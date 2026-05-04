@@ -66,6 +66,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  github-release:
+    name: Create GitHub Release
+    needs: docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          prerelease: ${{ needs.docker.outputs.is-prerelease == 'true' }}
+          generate_release_notes: true
+
   update-examples:
     name: Update Example Files
     needs: docker
