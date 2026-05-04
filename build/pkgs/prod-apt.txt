@@ -19,7 +19,7 @@ xz-utils=5.4.1-1
 zip=3.0-13
 
 # Image processing
-imagemagick-6.q16=8:6.9.11.60+dfsg-1.6+deb12u7
+imagemagick-6.q16=8:6.9.11.60+dfsg-1.6+deb12u9
 libjpeg62-turbo=1:2.1.5-2
 libopenjp2-7=2.5.0-2+deb12u2
 librsvg2-bin=2.54.7+dfsg-1~deb12u1
