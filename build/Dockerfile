@@ -15,7 +15,7 @@ FROM rust:1.89-bookworm AS planner
 RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo.txt \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \
-    cargo install "$crate" --version "$version"; \
+    cargo install "$crate" --version "$version" --locked; \
   done
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
@@ -31,7 +31,7 @@ RUN --mount=type=bind,source=build/pkgs/builder-rust-apt.txt,target=/tmp/package
 RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo.txt \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \
-    cargo install "$crate" --version "$version"; \
+    cargo install "$crate" --version "$version" --locked; \
   done
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
@@ -97,7 +97,7 @@ RUN pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
 RUN --mount=type=bind,source=build/pkgs/dev-rust-cargo.txt,target=/tmp/cargo.txt \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \
-    cargo install "$crate" --version "$version"; \
+    cargo install "$crate" --version "$version" --locked; \
   done
 
 COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/syd /usr/local/bin/
