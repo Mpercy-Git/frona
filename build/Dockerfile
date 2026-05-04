@@ -87,10 +87,10 @@ FROM rust:1.89-bookworm AS dev
 RUN --mount=type=bind,source=build/pkgs/dev-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
-     $(grep -vE '^\s*(#|$)|^nodejs=' /tmp/packages.txt | tr '\n' ' ') \
+    $(grep -vE '^\s*(#|$)|^nodejs($|=)' /tmp/packages.txt | tr '\n' ' ') \
   && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y --no-install-recommends \
-     $(grep '^nodejs=' /tmp/packages.txt) \
+    $(grep -E '^nodejs($|=)' /tmp/packages.txt | cut -d= -f1) \
   && rm -rf /var/lib/apt/lists/*
 COPY build/pkgs/builder-python-pip.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
@@ -123,10 +123,10 @@ LABEL org.opencontainers.image.licenses="BSL-1.1"
 RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
-     $(grep -vE '^\s*(#|$)|^nodejs=' /tmp/packages.txt | tr '\n' ' ') \
+    $(grep -vE '^\s*(#|$)|^nodejs($|=)' /tmp/packages.txt | tr '\n' ' ') \
   && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y --no-install-recommends \
-     $(grep '^nodejs=' /tmp/packages.txt) \
+    $(grep -E '^nodejs($|=)' /tmp/packages.txt | cut -d= -f1) \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/syd /usr/local/bin/
