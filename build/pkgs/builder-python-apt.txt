@@ -1,4 +1,4 @@
-gcc=4:12.2.0-3
-g++=4:12.2.0-3
-gfortran=4:12.2.0-3
-libopenblas-dev=0.3.21+ds-4
+gcc
+g++
+gfortran
+libopenblas-dev

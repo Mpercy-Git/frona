@@ -1,1 +1,1 @@
-libclang-dev=1:14.0-55.7~deb12u1
+libclang-dev
