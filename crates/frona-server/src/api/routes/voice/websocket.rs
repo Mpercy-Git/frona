@@ -7,6 +7,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::execution::run_agent_loop;
+use crate::call::models::CallDirection;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::inference::InferenceResponse;
@@ -47,15 +48,31 @@ pub(crate) async fn twilio_ws_handler(
     let user_id = claims.sub.clone();
     let contact_id = ext.contact_id.clone();
     let call_id = ext.call_id.clone();
+    let direction = ext.direction.clone();
+    let caller_phone = ext.caller_phone.clone();
+    let caller_name = ext.caller_name.clone();
 
     let ws = match WebSocketUpgrade::from_request(req, &state).await {
         Ok(ws) => ws,
         Err(e) => return e.into_response(),
     };
 
-    ws.on_upgrade(move |socket| handle_voice_socket(socket, state, chat_id, user_id, contact_id, call_id))
+    ws.on_upgrade(move |socket| {
+        handle_voice_socket(
+            socket,
+            state,
+            chat_id,
+            user_id,
+            contact_id,
+            call_id,
+            direction,
+            caller_phone,
+            caller_name,
+        )
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_voice_socket(
     socket: WebSocket,
     state: AppState,
@@ -63,7 +80,12 @@ async fn handle_voice_socket(
     user_id: String,
     contact_id: Option<String>,
     call_id: Option<String>,
+    direction: Option<CallDirection>,
+    caller_phone: Option<String>,
+    caller_name: Option<String>,
 ) {
+    let is_inbound = matches!(direction, Some(CallDirection::Inbound));
+
     state.active_sessions.register(&chat_id).await;
     tracing::debug!(chat_id = %chat_id, "Voice WS session registered in active sessions");
     let (mut ws_send, mut ws_recv) = socket.split();
@@ -90,7 +112,41 @@ async fn handle_voice_socket(
 
         match msg_type.as_str() {
             "setup" => {
-                tracing::info!(chat_id = %chat_id, user_id = %user_id, contact_id = ?contact_id, "ConversationRelay connected");
+                tracing::info!(
+                    chat_id = %chat_id,
+                    user_id = %user_id,
+                    contact_id = ?contact_id,
+                    direction = ?direction,
+                    "ConversationRelay connected"
+                );
+
+                // For inbound calls, inject an [INBOUND_CALL] context message
+                // so the agent knows it is answering, not initiating.
+                if is_inbound {
+                    let name = caller_name.as_deref().unwrap_or("Unknown");
+                    let phone = caller_phone.as_deref().unwrap_or("unknown");
+                    let inbound_context = state
+                        .prompts
+                        .read_with_vars("inbound_call.md", &[
+                            ("caller_name", name),
+                            ("phone_number", phone),
+                        ])
+                        .unwrap_or_else(|| {
+                            format!("[INBOUND_CALL: Incoming call from {name} ({phone}).]")
+                        });
+
+                    if !inbound_context.is_empty() {
+                        let _ = state
+                            .chat_service
+                            .save_live_call_message(
+                                &user_id,
+                                &chat_id,
+                                &inbound_context,
+                                contact_id.as_deref(),
+                            )
+                            .await;
+                    }
+                }
             }
             "interrupt" => {
                 tracing::debug!(chat_id = %chat_id, "ConversationRelay interrupt — cancelling active turn");
@@ -165,8 +221,22 @@ async fn handle_voice_socket(
         }
     }
 
-    tracing::info!(chat_id = %chat_id, "Voice WS session ended");
+    tracing::info!(chat_id = %chat_id, direction = ?direction, "Voice WS session ended");
     state.active_sessions.remove(&chat_id).await;
+
+    // For inbound calls, mark the call completed when the WebSocket closes
+    // (the caller may hang up without the agent explicitly calling hangup_call).
+    if is_inbound {
+        if let Some(cid) = call_id.as_deref() {
+            if let Err(e) = state.call_service.mark_completed(cid).await {
+                tracing::warn!(
+                    error = %e,
+                    call_id = %cid,
+                    "Failed to mark inbound call completed on WS close"
+                );
+            }
+        }
+    }
 
     if let Some(executor) = state.task_executor()
         && let Ok(Some(task)) = state.task_service.find_by_chat_id(&chat_id).await
@@ -284,3 +354,4 @@ async fn handle_voice_turn(
         }
     }
 }
+

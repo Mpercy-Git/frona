@@ -7,6 +7,7 @@ use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::task::executor::TaskExecutor;
+use crate::tool::voice::normalize_phone;
 
 use crate::agent::service::AgentService;
 use crate::app::manager::AppManager;
@@ -420,6 +421,116 @@ impl AppState {
             .ok()
             .flatten()
             .is_some_and(|v| v == "true")
+    }
+
+    // -----------------------------------------------------------------------
+    // Inbound-call allowlist helpers
+    // -----------------------------------------------------------------------
+
+    fn allowlist_key(user_id: &str) -> String {
+        format!("voice.inbound_allowlist.{user_id}")
+    }
+
+    /// Return the normalised E.164 numbers on a user's allowlist (DB-stored).
+    pub async fn get_allowlist(&self, user_id: &str) -> Vec<String> {
+        let key = Self::allowlist_key(user_id);
+        match self.get_runtime_config(&key).await {
+            Ok(Some(json)) => serde_json::from_str::<Vec<String>>(&json).unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Add `phone` to the user's allowlist (idempotent).
+    pub async fn add_to_allowlist(
+        &self,
+        user_id: &str,
+        phone: &str,
+    ) -> Result<(), crate::core::error::AppError> {
+        let normalized = normalize_phone(phone);
+        if normalized.is_empty() || normalized == "+" {
+            return Err(crate::core::error::AppError::Validation(
+                "Invalid phone number".into(),
+            ));
+        }
+        let mut list = self.get_allowlist(user_id).await;
+        if !list.contains(&normalized) {
+            list.push(normalized);
+        }
+        let json = serde_json::to_string(&list)
+            .map_err(|e| crate::core::error::AppError::Internal(e.to_string()))?;
+        self.set_runtime_config(&Self::allowlist_key(user_id), &json)
+            .await
+    }
+
+    /// Remove `phone` from the user's allowlist (no-op if absent).
+    pub async fn remove_from_allowlist(
+        &self,
+        user_id: &str,
+        phone: &str,
+    ) -> Result<(), crate::core::error::AppError> {
+        let normalized = normalize_phone(phone);
+        let mut list = self.get_allowlist(user_id).await;
+        list.retain(|p| p != &normalized);
+        let json = serde_json::to_string(&list)
+            .map_err(|e| crate::core::error::AppError::Internal(e.to_string()))?;
+        self.set_runtime_config(&Self::allowlist_key(user_id), &json)
+            .await
+    }
+
+    /// Resolve which platform user "owns" an inbound call from `phone`.
+    ///
+    /// Look-up order:
+    /// 1. Per-user DB allowlists (key prefix `voice.inbound_allowlist.{user_id}`)
+    ///    — first match wins.
+    /// 2. Static `config_allowlist` (owned by `fallback_user_id`).
+    ///
+    /// Returns `None` when the caller is not on any allowlist.
+    pub async fn find_user_for_caller(
+        &self,
+        phone: &str,
+        fallback_user_id: Option<&str>,
+        config_allowlist: &[String],
+    ) -> Option<String> {
+        let normalized = normalize_phone(phone);
+        if normalized.is_empty() || normalized == "+" {
+            return None;
+        }
+
+        // --- 1. Check all per-user DB allowlists ---
+        let mut result = self
+            .db
+            .query(
+                "SELECT key, value FROM runtime_config \
+                 WHERE string::starts_with(key, 'voice.inbound_allowlist.')",
+            )
+            .await
+            .ok()?;
+
+        let rows: Vec<serde_json::Value> = result.take(0).ok()?;
+
+        const PREFIX: &str = "voice.inbound_allowlist.";
+        for row in &rows {
+            let key = row.get("key").and_then(|v| v.as_str())?;
+            let value = row.get("value").and_then(|v| v.as_str())?;
+            let user_id = key.strip_prefix(PREFIX)?;
+
+            let list: Vec<String> = serde_json::from_str(value).unwrap_or_default();
+            if list.iter().any(|p| normalize_phone(p) == normalized) {
+                return Some(user_id.to_string());
+            }
+        }
+
+        // --- 2. Fall back to the static config allowlist ---
+        if let Some(uid) = fallback_user_id {
+            if config_allowlist
+                .iter()
+                .any(|p| normalize_phone(p) == normalized)
+            {
+                return Some(uid.to_string());
+            }
+        }
+
+        None
     }
 
     pub fn init_task_executor(&self) {

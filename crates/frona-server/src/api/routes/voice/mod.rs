@@ -1,5 +1,7 @@
 mod models;
 mod websocket;
+pub mod allowlist;
+pub mod inbound;
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderValue, StatusCode};
@@ -18,7 +20,7 @@ use crate::tool::voice::{VoiceCallbackExtensions, VoiceSessionExtensions};
 
 use models::TokenQuery;
 
-fn build_twiml(
+pub(super) fn build_twiml(
     ws_url: &str,
     welcome_greeting: Option<&str>,
     hints: Option<&str>,
@@ -67,6 +69,11 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/voice/twilio/callback", post(twilio_callback))
         .route("/api/voice/twilio/ws", get(websocket::twilio_ws_handler))
+        .route(
+            "/api/voice/twilio/inbound",
+            post(inbound::twilio_inbound_handler),
+        )
+        .merge(allowlist::router())
 }
 
 /// Verify the voice token through the standard `TokenService` — voice tokens
@@ -133,6 +140,9 @@ async fn twilio_callback(
         chat_id: chat_id.clone(),
         contact_id: ext.contact_id.clone(),
         call_id: call_id.clone(),
+        direction: None,
+        caller_phone: None,
+        caller_name: None,
     }) {
         Ok(v) => v,
         Err(e) => {

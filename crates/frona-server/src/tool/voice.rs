@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::Engine as _;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha1::Sha1;
+use std::collections::HashMap;
 use twilio_async::{TwilioJson, TwilioRequest};
 
 use crate::agent::prompt::PromptLoader;
@@ -17,6 +21,65 @@ use crate::core::config::VoiceConfig;
 use crate::core::error::AppError;
 use crate::credential::keypair::service::KeyPairService;
 use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition};
+
+// ---------------------------------------------------------------------------
+// Phone number helpers
+// ---------------------------------------------------------------------------
+
+/// Normalise a phone number to a canonical E.164-ish form for comparison:
+/// keep the leading `+` and strip everything that is not an ASCII digit.
+/// "+1 (555) 555-1234" and "+15555551234" both normalise to "+15555551234".
+pub fn normalize_phone(phone: &str) -> String {
+    let mut out = String::new();
+    if phone.starts_with('+') {
+        out.push('+');
+    }
+    for c in phone.chars() {
+        if c.is_ascii_digit() {
+            out.push(c);
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Twilio webhook signature validation
+// ---------------------------------------------------------------------------
+
+type HmacSha1 = Hmac<Sha1>;
+
+/// Validate the `X-Twilio-Signature` header on an incoming Twilio webhook.
+///
+/// Twilio computes HMAC-SHA1 over the full request URL concatenated with all
+/// sorted POST body key/value pairs (no separators), then base64-encodes the
+/// result.  Returns `true` when the computed digest matches `header_sig`.
+pub fn validate_twilio_signature(
+    auth_token: &str,
+    url: &str,
+    params: &HashMap<String, String>,
+    header_sig: &str,
+) -> bool {
+    let mut sorted: Vec<(&str, &str)> = params
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    sorted.sort_by_key(|(k, _)| *k);
+
+    let mut s = url.to_string();
+    for (k, v) in sorted {
+        s.push_str(k);
+        s.push_str(v);
+    }
+
+    let mut mac = match HmacSha1::new_from_slice(auth_token.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(s.as_bytes());
+    let result = mac.finalize().into_bytes();
+    let expected = base64::engine::general_purpose::STANDARD.encode(result);
+    expected == header_sig
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VoiceCallbackExtensions {
@@ -36,6 +99,16 @@ pub struct VoiceSessionExtensions {
     pub contact_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
+    /// Present on inbound calls; `None` for outbound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direction: Option<CallDirection>,
+    /// Caller's phone number for inbound calls (stored so the WS handler does
+    /// not need an extra DB round-trip to build the `[INBOUND_CALL]` message).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_phone: Option<String>,
+    /// Caller's display name for inbound calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

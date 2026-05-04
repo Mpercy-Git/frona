@@ -690,6 +690,16 @@ pub struct VoiceConfig {
     pub twilio_speech_model: Option<String>,
     #[schemars(description = "Public-facing base URL for Twilio callbacks. Overrides server.base_url for voice only.")]
     pub callback_base_url: Option<String>,
+    #[schemars(description = "Enable inbound call answering. Requires Twilio to POST to /api/voice/twilio/inbound.")]
+    pub inbound_enabled: bool,
+    #[schemars(description = "Fallback user ID that owns inbound calls when the caller matches the static inbound_allowlist (or when no per-user allowlist matches).")]
+    pub inbound_user_id: Option<String>,
+    #[schemars(description = "Agent ID that handles inbound calls. Defaults to 'receptionist'.")]
+    pub inbound_agent_id: Option<String>,
+    #[schemars(description = "Greeting spoken immediately when an inbound call connects.")]
+    pub inbound_welcome_greeting: Option<String>,
+    #[schemars(description = "Static E.164 phone numbers allowed to reach inbound_user_id. Dynamic per-user lists are managed via /api/voice/allowlist.")]
+    pub inbound_allowlist: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
