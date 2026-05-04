@@ -1,1 +1,1 @@
-cargo-chef=0.1.75
+cargo-chef=0.1.77
