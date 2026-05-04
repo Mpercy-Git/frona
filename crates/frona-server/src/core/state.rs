@@ -510,9 +510,15 @@ impl AppState {
 
         const PREFIX: &str = "voice.inbound_allowlist.";
         for row in &rows {
-            let key = row.get("key").and_then(|v| v.as_str())?;
-            let value = row.get("value").and_then(|v| v.as_str())?;
-            let user_id = key.strip_prefix(PREFIX)?;
+            let (Some(key), Some(value)) = (
+                row.get("key").and_then(|v| v.as_str()),
+                row.get("value").and_then(|v| v.as_str()),
+            ) else {
+                continue; // skip malformed rows
+            };
+            let Some(user_id) = key.strip_prefix(PREFIX) else {
+                continue;
+            };
 
             let list: Vec<String> = serde_json::from_str(value).unwrap_or_default();
             if list.iter().any(|p| normalize_phone(p) == normalized) {
