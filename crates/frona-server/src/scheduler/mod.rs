@@ -71,7 +71,38 @@ impl Scheduler {
     async fn run_poll_tasks(&self) -> Result<(), AppError> {
         self.run_cron_tasks().await?;
         self.run_deferred_tasks().await?;
+        self.run_signal_timeouts().await?;
         self.run_heartbeats().await
+    }
+
+    async fn run_signal_timeouts(&self) -> Result<(), AppError> {
+        if self.app_state.is_shutting_down() {
+            return Ok(());
+        }
+        let expired = self.app_state.task_service.find_expired_signal_tasks().await?;
+        if expired.is_empty() {
+            return Ok(());
+        }
+        let signal_service = self.app_state.signal_service();
+        for task in expired {
+            if let Err(e) = self
+                .app_state
+                .task_service
+                .mark_failed(&task.id, "timed out: no matching signal".into())
+                .await
+            {
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %e,
+                    "Failed to mark expired signal task as failed"
+                );
+                continue;
+            }
+            if let Some(ref svc) = signal_service {
+                svc.unregister(&task.user_id, &task.id).await;
+            }
+        }
+        Ok(())
     }
 
     async fn run_cron_tasks(&self) -> Result<(), AppError> {

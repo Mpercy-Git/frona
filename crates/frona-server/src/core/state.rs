@@ -6,6 +6,7 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::signal::SignalService;
 use crate::agent::task::executor::TaskExecutor;
 
 use crate::agent::service::AgentService;
@@ -107,6 +108,7 @@ pub struct AppState {
     pub voice_provider: Option<Arc<dyn VoiceProvider>>,
     pub skill_service: SkillService,
     pub task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
+    pub signal_service: Arc<OnceLock<Arc<SignalService>>>,
     pub max_concurrent_tasks: usize,
     pub config: Arc<Config>,
     pub storage_service: StorageService,
@@ -371,6 +373,7 @@ impl AppState {
             voice_provider,
             skill_service,
             task_executor: Arc::new(OnceLock::new()),
+            signal_service: Arc::new(OnceLock::new()),
             max_concurrent_tasks: config.server.max_concurrent_tasks,
             config: Arc::new(config.clone()),
             storage_service: storage,
@@ -425,6 +428,23 @@ impl AppState {
     pub fn init_task_executor(&self) {
         let executor = TaskExecutor::new(self.clone());
         let _ = self.task_executor.set(Arc::new(executor));
+    }
+
+    pub fn init_signal_service(&self) -> Arc<SignalService> {
+        let svc = Arc::new(SignalService::new(
+            self.task_service.clone(),
+            self.task_executor.clone(),
+            self.agent_service.clone(),
+            self.contact_service.clone(),
+            self.policy_service.clone(),
+            self.prompts.clone(),
+        ));
+        let _ = self.signal_service.set(svc.clone());
+        svc
+    }
+
+    pub fn signal_service(&self) -> Option<Arc<SignalService>> {
+        self.signal_service.get().cloned()
     }
 
     pub fn task_executor(&self) -> Option<Arc<TaskExecutor>> {

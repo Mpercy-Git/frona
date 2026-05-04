@@ -832,9 +832,28 @@ pub struct Config {
     pub cache: CacheConfig,
     pub mcp: McpConfig,
     #[serde(default)]
+    pub signal: SignalConfig,
+    #[serde(default)]
     pub models: HashMap<String, ModelGroupConfig>,
     #[serde(default)]
     pub providers: HashMap<String, ModelProviderConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct SignalConfig {
+    #[schemars(description = "Maximum number of pending signal watches per user.")]
+    pub max_pending_per_user: usize,
+    #[schemars(description = "Default safety cap on the number of candidates a single watch can be evaluated against before auto-failing. Sweep cadence is driven by scheduler.poll_secs.")]
+    pub default_max_evaluations: u32,
+}
+
+impl Default for SignalConfig {
+    fn default() -> Self {
+        Self {
+            max_pending_per_user: 50,
+            default_max_evaluations: 50,
+        }
+    }
 }
 
 pub struct LoadedConfig {
