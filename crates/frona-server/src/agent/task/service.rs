@@ -60,6 +60,62 @@ impl TaskService {
         Ok(task.into())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_signal(
+        &self,
+        user_id: &str,
+        agent_id: String,
+        source_chat_id: String,
+        title: String,
+        description: String,
+        resume_parent: bool,
+        tags: Vec<String>,
+        expected_channels: Vec<String>,
+        expected_contacts: Vec<String>,
+        expires_at: Option<DateTime<Utc>>,
+        max_evaluations: u32,
+    ) -> Result<Task, AppError> {
+        let now = chrono::Utc::now();
+        let task = Task {
+            id: uuid::Uuid::new_v4().to_string(),
+            user_id: user_id.to_string(),
+            agent_id,
+            space_id: None,
+            chat_id: None,
+            title,
+            description,
+            status: TaskStatus::Pending,
+            kind: TaskKind::Signal {
+                source_chat_id,
+                resume_parent,
+                tags,
+                expected_channels,
+                expected_contacts,
+                expires_at,
+                max_evaluations,
+                evaluation_count: 0,
+            },
+            run_at: None,
+            result_summary: None,
+            error_message: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.repo.create(&task).await
+    }
+
+    pub async fn list_pending_signal_tasks(&self) -> Result<Vec<Task>, AppError> {
+        self.repo.find_pending_signal_tasks().await
+    }
+
+    pub async fn find_expired_signal_tasks(&self) -> Result<Vec<Task>, AppError> {
+        self.repo.find_expired_signal_tasks(chrono::Utc::now()).await
+    }
+
+    pub async fn save(&self, task: &Task) -> Result<Task, AppError> {
+        self.repo.update(task).await
+    }
+
     pub async fn list_active(
         &self,
         user_id: &str,

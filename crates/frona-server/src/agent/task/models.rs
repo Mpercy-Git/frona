@@ -34,6 +34,23 @@ pub enum TaskKind {
         source_agent_id: Option<String>,
         source_chat_id: Option<String>,
     },
+    Signal {
+        source_chat_id: String,
+        #[serde(default)]
+        resume_parent: bool,
+        #[serde(default)]
+        tags: Vec<String>,
+        #[serde(default)]
+        expected_channels: Vec<String>,
+        #[serde(default)]
+        expected_contacts: Vec<String>,
+        #[serde(default)]
+        expires_at: Option<DateTime<Utc>>,
+        #[serde(default)]
+        max_evaluations: u32,
+        #[serde(default)]
+        evaluation_count: u32,
+    },
 }
 
 impl Default for TaskKind {
@@ -48,6 +65,7 @@ impl TaskKind {
             TaskKind::Direct { source_chat_id } => source_chat_id.as_deref(),
             TaskKind::Delegation { source_chat_id, .. } => Some(source_chat_id),
             TaskKind::Cron { source_chat_id, .. } => source_chat_id.as_deref(),
+            TaskKind::Signal { source_chat_id, .. } => Some(source_chat_id),
         }
     }
 }
@@ -176,5 +194,20 @@ mod tests {
             source_chat_id: None,
         };
         assert_eq!(kind.source_chat_id(), None);
+    }
+
+    #[test]
+    fn source_chat_id_signal() {
+        let kind = TaskKind::Signal {
+            source_chat_id: "c3".to_string(),
+            resume_parent: true,
+            tags: vec!["verification_code".to_string()],
+            expected_channels: vec![],
+            expected_contacts: vec![],
+            expires_at: None,
+            max_evaluations: 50,
+            evaluation_count: 0,
+        };
+        assert_eq!(kind.source_chat_id(), Some("c3"));
     }
 }

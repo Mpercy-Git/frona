@@ -426,6 +426,94 @@ impl TaskExecutor {
         Ok(())
     }
 
+    /// Inject a system message into the task's chat and run one agent turn.
+    /// If the agent emits a `complete_task` / `fail_task` lifecycle event,
+    /// it's processed and the parent resumes via `deliver_to_source`.
+    pub async fn run_with_injected_message(
+        self: &Arc<Self>,
+        task: &Task,
+        system_message: String,
+    ) -> Result<(), AppError> {
+        let mut task_for_chat = task.clone();
+        let was_unset = task_for_chat.chat_id.is_none();
+        let chat_id = self.ensure_task_chat(&mut task_for_chat).await?;
+        if was_unset {
+            // ensure_task_chat populated chat_id on the local clone — persist
+            // it so subsequent calls reuse C₂ instead of creating a new chat.
+            self.app_state
+                .task_service
+                .save(&task_for_chat)
+                .await?;
+        }
+
+        self.app_state
+            .chat_service
+            .save_system_message(&chat_id, system_message)
+            .await?;
+
+        let agent_msg = self
+            .app_state
+            .chat_service
+            .create_executing_agent_message(&chat_id, &task.agent_id)
+            .await?;
+        let agent_msg_id = agent_msg.id.clone();
+        let cancel_token = CancellationToken::new();
+
+        let outcome = execution::run_agent_loop(
+            &self.app_state,
+            &task.user_id,
+            &chat_id,
+            &agent_msg_id,
+            cancel_token,
+            true,
+            None,
+        )
+        .await;
+
+        match outcome {
+            Ok(execution::AgentLoopOutcome { response }) => {
+                if let InferenceResponse::Completed {
+                    text,
+                    attachments,
+                    reasoning,
+                    ..
+                } = response
+                {
+                    let _ = self
+                        .app_state
+                        .chat_service
+                        .complete_agent_message(&agent_msg_id, text, attachments, reasoning)
+                        .await;
+                }
+            }
+            Err(e) => {
+                let _ = self
+                    .app_state
+                    .chat_service
+                    .fail_agent_message(&agent_msg_id)
+                    .await;
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %e,
+                    "Agent failed during injected-message run"
+                );
+                return Err(e);
+            }
+        }
+
+        if let Some(action) = self.find_lifecycle_event(&chat_id).await
+            && let Err(e) = self.handle_lifecycle_action(task, &chat_id, action).await
+        {
+            tracing::warn!(
+                task_id = %task.id,
+                error = %e,
+                "Failed to apply lifecycle action after injected-message run"
+            );
+        }
+
+        Ok(())
+    }
+
     pub async fn ensure_task_chat(&self, task: &mut Task) -> Result<String, AppError> {
         if let Some(ref cid) = task.chat_id {
             return Ok(cid.clone());
@@ -516,6 +604,11 @@ impl TaskExecutor {
             TaskKind::Direct {
                 source_chat_id: Some(source_chat_id),
             } => (source_chat_id.as_str(), false),
+            TaskKind::Signal {
+                source_chat_id,
+                resume_parent,
+                ..
+            } => (source_chat_id.as_str(), *resume_parent),
             _ => return,
         };
 
@@ -633,6 +726,7 @@ impl TaskExecutor {
             summary,
         );
     }
+
 }
 
 enum LifecycleAction {

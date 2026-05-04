@@ -137,4 +137,39 @@ impl TaskRepository for SurrealRepo<Task> {
 
         Ok(tasks)
     }
+
+    async fn find_pending_signal_tasks(&self) -> Result<Vec<Task>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM task WHERE kind.Signal IS NOT NONE AND status.Pending IS NOT NONE ORDER BY created_at ASC"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let tasks: Vec<Task> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(tasks)
+    }
+
+    async fn find_expired_signal_tasks(&self, now: DateTime<Utc>) -> Result<Vec<Task>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM task WHERE kind.Signal IS NOT NONE AND status.Pending IS NOT NONE AND kind.Signal.expires_at IS NOT NONE AND kind.Signal.expires_at <= $now ORDER BY kind.Signal.expires_at ASC"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("now", now))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let tasks: Vec<Task> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(tasks)
+    }
 }
