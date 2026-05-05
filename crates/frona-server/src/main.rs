@@ -85,8 +85,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.skill_service.start_watcher();
 
     state.init_task_executor();
+    let signal_service = state.init_signal_service();
     state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await?;
+    if let Err(e) = signal_service.start().await {
+        tracing::warn!(error = %e, "Failed to start signal service");
+    }
 
     if state.config.sandbox.default_network_access {
         let policy = cedar_policy::Policy::from_json(
@@ -227,6 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::navigation::router())
         .merge(routes::notifications::router())
         .merge(routes::policies::router())
+        .merge(routes::signals::router())
         .merge(routes::skills::router())
         .merge(routes::tools::router())
         .merge(routes::files::router())

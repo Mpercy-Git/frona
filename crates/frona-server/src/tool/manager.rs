@@ -300,6 +300,15 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         )));
     }
 
+    if let Some(signal_service) = state.signal_service() {
+        tools.push(Arc::new(super::await_signal::AwaitSignalTool::new(
+            state.task_service.clone(),
+            signal_service,
+            prompts.clone(),
+            state.config.signal.default_max_evaluations,
+        )));
+    }
+
     if state.voice_provider.is_some() {
         tools.push(Arc::new(super::voice::VoiceCallTool {
             provider: state.voice_provider.clone(), prompts: prompts.clone(),

@@ -1,3 +1,4 @@
+pub mod await_signal;
 pub mod browser;
 pub mod manager;
 pub mod cli;
