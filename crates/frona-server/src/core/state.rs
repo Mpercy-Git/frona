@@ -126,6 +126,7 @@ pub struct AppState {
     pub metrics_handle: PrometheusHandle,
     pub task_resolution_notifiers: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
     pub shutdown_token: CancellationToken,
+    pub http_client: reqwest::Client,
 }
 
 impl AppState {
@@ -137,6 +138,8 @@ impl AppState {
         metrics_handle: PrometheusHandle,
         resource_manager: Arc<SystemResourceManager>,
     ) -> Self {
+        let http_client = crate::build_http_client();
+
         let broadcast_service = BroadcastService::with_pending_events_secs(config.server.sse_pending_events_secs);
         let llm_config = load_models_config(models_config);
         let provider_registry = ModelProviderRegistry::from_config(llm_config, broadcast_service.clone(), &config.inference)
@@ -156,7 +159,7 @@ impl AppState {
             resource_manager.clone(),
         ).with_default_timeout(config.sandbox.default_limits.timeout_secs)
          .with_shared_read_paths(vec![shared_config_abs.to_string_lossy().into_owned()]));
-        let search_provider = create_search_provider(&config.search);
+        let search_provider = create_search_provider(http_client.clone(), &config.search);
         let local_base_url = config.server.base_url.clone()
             .unwrap_or_else(|| format!("http://localhost:{}", config.server.port));
         let voice_base_url = config.server.external_base_url()
@@ -183,7 +186,7 @@ impl AppState {
         let skill_resolver = SkillResolver::new(&config.storage.shared_config_dir, storage.clone())
             .with_installed_dir(&config.storage.skills_dir);
         let skill_service = SkillService::new(
-            SkillRegistryClient::new(format!("{}/skills", config.storage.cache_dir)),
+            SkillRegistryClient::new(http_client.clone(), format!("{}/skills", config.storage.cache_dir)),
             skill_resolver,
             storage.clone(),
             &config.storage.skills_dir,
@@ -254,7 +257,7 @@ impl AppState {
         let oauth_service = if config.sso.enabled {
             let oauth_repo: SurrealRepo<crate::auth::oauth::models::OAuthIdentity> =
                 SurrealRepo::new(db.clone());
-            OAuthService::new(config, Arc::new(oauth_repo)).ok()
+            OAuthService::new(config, Arc::new(oauth_repo), http_client.clone()).ok()
         } else {
             None
         };
@@ -285,6 +288,7 @@ impl AppState {
             config.app.port_range_start,
             config.app.port_range_end,
             policy_service.clone(),
+            http_client.clone(),
         ));
 
         let mcp_workspaces = std::fs::canonicalize(&config.mcp.workspaces_path)
@@ -301,11 +305,13 @@ impl AppState {
             config.mcp.port_range_start,
             config.mcp.port_range_end,
             policy_service.clone(),
+            http_client.clone(),
         ));
         let mcp_repo: Arc<dyn crate::tool::mcp::repository::McpServerRepository> =
             Arc::new(SurrealRepo::<crate::tool::mcp::McpServer>::new(db.clone()));
         let mcp_registry: Arc<dyn crate::tool::mcp::McpRegistryClient> =
             Arc::new(crate::tool::mcp::PrebuiltMcpRegistryClient::new(
+                http_client.clone(),
                 std::path::PathBuf::from(
                     config.mcp.cache_path.clone()
                         .unwrap_or_else(|| format!("{}/mcp", config.storage.cache_dir))
@@ -389,6 +395,7 @@ impl AppState {
             metrics_handle,
             task_resolution_notifiers: Arc::new(Mutex::new(HashMap::new())),
             shutdown_token: CancellationToken::new(),
+            http_client,
         }
     }
 

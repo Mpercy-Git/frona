@@ -40,6 +40,7 @@ pub struct AppManager {
     sandbox_manager: Arc<SandboxManager>,
     last_accessed: Arc<Mutex<HashMap<String, DateTime<Utc>>>>,
     policy_service: crate::policy::service::PolicyService,
+    http: reqwest::Client,
 }
 
 impl AppManager {
@@ -48,6 +49,7 @@ impl AppManager {
         port_range_start: u16,
         port_range_end: u16,
         policy_service: crate::policy::service::PolicyService,
+        http: reqwest::Client,
     ) -> Self {
         Self {
             processes: Arc::new(Mutex::new(HashMap::new())),
@@ -56,6 +58,7 @@ impl AppManager {
             sandbox_manager,
             last_accessed: Arc::new(Mutex::new(HashMap::new())),
             policy_service,
+            http,
         }
     }
 
@@ -117,17 +120,12 @@ impl AppManager {
     pub async fn health_check(&self, port: u16, health_check: &HealthCheck) -> bool {
         let url = format!("http://127.0.0.1:{}{}", port, health_check.path);
         let timeout = std::time::Duration::from_secs(health_check.effective_timeout());
-
-        let client = reqwest::Client::builder()
+        self.http
+            .get(&url)
             .timeout(timeout)
-            .build();
-
-        let client = match client {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        client.get(&url).send().await.is_ok_and(|r| r.status().is_success())
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success())
     }
 
     pub async fn check_process(&self, app_id: &str) -> ProcessStatus {
@@ -439,6 +437,7 @@ mod tests {
             port_start,
             port_end,
             test_policy_service().await,
+            crate::build_http_client(),
         )
     }
 
@@ -509,6 +508,7 @@ mod tests {
             6000,
             6010,
             test_policy_service().await,
+            crate::build_http_client(),
         );
 
         let child = tokio::process::Command::new("true")

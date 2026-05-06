@@ -32,11 +32,8 @@ pub struct TavilyProvider {
 }
 
 impl TavilyProvider {
-    pub fn new(api_key: String) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            api_key,
-        }
+    pub fn new(client: reqwest::Client, api_key: String) -> Self {
+        Self { client, api_key }
     }
 }
 
@@ -100,11 +97,8 @@ pub struct BraveProvider {
 }
 
 impl BraveProvider {
-    pub fn new(api_key: String) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            api_key,
-        }
+    pub fn new(client: reqwest::Client, api_key: String) -> Self {
+        Self { client, api_key }
     }
 }
 
@@ -172,9 +166,9 @@ pub struct SearxngProvider {
 }
 
 impl SearxngProvider {
-    pub fn new(base_url: String) -> Self {
+    pub fn new(client: reqwest::Client, base_url: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client,
             base_url: base_url.trim_end_matches('/').to_string(),
         }
     }
@@ -305,20 +299,23 @@ impl WebSearchTool {
 
 // --- Factory ---
 
-pub fn create_search_provider(settings: &crate::core::config::SearchConfig) -> Option<Arc<dyn SearchProvider>> {
+pub fn create_search_provider(
+    http: reqwest::Client,
+    settings: &crate::core::config::SearchConfig,
+) -> Option<Arc<dyn SearchProvider>> {
     if let Some(provider_name) = settings.provider.as_deref() {
         return match provider_name.to_lowercase().as_str() {
             "tavily" => {
                 let api_key = env::var("TAVILY_API_KEY").ok()?;
-                Some(Arc::new(TavilyProvider::new(api_key)))
+                Some(Arc::new(TavilyProvider::new(http, api_key)))
             }
             "brave" => {
                 let api_key = env::var("BRAVE_API_KEY").ok()?;
-                Some(Arc::new(BraveProvider::new(api_key)))
+                Some(Arc::new(BraveProvider::new(http, api_key)))
             }
             "searxng" => {
                 let base_url = settings.searxng_base_url.clone()?;
-                Some(Arc::new(SearxngProvider::new(base_url)))
+                Some(Arc::new(SearxngProvider::new(http, base_url)))
             }
             other => {
                 tracing::warn!(provider = %other, "Unknown search provider");
@@ -328,13 +325,13 @@ pub fn create_search_provider(settings: &crate::core::config::SearchConfig) -> O
     }
 
     if let Ok(api_key) = env::var("TAVILY_API_KEY") {
-        return Some(Arc::new(TavilyProvider::new(api_key)));
+        return Some(Arc::new(TavilyProvider::new(http, api_key)));
     }
     if let Ok(api_key) = env::var("BRAVE_API_KEY") {
-        return Some(Arc::new(BraveProvider::new(api_key)));
+        return Some(Arc::new(BraveProvider::new(http, api_key)));
     }
     if let Some(base_url) = settings.searxng_base_url.clone() {
-        return Some(Arc::new(SearxngProvider::new(base_url)));
+        return Some(Arc::new(SearxngProvider::new(http, base_url)));
     }
 
     None
@@ -373,7 +370,7 @@ mod tests {
 
     fn mock_context() -> InferenceContext {
         let broadcast = crate::chat::broadcast::BroadcastService::new();
-        let event_sender = broadcast.create_event_sender("u", "c");
+        let event_sender = broadcast.create_event_sender("u", "c", None);
         InferenceContext::new(
             crate::auth::User {
                 id: "u".into(), username: "u".into(), email: "e".into(), name: "n".into(),
@@ -393,6 +390,9 @@ mod tests {
                 id: "c".into(), user_id: "u".into(), space_id: None,
                 task_id: None, agent_id: "a".into(), title: None,
                 archived_at: None,
+                channel_id: None,
+                channel_external_id: None,
+                metadata: Default::default(),
                 created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
             },
             event_sender,
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn create_search_provider_returns_none_with_empty_config() {
         let settings = crate::core::config::SearchConfig::default();
-        assert!(create_search_provider(&settings).is_none());
+        assert!(create_search_provider(crate::build_http_client(), &settings).is_none());
     }
 
     #[test]
@@ -483,7 +483,7 @@ mod tests {
             provider: Some("searxng".into()),
             searxng_base_url: Some("http://localhost:3400".into()),
         };
-        assert!(create_search_provider(&settings).is_some());
+        assert!(create_search_provider(crate::build_http_client(), &settings).is_some());
     }
 
     #[test]
@@ -492,7 +492,7 @@ mod tests {
             provider: None,
             searxng_base_url: Some("http://localhost:3400".into()),
         };
-        assert!(create_search_provider(&settings).is_some());
+        assert!(create_search_provider(crate::build_http_client(), &settings).is_some());
     }
 
     #[test]
@@ -501,7 +501,7 @@ mod tests {
             provider: Some("nonexistent".into()),
             searxng_base_url: None,
         };
-        assert!(create_search_provider(&settings).is_none());
+        assert!(create_search_provider(crate::build_http_client(), &settings).is_none());
     }
 
     #[tokio::test]
