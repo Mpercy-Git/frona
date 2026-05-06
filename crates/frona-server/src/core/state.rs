@@ -159,7 +159,7 @@ impl AppState {
         let search_provider = create_search_provider(&config.search);
         let local_base_url = config.server.base_url.clone()
             .unwrap_or_else(|| format!("http://localhost:{}", config.server.port));
-        let voice_base_url = config.voice.callback_base_url.clone()
+        let voice_base_url = config.server.external_base_url()
             .unwrap_or_else(|| local_base_url.clone());
 
         let provider_registry_arc = Arc::new(provider_registry.clone());

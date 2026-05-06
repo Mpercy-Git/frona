@@ -34,6 +34,8 @@ pub struct ServerConfig {
     pub backend_url: Option<String>,
     #[schemars(description = "Override URL for the frontend (if different from base_url).")]
     pub frontend_url: Option<String>,
+    #[schemars(description = "Externally-reachable URL of this server (e.g. ngrok tunnel, public domain). Used as the default callback target for inbound webhooks and external service callbacks when no per-feature override is set.")]
+    pub external_url: Option<String>,
     #[schemars(description = "Maximum request body size in bytes.")]
     pub max_body_size_bytes: usize,
     #[schemars(description = "Graceful shutdown timeout in seconds. Server force-exits after this duration.")]
@@ -60,6 +62,14 @@ impl ServerConfig {
             .trim_end_matches('/')
             .to_string()
     }
+
+    pub fn external_base_url(&self) -> Option<String> {
+        self.external_url
+            .as_deref()
+            .or(self.backend_url.as_deref())
+            .or(self.base_url.as_deref())
+            .map(|s| s.trim_end_matches('/').to_string())
+    }
 }
 
 impl Default for ServerConfig {
@@ -73,6 +83,7 @@ impl Default for ServerConfig {
             base_url: None,
             backend_url: None,
             frontend_url: None,
+            external_url: None,
             max_body_size_bytes: 104_857_600,
             shutdown_timeout_secs: 60,
             sse_pending_events_secs: 60,
@@ -688,8 +699,6 @@ pub struct VoiceConfig {
     pub twilio_voice_id: Option<String>,
     #[schemars(description = "Twilio speech recognition model.")]
     pub twilio_speech_model: Option<String>,
-    #[schemars(description = "Public-facing base URL for Twilio callbacks. Overrides server.base_url for voice only.")]
-    pub callback_base_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -843,8 +852,10 @@ pub struct Config {
 pub struct SignalConfig {
     #[schemars(description = "Maximum number of pending signal watches per user.")]
     pub max_pending_per_user: usize,
-    #[schemars(description = "Default safety cap on the number of candidates a single watch can be evaluated against before auto-failing. Sweep cadence is driven by scheduler.poll_secs.")]
+    #[schemars(description = "Default safety cap on the number of candidates a one-shot watch can be evaluated against before auto-failing. Sweep cadence is driven by scheduler.poll_secs.")]
     pub default_max_evaluations: u32,
+    #[schemars(description = "Default safety cap on the number of fires a continuous-mode watch can absorb before auto-completing. Higher than the one-shot default because continuous watches stream over time.")]
+    pub default_max_continuous_evaluations: u32,
 }
 
 impl Default for SignalConfig {
@@ -852,6 +863,7 @@ impl Default for SignalConfig {
         Self {
             max_pending_per_user: 50,
             default_max_evaluations: 50,
+            default_max_continuous_evaluations: 1_000,
         }
     }
 }
@@ -916,6 +928,7 @@ impl Config {
             Some(crate::inference::config::ModelRegistryConfig {
                 providers: config.providers.clone().into_iter().collect(),
                 models: config.models.clone().into_iter().collect(),
+                skip_auto_discover: false,
             })
         } else {
             None

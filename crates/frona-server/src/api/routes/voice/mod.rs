@@ -176,8 +176,7 @@ async fn twilio_callback(
         }
     };
 
-    let base_url = state.config.voice.callback_base_url.clone()
-        .or_else(|| state.config.server.base_url.clone())
+    let base_url = state.config.server.external_base_url()
         .unwrap_or_else(|| format!("http://localhost:{}", state.config.server.port));
     let ws_base = base_url
         .replace("https://", "wss://")
