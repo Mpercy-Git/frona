@@ -10,7 +10,6 @@ use axum::Router;
 use crate::auth::models::Claims;
 use crate::auth::token::models::TokenType;
 use crate::auth::token::service::CreateTokenRequest;
-use crate::auth::User;
 use crate::core::Principal;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
@@ -141,15 +140,16 @@ async fn twilio_callback(
         }
     };
 
-    let user = User {
-        id: user_id.clone(),
-        username: claims.username.clone(),
-        email: claims.email.clone(),
-        name: String::new(),
-        password_hash: String::new(),
-        timezone: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+    let user = match state.user_service.find_by_id(&user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            tracing::warn!(user_id = %user_id, "Voice session: user not found");
+            return (StatusCode::UNAUTHORIZED, "User not found").into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, user_id = %user_id, "Voice session: user lookup failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+        }
     };
 
     let created = match state

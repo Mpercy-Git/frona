@@ -49,15 +49,12 @@ pub(crate) async fn auth_gate(
         }
     };
 
-    let user = crate::auth::User {
-        id: claims.sub,
-        username: claims.username,
-        email: claims.email,
-        name: String::new(),
-        password_hash: String::new(),
-        timezone: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+    let user = match state.user_service.find_by_id(&claims.sub).await {
+        Ok(Some(u)) => u,
+        _ => {
+            let login_url = build_login_redirect(&state, redirect_url);
+            return Redirect::temporary(&login_url).into_response();
+        }
     };
 
     let app_session_jwt = match state
