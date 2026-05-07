@@ -81,4 +81,25 @@ impl ChatRepository for SurrealRepo<Chat> {
 
         Ok(chats)
     }
+
+    async fn find_by_channel_thread(
+        &self,
+        channel_id: &str,
+        channel_external_id: &str,
+    ) -> Result<Option<Chat>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM chat WHERE channel_id = $channel_id AND channel_external_id = $thread LIMIT 1"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("channel_id", channel_id.to_string()))
+            .bind(("thread", channel_external_id.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let chat: Option<Chat> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(chat)
+    }
 }

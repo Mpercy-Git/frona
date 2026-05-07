@@ -42,4 +42,5 @@ impl SpaceRepository for SurrealRepo<Space> {
 
         Ok(spaces)
     }
+
 }

@@ -45,4 +45,30 @@ impl ContactRepository for SurrealRepo<Contact> {
 
         Ok(contact)
     }
+
+    async fn find_by_channel_address(
+        &self,
+        user_id: &str,
+        provider: &str,
+        address: &str,
+    ) -> Result<Option<Contact>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM contact
+             WHERE user_id = $user_id
+               AND addresses[WHERE provider = $provider AND address = $address]
+             LIMIT 1"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("user_id", user_id.to_string()))
+            .bind(("provider", provider.to_string()))
+            .bind(("address", address.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let contact: Option<Contact> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(contact)
+    }
 }

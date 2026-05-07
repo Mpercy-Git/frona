@@ -140,4 +140,67 @@ impl MessageRepository for SurrealRepo<Message> {
             .flat_map(|m| m.attachments)
             .collect())
     }
+
+    async fn find_due_deliveries(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<Message>, AppError> {
+        // SurrealDB stores Rust enums as tagged objects (e.g. `Pending: {}`)
+        // when the SurrealValue derive is on a unit variant — direct string
+        // comparisons in WHERE wouldn't match. Bind the typed enum values
+        // and use `!= sent` to cover both Pending and Failed rows that
+        // still have work to do.
+        use crate::chat::message::models::DeliveryState;
+        let query = format!(
+            "{SELECT_CLAUSE} FROM message
+             WHERE delivery.state IS NOT NONE
+               AND delivery.state != $sent
+               AND delivery.next_attempt_at IS NOT NONE
+               AND delivery.next_attempt_at <= $now
+             LIMIT $limit"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("sent", DeliveryState::Sent))
+            .bind(("now", now))
+            .bind(("limit", limit as i64))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let messages: Vec<Message> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(messages)
+    }
+
+    async fn resume_deliveries_for_channel(
+        &self,
+        channel_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<u64, AppError> {
+        // See find_due_deliveries for why we filter via `!= $sent` instead of `IN [...]`.
+        // RETURN meta::id(id) projects to String so we can count via Vec length
+        // without deserializing the full Message (whose id is a record, not a string).
+        use crate::chat::message::models::DeliveryState;
+        let query = "UPDATE message
+            SET delivery.next_attempt_at = $now
+            WHERE chat_id IN (SELECT VALUE meta::id(id) FROM chat WHERE channel_id = $channel_id)
+              AND delivery.state IS NOT NONE
+              AND delivery.state != $sent
+              AND delivery.next_attempt_at IS NOT NONE
+            RETURN meta::id(id) AS id";
+        let mut result = self
+            .db()
+            .query(query)
+            .bind(("channel_id", channel_id.to_string()))
+            .bind(("now", now))
+            .bind(("sent", DeliveryState::Sent))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows: Vec<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(rows.len() as u64)
+    }
 }

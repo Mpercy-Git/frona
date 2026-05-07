@@ -26,6 +26,7 @@ impl SpaceService {
             id: uuid::Uuid::new_v4().to_string(),
             user_id: user_id.to_string(),
             name: req.name,
+            metadata: req.metadata.unwrap_or_default(),
             created_at: now,
             updated_at: now,
         };

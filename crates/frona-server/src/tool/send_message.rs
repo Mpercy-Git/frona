@@ -265,6 +265,7 @@ impl SendMessageTool {
                     space_id: None,
                     task_id: None,
                     title: None,
+                    metadata: None,
                 },
             )
             .await?;

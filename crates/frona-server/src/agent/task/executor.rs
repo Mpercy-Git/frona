@@ -529,6 +529,7 @@ impl TaskExecutor {
                     task_id: Some(task.id.clone()),
                     agent_id: task.agent_id.clone(),
                     title: Some(format!("Task: {}", task.title)),
+                    metadata: None,
                 },
             )
             .await?;

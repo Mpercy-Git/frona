@@ -108,6 +108,9 @@ impl ChatService {
             agent_id: req.agent_id,
             title: req.title,
             archived_at: None,
+            channel_id: None,
+            channel_external_id: None,
+            metadata: req.metadata.unwrap_or_default(),
             created_at: now,
             updated_at: now,
         };

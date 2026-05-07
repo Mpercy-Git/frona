@@ -371,6 +371,7 @@ async fn execute_cron(
                     task_id: None,
                     agent_id: agent_id.clone(),
                     title: Some(format!("Cron: {}", task.title)),
+                    metadata: None,
                 },
             )
             .await?;
@@ -406,6 +407,7 @@ async fn execute_heartbeat(
                     task_id: None,
                     agent_id: agent_id.clone(),
                     title: Some("Heartbeat".to_string()),
+                    metadata: None,
                 },
             )
             .await?;
