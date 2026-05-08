@@ -3,7 +3,8 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use cedar_policy::{
-    Authorizer, Context, Decision, Entities, Entity, EntityUid, PolicySet, Request, Schema,
+    Authorizer, Context, Decision, Entities, Entity, EntityUid, PolicySet, Request,
+    RestrictedExpression, Schema,
 };
 use moka::future::Cache;
 use tokio::sync::Mutex as AsyncMutex;
@@ -270,13 +271,21 @@ impl PolicyService {
                 connector_id,
                 sender,
                 ..
-            } => super::schema::signal_source_entity_uid(
+            }
+            | PolicyAction::ReceiveMessage {
                 connector_id,
-                sender.as_deref().unwrap_or(""),
-            ),
+                sender,
+                ..
+            } => super::schema::message_source_entity_uid(connector_id, &sender.address),
         };
 
-        let context = Context::empty();
+        let context = match &action {
+            PolicyAction::ReceiveSignal { paired_addresses, .. }
+            | PolicyAction::ReceiveMessage { paired_addresses, .. } => {
+                build_paired_addresses_context(paired_addresses)?
+            }
+            _ => Context::empty(),
+        };
 
         let entities = match &action {
             PolicyAction::InvokeTool { tool_name, tool_group } => {
@@ -305,7 +314,13 @@ impl PolicyService {
                 connector_id,
                 channel_id,
                 sender,
-                contact,
+                ..
+            }
+            | PolicyAction::ReceiveMessage {
+                connector_id,
+                channel_id,
+                sender,
+                ..
             } => {
                 let all_defs = self.tool_manager.definitions(user_id).await;
                 let mut agent_tools = Vec::new();
@@ -318,13 +333,12 @@ impl PolicyService {
                         agent_tools.push(def.id.clone());
                     }
                 }
-                super::schema::build_signal_source_entities(
+                super::schema::build_message_source_entities(
                     &agent.id,
                     &agent_tools,
                     connector_id,
                     channel_id,
-                    sender.as_deref(),
-                    contact.as_ref(),
+                    sender,
                 )
             }
         };
@@ -727,6 +741,17 @@ impl PolicyService {
         self.policy_cache.invalidate_all();
         self.sandbox_cache.invalidate_all();
     }
+}
+
+fn build_paired_addresses_context(addresses: &[String]) -> Result<Context, AppError> {
+    let set = RestrictedExpression::new_set(
+        addresses
+            .iter()
+            .cloned()
+            .map(RestrictedExpression::new_string),
+    );
+    Context::from_pairs([("paired_addresses".into(), set)])
+        .map_err(|e| AppError::Internal(format!("Policy context error: {e}")))
 }
 
 fn principal_kind_str(kind: &PrincipalKind) -> &'static str {

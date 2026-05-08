@@ -131,83 +131,86 @@ pub fn user_entity_uid(user_id: &str) -> EntityUid {
     entity_uid("User", user_id)
 }
 
-pub fn signal_source_entity_uid(connector_id: &str, sender: &str) -> EntityUid {
-    let id = format!("{}:{}", connector_id, sender);
-    entity_uid("SignalSource", &id)
+pub fn message_source_entity_uid(connector_id: &str, address: &str) -> EntityUid {
+    let id = format!("{}:{}", connector_id, address);
+    entity_uid("MessageSource", &id)
 }
 
-pub fn build_signal_source_entities(
+pub fn build_message_source_entities(
     agent_id: &str,
     agent_tools: &[String],
     connector_id: &str,
     channel_id: &str,
-    sender: Option<&str>,
-    contact: Option<&super::models::SignalContact>,
+    sender: &super::models::PolicyContact,
 ) -> Entities {
     let principal_entity = build_agent_principal_entity(agent_id, agent_tools);
-    let sender = sender.unwrap_or("");
 
     let channel_uid = channel_entity_uid(channel_id);
     let channel_entity = Entity::new_no_attrs(channel_uid.clone(), HashSet::new());
 
-    let mut all_entities = vec![principal_entity, channel_entity];
+    let user_uid = user_entity_uid(&sender.user_id);
+    let user_entity = Entity::new_no_attrs(user_uid.clone(), HashSet::new());
 
-    let mut signal_attrs: Vec<(String, RestrictedExpression)> = vec![
+    let contact_uid = contact_entity_uid(&sender.id);
+    let contact_addresses = RestrictedExpression::new_set(
+        sender
+            .addresses
+            .iter()
+            .cloned()
+            .map(RestrictedExpression::new_string),
+    );
+    let contact_attrs = [
+        (
+            "address".into(),
+            RestrictedExpression::new_string(sender.address.clone()),
+        ),
+        ("addresses".into(), contact_addresses),
+        (
+            "name".into(),
+            RestrictedExpression::new_string(sender.name.clone()),
+        ),
+    ];
+    let contact_entity = Entity::new(
+        contact_uid.clone(),
+        contact_attrs.into_iter().collect(),
+        HashSet::from([user_uid.clone()]),
+    )
+    .expect("valid contact entity");
+
+    let source_attrs = [
         (
             "connector_id".into(),
             RestrictedExpression::new_string(connector_id.to_string()),
         ),
         (
             "sender".into(),
-            RestrictedExpression::new_string(sender.to_string()),
+            RestrictedExpression::new_entity_uid(contact_uid),
+        ),
+        (
+            "user".into(),
+            RestrictedExpression::new_entity_uid(user_uid),
         ),
     ];
-
-    if let Some(contact) = contact {
-        let contact_uid = contact_entity_uid(&contact.id);
-        let user_uid = user_entity_uid(&contact.user_id);
-
-        let user_entity = Entity::new_no_attrs(user_uid.clone(), HashSet::new());
-
-        let handles = RestrictedExpression::new_set(
-            contact
-                .handles
-                .iter()
-                .cloned()
-                .map(RestrictedExpression::new_string),
-        );
-        let contact_attrs = [
-            ("handles".into(), handles),
-            (
-                "name".into(),
-                RestrictedExpression::new_string(contact.name.clone()),
-            ),
-        ];
-        let contact_entity = Entity::new(
-            contact_uid.clone(),
-            contact_attrs.into_iter().collect(),
-            HashSet::from([user_uid]),
-        )
-        .expect("valid contact entity");
-        all_entities.push(user_entity);
-        all_entities.push(contact_entity);
-
-        signal_attrs.push((
-            "contact".into(),
-            RestrictedExpression::new_entity_uid(contact_uid),
-        ));
-    }
-
     let resource_entity = Entity::new(
-        signal_source_entity_uid(connector_id, sender),
-        signal_attrs.into_iter().collect(),
+        message_source_entity_uid(connector_id, &sender.address),
+        source_attrs.into_iter().collect(),
         HashSet::from([channel_uid]),
     )
-    .expect("valid signal source entity");
-    all_entities.push(resource_entity);
+    .expect("valid message source entity");
 
-    Entities::from_entities(all_entities, None).unwrap_or_else(|_| Entities::empty())
+    Entities::from_entities(
+        [
+            principal_entity,
+            channel_entity,
+            user_entity,
+            contact_entity,
+            resource_entity,
+        ],
+        None,
+    )
+    .unwrap_or_else(|_| Entities::empty())
 }
+
 
 pub fn prepend_annotations(id: &str, description: &str, policy_text: &str) -> String {
     format!("@id(\"{id}\")\n@description(\"{description}\")\n{policy_text}")

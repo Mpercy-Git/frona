@@ -1,6 +1,39 @@
 use chrono::{DateTime, Utc};
 
-use crate::agent::task::models::{Task, TaskKind};
+use crate::agent::task::models::{SignalMode, Task, TaskKind};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Annotation {
+    pub annotator: String,
+    pub key: String,
+    pub value: AnnotationValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnnotationValue {
+    Categorical(String),
+    Number(f64),
+    Bool(bool),
+    Text(String),
+}
+
+impl Annotation {
+    pub fn category(annotator: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            annotator: annotator.into(),
+            key: "category".into(),
+            value: AnnotationValue::Categorical(value.into()),
+        }
+    }
+
+    pub fn summary(annotator: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            annotator: annotator.into(),
+            key: "summary".into(),
+            value: AnnotationValue::Text(value.into()),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Watch {
@@ -9,7 +42,8 @@ pub struct Watch {
     pub agent_id: String,
     pub source_chat_id: String,
     pub resume_parent: bool,
-    pub tags: Vec<String>,
+    pub mode: SignalMode,
+    pub expected_categories: Vec<String>,
     pub expected_channels: Vec<String>,
     pub expected_contacts: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -23,7 +57,8 @@ impl Watch {
             TaskKind::Signal {
                 source_chat_id,
                 resume_parent,
-                tags,
+                mode,
+                expected_categories,
                 expected_channels,
                 expected_contacts,
                 expires_at,
@@ -35,7 +70,8 @@ impl Watch {
                 agent_id: task.agent_id.clone(),
                 source_chat_id: source_chat_id.clone(),
                 resume_parent: *resume_parent,
-                tags: tags.clone(),
+                mode: *mode,
+                expected_categories: expected_categories.clone(),
                 expected_channels: expected_channels.clone(),
                 expected_contacts: expected_contacts.clone(),
                 expires_at: *expires_at,
@@ -47,7 +83,7 @@ impl Watch {
     }
 
     pub fn has_criteria(&self) -> bool {
-        !self.tags.is_empty()
+        !self.expected_categories.is_empty()
             || !self.expected_channels.is_empty()
             || !self.expected_contacts.is_empty()
     }
@@ -63,9 +99,24 @@ pub struct CandidateEvent {
     pub channel_id: Option<String>,
     pub contact_id: Option<String>,
     pub sender: Option<String>,
-    pub tags: Vec<String>,
-    pub summary: Option<String>,
+    pub annotations: Vec<Annotation>,
     pub content: String,
+}
+
+impl CandidateEvent {
+    pub fn categories(&self) -> impl Iterator<Item = &str> {
+        self.annotations.iter().filter_map(|a| match (a.key.as_str(), &a.value) {
+            ("category", AnnotationValue::Categorical(s)) => Some(s.as_str()),
+            _ => None,
+        })
+    }
+
+    pub fn summary(&self) -> Option<&str> {
+        self.annotations.iter().find_map(|a| match (a.key.as_str(), &a.value) {
+            ("summary", AnnotationValue::Text(s)) => Some(s.as_str()),
+            _ => None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -86,7 +137,8 @@ mod tests {
             kind: TaskKind::Signal {
                 source_chat_id: "chat-A".into(),
                 resume_parent: true,
-                tags: vec!["verification_code".into()],
+                mode: SignalMode::Once,
+                expected_categories: vec!["verification_code".into()],
                 expected_channels: vec!["sms".into()],
                 expected_contacts: vec![],
                 expires_at: None,
@@ -96,6 +148,8 @@ mod tests {
             run_at: None,
             result_summary: None,
             error_message: None,
+            quarantined: false,
+            result_schema: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -109,7 +163,7 @@ mod tests {
         assert_eq!(watch.agent_id, "agent-1");
         assert_eq!(watch.source_chat_id, "chat-A");
         assert!(watch.resume_parent);
-        assert_eq!(watch.tags, vec!["verification_code".to_string()]);
+        assert_eq!(watch.expected_categories, vec!["verification_code".to_string()]);
         assert_eq!(watch.expected_channels, vec!["sms".to_string()]);
         assert_eq!(watch.max_evaluations, 50);
     }
@@ -129,9 +183,32 @@ mod tests {
         let mut watch = Watch::from_task(&task).unwrap();
         assert!(watch.has_criteria());
 
-        watch.tags.clear();
+        watch.expected_categories.clear();
         watch.expected_channels.clear();
         watch.expected_contacts.clear();
         assert!(!watch.has_criteria());
+    }
+
+    #[test]
+    fn candidate_event_helpers_extract_typed_values() {
+        let cand = CandidateEvent {
+            user_id: "u".into(),
+            space_id: None,
+            chat_id: None,
+            message_id: None,
+            connector_id: None,
+            channel_id: None,
+            contact_id: None,
+            sender: None,
+            annotations: vec![
+                Annotation::category("agent:a", "verification_code"),
+                Annotation::category("agent:a", "auth"),
+                Annotation::summary("agent:a", "code arrived"),
+            ],
+            content: String::new(),
+        };
+        let cats: Vec<&str> = cand.categories().collect();
+        assert_eq!(cats, vec!["verification_code", "auth"]);
+        assert_eq!(cand.summary(), Some("code arrived"));
     }
 }

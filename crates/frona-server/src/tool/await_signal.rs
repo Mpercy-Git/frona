@@ -6,6 +6,8 @@ use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
 use crate::agent::signal::{SignalService, Watch};
+use crate::agent::task::models::SignalMode;
+use crate::agent::task::schema::validate_schema_doc;
 use crate::agent::task::service::TaskService;
 use crate::core::error::AppError;
 use crate::tool::{
@@ -17,6 +19,7 @@ pub struct AwaitSignalTool {
     pub signal_service: Arc<SignalService>,
     pub prompts: PromptLoader,
     pub default_max_evaluations: u32,
+    pub default_max_continuous_evaluations: u32,
 }
 
 impl AwaitSignalTool {
@@ -25,12 +28,14 @@ impl AwaitSignalTool {
         signal_service: Arc<SignalService>,
         prompts: PromptLoader,
         default_max_evaluations: u32,
+        default_max_continuous_evaluations: u32,
     ) -> Self {
         Self {
             task_service,
             signal_service,
             prompts,
             default_max_evaluations,
+            default_max_continuous_evaluations,
         }
     }
 }
@@ -68,11 +73,20 @@ impl AgentTool for AwaitSignalTool {
             ));
         }
         let description = arguments
-            .get("description")
+            .get("instructions")
+            .or_else(|| arguments.get("description"))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::Validation("Missing required parameter: description".into()))?
+            .ok_or_else(|| {
+                AppError::Validation("Missing required parameter: instructions".into())
+            })?
             .to_string();
-        let tags = parse_string_array(&arguments, "tags")?;
+        // Accept both `expected_categories` (current) and `tags` (legacy alias)
+        // for the categorical-match list.
+        let expected_categories = if arguments.get("expected_categories").is_some() {
+            parse_string_array(&arguments, "expected_categories")?
+        } else {
+            parse_string_array(&arguments, "tags")?
+        };
         let expected_channels = parse_string_array(&arguments, "expected_channels")?;
         let expected_contacts = parse_string_array(&arguments, "expected_contacts")?;
         let expires_at = resolve_expires_at(&arguments)?;
@@ -80,17 +94,30 @@ impl AgentTool for AwaitSignalTool {
             .get("resume_parent")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+        let mode = parse_mode(&arguments)?;
+        let default_max = match mode {
+            SignalMode::Once => self.default_max_evaluations,
+            SignalMode::Continuous => self.default_max_continuous_evaluations,
+        };
         let max_evaluations = arguments
             .get("max_evaluations")
             .and_then(|v| v.as_u64())
             .map(|n| n.min(MAX_EVALUATIONS_CAP) as u32)
-            .unwrap_or(self.default_max_evaluations);
+            .unwrap_or(default_max);
 
-        if tags.is_empty() && expected_channels.is_empty() && expected_contacts.is_empty() {
+        if expected_categories.is_empty()
+            && expected_channels.is_empty()
+            && expected_contacts.is_empty()
+        {
             return Err(AppError::Validation(
-                "await_signal requires at least one of: tags, expected_channels, expected_contacts"
+                "await_signal requires at least one of: expected_categories, expected_channels, expected_contacts"
                     .into(),
             ));
+        }
+
+        let result_schema = arguments.get("result_schema").cloned();
+        if let Some(ref schema) = result_schema {
+            validate_schema_doc(schema).map_err(AppError::Validation)?;
         }
 
         let task = self
@@ -102,11 +129,13 @@ impl AgentTool for AwaitSignalTool {
                 title,
                 description,
                 resume_parent,
-                tags,
+                mode,
+                expected_categories,
                 expected_channels,
                 expected_contacts,
                 expires_at,
                 max_evaluations,
+                result_schema,
             )
             .await?;
 
@@ -114,15 +143,37 @@ impl AgentTool for AwaitSignalTool {
             self.signal_service.register(watch).await;
         }
 
-        let body = format!(
-            "Signal task created (id: {}). The current chat will resume when a matching candidate arrives and you confirm it via complete_task in the signal task's chat.",
-            task.id
-        );
+        let body = match mode {
+            SignalMode::Once => format!(
+                "Signal task created (id: {}). The current chat will resume when a matching candidate arrives and you confirm it via complete_task in the signal task's chat.",
+                task.id
+            ),
+            SignalMode::Continuous => format!(
+                "Continuous signal task created (id: {}). Each matching candidate will invoke the signal task agent; use report_signal to record matches without ending the watch. complete_task stops monitoring.",
+                task.id
+            ),
+        };
         Ok(ToolOutput::text(body))
     }
 }
 
 const MAX_EVALUATIONS_CAP: u64 = 1_000;
+
+fn parse_mode(arguments: &Value) -> Result<SignalMode, AppError> {
+    let Some(value) = arguments.get("mode") else {
+        return Ok(SignalMode::Once);
+    };
+    let s = value
+        .as_str()
+        .ok_or_else(|| AppError::Validation("mode must be a string".into()))?;
+    match s {
+        "once" => Ok(SignalMode::Once),
+        "continuous" => Ok(SignalMode::Continuous),
+        other => Err(AppError::Validation(format!(
+            "mode must be \"once\" or \"continuous\" (got {other:?})"
+        ))),
+    }
+}
 
 fn resolve_expires_at(arguments: &Value) -> Result<Option<DateTime<Utc>>, AppError> {
     let has_minutes = arguments.get("expires_in_minutes").is_some();

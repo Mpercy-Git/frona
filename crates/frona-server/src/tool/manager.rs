@@ -306,6 +306,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             signal_service,
             prompts.clone(),
             state.config.signal.default_max_evaluations,
+            state.config.signal.default_max_continuous_evaluations,
         )));
     }
 

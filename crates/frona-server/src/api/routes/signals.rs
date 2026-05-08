@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
-use crate::agent::signal::CandidateEvent;
+use crate::agent::signal::{Annotation, CandidateEvent};
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 
@@ -15,8 +15,8 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct EvaluateSignalRequest {
-    #[serde(default)]
-    pub tags: Vec<String>,
+    #[serde(default, alias = "tags")]
+    pub categories: Vec<String>,
     #[serde(default)]
     pub summary: Option<String>,
     #[serde(default)]
@@ -42,23 +42,24 @@ pub struct EvaluateSignalResponse {
     pub fired_watches: Vec<String>,
 }
 
-const MAX_TAGS: usize = 32;
+const MAX_CATEGORIES: usize = 32;
 const MAX_CONTENT_BYTES: usize = 64 * 1024;
+const HTTP_ANNOTATOR_ID: &str = "http";
 
 async fn evaluate_signal(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<EvaluateSignalRequest>,
 ) -> Result<Json<EvaluateSignalResponse>, ApiError> {
-    if req.tags.is_empty() {
+    if req.categories.is_empty() {
         return Err(AppError::Validation(
-            "tags must contain at least one entry".into(),
+            "categories must contain at least one entry".into(),
         )
         .into());
     }
-    if req.tags.len() > MAX_TAGS {
+    if req.categories.len() > MAX_CATEGORIES {
         return Err(AppError::Validation(format!(
-            "tags must contain at most {MAX_TAGS} entries"
+            "categories must contain at most {MAX_CATEGORIES} entries"
         ))
         .into());
     }
@@ -67,6 +68,15 @@ async fn evaluate_signal(
             "content must be at most {MAX_CONTENT_BYTES} bytes"
         ))
         .into());
+    }
+
+    let mut annotations: Vec<Annotation> = req
+        .categories
+        .into_iter()
+        .map(|c| Annotation::category(HTTP_ANNOTATOR_ID, c))
+        .collect();
+    if let Some(s) = req.summary {
+        annotations.push(Annotation::summary(HTTP_ANNOTATOR_ID, s));
     }
 
     let candidate = CandidateEvent {
@@ -78,8 +88,7 @@ async fn evaluate_signal(
         channel_id: req.channel_id,
         contact_id: req.contact_id,
         sender: req.sender,
-        tags: req.tags,
-        summary: req.summary,
+        annotations,
         content: req.content,
     };
 

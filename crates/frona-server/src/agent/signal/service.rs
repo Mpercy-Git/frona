@@ -8,13 +8,14 @@ use crate::agent::service::AgentService;
 use crate::agent::task::executor::TaskExecutor;
 use crate::agent::task::models::{Task, TaskKind, TaskStatus};
 use crate::agent::task::service::TaskService;
+use crate::auth::user_service::UserService;
 use crate::contact::service::ContactService;
 use crate::core::error::AppError;
-use crate::policy::models::{PolicyAction, SignalContact};
+use crate::policy::models::{PolicyAction, PolicyContact};
 use crate::policy::service::PolicyService;
 
 use super::matcher::{Matcher, MatcherKind};
-use super::matchers::{ChannelMatcher, ContactMatcher, TagMatcher};
+use super::matchers::{CategoryMatcher, ChannelMatcher, ContactMatcher};
 use super::models::{CandidateEvent, Watch};
 
 type WatchIndex = HashMap<String, HashMap<String, Watch>>;
@@ -26,21 +27,25 @@ pub struct SignalService {
     task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
     agent_service: AgentService,
     contact_service: ContactService,
+    #[allow(dead_code)]
+    user_service: UserService,
     policy_service: PolicyService,
     prompts: PromptLoader,
 }
 
 impl SignalService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_service: TaskService,
         task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
         agent_service: AgentService,
         contact_service: ContactService,
+        user_service: UserService,
         policy_service: PolicyService,
         prompts: PromptLoader,
     ) -> Self {
         let matchers: Vec<Arc<dyn Matcher>> = vec![
-            Arc::new(TagMatcher),
+            Arc::new(CategoryMatcher),
             Arc::new(ChannelMatcher),
             Arc::new(ContactMatcher),
         ];
@@ -49,17 +54,20 @@ impl SignalService {
             task_executor,
             agent_service,
             contact_service,
+            user_service,
             policy_service,
             prompts,
             matchers,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_matchers(
         task_service: TaskService,
         task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
         agent_service: AgentService,
         contact_service: ContactService,
+        user_service: UserService,
         policy_service: PolicyService,
         prompts: PromptLoader,
         matchers: Vec<Arc<dyn Matcher>>,
@@ -71,6 +79,7 @@ impl SignalService {
             task_executor,
             agent_service,
             contact_service,
+            user_service,
             policy_service,
             prompts,
         }
@@ -114,7 +123,6 @@ impl SignalService {
         }
     }
 
-    /// Returns task_ids of fired watches.
     pub async fn evaluate(
         &self,
         user_id: &str,
@@ -173,36 +181,37 @@ impl SignalService {
             return Ok(false);
         };
 
-        let contact = if let Some(ref contact_id) = candidate.contact_id {
-            match self
-                .contact_service
-                .get(&watch.user_id, contact_id)
-                .await
-            {
-                Ok(c) => Some(SignalContact {
+        let address = candidate.sender.clone().unwrap_or_default();
+        // Self-source already gated at inbound-persist.
+        let paired_addresses: Vec<String> = Vec::new();
+
+        let sender_contact = if let Some(ref contact_id) = candidate.contact_id {
+            match self.contact_service.get(&watch.user_id, contact_id).await {
+                Ok(c) => PolicyContact {
                     id: c.id,
                     user_id: watch.user_id.clone(),
                     name: c.name,
-                    handles: [c.phone, c.email].into_iter().flatten().collect(),
-                }),
+                    address: address.clone(),
+                    addresses: [c.phone, c.email].into_iter().flatten().collect(),
+                },
                 Err(e) => {
                     tracing::debug!(
                         contact_id = %contact_id,
                         error = %e,
                         "Could not resolve contact for receive_signal policy check"
                     );
-                    None
+                    PolicyContact::unresolved(&watch.user_id, &address)
                 }
             }
         } else {
-            None
+            PolicyContact::unresolved(&watch.user_id, &address)
         };
 
         let action = PolicyAction::ReceiveSignal {
             connector_id: candidate.connector_id.clone().unwrap_or_default(),
             channel_id: candidate.channel_id.clone().unwrap_or_default(),
-            sender: candidate.sender.clone(),
-            contact,
+            sender: sender_contact,
+            paired_addresses,
         };
         let decision = self
             .policy_service
@@ -211,16 +220,11 @@ impl SignalService {
         Ok(decision.allowed)
     }
 
-    /// Returns Ok(true) when the agent was actually invoked, Ok(false) when
-    /// the fire was silently skipped (stale watch, budget exceeded).
     async fn fire_signal(
         &self,
         watch: &Watch,
         candidate: &CandidateEvent,
     ) -> Result<bool, AppError> {
-        // Stale-watch check: if the underlying task is no longer pending,
-        // unregister and skip. Avoids a broadcast subscription for cancellation
-        // tracking (BroadcastService is SSE-only fan-out today).
         let Some(mut task) = self.task_service.find_by_id(&watch.task_id).await? else {
             self.unregister(&watch.user_id, &watch.task_id).await;
             return Ok(false);
@@ -232,9 +236,18 @@ impl SignalService {
 
         let next_count = bump_evaluation_count(&mut task);
         if next_count > watch.max_evaluations.max(1) {
-            self.task_service
-                .mark_failed(&task.id, "exceeded evaluation budget".into())
-                .await?;
+            match watch.mode {
+                super::super::task::models::SignalMode::Continuous => {
+                    self.task_service
+                        .mark_completed(&task.id, Some("max matches reached".into()))
+                        .await?;
+                }
+                super::super::task::models::SignalMode::Once => {
+                    self.task_service
+                        .mark_failed(&task.id, "exceeded evaluation budget".into())
+                        .await?;
+                }
+            }
             self.unregister(&watch.user_id, &watch.task_id).await;
             return Ok(false);
         }
@@ -243,7 +256,7 @@ impl SignalService {
         let Some(executor) = self.task_executor.get().cloned() else {
             return Err(AppError::Internal("TaskExecutor not initialized".into()));
         };
-        let injected_message = self.build_candidate_block(candidate);
+        let injected_message = self.build_candidate_block(candidate, watch.mode);
         executor
             .run_with_injected_message(&task, injected_message)
             .await?;
@@ -254,11 +267,36 @@ impl SignalService {
         let index = self.watches.read().await;
         index.get(user_id).map(|m| m.len()).unwrap_or(0)
     }
+
+    pub async fn pending_category_hints(&self, user_id: &str) -> Vec<(String, String)> {
+        let index = self.watches.read().await;
+        let Some(user_watches) = index.get(user_id) else {
+            return Vec::new();
+        };
+        aggregate_category_hints(user_watches.values())
+    }
 }
 
-/// Aggregator: any active hard-filter `None` rejects; otherwise a watch
-/// matches when at least one active matcher returned `Some(_)`, or when
-/// only hard filters are active and all passed.
+fn aggregate_category_hints<'a, I>(watches: I) -> Vec<(String, String)>
+where
+    I: IntoIterator<Item = &'a Watch>,
+{
+    let mut counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for watch in watches {
+        for cat in &watch.expected_categories {
+            *counts.entry(cat.clone()).or_insert(0) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(cat, n)| {
+            let suffix = if n == 1 { "task waiting" } else { "tasks waiting" };
+            (cat, format!("{n} {suffix}"))
+        })
+        .collect()
+}
+
 pub fn evaluate_match(
     matchers: &[Arc<dyn Matcher>],
     candidate: &CandidateEvent,
@@ -310,13 +348,23 @@ fn bump_evaluation_count(task: &mut Task) -> u32 {
 }
 
 impl SignalService {
-    fn build_candidate_block(&self, c: &CandidateEvent) -> String {
+    fn build_candidate_block(
+        &self,
+        c: &CandidateEvent,
+        mode: super::super::task::models::SignalMode,
+    ) -> String {
         let channel = c.channel_id.as_deref().unwrap_or("(unknown channel)");
         let sender = c.sender.as_deref().unwrap_or("(unknown sender)");
-        let summary = c.summary.as_deref().unwrap_or("(none)");
+        let summary = c.summary().unwrap_or("(none)");
+        let template = match mode {
+            super::super::task::models::SignalMode::Once => "signal_candidate_once.md",
+            super::super::task::models::SignalMode::Continuous => {
+                "signal_candidate_continuous.md"
+            }
+        };
         self.prompts
             .read_with_vars(
-                "signal_candidate.md",
+                template,
                 &[
                     ("channel", channel),
                     ("sender", sender),
@@ -331,19 +379,20 @@ impl SignalService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::signal::matchers::{ChannelMatcher, ContactMatcher, TagMatcher};
+    use crate::agent::signal::matchers::{CategoryMatcher, ChannelMatcher, ContactMatcher};
+    use crate::agent::signal::models::Annotation;
     use chrono::Utc;
 
     fn default_matchers() -> Vec<Arc<dyn Matcher>> {
         vec![
-            Arc::new(TagMatcher),
+            Arc::new(CategoryMatcher),
             Arc::new(ChannelMatcher),
             Arc::new(ContactMatcher),
         ]
     }
 
     fn make_watch(
-        tags: &[&str],
+        cats: &[&str],
         channels: &[&str],
         contacts: &[&str],
     ) -> Watch {
@@ -353,7 +402,8 @@ mod tests {
             agent_id: "a".into(),
             source_chat_id: "c".into(),
             resume_parent: false,
-            tags: tags.iter().map(|s| s.to_string()).collect(),
+            mode: crate::agent::task::models::SignalMode::Once,
+            expected_categories: cats.iter().map(|s| s.to_string()).collect(),
             expected_channels: channels.iter().map(|s| s.to_string()).collect(),
             expected_contacts: contacts.iter().map(|s| s.to_string()).collect(),
             expires_at: None,
@@ -363,7 +413,7 @@ mod tests {
     }
 
     fn make_candidate(
-        tags: &[&str],
+        cats: &[&str],
         channel: Option<&str>,
         contact: Option<&str>,
     ) -> CandidateEvent {
@@ -376,8 +426,10 @@ mod tests {
             channel_id: channel.map(|s| s.to_string()),
             contact_id: contact.map(|s| s.to_string()),
             sender: None,
-            tags: tags.iter().map(|s| s.to_string()).collect(),
-            summary: None,
+            annotations: cats
+                .iter()
+                .map(|c| Annotation::category("agent:test", *c))
+                .collect(),
             content: String::new(),
         }
     }
@@ -442,6 +494,28 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_category_hints_dedupes_sorts_and_counts() {
+        let w1 = make_watch(&["verification_code", "auth"], &[], &[]);
+        let w2 = make_watch(&["verification_code", "bank"], &[], &[]);
+        let w3 = make_watch(&[], &["sms"], &[]);
+        let hints = aggregate_category_hints([&w1, &w2, &w3]);
+        assert_eq!(
+            hints,
+            vec![
+                ("auth".into(), "1 task waiting".into()),
+                ("bank".into(), "1 task waiting".into()),
+                ("verification_code".into(), "2 tasks waiting".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn aggregate_category_hints_empty_when_no_watches() {
+        let hints: Vec<(String, String)> = aggregate_category_hints(std::iter::empty::<&Watch>());
+        assert!(hints.is_empty());
+    }
+
+    #[test]
     fn bump_evaluation_count_increments_signal_kind() {
         let mut task = Task {
             id: "t".into(),
@@ -455,7 +529,8 @@ mod tests {
             kind: TaskKind::Signal {
                 source_chat_id: "c".into(),
                 resume_parent: false,
-                tags: vec!["t".into()],
+                mode: crate::agent::task::models::SignalMode::Once,
+                expected_categories: vec!["t".into()],
                 expected_channels: vec![],
                 expected_contacts: vec![],
                 expires_at: None,
@@ -465,6 +540,8 @@ mod tests {
             run_at: None,
             result_summary: None,
             error_message: None,
+            quarantined: false,
+            result_schema: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

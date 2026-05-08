@@ -16,6 +16,9 @@
 //       when { principal.tools.contains("browser") };
 
 namespace Policy {
+    // The signed-in human.
+    //
+    // Reference format: Policy::User::"<user_id>"
     entity User;
 
     // An AI agent that can perform actions.
@@ -135,78 +138,148 @@ namespace Policy {
     };
 
     // A platform/channel kind (e.g. "sms", "email", "telegram", "slack").
-    // Used as a parent of SignalSource to enable coarse channel-level rules
-    // via the `in` operator.
+    // Used both as the resource for `reach` (a contact reaching the user via
+    // a channel) and as the parent of MessageSource (signal evaluation),
+    // enabling coarse channel-level rules via the `in` operator.
     //
     // Reference format: Policy::Channel::"<channel>"
     entity Channel;
 
-    // A user-owned contact, with all known reach handles aggregated into a
-    // single Set so policies don't need to enumerate phone/email/username.
+    // A user-owned contact, populated from the directory. Holds the address
+    // used for the current inbound (`address`) plus every address the system
+    // knows for this contact (`addresses`).
+    //
+    // For unresolved external senders, the dispatcher synthesizes an
+    // in-memory Contact with id "unresolved:<address>", `address` = the
+    // wire address, and `addresses` = `[address]`. For self-source messages,
+    // the dispatcher synthesizes a Contact with id == User.id, `address`
+    // = the inbound wire address, and `addresses` = the user's
+    // `paired_addresses` values.
     //
     // Attributes:
-    //   resource.handles  — Set<String> of all known handles
-    //                       (e.g. {"+15551234", "sarah@example.com"})
-    //   resource.name     — Display name
+    //   address    — The address used for the inbound message currently
+    //                being authorized (e.g. "+15551234"). Per-evaluation.
+    //   addresses  — Set<String> of all known addresses for this contact.
+    //   name       — Display name ("" for unresolved).
     //
     // Reference format: Policy::Contact::"<contact_id>"
     entity Contact in [User] {
-        handles: Set<String>,
+        address: String,
+        addresses: Set<String>,
         name: String,
     };
 
-    // An external source from which a Signal task receives candidate events
-    // (e.g. an SMS gateway, an email sender, a Telegram contact). Used as the
-    // resource for `receive_signal` authorization.
+    // An external source from which a message arrived: a connector instance,
+    // a sender Contact (always present, possibly synthesized), and the
+    // receiving User (always present).
     //
-    // Hierarchy: SignalSource in [Channel] — coarse channel targeting via `in`.
+    // Hierarchy: MessageSource in [Channel] — coarse channel targeting via `in`.
     //
     // Attributes:
-    //   resource.connector_id    — Adapter / space binding instance id
-    //                              (e.g. "space-personal-gmail"). Identifies
-    //                              the specific connector that produced the
-    //                              candidate, distinguishing multiple
-    //                              instances of the same channel kind.
-    //   resource.sender   — Raw sender handle on the wire ("+15551234",
-    //                              "2fa@bank.com"). "" if unknown.
-    //   resource.contact         — Optional Contact reference; present only
-    //                              when the candidate's sender resolved to a
-    //                              known Contact. Use `resource has contact`
-    //                              to guard.
+    //   resource.connector_id  — Adapter / space binding instance id
+    //                            (e.g. "space-personal-gmail"). Identifies
+    //                            the specific connector that produced the
+    //                            inbound, distinguishing multiple instances
+    //                            of the same channel kind.
+    //   resource.sender        — Contact entity for the sender. Always set.
+    //                            For external known senders: the real DB
+    //                            contact. For external unknowns: a
+    //                            synthesized Contact with id
+    //                            "unresolved:<address>". For self-source:
+    //                            a synthesized Contact with id == user.id.
+    //   resource.user          — Receiving User entity. Always set.
     //
-    // Reference format: Policy::SignalSource::"<connector_id>:<sender>"
+    // Reference format: Policy::MessageSource::"<connector_id>:<address>"
     //
     // Examples:
     //   // Block all email signals via `in`
     //   forbid(principal, action == Policy::Action::"receive_signal",
     //          resource in Policy::Channel::"email");
     //
-    //   // Block a specific bank's 2FA across any handle the contact owns
+    //   // Block a specific bank's 2FA sender by address
     //   forbid(principal, action == Policy::Action::"receive_signal", resource)
-    //       when {
-    //         resource has contact &&
-    //         "2fa@bank.com" in resource.contact.handles
-    //       };
+    //       when { resource.sender.address == "2fa@bank.com" };
+    //
+    //   // Allow self-source messages (the user reaching their own agent)
+    //   permit(principal, action == Policy::Action::"receive_message", resource)
+    //       when { context.paired_addresses.contains(resource.sender.address) };
     //
     //   // Block all signals from a quarantined connector
     //   forbid(principal, action == Policy::Action::"receive_signal", resource)
     //       when { resource.connector_id == "space-old-slack-deprecated" };
-    entity SignalSource in [Channel] {
+    entity MessageSource in [Channel] {
         connector_id: String,
-        sender: String,
-        contact?: Contact,
+        sender: Contact,
+        user: User,
     };
 
     // Authorize an agent to receive a candidate event from a given external
     // source. Evaluated by SignalService for every matched watch before firing.
     //
-    // Principal: Agent that owns the Signal task    Resource: SignalSource
+    // Principal: Agent that owns the Signal task    Resource: MessageSource
     //
     // Default policy fixture allows all `receive_signal` actions; operators
     // add `forbid` policies for sensitive sources.
     action receive_signal appliesTo {
         principal: [Agent],
-        resource: [SignalSource],
+        resource: [MessageSource],
+        context: {
+            // Operator's addresses paired on this inbound's channel binding.
+            // Use `context.paired_addresses.contains(resource.sender.address)`
+            // to gate on self-source.
+            paired_addresses: Set<String>,
+        },
+    };
+
+    // Authorize an agent to receive (read & process) an inbound message from a
+    // given external source. Hard security gate evaluated BEFORE persistence at
+    // the dispatcher: denied messages are dropped (no DB record, no broadcast,
+    // no inference).
+    //
+    // Two-tier dispatcher logic uses both this action and `receive_signal`:
+    //   receive_message allow → run full inference (agent may tag and reply)
+    //   receive_message deny + receive_signal allow → run tag-only inference
+    //                          (restricted tool registry, no reply)
+    //   both deny → discard
+    //
+    // Principal: channel-agent (the agent attached to the inbound chat)
+    // Resource: MessageSource
+    //
+    // Default policy fixture allows all `receive_message` actions; operators
+    // add `forbid` policies to express engagement rules (allowlists, channel
+    // blocks, per-agent restrictions, quiet mode) and hard security blocks.
+    //
+    // Examples:
+    //   // Allowlist mode — only reply to specific senders
+    //   forbid(principal == Policy::Agent::"personal",
+    //          action == Policy::Action::"receive_message",
+    //          resource in Policy::Channel::"sms")
+    //       unless { resource.sender == "+15551234" };
+    //
+    //   // Block a spam shortcode (full receive denied; receive_signal default
+    //   // permit means it still tag-only-processes for signal matching)
+    //   forbid(principal, action == Policy::Action::"receive_message", resource)
+    //       when { resource.sender == "22000" };
+    //
+    //   // Quiet mode — never reply on this channel
+    //   forbid(principal == Policy::Agent::"observer",
+    //          action == Policy::Action::"receive_message",
+    //          resource in Policy::Channel::"slack");
+    //
+    //   // Finance agent never sees SMS at all (combine with receive_signal forbid
+    //   // to fully discard)
+    //   forbid(principal == Policy::Agent::"finance",
+    //          action == Policy::Action::"receive_message",
+    //          resource in Policy::Channel::"sms");
+    action receive_message appliesTo {
+        principal: [Agent],
+        resource: [MessageSource],
+        context: {
+            // Operator's addresses paired on this inbound's channel binding.
+            // Use `context.paired_addresses.contains(resource.sender.address)`
+            // to gate on self-source.
+            paired_addresses: Set<String>,
+        },
     };
 
     // A filesystem path or virtual path for sandbox read/write rules.

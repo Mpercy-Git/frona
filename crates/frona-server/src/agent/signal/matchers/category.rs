@@ -3,11 +3,11 @@ use std::collections::HashSet;
 use crate::agent::signal::matcher::{Matcher, MatcherKind};
 use crate::agent::signal::models::{CandidateEvent, Watch};
 
-pub struct TagMatcher;
+pub struct CategoryMatcher;
 
-impl Matcher for TagMatcher {
+impl Matcher for CategoryMatcher {
     fn name(&self) -> &str {
-        "tag"
+        "category"
     }
 
     fn kind(&self) -> MatcherKind {
@@ -15,36 +15,31 @@ impl Matcher for TagMatcher {
     }
 
     fn is_active(&self, watch: &Watch) -> bool {
-        !watch.tags.is_empty()
+        !watch.expected_categories.is_empty()
     }
 
     fn evaluate(&self, candidate: &CandidateEvent, watch: &Watch) -> Option<u32> {
-        let watch_set: HashSet<&str> = watch.tags.iter().map(String::as_str).collect();
-        let overlap = candidate
-            .tags
-            .iter()
-            .filter(|t| watch_set.contains(t.as_str()))
-            .count() as u32;
-        if overlap == 0 {
-            None
-        } else {
-            Some(overlap)
-        }
+        let watch_set: HashSet<&str> =
+            watch.expected_categories.iter().map(String::as_str).collect();
+        let overlap = candidate.categories().filter(|c| watch_set.contains(c)).count() as u32;
+        if overlap == 0 { None } else { Some(overlap) }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::signal::models::Annotation;
 
-    fn watch(tags: &[&str]) -> Watch {
+    fn watch(cats: &[&str]) -> Watch {
         Watch {
             task_id: "t".into(),
             user_id: "u".into(),
             agent_id: "a".into(),
             source_chat_id: "c".into(),
             resume_parent: false,
-            tags: tags.iter().map(|s| s.to_string()).collect(),
+            mode: crate::agent::task::models::SignalMode::Once,
+            expected_categories: cats.iter().map(|s| s.to_string()).collect(),
             expected_channels: vec![],
             expected_contacts: vec![],
             expires_at: None,
@@ -53,7 +48,7 @@ mod tests {
         }
     }
 
-    fn candidate(tags: &[&str]) -> CandidateEvent {
+    fn candidate(cats: &[&str]) -> CandidateEvent {
         CandidateEvent {
             user_id: "u".into(),
             space_id: None,
@@ -63,27 +58,32 @@ mod tests {
             channel_id: None,
             contact_id: None,
             sender: None,
-            tags: tags.iter().map(|s| s.to_string()).collect(),
-            summary: None,
+            annotations: cats
+                .iter()
+                .map(|c| Annotation::category("agent:test", *c))
+                .collect(),
             content: String::new(),
         }
     }
 
     #[test]
-    fn empty_watch_tags_means_abstain() {
-        let m = TagMatcher;
+    fn empty_watch_categories_means_abstain() {
+        let m = CategoryMatcher;
         assert!(!m.is_active(&watch(&[])));
     }
 
     #[test]
     fn no_overlap_returns_none() {
-        let m = TagMatcher;
-        assert_eq!(m.evaluate(&candidate(&["scheduling"]), &watch(&["verification_code"])), None);
+        let m = CategoryMatcher;
+        assert_eq!(
+            m.evaluate(&candidate(&["scheduling"]), &watch(&["verification_code"])),
+            None,
+        );
     }
 
     #[test]
     fn partial_overlap_returns_count() {
-        let m = TagMatcher;
+        let m = CategoryMatcher;
         assert_eq!(
             m.evaluate(
                 &candidate(&["verification_code", "auth"]),
@@ -95,12 +95,9 @@ mod tests {
 
     #[test]
     fn full_overlap_returns_count() {
-        let m = TagMatcher;
+        let m = CategoryMatcher;
         assert_eq!(
-            m.evaluate(
-                &candidate(&["a", "b", "c"]),
-                &watch(&["a", "b", "c"]),
-            ),
+            m.evaluate(&candidate(&["a", "b", "c"]), &watch(&["a", "b", "c"])),
             Some(3),
         );
     }

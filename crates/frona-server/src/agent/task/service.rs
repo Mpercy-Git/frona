@@ -39,6 +39,10 @@ impl TaskService {
             (Some(_), None) => TaskKind::Direct { source_chat_id: None },
         };
 
+        if let Some(ref schema) = req.result_schema {
+            super::schema::validate_schema_doc(schema).map_err(AppError::Validation)?;
+        }
+
         let task = Task {
             id: uuid::Uuid::new_v4().to_string(),
             user_id: user_id.to_string(),
@@ -52,6 +56,8 @@ impl TaskService {
             run_at: req.run_at,
             result_summary: None,
             error_message: None,
+            quarantined: req.quarantined,
+            result_schema: req.result_schema,
             created_at: now,
             updated_at: now,
         };
@@ -61,6 +67,7 @@ impl TaskService {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_signal(
         &self,
         user_id: &str,
@@ -69,12 +76,17 @@ impl TaskService {
         title: String,
         description: String,
         resume_parent: bool,
-        tags: Vec<String>,
+        mode: super::models::SignalMode,
+        expected_categories: Vec<String>,
         expected_channels: Vec<String>,
         expected_contacts: Vec<String>,
         expires_at: Option<DateTime<Utc>>,
         max_evaluations: u32,
+        result_schema: Option<serde_json::Value>,
     ) -> Result<Task, AppError> {
+        if let Some(ref schema) = result_schema {
+            super::schema::validate_schema_doc(schema).map_err(AppError::Validation)?;
+        }
         let now = chrono::Utc::now();
         let task = Task {
             id: uuid::Uuid::new_v4().to_string(),
@@ -88,7 +100,8 @@ impl TaskService {
             kind: TaskKind::Signal {
                 source_chat_id,
                 resume_parent,
-                tags,
+                mode,
+                expected_categories,
                 expected_channels,
                 expected_contacts,
                 expires_at,
@@ -98,6 +111,8 @@ impl TaskService {
             run_at: None,
             result_summary: None,
             error_message: None,
+            quarantined: true,
+            result_schema,
             created_at: now,
             updated_at: now,
         };
@@ -331,6 +346,8 @@ impl TaskService {
             run_at,
             result_summary: None,
             error_message: None,
+            quarantined: false,
+            result_schema: None,
             created_at: now,
             updated_at: now,
         };

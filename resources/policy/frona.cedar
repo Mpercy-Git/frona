@@ -45,3 +45,12 @@ permit(
   action == Policy::Action::"receive_signal",
   resource
 );
+
+@id("self-source")
+@description("Allow inbound messages only from the channel's paired operator. Pairing is the access gate: an unpaired channel has no addresses and so denies everyone; a paired channel allows only the matching sender. Operators add additional permit policies to open up specific contacts or sources.")
+permit(
+  principal,
+  action == Policy::Action::"receive_message",
+  resource
+)
+when { context.paired_addresses.contains(resource.sender.address) };

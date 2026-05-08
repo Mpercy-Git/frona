@@ -41,7 +41,8 @@ mod tests {
             agent_id: "a".into(),
             source_chat_id: "c".into(),
             resume_parent: false,
-            tags: vec![],
+            mode: crate::agent::task::models::SignalMode::Once,
+            expected_categories: vec![],
             expected_channels: vec![],
             expected_contacts: contacts.iter().map(|s| s.to_string()).collect(),
             expires_at: None,
@@ -60,8 +61,7 @@ mod tests {
             channel_id: None,
             contact_id: contact.map(|s| s.to_string()),
             sender: None,
-            tags: vec![],
-            summary: None,
+            annotations: vec![],
             content: String::new(),
         }
     }
