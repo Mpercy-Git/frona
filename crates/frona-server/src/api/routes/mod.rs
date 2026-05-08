@@ -3,6 +3,7 @@ pub mod apps;
 pub mod auth;
 pub mod mcp;
 pub mod browser;
+pub mod channels;
 pub mod chats;
 pub mod config;
 pub mod provider_models;

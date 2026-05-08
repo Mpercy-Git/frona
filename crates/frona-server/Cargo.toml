@@ -29,10 +29,15 @@ ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 rand = "0.8"
 aes-gcm = "0.10"
 sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
 openidconnect = "4"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "http2", "multipart", "ws"] }
 twilio-async = "0.5"
+teloxide = { version = "0.13", default-features = false, features = ["rustls", "ctrlc_handler"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+telegram-markdown-v2 = "0.2"
 xml-rs = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "fs", "trace", "set-header"] }
@@ -53,6 +58,7 @@ hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+url = "2"
 backon = { workspace = true }
 moka = { workspace = true }
 cedar-policy = { workspace = true }

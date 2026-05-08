@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod apps;
 pub mod calls;
+pub mod channels;
 pub mod chats;
 pub mod contacts;
 pub mod memory_entries;

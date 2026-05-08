@@ -1,0 +1,317 @@
+use async_trait::async_trait;
+use axum::body::Bytes;
+use axum::http::{Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
+use teloxide::Bot;
+use teloxide::payloads::SendMessageSetters;
+use teloxide::prelude::Requester;
+use teloxide::types::{ChatAction, ChatId, ParseMode, Recipient, ThreadId};
+use url::Url;
+
+use crate::chat::message::models::Message;
+use crate::chat::models::Chat;
+use crate::core::error::AppError;
+
+use super::super::models::{
+    ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
+};
+#[cfg(test)]
+use super::super::models::ChannelFactory;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TelegramConfig {
+    pub bot_token: String,
+}
+
+#[derive(crate::ChannelFactory)]
+#[channel(id = "telegram", from = TelegramConfig)]
+pub struct TelegramAdapter {
+    bot: Bot,
+}
+
+impl From<TelegramConfig> for TelegramAdapter {
+    fn from(cfg: TelegramConfig) -> Self {
+        Self {
+            bot: Bot::new(cfg.bot_token),
+        }
+    }
+}
+
+#[async_trait]
+impl ChannelAdapter for TelegramAdapter {
+    async fn on_connect(&self, ctx: &ChannelCtx) -> Result<(), AppError> {
+        let url = Url::parse(&ctx.webhook_url).map_err(|e| {
+            AppError::Validation(format!("invalid webhook URL {}: {e}", ctx.webhook_url))
+        })?;
+        match self.bot.set_webhook(url).await {
+            Ok(_) => tracing::info!(
+                channel_id = %ctx.channel.id,
+                url = %ctx.webhook_url,
+                "Telegram channel registered setWebhook",
+            ),
+            Err(e) => tracing::warn!(
+                channel_id = %ctx.channel.id,
+                url = %ctx.webhook_url,
+                error = %e,
+                "Telegram channel could not register setWebhook — inbound updates will not arrive until this succeeds (check bot_token, network, rate limits)",
+            ),
+        }
+        Ok(())
+    }
+
+    async fn on_disconnect(&self, _ctx: &ChannelCtx) -> Result<(), AppError> {
+        if let Err(e) = self.bot.delete_webhook().await {
+            tracing::warn!(error = %e, "Telegram deleteWebhook failed (continuing)");
+        }
+        Ok(())
+    }
+
+    async fn on_send(
+        &self,
+        msg: &Message,
+        chat: &Chat,
+        _ctx: &ChannelCtx,
+    ) -> Result<String, AppError> {
+        let (chat_id, thread_id) = parse_external_id(external_chat_id(chat)?)?;
+
+        let (text, parse_mode) = match telegram_markdown_v2::convert(&msg.content) {
+            Ok(v2) => (v2, Some(ParseMode::MarkdownV2)),
+            Err(e) => {
+                tracing::debug!(
+                    msg_id = %msg.id,
+                    error = %e,
+                    "telegram MarkdownV2 conversion failed; falling back to plain text",
+                );
+                (super::markdown::to_plain(&msg.content), None)
+            }
+        };
+
+        let mut send = self.bot.send_message(Recipient::Id(chat_id), text);
+        if let Some(mode) = parse_mode {
+            send = send.parse_mode(mode);
+        }
+        if let Some(t) = thread_id {
+            send = send.message_thread_id(t);
+        }
+        let sent = send
+            .await
+            .map_err(|e| AppError::Internal(format!("Telegram sendMessage failed: {e}")))?;
+
+        Ok(sent.id.0.to_string())
+    }
+
+    async fn on_inference_active(
+        &self,
+        chat: &Chat,
+        _ctx: &ChannelCtx,
+    ) -> Result<(), AppError> {
+        let Ok(external_id) = external_chat_id(chat) else { return Ok(()) };
+        let Ok((chat_id, _thread)) = parse_external_id(external_id) else {
+            return Ok(());
+        };
+        if let Err(e) = self
+            .bot
+            .send_chat_action(Recipient::Id(chat_id), ChatAction::Typing)
+            .await
+        {
+            tracing::debug!(error = %e, "Telegram sendChatAction failed (best-effort)");
+        }
+        Ok(())
+    }
+
+    async fn on_webhook(
+        &self,
+        ctx: &ChannelCtx,
+        request: Request<Bytes>,
+    ) -> Result<Response, AppError> {
+        let body: serde_json::Value = serde_json::from_slice(request.body())
+            .map_err(|e| AppError::Validation(format!("invalid Telegram webhook body: {e}")))?;
+        emit_inbound_update(ctx, body).await?;
+        Ok(StatusCode::OK.into_response())
+    }
+}
+
+fn parse_external_id(s: &str) -> Result<(ChatId, Option<ThreadId>), AppError> {
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.as_slice() {
+        ["dm", id] | ["group", id] => {
+            let n: i64 = id
+                .parse()
+                .map_err(|e| AppError::Validation(format!("bad chat id in {s:?}: {e}")))?;
+            Ok((ChatId(n), None))
+        }
+        ["group", chat, "topic", thread] => {
+            let chat_n: i64 = chat
+                .parse()
+                .map_err(|e| AppError::Validation(format!("bad chat id in {s:?}: {e}")))?;
+            let thread_n: i32 = thread
+                .parse()
+                .map_err(|e| AppError::Validation(format!("bad thread id in {s:?}: {e}")))?;
+            Ok((ChatId(chat_n), Some(ThreadId(teloxide::types::MessageId(thread_n)))))
+        }
+        _ => Err(AppError::Validation(format!(
+            "unrecognised Telegram external_id format: {s:?}"
+        ))),
+    }
+}
+
+/// Telegram inbound update payload — only the fields we care about. We accept the
+/// raw JSON and pluck what we need rather than depending on teloxide's full `Update`
+/// type, which can change shape between API versions.
+#[derive(Debug, Deserialize)]
+struct InboundUpdate {
+    message: Option<InboundMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InboundMessage {
+    message_id: i64,
+    #[serde(default)]
+    message_thread_id: Option<i64>,
+    chat: InboundChat,
+    from: Option<InboundUser>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InboundChat {
+    id: i64,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InboundUser {
+    id: i64,
+    #[serde(default)]
+    first_name: Option<String>,
+    #[serde(default)]
+    last_name: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+}
+
+async fn emit_inbound_update(
+    ctx: &ChannelCtx,
+    raw: serde_json::Value,
+) -> Result<(), AppError> {
+    let update: InboundUpdate = serde_json::from_value(raw)
+        .map_err(|e| AppError::Validation(format!("invalid Telegram update: {e}")))?;
+    let Some(message) = update.message else {
+        return Ok(());
+    };
+
+    let external_chat_id = match (message.chat.kind.as_str(), message.message_thread_id) {
+        ("private", _) => format!("dm:{}", message.chat.id),
+        (_, Some(thread_id)) => {
+            format!("group:{}:topic:{thread_id}", message.chat.id)
+        }
+        _ => format!("group:{}", message.chat.id),
+    };
+
+    let from = message.from.ok_or_else(|| {
+        AppError::Validation("Telegram update missing `from` user".into())
+    })?;
+    let display_name = from
+        .username
+        .as_deref()
+        .map(|u| format!("@{u}"))
+        .or_else(|| {
+            match (from.first_name.as_deref(), from.last_name.as_deref()) {
+                (Some(f), Some(l)) => Some(format!("{f} {l}")),
+                (Some(f), None) => Some(f.to_string()),
+                (None, Some(l)) => Some(l.to_string()),
+                (None, None) => None,
+            }
+        })
+        .unwrap_or_else(|| from.id.to_string());
+
+    let sender_address = from
+        .username
+        .as_ref()
+        .map(|u| format!("@{u}"))
+        .unwrap_or_else(|| from.id.to_string());
+
+    let event = ExternalMessage {
+        external_chat_id,
+        external_msg_id: Some(message.message_id.to_string()),
+        sender_address,
+        sender_external_id: Some(from.id.to_string()),
+        sender_display_name: Some(display_name),
+        content: message.text.unwrap_or_default(),
+    };
+
+    ctx.emit
+        .send(event)
+        .await
+        .map_err(|e| AppError::Internal(format!("inbound emit channel closed: {e}")))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn manifest_has_bot_token_param() {
+        let m = TelegramAdapterFactory.manifest();
+        assert_eq!(m.id, "telegram");
+        assert_eq!(m.display_name, "Telegram Bot");
+        let bot_token = m
+            .config_fields
+            .iter()
+            .find(|f| f.name == "bot_token")
+            .expect("bot_token field must be declared");
+        assert!(bot_token.is_required);
+        assert!(bot_token.is_secret);
+    }
+
+    #[test]
+    fn factory_create_with_valid_config_succeeds() {
+        let cfg = json!({"bot_token": "123:abc-def"});
+        let _ch = TelegramAdapterFactory
+            .create(cfg)
+            .expect("valid config should produce a Channel");
+    }
+
+    #[test]
+    fn factory_create_rejects_missing_bot_token() {
+        let cfg = json!({"unrelated": "x"});
+        match TelegramAdapterFactory.create(cfg) {
+            Err(AppError::Validation(_)) => {}
+            Ok(_) => panic!("expected Validation error, got Ok"),
+            Err(e) => panic!("expected Validation, got: {e}"),
+        }
+    }
+
+    #[test]
+    fn parse_external_id_dm() {
+        let (chat, thread) = parse_external_id("dm:12345").unwrap();
+        assert_eq!(chat, ChatId(12345));
+        assert!(thread.is_none());
+    }
+
+    #[test]
+    fn parse_external_id_group_negative() {
+        let (chat, thread) = parse_external_id("group:-1001234567890").unwrap();
+        assert_eq!(chat, ChatId(-1001234567890));
+        assert!(thread.is_none());
+    }
+
+    #[test]
+    fn parse_external_id_forum_topic() {
+        let (chat, thread) = parse_external_id("group:-100123:topic:42").unwrap();
+        assert_eq!(chat, ChatId(-100123));
+        assert!(thread.is_some());
+    }
+
+    #[test]
+    fn parse_external_id_rejects_garbage() {
+        assert!(parse_external_id("nonsense").is_err());
+        assert!(parse_external_id("dm:notanumber").is_err());
+        assert!(parse_external_id("group:1:topic:notanumber").is_err());
+    }
+}

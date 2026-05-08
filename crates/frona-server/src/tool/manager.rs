@@ -303,10 +303,18 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     if let Some(signal_service) = state.signal_service() {
         tools.push(Arc::new(super::await_signal::AwaitSignalTool::new(
             state.task_service.clone(),
-            signal_service,
+            signal_service.clone(),
             prompts.clone(),
             state.config.signal.default_max_evaluations,
             state.config.signal.default_max_continuous_evaluations,
+        )));
+        tools.push(Arc::new(super::annotate::AnnotateTool::new(
+            signal_service,
+            state.chat_service.clone(),
+            state.space_service.clone(),
+            state.contact_service.clone(),
+            state.channel_service.clone(),
+            prompts.clone(),
         )));
     }
 

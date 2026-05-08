@@ -1,15 +1,84 @@
-use rig::completion::Message as RigMessage;
 use tokio_util::sync::CancellationToken;
 
-use crate::chat::broadcast::BroadcastEventKind;
+use crate::chat::broadcast::{BroadcastEventKind, EventSender};
 use crate::chat::session::ChatSessionContext;
 use crate::credential::presign::presign_response_by_user_id;
 use crate::core::state::AppState;
 use crate::core::error::AppError;
+use crate::inference::conversation::{ConversationBuilder, DefaultConversationBuilder};
 use crate::inference::request::{InferenceRequest, InferenceResponse};
 
 pub struct AgentLoopOutcome {
     pub response: InferenceResponse,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_agent_turn(
+    state: &AppState,
+    user_id: &str,
+    chat_id: &str,
+    message_id: &str,
+    cancel_token: CancellationToken,
+    builder: Box<dyn ConversationBuilder>,
+    tool_filter: Option<&[&str]>,
+    event_sender: Option<&EventSender>,
+) {
+    let outcome = run_agent_loop(
+        state, user_id, chat_id, message_id, cancel_token, builder, tool_filter,
+    )
+    .await;
+    finalize_agent_outcome(state, user_id, message_id, outcome, event_sender).await;
+}
+
+pub async fn finalize_agent_outcome(
+    state: &AppState,
+    user_id: &str,
+    message_id: &str,
+    outcome: Result<AgentLoopOutcome, AppError>,
+    event_sender: Option<&EventSender>,
+) {
+    match outcome {
+        Ok(AgentLoopOutcome { response }) => match response {
+            InferenceResponse::Completed { text, attachments, reasoning, .. } => {
+                if let Ok(mut msg) = state
+                    .chat_service
+                    .complete_agent_message(message_id, text, attachments, reasoning)
+                    .await
+                    && let Some(es) = event_sender
+                {
+                    if let Ok(tes) = state.chat_service.get_tool_calls_by_message(message_id).await {
+                        msg.tool_calls = tes.into_iter().map(Into::into).collect();
+                    }
+                    presign_response_by_user_id(&state.presign_service, &mut msg, user_id).await;
+                    es.send_kind(BroadcastEventKind::InferenceDone { message: msg });
+                }
+            }
+            InferenceResponse::Cancelled(text) => {
+                let _ = state.chat_service.cancel_agent_message(message_id, text).await;
+                if let Some(es) = event_sender {
+                    es.send_kind(BroadcastEventKind::InferenceCancelled {
+                        reason: "Cancelled".to_string(),
+                    });
+                }
+            }
+            InferenceResponse::ExternalToolPending { tool_calls, .. } => {
+                if let Some(es) = event_sender {
+                    for te in tool_calls {
+                        es.send_kind(BroadcastEventKind::ToolCallCreated { tool_call: te });
+                    }
+                }
+            }
+        },
+        Err(e) => {
+            tracing::warn!(message_id, error = %e, "agent loop failed");
+            let _ = state.chat_service.fail_agent_message(message_id).await;
+            if let Some(es) = event_sender {
+                es.send_kind(BroadcastEventKind::InferenceError {
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
 }
 
 pub async fn run_agent_loop(
@@ -18,8 +87,8 @@ pub async fn run_agent_loop(
     chat_id: &str,
     message_id: &str,
     cancel_token: CancellationToken,
-    is_task: bool,
-    continuation_prompt: Option<&str>,
+    builder: Box<dyn ConversationBuilder>,
+    tool_filter: Option<&[&str]>,
 ) -> Result<AgentLoopOutcome, AppError> {
     let chat = state
         .chat_service
@@ -27,13 +96,25 @@ pub async fn run_agent_loop(
         .await?
         .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
 
-    let ChatSessionContext {
-        system_prompt, model_group, mut rig_history, registry,
-        tool_registry, tool_ctx, ..
-    } = ChatSessionContext::build_with_task(state, user_id, chat, cancel_token.clone(), is_task).await?;
+    let builder_system_prompt = builder.system_prompt();
 
-    if let Some(prompt) = continuation_prompt {
-        rig_history.push(RigMessage::user(prompt));
+    let ChatSessionContext {
+        mut system_prompt, model_group, rig_history, registry,
+        mut tool_registry, tool_ctx, ..
+    } = ChatSessionContext::build(
+        state, user_id, chat, cancel_token.clone(), builder,
+    ).await?;
+
+    if let Some(extra) = builder_system_prompt {
+        let trimmed = extra.trim();
+        if !trimmed.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(trimmed);
+        }
+    }
+
+    if let Some(allowed) = tool_filter {
+        tool_registry.restrict_to(allowed);
     }
 
     let response = crate::inference::inference(InferenceRequest {
@@ -91,50 +172,24 @@ pub async fn resume_agent_loop(
     message_id: &str,
 ) -> Result<(), AppError> {
     let cancel_token = state.active_sessions.register(chat_id).await;
-    let event_sender = state.broadcast_service.create_event_sender(user_id, chat_id);
+    let space_id = state
+        .chat_service
+        .get_chat(user_id, chat_id)
+        .await
+        .ok()
+        .and_then(|c| c.space_id);
+    let event_sender = state
+        .broadcast_service
+        .create_event_sender(user_id, chat_id, space_id);
 
-    let result = run_agent_loop(state, user_id, chat_id, message_id, cancel_token, false, None).await;
-
-    match result {
-        Ok(AgentLoopOutcome { response }) => match response {
-            InferenceResponse::Completed { text, attachments, reasoning, .. } => {
-                if let Ok(mut msg) = state
-                    .chat_service
-                    .complete_agent_message(message_id, text, attachments, reasoning)
-                    .await
-                {
-                    if let Ok(tes) = state.chat_service.get_tool_calls_by_message(message_id).await {
-                        msg.tool_calls = tes.into_iter().map(Into::into).collect();
-                    }
-                    presign_response_by_user_id(&state.presign_service, &mut msg, user_id).await;
-                    event_sender.send_kind(BroadcastEventKind::InferenceDone { message: msg });
-                }
-            }
-            InferenceResponse::Cancelled(text) => {
-                let _ = state
-                    .chat_service
-                    .cancel_agent_message(message_id, text)
-                    .await;
-                event_sender.send_kind(BroadcastEventKind::InferenceCancelled {
-                    reason: "Cancelled".to_string(),
-                });
-            }
-            InferenceResponse::ExternalToolPending {
-                tool_calls, ..
-            } => {
-                for te in tool_calls {
-                    event_sender.send_kind(BroadcastEventKind::ToolCallCreated { tool_call: te });
-                }
-            }
-        },
-        Err(e) => {
-            tracing::error!(error = %e, chat_id = %chat_id, "Resume chat inference failed");
-            let _ = state.chat_service.fail_agent_message(message_id).await;
-            event_sender.send_kind(BroadcastEventKind::InferenceError {
-                error: e.to_string(),
-            });
-        }
-    }
+    let builder = Box::new(DefaultConversationBuilder {
+        user_service: state.user_service.clone(),
+        storage_service: state.storage_service.clone(),
+    });
+    run_agent_turn(
+        state, user_id, chat_id, message_id, cancel_token, builder, None, Some(&event_sender),
+    )
+    .await;
 
     state.active_sessions.remove(chat_id).await;
     Ok(())

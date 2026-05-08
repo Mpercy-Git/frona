@@ -26,6 +26,11 @@ pub trait ConversationBuilder: Send + Sync {
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
     ) -> Vec<RigMessage>;
+
+    /// Turn-scoped system prompt appended to the agent's main system prompt.
+    fn system_prompt(&self) -> Option<String> {
+        None
+    }
 }
 
 pub struct DefaultConversationBuilder {
@@ -90,6 +95,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
 pub struct TaskConversationBuilder {
     pub user_service: UserService,
     pub storage_service: StorageService,
+    pub continuation_prompt: Option<String>,
 }
 
 #[async_trait]
@@ -147,7 +153,77 @@ impl ConversationBuilder for TaskConversationBuilder {
                 }
             };
         }
+        if let Some(prompt) = &self.continuation_prompt
+            && !prompt.is_empty()
+        {
+            result.push(RigMessage::user(prompt));
+        }
         result
+    }
+}
+
+pub struct ChannelConversationBuilder {
+    pub user_service: UserService,
+    pub storage_service: StorageService,
+    pub channel: String,
+    pub sender: Option<String>,
+    pub inbound_prompt: Option<String>,
+}
+
+#[async_trait]
+impl ConversationBuilder for ChannelConversationBuilder {
+    async fn build(
+        &self,
+        messages: &[Message],
+        tool_calls: &[ToolCall],
+        ctx: &ConversationContext,
+    ) -> Vec<RigMessage> {
+        let te_map = group_tool_calls_by_message(tool_calls);
+        let mut result = Vec::with_capacity(messages.len());
+        for msg in messages {
+            match msg.role {
+                MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                    result.push(
+                        build_user_message(
+                            &msg.content,
+                            &msg.attachments,
+                            &self.user_service,
+                            &self.storage_service,
+                        )
+                        .await,
+                    );
+                }
+                MessageRole::LiveCall => {
+                    let content = format!("[LIVE_CALL] {}", msg.content);
+                    result.push(
+                        build_user_message(
+                            &content,
+                            &msg.attachments,
+                            &self.user_service,
+                            &self.storage_service,
+                        )
+                        .await,
+                    );
+                }
+                MessageRole::Agent => {
+                    if let Some(tes) = te_map.get(&msg.id) {
+                        convert_agent_with_tool_calls(msg, tes, &ctx.agent_id, &mut result);
+                    } else if let Some(m) = convert_agent_message(msg, &ctx.agent_id) {
+                        result.push(m);
+                    }
+                }
+                MessageRole::System => {
+                    if !msg.content.is_empty() {
+                        result.push(RigMessage::user(&msg.content));
+                    }
+                }
+            };
+        }
+        result
+    }
+
+    fn system_prompt(&self) -> Option<String> {
+        self.inbound_prompt.clone()
     }
 }
 
@@ -384,6 +460,10 @@ mod tests {
             contact_id: None,
             status: None,
             reasoning: None,
+            external_msg_id: None,
+            from_address: None,
+            delivery: None,
+            metadata: Default::default(),
             created_at: Utc::now(),
         }
     }

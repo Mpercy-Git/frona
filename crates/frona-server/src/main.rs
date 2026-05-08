@@ -91,6 +91,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = signal_service.start().await {
         tracing::warn!(error = %e, "Failed to start signal service");
     }
+    frona::chat::channel::spawn_inference_dispatcher(state.clone());
+
+    if let Err(e) = state.channel_manager.clone().start(state.clone()).await {
+        tracing::warn!(error = %e, "ChannelManager failed to start; channel adapters will not run");
+    }
 
     if state.config.sandbox.default_network_access {
         let policy = cedar_policy::Policy::from_json(
@@ -224,6 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::apps::router())
         .merge(routes::spaces::router())
         .merge(routes::chats::router())
+        .merge(routes::channels::router())
         .merge(routes::contacts::router())
         .merge(routes::messages::router())
         .merge(routes::tasks::router())

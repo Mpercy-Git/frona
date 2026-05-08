@@ -126,6 +126,9 @@ pub struct AppState {
     pub metrics_handle: PrometheusHandle,
     pub task_resolution_notifiers: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
     pub shutdown_token: CancellationToken,
+    pub channel_registry: Arc<crate::chat::channel::ChannelRegistry>,
+    pub channel_manager: Arc<crate::chat::channel::ChannelManager>,
+    pub channel_service: Arc<crate::chat::channel::ChannelService>,
     pub http_client: reqwest::Client,
 }
 
@@ -225,7 +228,7 @@ impl AppState {
             keypair_service.clone(),
         );
         match &voice_provider {
-            Some(p) => tracing::info!(provider = %p.name(), callback_base_url = %voice_base_url, "Voice calling enabled"),
+            Some(p) => tracing::info!(provider = %p.name(), voice_base_url = %voice_base_url, "Voice calling enabled"),
             None => tracing::info!("Voice calling disabled (no provider configured)"),
         }
 
@@ -346,26 +349,51 @@ impl AppState {
             policy_service.clone(),
         );
 
+        let channel_registry = {
+            let reg = Arc::new(crate::chat::channel::ChannelRegistry::new());
+            reg.register_factory(Arc::new(crate::chat::channel::adapter::telegram::TelegramAdapterFactory));
+            reg.register_factory(Arc::new(crate::chat::channel::adapter::sms::SmsAdapterFactory));
+            reg
+        };
+        let channel_repo: Arc<dyn crate::chat::channel::repository::ChannelRepository> =
+            Arc::new(SurrealRepo::<crate::chat::channel::Channel>::new(db.clone()));
+        let config_arc = Arc::new(config.clone());
+        let channel_service = Arc::new(crate::chat::channel::ChannelService::new(
+            channel_repo,
+            channel_registry.clone(),
+            Arc::new(vault_service.clone()),
+            broadcast_service.clone(),
+            config_arc.clone(),
+        ));
+
+        let chat_service = ChatService::new(
+            chat_repo,
+            message_repo,
+            tool_call_repo,
+            agent_service.clone(),
+            provider_registry,
+            storage.clone(),
+            user_service.clone(),
+            memory_service.clone(),
+            prompt_loader.clone(),
+            broadcast_service.clone(),
+        );
+        let message_repo_for_channel: Arc<dyn crate::chat::message::repository::MessageRepository> =
+            Arc::new(SurrealRepo::<crate::chat::message::models::Message>::new(db.clone()));
+        let channel_manager = Arc::new(crate::chat::channel::ChannelManager::new(
+            message_repo_for_channel,
+            chat_service.clone(),
+        ));
         Self {
             db: db.clone(),
             auth_service: Arc::new(AuthService::new()),
             app_service,
             user_service: user_service.clone(),
             agent_service: agent_service.clone(),
-            space_service: SpaceService::new(SurrealRepo::new(db.clone())),
+            space_service: SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             call_service: CallService::new(SurrealRepo::new(db.clone())),
-            contact_service: ContactService::new(SurrealRepo::new(db.clone())),
-            chat_service: ChatService::new(
-                chat_repo,
-                message_repo,
-                tool_call_repo,
-                agent_service.clone(),
-                provider_registry,
-                storage.clone(),
-                user_service.clone(),
-                memory_service.clone(),
-                prompt_loader.clone(),
-            ),
+            contact_service: ContactService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            chat_service,
             task_service: TaskService::new(SurrealRepo::new(db.clone())),
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
@@ -382,7 +410,7 @@ impl AppState {
             task_executor: Arc::new(OnceLock::new()),
             signal_service: Arc::new(OnceLock::new()),
             max_concurrent_tasks: config.server.max_concurrent_tasks,
-            config: Arc::new(config.clone()),
+            config: config_arc,
             storage_service: storage,
             prompts: prompt_loader,
             vault_service,
@@ -396,6 +424,9 @@ impl AppState {
             metrics_handle,
             task_resolution_notifiers: Arc::new(Mutex::new(HashMap::new())),
             shutdown_token: CancellationToken::new(),
+            channel_registry: channel_registry.clone(),
+            channel_manager,
+            channel_service,
             http_client,
         }
     }

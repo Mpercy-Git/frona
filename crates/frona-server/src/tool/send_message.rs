@@ -71,7 +71,7 @@ impl SendMessageTool {
 
         let message = self
             .chat_service
-            .save_agent_message(&resolved_chat_id, &ctx.agent.id, content.clone())
+            .save_agent_message(&resolved_chat_id, &ctx.agent.id, content.clone(), None)
             .await?;
 
         if is_new_chat {
@@ -86,8 +86,12 @@ impl SendMessageTool {
             });
         }
 
+        let space_id = ctx
+            .chat
+            .space_id
+            .clone();
         self.broadcast_service
-            .broadcast_chat_message(&ctx.user.id, &resolved_chat_id, message.clone());
+            .broadcast_chat_message(&ctx.user.id, &resolved_chat_id, space_id, message.clone());
 
         let truncated_body = if content.len() > 200 {
             format!("{}…", &content[..200])

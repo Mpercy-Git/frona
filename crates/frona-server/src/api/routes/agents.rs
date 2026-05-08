@@ -176,6 +176,7 @@ async fn update_agent(
     state.broadcast_service.send(BroadcastEvent {
         user_id: auth.user_id,
         chat_id: None,
+        space_id: None,
         kind: BroadcastEventKind::Inference(InferenceEventKind::EntityUpdated {
             table: "agent".to_string(),
             record_id: id,

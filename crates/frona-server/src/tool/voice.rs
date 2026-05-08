@@ -330,7 +330,7 @@ mod tests {
         use surrealdb::engine::local::Mem;
         let db = Surreal::new::<Mem>(()).await.unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
-        ContactService::new(SurrealRepo::new(db))
+        ContactService::new(SurrealRepo::new(db), crate::chat::broadcast::BroadcastService::new())
     }
 
     #[test]

@@ -218,7 +218,7 @@ impl Supervisor for AppSupervisor {
                     info!(chat_id = %chat_id, "Creating agent message for crash fix");
                     match state
                         .chat_service
-                        .create_executing_agent_message(&chat_id, &agent_id)
+                        .create_executing_agent_message(&chat_id, &agent_id, None)
                         .await
                     {
                         Ok(msg) => msg.id,

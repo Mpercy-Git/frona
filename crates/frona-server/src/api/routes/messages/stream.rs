@@ -96,8 +96,12 @@ pub(crate) async fn stream_message(
         .map_err(ApiError::from)?;
 
     let cancel_token = state.active_sessions.register(&chat_id).await;
+    let builder = Box::new(DefaultConversationBuilder {
+        user_service: state.user_service.clone(),
+        storage_service: state.storage_service.clone(),
+    });
     let mut ctx = crate::chat::session::ChatSessionContext::build(
-        &state, &auth.user_id, chat, cancel_token,
+        &state, &auth.user_id, chat, cancel_token, builder,
     )
     .await
     .map_err(ApiError::from)?;
@@ -188,7 +192,7 @@ pub(crate) async fn stream_message(
             None => {
                 // Fallback: create a new one if somehow missing
                 let msg = state.chat_service
-                    .create_executing_agent_message(&chat_id, &agent_id)
+                    .create_executing_agent_message(&chat_id, &agent_id, None)
                     .await
                     .map_err(ApiError::from)?;
                 msg.id
@@ -271,7 +275,7 @@ pub(crate) async fn stream_message(
 
         // Pre-create agent message in Executing state
         let agent_msg = state.chat_service
-            .create_executing_agent_message(&chat_id, &agent_id)
+            .create_executing_agent_message(&chat_id, &agent_id, None)
             .await
             .map_err(ApiError::from)?;
         let agent_msg_id = agent_msg.id.clone();

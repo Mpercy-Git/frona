@@ -113,6 +113,7 @@ impl CreateAgentTool {
         self.broadcast_service.send(crate::chat::broadcast::BroadcastEvent {
             user_id: ctx.user.id.clone(),
             chat_id: None,
+            space_id: None,
             kind: crate::chat::broadcast::BroadcastEventKind::Inference(
                 InferenceEventKind::EntityUpdated {
                     table: "agent".to_string(),
