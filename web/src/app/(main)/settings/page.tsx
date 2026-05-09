@@ -22,6 +22,7 @@ import { AdvancedSection } from "@/components/settings/sections/advanced-section
 import { SkillsSection } from "@/components/settings/sections/skills-section";
 import { SandboxSettingsSection } from "@/components/settings/sections/sandbox-section";
 import { McpSection } from "@/components/settings/sections/mcp-section";
+import { ChannelsSection } from "@/components/settings/sections/channels-section";
 import { AboutSection } from "@/components/settings/sections/about-section";
 import { getConfig, updateConfig } from "@/lib/config-types";
 import type { Config } from "@/lib/config-types";
@@ -31,6 +32,7 @@ const TABS = [
   { id: "theme", label: "Theme", group: "user", saveable: false },
   { id: "providers", label: "Providers", group: "config", saveable: true },
   { id: "models", label: "Models", group: "config", saveable: true },
+  { id: "channels", label: "Channels", group: "config", saveable: false },
   { id: "skills", label: "Skills", group: "config", saveable: false },
   { id: "mcp", label: "MCP", group: "config", saveable: false },
   { id: "search", label: "Search", group: "config", saveable: true },
@@ -264,6 +266,7 @@ export default function SettingsPage() {
 
               {activeTab === "skills" && <SkillsSection />}
               {activeTab === "mcp" && <McpSection />}
+              {activeTab === "channels" && <ChannelsSection />}
 
               {config && (
                 <>

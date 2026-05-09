@@ -90,8 +90,13 @@ export function NumberInput({ label, description, value, onChange, min, max, ste
     <Field label={label} description={description}>
       <input
         type="number"
-        value={value ?? ""}
-        onChange={(e) => onChange(Number(e.target.value))}
+        value={typeof value === "number" && Number.isFinite(value) ? value : ""}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") return;
+          const n = Number(raw);
+          if (Number.isFinite(n)) onChange(n);
+        }}
         min={min}
         max={max}
         step={step}
