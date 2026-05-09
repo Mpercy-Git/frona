@@ -60,6 +60,14 @@ export function ServerSection({ server, onChange }: ServerSectionProps) {
       />
 
       <TextInput
+        label="External URL"
+        description="Externally-reachable URL (e.g. ngrok tunnel, public domain) used as the default callback target for inbound webhooks and external service callbacks. Use this when base_url points to an internal address that callers outside your network can't reach."
+        value={server.external_url}
+        onChange={(external_url) => onChange({ ...server, external_url })}
+        placeholder="https://abcd1234.ngrok.app"
+      />
+
+      <TextInput
         label="CORS Origins"
         description="Comma-separated list of allowed origins"
         value={server.cors_origins}

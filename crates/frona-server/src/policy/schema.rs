@@ -43,6 +43,7 @@ pub fn principal_entity_uid(principal: &Principal) -> EntityUid {
         PrincipalKind::Agent => "Agent",
         PrincipalKind::McpServer => "Mcp",
         PrincipalKind::App => "App",
+        PrincipalKind::Channel => "Channel",
     };
     entity_uid(type_name, &principal.id)
 }
@@ -117,6 +118,99 @@ pub fn build_agent_entities(
     Entities::from_entities([principal_entity, target_entity], None)
         .unwrap_or_else(|_| Entities::empty())
 }
+
+pub fn channel_entity_uid(channel_id: &str) -> EntityUid {
+    entity_uid("Channel", channel_id)
+}
+
+pub fn contact_entity_uid(contact_id: &str) -> EntityUid {
+    entity_uid("Contact", contact_id)
+}
+
+pub fn user_entity_uid(user_id: &str) -> EntityUid {
+    entity_uid("User", user_id)
+}
+
+pub fn message_source_entity_uid(connector_id: &str, address: &str) -> EntityUid {
+    let id = format!("{}:{}", connector_id, address);
+    entity_uid("MessageSource", &id)
+}
+
+pub fn build_message_source_entities(
+    agent_id: &str,
+    agent_tools: &[String],
+    connector_id: &str,
+    channel_id: &str,
+    sender: &super::models::PolicyContact,
+) -> Entities {
+    let principal_entity = build_agent_principal_entity(agent_id, agent_tools);
+
+    let channel_uid = channel_entity_uid(channel_id);
+    let channel_entity = Entity::new_no_attrs(channel_uid.clone(), HashSet::new());
+
+    let user_uid = user_entity_uid(&sender.user_id);
+    let user_entity = Entity::new_no_attrs(user_uid.clone(), HashSet::new());
+
+    let contact_uid = contact_entity_uid(&sender.id);
+    let contact_addresses = RestrictedExpression::new_set(
+        sender
+            .addresses
+            .iter()
+            .cloned()
+            .map(RestrictedExpression::new_string),
+    );
+    let contact_attrs = [
+        (
+            "address".into(),
+            RestrictedExpression::new_string(sender.address.clone()),
+        ),
+        ("addresses".into(), contact_addresses),
+        (
+            "name".into(),
+            RestrictedExpression::new_string(sender.name.clone()),
+        ),
+    ];
+    let contact_entity = Entity::new(
+        contact_uid.clone(),
+        contact_attrs.into_iter().collect(),
+        HashSet::from([user_uid.clone()]),
+    )
+    .expect("valid contact entity");
+
+    let source_attrs = [
+        (
+            "connector_id".into(),
+            RestrictedExpression::new_string(connector_id.to_string()),
+        ),
+        (
+            "sender".into(),
+            RestrictedExpression::new_entity_uid(contact_uid),
+        ),
+        (
+            "user".into(),
+            RestrictedExpression::new_entity_uid(user_uid),
+        ),
+    ];
+    let resource_entity = Entity::new(
+        message_source_entity_uid(connector_id, &sender.address),
+        source_attrs.into_iter().collect(),
+        HashSet::from([channel_uid]),
+    )
+    .expect("valid message source entity");
+
+    Entities::from_entities(
+        [
+            principal_entity,
+            channel_entity,
+            user_entity,
+            contact_entity,
+            resource_entity,
+        ],
+        None,
+    )
+    .unwrap_or_else(|_| Entities::empty())
+}
+
 
 pub fn prepend_annotations(id: &str, description: &str, policy_text: &str) -> String {
     format!("@id(\"{id}\")\n@description(\"{description}\")\n{policy_text}")

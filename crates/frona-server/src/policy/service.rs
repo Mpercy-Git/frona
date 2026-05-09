@@ -3,7 +3,8 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use cedar_policy::{
-    Authorizer, Context, Decision, Entities, Entity, EntityUid, PolicySet, Request, Schema,
+    Authorizer, Context, Decision, Entities, Entity, EntityUid, PolicySet, Request,
+    RestrictedExpression, Schema,
 };
 use moka::future::Cache;
 use tokio::sync::Mutex as AsyncMutex;
@@ -266,9 +267,25 @@ impl PolicyService {
             PolicyAction::InvokeTool { tool_name, .. } => tool_entity_uid(tool_name),
             PolicyAction::DelegateTask { target_agent_id } => agent_entity_uid(target_agent_id),
             PolicyAction::SendMessage { target_agent_id } => agent_entity_uid(target_agent_id),
+            PolicyAction::ReceiveSignal {
+                connector_id,
+                sender,
+                ..
+            }
+            | PolicyAction::ReceiveMessage {
+                connector_id,
+                sender,
+                ..
+            } => super::schema::message_source_entity_uid(connector_id, &sender.address),
         };
 
-        let context = Context::empty();
+        let context = match &action {
+            PolicyAction::ReceiveSignal { paired_addresses, .. }
+            | PolicyAction::ReceiveMessage { paired_addresses, .. } => {
+                build_paired_addresses_context(paired_addresses)?
+            }
+            _ => Context::empty(),
+        };
 
         let entities = match &action {
             PolicyAction::InvokeTool { tool_name, tool_group } => {
@@ -292,6 +309,37 @@ impl PolicyService {
                     }
                 }
                 build_agent_entities(&agent.id, &principal_tools, target_agent_id, &target_tools)
+            }
+            PolicyAction::ReceiveSignal {
+                connector_id,
+                channel_id,
+                sender,
+                ..
+            }
+            | PolicyAction::ReceiveMessage {
+                connector_id,
+                channel_id,
+                sender,
+                ..
+            } => {
+                let all_defs = self.tool_manager.definitions(user_id).await;
+                let mut agent_tools = Vec::new();
+                for def in &all_defs {
+                    let resource = PolicyResource::Tool {
+                        id: def.id.clone(),
+                        group: def.provider_id.clone(),
+                    };
+                    if self.is_permitted(&agent.id, &resource, &cached.policy_set)? {
+                        agent_tools.push(def.id.clone());
+                    }
+                }
+                super::schema::build_message_source_entities(
+                    &agent.id,
+                    &agent_tools,
+                    connector_id,
+                    channel_id,
+                    sender,
+                )
             }
         };
 
@@ -387,6 +435,11 @@ impl PolicyService {
                 PrincipalKind::User => {
                     return Err(AppError::Internal(
                         "User is not a sandbox principal".into(),
+                    ));
+                }
+                PrincipalKind::Channel => {
+                    return Err(AppError::Internal(
+                        "Channel is not a sandbox principal".into(),
                     ));
                 }
             };
@@ -690,12 +743,24 @@ impl PolicyService {
     }
 }
 
+fn build_paired_addresses_context(addresses: &[String]) -> Result<Context, AppError> {
+    let set = RestrictedExpression::new_set(
+        addresses
+            .iter()
+            .cloned()
+            .map(RestrictedExpression::new_string),
+    );
+    Context::from_pairs([("paired_addresses".into(), set)])
+        .map_err(|e| AppError::Internal(format!("Policy context error: {e}")))
+}
+
 fn principal_kind_str(kind: &PrincipalKind) -> &'static str {
     match kind {
         PrincipalKind::User => "user",
         PrincipalKind::Agent => "agent",
         PrincipalKind::McpServer => "mcp_server",
         PrincipalKind::App => "app",
+        PrincipalKind::Channel => "channel",
     }
 }
 

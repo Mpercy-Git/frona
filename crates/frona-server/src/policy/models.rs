@@ -31,6 +31,58 @@ pub enum PolicyAction {
     InvokeTool { tool_name: String, tool_group: String },
     DelegateTask { target_agent_id: String },
     SendMessage { target_agent_id: String },
+    ReceiveSignal {
+        connector_id: String,
+        channel_id: String,
+        sender: PolicyContact,
+        paired_addresses: Vec<String>,
+    },
+    /// Deny here + `ReceiveSignal` allow falls back to signal-mode inference; both deny means discard.
+    ReceiveMessage {
+        connector_id: String,
+        channel_id: String,
+        sender: PolicyContact,
+        paired_addresses: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct PolicyContact {
+    pub id: String,
+    pub user_id: String,
+    pub name: String,
+    pub address: String,
+    pub addresses: Vec<String>,
+}
+
+impl PolicyContact {
+    /// Not persisted; lives only in the per-evaluation Cedar entity bundle.
+    pub fn unresolved(user_id: &str, address: &str) -> Self {
+        Self {
+            id: format!("unresolved:{}", address),
+            user_id: user_id.to_string(),
+            name: String::new(),
+            address: address.to_string(),
+            addresses: if address.is_empty() {
+                Vec::new()
+            } else {
+                vec![address.to_string()]
+            },
+        }
+    }
+
+    pub fn from_contact(c: &crate::contact::models::Contact, address: &str) -> Self {
+        Self {
+            id: c.id.clone(),
+            user_id: c.user_id.clone(),
+            name: c.name.clone(),
+            address: address.to_string(),
+            addresses: [c.phone.clone(), c.email.clone()]
+                .into_iter()
+                .flatten()
+                .collect(),
+        }
+    }
 }
 
 impl PolicyAction {
@@ -39,6 +91,8 @@ impl PolicyAction {
             PolicyAction::InvokeTool { .. } => "invoke_tool",
             PolicyAction::DelegateTask { .. } => "delegate_task",
             PolicyAction::SendMessage { .. } => "send_message",
+            PolicyAction::ReceiveSignal { .. } => "receive_signal",
+            PolicyAction::ReceiveMessage { .. } => "receive_message",
         }
     }
 }

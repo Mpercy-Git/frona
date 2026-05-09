@@ -23,9 +23,14 @@ async fn setup() -> (TokenService, KeyPairService, User, tempfile::TempDir) {
     setup_schema(&db).await.unwrap();
 
     let keypair = KeyPairService::new("test-secret", Arc::new(SurrealRepo::new(db.clone())));
+    let user_service = frona::auth::user_service::UserService::new(
+        SurrealRepo::new(db.clone()),
+        &frona::core::config::CacheConfig::default(),
+    );
     let tokens = TokenService::new(
         Arc::new(SurrealRepo::new(db.clone())),
         JwtService::new(),
+        user_service,
         900,
         604_800,
     );

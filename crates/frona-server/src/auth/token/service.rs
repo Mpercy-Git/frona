@@ -15,6 +15,7 @@ use crate::credential::keypair::service::KeyPairService;
 pub struct TokenService {
     repo: Arc<dyn TokenRepository>,
     jwt: JwtService,
+    user_service: super::super::user_service::UserService,
     access_expiry_secs: u64,
     refresh_expiry_secs: u64,
 }
@@ -39,12 +40,14 @@ impl TokenService {
     pub fn new(
         repo: Arc<dyn TokenRepository>,
         jwt: JwtService,
+        user_service: super::super::user_service::UserService,
         access_expiry_secs: u64,
         refresh_expiry_secs: u64,
     ) -> Self {
         Self {
             repo,
             jwt,
+            user_service,
             access_expiry_secs,
             refresh_expiry_secs,
         }
@@ -199,16 +202,14 @@ impl TokenService {
             self.repo.delete_by_refresh_pair(pair_id).await?;
         }
 
-        let user = User {
-            id: claims.sub.clone(),
-            username: claims.username.clone(),
-            email: claims.email.clone(),
-            name: String::new(),
-            password_hash: String::new(),
-            timezone: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
+        let user = self
+            .user_service
+            .find_by_id(&claims.sub)
+            .await?
+            .ok_or_else(|| AppError::Auth {
+                message: "User no longer exists".into(),
+                code: AuthErrorCode::TokenInvalid,
+            })?;
 
         let (access_jwt, refresh_jwt) = self.create_session_pair(keypair_svc, &user).await?;
         Ok((access_jwt, refresh_jwt, claims))

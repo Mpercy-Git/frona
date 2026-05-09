@@ -361,9 +361,14 @@ mod tests {
             "test-secret",
             Arc::new(SurrealRepo::new(db.clone())),
         );
+        let user_service = crate::auth::user_service::UserService::new(
+            SurrealRepo::new(db.clone()),
+            &crate::core::config::CacheConfig::default(),
+        );
         let tokens = TokenService::new(
             Arc::new(SurrealRepo::new(db.clone())),
             JwtService::new(),
+            user_service,
             900,
             604_800,
         );
@@ -474,7 +479,7 @@ mod tests {
 
     fn mock_context() -> InferenceContext {
         let broadcast = crate::chat::broadcast::BroadcastService::new();
-        let event_sender = broadcast.create_event_sender("test-user", "test-chat");
+        let event_sender = broadcast.create_event_sender("test-user", "test-chat", None);
         InferenceContext::new(
             crate::auth::User {
                 id: "test-user".into(),
@@ -513,6 +518,9 @@ mod tests {
                 agent_id: "test-agent".into(),
                 title: None,
                 archived_at: None,
+                channel_id: None,
+                channel_external_id: None,
+                metadata: Default::default(),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },

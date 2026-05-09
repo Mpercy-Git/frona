@@ -81,6 +81,7 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
         4100,
         4200,
         policy_service,
+        frona::build_http_client(),
     ))
 }
 

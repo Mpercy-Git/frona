@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useCombobox } from "downshift";
 
 interface ComboboxItem {
@@ -9,7 +9,7 @@ interface ComboboxItem {
 }
 
 interface ComboboxInputProps {
-  label: string;
+  label: ReactNode;
   value: string;
   items: ComboboxItem[];
   onChange: (value: string) => void;
@@ -93,7 +93,7 @@ export function ComboboxInput({
   return (
     <div className="space-y-1">
       <label
-        className="block text-sm font-medium text-text-secondary"
+        className="flex items-center gap-2 text-sm font-medium text-text-secondary"
         {...getLabelProps()}
       >
         {label}

@@ -9,7 +9,7 @@ use axum::{Json, Router};
 use futures::stream::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::chat::message::models::{MessageQuery, MessageResponse, PaginatedMessagesResponse, ResolveToolRequest, SendMessageRequest};
+use crate::chat::message::models::{MessageQuery, MessageResponse, PaginatedMessagesResponse, ResolveToolRequest, SendMessageRequest, UpdateMessageRequest};
 use crate::credential::presign::presign_response;
 
 use super::super::error::ApiError;
@@ -35,6 +35,23 @@ pub fn router() -> Router<AppState> {
             post(cancel_generation),
         )
         .route("/api/stream", get(event_stream))
+        .route(
+            "/api/messages/{id}",
+            axum::routing::patch(patch_message),
+        )
+}
+
+async fn patch_message(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateMessageRequest>,
+) -> Result<Json<MessageResponse>, ApiError> {
+    let updated = state
+        .chat_service
+        .update_message_metadata(&auth.user_id, &id, req)
+        .await?;
+    Ok(Json(updated))
 }
 
 async fn send_message(

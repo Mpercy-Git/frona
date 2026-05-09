@@ -4,6 +4,7 @@ use std::time::Duration;
 use chrono::Utc;
 
 use crate::agent::execution::{self, AgentLoopOutcome};
+use crate::inference::conversation::DefaultConversationBuilder;
 use crate::agent::models::Agent;
 use crate::agent::task::models::TaskKind;
 use crate::db::repo::generic::SurrealRepo;
@@ -71,7 +72,77 @@ impl Scheduler {
     async fn run_poll_tasks(&self) -> Result<(), AppError> {
         self.run_cron_tasks().await?;
         self.run_deferred_tasks().await?;
+        self.run_signal_timeouts().await?;
+        self.run_delivery_retries().await?;
+        self.run_pair_expiry_sweep().await?;
         self.run_heartbeats().await
+    }
+
+    async fn run_pair_expiry_sweep(&self) -> Result<(), AppError> {
+        if self.app_state.is_shutting_down() {
+            return Ok(());
+        }
+        self.app_state
+            .channel_service
+            .revert_expired_pairings()
+            .await
+            .map(|_count| ())
+    }
+
+    async fn run_delivery_retries(&self) -> Result<(), AppError> {
+        if self.app_state.is_shutting_down() {
+            return Ok(());
+        }
+        self.app_state
+            .channel_manager
+            .retry_due_deliveries()
+            .await
+            .map(|_count| ())
+    }
+
+    async fn run_signal_timeouts(&self) -> Result<(), AppError> {
+        if self.app_state.is_shutting_down() {
+            return Ok(());
+        }
+        let expired = self.app_state.task_service.find_expired_signal_tasks().await?;
+        if expired.is_empty() {
+            return Ok(());
+        }
+        let signal_service = self.app_state.signal_service();
+        for task in expired {
+            let is_continuous = matches!(
+                task.kind,
+                TaskKind::Signal {
+                    mode: crate::agent::task::models::SignalMode::Continuous,
+                    ..
+                }
+            );
+            let outcome = if is_continuous {
+                self.app_state
+                    .task_service
+                    .mark_completed(&task.id, Some("monitoring window ended".into()))
+                    .await
+                    .map(|_| ())
+            } else {
+                self.app_state
+                    .task_service
+                    .mark_failed(&task.id, "timed out: no matching signal".into())
+                    .await
+                    .map(|_| ())
+            };
+            if let Err(e) = outcome {
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %e,
+                    "Failed to transition expired signal task"
+                );
+                continue;
+            }
+            if let Some(ref svc) = signal_service {
+                svc.unregister(&task.user_id, &task.id).await;
+            }
+        }
+        Ok(())
     }
 
     async fn run_cron_tasks(&self) -> Result<(), AppError> {
@@ -340,6 +411,7 @@ async fn execute_cron(
                     task_id: None,
                     agent_id: agent_id.clone(),
                     title: Some(format!("Cron: {}", task.title)),
+                    metadata: None,
                 },
             )
             .await?;
@@ -375,6 +447,7 @@ async fn execute_heartbeat(
                     task_id: None,
                     agent_id: agent_id.clone(),
                     title: Some("Heartbeat".to_string()),
+                    metadata: None,
                 },
             )
             .await?;
@@ -409,14 +482,18 @@ async fn execute_background_agent(
     let chat = state.chat_service.find_chat(chat_id).await?
         .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
     let agent_msg = state.chat_service
-        .create_executing_agent_message(chat_id, &chat.agent_id)
+        .create_executing_agent_message(chat_id, &chat.agent_id, None)
         .await?;
     let agent_msg_id = agent_msg.id.clone();
 
     let cancel_token = state.active_sessions.register(chat_id).await;
 
+    let builder = Box::new(DefaultConversationBuilder {
+        user_service: state.user_service.clone(),
+        storage_service: state.storage_service.clone(),
+    });
     let result = execution::run_agent_loop(
-        state, user_id, chat_id, &agent_msg_id, cancel_token, false, None,
+        state, user_id, chat_id, &agent_msg_id, cancel_token, builder, None,
     )
     .await;
 

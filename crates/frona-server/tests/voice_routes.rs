@@ -38,7 +38,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
         frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let metrics = setup_metrics_recorder();
-    let state = AppState::new(db, &config, None, storage, metrics, resource_manager);
+    let state = AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics, resource_manager);
     (state, tmp)
 }
 
@@ -116,7 +116,7 @@ async fn twilio_callback_valid_token_returns_xml() {
         frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let metrics = setup_metrics_recorder();
-    let state = AppState::new(db.clone(), &config, None, storage, metrics, resource_manager);
+    let state = AppState::new(db.clone(), &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics, resource_manager);
 
     // Persist the user so the AppState's token_service can round-trip the token
     // through the ApiToken DB row it creates for access tokens.

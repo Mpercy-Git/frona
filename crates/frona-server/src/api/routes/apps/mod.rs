@@ -174,6 +174,7 @@ async fn approve_service(
             state_clone.broadcast_service.send(crate::chat::broadcast::BroadcastEvent {
                 user_id: user_id.clone(),
                 chat_id: Some(chat_id.clone()),
+                space_id: None,
                 kind: crate::chat::broadcast::BroadcastEventKind::ToolResolved {
                     message: result.into_message(),
                 },
@@ -239,6 +240,7 @@ async fn deny_service(
         state.broadcast_service.send(crate::chat::broadcast::BroadcastEvent {
             user_id: auth.user_id.clone(),
             chat_id: Some(req.chat_id.clone()),
+            space_id: None,
             kind: crate::chat::broadcast::BroadcastEventKind::ToolResolved { message: denied },
         });
 

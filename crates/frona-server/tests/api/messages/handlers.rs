@@ -4,6 +4,64 @@ use tower::ServiceExt;
 
 use super::super::*;
 
+#[tokio::test]
+async fn message_metadata_round_trip_via_send_and_patch() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) =
+        register_user(&state, "mmd", "mmd@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "MdAgent").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let chat = create_chat(&state, &token, agent_id, None).await;
+    let chat_id = chat["id"].as_str().unwrap();
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            &format!("/api/chats/{chat_id}/messages"),
+            &token,
+            serde_json::json!({
+                "content": "hello",
+                "metadata": {"channel:external_msg_id": "tg:42"},
+            }),
+        ))
+        .await
+        .unwrap();
+    let _ = resp.status();
+
+    let app = build_app(state.clone());
+    let list = app
+        .oneshot(auth_get(
+            &format!("/api/chats/{chat_id}/messages"),
+            &token,
+        ))
+        .await
+        .unwrap();
+    let json = body_json(list).await;
+    let messages = json["messages"].as_array().expect("messages array");
+    let user_msg = messages
+        .iter()
+        .find(|m| m["role"] == "user")
+        .expect("user message present");
+    assert_eq!(user_msg["metadata"]["channel:external_msg_id"], "tg:42");
+    let msg_id = user_msg["id"].as_str().unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_patch_json(
+            &format!("/api/messages/{msg_id}"),
+            &token,
+            serde_json::json!({
+                "metadata": {"channel:external_msg_id": "tg:99", "extra": "x"},
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let patched = body_json(resp).await;
+    assert_eq!(patched["metadata"]["channel:external_msg_id"], "tg:99");
+    assert_eq!(patched["metadata"]["extra"], "x");
+}
+
 // ---------------------------------------------------------------------------
 // List messages
 // ---------------------------------------------------------------------------

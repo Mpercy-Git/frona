@@ -3,8 +3,121 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput, Expr, ImplItem, ItemImpl, Lit, Meta, Token};
 use syn::parse::{Parse, ParseStream};
+use syn::spanned::Spanned;
 
 mod migration;
+
+/// `#[channel(id = "...", from = ConfigType)]` — `from` is optional; when
+/// omitted, the adapter struct itself is the deserialisation target.
+#[proc_macro_derive(ChannelFactory, attributes(channel))]
+pub fn derive_channel_factory(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let adapter_name = &input.ident;
+    let factory_name = quote::format_ident!("{}Factory", adapter_name);
+
+    let attrs = parse_channel_attrs(&input.attrs).unwrap_or_else(|err| {
+        panic!("#[channel(...)] attribute parse error: {err}")
+    });
+    let id = attrs.id;
+    let manifest_rel_path = format!("/../../resources/channels/{id}.yaml");
+
+    let build_adapter = match attrs.from {
+        Some(config_ty) => quote! {
+            let cfg: #config_ty = serde_json::from_value(config).map_err(|e| {
+                frona::core::error::AppError::Validation(
+                    format!("invalid {} config: {}", #id, e),
+                )
+            })?;
+            Ok(Box::new(<#adapter_name as ::std::convert::From<#config_ty>>::from(cfg)))
+        },
+        None => quote! {
+            let adapter: #adapter_name = serde_json::from_value(config).map_err(|e| {
+                frona::core::error::AppError::Validation(
+                    format!("invalid {} config: {}", #id, e),
+                )
+            })?;
+            Ok(Box::new(adapter))
+        },
+    };
+
+    let expanded = quote! {
+        #[automatically_derived]
+        #[doc = concat!("Generated factory for `", stringify!(#adapter_name),
+            "`. Registers the adapter under provider id `", #id,
+            "` and loads its manifest from `resources/channels/", #id, ".yaml`.")]
+        pub struct #factory_name;
+
+        #[automatically_derived]
+        #[async_trait::async_trait]
+        impl frona::chat::channel::models::ChannelFactory for #factory_name {
+            fn manifest(&self) -> frona::chat::channel::models::ChannelManifest {
+                static M: std::sync::OnceLock<frona::chat::channel::models::ChannelManifest>
+                    = std::sync::OnceLock::new();
+                M.get_or_init(|| {
+                    serde_yaml::from_str(include_str!(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        #manifest_rel_path,
+                    )))
+                        .unwrap_or_else(|e| panic!(
+                            "invalid manifest yaml for channel {}: {}", #id, e))
+                }).clone()
+            }
+
+            fn create(
+                &self,
+                config: serde_json::Value,
+            ) -> Result<
+                Box<dyn frona::chat::channel::models::ChannelAdapter>,
+                frona::core::error::AppError,
+            > {
+                #build_adapter
+            }
+        }
+    };
+
+    expanded.into()
+}
+
+struct ChannelAttrs {
+    id: String,
+    from: Option<syn::Type>,
+}
+
+fn parse_channel_attrs(attrs: &[syn::Attribute]) -> syn::Result<ChannelAttrs> {
+    let attr = attrs
+        .iter()
+        .find(|a| a.path().is_ident("channel"))
+        .ok_or_else(|| syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[channel(id = \"...\")] attribute is required",
+        ))?;
+
+    let mut id: Option<String> = None;
+    let mut from: Option<syn::Type> = None;
+
+    attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("id") {
+            let value: syn::LitStr = meta.value()?.parse()?;
+            id = Some(value.value());
+        } else if meta.path.is_ident("from") {
+            let value: syn::Type = meta.value()?.parse()?;
+            from = Some(value);
+        } else {
+            return Err(meta.error(
+                "unknown #[channel] argument; expected one of: id, from",
+            ));
+        }
+        Ok(())
+    })?;
+
+    Ok(ChannelAttrs {
+        id: id.ok_or_else(|| syn::Error::new(
+            attr.span(),
+            "#[channel] missing required `id = \"...\"`",
+        ))?,
+        from,
+    })
+}
 
 #[proc_macro_attribute]
 pub fn migration(attr: TokenStream, item: TokenStream) -> TokenStream {

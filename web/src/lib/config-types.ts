@@ -12,6 +12,7 @@ export interface ServerConfig {
   base_url: string | null;
   backend_url: string | null;
   frontend_url: string | null;
+  external_url: string | null;
   max_body_size_bytes: number;
 }
 
@@ -64,7 +65,6 @@ export interface VoiceConfig {
   twilio_from_number: string | null;
   twilio_voice_id: string | null;
   twilio_speech_model: string | null;
-  callback_base_url: string | null;
 }
 
 export interface VaultConfig {

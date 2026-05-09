@@ -311,8 +311,7 @@ async fn list_provider_models(
 
     let url = format!("{}{}", base.trim_end_matches('/'), endpoint_path);
 
-    let client = reqwest::Client::new();
-    let mut req = client.get(&url);
+    let mut req = state.http_client.get(&url);
 
     if let Some(ref key) = api_key
         && !key.is_empty()

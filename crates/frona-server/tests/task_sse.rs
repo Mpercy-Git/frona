@@ -126,11 +126,12 @@ async fn test_app_state_with_mock(
         user_service,
         memory_service,
         prompt_loader.clone(),
+        frona::chat::broadcast::BroadcastService::new(),
     );
 
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let mut state =
-        AppState::new(db, &config, None, storage, metrics_handle, resource_manager);
+        AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
     // Replace the chat_service with our version that has the mock provider.
     state.chat_service = chat_service;
     // Replace the agent_service so chat_service in state shares the same
@@ -155,6 +156,8 @@ fn make_task() -> Task {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     }

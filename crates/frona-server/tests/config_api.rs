@@ -122,7 +122,7 @@ async fn test_runtime_config_operations() {
     let resource_manager = std::sync::Arc::new(
         frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
-    let state = frona::core::state::AppState::new(db, &config, None, storage, metrics_handle, resource_manager);
+    let state = frona::core::state::AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
 
     // Initially not set
     let val = state.get_runtime_config("setup_completed").await.unwrap();

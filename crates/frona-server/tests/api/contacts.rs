@@ -40,6 +40,50 @@ async fn create_contact_returns_json() {
 }
 
 #[tokio::test]
+async fn contact_metadata_and_space_id_round_trip() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) =
+        register_user(&state, "ct-md", "ctmd@example.com", "password123").await;
+    let space = create_space(&state, &token, "ChannelSpace").await;
+    let space_id = space["id"].as_str().unwrap();
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/contacts",
+            &token,
+            serde_json::json!({
+                "name": "Bob",
+                "space_id": space_id,
+                "metadata": {"channel:external_user_id": "tg:42"},
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["space_id"], space_id);
+    assert_eq!(json["metadata"]["channel:external_user_id"], "tg:42");
+    let id = json["id"].as_str().unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_put_json(
+            &format!("/api/contacts/{id}"),
+            &token,
+            serde_json::json!({
+                "metadata": {"channel:external_user_id": "tg:99", "extra": null},
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["metadata"]["channel:external_user_id"], "tg:99");
+    assert!(json["metadata"].get("extra").is_none());
+}
+
+#[tokio::test]
 async fn create_contact_without_auth_returns_401() {
     let (state, _tmp) = test_app_state().await;
     let app = build_app(state);
