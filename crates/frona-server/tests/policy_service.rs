@@ -194,6 +194,181 @@ async fn base_policies_include_delegation_and_communication() {
     assert!(send.allowed);
 }
 
+fn unresolved_sender(address: &str) -> frona::policy::models::PolicyContact {
+    frona::policy::models::PolicyContact {
+        id: format!("unresolved:{}", address),
+        user_id: "user-1".into(),
+        name: String::new(),
+        address: address.into(),
+        addresses: vec![address.into()],
+    }
+}
+
+fn self_sender(user_id: &str, address: &str) -> frona::policy::models::PolicyContact {
+    frona::policy::models::PolicyContact {
+        id: user_id.into(),
+        user_id: user_id.into(),
+        name: "Mina".into(),
+        address: address.into(),
+        addresses: vec![address.into()],
+    }
+}
+
+#[tokio::test]
+async fn receive_message_default_forbids_non_self_source() {
+    let (_db, service) = setup().await;
+    let agent = test_agent("agent-1");
+
+    let decision = service
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::ReceiveMessage {
+                connector_id: "space-sms-personal".into(),
+                channel_id: "sms".into(),
+                sender: unresolved_sender("+15551234"),
+                paired_addresses: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(decision.is_denied());
+}
+
+#[tokio::test]
+async fn receive_message_forbid_blocks_specific_sender() {
+    let (_db, service) = setup().await;
+    let agent = test_agent("agent-1");
+
+    service
+        .create_policy(
+            "user-1",
+            "@id(\"block-spam\")\nforbid(\n  principal,\n  action == Policy::Action::\"receive_message\",\n  resource\n)\nwhen { resource.sender.address == \"22000\" };",
+        )
+        .await
+        .unwrap();
+
+    let allowed_msg = service
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::ReceiveMessage {
+                connector_id: "space-sms-personal".into(),
+                channel_id: "sms".into(),
+                sender: self_sender("user-1", "+15551234"),
+                paired_addresses: vec!["+15551234".into()],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(allowed_msg.allowed);
+
+    let blocked_msg = service
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::ReceiveMessage {
+                connector_id: "space-sms-personal".into(),
+                channel_id: "sms".into(),
+                sender: unresolved_sender("22000"),
+                paired_addresses: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(blocked_msg.is_denied());
+}
+
+#[tokio::test]
+async fn receive_message_per_agent_channel_block() {
+    let (_db, service) = setup().await;
+    let finance = test_agent("finance");
+    let personal = test_agent("personal");
+
+    service
+        .create_policy(
+            "user-1",
+            "@id(\"finance-no-sms\")\nforbid(\n  principal == Policy::Agent::\"finance\",\n  action == Policy::Action::\"receive_message\",\n  resource in Policy::Channel::\"sms\"\n);",
+        )
+        .await
+        .unwrap();
+
+    let finance_sms = service
+        .authorize(
+            "user-1",
+            &finance,
+            PolicyAction::ReceiveMessage {
+                connector_id: "space-sms-personal".into(),
+                channel_id: "sms".into(),
+                sender: self_sender("user-1", "+15551234"),
+                paired_addresses: vec!["+15551234".into()],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(finance_sms.is_denied());
+
+    let personal_sms = service
+        .authorize(
+            "user-1",
+            &personal,
+            PolicyAction::ReceiveMessage {
+                connector_id: "space-sms-personal".into(),
+                channel_id: "sms".into(),
+                sender: self_sender("user-1", "+15551234"),
+                paired_addresses: vec!["+15551234".into()],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(personal_sms.allowed);
+}
+
+#[tokio::test]
+async fn receive_message_self_source_unaffected_by_external_forbid() {
+    let (_db, service) = setup().await;
+    let agent = test_agent("agent-1");
+
+    service
+        .create_policy(
+            "user-1",
+            "@id(\"block-spam\")\nforbid(\n  principal,\n  action == Policy::Action::\"receive_message\",\n  resource\n)\nwhen { resource.sender.address == \"22000\" };",
+        )
+        .await
+        .unwrap();
+
+    let self_decision = service
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::ReceiveMessage {
+                connector_id: "space-sms-personal".into(),
+                channel_id: "sms".into(),
+                sender: self_sender("user-1", "+15551234"),
+                paired_addresses: vec!["+15551234".into()],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(self_decision.allowed);
+
+    let blocked = service
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::ReceiveMessage {
+                connector_id: "space-sms-personal".into(),
+                channel_id: "sms".into(),
+                sender: unresolved_sender("22000"),
+                paired_addresses: vec!["+15551234".into()],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(blocked.is_denied());
+}
+
 #[tokio::test]
 async fn policy_crud_lifecycle() {
     let (_db, service) = setup().await;

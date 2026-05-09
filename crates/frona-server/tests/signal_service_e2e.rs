@@ -72,7 +72,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
 
-    let mut state = AppState::new(db.clone(), &config, None, storage, metrics_handle, resource_manager);
+    let mut state = AppState::new(db.clone(), &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
 
     // Replace the default chat_service with one wired to the mock model
     // provider so run_agent_loop doesn't try to reach a real LLM.
@@ -93,6 +93,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.user_service.clone(),
         state.memory_service.clone(),
         state.prompts.clone(),
+        state.broadcast_service.clone(),
     );
     state.chat_service = chat_service;
 
@@ -159,6 +160,32 @@ async fn create_signal_task(
     expected_contacts: Vec<&str>,
     max_evaluations: u32,
 ) -> frona::agent::task::models::Task {
+    create_signal_task_with_mode(
+        state,
+        user_id,
+        agent_id,
+        source_chat_id,
+        frona::agent::task::models::SignalMode::Once,
+        tags,
+        expected_channels,
+        expected_contacts,
+        max_evaluations,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_signal_task_with_mode(
+    state: &AppState,
+    user_id: &str,
+    agent_id: &str,
+    source_chat_id: &str,
+    mode: frona::agent::task::models::SignalMode,
+    tags: Vec<&str>,
+    expected_channels: Vec<&str>,
+    expected_contacts: Vec<&str>,
+    max_evaluations: u32,
+) -> frona::agent::task::models::Task {
     state
         .task_service
         .create_signal(
@@ -168,11 +195,13 @@ async fn create_signal_task(
             "Test signal".into(),
             "Wait for: test signal".into(),
             true,
+            mode,
             tags.into_iter().map(String::from).collect(),
             expected_channels.into_iter().map(String::from).collect(),
             expected_contacts.into_iter().map(String::from).collect(),
             None,
             max_evaluations,
+            None,
         )
         .await
         .unwrap()
@@ -180,10 +209,11 @@ async fn create_signal_task(
 
 fn make_candidate(
     user_id: &str,
-    tags: Vec<&str>,
+    categories: Vec<&str>,
     channel: Option<&str>,
     sender: Option<&str>,
 ) -> CandidateEvent {
+    use frona::agent::signal::Annotation;
     CandidateEvent {
         user_id: user_id.into(),
         space_id: None,
@@ -193,8 +223,10 @@ fn make_candidate(
         channel_id: channel.map(String::from),
         contact_id: None,
         sender: sender.map(String::from),
-        tags: tags.into_iter().map(String::from).collect(),
-        summary: None,
+        annotations: categories
+            .into_iter()
+            .map(|c| Annotation::category("agent:test", c))
+            .collect(),
         content: "candidate content".into(),
     }
 }
@@ -270,6 +302,7 @@ async fn rebuild_from_db_hydrates_pending_signal_tasks() {
         state.task_executor.clone(),
         state.agent_service.clone(),
         state.contact_service.clone(),
+        state.user_service.clone(),
         state.policy_service.clone(),
         state.prompts.clone(),
     ));
@@ -524,19 +557,16 @@ async fn evaluate_with_handle_based_policy_blocks_match() -> Result<(), AppError
         .await
         .unwrap();
 
-    // Forbid via the contact's handle set (the policy reads
-    // resource.contact.handles, not resource.sender).
     install_forbid_policy(
         &state,
-        "block-by-contact-handle",
-        r#"@id("block-by-contact-handle")
+        "block-by-sender-address",
+        r#"@id("block-by-sender-address")
 forbid(
     principal,
     action == Policy::Action::"receive_signal",
     resource
 ) when {
-    resource has contact &&
-    resource.contact.handles.contains("+15551234")
+    resource.sender.addresses.contains("+15551234")
 };"#,
     )
     .await;
@@ -567,4 +597,92 @@ forbid(
     assert!(fired.is_empty(), "handle-based policy denial must drop the match");
     assert_eq!(provider.calls(), 0);
     Ok(())
+}
+
+#[tokio::test]
+async fn continuous_task_stays_pending_after_match() {
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "noted".into(),
+    )]));
+    let (state, _tmp) = build_state(provider.clone()).await;
+    seed_user_and_agent(&state, "user-1", "agent-1").await;
+    let svc = signal_service(&state).await;
+
+    let task = create_signal_task_with_mode(
+        &state,
+        "user-1",
+        "agent-1",
+        "chat-A",
+        frona::agent::task::models::SignalMode::Continuous,
+        vec!["verification_code"],
+        vec![],
+        vec![],
+        50,
+    )
+    .await;
+    svc.register(Watch::from_task(&task).unwrap()).await;
+
+    let cand = make_candidate(
+        "user-1",
+        vec!["verification_code"],
+        Some("sms"),
+        Some("+15551234"),
+    );
+    let fired = svc.evaluate("user-1", cand).await.unwrap();
+    assert_eq!(fired, vec![task.id.clone()]);
+
+    assert_eq!(svc.watch_count("user-1").await, 1);
+
+    let reloaded = state.task_service.find_by_id(&task.id).await.unwrap().unwrap();
+    assert_eq!(
+        reloaded.status,
+        TaskStatus::Pending,
+        "continuous task stays Pending across matches"
+    );
+    if let TaskKind::Signal { evaluation_count, mode, .. } = reloaded.kind {
+        assert_eq!(evaluation_count, 1);
+        assert_eq!(mode, frona::agent::task::models::SignalMode::Continuous);
+    } else {
+        panic!("expected Signal kind");
+    }
+}
+
+#[tokio::test]
+async fn continuous_task_budget_exhaustion_marks_completed_not_failed() {
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "noted".into(),
+    )]));
+    let (state, _tmp) = build_state(provider).await;
+    seed_user_and_agent(&state, "user-1", "agent-1").await;
+    let svc = signal_service(&state).await;
+
+    let task = create_signal_task_with_mode(
+        &state,
+        "user-1",
+        "agent-1",
+        "chat-A",
+        frona::agent::task::models::SignalMode::Continuous,
+        vec!["verification_code"],
+        vec![],
+        vec![],
+        1,
+    )
+    .await;
+    svc.register(Watch::from_task(&task).unwrap()).await;
+
+    let cand1 = make_candidate("user-1", vec!["verification_code"], Some("sms"), None);
+    let fired1 = svc.evaluate("user-1", cand1).await.unwrap();
+    assert_eq!(fired1, vec![task.id.clone()]);
+
+    let cand2 = make_candidate("user-1", vec!["verification_code"], Some("sms"), None);
+    let fired2 = svc.evaluate("user-1", cand2).await.unwrap();
+    assert!(fired2.is_empty(), "budget-exhausted fires aren't reported");
+
+    let reloaded = state.task_service.find_by_id(&task.id).await.unwrap().unwrap();
+    assert_eq!(
+        reloaded.status,
+        TaskStatus::Completed,
+        "continuous tasks complete (not fail) on budget exhaustion"
+    );
+    assert_eq!(svc.watch_count("user-1").await, 0);
 }

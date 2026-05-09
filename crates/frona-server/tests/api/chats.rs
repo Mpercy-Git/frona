@@ -19,6 +19,48 @@ async fn create_chat_returns_json() {
 }
 
 #[tokio::test]
+async fn chat_metadata_round_trip_and_partial_patch() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) =
+        register_user(&state, "cmd", "cmd@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "MetaAgent").await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/chats",
+            &token,
+            serde_json::json!({
+                "agent_id": agent_id,
+                "metadata": {"channel:external_id": "dm:42", "tag": "hi"},
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let chat = body_json(resp).await;
+    assert_eq!(chat["metadata"]["channel:external_id"], "dm:42");
+    let id = chat["id"].as_str().unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_put_json(
+            &format!("/api/chats/{id}"),
+            &token,
+            serde_json::json!({
+                "metadata": {"channel:external_id": "dm:99", "tag": null},
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["metadata"]["channel:external_id"], "dm:99");
+    assert!(json["metadata"].get("tag").is_none());
+}
+
+#[tokio::test]
 async fn create_chat_without_auth_returns_401() {
     let (state, _tmp) = test_app_state().await;
     let app = build_app(state);

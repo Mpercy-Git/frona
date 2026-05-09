@@ -33,11 +33,13 @@ async fn create_signal_persists_with_signal_kind() {
             "Wait for: code".into(),
             "Wait for: code".into(),
             true,
+            frona::agent::task::models::SignalMode::Once,
             vec!["verification_code".into()],
             vec!["sms".into()],
             vec![],
             None,
             50,
+        None,
         )
         .await
         .expect("create_signal");
@@ -49,7 +51,7 @@ async fn create_signal_persists_with_signal_kind() {
         TaskKind::Signal {
             ref source_chat_id,
             resume_parent,
-            ref tags,
+            ref expected_categories,
             ref expected_channels,
             max_evaluations,
             evaluation_count,
@@ -57,7 +59,7 @@ async fn create_signal_persists_with_signal_kind() {
         } => {
             assert_eq!(source_chat_id, "chat-A");
             assert!(resume_parent);
-            assert_eq!(tags, &vec!["verification_code".to_string()]);
+            assert_eq!(expected_categories, &vec!["verification_code".to_string()]);
             assert_eq!(expected_channels, &vec!["sms".to_string()]);
             assert_eq!(max_evaluations, 50);
             assert_eq!(evaluation_count, 0);
@@ -79,11 +81,13 @@ async fn find_pending_signal_tasks_returns_only_signals() {
             "s1".into(),
             "s1".into(),
             false,
+            frona::agent::task::models::SignalMode::Once,
             vec!["t".into()],
             vec![],
             vec![],
             None,
             10,
+        None,
         )
         .await
         .unwrap();
@@ -96,11 +100,13 @@ async fn find_pending_signal_tasks_returns_only_signals() {
             "s2".into(),
             "s2".into(),
             true,
+            frona::agent::task::models::SignalMode::Once,
             vec![],
             vec!["sms".into()],
             vec![],
             Some(Utc::now() + Duration::hours(1)),
             5,
+        None,
         )
         .await
         .unwrap();
@@ -118,6 +124,8 @@ async fn find_pending_signal_tasks_returns_only_signals() {
             source_chat_id: None,
             resume_parent: None,
             run_at: None,
+        quarantined: false,
+        result_schema: None,
         },
     )
     .await
@@ -144,11 +152,13 @@ async fn find_pending_signal_tasks_excludes_completed() {
             "s".into(),
             "s".into(),
             true,
+            frona::agent::task::models::SignalMode::Once,
             vec!["t".into()],
             vec![],
             vec![],
             None,
             5,
+        None,
         )
         .await
         .unwrap();
@@ -175,11 +185,13 @@ async fn find_expired_signal_tasks_returns_only_past_expires_at() {
             "expired".into(),
             "s".into(),
             true,
+            frona::agent::task::models::SignalMode::Once,
             vec!["t".into()],
             vec![],
             vec![],
             Some(now - Duration::minutes(5)),
             5,
+        None,
         )
         .await
         .unwrap();
@@ -192,11 +204,13 @@ async fn find_expired_signal_tasks_returns_only_past_expires_at() {
             "future".into(),
             "s".into(),
             true,
+            frona::agent::task::models::SignalMode::Once,
             vec!["t".into()],
             vec![],
             vec![],
             Some(now + Duration::hours(1)),
             5,
+        None,
         )
         .await
         .unwrap();
@@ -209,11 +223,13 @@ async fn find_expired_signal_tasks_returns_only_past_expires_at() {
             "no-expiry".into(),
             "s".into(),
             true,
+            frona::agent::task::models::SignalMode::Once,
             vec!["t".into()],
             vec![],
             vec![],
             None,
             5,
+        None,
         )
         .await
         .unwrap();
@@ -235,11 +251,13 @@ async fn find_expired_signal_tasks_excludes_non_pending() {
             "expired-but-completed".into(),
             "s".into(),
             true,
+            frona::agent::task::models::SignalMode::Once,
             vec!["t".into()],
             vec![],
             vec![],
             Some(Utc::now() - Duration::minutes(5)),
             5,
+        None,
         )
         .await
         .unwrap();
@@ -272,6 +290,8 @@ async fn find_expired_signal_tasks_excludes_non_signal_kinds() {
             source_chat_id: None,
             resume_parent: None,
             run_at: Some(Utc::now() - Duration::hours(1)),
+        quarantined: false,
+        result_schema: None,
         },
     )
     .await
@@ -294,11 +314,13 @@ async fn save_persists_signal_evaluation_count() {
             "s".into(),
             "s".into(),
             true,
+            frona::agent::task::models::SignalMode::Once,
             vec!["t".into()],
             vec![],
             vec![],
             None,
             5,
+        None,
         )
         .await
         .unwrap();

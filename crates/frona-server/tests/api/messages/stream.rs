@@ -94,10 +94,14 @@ async fn event_stream_receives_chat_message_broadcast() {
         contact_id: None,
         status: None,
         reasoning: None,
+        external_msg_id: None,
+        from_address: None,
+        delivery: None,
         tool_calls: vec![],
+        metadata: Default::default(),
         created_at: chrono::Utc::now(),
     };
-    broadcast.broadcast_chat_message(&user_id, "chat-1", msg);
+    broadcast.broadcast_chat_message(&user_id, "chat-1", None, msg);
 
     // Also broadcast a message for a different user — should NOT appear
     let other_msg = MessageResponse {
@@ -111,10 +115,14 @@ async fn event_stream_receives_chat_message_broadcast() {
         contact_id: None,
         status: None,
         reasoning: None,
+        external_msg_id: None,
+        from_address: None,
+        delivery: None,
         tool_calls: vec![],
+        metadata: Default::default(),
         created_at: chrono::Utc::now(),
     };
-    broadcast.broadcast_chat_message("other-user-id", "chat-2", other_msg);
+    broadcast.broadcast_chat_message("other-user-id", "chat-2", None, other_msg);
 
     // Broadcast an inference count (goes to all users)
     broadcast.broadcast_inference_count(42);
