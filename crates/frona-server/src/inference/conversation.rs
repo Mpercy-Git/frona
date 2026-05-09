@@ -248,7 +248,9 @@ fn convert_agent_with_tool_calls(
 ) {
     let is_self = msg.agent_id.as_deref() == Some(agent_id);
     if !is_self {
-        result.push(RigMessage::user(&msg.content));
+        if !msg.content.is_empty() {
+            result.push(RigMessage::user(&msg.content));
+        }
         return;
     }
 
@@ -338,8 +340,15 @@ pub fn convert_agent_message(msg: &Message, agent_id: &str) -> Option<RigMessage
                 return Some(RigMessage::Assistant { id: None, content });
             }
         }
+        // Empty Assistant text blocks make Anthropic reject the request.
+        if msg.content.is_empty() {
+            return None;
+        }
         Some(RigMessage::assistant(&msg.content))
     } else {
+        if msg.content.is_empty() {
+            return None;
+        }
         Some(RigMessage::user(&msg.content))
     }
 }
@@ -488,6 +497,38 @@ mod tests {
         let result = convert_agent_message(&msg, "agent-1");
         assert!(result.is_some());
         assert!(matches!(result.unwrap(), RigMessage::User { .. }));
+    }
+
+    #[test]
+    fn agent_self_with_empty_content_is_skipped() {
+        let mut msg = make_agent_message("", "agent-1");
+        msg.status = Some(MessageStatus::Failed);
+        assert!(convert_agent_message(&msg, "agent-1").is_none());
+    }
+
+    #[test]
+    fn agent_self_with_empty_content_completed_is_skipped() {
+        let mut msg = make_agent_message("", "agent-1");
+        msg.status = Some(MessageStatus::Completed);
+        assert!(convert_agent_message(&msg, "agent-1").is_none());
+    }
+
+    #[test]
+    fn agent_other_with_empty_content_is_skipped() {
+        let mut msg = make_agent_message("", "agent-2");
+        msg.status = Some(MessageStatus::Failed);
+        assert!(convert_agent_message(&msg, "agent-1").is_none());
+    }
+
+    #[test]
+    fn agent_self_with_reasoning_and_empty_content_still_emits_reasoning() {
+        let mut msg = make_agent_message("", "agent-1");
+        msg.reasoning = Some(crate::chat::message::models::Reasoning {
+            id: None,
+            content: "thinking".into(),
+            signature: None,
+        });
+        assert!(convert_agent_message(&msg, "agent-1").is_some());
     }
 
     #[test]
