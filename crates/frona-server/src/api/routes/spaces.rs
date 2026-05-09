@@ -1,6 +1,12 @@
+use std::convert::Infallible;
+
 use axum::extract::{Path, State};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
 use axum::{Json, Router};
+use futures::stream::Stream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+
 use crate::space::models::{CreateSpaceRequest, SpaceResponse, UpdateSpaceRequest};
 
 use super::super::error::ApiError;
@@ -14,6 +20,7 @@ pub fn router() -> Router<AppState> {
             "/api/spaces/{id}",
             axum::routing::put(update_space).delete(delete_space),
         )
+        .route("/api/spaces/{id}/stream", get(space_stream))
 }
 
 async fn create_space(
@@ -50,4 +57,33 @@ async fn delete_space(
 ) -> Result<(), ApiError> {
     state.space_service.delete(&auth.user_id, &id).await?;
     Ok(())
+}
+
+async fn space_stream(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let _space = state.space_service.get(&auth.user_id, &id).await?;
+
+    let mut raw = state.broadcast_service.subscribe_raw();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+    let space_id = id.clone();
+
+    tokio::spawn(async move {
+        while let Ok(event) = raw.recv().await {
+            if event.user_id != auth.user_id {
+                continue;
+            }
+            if event.space_id.as_deref() == Some(space_id.as_str())
+                && let Some(sse) = crate::chat::broadcast::map_event_to_sse(&event)
+                && tx.send(Ok(sse)).is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    let stream = UnboundedReceiverStream::new(rx);
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }

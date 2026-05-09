@@ -49,6 +49,9 @@ fn test_chat(user_id: &str, space_id: Option<&str>, title: Option<&str>) -> Chat
         agent_id: "some-agent".to_string(),
         title: title.map(|s| s.to_string()),
         archived_at: None,
+        channel_id: None,
+        channel_external_id: None,
+        metadata: Default::default(),
         created_at: now,
         updated_at: now,
     }

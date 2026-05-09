@@ -85,8 +85,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.skill_service.start_watcher();
 
     state.init_task_executor();
+    let signal_service = state.init_signal_service();
     state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await?;
+    if let Err(e) = signal_service.start().await {
+        tracing::warn!(error = %e, "Failed to start signal service");
+    }
+    frona::chat::channel::spawn_inference_dispatcher(state.clone());
+
+    if let Err(e) = state.channel_manager.clone().start(state.clone()).await {
+        tracing::warn!(error = %e, "ChannelManager failed to start; channel adapters will not run");
+    }
 
     if state.config.sandbox.default_network_access {
         let policy = cedar_policy::Policy::from_json(
@@ -220,6 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::apps::router())
         .merge(routes::spaces::router())
         .merge(routes::chats::router())
+        .merge(routes::channels::router())
         .merge(routes::contacts::router())
         .merge(routes::messages::router())
         .merge(routes::tasks::router())
@@ -227,6 +237,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::navigation::router())
         .merge(routes::notifications::router())
         .merge(routes::policies::router())
+        .merge(routes::signals::router())
         .merge(routes::skills::router())
         .merge(routes::tools::router())
         .merge(routes::files::router())

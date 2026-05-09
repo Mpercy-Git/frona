@@ -3,6 +3,7 @@ mod app_supervisor;
 mod apps;
 mod mcp;
 mod auth;
+mod channels;
 mod chats;
 mod contacts;
 mod files;
@@ -57,7 +58,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
         frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let metrics = setup_metrics_recorder();
-    let mut state = AppState::new(db.clone(), &config, None, storage, metrics, resource_manager);
+    let mut state = AppState::new(db.clone(), &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics, resource_manager);
 
     // Override the MCP service with a noop package installer so tests don't
     // try to run npx/uvx against fake packages.
@@ -66,6 +67,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
             std::sync::Arc::new(SurrealRepo::<frona::tool::mcp::McpServer>::new(db));
         let mcp_registry: std::sync::Arc<dyn frona::tool::mcp::McpRegistryClient> =
             std::sync::Arc::new(frona::tool::mcp::PrebuiltMcpRegistryClient::new(
+                state.http_client.clone(),
                 std::path::PathBuf::from(&base).join("mcp-registry"),
             ));
         let noop: std::sync::Arc<dyn frona::tool::mcp::PackageInstaller> =
@@ -88,6 +90,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     }
     state.init_task_executor();
     state.tool_manager.init(&state);
+    state.policy_service.sync_base_policies().await.unwrap();
     (state, tmp)
 }
 
@@ -96,6 +99,7 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::auth::router())
         .merge(routes::agents::router())
         .merge(routes::chats::router())
+        .merge(routes::channels::router())
         .merge(routes::spaces::router())
         .merge(routes::tasks::router())
         .merge(routes::files::router())

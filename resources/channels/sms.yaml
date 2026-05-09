@@ -1,0 +1,27 @@
+id: sms
+display_name: Twilio SMS
+description: Send and receive SMS via a Twilio phone number.
+config_fields:
+  - name: account_sid
+    description: 'Twilio Account SID (starts with "AC").'
+    is_required: true
+    is_secret: true
+    format: password
+    default_from:
+      section: voice
+      field: twilio_account_sid
+  - name: auth_token
+    description: Twilio auth token.
+    is_required: true
+    is_secret: true
+    format: password
+    default_from:
+      section: voice
+      field: twilio_auth_token
+  - name: from_number
+    description: Twilio phone number to send from (E.164).
+    is_required: true
+    is_secret: false
+    default_from:
+      section: voice
+      field: twilio_from_number

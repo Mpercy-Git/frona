@@ -252,7 +252,7 @@ function SetupWizard() {
               <SsoSection
                 sso={config.sso}
                 onChange={(v) => updatePatch("sso", v)}
-                hasBaseUrl={!!(config.server.base_url || config.server.backend_url)}
+                hasBaseUrl={!!(config.server.base_url || config.server.backend_url || config.server.external_url)}
               />
             )}
             {currentStep.id === "sandbox" && (

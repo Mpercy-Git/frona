@@ -129,7 +129,7 @@ async fn build_test_harness(
     let policy_service = frona::policy::service::PolicyService::new(
         policy_repo, policy_schema, policy_tool_manager, storage,
     );
-    let manager = Arc::new(McpManager::new(sandbox_manager, workspaces_path, 4100, 4200, policy_service.clone()));
+    let manager = Arc::new(McpManager::new(sandbox_manager, workspaces_path, 4100, 4200, policy_service.clone(), frona::build_http_client()));
     let mcp_repo: Arc<dyn McpServerRepository> =
         Arc::new(SurrealRepo::<McpServer>::new(db.clone()));
     let registry: Arc<dyn McpRegistryClient> = Arc::new(FakeRegistry {
@@ -141,15 +141,16 @@ async fn build_test_harness(
         "test-secret",
         Arc::new(SurrealRepo::new(db.clone())),
     );
-    let token_service = frona::auth::token::service::TokenService::new(
-        Arc::new(SurrealRepo::new(db.clone())),
-        frona::auth::jwt::JwtService::new(),
-        900,
-        604_800,
-    );
     let user_service = frona::auth::UserService::new(
         SurrealRepo::new(db.clone()),
         &Default::default(),
+    );
+    let token_service = frona::auth::token::service::TokenService::new(
+        Arc::new(SurrealRepo::new(db.clone())),
+        frona::auth::jwt::JwtService::new(),
+        user_service.clone(),
+        900,
+        604_800,
     );
     let runtime_tokens_dir = tmp.path().join("runtime-tokens");
 

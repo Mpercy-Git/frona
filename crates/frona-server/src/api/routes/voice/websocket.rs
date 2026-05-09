@@ -11,6 +11,7 @@ use crate::call::models::CallDirection;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::inference::InferenceResponse;
+use crate::inference::conversation::DefaultConversationBuilder;
 use crate::tool::voice::VoiceSessionExtensions;
 
 use super::models::TokenQuery;
@@ -245,7 +246,17 @@ async fn handle_voice_socket(
         let summary = last_response;
 
         if let Ok(task) = state.task_service.mark_completed(&task.id, Some(summary.clone())).await {
-            executor.deliver_to_source(&task, crate::agent::task::models::TaskStatus::Completed, Some(summary), vec![]).await;
+            executor
+                .deliver_event_to_source(
+                    &task,
+                    crate::agent::task::executor::TaskLifecycleEvent::Completion {
+                        status: crate::agent::task::models::TaskStatus::Completed,
+                        summary: Some(summary),
+                    },
+                    vec![],
+                )
+                .await;
+            executor.resume_parent_if_requested(&task).await;
             executor.broadcast_task_status(&task, "completed", None);
         }
     }
@@ -279,13 +290,17 @@ async fn handle_voice_turn(
             Ok(Some(msg)) => msg.id,
             _ => {
                 let msg = state.chat_service
-                    .create_executing_agent_message(chat_id, &chat.agent_id)
+                    .create_executing_agent_message(chat_id, &chat.agent_id, None)
                     .await?;
                 msg.id
             }
         };
 
-        let outcome = run_agent_loop(state, user_id, chat_id, &agent_msg_id, cancel_token.clone(), false, None).await?;
+        let builder = Box::new(DefaultConversationBuilder {
+            user_service: state.user_service.clone(),
+            storage_service: state.storage_service.clone(),
+        });
+        let outcome = run_agent_loop(state, user_id, chat_id, &agent_msg_id, cancel_token.clone(), builder, None).await?;
 
         match outcome.response {
             InferenceResponse::ExternalToolPending {

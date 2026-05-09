@@ -19,4 +19,11 @@ pub mod space;
 pub mod storage;
 pub mod tool;
 
-pub use frona_derive::{Entity, migration};
+pub use frona_derive::{ChannelFactory, Entity, migration};
+
+pub fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("Failed to build shared HTTP client")
+}

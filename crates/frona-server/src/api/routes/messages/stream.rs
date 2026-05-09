@@ -96,8 +96,12 @@ pub(crate) async fn stream_message(
         .map_err(ApiError::from)?;
 
     let cancel_token = state.active_sessions.register(&chat_id).await;
+    let builder = Box::new(DefaultConversationBuilder {
+        user_service: state.user_service.clone(),
+        storage_service: state.storage_service.clone(),
+    });
     let mut ctx = crate::chat::session::ChatSessionContext::build(
-        &state, &auth.user_id, chat, cancel_token,
+        &state, &auth.user_id, chat, cancel_token, builder,
     )
     .await
     .map_err(ApiError::from)?;
@@ -117,7 +121,7 @@ pub(crate) async fn stream_message(
         }
     }
 
-    let stored_messages = state.chat_service.get_stored_messages(&chat_id).await;
+    let stored_messages = state.chat_service.get_stored_messages(&chat_id).await?;
     let (chat_summary, context_messages) = state
         .memory_service
         .get_conversation_context(&chat_id)
@@ -188,7 +192,7 @@ pub(crate) async fn stream_message(
             None => {
                 // Fallback: create a new one if somehow missing
                 let msg = state.chat_service
-                    .create_executing_agent_message(&chat_id, &agent_id)
+                    .create_executing_agent_message(&chat_id, &agent_id, None)
                     .await
                     .map_err(ApiError::from)?;
                 msg.id
@@ -222,11 +226,20 @@ pub(crate) async fn stream_message(
 
         if !still_pending {
             tokio::spawn(async move {
-                let stored_messages = chat_service.get_stored_messages(&chat_id_clone).await;
-                let tool_calls = chat_service
-                    .get_tool_calls(&chat_id_clone)
-                    .await
-                    .unwrap_or_default();
+                let stored_messages = match chat_service.get_stored_messages(&chat_id_clone).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::error!(chat_id = %chat_id_clone, error = %e, "failed to load stored messages for resume; aborting");
+                        return;
+                    }
+                };
+                let tool_calls = match chat_service.get_tool_calls(&chat_id_clone).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!(chat_id = %chat_id_clone, error = %e, "failed to load tool calls for resume; aborting");
+                        return;
+                    }
+                };
                 let rig_history = pending_conv_builder.build(&stored_messages, &tool_calls, &pending_conv_ctx).await;
 
                 let handle = spawn_inference(InferenceRequest {
@@ -271,7 +284,7 @@ pub(crate) async fn stream_message(
 
         // Pre-create agent message in Executing state
         let agent_msg = state.chat_service
-            .create_executing_agent_message(&chat_id, &agent_id)
+            .create_executing_agent_message(&chat_id, &agent_id, None)
             .await
             .map_err(ApiError::from)?;
         let agent_msg_id = agent_msg.id.clone();

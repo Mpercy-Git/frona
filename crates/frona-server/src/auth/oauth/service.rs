@@ -28,10 +28,15 @@ pub struct OAuthService {
     pending_states: Arc<Mutex<HashMap<String, (String, Nonce)>>>,
     repo: Arc<dyn OAuthRepository>,
     redirect_uri: String,
+    http: reqwest::Client,
 }
 
 impl OAuthService {
-    pub fn new(config: &Config, repo: Arc<dyn OAuthRepository>) -> Result<Self, AppError> {
+    pub fn new(
+        config: &Config,
+        repo: Arc<dyn OAuthRepository>,
+        http: reqwest::Client,
+    ) -> Result<Self, AppError> {
         let authority = config
             .sso
             .authority
@@ -70,14 +75,8 @@ impl OAuthService {
             pending_states: Arc::new(Mutex::new(HashMap::new())),
             repo,
             redirect_uri,
+            http,
         })
-    }
-
-    fn http_client(&self) -> Result<reqwest::Client, AppError> {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| AppError::Internal(format!("HTTP client error: {e}")))
     }
 
     fn issuer_url(&self) -> Result<IssuerUrl, AppError> {
@@ -93,7 +92,7 @@ impl OAuthService {
     pub async fn get_authorization_url(
         &self,
     ) -> Result<(String, String, String), AppError> {
-        let http_client = self.http_client()?;
+        let http_client = self.http.clone();
         let issuer_url = self.issuer_url()?;
 
         let provider_metadata =
@@ -146,7 +145,7 @@ impl OAuthService {
             .remove(state)
             .ok_or_else(|| AppError::Auth { message: "Invalid or expired SSO state".into(), code: AuthErrorCode::CsrfFailed })?;
 
-        let http_client = self.http_client()?;
+        let http_client = self.http.clone();
         let issuer_url = self.issuer_url()?;
 
         let provider_metadata =

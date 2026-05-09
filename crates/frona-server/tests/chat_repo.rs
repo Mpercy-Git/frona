@@ -30,6 +30,9 @@ fn test_chat(user_id: &str, agent_id: &str, task_id: Option<&str>) -> Chat {
         agent_id: agent_id.to_string(),
         title: Some("Test".to_string()),
         archived_at: None,
+        channel_id: None,
+        channel_external_id: None,
+        metadata: Default::default(),
         created_at: now,
         updated_at: now,
     }
@@ -45,6 +48,9 @@ fn test_chat_in_space(user_id: &str, space_id: &str) -> Chat {
         agent_id: "system".to_string(),
         title: Some("Space chat".to_string()),
         archived_at: None,
+        channel_id: None,
+        channel_external_id: None,
+        metadata: Default::default(),
         created_at: now,
         updated_at: now,
     }
@@ -66,6 +72,9 @@ fn test_message_at(chat_id: &str, content: &str, created_at: chrono::DateTime<Ut
         contact_id: None,
         status: None,
         reasoning: None,
+        from_address: None,
+        delivery: None,
+        metadata: Default::default(),
         created_at,
     }
 }
@@ -343,6 +352,8 @@ fn test_task(user_id: &str, agent_id: &str, chat_id: Option<&str>) -> Task {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     }
@@ -686,4 +697,38 @@ async fn test_page_limit_larger_than_result_set() {
     let page = msg_repo.find_by_chat_id_page(&chat.id, None, None, 50).await.unwrap();
     assert_eq!(page.len(), 1);
     assert_eq!(page[0].content, "only one");
+}
+
+#[tokio::test]
+async fn find_by_channel_thread_matches_typed_pair() {
+    let db = test_db().await;
+    let chat_repo = SurrealChatRepo::new(db);
+
+    let mut chat = test_chat_in_space("user-1", "space-A");
+    chat.channel_id = Some("channel:tg-1".into());
+    chat.channel_external_id = Some("dm:42".into());
+    chat_repo.create(&chat).await.unwrap();
+
+    let mut other = test_chat_in_space("user-1", "space-A");
+    other.channel_id = Some("channel:tg-1".into());
+    other.channel_external_id = Some("dm:99".into());
+    chat_repo.create(&other).await.unwrap();
+
+    let mut other_channel = test_chat_in_space("user-1", "space-B");
+    other_channel.channel_id = Some("channel:tg-2".into());
+    other_channel.channel_external_id = Some("dm:42".into());
+    chat_repo.create(&other_channel).await.unwrap();
+
+    let hit = chat_repo
+        .find_by_channel_thread("channel:tg-1", "dm:42")
+        .await
+        .expect("query must execute");
+    let hit = hit.expect("the matching chat must be found");
+    assert_eq!(hit.id, chat.id);
+
+    let miss = chat_repo
+        .find_by_channel_thread("channel:tg-1", "dm:nope")
+        .await
+        .unwrap();
+    assert!(miss.is_none());
 }

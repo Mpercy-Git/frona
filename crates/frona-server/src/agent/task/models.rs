@@ -14,6 +14,15 @@ pub enum TaskStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, SurrealValue)]
+#[serde(rename_all = "snake_case")]
+#[surreal(crate = "surrealdb::types", lowercase)]
+pub enum SignalMode {
+    #[default]
+    Once,
+    Continuous,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[serde(tag = "type")]
 #[surreal(crate = "surrealdb::types", tag = "type")]
@@ -34,6 +43,25 @@ pub enum TaskKind {
         source_agent_id: Option<String>,
         source_chat_id: Option<String>,
     },
+    Signal {
+        source_chat_id: String,
+        #[serde(default)]
+        resume_parent: bool,
+        #[serde(default)]
+        mode: SignalMode,
+        #[serde(default, alias = "tags")]
+        expected_categories: Vec<String>,
+        #[serde(default)]
+        expected_channels: Vec<String>,
+        #[serde(default)]
+        expected_contacts: Vec<String>,
+        #[serde(default)]
+        expires_at: Option<DateTime<Utc>>,
+        #[serde(default)]
+        max_evaluations: u32,
+        #[serde(default)]
+        evaluation_count: u32,
+    },
 }
 
 impl Default for TaskKind {
@@ -48,6 +76,7 @@ impl TaskKind {
             TaskKind::Direct { source_chat_id } => source_chat_id.as_deref(),
             TaskKind::Delegation { source_chat_id, .. } => Some(source_chat_id),
             TaskKind::Cron { source_chat_id, .. } => source_chat_id.as_deref(),
+            TaskKind::Signal { source_chat_id, .. } => Some(source_chat_id),
         }
     }
 }
@@ -70,6 +99,10 @@ pub struct Task {
     pub run_at: Option<DateTime<Utc>>,
     pub result_summary: Option<String>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub quarantined: bool,
+    #[serde(default)]
+    pub result_schema: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -85,6 +118,10 @@ pub struct CreateTaskRequest {
     pub source_chat_id: Option<String>,
     pub resume_parent: Option<bool>,
     pub run_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub quarantined: bool,
+    #[serde(default)]
+    pub result_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +144,8 @@ pub struct TaskResponse {
     pub run_at: Option<DateTime<Utc>>,
     pub result_summary: Option<String>,
     pub error_message: Option<String>,
+    pub quarantined: bool,
+    pub result_schema: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -125,6 +164,8 @@ impl From<Task> for TaskResponse {
             run_at: task.run_at,
             result_summary: task.result_summary,
             error_message: task.error_message,
+            quarantined: task.quarantined,
+            result_schema: task.result_schema,
             created_at: task.created_at,
             updated_at: task.updated_at,
         }
@@ -176,5 +217,58 @@ mod tests {
             source_chat_id: None,
         };
         assert_eq!(kind.source_chat_id(), None);
+    }
+
+    #[test]
+    fn source_chat_id_signal() {
+        let kind = TaskKind::Signal {
+            source_chat_id: "c3".to_string(),
+            resume_parent: true,
+            mode: SignalMode::Once,
+            expected_categories: vec!["verification_code".to_string()],
+            expected_channels: vec![],
+            expected_contacts: vec![],
+            expires_at: None,
+            max_evaluations: 50,
+            evaluation_count: 0,
+        };
+        assert_eq!(kind.source_chat_id(), Some("c3"));
+    }
+
+    #[test]
+    fn signal_mode_default_is_once() {
+        assert_eq!(SignalMode::default(), SignalMode::Once);
+    }
+
+    #[test]
+    fn signal_mode_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_value(SignalMode::Continuous).unwrap(),
+            serde_json::json!("continuous")
+        );
+        assert_eq!(
+            serde_json::to_value(SignalMode::Once).unwrap(),
+            serde_json::json!("once")
+        );
+    }
+
+    #[test]
+    fn signal_kind_deserializes_without_mode_as_once() {
+        let json = serde_json::json!({
+            "type": "Signal",
+            "source_chat_id": "c1",
+            "resume_parent": false,
+            "tags": ["x"],
+            "expected_channels": [],
+            "expected_contacts": [],
+            "expires_at": null,
+            "max_evaluations": 50,
+            "evaluation_count": 0,
+        });
+        let kind: TaskKind = serde_json::from_value(json).unwrap();
+        match kind {
+            TaskKind::Signal { mode, .. } => assert_eq!(mode, SignalMode::Once),
+            _ => panic!("expected Signal"),
+        }
     }
 }

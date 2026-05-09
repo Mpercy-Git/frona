@@ -78,13 +78,6 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
             placeholder="phone_call"
           />
 
-          <TextInput
-            label="Callback Base URL"
-            description="Public URL for Twilio webhooks"
-            value={voice.callback_base_url}
-            onChange={(callback_base_url) => onChange({ ...voice, callback_base_url })}
-            placeholder="https://example.com"
-          />
         </>
       )}
       </SectionPanel>

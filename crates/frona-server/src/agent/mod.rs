@@ -4,6 +4,7 @@ pub mod models;
 pub mod prompt;
 pub mod repository;
 pub mod service;
+pub mod signal;
 pub mod skill;
 pub mod task;
 pub mod workspace;

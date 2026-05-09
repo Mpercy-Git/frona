@@ -16,6 +16,7 @@ pub enum PrincipalKind {
     Agent,
     McpServer,
     App,
+    Channel,
 }
 
 impl Principal {
@@ -43,6 +44,13 @@ impl Principal {
     pub fn app(id: impl Into<String>) -> Self {
         Self {
             kind: PrincipalKind::App,
+            id: id.into(),
+        }
+    }
+
+    pub fn channel(id: impl Into<String>) -> Self {
+        Self {
+            kind: PrincipalKind::Channel,
             id: id.into(),
         }
     }
@@ -82,6 +90,13 @@ mod tests {
                 id: "p1".into()
             }
         );
+        assert_eq!(
+            Principal::channel("c1"),
+            Principal {
+                kind: PrincipalKind::Channel,
+                id: "c1".into()
+            }
+        );
     }
 
     #[test]
@@ -91,6 +106,7 @@ mod tests {
             (Principal::agent("a"), "agent"),
             (Principal::mcp_server("m"), "mcp_server"),
             (Principal::app("p"), "app"),
+            (Principal::channel("c"), "channel"),
         ];
         for (principal, expected_kind) in cases {
             let json = serde_json::to_value(&principal).unwrap();

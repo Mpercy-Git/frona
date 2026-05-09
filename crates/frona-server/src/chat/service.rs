@@ -57,6 +57,7 @@ pub struct ChatService {
     user_service: UserService,
     memory_service: MemoryService,
     prompts: PromptLoader,
+    broadcast: crate::chat::broadcast::BroadcastService,
 }
 
 impl ChatService {
@@ -71,6 +72,7 @@ impl ChatService {
         user_service: UserService,
         memory_service: MemoryService,
         prompts: PromptLoader,
+        broadcast: crate::chat::broadcast::BroadcastService,
     ) -> Self {
         Self {
             chat_repo,
@@ -82,7 +84,35 @@ impl ChatService {
             user_service,
             memory_service,
             prompts,
+            broadcast,
         }
+    }
+
+    fn broadcast_chat_entity(&self, chat: &Chat, action: crate::chat::broadcast::EntityAction) {
+        self.broadcast.broadcast_entity_updated(
+            &chat.user_id,
+            "chat",
+            &chat.id,
+            action,
+            chat.space_id.clone(),
+            None,
+        );
+    }
+
+    fn broadcast_message_entity(
+        &self,
+        msg: &Message,
+        chat: &Chat,
+        action: crate::chat::broadcast::EntityAction,
+    ) {
+        self.broadcast.broadcast_entity_updated(
+            &chat.user_id,
+            "message",
+            &msg.id,
+            action,
+            chat.space_id.clone(),
+            None,
+        );
     }
 
 
@@ -108,12 +138,33 @@ impl ChatService {
             agent_id: req.agent_id,
             title: req.title,
             archived_at: None,
+            channel_id: None,
+            channel_external_id: None,
+            metadata: req.metadata.unwrap_or_default(),
             created_at: now,
             updated_at: now,
         };
 
         let chat = self.chat_repo.create(&chat).await?;
+        self.broadcast_chat_entity(&chat, crate::chat::broadcast::EntityAction::Created);
         Ok(chat.into())
+    }
+
+    pub async fn get_message(&self, user_id: &str, message_id: &str) -> Result<Message, AppError> {
+        let msg = self
+            .message_repo
+            .find_by_id(message_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
+        let chat = self
+            .chat_repo
+            .find_by_id(&msg.chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
+        if chat.user_id != user_id {
+            return Err(AppError::Forbidden("Not your message".into()));
+        }
+        Ok(msg)
     }
 
     pub async fn get_chat(&self, user_id: &str, chat_id: &str) -> Result<Chat, AppError> {
@@ -149,15 +200,131 @@ impl ChatService {
         if let Some(space_id) = req.space_id {
             chat.space_id = Some(space_id);
         }
+        if let Some(patch) = req.metadata {
+            crate::core::metadata::apply_metadata_patch(&mut chat.metadata, patch);
+        }
         chat.updated_at = chrono::Utc::now();
 
         let chat = self.chat_repo.update(&chat).await?;
+        self.broadcast_chat_entity(&chat, crate::chat::broadcast::EntityAction::Updated);
         Ok(chat.into())
     }
 
+    pub async fn upsert_channel_chat(
+        &self,
+        user_id: &str,
+        space_id: &str,
+        agent_id: &str,
+        channel_id: &str,
+        channel_external_id: &str,
+        title: Option<&str>,
+    ) -> Result<Chat, AppError> {
+        if let Some(c) = self
+            .chat_repo
+            .find_by_channel_thread(channel_id, channel_external_id)
+            .await?
+        {
+            return Ok(c);
+        }
+        let now = chrono::Utc::now();
+        let chat = Chat {
+            id: uuid::Uuid::new_v4().to_string(),
+            user_id: user_id.to_string(),
+            space_id: Some(space_id.to_string()),
+            task_id: None,
+            agent_id: agent_id.to_string(),
+            title: title.map(|s| s.to_string()),
+            archived_at: None,
+            channel_id: Some(channel_id.to_string()),
+            channel_external_id: Some(channel_external_id.to_string()),
+            metadata: std::collections::BTreeMap::new(),
+            created_at: now,
+            updated_at: now,
+        };
+        let saved = self.chat_repo.create(&chat).await?;
+        self.broadcast_chat_entity(&saved, crate::chat::broadcast::EntityAction::Created);
+        Ok(saved)
+    }
+
+    pub async fn patch_chat_metadata(
+        &self,
+        chat_id: &str,
+        patch: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Result<Chat, AppError> {
+        let mut chat = self
+            .chat_repo
+            .find_by_id(chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
+        crate::core::metadata::apply_metadata_patch(&mut chat.metadata, patch);
+        chat.updated_at = chrono::Utc::now();
+        let saved = self.chat_repo.update(&chat).await?;
+        self.broadcast_chat_entity(&saved, crate::chat::broadcast::EntityAction::Updated);
+        Ok(saved)
+    }
+
+    pub async fn update_message_metadata(
+        &self,
+        user_id: &str,
+        message_id: &str,
+        req: crate::chat::message::models::UpdateMessageRequest,
+    ) -> Result<crate::chat::message::models::MessageResponse, AppError> {
+        let mut msg = self
+            .message_repo
+            .find_by_id(message_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
+        let chat = self
+            .chat_repo
+            .find_by_id(&msg.chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
+        if chat.user_id != user_id {
+            return Err(AppError::Forbidden("Not your message".into()));
+        }
+        if let Some(patch) = req.metadata {
+            crate::core::metadata::apply_metadata_patch(&mut msg.metadata, patch);
+        }
+        let saved = self.message_repo.update(&msg).await?;
+        self.broadcast_message_entity(&saved, &chat, crate::chat::broadcast::EntityAction::Updated);
+        Ok(saved.into())
+    }
+
+    pub async fn persist_inbound_message(&self, msg: &Message) -> Result<Message, AppError> {
+        let saved = self.message_repo.create(msg).await?;
+        if let Ok(Some(chat)) = self.chat_repo.find_by_id(&saved.chat_id).await {
+            self.broadcast_message_entity(
+                &saved,
+                &chat,
+                crate::chat::broadcast::EntityAction::Created,
+            );
+        }
+        Ok(saved)
+    }
+
+    pub async fn patch_message_metadata(
+        &self,
+        message_id: &str,
+        patch: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Result<Message, AppError> {
+        let mut msg = self
+            .message_repo
+            .find_by_id(message_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
+        crate::core::metadata::apply_metadata_patch(&mut msg.metadata, patch);
+        let saved = self.message_repo.update(&msg).await?;
+        if let Ok(Some(chat)) = self.chat_repo.find_by_id(&saved.chat_id).await {
+            self.broadcast_message_entity(&saved, &chat, crate::chat::broadcast::EntityAction::Updated);
+        }
+        Ok(saved)
+    }
+
     pub async fn delete_chat(&self, user_id: &str, chat_id: &str) -> Result<(), AppError> {
-        self.get_chat(user_id, chat_id).await?;
-        self.chat_repo.delete(chat_id).await
+        let chat = self.get_chat(user_id, chat_id).await?;
+        self.chat_repo.delete(chat_id).await?;
+        self.broadcast_chat_entity(&chat, crate::chat::broadcast::EntityAction::Deleted);
+        Ok(())
     }
 
     pub async fn archive_chat(
@@ -219,7 +386,12 @@ impl ChatService {
             None
         };
 
-        let user_message = Message::builder(chat_id, MessageRole::User, req.content.clone()).build();
+        let mut user_message_builder =
+            Message::builder(chat_id, MessageRole::User, req.content.clone());
+        if let Some(ref md) = req.metadata {
+            user_message_builder = user_message_builder.metadata(md.clone());
+        }
+        let user_message = user_message_builder.build();
         let user_message = self.message_repo.create(&user_message).await?;
 
         let agent_config = self.resolve_agent_config(&chat.agent_id).await?;
@@ -237,7 +409,7 @@ impl ChatService {
             model_ref: model_group.main.clone(),
             user_id: user_id.to_string(),
         };
-        let tool_calls = self.get_tool_calls(chat_id).await.unwrap_or_default();
+        let tool_calls = self.get_tool_calls(chat_id).await?;
         let mut rig_history = conv_builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
 
         rig_history.push(RigMessage::user(&req.content));
@@ -423,14 +595,18 @@ impl ChatService {
         chat_id: &str,
         agent_id: &str,
         content: String,
+        delivery: Option<crate::chat::message::models::MessageDelivery>,
     ) -> Result<MessageResponse, AppError> {
-        let msg = Message::builder(chat_id, MessageRole::Agent, content)
-            .agent_id(agent_id.to_string())
-            .build();
+        let mut builder = Message::builder(chat_id, MessageRole::Agent, content)
+            .agent_id(agent_id.to_string());
+        if let Some(d) = delivery {
+            builder = builder.delivery(d);
+        }
+        let msg = builder.build();
         self.save_message(msg).await
     }
 
-    pub async fn save_task_completion_message(
+    pub async fn save_task_lifecycle_message(
         &self,
         chat_id: &str,
         agent_id: &str,
@@ -452,11 +628,15 @@ impl ChatService {
         &self,
         chat_id: &str,
         agent_id: &str,
+        delivery: Option<crate::chat::message::models::MessageDelivery>,
     ) -> Result<MessageResponse, AppError> {
-        let msg = Message::builder(chat_id, MessageRole::Agent, String::new())
+        let mut builder = Message::builder(chat_id, MessageRole::Agent, String::new())
             .agent_id(agent_id.to_string())
-            .status(MessageStatus::Executing)
-            .build();
+            .status(MessageStatus::Executing);
+        if let Some(d) = delivery {
+            builder = builder.delivery(d);
+        }
+        let msg = builder.build();
         self.save_message(msg).await
     }
 
@@ -479,6 +659,17 @@ impl ChatService {
         message.status = Some(MessageStatus::Completed);
 
         let updated = self.message_repo.update(&message).await?;
+        // Broadcast the completion so the channel outbound dispatcher and
+        // any SSE subscribers see the finished agent message — without this
+        // the row sits Completed in the DB but no one delivers it externally
+        // and the UI shows a perpetual typing indicator.
+        if let Ok(Some(chat)) = self.chat_repo.find_by_id(&updated.chat_id).await {
+            self.broadcast_message_entity(
+                &updated,
+                &chat,
+                crate::chat::broadcast::EntityAction::Updated,
+            );
+        }
         Ok(updated.into())
     }
 
@@ -774,6 +965,10 @@ impl ChatService {
         }
     }
 
+    pub async fn find_message(&self, message_id: &str) -> Result<Option<Message>, AppError> {
+        self.message_repo.find_by_id(message_id).await
+    }
+
     pub async fn find_chat(&self, chat_id: &str) -> Result<Option<Chat>, AppError> {
         self.chat_repo.find_by_id(chat_id).await
     }
@@ -897,11 +1092,8 @@ impl ChatService {
         Ok(())
     }
 
-    pub async fn get_stored_messages(&self, chat_id: &str) -> Vec<Message> {
-        self.message_repo
-            .find_by_chat_id(chat_id)
-            .await
-            .unwrap_or_default()
+    pub async fn get_stored_messages(&self, chat_id: &str) -> Result<Vec<Message>, AppError> {
+        self.message_repo.find_by_chat_id(chat_id).await
     }
 
     pub async fn find_chats_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError> {
