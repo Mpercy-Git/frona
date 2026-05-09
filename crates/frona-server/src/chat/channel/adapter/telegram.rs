@@ -44,19 +44,20 @@ impl ChannelAdapter for TelegramAdapter {
         let url = Url::parse(&ctx.webhook_url).map_err(|e| {
             AppError::Validation(format!("invalid webhook URL {}: {e}", ctx.webhook_url))
         })?;
-        match self.bot.set_webhook(url).await {
-            Ok(_) => tracing::info!(
-                channel_id = %ctx.channel.id,
-                url = %ctx.webhook_url,
-                "Telegram channel registered setWebhook",
-            ),
-            Err(e) => tracing::warn!(
+        self.bot.set_webhook(url).await.map_err(|e| {
+            tracing::warn!(
                 channel_id = %ctx.channel.id,
                 url = %ctx.webhook_url,
                 error = %e,
-                "Telegram channel could not register setWebhook — inbound updates will not arrive until this succeeds (check bot_token, network, rate limits)",
-            ),
-        }
+                "Telegram setWebhook failed — channel will be marked Failed (check bot_token, network/DNS, rate limits)",
+            );
+            AppError::Internal(format!("Telegram setWebhook failed: {e}"))
+        })?;
+        tracing::info!(
+            channel_id = %ctx.channel.id,
+            url = %ctx.webhook_url,
+            "Telegram channel registered setWebhook",
+        );
         Ok(())
     }
 

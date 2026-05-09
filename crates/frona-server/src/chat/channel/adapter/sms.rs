@@ -42,26 +42,27 @@ impl SmsAdapter {
 #[async_trait]
 impl ChannelAdapter for SmsAdapter {
     async fn on_connect(&self, ctx: &ChannelCtx) -> Result<(), AppError> {
-        match self
+        let sid = self
             .twilio()
             .register_messaging_webhook(&self.from_number, &ctx.webhook_url)
             .await
-        {
-            Ok(sid) => tracing::info!(
-                channel_id = %ctx.channel.id,
-                phone_number_sid = %sid,
-                from_number = %self.from_number,
-                url = %ctx.webhook_url,
-                "SMS channel registered Twilio Messaging webhook",
-            ),
-            Err(e) => tracing::warn!(
-                channel_id = %ctx.channel.id,
-                from_number = %self.from_number,
-                url = %ctx.webhook_url,
-                error = %e,
-                "SMS channel could not auto-register Twilio webhook — paste the URL into the Twilio console manually",
-            ),
-        }
+            .map_err(|e| {
+                tracing::warn!(
+                    channel_id = %ctx.channel.id,
+                    from_number = %self.from_number,
+                    url = %ctx.webhook_url,
+                    error = %e,
+                    "SMS channel could not auto-register Twilio webhook — channel will be marked Failed (fix the underlying issue and restart, or paste the URL into the Twilio console manually)",
+                );
+                e
+            })?;
+        tracing::info!(
+            channel_id = %ctx.channel.id,
+            phone_number_sid = %sid,
+            from_number = %self.from_number,
+            url = %ctx.webhook_url,
+            "SMS channel registered Twilio Messaging webhook",
+        );
         Ok(())
     }
 
