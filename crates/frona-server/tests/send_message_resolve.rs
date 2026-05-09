@@ -24,6 +24,9 @@ fn test_chat(id: &str, user_id: &str, agent_id: &str, task_id: Option<&str>) -> 
         agent_id: agent_id.to_string(),
         title: Some(format!("Chat {id}")),
         archived_at: None,
+        channel_id: None,
+        channel_external_id: None,
+        metadata: Default::default(),
         created_at: now,
         updated_at: now,
     }
@@ -44,6 +47,8 @@ fn test_task(id: &str, user_id: &str, agent_id: &str, kind: TaskKind) -> Task {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     }

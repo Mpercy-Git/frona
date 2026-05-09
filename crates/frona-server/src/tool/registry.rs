@@ -49,6 +49,19 @@ impl AgentToolRegistry {
         self.mcp_bridge_mode
     }
 
+    /// Used by signal-mode inference to restrict the agent's blast radius —
+    /// even if Cedar permits a tool generally, the in-mode registry hides it.
+    pub fn restrict_to(&mut self, allowed: &[&str]) {
+        let allow_set: std::collections::HashSet<&str> = allowed.iter().copied().collect();
+        self.definitions.retain(|d| allow_set.contains(d.id.as_str()));
+        let surviving_owners: std::collections::HashSet<String> =
+            self.definitions.iter().filter_map(|d| {
+                self.tool_name_to_owner.get(&d.id).cloned()
+            }).collect();
+        self.tool_name_to_owner.retain(|tool_id, _| allow_set.contains(tool_id.as_str()));
+        self.tools.retain(|owner, _| surviving_owners.contains(owner));
+    }
+
     pub fn register(&mut self, tool: Arc<dyn AgentTool>) {
         let owner_name = tool.name().to_string();
         for def in tool.definitions() {
@@ -161,7 +174,7 @@ mod tests {
 
     fn mock_context() -> InferenceContext {
         let broadcast = crate::chat::broadcast::BroadcastService::new();
-        let event_sender = broadcast.create_event_sender("test-user", "test-chat");
+        let event_sender = broadcast.create_event_sender("test-user", "test-chat", None);
         InferenceContext::new(
             crate::auth::User {
                 id: "test-user".into(),
@@ -200,6 +213,9 @@ mod tests {
                 agent_id: "test-agent".into(),
                 title: None,
                 archived_at: None,
+                channel_id: None,
+                channel_external_id: None,
+                metadata: Default::default(),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
@@ -232,5 +248,50 @@ mod tests {
         let ctx = mock_context();
         let result = registry.execute("nonexistent", serde_json::json!({}), &ctx).await;
         assert!(result.is_err());
+    }
+
+    struct OtherTool;
+
+    #[async_trait]
+    impl AgentTool for OtherTool {
+        fn name(&self) -> &str {
+            "other"
+        }
+        fn definitions(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                id: "other_action".into(),
+                provider_id: String::new(),
+                description: String::new(),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
+            }]
+        }
+        async fn execute(&self, _: &str, _: Value, _: &InferenceContext) -> Result<ToolOutput, AppError> {
+            Ok(ToolOutput::text("other"))
+        }
+    }
+
+    #[tokio::test]
+    async fn restrict_to_keeps_only_listed_tools() {
+        let mut registry = AgentToolRegistry::empty();
+        registry.register(Arc::new(MockTool));
+        registry.register(Arc::new(OtherTool));
+        assert_eq!(registry.definitions().len(), 2);
+
+        registry.restrict_to(&["mock_action"]);
+
+        assert_eq!(registry.definitions().len(), 1);
+        assert_eq!(registry.definitions()[0].id, "mock_action");
+
+        let ctx = mock_context();
+        assert!(registry.execute("other_action", serde_json::json!({}), &ctx).await.is_err());
+        assert!(registry.execute("mock_action", serde_json::json!({}), &ctx).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn restrict_to_empty_yields_empty_registry() {
+        let mut registry = AgentToolRegistry::empty();
+        registry.register(Arc::new(MockTool));
+        registry.restrict_to(&[]);
+        assert!(registry.is_empty());
     }
 }

@@ -42,9 +42,14 @@ fn setup_services(db: &Surreal<Db>) -> (KeyPairService, TokenService) {
         Arc::new(SurrealRepo::new(db.clone())),
     );
     let jwt_service = JwtService::new();
+    let user_service = frona::auth::user_service::UserService::new(
+        SurrealRepo::new(db.clone()),
+        &frona::core::config::CacheConfig::default(),
+    );
     let token_service = TokenService::new(
         Arc::new(SurrealRepo::new(db.clone())),
         jwt_service,
+        user_service,
         900,    // 15 min
         604800, // 7 days
     );

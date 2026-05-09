@@ -31,4 +31,14 @@ pub trait MessageRepository: Repository<Message> {
         after: Option<DateTime<Utc>>,
         limit: u32,
     ) -> Result<Vec<Message>, AppError>;
+    async fn find_due_deliveries(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<Message>, AppError>;
+    async fn resume_deliveries_for_channel(
+        &self,
+        channel_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<u64, AppError>;
 }

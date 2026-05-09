@@ -23,9 +23,18 @@ pub struct ModelGroup {
 pub struct ModelRegistryConfig {
     pub providers: HashMap<String, ModelProviderConfig>,
     pub models: HashMap<String, ModelGroupConfig>,
+    pub skip_auto_discover: bool,
 }
 
 impl ModelRegistryConfig {
+    pub fn empty() -> Self {
+        Self {
+            providers: HashMap::new(),
+            models: HashMap::new(),
+            skip_auto_discover: true,
+        }
+    }
+
     pub fn auto_discover() -> Self {
         let mut providers = HashMap::new();
 
@@ -75,10 +84,13 @@ impl ModelRegistryConfig {
         let inference = InferenceConfig::default();
         let models = build_default_model_groups(&providers, &inference);
 
-        Self { providers, models }
+        Self { providers, models, skip_auto_discover: false }
     }
 
     pub fn merge_with_auto_discovered(&mut self) {
+        if self.skip_auto_discover {
+            return;
+        }
         let discovered = Self::auto_discover();
         for (name, provider) in discovered.providers {
             self.providers.entry(name).or_insert(provider);

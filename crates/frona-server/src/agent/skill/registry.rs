@@ -64,17 +64,14 @@ pub struct SkillRegistryClient {
 
 impl Default for SkillRegistryClient {
     fn default() -> Self {
-        Self::new("data/system/cache/skills")
+        Self::new(crate::build_http_client(), "data/system/cache/skills")
     }
 }
 
 impl SkillRegistryClient {
-    pub fn new(cache_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(client: reqwest::Client, cache_dir: impl Into<PathBuf>) -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .user_agent("frona-skill-registry")
-                .build()
-                .expect("Failed to create HTTP client"),
+            client,
             cache_dir: cache_dir.into(),
         }
     }

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::response::sse::Event;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc};
 
 use crate::inference::tool_call::ToolCallResponse;
@@ -11,6 +12,14 @@ use crate::inference::tool_loop::InferenceEventKind;
 use crate::notification::models::Notification;
 
 use super::message::models::MessageResponse;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EntityAction {
+    Created,
+    Updated,
+    Deleted,
+}
 
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -38,12 +47,21 @@ pub enum BroadcastEventKind {
         result_summary: Option<String>,
     },
     InferenceCount { count: usize },
+
+    EntityUpdated {
+        table: String,
+        record_id: String,
+        action: EntityAction,
+        space_id: Option<String>,
+        fields: Option<serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct BroadcastEvent {
     pub user_id: String,
     pub chat_id: Option<String>,
+    pub space_id: Option<String>,
     pub kind: BroadcastEventKind,
 }
 
@@ -63,8 +81,10 @@ struct DispatchEvent {
 #[derive(Clone)]
 pub struct EventSender {
     tx: mpsc::UnboundedSender<DispatchEvent>,
+    raw: tokio::sync::broadcast::Sender<BroadcastEvent>,
     user_id: String,
     chat_id: String,
+    space_id: Option<String>,
 }
 
 impl EventSender {
@@ -78,8 +98,10 @@ impl EventSender {
         let broadcast = BroadcastEvent {
             user_id: self.user_id.clone(),
             chat_id: Some(self.chat_id.clone()),
+            space_id: self.space_id.clone(),
             kind: BroadcastEventKind::Inference(event.kind),
         };
+        let _ = self.raw.send(broadcast.clone());
         if let Some(sse) = map_event_to_sse(&broadcast) {
             let _ = self.tx.send(DispatchEvent {
                 user_id: broadcast.user_id,
@@ -93,8 +115,10 @@ impl EventSender {
         let broadcast = BroadcastEvent {
             user_id: self.user_id.clone(),
             chat_id: Some(self.chat_id.clone()),
+            space_id: self.space_id.clone(),
             kind,
         };
+        let _ = self.raw.send(broadcast.clone());
         if let Some(sse) = map_event_to_sse(&broadcast) {
             let _ = self.tx.send(DispatchEvent {
                 user_id: broadcast.user_id,
@@ -118,6 +142,7 @@ pub struct BroadcastService {
     tx: mpsc::UnboundedSender<DispatchEvent>,
     sessions: SessionRegistry,
     pending_events: PendingEventsCache,
+    raw_events: tokio::sync::broadcast::Sender<BroadcastEvent>,
 }
 
 impl Default for BroadcastService {
@@ -130,7 +155,7 @@ fn sse_event(name: &str, data: impl serde::Serialize) -> Event {
     Event::default().event(name).json_data(data).unwrap()
 }
 
-fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
+pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
     match &event.kind {
         BroadcastEventKind::Inference(kind) => {
             let chat_id = event.chat_id.as_deref().unwrap_or("");
@@ -274,6 +299,22 @@ fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
             "notification",
             serde_json::json!({ "notification": notification }),
         )),
+        BroadcastEventKind::EntityUpdated {
+            table,
+            record_id,
+            action,
+            space_id,
+            fields,
+        } => Some(sse_event(
+            "entity_updated",
+            serde_json::json!({
+                "table": table,
+                "record_id": record_id,
+                "action": action,
+                "space_id": space_id,
+                "fields": fields,
+            }),
+        )),
     }
 }
 
@@ -297,7 +338,12 @@ impl BroadcastService {
             Self::run_dispatcher(rx, sessions_clone, pending_events_clone).await;
         });
 
-        Self { tx, sessions, pending_events }
+        let (raw_events, _) = tokio::sync::broadcast::channel(1024);
+        Self { tx, sessions, pending_events, raw_events }
+    }
+
+    pub fn subscribe_raw(&self) -> tokio::sync::broadcast::Receiver<BroadcastEvent> {
+        self.raw_events.subscribe()
     }
 
     async fn run_dispatcher(
@@ -353,6 +399,8 @@ impl BroadcastService {
     }
 
     fn dispatch(&self, event: BroadcastEvent) {
+        let _ = self.raw_events.send(event.clone());
+
         let is_global = matches!(event.kind, BroadcastEventKind::InferenceCount { .. });
         if let Some(sse) = map_event_to_sse(&event) {
             let _ = self.tx.send(DispatchEvent {
@@ -363,11 +411,18 @@ impl BroadcastService {
         }
     }
 
-    pub fn create_event_sender(&self, user_id: &str, chat_id: &str) -> EventSender {
+    pub fn create_event_sender(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        space_id: Option<String>,
+    ) -> EventSender {
         EventSender {
             tx: self.tx.clone(),
+            raw: self.raw_events.clone(),
             user_id: user_id.to_string(),
             chat_id: chat_id.to_string(),
+            space_id,
         }
     }
 
@@ -394,11 +449,13 @@ impl BroadcastService {
         &self,
         user_id: &str,
         chat_id: &str,
+        space_id: Option<String>,
         message: MessageResponse,
     ) {
         self.dispatch(BroadcastEvent {
             user_id: user_id.to_string(),
             chat_id: Some(chat_id.to_string()),
+            space_id,
             kind: BroadcastEventKind::ChatMessage { message },
         });
     }
@@ -417,6 +474,7 @@ impl BroadcastService {
         self.dispatch(BroadcastEvent {
             user_id: user_id.to_string(),
             chat_id: None,
+            space_id: None,
             kind: BroadcastEventKind::TaskUpdate {
                 task_id: task_id.to_string(),
                 status: status.to_string(),
@@ -432,6 +490,7 @@ impl BroadcastService {
         self.dispatch(BroadcastEvent {
             user_id: user_id.to_string(),
             chat_id: None,
+            space_id: None,
             kind: BroadcastEventKind::NewNotification { notification },
         });
     }
@@ -440,7 +499,77 @@ impl BroadcastService {
         self.dispatch(BroadcastEvent {
             user_id: String::new(),
             chat_id: None,
+            space_id: None,
             kind: BroadcastEventKind::InferenceCount { count },
         });
+    }
+
+    pub fn broadcast_entity_updated(
+        &self,
+        user_id: &str,
+        table: &str,
+        record_id: &str,
+        action: EntityAction,
+        space_id: Option<String>,
+        fields: Option<serde_json::Value>,
+    ) {
+        self.dispatch(BroadcastEvent {
+            user_id: user_id.to_string(),
+            chat_id: None,
+            space_id: space_id.clone(),
+            kind: BroadcastEventKind::EntityUpdated {
+                table: table.to_string(),
+                record_id: record_id.to_string(),
+                action,
+                space_id,
+                fields,
+            },
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entity_action_serializes_lowercase() {
+        assert_eq!(serde_json::to_string(&EntityAction::Created).unwrap(), "\"created\"");
+        assert_eq!(serde_json::to_string(&EntityAction::Updated).unwrap(), "\"updated\"");
+        assert_eq!(serde_json::to_string(&EntityAction::Deleted).unwrap(), "\"deleted\"");
+    }
+
+    #[test]
+    fn entity_updated_event_maps_to_sse() {
+        let event = BroadcastEvent {
+            user_id: "u".to_string(),
+            chat_id: None,
+            space_id: None,
+            kind: BroadcastEventKind::EntityUpdated {
+                table: "space".to_string(),
+                record_id: "s-1".to_string(),
+                action: EntityAction::Updated,
+                space_id: Some("s-1".to_string()),
+                fields: Some(serde_json::json!({"channel:status": "connected"})),
+            },
+        };
+        assert!(map_event_to_sse(&event).is_some());
+    }
+
+    #[test]
+    fn entity_updated_without_space_id_maps_to_sse() {
+        let event = BroadcastEvent {
+            user_id: "u".to_string(),
+            chat_id: None,
+            space_id: None,
+            kind: BroadcastEventKind::EntityUpdated {
+                table: "agent".to_string(),
+                record_id: "a-1".to_string(),
+                action: EntityAction::Created,
+                space_id: None,
+                fields: None,
+            },
+        };
+        assert!(map_event_to_sse(&event).is_some());
     }
 }

@@ -61,7 +61,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
         frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
-    let state = AppState::new(db, &config, None, storage, metrics_handle, resource_manager);
+    let state = AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
     (state, tmp)
 }
 
@@ -84,6 +84,8 @@ fn make_task(kind: TaskKind) -> Task {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     }
@@ -127,7 +129,7 @@ async fn save_initial_message_saves_on_first_run() {
         .await
         .unwrap();
 
-    let messages = state.chat_service.get_stored_messages(&chat_id).await;
+    let messages = state.chat_service.get_stored_messages(&chat_id).await.unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "Do something");
 }
@@ -148,7 +150,7 @@ async fn save_initial_message_skips_on_resume() {
         .await
         .unwrap();
 
-    let messages = state.chat_service.get_stored_messages(&chat_id).await;
+    let messages = state.chat_service.get_stored_messages(&chat_id).await.unwrap();
     assert_eq!(messages.len(), 1);
 }
 
@@ -185,6 +187,7 @@ async fn handle_error_marks_failed_and_delivers() {
                 task_id: None,
                 agent_id: "agent-1".to_string(),
                 title: Some("Source chat".to_string()),
+                metadata: None,
             },
         )
         .await
@@ -209,7 +212,7 @@ async fn handle_error_marks_failed_and_delivers() {
     let source_messages = state
         .chat_service
         .get_stored_messages(&source_chat.id)
-        .await;
+        .await.unwrap();
     assert_eq!(source_messages.len(), 1);
     assert!(source_messages[0].content.contains("something broke"));
 }
@@ -228,6 +231,7 @@ async fn lifecycle_complete_event_detected() {
                 task_id: Some("task-1".to_string()),
                 agent_id: "agent-1".to_string(),
                 title: Some("Task chat".to_string()),
+                metadata: None,
             },
         )
         .await
@@ -249,7 +253,7 @@ async fn lifecycle_complete_event_detected() {
         .unwrap();
 
     // Verify the System message was saved
-    let messages = state.chat_service.get_stored_messages(&source_chat.id).await;
+    let messages = state.chat_service.get_stored_messages(&source_chat.id).await.unwrap();
     let system_msgs: Vec<_> = messages
         .iter()
         .filter(|m| m.role == MessageRole::System)
@@ -279,6 +283,7 @@ async fn lifecycle_defer_event_detected() {
                 task_id: Some("task-2".to_string()),
                 agent_id: "agent-1".to_string(),
                 title: Some("Task chat".to_string()),
+                metadata: None,
             },
         )
         .await
@@ -297,7 +302,7 @@ async fn lifecycle_defer_event_detected() {
         .await
         .unwrap();
 
-    let messages = state.chat_service.get_stored_messages(&task_chat.id).await;
+    let messages = state.chat_service.get_stored_messages(&task_chat.id).await.unwrap();
     let system_msgs: Vec<_> = messages
         .iter()
         .filter(|m| m.role == MessageRole::System)
@@ -341,7 +346,14 @@ async fn deliver_to_source_skips_direct_tasks() {
     let task = make_task(TaskKind::Direct { source_chat_id: None });
 
     executor
-        .deliver_to_source(&task, TaskStatus::Completed, Some("result".to_string()), vec![])
+        .deliver_event_to_source(
+            &task,
+            frona::agent::task::executor::TaskLifecycleEvent::Completion {
+                status: TaskStatus::Completed,
+                summary: Some("result".to_string()),
+            },
+            vec![],
+        )
         .await;
 }
 
@@ -359,6 +371,7 @@ async fn deliver_to_source_sends_to_delegation() {
                 task_id: None,
                 agent_id: "agent-1".to_string(),
                 title: Some("Source".to_string()),
+                metadata: None,
             },
         )
         .await
@@ -372,13 +385,20 @@ async fn deliver_to_source_sends_to_delegation() {
     task.chat_id = Some("task-chat".to_string());
 
     executor
-        .deliver_to_source(&task, TaskStatus::Completed, Some("All done".to_string()), vec![])
+        .deliver_event_to_source(
+            &task,
+            frona::agent::task::executor::TaskLifecycleEvent::Completion {
+                status: TaskStatus::Completed,
+                summary: Some("All done".to_string()),
+            },
+            vec![],
+        )
         .await;
 
     let messages = state
         .chat_service
         .get_stored_messages(&source_chat.id)
-        .await;
+        .await.unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "All done");
 }
@@ -397,6 +417,7 @@ async fn deliver_to_source_sends_to_direct_with_source_chat() {
                 task_id: None,
                 agent_id: "agent-1".to_string(),
                 title: Some("User chat".to_string()),
+                metadata: None,
             },
         )
         .await
@@ -408,13 +429,20 @@ async fn deliver_to_source_sends_to_direct_with_source_chat() {
     task.chat_id = Some("self-task-chat".to_string());
 
     executor
-        .deliver_to_source(&task, TaskStatus::Completed, Some("Self-task result".to_string()), vec![])
+        .deliver_event_to_source(
+            &task,
+            frona::agent::task::executor::TaskLifecycleEvent::Completion {
+                status: TaskStatus::Completed,
+                summary: Some("Self-task result".to_string()),
+            },
+            vec![],
+        )
         .await;
 
     let messages = state
         .chat_service
         .get_stored_messages(&source_chat.id)
-        .await;
+        .await.unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "Self-task result");
 }
@@ -481,6 +509,7 @@ async fn deliver_to_source_signal_only_sends_empty_content() {
                 task_id: None,
                 agent_id: "agent-1".to_string(),
                 title: Some("Source".to_string()),
+                metadata: None,
             },
         )
         .await
@@ -495,13 +524,20 @@ async fn deliver_to_source_signal_only_sends_empty_content() {
 
     // Signal-only completion: no result text, no deliverables
     executor
-        .deliver_to_source(&task, TaskStatus::Completed, None, vec![])
+        .deliver_event_to_source(
+            &task,
+            frona::agent::task::executor::TaskLifecycleEvent::Completion {
+                status: TaskStatus::Completed,
+                summary: None,
+            },
+            vec![],
+        )
         .await;
 
     let messages = state
         .chat_service
         .get_stored_messages(&source_chat.id)
-        .await;
+        .await.unwrap();
     assert_eq!(messages.len(), 1);
     assert!(messages[0].content.is_empty(), "Signal-only completion should have empty content");
 }
@@ -523,6 +559,7 @@ async fn deliver_to_source_saves_message_to_user_chat() {
                 task_id: None,
                 agent_id: "agent-1".to_string(),
                 title: Some("User chat".to_string()),
+                metadata: None,
             },
         )
         .await
@@ -539,14 +576,21 @@ async fn deliver_to_source_saves_message_to_user_chat() {
     repo.create(&task).await.unwrap();
 
     executor
-        .deliver_to_source(&task, TaskStatus::Completed, Some("Done".to_string()), vec![])
+        .deliver_event_to_source(
+            &task,
+            frona::agent::task::executor::TaskLifecycleEvent::Completion {
+                status: TaskStatus::Completed,
+                summary: Some("Done".to_string()),
+            },
+            vec![],
+        )
         .await;
 
     // Message should be delivered
     let messages = state
         .chat_service
         .get_stored_messages(&user_chat.id)
-        .await;
+        .await.unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "Done");
 }
@@ -564,6 +608,7 @@ async fn lifecycle_event_saved_after_assistant_message() {
                 task_id: Some("task-order".to_string()),
                 agent_id: "agent-1".to_string(),
                 title: Some("Task chat".to_string()),
+                metadata: None,
             },
         )
         .await
@@ -572,7 +617,7 @@ async fn lifecycle_event_saved_after_assistant_message() {
     // Simulate the executor flow: save assistant message first
     state
         .chat_service
-        .save_agent_message(&chat.id, "agent-1", "Here is my answer.".to_string())
+        .save_agent_message(&chat.id, "agent-1", "Here is my answer.".to_string(), None)
         .await
         .unwrap();
 
@@ -592,7 +637,7 @@ async fn lifecycle_event_saved_after_assistant_message() {
         .unwrap();
 
     // Verify ordering: assistant message comes before system event
-    let messages = state.chat_service.get_stored_messages(&chat.id).await;
+    let messages = state.chat_service.get_stored_messages(&chat.id).await.unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, MessageRole::Agent);
     assert_eq!(messages[0].content, "Here is my answer.");

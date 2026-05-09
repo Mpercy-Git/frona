@@ -7,7 +7,7 @@ use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::inference::config::ModelGroup;
-use crate::inference::conversation::{ConversationBuilder, ConversationContext, DefaultConversationBuilder, TaskConversationBuilder, resolve_attachment_path};
+use crate::inference::conversation::{ConversationBuilder, ConversationContext, resolve_attachment_path};
 use crate::inference::ModelProviderRegistry;
 use crate::tool::registry::AgentToolRegistry;
 use crate::tool::InferenceContext;
@@ -30,19 +30,11 @@ impl ChatSessionContext {
         user_id: &str,
         chat: Chat,
         cancel_token: CancellationToken,
+        builder: Box<dyn ConversationBuilder>,
     ) -> Result<Self, AppError> {
-        Self::build_with_task(state, user_id, chat, cancel_token, false).await
-    }
-
-    pub async fn build_with_task(
-        state: &AppState,
-        user_id: &str,
-        chat: Chat,
-        cancel_token: CancellationToken,
-        is_task: bool,
-    ) -> Result<Self, AppError> {
-        let event_sender: EventSender =
-            state.broadcast_service.create_event_sender(user_id, &chat.id);
+        let event_sender: EventSender = state
+            .broadcast_service
+            .create_event_sender(user_id, &chat.id, chat.space_id.clone());
         let agent_config = state
             .chat_service
             .resolve_agent_config(&chat.agent_id)
@@ -122,13 +114,24 @@ impl ChatSessionContext {
             .provider_registry()
             .resolve_model_group(&agent_config.model_group)?;
 
-        let stored_messages = state.chat_service.get_stored_messages(&chat.id).await;
+        let stored_messages = state.chat_service.get_stored_messages(&chat.id).await?;
         let tool_calls = state.chat_service
             .get_tool_calls(&chat.id)
             .await
             .unwrap_or_default();
 
-        if is_task
+        let task = if let Some(ref task_id) = chat.task_id {
+            state.task_service.find_by_id(task_id).await.ok().flatten()
+        } else {
+            None
+        };
+
+        let task_in_progress = task.as_ref().is_some_and(|t| matches!(t.status,
+            crate::agent::task::models::TaskStatus::Pending
+            | crate::agent::task::models::TaskStatus::InProgress
+        ));
+
+        if task_in_progress
             && let Some(task_prompt) = state.prompts.read("TASK.md")
         {
             system_prompt.push_str("\n\n");
@@ -147,11 +150,6 @@ impl ChatSessionContext {
             agent_id: chat.agent_id.clone(),
             model_ref,
             user_id: user_id.to_string(),
-        };
-        let task = if let Some(ref task_id) = chat.task_id {
-            state.task_service.find_by_id(task_id).await.ok().flatten()
-        } else {
-            None
         };
 
         if let Some(ref task) = task {
@@ -172,24 +170,7 @@ impl ChatSessionContext {
             );
         }
 
-        let task_in_progress = task.as_ref().is_some_and(|t| matches!(t.status,
-            crate::agent::task::models::TaskStatus::Pending
-            | crate::agent::task::models::TaskStatus::InProgress
-        ));
-
-        let rig_history = if task_in_progress {
-            let builder = TaskConversationBuilder {
-                user_service: state.user_service.clone(),
-                storage_service: state.storage_service.clone(),
-            };
-            builder.build(&stored_messages, &tool_calls, &conv_ctx).await
-        } else {
-            let builder = DefaultConversationBuilder {
-                user_service: state.user_service.clone(),
-                storage_service: state.storage_service.clone(),
-            };
-            builder.build(&stored_messages, &tool_calls, &conv_ctx).await
-        };
+        let rig_history = builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
 
         let registry = state.chat_service.provider_registry().clone();
 
@@ -199,13 +180,41 @@ impl ChatSessionContext {
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
-        if is_task {
+        if task_in_progress {
+            let result_schema = task
+                .as_ref()
+                .and_then(|t| t.result_schema.clone())
+                .and_then(|v| match crate::agent::task::schema::ResultSpec::new(v) {
+                    Ok(spec) => Some(std::sync::Arc::new(spec)),
+                    Err(e) => {
+                        tracing::warn!("failed to compile task.result_schema: {e}");
+                        None
+                    }
+                });
             tool_registry.register(std::sync::Arc::new(
                 crate::tool::task_control::TaskControlTool::new(
                     state.config.storage.workspaces_path.clone().into(),
                     state.prompts.clone(),
+                    result_schema.clone(),
                 ),
             ));
+
+            let is_continuous_signal = matches!(
+                task.as_ref().map(|t| &t.kind),
+                Some(crate::agent::task::models::TaskKind::Signal {
+                    mode: crate::agent::task::models::SignalMode::Continuous,
+                    ..
+                })
+            );
+            if is_continuous_signal && let Some(executor) = state.task_executor() {
+                tool_registry.register(std::sync::Arc::new(
+                    crate::tool::report_signal::ReportSignalTool::new(
+                        executor,
+                        state.prompts.clone(),
+                        result_schema,
+                    ),
+                ));
+            }
         }
         let mut file_paths = Vec::new();
         for msg in &stored_messages {

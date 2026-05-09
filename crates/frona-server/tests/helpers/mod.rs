@@ -302,7 +302,7 @@ impl AgentTool for MockFailingTool {
 
 pub fn mock_context() -> InferenceContext {
     let broadcast = frona::chat::broadcast::BroadcastService::new();
-    let event_sender = broadcast.create_event_sender("test-user", "test-chat");
+    let event_sender = broadcast.create_event_sender("test-user", "test-chat", None);
     InferenceContext::new(
         frona::auth::User {
             id: "test-user".into(),
@@ -341,6 +341,9 @@ pub fn mock_context() -> InferenceContext {
             agent_id: "test-agent".into(),
             title: None,
             archived_at: None,
+            channel_id: None,
+            channel_external_id: None,
+            metadata: Default::default(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         },
@@ -536,6 +539,7 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         user_service,
         memory_service,
         frona::agent::prompt::PromptLoader::new(&base),
+        frona::chat::broadcast::BroadcastService::new(),
     )
 }
 
@@ -548,7 +552,7 @@ pub async fn test_event_sender() -> (
     frona::chat::broadcast::BroadcastService,
 ) {
     let broadcast = frona::chat::broadcast::BroadcastService::new();
-    let event_sender = broadcast.create_event_sender("test-user", "test-chat");
+    let event_sender = broadcast.create_event_sender("test-user", "test-chat", None);
 
     let (tx, rx) = mpsc::unbounded_channel();
     broadcast.register_session("test-user", tx).await;

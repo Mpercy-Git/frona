@@ -1,0 +1,9 @@
+id: telegram
+display_name: Telegram Bot
+description: Connect a Telegram bot via its bot token from @BotFather.
+config_fields:
+  - name: bot_token
+    description: 'The bot token issued by @BotFather (e.g. "123456:ABC-DEF...").'
+    is_required: true
+    is_secret: true
+    format: password

@@ -250,6 +250,8 @@ impl TaskTool {
             source_chat_id: Some(chat_id.to_string()),
             resume_parent: Some(process_result),
             run_at,
+            quarantined: false,
+            result_schema: None,
         };
 
         let task_response = self.task_service.create(user_id, req).await?;

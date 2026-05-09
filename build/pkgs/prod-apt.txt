@@ -45,4 +45,4 @@ smbclient
 fd-find
 
 # Installed after NodeSource repo setup
-nodejs=22.22.0-1nodesource1
+nodejs

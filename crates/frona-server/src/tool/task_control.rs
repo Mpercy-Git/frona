@@ -1,39 +1,71 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
 use crate::agent::task::models::TaskStatus;
+use crate::agent::task::schema::ResultSpec;
+use crate::core::error::AppError;
 use crate::inference::tool_call::MessageTool;
 use crate::storage::resolve_workspace_attachment;
-use crate::core::error::AppError;
-use frona_derive::agent_tool;
 
-use super::{InferenceContext, ToolOutput};
+use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition};
 
 pub struct TaskControlTool {
     workspaces_path: PathBuf,
     prompts: PromptLoader,
+    result_schema: Option<Arc<ResultSpec>>,
 }
 
 impl TaskControlTool {
-    pub fn new(workspaces_path: PathBuf, prompts: PromptLoader) -> Self {
-        Self { workspaces_path, prompts }
+    pub fn new(
+        workspaces_path: PathBuf,
+        prompts: PromptLoader,
+        result_schema: Option<Arc<ResultSpec>>,
+    ) -> Self {
+        Self {
+            workspaces_path,
+            prompts,
+            result_schema,
+        }
     }
 }
 
-#[agent_tool(name = "task_control", files("complete_task", "defer_task", "fail_task"))]
-impl TaskControlTool {
+#[async_trait]
+impl AgentTool for TaskControlTool {
+    fn name(&self) -> &str {
+        "task_control"
+    }
+
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        let complete = load_tool_definition(&self.prompts, "tools/complete_task.md").map(|mut def| {
+            if let Some(spec) = &self.result_schema
+                && let Some(props) = def
+                    .parameters
+                    .as_object_mut()
+                    .and_then(|o| o.get_mut("properties"))
+                    .and_then(|p| p.as_object_mut())
+            {
+                props.insert("result".to_string(), spec.schema.clone());
+            }
+            def
+        });
+        let fail = load_tool_definition(&self.prompts, "tools/fail_task.md");
+        let defer = load_tool_definition(&self.prompts, "tools/defer_task.md");
+        [complete, fail, defer].into_iter().flatten().collect()
+    }
+
     async fn execute(
         &self,
         tool_name: &str,
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        let task = ctx
-            .task
-            .as_ref()
-            .ok_or_else(|| AppError::Tool("task_control tools can only be used within a task context".into()))?;
+        let task = ctx.task.as_ref().ok_or_else(|| {
+            AppError::Tool("task_control tools can only be used within a task context".into())
+        })?;
 
         match tool_name {
             "complete_task" => {
@@ -41,6 +73,14 @@ impl TaskControlTool {
                     .get("result")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+
+                if let (Some(spec), Some(value)) = (self.result_schema.as_ref(), result.as_deref())
+                    && let Err(reason) = spec.validate(value)
+                {
+                    return Err(AppError::Validation(format!(
+                        "result does not match the task's declared schema: {reason}"
+                    )));
+                }
 
                 let mut resolved_deliverables = Vec::new();
                 if let Some(deliverables) = arguments.get("deliverables").and_then(|v| v.as_array()) {
@@ -50,7 +90,8 @@ impl TaskControlTool {
                                 &self.workspaces_path,
                                 &ctx.agent.id,
                                 path,
-                            ).await?;
+                            )
+                            .await?;
                             resolved_deliverables.push(attachment);
                         }
                     }
@@ -112,5 +153,71 @@ impl TaskControlTool {
             }
             _ => Err(AppError::Tool(format!("Unknown task_control tool: {tool_name}"))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn tool_with_schema(schema: Option<Value>) -> TaskControlTool {
+        let prompts = PromptLoader::new(
+            std::env::current_dir()
+                .unwrap()
+                .ancestors()
+                .find(|p| p.join("resources/prompts").exists())
+                .unwrap()
+                .join("resources/prompts"),
+        );
+        let spec = schema.map(|s| Arc::new(ResultSpec::new(s).expect("valid schema")));
+        TaskControlTool::new(PathBuf::from("/tmp"), prompts, spec)
+    }
+
+    #[test]
+    fn definitions_include_complete_fail_defer() {
+        let tool = tool_with_schema(None);
+        let defs = tool.definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
+        assert!(names.contains(&"complete_task"), "missing complete_task: {names:?}");
+        assert!(names.contains(&"fail_task"), "missing fail_task: {names:?}");
+        assert!(names.contains(&"defer_task"), "missing defer_task: {names:?}");
+    }
+
+    #[test]
+    fn definitions_patch_complete_result_when_schema_present() {
+        let schema = json!({"type": "string", "pattern": "^[0-9]{6}$"});
+        let tool = tool_with_schema(Some(schema.clone()));
+        let defs = tool.definitions();
+        let complete = defs
+            .iter()
+            .find(|d| d.id == "complete_task")
+            .expect("complete_task definition");
+        let result_schema = complete
+            .parameters
+            .get("properties")
+            .and_then(|p| p.get("result"))
+            .expect("complete_task.parameters.properties.result");
+        assert_eq!(result_schema, &schema);
+    }
+
+    #[test]
+    fn definitions_leave_complete_result_unchanged_when_no_schema() {
+        let tool = tool_with_schema(None);
+        let defs = tool.definitions();
+        let complete = defs
+            .iter()
+            .find(|d| d.id == "complete_task")
+            .expect("complete_task definition");
+        let result_schema = complete
+            .parameters
+            .get("properties")
+            .and_then(|p| p.get("result"))
+            .expect("complete_task.parameters.properties.result");
+        assert_ne!(
+            result_schema.get("pattern"),
+            Some(&json!("^[0-9]{6}$")),
+            "result schema should not have been patched"
+        );
     }
 }

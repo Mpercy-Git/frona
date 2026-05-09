@@ -1,4 +1,6 @@
 use chrono::{DateTime, Utc};
+use std::collections::BTreeMap;
+
 use crate::Entity;
 use crate::storage::Attachment;
 use serde::{Deserialize, Serialize};
@@ -47,11 +49,66 @@ pub enum MessageEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
     },
+    TaskMatch {
+        task_id: String,
+        chat_id: Option<String>,
+        attempt_index: u32,
+        summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
+    },
     TaskDeferred {
         task_id: String,
         delay_minutes: u32,
         reason: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, SurrealValue)]
+#[serde(rename_all = "lowercase")]
+#[surreal(crate = "surrealdb::types", lowercase)]
+pub enum DeliveryState {
+    Pending,
+    Sent,
+    Delivered,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
+pub struct MessageDelivery {
+    pub state: DeliveryState,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_at: Option<DateTime<Utc>>,
+    /// Cursor: `0..tool_count` walks each tool call's `turn_text`;
+    /// `tool_count` is the trailing `Message.content`.
+    #[serde(default)]
+    pub tool_index: u32,
+}
+
+impl MessageDelivery {
+    pub fn pending(now: DateTime<Utc>) -> Self {
+        Self {
+            state: DeliveryState::Pending,
+            attempts: 0,
+            next_attempt_at: Some(now),
+            last_attempt_at: None,
+            last_error: None,
+            sent_at: None,
+            delivered_at: None,
+            tool_index: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
@@ -72,6 +129,12 @@ pub struct Message {
     pub status: Option<MessageStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<MessageDelivery>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -87,6 +150,9 @@ impl Message {
             contact_id: None,
             status: None,
             reasoning: None,
+            from_address: None,
+            delivery: None,
+            metadata: BTreeMap::new(),
         }
     }
 }
@@ -101,6 +167,9 @@ pub struct MessageBuilder {
     contact_id: Option<String>,
     status: Option<MessageStatus>,
     reasoning: Option<Reasoning>,
+    from_address: Option<String>,
+    delivery: Option<MessageDelivery>,
+    metadata: BTreeMap<String, serde_json::Value>,
 }
 
 impl MessageBuilder {
@@ -134,6 +203,21 @@ impl MessageBuilder {
         self
     }
 
+    pub fn metadata(mut self, m: BTreeMap<String, serde_json::Value>) -> Self {
+        self.metadata = m;
+        self
+    }
+
+    pub fn from_address(mut self, addr: impl Into<String>) -> Self {
+        self.from_address = Some(addr.into());
+        self
+    }
+
+    pub fn delivery(mut self, d: MessageDelivery) -> Self {
+        self.delivery = Some(d);
+        self
+    }
+
     pub fn build(self) -> Message {
         Message {
             id: uuid::Uuid::new_v4().to_string(),
@@ -146,6 +230,9 @@ impl MessageBuilder {
             contact_id: self.contact_id,
             status: self.status,
             reasoning: self.reasoning,
+            from_address: self.from_address,
+            delivery: self.delivery,
+            metadata: self.metadata,
             created_at: chrono::Utc::now(),
         }
     }
@@ -174,6 +261,14 @@ pub struct SendMessageRequest {
     pub content: String,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    #[serde(default)]
+    pub metadata: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateMessageRequest {
+    #[serde(default)]
+    pub metadata: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
@@ -215,8 +310,14 @@ pub struct MessageResponse {
     pub status: Option<MessageStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<MessageDelivery>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<crate::inference::tool_call::ToolCallResponse>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -233,7 +334,10 @@ impl From<Message> for MessageResponse {
             contact_id: msg.contact_id,
             status: msg.status,
             reasoning: msg.reasoning.map(|r| r.content),
+            from_address: msg.from_address,
+            delivery: msg.delivery,
             tool_calls: vec![],
+            metadata: msg.metadata,
             created_at: msg.created_at,
         }
     }
@@ -319,6 +423,26 @@ mod tests {
 
         let response: MessageResponse = msg.into();
         assert!(response.reasoning.is_none());
+    }
+
+    #[test]
+    fn message_delivery_pending_initializes_tool_index_zero() {
+        let now = Utc::now();
+        let d = MessageDelivery::pending(now);
+        assert_eq!(d.tool_index, 0);
+        assert_eq!(d.state, DeliveryState::Pending);
+        assert_eq!(d.attempts, 0);
+    }
+
+    #[test]
+    fn message_delivery_deserializes_without_tool_index_field() {
+        let json = serde_json::json!({
+            "state": "pending",
+            "attempts": 2,
+        });
+        let d: MessageDelivery = serde_json::from_value(json).unwrap();
+        assert_eq!(d.tool_index, 0);
+        assert_eq!(d.attempts, 2);
     }
 
     #[test]

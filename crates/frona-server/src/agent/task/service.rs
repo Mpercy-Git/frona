@@ -39,6 +39,10 @@ impl TaskService {
             (Some(_), None) => TaskKind::Direct { source_chat_id: None },
         };
 
+        if let Some(ref schema) = req.result_schema {
+            super::schema::validate_schema_doc(schema).map_err(AppError::Validation)?;
+        }
+
         let task = Task {
             id: uuid::Uuid::new_v4().to_string(),
             user_id: user_id.to_string(),
@@ -52,12 +56,79 @@ impl TaskService {
             run_at: req.run_at,
             result_summary: None,
             error_message: None,
+            quarantined: req.quarantined,
+            result_schema: req.result_schema,
             created_at: now,
             updated_at: now,
         };
 
         let task = self.repo.create(&task).await?;
         Ok(task.into())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_signal(
+        &self,
+        user_id: &str,
+        agent_id: String,
+        source_chat_id: String,
+        title: String,
+        description: String,
+        resume_parent: bool,
+        mode: super::models::SignalMode,
+        expected_categories: Vec<String>,
+        expected_channels: Vec<String>,
+        expected_contacts: Vec<String>,
+        expires_at: Option<DateTime<Utc>>,
+        max_evaluations: u32,
+        result_schema: Option<serde_json::Value>,
+    ) -> Result<Task, AppError> {
+        if let Some(ref schema) = result_schema {
+            super::schema::validate_schema_doc(schema).map_err(AppError::Validation)?;
+        }
+        let now = chrono::Utc::now();
+        let task = Task {
+            id: uuid::Uuid::new_v4().to_string(),
+            user_id: user_id.to_string(),
+            agent_id,
+            space_id: None,
+            chat_id: None,
+            title,
+            description,
+            status: TaskStatus::Pending,
+            kind: TaskKind::Signal {
+                source_chat_id,
+                resume_parent,
+                mode,
+                expected_categories,
+                expected_channels,
+                expected_contacts,
+                expires_at,
+                max_evaluations,
+                evaluation_count: 0,
+            },
+            run_at: None,
+            result_summary: None,
+            error_message: None,
+            quarantined: true,
+            result_schema,
+            created_at: now,
+            updated_at: now,
+        };
+        self.repo.create(&task).await
+    }
+
+    pub async fn list_pending_signal_tasks(&self) -> Result<Vec<Task>, AppError> {
+        self.repo.find_pending_signal_tasks().await
+    }
+
+    pub async fn find_expired_signal_tasks(&self) -> Result<Vec<Task>, AppError> {
+        self.repo.find_expired_signal_tasks(chrono::Utc::now()).await
+    }
+
+    pub async fn save(&self, task: &Task) -> Result<Task, AppError> {
+        self.repo.update(task).await
     }
 
     pub async fn list_active(
@@ -275,6 +346,8 @@ impl TaskService {
             run_at,
             result_summary: None,
             error_message: None,
+            quarantined: false,
+            result_schema: None,
             created_at: now,
             updated_at: now,
         };

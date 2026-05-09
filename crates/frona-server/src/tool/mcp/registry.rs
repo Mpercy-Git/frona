@@ -54,12 +54,12 @@ pub struct PrebuiltMcpRegistryClient {
 }
 
 impl PrebuiltMcpRegistryClient {
-    pub fn new(cache_dir: PathBuf) -> Self {
+    pub fn new(http: reqwest::Client, cache_dir: PathBuf) -> Self {
         Self {
             metadata_url: PREBUILT_METADATA_URL.to_string(),
             servers_url: PREBUILT_SERVERS_URL.to_string(),
             cache_dir,
-            http: reqwest::Client::new(),
+            http,
             cache: RwLock::new(None),
         }
     }
@@ -70,7 +70,7 @@ impl PrebuiltMcpRegistryClient {
             metadata_url,
             servers_url,
             cache_dir,
-            http: reqwest::Client::new(),
+            http: crate::build_http_client(),
             cache: RwLock::new(None),
         }
     }

@@ -1,3 +1,4 @@
+pub mod await_signal;
 pub mod browser;
 pub mod manager;
 pub mod cli;
@@ -9,9 +10,11 @@ pub mod notify_human;
 pub mod produce_file;
 pub mod registry;
 pub mod memory;
+pub mod report_signal;
 pub mod request_credentials;
 pub mod task;
 pub mod send_message;
+pub mod annotate;
 pub mod task_control;
 pub mod update_identity;
 pub mod voice;

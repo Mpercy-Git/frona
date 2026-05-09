@@ -1,5 +1,6 @@
 pub mod config;
 pub mod error;
+pub mod metadata;
 pub mod metrics;
 pub mod principal;
 pub mod repository;

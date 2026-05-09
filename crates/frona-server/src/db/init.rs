@@ -25,9 +25,12 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE TABLE IF NOT EXISTS chat SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_chat_user ON TABLE chat COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_chat_space ON TABLE chat COLUMNS space_id;
+        DEFINE INDEX IF NOT EXISTS idx_chat_channel ON TABLE chat COLUMNS channel_id;
+        DEFINE INDEX IF NOT EXISTS idx_chat_channel_thread ON TABLE chat COLUMNS channel_id, channel_external_id UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS message SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_message_chat ON TABLE message COLUMNS chat_id;
+        DEFINE INDEX IF NOT EXISTS idx_message_delivery_due ON TABLE message COLUMNS delivery.state, delivery.next_attempt_at;
 
         DEFINE TABLE IF NOT EXISTS task SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_task_user ON TABLE task COLUMNS user_id;
@@ -55,6 +58,7 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE TABLE IF NOT EXISTS contact SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_contact_user ON TABLE contact COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_contact_phone ON TABLE contact COLUMNS user_id, phone;
+        DEFINE INDEX IF NOT EXISTS idx_contact_addresses ON TABLE contact COLUMNS user_id, addresses.provider, addresses.address UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS oauth_identity SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_oauth_identity_sub ON TABLE oauth_identity COLUMNS external_sub UNIQUE;
@@ -79,6 +83,12 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_mcp_server_user ON TABLE mcp_server COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_mcp_server_status ON TABLE mcp_server COLUMNS status;
         DEFINE INDEX IF NOT EXISTS idx_mcp_server_user_slug ON TABLE mcp_server COLUMNS user_id, slug UNIQUE;
+
+        DEFINE TABLE IF NOT EXISTS channel SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_channel_user ON TABLE channel COLUMNS user_id;
+        DEFINE INDEX IF NOT EXISTS idx_channel_space ON TABLE channel COLUMNS space_id;
+        DEFINE INDEX IF NOT EXISTS idx_channel_status ON TABLE channel COLUMNS status;
+        DEFINE INDEX IF NOT EXISTS idx_channel_space_unique ON TABLE channel COLUMNS space_id UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS vault_connection SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_vault_connection_user ON TABLE vault_connection COLUMNS user_id;

@@ -26,6 +26,11 @@ pub trait ConversationBuilder: Send + Sync {
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
     ) -> Vec<RigMessage>;
+
+    /// Turn-scoped system prompt appended to the agent's main system prompt.
+    fn system_prompt(&self) -> Option<String> {
+        None
+    }
 }
 
 pub struct DefaultConversationBuilder {
@@ -90,6 +95,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
 pub struct TaskConversationBuilder {
     pub user_service: UserService,
     pub storage_service: StorageService,
+    pub continuation_prompt: Option<String>,
 }
 
 #[async_trait]
@@ -147,7 +153,77 @@ impl ConversationBuilder for TaskConversationBuilder {
                 }
             };
         }
+        if let Some(prompt) = &self.continuation_prompt
+            && !prompt.is_empty()
+        {
+            result.push(RigMessage::user(prompt));
+        }
         result
+    }
+}
+
+pub struct ChannelConversationBuilder {
+    pub user_service: UserService,
+    pub storage_service: StorageService,
+    pub channel: String,
+    pub sender: Option<String>,
+    pub inbound_prompt: Option<String>,
+}
+
+#[async_trait]
+impl ConversationBuilder for ChannelConversationBuilder {
+    async fn build(
+        &self,
+        messages: &[Message],
+        tool_calls: &[ToolCall],
+        ctx: &ConversationContext,
+    ) -> Vec<RigMessage> {
+        let te_map = group_tool_calls_by_message(tool_calls);
+        let mut result = Vec::with_capacity(messages.len());
+        for msg in messages {
+            match msg.role {
+                MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                    result.push(
+                        build_user_message(
+                            &msg.content,
+                            &msg.attachments,
+                            &self.user_service,
+                            &self.storage_service,
+                        )
+                        .await,
+                    );
+                }
+                MessageRole::LiveCall => {
+                    let content = format!("[LIVE_CALL] {}", msg.content);
+                    result.push(
+                        build_user_message(
+                            &content,
+                            &msg.attachments,
+                            &self.user_service,
+                            &self.storage_service,
+                        )
+                        .await,
+                    );
+                }
+                MessageRole::Agent => {
+                    if let Some(tes) = te_map.get(&msg.id) {
+                        convert_agent_with_tool_calls(msg, tes, &ctx.agent_id, &mut result);
+                    } else if let Some(m) = convert_agent_message(msg, &ctx.agent_id) {
+                        result.push(m);
+                    }
+                }
+                MessageRole::System => {
+                    if !msg.content.is_empty() {
+                        result.push(RigMessage::user(&msg.content));
+                    }
+                }
+            };
+        }
+        result
+    }
+
+    fn system_prompt(&self) -> Option<String> {
+        self.inbound_prompt.clone()
     }
 }
 
@@ -172,7 +248,9 @@ fn convert_agent_with_tool_calls(
 ) {
     let is_self = msg.agent_id.as_deref() == Some(agent_id);
     if !is_self {
-        result.push(RigMessage::user(&msg.content));
+        if !msg.content.is_empty() {
+            result.push(RigMessage::user(&msg.content));
+        }
         return;
     }
 
@@ -262,8 +340,15 @@ pub fn convert_agent_message(msg: &Message, agent_id: &str) -> Option<RigMessage
                 return Some(RigMessage::Assistant { id: None, content });
             }
         }
+        // Empty Assistant text blocks make Anthropic reject the request.
+        if msg.content.is_empty() {
+            return None;
+        }
         Some(RigMessage::assistant(&msg.content))
     } else {
+        if msg.content.is_empty() {
+            return None;
+        }
         Some(RigMessage::user(&msg.content))
     }
 }
@@ -384,6 +469,9 @@ mod tests {
             contact_id: None,
             status: None,
             reasoning: None,
+            from_address: None,
+            delivery: None,
+            metadata: Default::default(),
             created_at: Utc::now(),
         }
     }
@@ -409,6 +497,38 @@ mod tests {
         let result = convert_agent_message(&msg, "agent-1");
         assert!(result.is_some());
         assert!(matches!(result.unwrap(), RigMessage::User { .. }));
+    }
+
+    #[test]
+    fn agent_self_with_empty_content_is_skipped() {
+        let mut msg = make_agent_message("", "agent-1");
+        msg.status = Some(MessageStatus::Failed);
+        assert!(convert_agent_message(&msg, "agent-1").is_none());
+    }
+
+    #[test]
+    fn agent_self_with_empty_content_completed_is_skipped() {
+        let mut msg = make_agent_message("", "agent-1");
+        msg.status = Some(MessageStatus::Completed);
+        assert!(convert_agent_message(&msg, "agent-1").is_none());
+    }
+
+    #[test]
+    fn agent_other_with_empty_content_is_skipped() {
+        let mut msg = make_agent_message("", "agent-2");
+        msg.status = Some(MessageStatus::Failed);
+        assert!(convert_agent_message(&msg, "agent-1").is_none());
+    }
+
+    #[test]
+    fn agent_self_with_reasoning_and_empty_content_still_emits_reasoning() {
+        let mut msg = make_agent_message("", "agent-1");
+        msg.reasoning = Some(crate::chat::message::models::Reasoning {
+            id: None,
+            content: "thinking".into(),
+            signature: None,
+        });
+        assert!(convert_agent_message(&msg, "agent-1").is_some());
     }
 
     #[test]

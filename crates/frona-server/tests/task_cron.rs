@@ -180,6 +180,8 @@ async fn find_resumable_excludes_cron_templates() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -216,6 +218,8 @@ async fn find_resumable_includes_in_progress_tasks() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -251,6 +255,8 @@ async fn find_resumable_includes_delegation_tasks() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -286,6 +292,8 @@ async fn find_resumable_excludes_terminal_states() {
             run_at: None,
             result_summary: None,
             error_message: None,
+            quarantined: false,
+            result_schema: None,
             created_at: now + Duration::seconds(i as i64),
             updated_at: now,
         };
@@ -318,6 +326,8 @@ async fn find_resumable_orders_by_created_at_asc() {
             run_at: None,
             result_summary: None,
             error_message: None,
+            quarantined: false,
+            result_schema: None,
             created_at: base + Duration::seconds(i),
             updated_at: base,
         };
@@ -354,6 +364,8 @@ async fn find_resumable_mixed_scenario() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -377,6 +389,8 @@ async fn find_resumable_mixed_scenario() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now + Duration::seconds(1),
         updated_at: now,
     };
@@ -402,6 +416,8 @@ async fn find_resumable_mixed_scenario() {
         run_at: None,
         result_summary: Some("done".to_string()),
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now + Duration::seconds(3),
         updated_at: now,
     };
@@ -421,6 +437,8 @@ async fn find_resumable_mixed_scenario() {
         run_at: None,
         result_summary: None,
         error_message: Some("err".to_string()),
+        quarantined: false,
+        result_schema: None,
         created_at: now + Duration::seconds(4),
         updated_at: now,
     };
@@ -460,6 +478,8 @@ async fn find_resumable_excludes_future_run_at() {
         run_at: Some(now + Duration::hours(1)),
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -479,6 +499,8 @@ async fn find_resumable_excludes_future_run_at() {
         run_at: Some(now - Duration::minutes(5)),
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now + Duration::seconds(1),
         updated_at: now,
     };
@@ -498,6 +520,8 @@ async fn find_resumable_excludes_future_run_at() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now + Duration::seconds(2),
         updated_at: now,
     };
@@ -554,6 +578,8 @@ async fn mark_in_progress_then_find_resumable() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -592,6 +618,8 @@ async fn completed_during_execution_not_resumable() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -630,6 +658,8 @@ async fn failed_during_execution_not_resumable() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -666,6 +696,8 @@ async fn cancelled_during_execution_not_resumable() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -745,6 +777,8 @@ async fn deferred_task_found_when_due() {
         run_at: Some(now - Duration::minutes(5)),
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -764,6 +798,8 @@ async fn deferred_task_found_when_due() {
         run_at: Some(now + Duration::hours(2)),
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -783,6 +819,8 @@ async fn deferred_task_found_when_due() {
         run_at: None,
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };
@@ -825,6 +863,8 @@ async fn task_run_at_serialization() {
         run_at: Some(now),
         result_summary: None,
         error_message: None,
+        quarantined: false,
+        result_schema: None,
         created_at: now,
         updated_at: now,
     };

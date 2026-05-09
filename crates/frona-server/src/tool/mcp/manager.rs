@@ -33,6 +33,7 @@ pub struct McpManager {
     allocated_ports: Arc<Mutex<HashSet<u16>>>,
     port_range: (u16, u16),
     policy_service: crate::policy::service::PolicyService,
+    http: reqwest::Client,
 }
 
 impl McpManager {
@@ -42,6 +43,7 @@ impl McpManager {
         port_range_start: u16,
         port_range_end: u16,
         policy_service: crate::policy::service::PolicyService,
+        http: reqwest::Client,
     ) -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
@@ -50,6 +52,7 @@ impl McpManager {
             allocated_ports: Arc::new(Mutex::new(HashSet::new())),
             port_range: (port_range_start, port_range_end),
             policy_service,
+            http,
         }
     }
 
@@ -356,16 +359,13 @@ impl McpManager {
 
     async fn wait_for_ready(&self, port: u16, path: &str, timeout: std::time::Duration) -> Result<(), AppError> {
         let url = format!("http://127.0.0.1:{port}{path}");
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .map_err(|e| AppError::Tool(format!("http client: {e}")))?;
+        let req_timeout = std::time::Duration::from_secs(2);
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             if tokio::time::Instant::now() > deadline {
                 return Err(AppError::Tool("MCP HTTP server did not become ready in time".into()));
             }
-            if client.get(&url).send().await.is_ok() {
+            if self.http.get(&url).timeout(req_timeout).send().await.is_ok() {
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
