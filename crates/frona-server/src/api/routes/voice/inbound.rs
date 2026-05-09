@@ -213,6 +213,7 @@ pub(super) async fn twilio_inbound_handler(
                 task_id: None,
                 agent_id: agent_id.clone(),
                 title: Some(format!("Inbound call from {from}")),
+                metadata: None,
             },
         )
         .await
