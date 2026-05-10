@@ -35,10 +35,10 @@ RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo
   done
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
+COPY resources/ resources/
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-COPY resources/ resources/
 RUN cargo build --release -p frona-server -p frona-cli-mcp
 
 # Stage 4: CLI tools (op, bw, syd)
