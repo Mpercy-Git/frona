@@ -157,20 +157,22 @@ function AttachmentItem({ attachment }: { attachment: Attachment }) {
   );
 }
 
+function AttachmentsRender() {
+  const message = useMessage();
+  const attachments = (message.metadata as Record<string, any>)?.custom?.attachments as Attachment[] | undefined;
+
+  if (!attachments?.length) return null;
+
+  return (
+    <div className="flex flex-wrap gap-2 mt-2">
+      {attachments.map((att, i) => (
+        <AttachmentItem key={i} attachment={att} />
+      ))}
+    </div>
+  );
+}
+
 export const AttachmentsToolUI = makeAssistantToolUI<Record<string, never>, string>({
   toolName: "Attachments",
-  render: () => {
-    const message = useMessage();
-    const attachments = (message.metadata as Record<string, any>)?.custom?.attachments as Attachment[] | undefined;
-
-    if (!attachments?.length) return null;
-
-    return (
-      <div className="flex flex-wrap gap-2 mt-2">
-        {attachments.map((att, i) => (
-          <AttachmentItem key={i} attachment={att} />
-        ))}
-      </div>
-    );
-  },
+  render: AttachmentsRender,
 });

@@ -14,7 +14,6 @@ function AgentIcon({ agent }: { agent: Agent }) {
   const avatar = agent.identity?.avatar;
   if (avatar && (avatar.startsWith("data:") || avatar.startsWith("http") || avatar.startsWith("/api/"))) {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
       <img
         src={avatar}
         alt={agent.name}

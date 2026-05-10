@@ -55,7 +55,6 @@ function StreamingIndicator() {
 
 function AvatarContent({ avatar, letter }: { avatar?: string | null; letter: string }) {
   if (avatar && (avatar.startsWith("data:") || avatar.startsWith("http") || avatar.startsWith("/api/"))) {
-    // eslint-disable-next-line @next/next/no-img-element
     return <img src={avatar} alt="" className="h-8 w-8 rounded-full object-cover" />;
   }
   return (

@@ -120,6 +120,11 @@ function SetupWizard() {
   const [loading, setLoading] = useState(true);
   const [providersBlock, setProvidersBlock] = useState<string | null>(null);
 
+  const updatePatch = useCallback((section: string, value: unknown) => {
+    setPatch((prev) => ({ ...prev, [section]: value }));
+    setConfig((prev) => prev ? { ...prev, [section]: value } as Config : prev);
+  }, []);
+
   useEffect(() => {
     getConfig()
       .then((cfg) => {
@@ -131,7 +136,7 @@ function SetupWizard() {
       })
       .catch(() => setError("Failed to load configuration"))
       .finally(() => setLoading(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [updatePatch]);
 
   const currentStep = STEPS[step];
   const isLastStep = step === STEPS.length - 1;
@@ -147,11 +152,6 @@ function SetupWizard() {
   }
   const blockReason = getBlockReason();
   const canAdvance = !blockReason;
-
-  const updatePatch = useCallback((section: string, value: unknown) => {
-    setPatch((prev) => ({ ...prev, [section]: value }));
-    setConfig((prev) => prev ? { ...prev, [section]: value } as Config : prev);
-  }, []);
 
   const handleComplete = useCallback(async () => {
     setSaving(true);

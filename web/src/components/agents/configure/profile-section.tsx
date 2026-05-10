@@ -108,7 +108,6 @@ function AvatarField({ agentId, value, onChange }: { agentId: string; value: str
         className="relative shrink-0 group cursor-pointer"
       >
         {isImage ? (
-          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={value}
             alt="Avatar"
