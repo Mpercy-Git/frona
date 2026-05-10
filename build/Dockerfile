@@ -38,6 +38,7 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY resources/ resources/
 RUN cargo build --release -p frona-server -p frona-cli-mcp
 
 # Stage 4: CLI tools (op, bw, syd)
