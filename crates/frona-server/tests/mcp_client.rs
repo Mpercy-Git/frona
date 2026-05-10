@@ -11,6 +11,7 @@ use tokio::io::duplex;
 
 #[derive(Clone)]
 struct EchoServer {
+    #[allow(dead_code)]
     tool_router: ToolRouter<EchoServer>,
 }
 

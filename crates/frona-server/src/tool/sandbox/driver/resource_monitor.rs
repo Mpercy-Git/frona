@@ -281,7 +281,7 @@ impl SystemResourceManager {
         if exceeded_cpu {
             candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         } else {
-            candidates.sort_by(|a, b| b.3.cmp(&a.3));
+            candidates.sort_by_key(|c| std::cmp::Reverse(c.3));
         }
 
         if let Some((pid, agent_id, _, _)) = candidates.into_iter().next() {

@@ -11,7 +11,7 @@ COPY web/ .
 RUN npm run build
 
 # Stage 2: cargo-chef planner
-FROM rust:1.89-bookworm AS planner
+FROM rust:1.95-bookworm AS planner
 RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo.txt \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \
@@ -23,7 +23,7 @@ COPY crates/ crates/
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 3: backend builder
-FROM rust:1.89-bookworm AS backend-builder
+FROM rust:1.95-bookworm AS backend-builder
 RUN --mount=type=bind,source=build/pkgs/builder-rust-apt.txt,target=/tmp/packages.txt \
   apt-get update && apt-get install -y --no-install-recommends \
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
@@ -83,7 +83,7 @@ RUN pip install --no-cache-dir --prefix=/install -r builder-python-pip.txt
 # DEV TARGET
 # ============================
 
-FROM rust:1.89-bookworm AS dev
+FROM rust:1.95-bookworm AS dev
 RUN --mount=type=bind,source=build/pkgs/dev-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
