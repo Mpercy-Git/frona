@@ -19,7 +19,7 @@ xz-utils
 zip
 
 # Image processing
-imagemagick-6.q16
+imagemagick
 libjpeg62-turbo
 libopenjp2-7
 librsvg2-bin
