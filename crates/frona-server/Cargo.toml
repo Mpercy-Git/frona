@@ -38,7 +38,7 @@ twilio-async = "0.5"
 teloxide = { version = "0.13", default-features = false, features = ["rustls", "ctrlc_handler"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 telegram-markdown-v2 = "0.2"
-xml-rs = "0.8"
+xml-rs = "1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "fs", "trace", "set-header"] }
 tower_governor = "0.8"
@@ -51,7 +51,7 @@ async-stream = { workspace = true }
 serde-aux = { workspace = true }
 base64 = { workspace = true }
 serde_yaml = "0.9"
-config = { version = "0.14", features = ["yaml"] }
+config = { version = "0.15", features = ["yaml"] }
 browser-use = { version = "0.2", default-features = false }
 tokio-util = "0.7"
 hyper = { version = "1", features = ["full"] }
@@ -64,10 +64,10 @@ moka = { workspace = true }
 cedar-policy = { workspace = true }
 dashmap = "6"
 libc = "0.2"
-cron = "0.15"
+cron = "0.16"
 metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.16", default-features = false }
-vaultrs = { version = "0.7", default-features = false, features = ["rustls"] }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+vaultrs = { version = "0.8", default-features = false, features = ["rustls"] }
 keepass = "0.10"
 keeper-secrets-manager-core = "17"
 cookie = "0.18.1"
