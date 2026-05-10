@@ -100,6 +100,7 @@ pub struct Task {
     pub result_summary: Option<String>,
     pub error_message: Option<String>,
     #[serde(default)]
+    #[surreal(default)]
     pub quarantined: bool,
     #[serde(default)]
     pub result_schema: Option<serde_json::Value>,
