@@ -70,6 +70,12 @@ pub enum AppError {
     Http { status: u16, message: String },
 }
 
+impl From<serde_json::Error> for AppError {
+    fn from(e: serde_json::Error) -> Self {
+        AppError::Tool(format!("json: {e}"))
+    }
+}
+
 impl AppError {
     pub fn is_retryable(&self) -> bool {
         match self {

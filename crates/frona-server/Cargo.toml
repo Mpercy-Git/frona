@@ -23,7 +23,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 argon2 = "0.5"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 rand = "0.8"
@@ -35,7 +35,7 @@ openidconnect = "4"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "http2", "multipart", "ws"] }
 twilio-async = "0.5"
-teloxide = { version = "0.13", default-features = false, features = ["rustls", "ctrlc_handler"] }
+teloxide = { version = "0.17", default-features = false, features = ["rustls", "ctrlc_handler"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 telegram-markdown-v2 = "0.2"
 xml-rs = "1"
@@ -52,7 +52,7 @@ serde-aux = { workspace = true }
 base64 = { workspace = true }
 serde_yaml = "0.9"
 config = { version = "0.15", features = ["yaml"] }
-browser-use = { version = "0.2", default-features = false }
+frona-browser = { path = "../frona-browser" }
 tokio-util = "0.7"
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }

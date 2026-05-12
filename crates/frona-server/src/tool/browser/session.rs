@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use http_body_util::BodyExt;
@@ -7,9 +8,9 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use tokio::sync::RwLock;
 
-use crate::core::error::AppError;
-
 use crate::core::config::BrowserConfig;
+use crate::core::error::AppError;
+use frona_browser::BrowserConnection;
 
 #[derive(serde::Deserialize)]
 struct BrowserlessSession {
@@ -21,14 +22,10 @@ struct BrowserlessSession {
     user_data_dir: Option<String>,
 }
 
-struct ManagedSession {
-    session: browser_use::BrowserSession,
-}
-
 #[derive(Clone)]
 pub struct BrowserSessionManager {
     config: Option<BrowserConfig>,
-    sessions: Arc<RwLock<HashMap<String, ManagedSession>>>,
+    sessions: Arc<RwLock<HashMap<String, BrowserConnection>>>,
 }
 
 impl BrowserSessionManager {
@@ -47,20 +44,18 @@ impl BrowserSessionManager {
         format!("{user_id}/{provider}")
     }
 
-    pub async fn get_or_create_session(
+    /// Inserts `/` before the query string — browserless v2 returns HTTP 400 without it.
+    fn ws_url_for_profile(config: &BrowserConfig, user_id: &str, provider: &str) -> String {
+        let user_data_dir = config.profile_path(user_id, provider);
+        let base = config.ws_url.trim_end_matches('/');
+        format!("{}/?--user-data-dir={}", base, user_data_dir.display())
+    }
+
+    async fn create_connection(
         &self,
         user_id: &str,
         provider: &str,
-    ) -> Result<(), AppError> {
-        let key = Self::profile_key(user_id, provider);
-
-        {
-            let sessions = self.sessions.read().await;
-            if sessions.contains_key(&key) {
-                return Ok(());
-            }
-        }
-
+    ) -> Result<BrowserConnection, AppError> {
         let config = self.config.as_ref().ok_or_else(|| {
             AppError::Browser("Browser is not configured (FRONA_BROWSER_WS_URL not set)".into())
         })?;
@@ -68,36 +63,49 @@ impl BrowserSessionManager {
         self.kill_browserless_sessions_for_profile(user_id, provider)
             .await;
 
-        let ws_url = config.ws_url_for_profile(user_id, provider);
+        let ws_url = Self::ws_url_for_profile(config, user_id, provider);
         tracing::debug!(ws_url = %ws_url, browserless_ws_url = %config.ws_url, "Connecting to browser");
 
-        let options = browser_use::ConnectionOptions::new(&ws_url)
-            .timeout(config.connection_timeout_ms);
+        let timeout = Duration::from_millis(config.connection_timeout_ms);
+        BrowserConnection::connect(&ws_url, timeout)
+            .await
+            .map_err(|e| AppError::Browser(format!("Failed to connect to browser: {e}")))
+    }
 
-        let mut session = browser_use::BrowserSession::connect(options)
-            .map_err(|e| AppError::Browser(format!("Failed to connect to browser: {e}")))?;
+    pub async fn connection(
+        &self,
+        user_id: &str,
+        provider: &str,
+    ) -> Result<BrowserConnection, AppError> {
+        let key = Self::profile_key(user_id, provider);
+        if let Some(conn) = self.sessions.read().await.get(&key).cloned() {
+            return Ok(conn);
+        }
+        let conn = self.create_connection(user_id, provider).await?;
+        self.sessions.write().await.insert(key, conn.clone());
+        Ok(conn)
+    }
 
-        // Create an initial tab so get_active_tab() works in headless mode.
-        // BrowserSession::connect() (unlike launch()) doesn't create a tab,
-        // and the visibility-based tab detection fails in headless browserless.
-        let tab = session
-            .new_tab()
-            .map_err(|e| AppError::Browser(format!("Failed to create initial tab: {e}")))?;
-        tab.navigate_to("about:blank")
-            .map_err(|e| AppError::Browser(format!("Failed to initialize tab: {e}")))?;
-        tab.activate()
-            .map_err(|e| AppError::Browser(format!("Failed to activate tab: {e}")))?;
+    pub async fn reconnect(
+        &self,
+        user_id: &str,
+        provider: &str,
+    ) -> Result<BrowserConnection, AppError> {
+        let key = Self::profile_key(user_id, provider);
+        self.sessions.write().await.remove(&key);
+        self.connection(user_id, provider).await
+    }
 
-        let mut sessions = self.sessions.write().await;
-        sessions.insert(key, ManagedSession { session });
-
-        Ok(())
+    fn admin_http_client() -> Client<hyper_util::client::legacy::connect::HttpConnector, Body> {
+        Client::builder(TokioExecutor::new()).build_http::<Body>()
     }
 
     async fn list_browserless_sessions(&self) -> Vec<BrowserlessSession> {
-        let Some(config) = self.config.as_ref() else { return vec![] };
+        let Some(config) = self.config.as_ref() else {
+            return vec![];
+        };
         let http_base = config.http_base_url();
-        let client = Client::builder(TokioExecutor::new()).build_http::<Body>();
+        let client = Self::admin_http_client();
 
         let sessions_url = format!("{http_base}/sessions?token={}", config.api_token());
         let req = match hyper::Request::get(&sessions_url).body(Body::empty()) {
@@ -137,9 +145,11 @@ impl BrowserSessionManager {
         if browser_ids.is_empty() {
             return;
         }
-        let Some(config) = self.config.as_ref() else { return };
+        let Some(config) = self.config.as_ref() else {
+            return;
+        };
         let http_base = config.http_base_url();
-        let client = Client::builder(TokioExecutor::new()).build_http::<Body>();
+        let client = Self::admin_http_client();
 
         for id in browser_ids {
             let kill_url = format!("{http_base}/kill/{id}?token={}", config.api_token());
@@ -158,7 +168,9 @@ impl BrowserSessionManager {
     }
 
     async fn kill_browserless_sessions_for_profile(&self, user_id: &str, provider: &str) {
-        let Some(config) = self.config.as_ref() else { return };
+        let Some(config) = self.config.as_ref() else {
+            return;
+        };
         let profile_path = config.profile_path(user_id, provider);
         let profile_str = profile_path.to_string_lossy();
 
@@ -167,9 +179,9 @@ impl BrowserSessionManager {
             .into_iter()
             .filter(|s| {
                 s.session_type.as_deref() == Some("browser")
-                    && s.user_data_dir
-                        .as_deref()
-                        .is_some_and(|d| profile_str.ends_with(d) || d.ends_with(profile_str.as_ref()))
+                    && s.user_data_dir.as_deref().is_some_and(|d| {
+                        profile_str.ends_with(d) || d.ends_with(profile_str.as_ref())
+                    })
             })
             .map(|s| s.browser_id)
             .collect::<std::collections::HashSet<_>>()
@@ -192,89 +204,46 @@ impl BrowserSessionManager {
         self.kill_browserless_session_ids(&ids).await;
     }
 
-    async fn execute_on_session(
-        &self,
-        key: &str,
-        tool_name: &str,
-        params: &serde_json::Value,
-    ) -> Result<String, AppError> {
-        let sessions = self.sessions.read().await;
-        let managed = sessions
-            .get(key)
-            .ok_or_else(|| AppError::Browser("Session not found after creation".into()))?;
-
-        let result = managed
-            .session
-            .execute_tool(tool_name, params.clone())
-            .map_err(|e| AppError::Browser(format!("Tool execution failed: {e}")))?;
-
-        if !result.success {
-            Ok(format!(
-                "Error: {}",
-                result.error.unwrap_or_else(|| "Unknown error".to_string())
-            ))
-        } else {
-            Ok(result
-                .data
-                .map(|v| v.to_string())
-                .unwrap_or_default())
-        }
-    }
-
-    pub async fn execute_tool(
-        &self,
-        user_id: &str,
-        provider: &str,
-        tool_name: &str,
-        params: serde_json::Value,
-    ) -> Result<String, AppError> {
-        let key = Self::profile_key(user_id, provider);
-
-        self.get_or_create_session(user_id, provider).await?;
-
-        match self.execute_on_session(&key, tool_name, &params).await {
-            Ok(result) => Ok(result),
-            Err(e) if e.to_string().contains("connection is closed") => {
-                tracing::warn!("Browser session dead, reconnecting");
-                self.sessions.write().await.remove(&key);
-                self.get_or_create_session(user_id, provider).await?;
-                self.execute_on_session(&key, tool_name, &params).await
-            }
-            Err(e) if e.to_string().contains("No active tab found") => {
-                tracing::warn!("No active tab found, reconnecting browser session");
-                self.sessions.write().await.remove(&key);
-                self.get_or_create_session(user_id, provider).await?;
-
-                match self.execute_on_session(&key, tool_name, &params).await {
-                    Ok(result) => Ok(result),
-                    Err(e) if e.to_string().contains("No active tab found")
-                        && tool_name == "navigate" =>
-                    {
-                        tracing::warn!(
-                            "Still no active tab after reconnect, creating new tab"
-                        );
-                        self.execute_on_session(&key, "new_tab", &params).await
-                    }
-                    Err(e) => Err(e),
-                }
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    pub async fn close_session(
-        &self,
-        user_id: &str,
-        provider: &str,
-    ) -> Result<(), AppError> {
+    pub async fn close_session(&self, user_id: &str, provider: &str) -> Result<(), AppError> {
         let key = Self::profile_key(user_id, provider);
         let mut sessions = self.sessions.write().await;
-        if let Some(managed) = sessions.remove(&key) {
-            managed
-                .session
-                .close()
+        if let Some(conn) = sessions.remove(&key) {
+            conn.disconnect()
+                .await
                 .map_err(|e| AppError::Browser(format!("Failed to close session: {e}")))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(ws_url: &str) -> BrowserConfig {
+        BrowserConfig {
+            ws_url: ws_url.into(),
+            api_token: None,
+            profiles_path: "/profiles".into(),
+            connection_timeout_ms: 30000,
+        }
+    }
+
+    #[test]
+    fn ws_url_inserts_root_path_before_query_string() {
+        let url = BrowserSessionManager::ws_url_for_profile(&cfg("ws://browserless:3333"), "alice", "openai");
+        assert_eq!(
+            url,
+            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai"
+        );
+    }
+
+    #[test]
+    fn ws_url_normalises_trailing_slash_on_base() {
+        let url = BrowserSessionManager::ws_url_for_profile(&cfg("ws://browserless:3333/"), "alice", "openai");
+        assert_eq!(
+            url,
+            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai"
+        );
     }
 }
