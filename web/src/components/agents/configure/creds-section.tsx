@@ -5,7 +5,7 @@ import { SectionHeader } from "@/components/settings/field";
 import { KeyIcon, TrashIcon, PlusIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
 import { CheckIcon, MinusIcon } from "@heroicons/react/16/solid";
 import * as Checkbox from "@radix-ui/react-checkbox";
-import { Si1password, SiBitwarden, SiVault, SiKeepassxc, SiKeeper } from "@icons-pack/react-simple-icons";
+import { Si1password, SiBitwarden, SiVault, SiKeepassxc } from "@icons-pack/react-simple-icons";
 import { api } from "@/lib/api-client";
 
 const PROVIDER_ICONS: Record<string, React.ComponentType<{ className?: string; size?: number }>> = {
@@ -13,7 +13,6 @@ const PROVIDER_ICONS: Record<string, React.ComponentType<{ className?: string; s
   bitwarden: SiBitwarden,
   hashicorp: SiVault,
   keepass: SiKeepassxc,
-  keeper: SiKeeper,
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -22,7 +21,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   bitwarden: "Bitwarden",
   hashicorp: "HashiCorp",
   keepass: "KeePass",
-  keeper: "Keeper",
 };
 
 export interface VaultGrant {

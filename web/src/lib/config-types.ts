@@ -79,7 +79,6 @@ export interface VaultConfig {
   hashicorp_mount: string | null;
   keepass_path: string | null;
   keepass_password: SensitiveField;
-  keeper_app_key: SensitiveField;
 }
 
 export interface RetryConfig {
