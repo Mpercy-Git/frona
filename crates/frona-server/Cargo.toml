@@ -69,7 +69,6 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 vaultrs = { version = "0.8", default-features = false, features = ["rustls"] }
 keepass = "0.10"
-keeper-secrets-manager-core = "17"
 cookie = "0.18.1"
 minijinja = "2"
 schemars = { version = "0.8", features = ["chrono"] }

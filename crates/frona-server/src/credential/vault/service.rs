@@ -630,17 +630,6 @@ impl VaultService {
             ));
         }
 
-        if let Some(app_key) = &self.vault_config.keeper_app_key {
-            entries.push((
-                "keeper".to_string(),
-                VaultProviderType::Keeper,
-                "Keeper".to_string(),
-                VaultConnectionConfig::Keeper {
-                    app_key: app_key.clone(),
-                    server: None,
-                },
-            ));
-        }
 
         entries
     }

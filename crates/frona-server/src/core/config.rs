@@ -250,14 +250,6 @@ impl Default for BrowserConfig {
 }
 
 impl BrowserConfig {
-    pub fn ws_url_for_profile(&self, username: &str, provider: &str) -> String {
-        let user_data_dir = self.profile_path(username, provider);
-        format!(
-            "{}?--user-data-dir={}",
-            self.ws_url,
-            user_data_dir.display()
-        )
-    }
 
     pub fn http_base_url(&self) -> String {
         self.ws_url
@@ -726,8 +718,6 @@ pub struct VaultConfig {
     pub keepass_path: Option<String>,
     #[schemars(description = "KeePass database password.")]
     pub keepass_password: Option<String>,
-    #[schemars(description = "Keeper Secrets Manager app key.")]
-    pub keeper_app_key: Option<String>,
 }
 
 
@@ -960,7 +950,6 @@ pub const SENSITIVE_PATHS: &[&[&str]] = &[
     &["vault", "bitwarden_master_password"],
     &["vault", "hashicorp_token"],
     &["vault", "keepass_password"],
-    &["vault", "keeper_app_key"],
 ];
 
 /// Provider fields that are sensitive (applied to each provider in the map).
@@ -1272,15 +1261,6 @@ mod tests {
         let loaded = Config::load();
         assert!(loaded.config.sso.enabled);
         unsafe { std::env::remove_var("FRONA_SSO_ENABLED") };
-    }
-
-    #[test]
-    fn browser_config_ws_url_for_profile() {
-        let config = BrowserConfig { ws_url: "ws://localhost:3333".into(), ..Default::default() };
-        let url = config.ws_url_for_profile("alice", "google");
-        assert!(url.starts_with("ws://localhost:3333?--user-data-dir="));
-        assert!(url.contains("alice"));
-        assert!(url.contains("google"));
     }
 
     #[test]
