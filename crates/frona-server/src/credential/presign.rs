@@ -17,6 +17,8 @@ pub struct PresignService {
 }
 
 impl PresignService {
+    pub const LONG_TERM_EXPIRY_SECS: u64 = 30 * 24 * 60 * 60;
+
     pub fn new(
         keypair_svc: KeyPairService,
         user_service: UserService,
@@ -39,6 +41,17 @@ impl PresignService {
         user_id: &str,
         username: &str,
     ) -> Result<String, AppError> {
+        self.sign_with_expiry(owner, path, user_id, username, self.expiry_secs).await
+    }
+
+    pub async fn sign_with_expiry(
+        &self,
+        owner: &str,
+        path: &str,
+        user_id: &str,
+        username: &str,
+        expiry_secs: u64,
+    ) -> Result<String, AppError> {
         let segment = match attachment_url_segment(owner, path, Some(username)) {
             Some(s) => s,
             None => return Ok(String::new()),
@@ -47,7 +60,7 @@ impl PresignService {
         let keypair_owner = format!("user:{user_id}");
         let (encoding_key, kid) = self.keypair_svc.get_signing_key(&keypair_owner).await?;
 
-        let exp = (chrono::Utc::now().timestamp() as u64 + self.expiry_secs) as usize;
+        let exp = (chrono::Utc::now().timestamp() as u64 + expiry_secs) as usize;
         let claims = PresignClaims {
             sub: user_id.to_string(),
             owner: owner.to_string(),
@@ -70,6 +83,17 @@ impl PresignService {
     ) -> Result<String, AppError> {
         let username = self.resolve_username(user_id).await?;
         self.sign(owner, path, user_id, &username).await
+    }
+
+    pub async fn sign_with_expiry_by_user_id(
+        &self,
+        owner: &str,
+        path: &str,
+        user_id: &str,
+        expiry_secs: u64,
+    ) -> Result<String, AppError> {
+        let username = self.resolve_username(user_id).await?;
+        self.sign_with_expiry(owner, path, user_id, &username, expiry_secs).await
     }
 
     pub async fn verify(&self, token: &str) -> Result<PresignClaims, AppError> {
