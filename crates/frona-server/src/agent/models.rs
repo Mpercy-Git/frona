@@ -82,7 +82,8 @@ pub struct AgentResponse {
     /// Evaluated sandbox access (reconciled + user-authored + managed).
     pub sandbox_policy: SandboxPolicy,
     pub sandbox_limits: Option<SandboxLimits>,
-    pub avatar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     pub identity: BTreeMap<String, String>,
     pub prompt: Option<String>,
     pub default_prompt: String,
@@ -105,7 +106,7 @@ impl AgentResponse {
             skills: agent.skills,
             sandbox_policy,
             sandbox_limits: agent.sandbox_limits,
-            avatar: agent.avatar,
+            avatar_url: None,
             identity: agent.identity,
             prompt: agent.prompt,
             default_prompt: String::new(),

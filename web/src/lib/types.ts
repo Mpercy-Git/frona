@@ -53,7 +53,7 @@ export interface Agent {
   enabled: boolean;
   tools: string[];
   skills: string[];
-  avatar: string | null;
+  avatar_url: string | null;
   identity: Record<string, string>;
   /** Evaluated sandbox access — read-only on responses. */
   sandbox_policy: SandboxPolicy;

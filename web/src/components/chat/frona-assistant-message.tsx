@@ -54,7 +54,7 @@ function StreamingIndicator() {
 }
 
 function AvatarContent({ avatar, letter }: { avatar?: string | null; letter: string }) {
-  if (avatar && (avatar.startsWith("data:") || avatar.startsWith("http") || avatar.startsWith("/api/"))) {
+  if (avatar) {
     return <img src={avatar} alt="" className="h-8 w-8 rounded-full object-cover" />;
   }
   return (
@@ -284,7 +284,7 @@ export function FronaAssistantMessage() {
       <div className="w-full">
         {!isContinuation && (
           <div className="flex items-center gap-2.5 h-8">
-            <AgentAvatar name={agentName} avatar={agent?.identity?.avatar} />
+            <AgentAvatar name={agentName} avatar={agent?.avatar_url} />
             <p className="text-xs font-medium text-text-tertiary">
               {agentName}
             </p>
