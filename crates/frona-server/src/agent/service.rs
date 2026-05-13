@@ -221,6 +221,13 @@ impl AgentService {
             agent.prompt = if prompt.is_empty() { None } else { Some(prompt) };
         }
         if let Some(ref identity) = req.identity {
+            if let Some(avatar) = identity.get("avatar")
+                && avatar.starts_with("data:")
+            {
+                return Err(AppError::Validation(
+                    "Inline data: URLs are not allowed for avatars".into(),
+                ));
+            }
             if !explicit_name
                 && let Some(new_name) = identity.get("name").filter(|n| !n.is_empty())
                 && agent.identity.get("name") != Some(new_name)
