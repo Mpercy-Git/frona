@@ -242,6 +242,7 @@ function AgentSettings() {
                 description={(merged.description as string) ?? ""}
                 enabled={(merged.enabled as boolean) ?? true}
                 identity={(merged.identity as Record<string, string>) ?? {}}
+                avatarUrl={(merged.avatar_url as string | null) ?? null}
                 onChange={update}
                 onIdentityChange={(v) => update({ identity: v })}
               />

@@ -83,7 +83,29 @@ async fn to_response(state: &AppState, user_id: &str, agent: Agent) -> Result<Ag
         .await?
         .as_ref()
         .clone();
-    Ok(AgentResponse::from_agent(agent, tools, sandbox_policy))
+    let agent_id = agent.id.clone();
+    let mut response = AgentResponse::from_agent(agent, tools, sandbox_policy);
+    if let Some(value) = response.identity.get("avatar")
+        && !value.is_empty()
+    {
+        response.avatar_url = if value.starts_with("http://") || value.starts_with("https://") {
+            Some(value.clone())
+        } else if !value.contains('/') {
+            state
+                .presign_service
+                .sign_with_expiry_by_user_id(
+                    &format!("agent:{agent_id}"),
+                    value,
+                    user_id,
+                    crate::credential::presign::PresignService::LONG_TERM_EXPIRY_SECS,
+                )
+                .await
+                .ok()
+        } else {
+            None
+        };
+    }
+    Ok(response)
 }
 
 async fn create_agent(
@@ -263,6 +285,20 @@ async fn upload_avatar(
         .write_bytes(&avatar_filename, &bytes)
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
 
-    let url = format!("/api/files/agent/{id}/{avatar_filename}");
-    Ok(Json(serde_json::json!({ "url": url })))
+    let owner = format!("agent:{id}");
+    let presigned_url = state
+        .presign_service
+        .sign_with_expiry_by_user_id(
+            &owner,
+            &avatar_filename,
+            &auth.user_id,
+            crate::credential::presign::PresignService::LONG_TERM_EXPIRY_SECS,
+        )
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "filename": avatar_filename,
+        "url": presigned_url,
+    })))
 }
+

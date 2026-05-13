@@ -21,11 +21,12 @@ interface ProfileSectionProps {
   description: string;
   enabled: boolean;
   identity: Record<string, string>;
+  avatarUrl: string | null;
   onChange: (fields: { description?: string; enabled?: boolean }) => void;
   onIdentityChange: (identity: Record<string, string>) => void;
 }
 
-export function ProfileSection({ agentId, description, enabled, identity, onChange, onIdentityChange }: ProfileSectionProps) {
+export function ProfileSection({ agentId, description, enabled, identity, avatarUrl, onChange, onIdentityChange }: ProfileSectionProps) {
   const updateIdentityField = (key: string, value: string) => {
     onIdentityChange({ ...identity, [key]: value });
   };
@@ -38,6 +39,7 @@ export function ProfileSection({ agentId, description, enabled, identity, onChan
           <AvatarField
             agentId={agentId}
             value={identity.avatar ?? ""}
+            displayUrl={avatarUrl}
             onChange={(v) => updateIdentityField("avatar", v)}
           />
           <Toggle label="Enabled" value={enabled} onChange={(v) => onChange({ enabled: v })} />
@@ -78,27 +80,19 @@ export function ProfileSection({ agentId, description, enabled, identity, onChan
   );
 }
 
-function AvatarField({ agentId, value, onChange }: { agentId: string; value: string; onChange: (v: string) => void }) {
+function AvatarField({ agentId, value, displayUrl, onChange }: { agentId: string; value: string; displayUrl: string | null; onChange: (v: string) => void }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    try {
-      const result = await api.uploadFile(`/api/agents/${agentId}/avatar`, file);
-      onChange(result.url);
-    } catch {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === "string") {
-          onChange(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
+    const result = await api.uploadFile<{ filename: string; url: string }>(`/api/agents/${agentId}/avatar`, file);
+    setPreviewUrl(result.url);
+    onChange(result.filename);
   }, [agentId, onChange]);
 
-  const isImage = value && (value.startsWith("data:") || value.startsWith("http") || value.startsWith("/api/"));
+  const renderSrc = previewUrl ?? displayUrl;
 
   return (
     <div className="flex items-center gap-3">
@@ -107,9 +101,9 @@ function AvatarField({ agentId, value, onChange }: { agentId: string; value: str
         onClick={() => fileInputRef.current?.click()}
         className="relative shrink-0 group cursor-pointer"
       >
-        {isImage ? (
+        {renderSrc ? (
           <img
-            src={value}
+            src={renderSrc}
             alt="Avatar"
             className="h-20 w-20 rounded-full object-cover border border-border group-hover:opacity-80 transition"
           />
@@ -119,10 +113,13 @@ function AvatarField({ agentId, value, onChange }: { agentId: string; value: str
           </div>
         )}
       </button>
-      {value && (
+      {(value || previewUrl) && (
         <button
           type="button"
-          onClick={() => onChange("")}
+          onClick={() => {
+            setPreviewUrl(null);
+            onChange("");
+          }}
           className="text-xs text-text-tertiary hover:text-text-primary"
         >
           Remove
