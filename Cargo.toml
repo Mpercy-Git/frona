@@ -20,5 +20,6 @@ async-stream = "0.3"
 serde-aux = "4"
 base64 = "0.22"
 backon = "1"
+bon = "3"
 moka = { version = "0.12", features = ["future", "sync"] }
 cedar-policy = { version = "4", features = ["partial-eval"] }
