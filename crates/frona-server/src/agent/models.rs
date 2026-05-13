@@ -52,7 +52,7 @@ pub struct CreateAgentRequest {
     pub sandbox_limits: Option<SandboxLimits>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize, bon::Builder)]
 pub struct UpdateAgentRequest {
     pub name: Option<String>,
     pub description: Option<String>,
