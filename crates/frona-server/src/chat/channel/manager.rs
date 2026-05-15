@@ -123,15 +123,15 @@ impl ChannelManager {
     ) -> Result<(), AppError> {
         self.stop_channel(&channel.id).await;
 
+        // Don't mark Setup from here: the watcher would catch the broadcast
+        // and call start_channel again, looping forever. `Setup` is owned by
+        // service.create/update; we just refuse to start.
         let missing = state.channel_service.missing_required(channel).await?;
         if !missing.is_empty() {
-            let msg = format!("missing required field(s): {}", missing.join(", "));
-            state
-                .channel_service
-                .mark_status(&channel.id, ChannelStatus::Setup, Some(msg.clone()))
-                .await
-                .ok();
-            return Err(AppError::Validation(msg));
+            return Err(AppError::Validation(format!(
+                "missing required field(s): {}",
+                missing.join(", ")
+            )));
         }
 
         let setup = async {

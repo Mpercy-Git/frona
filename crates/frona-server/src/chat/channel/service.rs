@@ -156,6 +156,15 @@ impl ChannelService {
             self.write_bindings(user_id, &channel.id, credentials.clone()).await?;
         }
 
+        if channel.status == ChannelStatus::Setup {
+            let missing = self.missing_required(&channel).await?;
+            channel.error_message = if missing.is_empty() {
+                None
+            } else {
+                Some(format!("missing required field(s): {}", missing.join(", ")))
+            };
+        }
+
         channel.updated_at = Utc::now();
         let persisted = self.repo.update(&channel).await?;
 
@@ -199,6 +208,20 @@ impl ChannelService {
         let channel = self.find_owned(user_id, channel_id).await?;
         if channel.status == ChannelStatus::Connected {
             return Ok(channel);
+        }
+        // Catch missing fields before flipping to Connecting: start_channel
+        // returns Err but doesn't revert status, so a stuck Connecting row
+        // would otherwise sit forever.
+        let missing = self.missing_required(&channel).await?;
+        if !missing.is_empty() {
+            let msg = format!("missing required field(s): {}", missing.join(", "));
+            if channel.status != ChannelStatus::Setup
+                || channel.error_message.as_deref() != Some(msg.as_str())
+            {
+                self.mark_status(channel_id, ChannelStatus::Setup, Some(msg.clone()))
+                    .await?;
+            }
+            return Err(AppError::Validation(msg));
         }
         self.mark_status(channel_id, ChannelStatus::Connecting, None).await?;
         state.channel_manager.start_channel(state, &channel).await?;
