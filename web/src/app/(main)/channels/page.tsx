@@ -302,7 +302,10 @@ function ChannelDetailPage() {
     return <p className="p-8 text-sm text-error-text">{error || "Channel not found"}</p>;
   }
 
-  const canStart = channel.status === "disconnected" || channel.status === "failed";
+  const canStart =
+    channel.status === "disconnected"
+    || channel.status === "failed"
+    || channel.status === "setup";
   const canStop = channel.status === "connected" || channel.status === "connecting";
   const displayName = space?.name ?? manifest?.display_name ?? channel.provider;
 
