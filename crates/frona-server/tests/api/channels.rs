@@ -1435,3 +1435,119 @@ async fn segments_executing_excluded_from_retry_then_completed_walks_full_list()
     drop(seen);
     assert_eq!(setup.captured.lock().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn slack_manifest_is_registered_with_required_secret_tokens() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) =
+        register_user(&state, "slmf", "slmf@example.com", "password123").await;
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_get("/api/channels/manifests", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let manifests = body_json(resp).await;
+    let slack = manifests
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "slack")
+        .expect("Slack manifest registered at startup");
+    assert_eq!(slack["display_name"], "Slack");
+    let fields = slack["config_fields"].as_array().unwrap();
+    for name in ["bot_token", "app_token"] {
+        let f = fields
+            .iter()
+            .find(|f| f["name"] == name)
+            .unwrap_or_else(|| panic!("manifest must declare {name}"));
+        assert_eq!(f["is_required"], true, "{name} must be required");
+        assert_eq!(f["is_secret"], true, "{name} must be marked secret");
+    }
+}
+
+#[tokio::test]
+async fn slack_pairing_binds_slack_user_id_into_user_address() {
+    use frona::core::repository::Repository;
+
+    let (state, _tmp) = test_app_state().await;
+    let (_token, user_id) =
+        register_user(&state, "slpair", "slpair@example.com", "password123").await;
+
+    let now = chrono::Utc::now();
+    let channel_id = format!("channel:{}", frona::core::repository::new_id());
+    let channel = frona::chat::channel::Channel {
+        id: channel_id.clone(),
+        user_id: user_id.clone(),
+        space_id: "space-x".into(),
+        provider: "slack".into(),
+        agent_id: "agent-x".into(),
+        config: {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("bot_token".into(), "xoxb-fake".into());
+            m.insert("app_token".into(), "xapp-fake".into());
+            m
+        },
+        dispatch_mode: frona::chat::channel::DispatchMode::Message,
+        status: frona::chat::channel::ChannelStatus::Disconnected,
+        error_message: None,
+        last_started_at: None,
+        user_address: None,
+        created_at: now,
+        updated_at: now,
+    };
+    frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
+        state.db.clone(),
+    )
+    .create(&channel)
+    .await
+    .unwrap();
+
+    let code = state
+        .channel_service
+        .initiate_pairing(&user_id, &channel_id)
+        .await
+        .unwrap();
+    let pairing = state
+        .channel_service
+        .find_owned(&user_id, &channel_id)
+        .await
+        .unwrap();
+    assert_eq!(format!("{:?}", pairing.status), "Pairing");
+
+    let redeemed = state
+        .channel_service
+        .try_redeem_pairing(&channel_id, "U07AB12C", &code)
+        .await
+        .unwrap();
+    assert!(redeemed, "matching code should redeem");
+
+    let after = state
+        .channel_service
+        .find_owned(&user_id, &channel_id)
+        .await
+        .unwrap();
+    assert_eq!(format!("{:?}", after.status), "Connected");
+    let ua = after.user_address.expect("user_address populated by redeem");
+    assert_eq!(ua.address.as_deref(), Some("U07AB12C"));
+    assert!(ua.paired_at.is_some());
+    assert!(ua.pairing_code.is_none(), "code cleared after redeem");
+
+    // Replays after redemption are no-ops — status is no longer Pairing.
+    let again = state
+        .channel_service
+        .try_redeem_pairing(&channel_id, "U99XYZ45", &code)
+        .await
+        .unwrap();
+    assert!(!again, "second redeem after Connected returns false");
+    let still = state
+        .channel_service
+        .find_owned(&user_id, &channel_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        still.user_address.and_then(|ua| ua.address).as_deref(),
+        Some("U07AB12C"),
+        "second attempt does not overwrite the paired address",
+    );
+}

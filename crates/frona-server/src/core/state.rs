@@ -141,6 +141,11 @@ impl AppState {
         metrics_handle: PrometheusHandle,
         resource_manager: Arc<SystemResourceManager>,
     ) -> Self {
+        // Both `aws-lc-rs` and `ring` features are active on rustls 0.23 (via
+        // reqwest + slack-morphism); without an explicit default, rustls panics
+        // on first TLS construction.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let http_client = crate::build_http_client();
 
         let broadcast_service = BroadcastService::with_pending_events_secs(config.server.sse_pending_events_secs);
@@ -353,6 +358,7 @@ impl AppState {
             let reg = Arc::new(crate::chat::channel::ChannelRegistry::new());
             reg.register_factory(Arc::new(crate::chat::channel::adapter::telegram::TelegramAdapterFactory));
             reg.register_factory(Arc::new(crate::chat::channel::adapter::sms::SmsAdapterFactory));
+            reg.register_factory(Arc::new(crate::chat::channel::adapter::slack::SlackAdapterFactory));
             reg
         };
         let channel_repo: Arc<dyn crate::chat::channel::repository::ChannelRepository> =
