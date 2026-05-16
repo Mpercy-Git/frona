@@ -79,7 +79,7 @@ impl ChannelAdapter for SlackAdapter {
             channel_id = %ctx.channel.id,
             slack_user_id = %identity.user_id,
             slack_team = %auth.team,
-            "Slack channel connected; starting Socket Mode listener",
+            "Slack bot authenticated",
         );
 
         let env = Arc::new(
@@ -116,6 +116,10 @@ impl ChannelAdapter for SlackAdapter {
             // Not `serve()`: dropping its future skips the inner `shutdown()`,
             // leaving slack-morphism's WSS tasks alive after cancellation.
             listener.start().await;
+            tracing::info!(
+                channel_id = %channel_id,
+                "Slack channel connected via Socket Mode",
+            );
             cancel.cancelled().await;
             listener.shutdown().await;
             tracing::info!(
