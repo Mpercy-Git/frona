@@ -331,9 +331,10 @@ impl Default for SchedulerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, surrealdb::types::SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
 pub struct RetryConfig {
-    #[schemars(description = "Maximum number of retry attempts.")]
+    #[schemars(description = "Maximum number of retry attempts. 0 disables retry.")]
     pub max_retries: u32,
     #[schemars(description = "Initial backoff delay in milliseconds.")]
     pub initial_backoff_ms: u64,
@@ -360,6 +361,26 @@ impl Default for RetryConfig {
             initial_backoff_ms: 1_000,
             backoff_multiplier: 2.0,
             max_backoff_ms: 60_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
+pub struct ChannelConfig {
+    #[schemars(description = "Default retry policy for failed channel connections. Per-channel overrides take precedence.")]
+    pub retry: RetryConfig,
+}
+
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        Self {
+            retry: RetryConfig {
+                max_retries: u32::MAX,
+                initial_backoff_ms: 1_000,
+                backoff_multiplier: 2.0,
+                max_backoff_ms: 60_000,
+            },
         }
     }
 }
@@ -830,6 +851,8 @@ pub struct Config {
     pub app: AppConfig,
     pub cache: CacheConfig,
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub channel: ChannelConfig,
     #[serde(default)]
     pub signal: SignalConfig,
     #[serde(default)]
