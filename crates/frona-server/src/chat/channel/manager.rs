@@ -83,6 +83,7 @@ pub(super) struct ChannelTask {
 
 pub struct ChannelManager {
     tasks: Arc<Mutex<HashMap<String, ChannelTask>>>,
+    retry_cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
     message_repo: Arc<dyn MessageRepository>,
     chat_service: ChatService,
     channel_service: Arc<ChannelService>,
@@ -96,6 +97,7 @@ impl ChannelManager {
     ) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            retry_cancels: Arc::new(Mutex::new(HashMap::new())),
             message_repo,
             chat_service,
             channel_service,
@@ -116,19 +118,98 @@ impl ChannelManager {
         }
     }
 
+    pub fn start_with_retry(self: Arc<Self>, state: AppState, channel_id: String) {
+        let cancel = state.shutdown_token.child_token();
+        let manager = self.clone();
+        let id_for_task = channel_id.clone();
+        let cancel_for_task = cancel.clone();
+        tokio::spawn(async move {
+            let prev = {
+                let mut map = manager.retry_cancels.lock().await;
+                map.insert(id_for_task.clone(), cancel_for_task.clone())
+            };
+            if let Some(p) = prev {
+                p.cancel();
+            }
+            manager
+                .clone()
+                .retry_loop(state, id_for_task.clone(), cancel_for_task)
+                .await;
+            let mut map = manager.retry_cancels.lock().await;
+            map.remove(&id_for_task);
+        });
+    }
+
+    async fn retry_loop(
+        self: Arc<Self>,
+        state: AppState,
+        channel_id: String,
+        cancel: CancellationToken,
+    ) {
+        let mut attempt: u32 = 0;
+        loop {
+            let channel = match self.channel_service.find_by_id(&channel_id).await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            // Connected is intentionally included: after a process restart the DB
+            // still says Connected but no in-memory task exists, so we re-start.
+            if matches!(channel.status, ChannelStatus::Setup | ChannelStatus::Pairing) {
+                return;
+            }
+
+            let retry_cfg = channel
+                .retry
+                .clone()
+                .unwrap_or_else(|| state.config.channel.retry.clone());
+            if attempt > 0 && attempt > retry_cfg.max_retries {
+                tracing::warn!(
+                    channel_id = %channel_id,
+                    attempts = %attempt,
+                    "channel retry exhausted; leaving Failed for operator",
+                );
+                return;
+            }
+
+            match self.start_channel(&state, &channel).await {
+                Ok(()) => return,
+                Err(e) => {
+                    if retry_cfg.max_retries == 0 {
+                        tracing::warn!(
+                            channel_id = %channel_id,
+                            error = %e,
+                            "channel retry disabled; one-shot start failed",
+                        );
+                        return;
+                    }
+                    attempt = attempt.saturating_add(1);
+                    let factor = retry_cfg
+                        .backoff_multiplier
+                        .powi(attempt.saturating_sub(1) as i32);
+                    let delay = (retry_cfg.initial_backoff_ms as f64 * factor)
+                        .min(retry_cfg.max_backoff_ms as f64) as u64;
+                    tracing::info!(
+                        channel_id = %channel_id,
+                        attempt = %attempt,
+                        delay_ms = %delay,
+                        "channel start failed; retrying after backoff",
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {},
+                        _ = cancel.cancelled() => return,
+                    }
+                }
+            }
+        }
+    }
+
     pub async fn start(self: Arc<Self>, state: AppState) -> Result<(), AppError> {
         if let Err(e) = state.channel_service.revert_orphaned_pairings().await {
             tracing::warn!(error = %e, "ChannelManager: failed to revert orphaned pairings");
         }
         let channels = state.channel_service.find_active().await.unwrap_or_default();
         for channel in channels {
-            let manager = self.clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                if let Err(e) = manager.start_channel(&state, &channel).await {
-                    tracing::warn!(channel_id = %channel.id, error = %e, "ChannelManager: failed to spawn channel at startup");
-                }
-            });
+            self.clone().start_with_retry(state.clone(), channel.id);
         }
         self.clone().spawn_broadcast_watcher(state);
         Ok(())
@@ -300,6 +381,13 @@ impl ChannelManager {
         if let Some(task) = task {
             task.cancel.cancel();
         }
+        let retry = {
+            let mut map = self.retry_cancels.lock().await;
+            map.remove(channel_id)
+        };
+        if let Some(c) = retry {
+            c.cancel();
+        }
     }
 
     pub async fn dispatch_inbound_webhook(
@@ -352,10 +440,7 @@ impl ChannelManager {
                 tokio::spawn(async move {
                     match action {
                         EntityAction::Created => {
-                            if let Ok(channel) = state.channel_service.find_by_id(&record_id).await
-                            {
-                                let _ = manager.start_channel(&state, &channel).await;
-                            }
+                            manager.start_with_retry(state, record_id);
                         }
                         EntityAction::Updated => {
                             let new_channel =
@@ -373,9 +458,19 @@ impl ChannelManager {
                             if let Some(prior) = prior
                                 && !channel_needs_restart(&prior, &new_channel)
                             {
+                                if new_channel.status == ChannelStatus::Failed {
+                                    let already = manager
+                                        .retry_cancels
+                                        .lock()
+                                        .await
+                                        .contains_key(&record_id);
+                                    if !already {
+                                        manager.start_with_retry(state, record_id);
+                                    }
+                                }
                                 return;
                             }
-                            let _ = manager.start_channel(&state, &new_channel).await;
+                            manager.start_with_retry(state, record_id);
                         }
                         EntityAction::Deleted => {
                             manager.stop_channel(&record_id).await;

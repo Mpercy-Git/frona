@@ -229,7 +229,10 @@ impl ChannelService {
             return Err(AppError::Validation(msg));
         }
         self.mark_status(channel_id, ChannelStatus::Connecting, None).await?;
-        state.channel_manager.start_channel(state, &channel).await?;
+        state
+            .channel_manager
+            .clone()
+            .start_with_retry(state.clone(), channel.id.clone());
         self.find_by_id(channel_id).await
     }
 
