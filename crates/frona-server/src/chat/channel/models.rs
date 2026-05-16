@@ -74,6 +74,8 @@ pub struct Channel {
     pub last_started_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub user_address: Option<UserAddress>,
+    #[serde(default)]
+    pub retry: Option<crate::core::config::RetryConfig>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -114,6 +116,8 @@ pub struct CreateChannelRequest {
     pub credentials: Vec<CredentialBinding>,
     #[serde(default)]
     pub dispatch_mode: DispatchMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<crate::core::config::RetryConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -126,6 +130,8 @@ pub struct UpdateChannelRequest {
     pub credentials: Option<Vec<CredentialBinding>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_mode: Option<DispatchMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<Option<crate::core::config::RetryConfig>>,
 }
 
 #[derive(Debug, Clone)]

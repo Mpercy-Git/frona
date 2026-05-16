@@ -173,6 +173,7 @@ async fn seed_space_and_chat(
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };

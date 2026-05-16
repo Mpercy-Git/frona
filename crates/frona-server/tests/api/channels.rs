@@ -70,6 +70,7 @@ async fn telegram_webhook_creates_entities_with_metadata() {
             pairing_initiated_at: None,
             paired_at: Some(now),
         }),
+        retry: None,
         created_at: now,
         updated_at: now,
     };
@@ -192,6 +193,7 @@ async fn telegram_webhook_persists_when_channel_is_signal_mode() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };
@@ -318,6 +320,7 @@ async fn telegram_webhook_drops_inbound_when_receive_message_forbidden() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };
@@ -428,6 +431,7 @@ async fn pairing_round_trip_flips_channel_to_connected() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };
@@ -523,6 +527,7 @@ async fn pairing_cancel_reverts_to_disconnected() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };
@@ -559,6 +564,7 @@ async fn restart_clears_orphaned_pairing() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };
@@ -795,6 +801,7 @@ async fn inbound_webhook_persists_message_via_stub_adapter() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };
@@ -887,6 +894,7 @@ async fn agent_message_completion_dispatches_to_outbound_adapter() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };
@@ -997,6 +1005,7 @@ async fn empty_agent_message_skips_adapter_and_marks_sent() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };
@@ -1117,6 +1126,7 @@ async fn setup_segment_test(prefix: &str) -> SegmentTestSetup {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };
@@ -1493,6 +1503,7 @@ async fn slack_pairing_binds_slack_user_id_into_user_address() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        retry: None,
         created_at: now,
         updated_at: now,
     };

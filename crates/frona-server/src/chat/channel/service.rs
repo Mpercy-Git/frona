@@ -112,6 +112,7 @@ impl ChannelService {
             error_message: initial_error,
             last_started_at: None,
             user_address: None,
+            retry: req.retry,
             created_at: now,
             updated_at: now,
         };
@@ -154,6 +155,10 @@ impl ChannelService {
                 .delete_bindings_for_principal(user_id, &principal)
                 .await?;
             self.write_bindings(user_id, &channel.id, credentials.clone()).await?;
+        }
+
+        if let Some(retry) = req.retry {
+            channel.retry = retry;
         }
 
         if channel.status == ChannelStatus::Setup {
