@@ -10,7 +10,8 @@ pub const WEBHOOK_PATH_PREFIX: &str = "/api/webhooks/channels";
 pub use manager::{ChannelManager, spawn_inference_dispatcher};
 pub use models::{
     Channel, ChannelAdapter, ChannelCtx, ChannelFactory, ChannelManifest, ChannelStatus, ChatType,
-    ConfigRef, CreateChannelRequest, DispatchMode, UpdateChannelRequest, external_chat_id,
+    ConfigRef, CreateChannelRequest, DispatchMode, ExternalLink, SetupConfig,
+    UpdateChannelRequest, external_chat_id,
 };
 pub use registry::ChannelRegistry;
 pub use service::ChannelService;

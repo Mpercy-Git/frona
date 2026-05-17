@@ -70,9 +70,11 @@ async fn telegram_webhook_creates_entities_with_metadata() {
             pairing_initiated_at: None,
             paired_at: Some(now),
         }),
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     use frona::core::repository::Repository;
     let channel = frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
@@ -193,9 +195,11 @@ async fn telegram_webhook_persists_when_channel_is_signal_mode() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     use frona::core::repository::Repository;
     let channel = frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
@@ -320,9 +324,11 @@ async fn telegram_webhook_drops_inbound_when_receive_message_forbidden() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     use frona::core::repository::Repository;
     let channel = frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
@@ -431,9 +437,11 @@ async fn pairing_round_trip_flips_channel_to_connected() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
         state.db.clone()).create(&channel).await.unwrap();
@@ -527,9 +535,11 @@ async fn pairing_cancel_reverts_to_disconnected() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
         state.db.clone()).create(&channel).await.unwrap();
@@ -564,9 +574,11 @@ async fn restart_clears_orphaned_pairing() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
         state.db.clone()).create(&channel).await.unwrap();
@@ -698,6 +710,7 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
             sender_external_id: Some(from.clone()),
             sender_display_name: Some(from),
             content: text,
+            attachments: vec![],
         };
         ctx.emit
             .send(event)
@@ -731,6 +744,9 @@ impl frona::chat::channel::ChannelFactory for StubFactory {
             display_name: "Test".into(),
             description: "stub for e2e tests".into(),
             config_fields: vec![],
+            webhook_url_visible: false,
+            setup_instructions: None,
+            external_links: vec![],
         }
     }
     fn create(
@@ -801,9 +817,11 @@ async fn inbound_webhook_persists_message_via_stub_adapter() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
         .create(&channel)
@@ -894,9 +912,11 @@ async fn agent_message_completion_dispatches_to_outbound_adapter() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
         .create(&channel)
@@ -1005,9 +1025,11 @@ async fn empty_agent_message_skips_adapter_and_marks_sent() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
         .create(&channel)
@@ -1126,9 +1148,11 @@ async fn setup_segment_test(prefix: &str) -> SegmentTestSetup {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
         .create(&channel)
@@ -1503,9 +1527,11 @@ async fn slack_pairing_binds_slack_user_id_into_user_address() {
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
         state.db.clone(),

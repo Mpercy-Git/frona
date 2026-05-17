@@ -173,9 +173,11 @@ async fn seed_space_and_chat(
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
         retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     use frona::core::repository::Repository;
     SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())

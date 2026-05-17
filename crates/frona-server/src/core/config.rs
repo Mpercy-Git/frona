@@ -296,6 +296,8 @@ pub struct StorageConfig {
     pub skills_dir: String,
     #[schemars(description = "Path for system cache directory.")]
     pub cache_dir: String,
+    #[schemars(description = "Path for per-channel adapter data (sessions, etc).")]
+    pub channels_data_path: String,
 }
 
 impl Default for StorageConfig {
@@ -306,6 +308,7 @@ impl Default for StorageConfig {
             shared_config_dir: "resources".into(),
             skills_dir: "data/skills".into(),
             cache_dir: "data/system/cache".into(),
+            channels_data_path: "data/channels".into(),
         }
     }
 }
@@ -899,6 +902,7 @@ impl Config {
             .set_default("database.path", format!("{data_dir}/db")).unwrap()
             .set_default("storage.workspaces_path", format!("{data_dir}/workspaces")).unwrap()
             .set_default("storage.files_path", format!("{data_dir}/files")).unwrap()
+            .set_default("storage.channels_data_path", format!("{data_dir}/channels")).unwrap()
             .set_default("mcp.workspaces_path", format!("{data_dir}/mcp")).unwrap()
             .set_default("auth.runtime_tokens_dir", format!("{data_dir}/runtime/tokens")).unwrap();
 

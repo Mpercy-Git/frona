@@ -262,6 +262,7 @@ async fn emit_inbound_update(
         sender_external_id: Some(from.id.to_string()),
         sender_display_name: Some(display_name),
         content: message.text.unwrap_or_default(),
+        attachments: vec![],
     };
 
     ctx.emit

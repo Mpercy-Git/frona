@@ -49,6 +49,20 @@ fn backoff_for(attempts: u32) -> Duration {
     DELIVERY_BACKOFF[idx]
 }
 
+/// Keep filesystem path segments to a safe alphabet so usernames / record-id
+/// suffixes can't drill into parent dirs or land on `/`.
+fn sanitize_path_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for c in segment.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() { "_".into() } else { out }
+}
+
 // Lifecycle-only writes must not trigger a restart loop via the watcher.
 fn channel_needs_restart(prior: &Channel, next: &Channel) -> bool {
     prior.provider != next.provider
@@ -289,6 +303,28 @@ impl ChannelManager {
             bare_id,
         );
 
+        let username = state
+            .user_service
+            .find_by_id(&channel.user_id)
+            .await?
+            .map(|u| u.username)
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "channel {:?} references missing user {:?}",
+                    channel.id, channel.user_id,
+                ))
+            })?;
+        let data_dir = std::path::PathBuf::from(&state.config.storage.channels_data_path)
+            .join(&channel.provider)
+            .join(sanitize_path_segment(&username))
+            .join(sanitize_path_segment(&channel.space_id));
+        if let Err(e) = std::fs::create_dir_all(&data_dir) {
+            return Err(AppError::Internal(format!(
+                "could not create channel data dir {}: {e}",
+                data_dir.display(),
+            )));
+        }
+
         let cancel = state.shutdown_token.child_token();
 
         let ctx = ChannelCtx {
@@ -297,6 +333,9 @@ impl ChannelManager {
             emit,
             webhook_url,
             channel_manager: state.channel_manager.clone(),
+            storage_service: state.storage_service.clone(),
+            user_service: state.user_service.clone(),
+            data_dir,
             cancel: cancel.clone(),
         };
 

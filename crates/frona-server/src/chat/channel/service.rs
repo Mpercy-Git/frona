@@ -112,9 +112,11 @@ impl ChannelService {
             error_message: initial_error,
             last_started_at: None,
             user_address: None,
+            setup: None,
             retry: req.retry,
             created_at: now,
             updated_at: now,
+            webhook_url: None,
         };
         let persisted = self.repo.create(&channel).await?;
 

@@ -19,9 +19,31 @@ use crate::tool::mcp::models::CredentialBinding;
 pub struct ChannelManifest {
     pub id: String,
     pub display_name: String,
+    /// Markdown - rendered as such by the frontend. Adapters embed warnings,
+    /// inline links, and emphasis directly in this field.
     pub description: String,
     #[serde(default)]
     pub config_fields: Vec<ChannelConfigField>,
+    /// When `true`, the UI surfaces this channel's webhook URL
+    /// (`/api/webhooks/channels/{id}`) as a copyable code block so the user
+    /// can paste it into the provider's dashboard.
+    #[serde(default)]
+    pub webhook_url_visible: bool,
+    /// Markdown instructions rendered verbatim on the channel detail page.
+    /// Adapters use this to keep provider-specific setup copy out of shared code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_instructions: Option<String>,
+    /// Authoritative external resources (provider Terms of Service, Privacy
+    /// Policy, documentation). The UI renders these as a uniform link list
+    /// near the channel description.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_links: Vec<ExternalLink>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalLink {
+    pub label: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,10 +96,16 @@ pub struct Channel {
     pub last_started_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub user_address: Option<UserAddress>,
+    /// Present iff `status == Setup`; cleared on transition out.
+    #[serde(default)]
+    pub setup: Option<SetupConfig>,
     #[serde(default)]
     pub retry: Option<crate::core::config::RetryConfig>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Populated by the API layer when `manifest.webhook_url_visible`.
+    #[serde(skip_deserializing, default, skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
@@ -103,6 +131,23 @@ pub struct UserAddress {
     pub pairing_initiated_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paired_at: Option<DateTime<Utc>>,
+}
+
+/// Distinct from `UserAddress.pairing_*` (which authenticates the sender).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
+pub struct SetupConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Adapters leave as `None`; the manager stamps it in `begin_setup`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +187,7 @@ pub struct ExternalMessage {
     pub sender_external_id: Option<String>,
     pub sender_display_name: Option<String>,
     pub content: String,
+    pub attachments: Vec<crate::storage::Attachment>,
 }
 
 #[derive(Clone)]
@@ -151,8 +197,13 @@ pub struct ChannelCtx {
     pub emit: tokio::sync::mpsc::Sender<ExternalMessage>,
     pub channel_manager: std::sync::Arc<super::ChannelManager>,
     pub webhook_url: String,
-    /// Gateway adapters that spawn long-running tasks in `on_connect` MUST
-    /// subscribe to this: it's the only signal that `stop_channel` was called.
+    pub storage_service: crate::storage::StorageService,
+    pub user_service: crate::auth::UserService,
+    /// `{channels_data_path}/{provider}/{username}/{space_id}/`, created by
+    /// the manager before the ctx is built.
+    pub data_dir: std::path::PathBuf,
+    /// Adapters with long-running tasks MUST observe this - it's the only
+    /// signal that `stop_channel` was called.
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
@@ -161,6 +212,20 @@ pub trait ChannelAdapter: Send + Sync {
     async fn on_connect(&self, ctx: &ChannelCtx) -> Result<(), AppError>;
 
     async fn on_disconnect(&self, ctx: &ChannelCtx) -> Result<(), AppError>;
+
+    /// Default `Err` so adapters can't accidentally claim setup support.
+    /// Distinct from `UserAddress.pairing_*` (which authenticates the sender).
+    async fn on_setup_begin(&self, _ctx: &ChannelCtx) -> Result<SetupConfig, AppError> {
+        Err(AppError::Validation(
+            "provider does not require setup".into(),
+        ))
+    }
+
+    /// Called by the manager after `report_setup_complete` runs. Adapters
+    /// may persist provider-specific finalisation state here.
+    async fn on_setup_complete(&self, _ctx: &ChannelCtx) -> Result<(), AppError> {
+        Ok(())
+    }
 
     async fn on_tool(
         &self,
@@ -286,6 +351,9 @@ mod tests {
                 default_from: None,
                 default_resolved: None,
             }],
+            webhook_url_visible: false,
+            setup_instructions: None,
+            external_links: vec![],
         };
         assert_eq!(m.id, "telegram");
         assert_eq!(m.config_fields.len(), 1);

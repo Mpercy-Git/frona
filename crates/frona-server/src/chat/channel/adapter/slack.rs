@@ -283,6 +283,7 @@ fn convert_message_event(
         sender_external_id: if user_id.is_empty() { None } else { Some(user_id.to_string()) },
         sender_display_name: display,
         content: text,
+        attachments: vec![],
     })
 }
 
