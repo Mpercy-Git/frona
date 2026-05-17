@@ -84,11 +84,9 @@ async fn telegram_webhook_creates_entities_with_metadata() {
     .await
     .unwrap();
     let channel_id = channel.id.as_str();
-    state
-        .channel_manager
-        .start_channel(&state, &channel)
-        .await
-        .unwrap();
+    // Fake bot token → on_connect fails, but the task is registered
+    // *before* on_connect, so webhook dispatch still routes.
+    let _ = state.channel_manager.start_channel(&state, &channel).await;
 
     let payload = serde_json::json!({
         "update_id": 1001,
@@ -209,11 +207,7 @@ async fn telegram_webhook_persists_when_channel_is_signal_mode() {
     .await
     .unwrap();
     let channel_id = channel.id.as_str();
-    state
-        .channel_manager
-        .start_channel(&state, &channel)
-        .await
-        .unwrap();
+    let _ = state.channel_manager.start_channel(&state, &channel).await;
 
     let payload = serde_json::json!({
         "update_id": 7001,
@@ -338,11 +332,7 @@ async fn telegram_webhook_drops_inbound_when_receive_message_forbidden() {
     .await
     .unwrap();
     let channel_id = channel.id.as_str();
-    state
-        .channel_manager
-        .start_channel(&state, &channel)
-        .await
-        .unwrap();
+    let _ = state.channel_manager.start_channel(&state, &channel).await;
 
     let payload = serde_json::json!({
         "update_id": 9001,
@@ -445,7 +435,7 @@ async fn pairing_round_trip_flips_channel_to_connected() {
     };
     frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
         state.db.clone()).create(&channel).await.unwrap();
-    state.channel_manager.start_channel(&state, &channel).await.unwrap();
+    let _ = state.channel_manager.start_channel(&state, &channel).await;
 
     let app = build_app(state.clone());
     let resp = app

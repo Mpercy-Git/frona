@@ -477,6 +477,41 @@ impl ChannelService {
         Ok(())
     }
 
+    pub async fn begin_setup(
+        &self,
+        channel_id: &str,
+        mut setup: super::models::SetupConfig,
+    ) -> Result<(), AppError> {
+        let mut channel = self
+            .repo
+            .find_by_id(channel_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("channel {channel_id} not found")))?;
+        let now = Utc::now();
+        setup.initiated_at = Some(now);
+        channel.setup = Some(setup);
+        channel.status = ChannelStatus::Setup;
+        channel.updated_at = now;
+        self.repo.update(&channel).await?;
+        self.broadcast_update(&channel, EntityAction::Updated);
+        Ok(())
+    }
+
+    pub async fn complete_setup(&self, channel_id: &str) -> Result<(), AppError> {
+        let mut channel = self
+            .repo
+            .find_by_id(channel_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("channel {channel_id} not found")))?;
+        let now = Utc::now();
+        channel.setup = None;
+        channel.status = ChannelStatus::Connected;
+        channel.updated_at = now;
+        self.repo.update(&channel).await?;
+        self.broadcast_update(&channel, EntityAction::Updated);
+        Ok(())
+    }
+
     pub async fn try_redeem_pairing(
         &self,
         channel_id: &str,

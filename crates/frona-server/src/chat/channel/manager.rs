@@ -132,6 +132,36 @@ impl ChannelManager {
         }
     }
 
+    /// Adapter background tasks call this when provider setup finishes.
+    /// The adapter must keep running across the transition - the manager
+    /// does not restart the channel.
+    pub async fn report_setup_complete(&self, channel_id: &str) {
+        let pair = {
+            let tasks = self.tasks.lock().await;
+            tasks.get(channel_id).map(|t| (t.adapter.clone(), t.ctx.clone()))
+        };
+        if let Some((adapter, ctx)) = pair
+            && let Err(e) = adapter.on_setup_complete(&ctx).await
+        {
+            tracing::warn!(
+                channel_id = %channel_id,
+                error = %e,
+                "on_setup_complete failed; continuing with state transition",
+            );
+        }
+        if let Err(e) = self
+            .channel_service
+            .complete_setup(channel_id)
+            .await
+        {
+            tracing::warn!(
+                channel_id = %channel_id,
+                error = %e,
+                "report_setup_complete: could not persist Connected status",
+            );
+        }
+    }
+
     pub fn start_with_retry(self: Arc<Self>, state: AppState, channel_id: String) {
         let cancel = state.shutdown_token.child_token();
         let manager = self.clone();
@@ -234,7 +264,7 @@ impl ChannelManager {
         state: &AppState,
         channel: &Channel,
     ) -> Result<(), AppError> {
-        self.stop_channel(&channel.id).await;
+        self.stop_running_task(&channel.id).await;
 
         // Don't mark Setup from here: the watcher would catch the broadcast
         // and call start_channel again, looping forever. `Setup` is owned by
@@ -339,14 +369,8 @@ impl ChannelManager {
             cancel: cancel.clone(),
         };
 
-        let connect_result = adapter.on_connect(&ctx).await;
-        let connect_error = connect_result.as_ref().err().map(|e| e.to_string());
-        if let Some(err) = &connect_error {
-            tracing::warn!(channel_id = %channel.id, error = %err, "channel.on_connect failed");
-        }
-        let connected = connect_result.is_ok();
-
-        // Must precede the mark_status broadcast or the watcher respawns.
+        // Register before setup/connect: those hooks may call back into the
+        // manager (e.g. `report_setup_complete`) and need the entry present.
         {
             let mut tasks = self.tasks.lock().await;
             tasks.insert(
@@ -358,6 +382,51 @@ impl ChannelManager {
                 },
             );
         }
+
+        // Pipelines spawn before setup/connect so adapters can emit inbound
+        // events from inside those hooks - `ctx.emit.send(...)` would
+        // otherwise fail with "channel closed".
+        {
+            let adapter = adapter.clone();
+            let ctx = ctx.clone();
+            let state = state.clone();
+            let cancel = cancel.clone();
+            let channel_id = channel.id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = run_outbound(adapter, ctx, state, cancel).await {
+                    tracing::warn!(channel_id = %channel_id, error = %e, "channel outbound task exited with error");
+                }
+            });
+        }
+        {
+            let ctx = ctx.clone();
+            let state = state.clone();
+            let cancel = cancel.clone();
+            let channel_id = channel.id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = run_inbound_pipeline(ctx, state, rx, cancel).await {
+                    tracing::warn!(channel_id = %channel_id, error = %e, "channel inbound pipeline exited with error");
+                }
+            });
+        }
+
+        // `Err` from `on_setup_begin` means "no setup required, proceed".
+        // The adapter is responsible for spawning the background watcher
+        // that calls `report_setup_complete` when setup finishes.
+        if let Ok(setup) = adapter.on_setup_begin(&ctx).await {
+            state
+                .channel_service
+                .begin_setup(&channel.id, setup)
+                .await?;
+            return Ok(());
+        }
+
+        let connect_result = adapter.on_connect(&ctx).await;
+        let connect_error = connect_result.as_ref().err().map(|e| e.to_string());
+        if let Some(err) = &connect_error {
+            tracing::warn!(channel_id = %channel.id, error = %err, "channel.on_connect failed");
+        }
+        let connected = connect_result.is_ok();
 
         if connected {
             state
@@ -378,38 +447,17 @@ impl ChannelManager {
                     "outbound: reconcile_message_delivery failed at spawn",
                 );
             }
+            Ok(())
         } else {
             state
                 .channel_service
                 .mark_status(&channel.id, ChannelStatus::Failed, connect_error)
                 .await?;
+            // Propagate so retry_loop's Err branch applies backoff -
+            // otherwise the Failed broadcast triggers a fresh retry with
+            // no sleep.
+            Err(connect_result.unwrap_err())
         }
-
-        {
-            let adapter = adapter.clone();
-            let ctx = ctx.clone();
-            let state = state.clone();
-            let cancel = cancel.clone();
-            let channel_id = channel.id.clone();
-            tokio::spawn(async move {
-                if let Err(e) = run_outbound(adapter, ctx, state, cancel).await {
-                    tracing::warn!(channel_id = %channel_id, error = %e, "channel outbound task exited with error");
-                }
-            });
-        }
-
-        {
-            let ctx = ctx.clone();
-            let state = state.clone();
-            let cancel = cancel.clone();
-            let channel_id = channel.id.clone();
-            tokio::spawn(async move {
-                if let Err(e) = run_inbound_pipeline(ctx, state, rx, cancel).await {
-                    tracing::warn!(channel_id = %channel_id, error = %e, "channel inbound pipeline exited with error");
-                }
-            });
-        }
-        Ok(())
     }
 
     pub async fn stop(&self) {
@@ -420,19 +468,25 @@ impl ChannelManager {
     }
 
     pub async fn stop_channel(&self, channel_id: &str) {
-        let task = {
-            let mut tasks = self.tasks.lock().await;
-            tasks.remove(channel_id)
-        };
-        if let Some(task) = task {
-            task.cancel.cancel();
-        }
+        self.stop_running_task(channel_id).await;
         let retry = {
             let mut map = self.retry_cancels.lock().await;
             map.remove(channel_id)
         };
         if let Some(c) = retry {
             c.cancel();
+        }
+    }
+
+    /// Stops the adapter task but leaves any active retry loop alive -
+    /// otherwise a retry loop calling `start_channel` cancels itself.
+    async fn stop_running_task(&self, channel_id: &str) {
+        let task = {
+            let mut tasks = self.tasks.lock().await;
+            tasks.remove(channel_id)
+        };
+        if let Some(task) = task {
+            task.cancel.cancel();
         }
     }
 
@@ -883,7 +937,7 @@ async fn handle_outbound_event(
             && ev_space_id.as_deref() == Some(space_id) =>
         {
             let msg = state.chat_service.get_message(&event.user_id, record_id).await?;
-            if msg.role != MessageRole::Agent {
+            if !matches!(msg.role, MessageRole::Agent | MessageRole::TaskCompletion) {
                 return Ok(());
             }
             if !matches!(msg.status, Some(MessageStatus::Completed) | None) {
@@ -1018,6 +1072,15 @@ async fn process_inbound(
         return Ok(None);
     }
 
+    if event.content.trim().is_empty() && event.attachments.is_empty() {
+        tracing::debug!(
+            channel_id = %channel.id,
+            sender = %event.sender_address,
+            "inbound dropped: empty content with no attachments",
+        );
+        return Ok(None);
+    }
+
     let agent = state
         .agent_service
         .find_by_id(&channel.agent_id)
@@ -1085,8 +1148,15 @@ async fn process_inbound(
         .and_then(|ua| ua.address.clone())
         .map(|a| vec![a])
         .unwrap_or_default();
-    let allowed = check_allowed(state, channel, &agent, &sender_contact, &paired_addresses).await?;
-    if !allowed {
+    let effective = effective_dispatch_mode(
+        state,
+        channel,
+        &agent,
+        &sender_contact,
+        &paired_addresses,
+    )
+    .await?;
+    let Some(effective) = effective else {
         tracing::info!(
             user_id = %channel.user_id,
             agent_id = %channel.agent_id,
@@ -1099,45 +1169,73 @@ async fn process_inbound(
             "Inbound discarded — Cedar denied",
         );
         return Ok(None);
+    };
+    if effective != channel.dispatch_mode {
+        tracing::info!(
+            channel_id = %channel.id,
+            sender = %event.sender_address,
+            channel_mode = ?channel.dispatch_mode,
+            effective_mode = ?effective,
+            "Inbound authorized as signal fallback on Message-mode channel",
+        );
     }
 
     let builder = Message::builder(&chat.id, MessageRole::User, event.content.clone())
-        .from_address(event.sender_address.clone());
+        .from_address(event.sender_address.clone())
+        .dispatch_mode(effective);
     let mut msg = builder.build();
     if let Some(c) = &real_contact {
         msg.contact_id = Some(c.id.clone());
     }
+    msg.attachments = event.attachments.clone();
 
     let saved = state.chat_service.persist_inbound_message(&msg).await?;
     Ok(Some(saved))
 }
 
-async fn check_allowed(
+/// On a Message-mode channel, fall back to `ReceiveSignal` if `ReceiveMessage`
+/// is denied - covers the case where an agent has an open watch even though
+/// the sender wouldn't normally satisfy the message policy. Signal-mode
+/// channels only consult `ReceiveSignal`. Returns the action that authorized,
+/// or `None` if all denied.
+async fn effective_dispatch_mode(
     state: &AppState,
     channel: &Channel,
     agent: &Agent,
     sender_contact: &PolicyContact,
     paired_addresses: &[String],
-) -> Result<bool, AppError> {
-    let action = match channel.dispatch_mode {
-        DispatchMode::Message => PolicyAction::ReceiveMessage {
-            connector_id: channel.space_id.clone(),
-            channel_id: channel.provider.clone(),
-            sender: sender_contact.clone(),
-            paired_addresses: paired_addresses.to_vec(),
-        },
-        DispatchMode::Signal => PolicyAction::ReceiveSignal {
-            connector_id: channel.space_id.clone(),
-            channel_id: channel.provider.clone(),
-            sender: sender_contact.clone(),
-            paired_addresses: paired_addresses.to_vec(),
-        },
+) -> Result<Option<DispatchMode>, AppError> {
+    let receive_message = || PolicyAction::ReceiveMessage {
+        connector_id: channel.space_id.clone(),
+        channel_id: channel.provider.clone(),
+        sender: sender_contact.clone(),
+        paired_addresses: paired_addresses.to_vec(),
     };
+    let receive_signal = || PolicyAction::ReceiveSignal {
+        connector_id: channel.space_id.clone(),
+        channel_id: channel.provider.clone(),
+        sender: sender_contact.clone(),
+        paired_addresses: paired_addresses.to_vec(),
+    };
+
+    if channel.dispatch_mode == DispatchMode::Message {
+        let decision = state
+            .policy_service
+            .authorize(&channel.user_id, agent, receive_message())
+            .await?;
+        if decision.allowed {
+            return Ok(Some(DispatchMode::Message));
+        }
+    }
+
     let decision = state
         .policy_service
-        .authorize(&channel.user_id, agent, action)
+        .authorize(&channel.user_id, agent, receive_signal())
         .await?;
-    Ok(decision.allowed)
+    if decision.allowed {
+        return Ok(Some(DispatchMode::Signal));
+    }
+    Ok(None)
 }
 
 fn synthesize_self_contact(
@@ -1224,7 +1322,9 @@ async fn handle_inbound_message(
         return Ok(());
     };
     let channel = channel_row.provider.clone();
-    let mode = channel_row.dispatch_mode;
+    // Fall back to the channel's mode for legacy rows persisted before
+    // `msg.dispatch_mode` existed.
+    let mode = msg.dispatch_mode.unwrap_or(channel_row.dispatch_mode);
 
     let chat_type = ChatType::from_chat(&chat);
     let sender = msg.from_address.as_deref();
