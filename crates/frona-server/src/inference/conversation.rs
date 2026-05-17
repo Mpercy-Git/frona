@@ -471,6 +471,7 @@ mod tests {
             reasoning: None,
             from_address: None,
             delivery: None,
+            dispatch_mode: None,
             metadata: Default::default(),
             created_at: Utc::now(),
         }
