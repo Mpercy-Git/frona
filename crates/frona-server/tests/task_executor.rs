@@ -241,6 +241,8 @@ async fn lifecycle_complete_event_detected() {
     state
         .chat_service
         .save_system_event(
+            "user-1",
+            None,
             &source_chat.id,
             MessageEvent::TaskCompletion {
                 task_id: "task-1".to_string(),
@@ -292,6 +294,8 @@ async fn lifecycle_defer_event_detected() {
     state
         .chat_service
         .save_system_event(
+            "user-1",
+            None,
             &task_chat.id,
             MessageEvent::TaskDeferred {
                 task_id: "task-2".to_string(),
@@ -617,7 +621,7 @@ async fn lifecycle_event_saved_after_assistant_message() {
     // Simulate the executor flow: save assistant message first
     state
         .chat_service
-        .save_agent_message(&chat.id, "agent-1", "Here is my answer.".to_string(), None)
+        .save_agent_message("user-1", None, &chat.id, "agent-1", "Here is my answer.".to_string(), None)
         .await
         .unwrap();
 
@@ -625,6 +629,8 @@ async fn lifecycle_event_saved_after_assistant_message() {
     state
         .chat_service
         .save_system_event(
+            "user-1",
+            None,
             &chat.id,
             MessageEvent::TaskCompletion {
                 task_id: "task-order".to_string(),

@@ -383,6 +383,7 @@ impl AppState {
             memory_service.clone(),
             prompt_loader.clone(),
             broadcast_service.clone(),
+            presign_service.clone(),
         );
         let message_repo_for_channel: Arc<dyn crate::chat::message::repository::MessageRepository> =
             Arc::new(SurrealRepo::<crate::chat::message::models::Message>::new(db.clone()));

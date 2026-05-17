@@ -92,6 +92,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.memory_service.clone(),
         prompts,
         state.broadcast_service.clone(),
+        state.presign_service.clone(),
     );
     state.chat_service = chat_service;
 
@@ -309,7 +310,7 @@ async fn dispatcher_skips_non_user_messages() {
 
     state
         .chat_service
-        .save_system_message(&chat.id, "system note".into())
+        .save_system_message("user-1", None, &chat.id, "system note".into())
         .await
         .unwrap();
 

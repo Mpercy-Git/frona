@@ -1048,6 +1048,8 @@ async fn fire_and_forget_agent_message_dispatches_to_outbound_adapter() {
     let response = state
         .chat_service
         .save_agent_message(
+            &user_id,
+            Some(&space_id),
             &chat.id,
             &agent_id,
             "💧 Time to drink water!".to_string(),

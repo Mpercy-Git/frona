@@ -529,6 +529,19 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         storage.clone(),
     );
 
+    let keypair_repo: SurrealRepo<frona::credential::keypair::models::KeyPair> =
+        SurrealRepo::new(db.clone());
+    let keypair_service = frona::credential::keypair::service::KeyPairService::new(
+        &config.auth.encryption_secret,
+        std::sync::Arc::new(keypair_repo),
+    );
+    let presign_service = frona::credential::presign::PresignService::new(
+        keypair_service,
+        user_service.clone(),
+        "http://localhost:0".to_string(),
+        300,
+    );
+
     frona::chat::service::ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -540,6 +553,7 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         memory_service,
         frona::agent::prompt::PromptLoader::new(&base),
         frona::chat::broadcast::BroadcastService::new(),
+        presign_service,
     )
 }
 

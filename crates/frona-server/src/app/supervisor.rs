@@ -201,7 +201,7 @@ impl Supervisor for AppSupervisor {
         let _ = self
             .state
             .chat_service
-            .save_system_message(&app.chat_id, crash_msg)
+            .save_system_message(&app.user_id, None, &app.chat_id, crash_msg)
             .await;
         let state = self.state.clone();
         let user_id = app.user_id.clone();

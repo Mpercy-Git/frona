@@ -94,6 +94,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.memory_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
+        state.presign_service.clone(),
     );
     state.chat_service = chat_service;
 

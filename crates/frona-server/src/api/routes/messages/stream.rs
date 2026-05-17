@@ -5,7 +5,7 @@ use rig::completion::Message as RigMessage;
 use crate::chat::broadcast::{BroadcastEventKind, EventSender};
 use crate::chat::message::models::SendMessageRequest;
 use crate::chat::service::ChatService;
-use crate::credential::presign::{PresignService, presign_response};
+use crate::credential::presign::presign_response;
 use crate::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder, build_user_message,
 };
@@ -22,35 +22,21 @@ fn spawn_inference(
     tokio::spawn(async move { crate::inference::inference(req).await })
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_inference_result(
     result: Result<Result<InferenceResponse, crate::core::error::AppError>, tokio::task::JoinError>,
     chat_service: &ChatService,
     message_id: &str,
-    presign_svc: &PresignService,
-    user_id: &str,
-    username: &str,
     event_sender: &EventSender,
 ) {
     match result {
         Ok(Ok(response)) => match response {
             InferenceResponse::Completed { text, attachments, reasoning, .. } => {
-                if let Ok(mut msg) = chat_service
+                let _ = chat_service
                     .complete_agent_message(message_id, text, attachments, reasoning)
-                    .await
-                {
-                    if let Ok(tes) = chat_service.get_tool_calls_by_message(message_id).await {
-                        msg.tool_calls = tes.into_iter().map(Into::into).collect();
-                    }
-                    presign_response(presign_svc, &mut msg, user_id, username).await;
-                    event_sender.send_kind(BroadcastEventKind::InferenceDone { message: msg });
-                }
+                    .await;
             }
             InferenceResponse::Cancelled(text) => {
                 let _ = chat_service.cancel_agent_message(message_id, text).await;
-                event_sender.send_kind(BroadcastEventKind::InferenceCancelled {
-                    reason: "User cancelled generation".to_string(),
-                });
             }
             InferenceResponse::ExternalToolPending {
                 tool_calls, ..
@@ -63,16 +49,10 @@ async fn handle_inference_result(
         Ok(Err(e)) => {
             tracing::error!(error = %e, "Inference failed");
             let _ = chat_service.fail_agent_message(message_id).await;
-            event_sender.send_kind(BroadcastEventKind::InferenceError {
-                error: e.to_string(),
-            });
         }
         Err(e) => {
             tracing::error!(error = %e, "Inference task panicked");
             let _ = chat_service.fail_agent_message(message_id).await;
-            event_sender.send_kind(BroadcastEventKind::InferenceError {
-                error: "Internal error".to_string(),
-            });
         }
     }
 }
@@ -210,10 +190,7 @@ pub(crate) async fn stream_message(
         };
 
         let chat_service = state.chat_service.clone();
-        let presign_svc = state.presign_service.clone();
         let active_sessions = state.active_sessions.clone();
-        let user_id = auth.user_id.clone();
-        let username = auth.username.clone();
         let chat_id_clone = chat_id.clone();
 
         event_sender.send_kind(BroadcastEventKind::ToolResolved { message: resolved_msg });
@@ -253,8 +230,7 @@ pub(crate) async fn stream_message(
                 let result = handle.await;
 
                 handle_inference_result(
-                    result, &chat_service, &agent_msg_id,
-                    &presign_svc, &user_id, &username, &event_sender,
+                    result, &chat_service, &agent_msg_id, &event_sender,
                 ).await;
                 active_sessions.remove(&chat_id_clone).await;
             });
@@ -290,10 +266,7 @@ pub(crate) async fn stream_message(
         let agent_msg_id = agent_msg.id.clone();
 
         let chat_service = state.chat_service.clone();
-        let presign_svc = state.presign_service.clone();
         let active_sessions = state.active_sessions.clone();
-        let user_id = auth.user_id.clone();
-        let username = auth.username.clone();
         let msg_user_service = state.user_service.clone();
         let msg_storage_service = state.storage_service.clone();
         let chat_id_clone = chat_id.clone();
@@ -337,8 +310,7 @@ pub(crate) async fn stream_message(
             let result = handle.await;
 
             handle_inference_result(
-                result, &chat_service, &agent_msg_id,
-                &presign_svc, &user_id, &username, &event_sender,
+                result, &chat_service, &agent_msg_id, &event_sender,
             ).await;
             active_sessions.remove(&chat_id_clone).await;
         });

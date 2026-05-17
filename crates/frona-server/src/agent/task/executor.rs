@@ -299,21 +299,9 @@ impl TaskExecutor {
             match result {
                 Ok(execution::AgentLoopOutcome { response }) => match response {
                     InferenceResponse::Completed { text, attachments, lifecycle_event, reasoning, .. } => {
-                        if let Ok(mut msg) = self.app_state.chat_service
+                        let _ = self.app_state.chat_service
                             .complete_agent_message(&agent_msg_id, text.clone(), attachments.clone(), reasoning)
-                            .await
-                        {
-                            // Populate tool_calls so the SSE has complete_task/TaskCompletion data
-                            if let Ok(tes) = self.app_state.chat_service
-                                .get_tool_calls_by_message(&agent_msg_id).await
-                            {
-                                msg.tool_calls = tes.into_iter().map(Into::into).collect();
-                            }
-                            crate::credential::presign::presign_response_by_user_id(
-                                &self.app_state.presign_service, &mut msg, &task.user_id,
-                            ).await;
-                            event_sender.send_kind(BroadcastEventKind::InferenceDone { message: msg });
-                        }
+                            .await;
 
                         if let Some(event) = lifecycle_event {
                             let action = self.lifecycle_action_from_event(event);
@@ -340,9 +328,6 @@ impl TaskExecutor {
                         let _ = self.app_state.chat_service
                             .complete_agent_message(&agent_msg_id, text, vec![], None)
                             .await;
-                        event_sender.send_kind(BroadcastEventKind::InferenceCancelled {
-                            reason: "Task cancelled".to_string(),
-                        });
                         self.handle_cancelled(&task).await?;
                         return Ok(());
                     }
@@ -350,9 +335,6 @@ impl TaskExecutor {
                 Err(e) => {
                     let _ = self.app_state.chat_service
                         .fail_agent_message(&agent_msg_id).await;
-                    event_sender.send_kind(BroadcastEventKind::InferenceError {
-                        error: e.to_string(),
-                    });
                     self.handle_error(&task, &e).await?;
                     return Ok(());
                 }
@@ -571,7 +553,12 @@ impl TaskExecutor {
 
         self.app_state
             .chat_service
-            .save_system_message(&chat_id, system_message)
+            .save_system_message(
+                &task.user_id,
+                task.space_id.as_deref(),
+                &chat_id,
+                system_message,
+            )
             .await?;
 
         let agent_msg = self
@@ -691,21 +678,18 @@ impl TaskExecutor {
             } => source_agent_id.as_str(),
             _ => &task.agent_id,
         };
-        let msg = self
+        self
             .app_state
             .chat_service
-            .save_agent_message(chat_id, source_agent_id, task.description.clone(), None)
+            .save_agent_message(
+                &task.user_id,
+                task.space_id.as_deref(),
+                chat_id,
+                source_agent_id,
+                task.description.clone(),
+                None,
+            )
             .await?;
-        let space_id = self
-            .app_state
-            .chat_service
-            .get_chat(&task.user_id, chat_id)
-            .await
-            .ok()
-            .and_then(|c| c.space_id);
-        self.app_state
-            .broadcast_service
-            .broadcast_chat_message(&task.user_id, chat_id, space_id, msg);
         Ok(())
     }
 
@@ -754,33 +738,21 @@ impl TaskExecutor {
 
         let (content, message_event) = build_message_event(task, event);
 
-        match self
+        if let Err(e) = self
             .app_state
             .chat_service
-            .save_task_lifecycle_message(source_chat_id, &task.agent_id, content, message_event, attachments)
+            .save_task_lifecycle_message(
+                &task.user_id,
+                task.space_id.as_deref(),
+                source_chat_id,
+                &task.agent_id,
+                content,
+                message_event,
+                attachments,
+            )
             .await
         {
-            Ok(mut msg) => {
-                crate::credential::presign::presign_response_by_user_id(
-                    &self.app_state.presign_service, &mut msg, &task.user_id,
-                ).await;
-                let space_id = self
-                    .app_state
-                    .chat_service
-                    .get_chat(&task.user_id, source_chat_id)
-                    .await
-                    .ok()
-                    .and_then(|c| c.space_id);
-                self.app_state.broadcast_service.broadcast_chat_message(
-                    &task.user_id,
-                    source_chat_id,
-                    space_id,
-                    msg,
-                );
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, task_id = %task.id, "Failed to deliver task result to source chat");
-            }
+            tracing::warn!(error = %e, task_id = %task.id, "Failed to deliver task result to source chat");
         }
     }
 
