@@ -18,7 +18,7 @@ pub fn router() -> Router<AppState> {
                 "{}/{{provider}}/{{channel_id}}",
                 crate::chat::channel::WEBHOOK_PATH_PREFIX,
             ),
-            post(channel_webhook),
+            post(channel_webhook).get(channel_webhook),
         )
         .route("/api/channels/manifests", get(list_manifests))
         .route("/api/channels", get(list_channels).post(create_channel))
@@ -32,6 +32,7 @@ pub fn router() -> Router<AppState> {
             "/api/channels/{id}/pair",
             post(initiate_pairing).delete(cancel_pairing),
         )
+        .route("/api/channels/{id}/setup/refresh", post(refresh_setup))
 }
 
 const MAX_WEBHOOK_BYTES: usize = 10 * 1024 * 1024;
@@ -99,8 +100,29 @@ async fn get_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Channel>, ApiError> {
-    let channel = state.channel_service.find_owned(&auth.user_id, &id).await?;
+    let mut channel = state.channel_service.find_owned(&auth.user_id, &id).await?;
+    if let Some(manifest) = state.channel_registry.get_manifest(&channel.provider)
+        && manifest.webhook_url_visible
+    {
+        channel.webhook_url = Some(build_webhook_url(&state, &channel));
+    }
     Ok(Json(channel))
+}
+
+fn build_webhook_url(state: &AppState, channel: &Channel) -> String {
+    let base = state
+        .config
+        .server
+        .external_base_url()
+        .unwrap_or_else(|| format!("http://localhost:{}", state.config.server.port));
+    let bare_id = channel.id.strip_prefix("channel:").unwrap_or(&channel.id);
+    format!(
+        "{}{}/{}/{}",
+        base.trim_end_matches('/'),
+        crate::chat::channel::WEBHOOK_PATH_PREFIX,
+        channel.provider,
+        bare_id,
+    )
 }
 
 async fn update_channel(
@@ -173,4 +195,18 @@ async fn cancel_pairing(
         .cancel_pairing(&auth.user_id, &id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn refresh_setup(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Channel>, ApiError> {
+    // Authorise: must own the channel.
+    let _channel = state.channel_service.find_owned(&auth.user_id, &id).await?;
+    state.channel_manager.stop_channel(&id).await;
+    let channel = state.channel_service.find_by_id(&id).await?;
+    state.channel_manager.start_channel(&state, &channel).await?;
+    let channel = state.channel_service.find_by_id(&id).await?;
+    Ok(Json(channel))
 }
