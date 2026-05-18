@@ -86,6 +86,14 @@ xz2 = "0.1"
 inventory = "0.3"
 jsonschema = { version = "0.18", default-features = false }
 
+# Personal-WhatsApp adapter. Uses the stable-Rust `wa-rs` fork of
+# `whatsapp-rust` - the upstream requires nightly.
+wa-rs = "0.2"
+wa-rs-proto = "0.2"
+wa-rs-sqlite-storage = "0.2"
+wa-rs-tokio-transport = "0.2"
+wa-rs-ureq-http = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 

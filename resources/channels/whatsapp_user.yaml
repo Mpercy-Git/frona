@@ -1,0 +1,14 @@
+id: whatsapp_user
+display_name: WhatsApp (Personal account)
+description: |
+  Link your **personal WhatsApp** by scanning a QR code with the WhatsApp app on your phone.
+
+  ⚠ **Risk of account suspension.** Using a personal WhatsApp account through an unofficial client may violate WhatsApp's [Terms of Service](https://www.whatsapp.com/legal/terms-of-service) and could result in your account being banned. You are responsible for any actions taken against your account.
+setup_instructions: |
+  Open WhatsApp on your phone, go to **Settings → Linked Devices → Link a Device**, and scan the QR code displayed here. The connection completes automatically once the scan succeeds. If the QR expires before you scan, click **Refresh** for a new one.
+external_links:
+  - label: WhatsApp Terms of Service
+    url: https://www.whatsapp.com/legal/terms-of-service
+  - label: WhatsApp Privacy Policy
+    url: https://www.whatsapp.com/legal/privacy-policy
+config_fields: []
