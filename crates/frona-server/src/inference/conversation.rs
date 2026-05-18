@@ -52,6 +52,16 @@ impl ConversationBuilder for DefaultConversationBuilder {
         for msg in messages {
             match msg.role {
                 MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                    // Providers reject empty content blocks. Skip + warn.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::warn!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            role = ?msg.role,
+                            "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
+                        );
+                        continue;
+                    }
                     result.push(
                         build_user_message(
                             &msg.content,
@@ -112,6 +122,16 @@ impl ConversationBuilder for TaskConversationBuilder {
         for msg in messages {
             match msg.role {
                 MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                    // Providers reject empty content blocks. Skip + warn.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::warn!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            role = ?msg.role,
+                            "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
+                        );
+                        continue;
+                    }
                     result.push(
                         build_user_message(
                             &msg.content,
@@ -183,6 +203,16 @@ impl ConversationBuilder for ChannelConversationBuilder {
         for msg in messages {
             match msg.role {
                 MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                    // Providers reject empty content blocks. Skip + warn.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::warn!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            role = ?msg.role,
+                            "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
+                        );
+                        continue;
+                    }
                     result.push(
                         build_user_message(
                             &msg.content,
