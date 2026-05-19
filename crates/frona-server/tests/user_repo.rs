@@ -23,6 +23,8 @@ fn test_user() -> User {
         name: "Test User".to_string(),
         password_hash: "hashed_password".to_string(),
         timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
         created_at: now,
         updated_at: now,
     }

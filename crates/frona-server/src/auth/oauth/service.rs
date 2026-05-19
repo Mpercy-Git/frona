@@ -199,6 +199,12 @@ impl OAuthService {
                 .find_by_id(&identity.user_id)
                 .await?
                 .ok_or_else(|| AppError::Internal("Linked user not found".into()))?;
+            if user.deactivated_at.is_some() {
+                return Err(AppError::Auth {
+                    message: "Account deactivated".into(),
+                    code: AuthErrorCode::AccountDeactivated,
+                });
+            }
             return Ok((user, false));
         }
 
@@ -206,6 +212,12 @@ impl OAuthService {
             && let Some(ref email) = external_email
             && let Some(existing_user) = user_service.find_by_email(email).await?
         {
+            if existing_user.deactivated_at.is_some() {
+                return Err(AppError::Auth {
+                    message: "Account deactivated".into(),
+                    code: AuthErrorCode::AccountDeactivated,
+                });
+            }
             let now = Utc::now();
             let identity = OAuthIdentity {
                 id: crate::core::repository::new_id(),
@@ -239,10 +251,13 @@ impl OAuthService {
                 .unwrap_or_else(|| "SSO User".to_string()),
             password_hash: String::new(),
             timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
             created_at: now,
             updated_at: now,
         };
         let user = user_service.create(&new_user).await?;
+        user_service.ensure_admin_invariant().await?;
 
         let identity = OAuthIdentity {
             id: crate::core::repository::new_id(),

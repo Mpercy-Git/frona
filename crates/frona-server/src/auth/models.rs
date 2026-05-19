@@ -15,6 +15,26 @@ pub struct User {
     pub password_hash: String,
     #[serde(default)]
     pub timezone: Option<String>,
+    #[serde(default)]
+    pub groups: Vec<String>,
+    #[serde(default)]
+    pub deactivated_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub const ADMINS_GROUP: &str = "admins";
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
+#[surreal(crate = "surrealdb::types")]
+#[entity(table = "user_group")]
+pub struct UserGroup {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub built_in: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

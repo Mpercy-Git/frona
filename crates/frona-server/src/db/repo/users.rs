@@ -54,4 +54,57 @@ impl UserRepository for SurrealRepo<User> {
 
         Ok(row.is_some_and(|v| v.get("total").and_then(|t| t.as_u64()).unwrap_or(0) > 0))
     }
+
+    async fn find_any_active_admin(&self) -> Result<Option<User>, AppError> {
+        let mut result = self
+            .db()
+            .query(format!(
+                "{SELECT_CLAUSE} FROM user \
+                 WHERE deactivated_at IS NONE \
+                   AND groups CONTAINS 'admins' \
+                 LIMIT 1"
+            ))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let user: Option<User> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(user)
+    }
+
+    async fn find_oldest_active(&self) -> Result<Option<User>, AppError> {
+        let mut result = self
+            .db()
+            .query(format!(
+                "{SELECT_CLAUSE} FROM user \
+                 WHERE deactivated_at IS NONE \
+                 ORDER BY created_at ASC \
+                 LIMIT 1"
+            ))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let user: Option<User> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(user)
+    }
+
+    async fn list_all(&self, include_deactivated: bool) -> Result<Vec<User>, AppError> {
+        let query = if include_deactivated {
+            format!("{SELECT_CLAUSE} FROM user ORDER BY created_at ASC")
+        } else {
+            format!(
+                "{SELECT_CLAUSE} FROM user WHERE deactivated_at IS NONE ORDER BY created_at ASC"
+            )
+        };
+        let mut result = self
+            .db()
+            .query(&query)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let users: Vec<User> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(users)
+    }
 }

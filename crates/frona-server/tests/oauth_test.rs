@@ -124,6 +124,8 @@ async fn test_email_matching_flow() {
         name: "Existing User".to_string(),
         password_hash: "hash".to_string(),
         timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
         created_at: now,
         updated_at: now,
     };

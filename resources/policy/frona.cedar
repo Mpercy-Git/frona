@@ -54,3 +54,11 @@ permit(
   resource
 )
 when { context.paired_addresses.contains(resource.sender.address) };
+
+@id("admin-user-management")
+@description("Members of the 'admins' user group may list, modify, deactivate, and delete user accounts.")
+permit(
+  principal in Policy::UserGroup::"admins",
+  action in [Policy::Action::"list_users", Policy::Action::"manage_users"],
+  resource
+);

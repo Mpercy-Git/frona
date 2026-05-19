@@ -42,6 +42,8 @@ async fn setup() -> (TokenService, KeyPairService, User, tempfile::TempDir) {
         name: "Bob".into(),
         password_hash: String::new(),
         timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

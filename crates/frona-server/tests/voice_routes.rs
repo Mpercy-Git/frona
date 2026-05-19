@@ -127,6 +127,8 @@ async fn twilio_callback_valid_token_returns_xml() {
         name: "Test".to_string(),
         password_hash: String::new(),
         timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

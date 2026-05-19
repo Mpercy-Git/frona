@@ -211,6 +211,13 @@ impl TokenService {
                 code: AuthErrorCode::TokenInvalid,
             })?;
 
+        if user.deactivated_at.is_some() {
+            return Err(AppError::Auth {
+                message: "Account deactivated".into(),
+                code: AuthErrorCode::AccountDeactivated,
+            });
+        }
+
         let (access_jwt, refresh_jwt) = self.create_session_pair(keypair_svc, &user).await?;
         Ok((access_jwt, refresh_jwt, claims))
     }

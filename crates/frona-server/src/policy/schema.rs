@@ -37,6 +37,42 @@ pub fn agent_entity_uid(agent_id: &str) -> EntityUid {
     entity_uid("Agent", agent_id)
 }
 
+pub fn user_entity_uid(user_id: &str) -> EntityUid {
+    entity_uid("User", user_id)
+}
+
+pub fn user_group_entity_uid(group: &str) -> EntityUid {
+    entity_uid("UserGroup", group)
+}
+
+/// Cedar requires parent entities to be present in the request's `Entities` set,
+/// not just named as parents on the principal — otherwise `principal in
+/// UserGroup::"x"` evaluates false.
+pub fn build_user_action_entities(
+    principal_id: &str,
+    principal_groups: &[String],
+    target_id: &str,
+) -> Entities {
+    let group_uids: HashSet<EntityUid> = principal_groups
+        .iter()
+        .map(|g| user_group_entity_uid(g))
+        .collect();
+
+    let principal_entity = Entity::new_no_attrs(user_entity_uid(principal_id), group_uids.clone());
+
+    let mut all = vec![principal_entity];
+    if target_id != principal_id {
+        all.push(Entity::new_no_attrs(
+            user_entity_uid(target_id),
+            HashSet::new(),
+        ));
+    }
+    for uid in group_uids {
+        all.push(Entity::new_no_attrs(uid, HashSet::new()));
+    }
+    Entities::from_entities(all, None).unwrap_or_else(|_| Entities::empty())
+}
+
 pub fn principal_entity_uid(principal: &Principal) -> EntityUid {
     let type_name = match principal.kind {
         PrincipalKind::User => "User",
@@ -125,10 +161,6 @@ pub fn channel_entity_uid(channel_id: &str) -> EntityUid {
 
 pub fn contact_entity_uid(contact_id: &str) -> EntityUid {
     entity_uid("Contact", contact_id)
-}
-
-pub fn user_entity_uid(user_id: &str) -> EntityUid {
-    entity_uid("User", user_id)
 }
 
 pub fn message_source_entity_uid(connector_id: &str, address: &str) -> EntityUid {

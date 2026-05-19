@@ -201,6 +201,8 @@ async fn seed_user(db: &Surreal<Db>) {
         name: "Test".to_string(),
         password_hash: String::new(),
         timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };

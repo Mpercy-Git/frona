@@ -91,6 +91,7 @@ pub struct AppState {
     pub auth_service: Arc<AuthService>,
     pub app_service: AppService,
     pub user_service: UserService,
+    pub user_group_service: crate::auth::group_service::UserGroupService,
     pub agent_service: AgentService,
     pub space_service: SpaceService,
     pub call_service: CallService,
@@ -208,6 +209,7 @@ impl AppState {
             Arc::new(keypair_repo),
         );
         let user_service = UserService::new(SurrealRepo::new(db.clone()), &config.cache);
+        let user_group_service = crate::auth::group_service::UserGroupService::new(db.clone());
         let presign_service = PresignService::new(
             keypair_service.clone(),
             user_service.clone(),
@@ -399,6 +401,7 @@ impl AppState {
             auth_service: Arc::new(AuthService::new()),
             app_service,
             user_service: user_service.clone(),
+            user_group_service: user_group_service.clone(),
             agent_service: agent_service.clone(),
             space_service: SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             call_service: CallService::new(SurrealRepo::new(db.clone())),

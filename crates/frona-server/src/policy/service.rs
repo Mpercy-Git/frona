@@ -10,6 +10,7 @@ use moka::future::Cache;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::agent::models::Agent;
+use crate::auth::User;
 use crate::core::error::AppError;
 use crate::core::principal::{Principal, PrincipalKind};
 
@@ -277,6 +278,12 @@ impl PolicyService {
                 sender,
                 ..
             } => super::schema::message_source_entity_uid(connector_id, &sender.address),
+            PolicyAction::ListUsers | PolicyAction::ManageUsers { .. } => {
+                return Err(AppError::Internal(
+                    "authorize() called with a user-level action; use authorize_user() instead"
+                        .into(),
+                ));
+            }
         };
 
         let context = match &action {
@@ -341,13 +348,34 @@ impl PolicyService {
                     sender,
                 )
             }
+            PolicyAction::ListUsers | PolicyAction::ManageUsers { .. } => {
+                return Err(AppError::Internal(
+                    "authorize() called with a user-level action; use authorize_user() instead"
+                        .into(),
+                ));
+            }
         };
 
-        let request = Request::new(principal, action_uid, resource, context, Some(&self.schema))
+        self.evaluate_request(action_name, principal, action_uid, resource, context, &cached.policy_set, &entities, start)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_request(
+        &self,
+        action_name: &str,
+        principal: cedar_policy::EntityUid,
+        action: cedar_policy::EntityUid,
+        resource: cedar_policy::EntityUid,
+        context: Context,
+        policy_set: &PolicySet,
+        entities: &cedar_policy::Entities,
+        start: std::time::Instant,
+    ) -> Result<AuthorizationDecision, AppError> {
+        let request = Request::new(principal, action, resource, context, Some(&self.schema))
             .map_err(|e| AppError::Internal(format!("Policy request error: {e}")))?;
 
         let authorizer = Authorizer::new();
-        let response = authorizer.is_authorized(&request, &cached.policy_set, &entities);
+        let response = authorizer.is_authorized(&request, policy_set, entities);
 
         match response.decision() {
             Decision::Allow => {
@@ -369,6 +397,45 @@ impl PolicyService {
                 Ok(AuthorizationDecision::deny(diag))
             }
         }
+    }
+
+    /// Authorize a user-level action (admin endpoints). Mirrors `authorize` but uses
+    /// `User` as principal and either a target User or the sentinel `User::"*"` as resource.
+    pub async fn authorize_user(
+        &self,
+        user: &User,
+        action: PolicyAction,
+    ) -> Result<AuthorizationDecision, AppError> {
+        let start = std::time::Instant::now();
+        let action_name = action.cedar_action_name();
+
+        let target_id = match &action {
+            PolicyAction::ListUsers => "*".to_string(),
+            PolicyAction::ManageUsers { target_user_id } => target_user_id.clone(),
+            _ => {
+                return Err(AppError::Internal(
+                    "authorize_user() called with a non-user action; use authorize() instead"
+                        .into(),
+                ));
+            }
+        };
+
+        let cached = self.build_policy_set(&user.id).await?;
+        let principal = super::schema::user_entity_uid(&user.id);
+        let action_uid = action_entity_uid(action.cedar_action_name());
+        let resource = super::schema::user_entity_uid(&target_id);
+        let entities = super::schema::build_user_action_entities(&user.id, &user.groups, &target_id);
+
+        self.evaluate_request(
+            action_name,
+            principal,
+            action_uid,
+            resource,
+            Context::empty(),
+            &cached.policy_set,
+            &entities,
+            start,
+        )
     }
 
     fn is_permitted(

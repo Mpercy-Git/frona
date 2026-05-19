@@ -31,6 +31,8 @@ fn test_user() -> User {
         name: "Test User".to_string(),
         password_hash: "$argon2id$v=19$m=19456,t=2,p=1$test$test".to_string(),
         timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
         created_at: now,
         updated_at: now,
     }

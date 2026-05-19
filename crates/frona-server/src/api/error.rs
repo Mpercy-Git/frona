@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use crate::core::error::AppError;
+use crate::core::error::{AppError, AuthErrorCode};
 use serde_json::json;
 
 pub struct ApiError(pub AppError);
@@ -15,7 +15,13 @@ impl From<AppError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match &self.0 {
-            AppError::Auth { message, .. } => (StatusCode::UNAUTHORIZED, message.clone()),
+            AppError::Auth { message, code } => {
+                let status = match code {
+                    AuthErrorCode::AccountDeactivated => StatusCode::FORBIDDEN,
+                    _ => StatusCode::UNAUTHORIZED,
+                };
+                (status, message.clone())
+            }
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Database(msg) => {
@@ -23,6 +29,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into())
             }
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             AppError::Internal(msg) => {
                 tracing::error!("Internal error: {msg}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into())

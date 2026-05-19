@@ -231,6 +231,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("No users found — registration redirect active. Restart after setup.");
     }
 
+    if let Err(e) = state.user_group_service.seed_built_in().await {
+        error!(error = %e, "Failed to seed built-in user groups");
+        std::process::exit(1);
+    }
+    if let Err(e) = state.user_service.ensure_admin_invariant().await {
+        error!(error = %e, "Failed to ensure admin invariant");
+        std::process::exit(1);
+    }
+
     let mut api = axum::Router::new()
         .merge(routes::auth::router())
         .merge(routes::well_known::router())

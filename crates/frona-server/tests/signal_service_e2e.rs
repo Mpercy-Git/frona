@@ -117,6 +117,8 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
             name: "Test User".into(),
             password_hash: String::new(),
             timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })

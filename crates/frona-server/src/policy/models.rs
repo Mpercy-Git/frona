@@ -44,6 +44,8 @@ pub enum PolicyAction {
         sender: PolicyContact,
         paired_addresses: Vec<String>,
     },
+    ListUsers,
+    ManageUsers { target_user_id: String },
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +95,8 @@ impl PolicyAction {
             PolicyAction::SendMessage { .. } => "send_message",
             PolicyAction::ReceiveSignal { .. } => "receive_signal",
             PolicyAction::ReceiveMessage { .. } => "receive_message",
+            PolicyAction::ListUsers => "list_users",
+            PolicyAction::ManageUsers { .. } => "manage_users",
         }
     }
 }

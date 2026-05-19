@@ -1298,3 +1298,89 @@ mod reconcile {
         assert!(!after.iter().any(|p| p.name == "u-y"), "user permit absorbed");
     }
 }
+
+// ─── User-level authorization (admin endpoints) ─────────────────────
+
+use frona::auth::User as UserModel;
+
+fn test_user(id: &str, groups: Vec<&str>) -> UserModel {
+    UserModel {
+        id: id.into(),
+        username: id.into(),
+        email: format!("{id}@test"),
+        name: id.into(),
+        password_hash: String::new(),
+        timezone: None,
+        groups: groups.into_iter().map(String::from).collect(),
+        deactivated_at: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    }
+}
+
+#[tokio::test]
+async fn authorize_user_admin_can_list_users() {
+    let (_db, service) = setup().await;
+    let admin = test_user("admin-1", vec!["admins"]);
+    let decision = service
+        .authorize_user(&admin, PolicyAction::ListUsers)
+        .await
+        .unwrap();
+    assert!(decision.allowed, "admin should be permitted to list_users");
+}
+
+#[tokio::test]
+async fn authorize_user_admin_can_manage_users() {
+    let (_db, service) = setup().await;
+    let admin = test_user("admin-1", vec!["admins"]);
+    let decision = service
+        .authorize_user(
+            &admin,
+            PolicyAction::ManageUsers { target_user_id: "target".into() },
+        )
+        .await
+        .unwrap();
+    assert!(decision.allowed, "admin should be permitted to manage_users");
+}
+
+#[tokio::test]
+async fn authorize_user_member_cannot_list_users() {
+    let (_db, service) = setup().await;
+    let member = test_user("member-1", vec![]);
+    let decision = service
+        .authorize_user(&member, PolicyAction::ListUsers)
+        .await
+        .unwrap();
+    assert!(!decision.allowed, "non-admin should not be permitted to list_users");
+}
+
+#[tokio::test]
+async fn authorize_user_member_cannot_manage_users() {
+    // Regression for privilege-escalation footgun: even when target == self,
+    // a non-admin must not be permitted to manage_users.
+    let (_db, service) = setup().await;
+    let member = test_user("member-1", vec![]);
+    let decision = service
+        .authorize_user(
+            &member,
+            PolicyAction::ManageUsers { target_user_id: "member-1".into() },
+        )
+        .await
+        .unwrap();
+    assert!(!decision.allowed, "non-admin must not self-promote via manage_users");
+}
+
+#[tokio::test]
+async fn authorize_user_admin_in_custom_group_still_admin() {
+    // Membership in `admins` is the gate; additional groups don't break the permit.
+    let (_db, service) = setup().await;
+    let admin = test_user("admin-1", vec!["admins", "ops"]);
+    let decision = service
+        .authorize_user(
+            &admin,
+            PolicyAction::ManageUsers { target_user_id: "target".into() },
+        )
+        .await
+        .unwrap();
+    assert!(decision.allowed);
+}

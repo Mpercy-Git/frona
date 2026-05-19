@@ -46,6 +46,8 @@ async fn create_user(db: &Surreal<Db>, id: &str, username: &str) {
         name: username.to_string(),
         password_hash: String::new(),
         timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };

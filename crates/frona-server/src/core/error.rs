@@ -9,6 +9,7 @@ pub enum AuthErrorCode {
     TokenFailed,
     SsoDisabled,
     ServerError,
+    AccountDeactivated,
 }
 
 impl AuthErrorCode {
@@ -21,6 +22,7 @@ impl AuthErrorCode {
             Self::TokenFailed => "token_failed",
             Self::SsoDisabled => "sso_disabled",
             Self::ServerError => "server_error",
+            Self::AccountDeactivated => "account_deactivated",
         }
     }
 }
@@ -50,6 +52,9 @@ pub enum AppError {
 
     #[error("Forbidden: {0}")]
     Forbidden(String),
+
+    #[error("Conflict: {0}")]
+    Conflict(String),
 
     #[error("Internal error: {0}")]
     Internal(String),

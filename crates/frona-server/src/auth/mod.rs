@@ -1,4 +1,5 @@
 pub mod ephemeral_token;
+pub mod group_service;
 pub mod jwt;
 pub mod lockout;
 pub mod models;
@@ -22,6 +23,9 @@ pub trait UserRepository: Repository<User> {
     async fn find_by_email(&self, email: &str) -> Result<Option<User>, AppError>;
     async fn find_by_username(&self, username: &str) -> Result<Option<User>, AppError>;
     async fn has_users(&self) -> Result<bool, AppError>;
+    async fn find_any_active_admin(&self) -> Result<Option<User>, AppError>;
+    async fn find_oldest_active(&self) -> Result<Option<User>, AppError>;
+    async fn list_all(&self, include_deactivated: bool) -> Result<Vec<User>, AppError>;
 }
 
 pub fn can_create_users(config: &Config) -> bool {
@@ -62,11 +66,15 @@ impl AuthService {
             name: req.name,
             password_hash,
             timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
             created_at: now,
             updated_at: now,
         };
 
         let user = user_service.create(&user).await?;
+        user_service.ensure_admin_invariant().await?;
+        let user = user_service.find_by_id(&user.id).await?.unwrap_or(user);
         let (access_jwt, refresh_jwt) =
             token_svc.create_session_pair(keypair_svc, &user).await?;
 
@@ -98,6 +106,13 @@ impl AuthService {
             user_service.find_by_username(&req.identifier).await?
         }
         .ok_or_else(|| AppError::Auth { message: "Invalid credentials".into(), code: AuthErrorCode::InvalidCredentials })?;
+
+        if user.deactivated_at.is_some() {
+            return Err(AppError::Auth {
+                message: "Account deactivated".into(),
+                code: AuthErrorCode::AccountDeactivated,
+            });
+        }
 
         self.verify_password(&req.password, &user.password_hash)?;
         let (access_jwt, refresh_jwt) =

@@ -375,6 +375,7 @@ mod tests {
             crate::auth::User {
                 id: "u".into(), username: "u".into(), email: "e".into(), name: "n".into(),
                 password_hash: String::new(), timezone: None,
+                groups: Vec::new(), deactivated_at: None,
                 created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
             },
             crate::agent::models::Agent {

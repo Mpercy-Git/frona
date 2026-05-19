@@ -16,10 +16,16 @@
 //       when { principal.tools.contains("browser") };
 
 namespace Policy {
-    // The signed-in human.
+    // Groups a user can belong to (e.g. "admins"). Used as parent entities of User
+    // so that policies can match `principal in Policy::UserGroup::"admins"`.
+    //
+    // Reference format: Policy::UserGroup::"<group_name>"
+    entity UserGroup;
+
+    // The signed-in human. Belongs to zero or more UserGroups.
     //
     // Reference format: Policy::User::"<user_id>"
-    entity User;
+    entity User in [UserGroup];
 
     // An AI agent that can perform actions.
     //
@@ -411,5 +417,31 @@ namespace Policy {
         context: {
             is_task?: Bool,
         },
+    };
+
+    // List/enumerate users on the admin surface. No specific target.
+    //
+    // Principal: User    Resource: User (the special sentinel UID "*" is used at runtime).
+    //
+    // Example:
+    //   permit(principal in Policy::UserGroup::"admins",
+    //          action == Policy::Action::"list_users",
+    //          resource);
+    action list_users appliesTo {
+        principal: [User],
+        resource: [User],
+    };
+
+    // Mutate a specific user: patch groups, deactivate, reactivate, delete.
+    //
+    // Principal: User    Resource: target User
+    //
+    // Example:
+    //   permit(principal in Policy::UserGroup::"admins",
+    //          action == Policy::Action::"manage_users",
+    //          resource);
+    action manage_users appliesTo {
+        principal: [User],
+        resource: [User],
     };
 }
