@@ -23,6 +23,17 @@ A heartbeat is a periodic wake-up where you review your HEARTBEAT.md and decide 
 
 Unlike cron, a heartbeat gives you autonomy — you reason about what actions to take each time.
 
+## Time Zones
+
+All scheduled times — `cron_expression` fields, naive `run_at` strings, "8am" / "tomorrow" — are interpreted in the **user's local timezone**. The server handles UTC conversion and DST automatically.
+
+You don't need to compute UTC offsets. Write times the way the user said them:
+- "every day at 8am" → `cron_expression: "0 8 * * *"`
+- "tomorrow at 10pm" → `run_at: "<tomorrow>T22:00:00"` (naive — no `Z`, no offset)
+- "in 30 minutes" → `delay_minutes: 30`
+
+Override with the `timezone` parameter only when the user explicitly names a different zone ("9am Tokyo standup").
+
 ## Cross-Agent Scheduling
 
 `create_task` accepts a `target_agent` parameter to assign work to another agent listed in `<available_agents>`. Omit it to schedule work for yourself.

@@ -31,10 +31,13 @@ Instructions must be self-contained — the target agent cannot see this convers
 
 ## Time
 
-Use the shell `date` command to get the current time or compute offsets. The `TZ` environment variable is set to the user's timezone when available. Examples:
-- Current time: `date "+%A, %B %d, %Y %H:%M %Z"`
-- ISO 8601 for `run_at`: `date -u "+%Y-%m-%dT%H:%M:%SZ"`
-- Future time: `date -d "+3 hours" "+%Y-%m-%dT%H:%M:%SZ"`
+`<temporal_context>` at the end of your system prompt provides the current local date, day of week, and user's timezone. Use that for any "today" / "tomorrow" / "this Friday" reasoning when building `run_at` strings. The server interprets naive datetimes (no offset) in the user's local timezone — you don't need to convert to UTC.
+
+If you need the hour/minute and `<temporal_context>` only provides the date, use `date` with the `TZ` env var (already set to the user's timezone):
+- Current local time: `date "+%Y-%m-%d %H:%M %Z"`
+- "Three hours from now" in naive form: `date -d "+3 hours" "+%Y-%m-%dT%H:%M:%S"`
+
+**Do not use `date -u`** for `run_at`. UTC strings bypass timezone handling and will fire at the wrong wall-clock time.
 
 ## User Interaction
 
