@@ -1,3 +1,4 @@
+mod admin;
 mod agents;
 mod app_supervisor;
 mod apps;
@@ -96,6 +97,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
 
 fn build_app(state: AppState) -> Router {
     Router::new()
+        .merge(routes::admin::router())
         .merge(routes::auth::router())
         .merge(routes::agents::router())
         .merge(routes::chats::router())

@@ -59,6 +59,11 @@ pub struct AuthResponse {
     pub user: UserInfo,
 }
 
+#[derive(Debug, Serialize, Default)]
+pub struct UserPermissions {
+    pub list_users: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct UserInfo {
     pub id: String,
@@ -69,6 +74,8 @@ pub struct UserInfo {
     pub timezone: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub needs_setup: Option<bool>,
+    #[serde(default)]
+    pub permissions: UserPermissions,
 }
 
 #[derive(Debug, Deserialize)]

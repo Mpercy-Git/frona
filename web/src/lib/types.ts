@@ -1,3 +1,7 @@
+export interface UserPermissions {
+  list_users: boolean;
+}
+
 export interface UserInfo {
   id: string;
   username: string;
@@ -5,6 +9,7 @@ export interface UserInfo {
   name: string;
   timezone?: string;
   needs_setup?: boolean;
+  permissions?: UserPermissions;
 }
 
 export interface AuthResponse {

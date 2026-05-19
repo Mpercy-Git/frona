@@ -11,7 +11,7 @@ use async_trait::async_trait;
 
 pub use self::models::User;
 pub use self::user_service::UserService;
-use self::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateUsernameRequest, UserInfo};
+use self::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateUsernameRequest, UserInfo, UserPermissions};
 use crate::auth::token::service::TokenService;
 use crate::core::config::Config;
 use crate::core::error::{AppError, AuthErrorCode};
@@ -40,13 +40,12 @@ impl AuthService {
         Self
     }
 
-    pub async fn register(
+    pub async fn create_user_with_password(
         &self,
         user_service: &UserService,
-        keypair_svc: &KeyPairService,
-        token_svc: &TokenService,
         req: RegisterRequest,
-    ) -> Result<(AuthResponse, String), AppError> {
+        groups: Vec<String>,
+    ) -> Result<User, AppError> {
         Self::validate_username(&req.username)?;
         Self::validate_password(&req.password)?;
 
@@ -66,15 +65,27 @@ impl AuthService {
             name: req.name,
             password_hash,
             timezone: None,
-            groups: Vec::new(),
+            groups,
             deactivated_at: None,
             created_at: now,
             updated_at: now,
         };
-
         let user = user_service.create(&user).await?;
         user_service.ensure_admin_invariant().await?;
-        let user = user_service.find_by_id(&user.id).await?.unwrap_or(user);
+        // Re-read so the caller sees any promotion from the invariant pass.
+        Ok(user_service.find_by_id(&user.id).await?.unwrap_or(user))
+    }
+
+    pub async fn register(
+        &self,
+        user_service: &UserService,
+        keypair_svc: &KeyPairService,
+        token_svc: &TokenService,
+        req: RegisterRequest,
+    ) -> Result<(AuthResponse, String), AppError> {
+        let user = self
+            .create_user_with_password(user_service, req, Vec::new())
+            .await?;
         let (access_jwt, refresh_jwt) =
             token_svc.create_session_pair(keypair_svc, &user).await?;
 
@@ -87,6 +98,7 @@ impl AuthService {
                 name: user.name,
                 timezone: user.timezone,
                 needs_setup: None,
+                permissions: UserPermissions::default(),
             },
         };
 
@@ -127,6 +139,7 @@ impl AuthService {
                 name: user.name,
                 timezone: user.timezone,
                 needs_setup: None,
+                permissions: UserPermissions::default(),
             },
         };
 
@@ -270,6 +283,7 @@ impl AuthService {
                 name: user.name,
                 timezone: user.timezone,
                 needs_setup: None,
+                permissions: UserPermissions::default(),
             },
         };
 
@@ -298,6 +312,7 @@ impl AuthService {
             name: user.name,
             timezone: user.timezone,
             needs_setup: None,
+            permissions: UserPermissions::default(),
         })
     }
 

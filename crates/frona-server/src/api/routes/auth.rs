@@ -12,7 +12,8 @@ use crate::api::cookie::{
     make_clear_refresh_cookie, make_clear_sso_csrf_cookie, make_refresh_cookie,
     make_sso_csrf_cookie,
 };
-use crate::auth::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateUsernameRequest, UserInfo};
+use crate::auth::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateUsernameRequest, UserInfo, UserPermissions};
+use crate::policy::models::PolicyAction;
 use crate::auth::token::models::CreatePatRequest;
 use crate::core::error::{AppError, AuthErrorCode};
 
@@ -162,6 +163,11 @@ async fn me(
     let setup_completed = state.get_runtime_config_bool("setup_completed").await;
     let needs_setup = if setup_completed { None } else { Some(true) };
 
+    let list_users_decision = state
+        .policy_service
+        .authorize_user(&user, PolicyAction::ListUsers)
+        .await?;
+
     Ok(Json(UserInfo {
         id: user.id,
         username: user.username,
@@ -169,6 +175,9 @@ async fn me(
         name: user.name,
         timezone: user.timezone,
         needs_setup,
+        permissions: UserPermissions {
+            list_users: list_users_decision.allowed,
+        },
     }))
 }
 

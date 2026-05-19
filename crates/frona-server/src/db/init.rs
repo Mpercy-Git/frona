@@ -7,11 +7,40 @@ use crate::agent::config::parse_frontmatter;
 use crate::agent::service::AgentService;
 use crate::storage::StorageService;
 
+const USER_OWNED_RESOURCES: &[(&str, &str)] = &[
+    ("chat", "user_id"),
+    ("agent", "user_id"),
+];
+
+fn build_refuse_user_delete_event() -> String {
+    let mut lets = String::new();
+    let mut conditions = Vec::new();
+    let mut payload_parts = Vec::new();
+    for (table, fk) in USER_OWNED_RESOURCES {
+        lets.push_str(&format!(
+            "            LET ${table}_count = (SELECT count() FROM {table} \
+              WHERE {fk} = meta::id($before.id) GROUP ALL)[0].count ?? 0;\n"
+        ));
+        conditions.push(format!("${table}_count > 0"));
+        payload_parts.push(format!("'\"{table}\":' + <string>${table}_count"));
+    }
+    format!(
+        "DEFINE EVENT IF NOT EXISTS refuse_user_delete_with_owned ON TABLE user
+          WHEN $event = 'DELETE'
+          THEN {{
+{lets}            IF {cond} {{
+              THROW 'owned_resources:{{' + {payload} + '}}';
+            }};
+          }};",
+        cond = conditions.join(" OR "),
+        payload = payload_parts.join(" + ',' + "),
+    )
+}
+
 pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
     db.use_ns("frona").use_db("frona").await?;
 
-    db.query(
-        "
+    let static_schema = "
         DEFINE TABLE IF NOT EXISTS user SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS unique_email ON TABLE user COLUMNS email UNIQUE;
         DEFINE INDEX IF NOT EXISTS unique_username ON TABLE user COLUMNS username UNIQUE;
@@ -135,9 +164,41 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE EVENT IF NOT EXISTS cascade_delete_task_chat ON TABLE task
           WHEN $event = 'DELETE' AND $before.chat_id IS NOT NONE
           THEN (DELETE type::record('chat', $before.chat_id));
-        ",
-    )
-    .await?;
+
+        DEFINE EVENT IF NOT EXISTS refuse_last_admin_loss_on_delete ON TABLE user
+          WHEN $event = 'DELETE'
+            AND $before.deactivated_at IS NONE
+            AND $before.groups CONTAINS 'admins'
+          THEN {
+            LET $remaining = (SELECT count() FROM user
+                                WHERE deactivated_at IS NONE
+                                  AND groups CONTAINS 'admins'
+                                GROUP ALL)[0].count ?? 0;
+            IF $remaining < 1 { THROW 'last_admin'; };
+          };
+
+        DEFINE EVENT IF NOT EXISTS refuse_last_admin_loss_on_update ON TABLE user
+          WHEN $event = 'UPDATE'
+            AND $before.deactivated_at IS NONE
+            AND $before.groups CONTAINS 'admins'
+            AND ($after.deactivated_at IS NOT NONE
+              OR !($after.groups CONTAINS 'admins'))
+          THEN {
+            LET $remaining = (SELECT count() FROM user
+                                WHERE deactivated_at IS NONE
+                                  AND groups CONTAINS 'admins'
+                                GROUP ALL)[0].count ?? 0;
+            IF $remaining < 1 { THROW 'last_admin'; };
+          };
+        ";
+
+    // The owned-resource refusal event is built dynamically from
+    // USER_OWNED_RESOURCES so adding a new owned-resource type is a one-line
+    // registry change rather than another LET/IF arm in raw SQL.
+    let owned_event = build_refuse_user_delete_event();
+    let schema = format!("{static_schema}\n{owned_event}");
+
+    db.query(schema).await?;
 
     Ok(())
 }

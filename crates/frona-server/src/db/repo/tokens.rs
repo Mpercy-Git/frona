@@ -100,4 +100,13 @@ impl TokenRepository for SurrealRepo<ApiToken> {
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }
+
+    async fn delete_by_user_id(&self, user_id: &str) -> Result<(), AppError> {
+        self.db()
+            .query("DELETE FROM api_token WHERE user_id = $uid")
+            .bind(("uid", user_id.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
 }
