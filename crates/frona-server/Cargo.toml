@@ -39,6 +39,7 @@ axum = { version = "0.8", features = ["macros", "http2", "multipart", "ws"] }
 twilio-async = "0.5"
 teloxide = { version = "0.17", default-features = false, features = ["rustls", "ctrlc_handler"] }
 slack-morphism = { version = "2", features = ["hyper"] }
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "rustls_backend"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 telegram-markdown-v2 = "0.2"

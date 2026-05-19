@@ -363,6 +363,7 @@ impl AppState {
             reg.register_factory(Arc::new(crate::chat::channel::adapter::slack::SlackAdapterFactory));
             reg.register_factory(Arc::new(crate::chat::channel::adapter::whatsapp_cloud::WhatsAppCloudAdapterFactory));
             reg.register_factory(Arc::new(crate::chat::channel::adapter::whatsapp_user::WhatsAppUserAdapterFactory));
+            reg.register_factory(Arc::new(crate::chat::channel::adapter::discord::DiscordAdapterFactory));
             reg
         };
         let channel_repo: Arc<dyn crate::chat::channel::repository::ChannelRepository> =

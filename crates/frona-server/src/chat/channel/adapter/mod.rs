@@ -1,3 +1,4 @@
+pub mod discord;
 pub mod markdown;
 pub mod slack;
 pub mod sms;

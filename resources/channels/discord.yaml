@@ -1,0 +1,9 @@
+id: discord
+display_name: Discord
+description: Connect a Discord bot via a token from the Discord Developer Portal. Enable the "MESSAGE CONTENT" privileged intent on the Bot page before starting.
+config_fields:
+  - name: bot_token
+    description: 'Bot token from the Discord Developer Portal (Applications → your app → Bot → Reset Token).'
+    is_required: true
+    is_secret: true
+    format: password
