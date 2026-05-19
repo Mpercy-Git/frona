@@ -231,6 +231,16 @@ impl TaskTool {
             )
             .await?;
 
+        self.broadcast_service.broadcast_task_update(
+            user_id,
+            &task.id,
+            "pending",
+            &task.title,
+            None,
+            Some(chat_id),
+            None,
+        );
+
         let tz: chrono_tz::Tz = timezone.parse().expect("timezone was validated earlier");
         let next_local = next_run_at.with_timezone(&tz);
 
