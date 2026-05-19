@@ -234,8 +234,28 @@ export interface AppResponse {
 }
 
 export type TaskKind =
-  | { type: "Direct" }
-  | { type: "Delegation"; source_agent_id: string; source_chat_id: string };
+  | { type: "Direct"; source_chat_id?: string | null }
+  | { type: "Delegation"; source_agent_id: string; source_chat_id: string; resume_parent?: boolean }
+  | {
+      type: "Cron";
+      cron_expression: string;
+      timezone?: string | null;
+      next_run_at?: string | null;
+      source_agent_id?: string | null;
+      source_chat_id?: string | null;
+    }
+  | {
+      type: "Signal";
+      source_chat_id: string;
+      resume_parent?: boolean;
+      mode?: "Once" | "Continuous";
+      expected_categories?: string[];
+      expected_channels?: string[];
+      expected_contacts?: string[];
+      expires_at?: string | null;
+      max_evaluations?: number;
+      evaluation_count?: number;
+    };
 
 export interface TaskResponse {
   id: string;
