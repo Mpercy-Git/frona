@@ -716,10 +716,15 @@ impl ChannelManager {
         if channel.dispatch_mode != DispatchMode::Message {
             return Ok(0);
         }
-        let orphans = self
+        // Signal-mode rows are observability-only — never delivered, so they
+        // shouldn't enter the retry queue.
+        let orphans: Vec<_> = self
             .message_repo
             .find_undelivered_completed_for_channel(&channel.id)
-            .await?;
+            .await?
+            .into_iter()
+            .filter(|m| m.dispatch_mode != Some(DispatchMode::Signal))
+            .collect();
         let count = orphans.len() as u64;
         if count == 0 {
             return Ok(0);
@@ -806,6 +811,22 @@ impl ChannelManager {
         adapter: &dyn ChannelAdapter,
         ctx: &ChannelCtx,
     ) -> Result<SegmentOutcome, AppError> {
+        // Funnel point for both broadcast and retry-poller flows; gating here
+        // catches Signal-fallback replies that the broadcast-side gate misses
+        // after a crash-recovery `reconcile_message_delivery`.
+        let effective_mode = msg
+            .dispatch_mode
+            .unwrap_or(ctx.channel.dispatch_mode);
+        if effective_mode != DispatchMode::Message {
+            tracing::debug!(
+                channel_id = %ctx.channel.id,
+                msg_id = %msg.id,
+                msg_mode = ?msg.dispatch_mode,
+                channel_mode = ?ctx.channel.dispatch_mode,
+                "attempt_send skip: effective mode is not Message",
+            );
+            return Ok(SegmentOutcome::Done);
+        }
         // Mirrors the outer watcher's status filter. See `handle_outbound_event`.
         if !matches!(msg.status, Some(MessageStatus::Completed) | None) {
             return Ok(SegmentOutcome::Done);
@@ -959,11 +980,19 @@ async fn handle_outbound_event(
                 );
                 return Ok(());
             }
-            if ctx.channel.dispatch_mode != DispatchMode::Message {
+            // Per-message Signal-fallback: a Message-mode channel can carry an
+            // individual Signal-mode reply (e.g. unpaired sender). The
+            // outbound dispatcher must respect that override.
+            let effective_mode = msg
+                .dispatch_mode
+                .unwrap_or(ctx.channel.dispatch_mode);
+            if effective_mode != DispatchMode::Message {
                 tracing::debug!(
                     channel_id = %ctx.channel.id,
                     msg_id = %msg.id,
-                    "outbound skip: channel is in Signal mode (no outbound delivery)",
+                    msg_mode = ?msg.dispatch_mode,
+                    channel_mode = ?ctx.channel.dispatch_mode,
+                    "outbound skip: effective mode is not Message",
                 );
                 return Ok(());
             }

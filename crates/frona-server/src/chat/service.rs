@@ -750,6 +750,22 @@ impl ChatService {
         self.save_message(msg).await
     }
 
+    /// Like `create_executing_agent_message`, but stamps `dispatch_mode = Signal`
+    /// so the outbound dispatcher will refuse to deliver this reply to the
+    /// channel adapter — Signal mode is pattern-matching/annotation only.
+    pub async fn create_executing_signal_message(
+        &self,
+        chat_id: &str,
+        agent_id: &str,
+    ) -> Result<MessageResponse, AppError> {
+        let msg = Message::builder(chat_id, MessageRole::Agent, String::new())
+            .agent_id(agent_id.to_string())
+            .status(MessageStatus::Executing)
+            .dispatch_mode(crate::chat::channel::DispatchMode::Signal)
+            .build();
+        self.save_message(msg).await
+    }
+
     /// Finalize a streaming-inference message. Fires `entity_updated` and
     /// `inference_done` - NOT `chat_message`. `inference_done` carries the
     /// same payload AND clears the frontend streaming buffers; firing both
