@@ -8,10 +8,12 @@
 /data/
 
 # Node
+node_modules/
 web/node_modules/
 web/.next/
 web/out/
 web/tsconfig.tsbuildinfo
+.vite/
 
 # Environment
 .env
