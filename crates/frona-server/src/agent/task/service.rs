@@ -387,4 +387,8 @@ impl TaskService {
     pub async fn find_due_cron_templates(&self) -> Result<Vec<Task>, AppError> {
         self.repo.find_due_cron_templates(chrono::Utc::now()).await
     }
+
+    pub async fn find_crons_with_in_flight_execution(&self) -> Result<Vec<Task>, AppError> {
+        self.repo.find_crons_with_in_flight_execution().await
+    }
 }

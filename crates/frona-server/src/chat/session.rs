@@ -126,10 +126,15 @@ impl ChatSessionContext {
             None
         };
 
-        let task_in_progress = task.as_ref().is_some_and(|t| matches!(t.status,
-            crate::agent::task::models::TaskStatus::Pending
-            | crate::agent::task::models::TaskStatus::InProgress
-        ));
+        // Cron must be excluded — TASK.md would prompt complete_task → status=Completed
+        // → cron stops firing forever.
+        let task_in_progress = task.as_ref().is_some_and(|t|
+            !matches!(t.kind, crate::agent::task::models::TaskKind::Cron { .. })
+            && matches!(t.status,
+                crate::agent::task::models::TaskStatus::Pending
+                | crate::agent::task::models::TaskStatus::InProgress
+            )
+        );
 
         if task_in_progress
             && let Some(task_prompt) = state.prompts.read("TASK.md")

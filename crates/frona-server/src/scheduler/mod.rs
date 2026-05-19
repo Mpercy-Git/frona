@@ -415,7 +415,7 @@ async fn execute_cron(
                 user_id,
                 CreateChatRequest {
                     space_id: None,
-                    task_id: None,
+                    task_id: Some(task.id.clone()),
                     agent_id: agent_id.clone(),
                     title: Some(format!("Cron: {}", task.title)),
                     metadata: None,
@@ -431,7 +431,23 @@ async fn execute_cron(
         chat.id
     };
 
-    execute_background_agent(state, user_id, &chat_id, &task.description).await
+    let cancel_token = state.active_sessions.register(&chat_id).await;
+
+    // Mirror into TaskExecutor.active_tasks so cancel_task finds cron tokens.
+    let executor = state.task_executor();
+    if let Some(ref exec) = executor {
+        exec.register_cancellation(agent_id, &task.id, cancel_token.clone()).await;
+    }
+
+    let result = execute_background_agent(
+        state, user_id, &chat_id, &task.description, cancel_token,
+    ).await;
+
+    if let Some(exec) = executor {
+        exec.unregister_cancellation(agent_id, &task.id).await;
+    }
+
+    result
 }
 
 async fn execute_heartbeat(
@@ -471,7 +487,8 @@ async fn execute_heartbeat(
         "Heartbeat: review and act on your checklist.\n\n{}",
         heartbeat_content
     );
-    execute_background_agent(state, user_id, &chat_id, &message).await
+    let cancel_token = state.active_sessions.register(&chat_id).await;
+    execute_background_agent(state, user_id, &chat_id, &message, cancel_token).await
 }
 
 async fn execute_background_agent(
@@ -479,6 +496,7 @@ async fn execute_background_agent(
     user_id: &str,
     chat_id: &str,
     message_content: &str,
+    cancel_token: tokio_util::sync::CancellationToken,
 ) -> Result<(), AppError> {
     state
         .chat_service
@@ -492,8 +510,6 @@ async fn execute_background_agent(
         .create_executing_agent_message(chat_id, &chat.agent_id)
         .await?;
     let agent_msg_id = agent_msg.id.clone();
-
-    let cancel_token = state.active_sessions.register(chat_id).await;
 
     let builder = Box::new(DefaultConversationBuilder {
         user_service: state.user_service.clone(),

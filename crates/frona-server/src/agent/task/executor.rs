@@ -118,20 +118,72 @@ impl TaskExecutor {
             }
         };
 
-        if tasks.is_empty() {
+        if !tasks.is_empty() {
+            tracing::info!(count = tasks.len(), "Resuming tasks from previous run");
+
+            for task in tasks {
+                if task.status == TaskStatus::Cancelled {
+                    continue;
+                }
+
+                if let Err(e) = self.spawn_execution(task).await {
+                    tracing::warn!(error = %e, "Failed to spawn task during resume");
+                }
+            }
+        }
+
+        self.resume_in_flight_crons().await;
+    }
+
+    /// Cron isn't in `find_resumable` because most pending crons are just
+    /// awaiting their next tick. This recovers only crons with an orphaned
+    /// `Executing` message from a crash mid-fire.
+    async fn resume_in_flight_crons(self: &Arc<Self>) {
+        let in_flight = match self
+            .app_state
+            .task_service
+            .find_crons_with_in_flight_execution()
+            .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to query in-flight cron templates");
+                return;
+            }
+        };
+
+        if in_flight.is_empty() {
             return;
         }
 
-        tracing::info!(count = tasks.len(), "Resuming tasks from previous run");
+        tracing::info!(count = in_flight.len(), "Recovering in-flight cron fires");
 
-        for task in tasks {
-            if task.status == TaskStatus::Cancelled {
-                continue;
-            }
+        for cron in in_flight {
+            let Some(chat_id) = cron.chat_id.clone() else { continue };
 
-            if let Err(e) = self.spawn_execution(task).await {
-                tracing::warn!(error = %e, "Failed to spawn task during resume");
-            }
+            let msg = match self
+                .app_state
+                .chat_service
+                .find_executing_message_for_chat(&chat_id)
+                .await
+            {
+                Ok(Some(m)) => m,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!(error = %e, task_id = %cron.id, "Failed to look up in-flight cron message");
+                    continue;
+                }
+            };
+
+            let app_state = self.app_state.clone();
+            let user_id = cron.user_id.clone();
+            let msg_id = msg.id.clone();
+            let chat_id = chat_id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = execution::resume_agent_loop(&app_state, &user_id, &chat_id, &msg_id).await {
+                    tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume in-flight cron fire");
+                }
+            });
         }
     }
 
@@ -201,6 +253,16 @@ impl TaskExecutor {
             }
         }
         false
+    }
+
+    pub async fn register_cancellation(&self, agent_id: &str, task_id: &str, token: CancellationToken) {
+        let key = format!("{}:{}", agent_id, task_id);
+        self.active_tasks.lock().await.insert(key, token);
+    }
+
+    pub async fn unregister_cancellation(&self, agent_id: &str, task_id: &str) {
+        let key = format!("{}:{}", agent_id, task_id);
+        self.active_tasks.lock().await.remove(&key);
     }
 
     async fn get_agent_concurrent_limit(&self, agent_id: &str) -> usize {

@@ -32,7 +32,7 @@ impl TaskRepository for SurrealRepo<Task> {
 
     async fn find_all_by_user_id(&self, user_id: &str) -> Result<Vec<Task>, AppError> {
         let query = format!(
-            "{SELECT_CLAUSE} FROM task WHERE user_id = $user_id AND kind.Cron IS NONE ORDER BY created_at DESC"
+            "{SELECT_CLAUSE} FROM task WHERE user_id = $user_id ORDER BY created_at DESC"
         );
         let mut result = self
             .db()
@@ -110,6 +110,29 @@ impl TaskRepository for SurrealRepo<Task> {
             .db()
             .query(&query)
             .bind(("now", now))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let tasks: Vec<Task> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(tasks)
+    }
+
+    async fn find_crons_with_in_flight_execution(&self) -> Result<Vec<Task>, AppError> {
+        // Status filter excludes cancelled crons — otherwise a cancel-then-crash
+        // sequence would resurrect the cron and deliver a post-cancel reminder.
+        let query = format!(
+            "{SELECT_CLAUSE} FROM task WHERE kind.Cron IS NOT NONE \
+             AND (status.Pending IS NOT NONE OR status.InProgress IS NOT NONE) \
+             AND chat_id IS NOT NONE \
+             AND chat_id IN (SELECT VALUE chat_id FROM message WHERE status = $status)"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("status", crate::chat::message::models::MessageStatus::Executing))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 
