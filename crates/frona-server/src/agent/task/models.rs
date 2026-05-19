@@ -39,6 +39,8 @@ pub enum TaskKind {
     },
     Cron {
         cron_expression: String,
+        #[serde(default)]
+        timezone: Option<String>,
         next_run_at: Option<DateTime<Utc>>,
         source_agent_id: Option<String>,
         source_chat_id: Option<String>,
@@ -202,6 +204,7 @@ mod tests {
     fn source_chat_id_cron_with_value() {
         let kind = TaskKind::Cron {
             cron_expression: "0 9 * * *".to_string(),
+            timezone: None,
             next_run_at: None,
             source_agent_id: None,
             source_chat_id: Some("c2".to_string()),
@@ -213,6 +216,7 @@ mod tests {
     fn source_chat_id_cron_without_value() {
         let kind = TaskKind::Cron {
             cron_expression: "0 9 * * *".to_string(),
+            timezone: None,
             next_run_at: None,
             source_agent_id: None,
             source_chat_id: None,

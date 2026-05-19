@@ -322,6 +322,7 @@ impl TaskService {
         title: &str,
         description: &str,
         cron_expression: &str,
+        timezone: String,
         next_run_at: DateTime<Utc>,
         source_agent_id: Option<String>,
         source_chat_id: Option<String>,
@@ -339,6 +340,7 @@ impl TaskService {
             status: TaskStatus::Pending,
             kind: TaskKind::Cron {
                 cron_expression: cron_expression.to_string(),
+                timezone: Some(timezone),
                 next_run_at: Some(next_run_at),
                 source_agent_id,
                 source_chat_id,

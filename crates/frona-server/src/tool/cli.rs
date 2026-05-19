@@ -47,6 +47,7 @@ pub struct CliTool {
     api_base_url: String,
     runtime_tokens_dir: PathBuf,
     ephemeral_token_expiry_secs: u64,
+    server_timezone: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -61,6 +62,7 @@ impl CliTool {
         api_base_url: String,
         runtime_tokens_dir: PathBuf,
         ephemeral_token_expiry_secs: u64,
+        server_timezone: String,
     ) -> Self {
         Self {
             config,
@@ -72,6 +74,7 @@ impl CliTool {
             api_base_url,
             runtime_tokens_dir,
             ephemeral_token_expiry_secs,
+            server_timezone,
         }
     }
 
@@ -192,9 +195,10 @@ impl AgentTool for CliTool {
 
         {
             let mut extra_vars = ctx.vault_env_vars.read().await.clone();
-            if let Some(tz) = &ctx.user.timezone {
-                extra_vars.push(("TZ".to_string(), tz.clone()));
-            }
+            extra_vars.push((
+                "TZ".to_string(),
+                ctx.user.resolved_timezone(&self.server_timezone),
+            ));
             extra_vars.push((
                 "FRONA_TOKEN_FILE".to_string(),
                 token_guard.path().to_string_lossy().into_owned(),
@@ -470,6 +474,7 @@ mod tests {
             "http://localhost".into(),
             std::env::temp_dir().join("frona-cli-def-tokens"),
             300,
+            "UTC".to_string(),
         );
         let defs = tool.definitions();
 
@@ -570,6 +575,7 @@ mod tests {
             "http://localhost".into(),
             runtime_tokens,
             300,
+            "UTC".to_string(),
         );
         let ctx = mock_context();
 

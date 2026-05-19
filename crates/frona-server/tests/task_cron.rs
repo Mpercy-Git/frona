@@ -23,18 +23,9 @@ async fn create_cron_template_stores_correctly() {
     let db = test_db().await;
     let svc = make_task_service(db);
 
-    let next = next_cron_occurrence("0 9 * * *").unwrap();
+    let next = next_cron_occurrence("0 9 * * *", "UTC").unwrap();
     let task = svc
-        .create_cron_template(
-            "user-1",
-            "agent-1",
-            "Daily check",
-            "Check things every day",
-            "0 9 * * *",
-            next,
-            None,
-            None,
-            None,
+        .create_cron_template("user-1", "agent-1", "Daily check", "Check things every day", "0 9 * * *", "UTC".to_string(), next, None, None, None,
         )
         .await
         .unwrap();
@@ -47,11 +38,13 @@ async fn create_cron_template_stores_correctly() {
     match &task.kind {
         TaskKind::Cron {
             cron_expression,
+            timezone,
             next_run_at,
             source_agent_id,
             source_chat_id,
         } => {
             assert_eq!(cron_expression, "0 9 * * *");
+            assert_eq!(timezone.as_deref(), Some("UTC"));
             assert_eq!(*next_run_at, Some(next));
             assert!(source_agent_id.is_none());
             assert!(source_chat_id.is_none());
@@ -65,7 +58,7 @@ async fn create_cron_template_with_source_provenance() {
     let db = test_db().await;
     let svc = make_task_service(db);
 
-    let next = next_cron_occurrence("*/5 * * * *").unwrap();
+    let next = next_cron_occurrence("*/5 * * * *", "UTC").unwrap();
     let task = svc
         .create_cron_template(
             "user-1",
@@ -73,6 +66,7 @@ async fn create_cron_template_with_source_provenance() {
             "Frequent poll",
             "Poll data source",
             "*/5 * * * *",
+            "UTC".to_string(),
             next,
             Some("agent-system".into()),
             Some("chat-origin".into()),
@@ -99,18 +93,9 @@ async fn advance_cron_template_updates_next_run_at() {
     let db = test_db().await;
     let svc = make_task_service(db);
 
-    let first_next = next_cron_occurrence("0 9 * * *").unwrap();
+    let first_next = next_cron_occurrence("0 9 * * *", "UTC").unwrap();
     let template = svc
-        .create_cron_template(
-            "user-1",
-            "agent-1",
-            "Daily task",
-            "description",
-            "0 9 * * *",
-            first_next,
-            None,
-            None,
-            None,
+        .create_cron_template("user-1", "agent-1", "Daily task", "description", "0 9 * * *", "UTC".to_string(), first_next, None, None, None,
         )
         .await
         .unwrap();
@@ -138,18 +123,18 @@ async fn find_due_cron_templates_returns_only_due_pending() {
 
     let past = Utc::now() - Duration::minutes(5);
     let t1 = svc
-        .create_cron_template("user-1", "agent-1", "Due task", "desc", "0 9 * * *", past, None, None, None)
+        .create_cron_template("user-1", "agent-1", "Due task", "desc", "0 9 * * *", "UTC".to_string(), past, None, None, None)
         .await
         .unwrap();
 
     let future = Utc::now() + Duration::hours(2);
     let _t2 = svc
-        .create_cron_template("user-1", "agent-1", "Future task", "desc", "0 11 * * *", future, None, None, None)
+        .create_cron_template("user-1", "agent-1", "Future task", "desc", "0 11 * * *", "UTC".to_string(), future, None, None, None)
         .await
         .unwrap();
 
     let mut cancelled = svc
-        .create_cron_template("user-1", "agent-1", "Cancelled task", "desc", "0 8 * * *", past, None, None, None)
+        .create_cron_template("user-1", "agent-1", "Cancelled task", "desc", "0 8 * * *", "UTC".to_string(), past, None, None, None)
         .await
         .unwrap();
     cancelled.status = TaskStatus::Cancelled;
@@ -188,7 +173,7 @@ async fn find_resumable_excludes_cron_templates() {
     repo.create(&direct_task).await.unwrap();
 
     let past = Utc::now() - Duration::minutes(5);
-    svc.create_cron_template("user-1", "agent-1", "Cron template", "desc", "0 9 * * *", past, None, None, None)
+    svc.create_cron_template("user-1", "agent-1", "Cron template", "desc", "0 9 * * *", "UTC".to_string(), past, None, None, None)
         .await
         .unwrap();
 
@@ -398,7 +383,7 @@ async fn find_resumable_mixed_scenario() {
 
     // Cron template — should NOT resume
     let past = Utc::now() - Duration::minutes(5);
-    svc.create_cron_template("user-1", "agent-1", "Cron tmpl", "d", "0 9 * * *", past, None, None, None)
+    svc.create_cron_template("user-1", "agent-1", "Cron tmpl", "d", "0 9 * * *", "UTC".to_string(), past, None, None, None)
         .await
         .unwrap();
 
@@ -543,12 +528,12 @@ async fn find_due_cron_templates_unaffected_by_restart() {
 
     let past = Utc::now() - Duration::minutes(10);
     let template = svc
-        .create_cron_template("user-1", "agent-1", "Hourly", "desc", "0 * * * *", past, None, None, None)
+        .create_cron_template("user-1", "agent-1", "Hourly", "desc", "0 * * * *", "UTC".to_string(), past, None, None, None)
         .await
         .unwrap();
 
     // Simulate what happens on restart: cron fires, template advanced
-    let next = next_cron_occurrence("0 * * * *").unwrap();
+    let next = next_cron_occurrence("0 * * * *", "UTC").unwrap();
     svc.advance_cron_template(&template.id, next, Some("chat-1"))
         .await
         .unwrap();
@@ -716,16 +701,7 @@ async fn cron_template_lifecycle_simulation() {
 
     let first_run = Utc::now() - Duration::minutes(1);
     let template = svc
-        .create_cron_template(
-            "user-1",
-            "agent-1",
-            "Hourly check",
-            "Check everything",
-            "0 * * * *",
-            first_run,
-            None,
-            None,
-            None,
+        .create_cron_template("user-1", "agent-1", "Hourly check", "Check everything", "0 * * * *", "UTC".to_string(), first_run, None, None, None,
         )
         .await
         .unwrap();
@@ -734,7 +710,7 @@ async fn cron_template_lifecycle_simulation() {
     assert_eq!(due.len(), 1);
 
     // Execute the cron directly (no CronRun child) and advance
-    let second_run = next_cron_occurrence("0 * * * *").unwrap();
+    let second_run = next_cron_occurrence("0 * * * *", "UTC").unwrap();
     let advanced = svc
         .advance_cron_template(&template.id, second_run, Some("chat-1"))
         .await
@@ -839,7 +815,7 @@ async fn deferred_task_excludes_cron() {
     let past = Utc::now() - Duration::minutes(5);
 
     // Cron template with past next_run_at — should NOT appear in deferred results
-    svc.create_cron_template("user-1", "agent-1", "Cron", "desc", "0 9 * * *", past, None, None, None)
+    svc.create_cron_template("user-1", "agent-1", "Cron", "desc", "0 9 * * *", "UTC".to_string(), past, None, None, None)
         .await
         .unwrap();
 

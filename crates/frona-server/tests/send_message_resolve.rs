@@ -200,6 +200,7 @@ fn test_task_kind_source_chat_id() {
 
     let cron_with = TaskKind::Cron {
         cron_expression: "* * * * *".into(),
+        timezone: None,
         next_run_at: None,
         source_agent_id: None,
         source_chat_id: Some("chat-2".into()),
@@ -208,6 +209,7 @@ fn test_task_kind_source_chat_id() {
 
     let cron_without = TaskKind::Cron {
         cron_expression: "* * * * *".into(),
+        timezone: None,
         next_run_at: None,
         source_agent_id: None,
         source_chat_id: None,

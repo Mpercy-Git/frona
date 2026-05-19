@@ -34,9 +34,9 @@ pub use crate::inference::request::InferenceContext;
 
 use crate::agent::prompt::PromptLoader;
 
-/// Parse a `run_at` argument that can be a unix timestamp (number or string) or ISO 8601 datetime.
-/// Returns an error if the value is in the past.
-pub fn parse_run_at(value: &Value) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
+/// Accepts unix timestamp or naive ISO 8601 (interpreted in `tz`). Rejects
+/// offset-bearing strings — the agent must use naive + `timezone` parameter.
+pub fn parse_run_at(value: &Value, tz: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
     let dt = match value {
         Value::Number(n) => {
             let ts = n.as_i64()
@@ -49,8 +49,7 @@ pub fn parse_run_at(value: &Value) -> Result<Option<chrono::DateTime<chrono::Utc
                 Some(chrono::DateTime::from_timestamp(ts, 0)
                     .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?)
             } else {
-                Some(s.parse::<chrono::DateTime<chrono::Utc>>()
-                    .map_err(|e| AppError::Validation(format!("Invalid run_at datetime: {}", e)))?)
+                Some(parse_naive_run_at(s, tz)?)
             }
         }
         _ => None,
@@ -65,9 +64,49 @@ pub fn parse_run_at(value: &Value) -> Result<Option<chrono::DateTime<chrono::Utc
     Ok(dt)
 }
 
+fn parse_naive_run_at(s: &str, tz: &str) -> Result<chrono::DateTime<chrono::Utc>, AppError> {
+    // RFC 3339 parse succeeds = offset-bearing. Reject — bypasses per-task TZ.
+    if chrono::DateTime::parse_from_rfc3339(s).is_ok() {
+        return Err(AppError::Validation(format!(
+            "run_at '{}' includes an explicit UTC offset. Use a naive ISO 8601 form like '2026-05-20T22:00:00' (interpreted in the user's local timezone) and set the optional `timezone` parameter only if the user names a different zone.",
+            s
+        )));
+    }
+
+    let naive = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M"))
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
+        .map_err(|e| {
+            AppError::Validation(format!(
+                "Invalid run_at datetime '{}': {}. Use naive ISO 8601 form like '2026-05-20T22:00:00' (no 'Z', no offset).",
+                s, e
+            ))
+        })?;
+
+    let parsed_tz: chrono_tz::Tz = tz.parse().map_err(|e| {
+        AppError::Validation(format!(
+            "Invalid timezone '{}': {}. Use an IANA name like 'America/Los_Angeles', 'Asia/Tokyo', or 'UTC'.",
+            tz, e
+        ))
+    })?;
+
+    use chrono::TimeZone;
+    let resolved = parsed_tz
+        .from_local_datetime(&naive)
+        .single()
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "run_at '{}' is ambiguous or invalid in timezone '{}' (likely a DST transition). Pick a different time.",
+                s, tz
+            ))
+        })?;
+
+    Ok(resolved.with_timezone(&chrono::Utc))
+}
+
 /// Resolve a `run_at` datetime from arguments, supporting both `run_at` and `delay_minutes`.
 /// `delay_minutes` takes precedence over `run_at` if both are provided.
-pub fn resolve_run_at(arguments: &Value) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
+pub fn resolve_run_at(arguments: &Value, tz: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
     if let Some(delay) = arguments.get("delay_minutes").and_then(|v| v.as_u64()) {
         if delay == 0 {
             return Err(AppError::Validation("delay_minutes must be greater than 0".into()));
@@ -76,7 +115,7 @@ pub fn resolve_run_at(arguments: &Value) -> Result<Option<chrono::DateTime<chron
     }
 
     match arguments.get("run_at") {
-        Some(v) => parse_run_at(v),
+        Some(v) => parse_run_at(v, tz),
         None => Ok(None),
     }
 }
@@ -276,4 +315,105 @@ pub fn load_tool_definition_with_vars(prompts: &PromptLoader, path: &str, vars: 
         description: body,
         parameters,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_run_at_unix_timestamp_number() {
+        let dt = parse_run_at(&json!(4_000_000_000_i64), "UTC")
+            .unwrap()
+            .unwrap();
+        assert_eq!(dt.timestamp(), 4_000_000_000);
+    }
+
+    #[test]
+    fn parse_run_at_unix_timestamp_string() {
+        let dt = parse_run_at(&json!("4000000000"), "UTC")
+            .unwrap()
+            .unwrap();
+        assert_eq!(dt.timestamp(), 4_000_000_000);
+    }
+
+    #[test]
+    fn parse_run_at_naive_in_la_winter() {
+        // 22:00 on 2030-01-15 in LA (PST = UTC-8) → 06:00 UTC on 01-16
+        let dt = parse_run_at(&json!("2030-01-15T22:00:00"), "America/Los_Angeles")
+            .unwrap()
+            .unwrap();
+        assert_eq!(dt.to_rfc3339(), "2030-01-16T06:00:00+00:00");
+    }
+
+    #[test]
+    fn parse_run_at_naive_in_la_summer() {
+        // 22:00 on 2030-07-15 in LA (PDT = UTC-7) → 05:00 UTC on 07-16
+        let dt = parse_run_at(&json!("2030-07-15T22:00:00"), "America/Los_Angeles")
+            .unwrap()
+            .unwrap();
+        assert_eq!(dt.to_rfc3339(), "2030-07-16T05:00:00+00:00");
+    }
+
+    #[test]
+    fn parse_run_at_naive_in_tokyo() {
+        // 06:00 on 2030-05-20 in Tokyo (JST = UTC+9) → 21:00 UTC on 05-19
+        let dt = parse_run_at(&json!("2030-05-20T06:00:00"), "Asia/Tokyo")
+            .unwrap()
+            .unwrap();
+        assert_eq!(dt.to_rfc3339(), "2030-05-19T21:00:00+00:00");
+    }
+
+    #[test]
+    fn parse_run_at_rejects_explicit_offset() {
+        let err = parse_run_at(&json!("2030-05-20T22:00:00-04:00"), "UTC").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("explicit UTC offset"),
+            "expected hint about explicit offset, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_run_at_rejects_z_suffix() {
+        let err = parse_run_at(&json!("2030-05-20T22:00:00Z"), "UTC").unwrap_err();
+        assert!(err.to_string().contains("explicit UTC offset"));
+    }
+
+    #[test]
+    fn parse_run_at_rejects_past_time() {
+        let err = parse_run_at(&json!("2000-01-01T00:00:00"), "UTC").unwrap_err();
+        assert!(err.to_string().contains("future"));
+    }
+
+    #[test]
+    fn parse_run_at_invalid_tz_rejected() {
+        let err = parse_run_at(&json!("2030-05-20T22:00:00"), "Mars/Olympus").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid timezone"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_run_at_accepts_space_separator() {
+        let dt = parse_run_at(&json!("2030-05-20 22:00:00"), "UTC")
+            .unwrap()
+            .unwrap();
+        assert_eq!(dt.to_rfc3339(), "2030-05-20T22:00:00+00:00");
+    }
+
+    #[test]
+    fn resolve_run_at_delay_minutes_takes_precedence() {
+        let args = json!({"delay_minutes": 5, "run_at": "2030-05-20T22:00:00"});
+        let dt = resolve_run_at(&args, "UTC").unwrap().unwrap();
+        // Should be ~5min from now, not 2030 — delay_minutes wins.
+        let delta = (dt - chrono::Utc::now()).num_minutes();
+        assert!((4..=6).contains(&delta), "expected ~5 min from now, got {delta}");
+    }
+
+    #[test]
+    fn resolve_run_at_delay_minutes_zero_rejected() {
+        let args = json!({"delay_minutes": 0});
+        assert!(resolve_run_at(&args, "UTC").is_err());
+    }
 }

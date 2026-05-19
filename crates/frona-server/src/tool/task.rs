@@ -23,11 +23,18 @@ pub fn parse_cron(expression: &str) -> Result<cron::Schedule, AppError> {
         .map_err(|e| AppError::Validation(format!("Invalid cron expression '{}': {}", expression, e)))
 }
 
-pub fn next_cron_occurrence(expression: &str) -> Result<DateTime<Utc>, AppError> {
+pub fn next_cron_occurrence(expression: &str, timezone: &str) -> Result<DateTime<Utc>, AppError> {
     let schedule = parse_cron(expression)?;
+    let tz: chrono_tz::Tz = timezone.parse().map_err(|e| {
+        AppError::Validation(format!(
+            "Invalid timezone '{}': {}. Use an IANA name like 'America/Los_Angeles', 'Asia/Tokyo', or 'UTC'.",
+            timezone, e
+        ))
+    })?;
     schedule
-        .upcoming(Utc)
+        .upcoming(tz)
         .next()
+        .map(|dt| dt.with_timezone(&Utc))
         .ok_or_else(|| AppError::Validation("Cron expression has no future occurrences".into()))
 }
 
@@ -38,6 +45,7 @@ pub struct TaskTool {
     broadcast_service: BroadcastService,
     policy_service: PolicyService,
     prompts: PromptLoader,
+    server_timezone: String,
 }
 
 impl TaskTool {
@@ -48,6 +56,7 @@ impl TaskTool {
         broadcast_service: BroadcastService,
         policy_service: PolicyService,
         prompts: PromptLoader,
+        server_timezone: String,
     ) -> Self {
         Self {
             task_service,
@@ -56,7 +65,21 @@ impl TaskTool {
             broadcast_service,
             policy_service,
             prompts,
+            server_timezone,
         }
+    }
+
+    fn resolve_timezone(&self, arguments: &Value, user: &crate::auth::models::User) -> Result<String, AppError> {
+        if let Some(arg) = arguments.get("timezone").and_then(|v| v.as_str()) {
+            arg.parse::<chrono_tz::Tz>().map_err(|e| {
+                AppError::Validation(format!(
+                    "Invalid timezone '{}': {}. Use an IANA name like 'America/Los_Angeles', 'Asia/Tokyo', or 'UTC'.",
+                    arg, e
+                ))
+            })?;
+            return Ok(arg.to_string());
+        }
+        Ok(user.resolved_timezone(&self.server_timezone))
     }
 
     async fn handle_create(&self, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
@@ -148,15 +171,17 @@ impl TaskTool {
             ));
         }
 
+        let timezone = self.resolve_timezone(&arguments, &ctx.user)?;
+
         if let Some(cron_expr) = cron_expression {
             self.handle_create_cron(
-                user_id, agent_id, chat_id, &target_agent, is_self, title, instruction, cron_expr, &arguments,
+                user_id, agent_id, chat_id, &target_agent, is_self, title, instruction, cron_expr, &timezone, &arguments,
             )
             .await
         } else {
             self.handle_create_oneoff(
                 user_id, agent_id, chat_id, space_id, &target_agent, is_self, process_result, title, instruction,
-                &arguments,
+                &timezone, &arguments,
             )
             .await
         }
@@ -173,14 +198,15 @@ impl TaskTool {
         title: &str,
         instruction: &str,
         cron_expression: &str,
+        timezone: &str,
         arguments: &Value,
     ) -> Result<ToolOutput, AppError> {
-        let run_at = super::resolve_run_at(arguments)?;
+        let run_at = super::resolve_run_at(arguments, timezone)?;
 
         parse_cron(cron_expression)?;
         let next_run_at = match run_at {
             Some(dt) => dt,
-            None => next_cron_occurrence(cron_expression)?,
+            None => next_cron_occurrence(cron_expression, timezone)?,
         };
 
         let source_agent_id = if is_self {
@@ -197,6 +223,7 @@ impl TaskTool {
                 title,
                 instruction,
                 cron_expression,
+                timezone.to_string(),
                 next_run_at,
                 source_agent_id,
                 Some(chat_id.to_string()),
@@ -204,14 +231,18 @@ impl TaskTool {
             )
             .await?;
 
+        let tz: chrono_tz::Tz = timezone.parse().expect("timezone was validated earlier");
+        let next_local = next_run_at.with_timezone(&tz);
+
         Ok(ToolOutput::text(
             serde_json::json!({
                 "task_id": task.id,
                 "cron_expression": cron_expression,
+                "timezone": timezone,
                 "next_run_at": next_run_at.to_rfc3339(),
                 "message": format!(
-                    "Cron job '{}' created for {}. Next run at {}.",
-                    title, target_agent.name, next_run_at.format("%Y-%m-%d %H:%M UTC")
+                    "Cron job '{}' created for {}. Next run at {} ({}).",
+                    title, target_agent.name, next_local.format("%Y-%m-%d %H:%M %Z"), timezone
                 )
             })
             .to_string(),
@@ -230,9 +261,10 @@ impl TaskTool {
         process_result: bool,
         title: &str,
         instruction: &str,
+        timezone: &str,
         arguments: &Value,
     ) -> Result<ToolOutput, AppError> {
-        let run_at = super::resolve_run_at(arguments)?;
+        let run_at = super::resolve_run_at(arguments, timezone)?;
 
         let source_agent_id = if is_self {
             None
@@ -279,12 +311,17 @@ impl TaskTool {
             }
         }
 
+        let tz: chrono_tz::Tz = timezone.parse().expect("timezone was validated earlier");
+        let format_local = |at: DateTime<Utc>| {
+            at.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z").to_string()
+        };
+
         let message = if is_self {
             match run_at {
                 Some(at) => format!(
                     "Task '{}' created, deferred until {}.",
                     title,
-                    at.format("%Y-%m-%d %H:%M UTC")
+                    format_local(at)
                 ),
                 None => format!("Task '{}' created and running.", title),
             }
@@ -294,7 +331,7 @@ impl TaskTool {
                     "Task '{}' assigned to {}, deferred until {}.",
                     title,
                     target_agent.name,
-                    at.format("%Y-%m-%d %H:%M UTC")
+                    format_local(at)
                 ),
                 (None, false) => format!(
                     "Task '{}' assigned to {}. Results will be posted to this chat when complete.",
@@ -459,26 +496,54 @@ mod tests {
 
     #[test]
     fn next_cron_occurrence_returns_future() {
-        let next = next_cron_occurrence("* * * * *").unwrap();
+        let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
         assert!(next > Utc::now());
     }
 
     #[test]
     fn next_cron_occurrence_daily_has_correct_time() {
-        let next = next_cron_occurrence("30 14 * * *").unwrap();
+        let next = next_cron_occurrence("30 14 * * *", "UTC").unwrap();
         assert_eq!(next.hour(), 14);
         assert_eq!(next.minute(), 30);
     }
 
     #[test]
     fn next_cron_occurrence_multiple_calls_are_consistent() {
-        let a = next_cron_occurrence("0 0 * * *").unwrap();
-        let b = next_cron_occurrence("0 0 * * *").unwrap();
+        let a = next_cron_occurrence("0 0 * * *", "UTC").unwrap();
+        let b = next_cron_occurrence("0 0 * * *", "UTC").unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn next_cron_occurrence_invalid_returns_error() {
-        assert!(next_cron_occurrence("invalid").is_err());
+        assert!(next_cron_occurrence("invalid", "UTC").is_err());
+    }
+
+    #[test]
+    fn next_cron_occurrence_resolves_in_named_tz() {
+        // 8am LA → 16:00 UTC (winter, PST) or 15:00 UTC (summer, PDT). Verify
+        // the time when projected back into the LA clock is 08:00.
+        let next = next_cron_occurrence("0 8 * * *", "America/Los_Angeles").unwrap();
+        let la: chrono_tz::Tz = "America/Los_Angeles".parse().unwrap();
+        let next_la = next.with_timezone(&la);
+        assert_eq!(next_la.hour(), 8);
+        assert_eq!(next_la.minute(), 0);
+    }
+
+    #[test]
+    fn next_cron_occurrence_in_tokyo() {
+        let next = next_cron_occurrence("0 8 * * *", "Asia/Tokyo").unwrap();
+        let tokyo: chrono_tz::Tz = "Asia/Tokyo".parse().unwrap();
+        let next_tokyo = next.with_timezone(&tokyo);
+        assert_eq!(next_tokyo.hour(), 8);
+        assert_eq!(next_tokyo.minute(), 0);
+    }
+
+    #[test]
+    fn next_cron_occurrence_invalid_tz_rejected() {
+        let err = next_cron_occurrence("0 8 * * *", "Mars/Olympus").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid timezone"), "got: {msg}");
+        assert!(msg.contains("IANA"), "expected IANA hint, got: {msg}");
     }
 }

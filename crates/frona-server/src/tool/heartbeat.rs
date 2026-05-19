@@ -13,6 +13,7 @@ pub struct HeartbeatTool {
     agent_service: AgentService,
     storage: StorageService,
     prompts: PromptLoader,
+    server_timezone: String,
 }
 
 impl HeartbeatTool {
@@ -20,11 +21,13 @@ impl HeartbeatTool {
         agent_service: AgentService,
         storage: StorageService,
         prompts: PromptLoader,
+        server_timezone: String,
     ) -> Self {
         Self {
             agent_service,
             storage,
             prompts,
+            server_timezone,
         }
     }
 }
@@ -68,8 +71,12 @@ impl HeartbeatTool {
             .set_heartbeat(agent_id, Some(interval_minutes))
             .await?;
 
+        let timezone = ctx.user.resolved_timezone(&self.server_timezone);
+        let tz: chrono_tz::Tz = timezone.parse().unwrap_or(chrono_tz::UTC);
+        let next_local = next.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z").to_string();
+
         Ok(ToolOutput::text(serde_json::json!({
-            "message": format!("Heartbeat set to every {} minutes. Next heartbeat at {}.", interval_minutes, next.format("%Y-%m-%d %H:%M UTC")),
+            "message": format!("Heartbeat set to every {} minutes. Next heartbeat at {}.", interval_minutes, next_local),
             "heartbeat_interval": interval_minutes,
             "next_heartbeat_at": next.to_rfc3339(),
         }).to_string()))

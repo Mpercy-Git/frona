@@ -154,15 +154,21 @@ impl Scheduler {
             return Ok(());
         }
 
+        let server_tz = self.app_state.config.server.timezone.as_str();
+
         for template in templates {
-            let cron_expression = match &template.kind {
-                TaskKind::Cron { cron_expression, .. } => cron_expression.clone(),
+            let (cron_expression, timezone) = match &template.kind {
+                TaskKind::Cron { cron_expression, timezone, .. } => (
+                    cron_expression.clone(),
+                    crate::auth::models::resolve_timezone(timezone.as_deref(), server_tz),
+                ),
                 _ => continue,
             };
 
             tracing::info!(
                 task_id = %template.id,
                 title = %template.title,
+                timezone = %timezone,
                 "Firing cron task"
             );
 
@@ -170,6 +176,7 @@ impl Scheduler {
             let task_service = self.app_state.task_service.clone();
             let cron_expr = cron_expression.clone();
             let task_clone = template.clone();
+            let tz_clone = timezone.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = execute_cron(&app_state, &task_clone).await {
@@ -179,7 +186,7 @@ impl Scheduler {
                         "Cron execution failed"
                     );
                 }
-                match next_cron_occurrence(&cron_expr) {
+                match next_cron_occurrence(&cron_expr, &tz_clone) {
                     Ok(next) => {
                         if let Err(e) = task_service
                             .advance_cron_template(&task_clone.id, next, task_clone.chat_id.as_deref())

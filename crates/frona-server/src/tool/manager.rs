@@ -280,7 +280,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         Arc::new(BrowserTool::new(state.browser_session_manager.clone(), state.vault_service.clone())),
         Arc::new(WebFetchTool::new(state.browser_session_manager.clone(), prompts.clone())),
         Arc::new(WebSearchTool::new(state.search_provider.clone(), prompts.clone())),
-        Arc::new(HeartbeatTool::new(state.agent_service.clone(), state.storage_service.clone(), prompts.clone())),
+        Arc::new(HeartbeatTool::new(state.agent_service.clone(), state.storage_service.clone(), prompts.clone(), state.config.server.timezone.clone())),
         Arc::new(RequestCredentialsTool::new(state.vault_service.clone(), prompts.clone())),
         Arc::new(super::manage_service::ManageServiceTool::new(
             state.app_service.clone(), prompts.clone(),
@@ -297,6 +297,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         tools.push(Arc::new(TaskTool::new(
             state.task_service.clone(), state.agent_service.clone(), executor,
             state.broadcast_service.clone(), state.policy_service.clone(), prompts.clone(),
+            state.config.server.timezone.clone(),
         )));
     }
 
@@ -304,9 +305,11 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         tools.push(Arc::new(super::await_signal::AwaitSignalTool::new(
             state.task_service.clone(),
             signal_service.clone(),
+            state.broadcast_service.clone(),
             prompts.clone(),
             state.config.signal.default_max_evaluations,
             state.config.signal.default_max_continuous_evaluations,
+            state.config.server.timezone.clone(),
         )));
         tools.push(Arc::new(super::annotate::AnnotateTool::new(
             signal_service,
@@ -334,6 +337,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             state.policy_service.clone(),
             state.config.server.public_base_url(), state.config.auth.runtime_tokens_dir.clone(),
             state.config.auth.ephemeral_token_expiry_secs,
+            state.config.server.timezone.clone(),
         )));
     }
 
