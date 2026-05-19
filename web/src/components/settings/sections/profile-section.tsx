@@ -7,15 +7,24 @@ import { api } from "@/lib/api-client";
 import { SectionHeader, SectionPanel } from "../field";
 import { ComboboxInput } from "../combobox";
 
+interface SystemInfo {
+  server_timezone: string;
+}
+
 export function ProfileSection() {
   const { user, revalidate } = useAuth();
   const [timezone, setTimezone] = useState(user?.timezone ?? "");
   const [saving, setSaving] = useState(false);
   const [timezones, setTimezones] = useState<string[]>([]);
+  const [serverTimezone, setServerTimezone] = useState<string>("");
 
   useEffect(() => {
     api.get<string[]>("/api/system/timezones").then(setTimezones).catch(() => {});
+    api.get<SystemInfo>("/api/system/info").then((i) => setServerTimezone(i.server_timezone ?? "")).catch(() => {});
   }, []);
+
+  const effectiveTimezone = timezone || serverTimezone;
+  const usingServerDefault = !timezone && !!serverTimezone;
 
   const timezoneItems = useMemo(
     () => timezones.map((tz) => ({ value: tz, label: tz.replace(/_/g, " ") })),
@@ -76,6 +85,13 @@ export function ProfileSection() {
               placeholder="Select timezone..."
               allowFreeText={false}
             />
+            {effectiveTimezone && (
+              <p className="text-xs text-text-tertiary">
+                {usingServerDefault
+                  ? `Currently using server default: ${effectiveTimezone}`
+                  : `Currently using: ${effectiveTimezone}`}
+              </p>
+            )}
             {detectedTimezone && timezone !== detectedTimezone && (
               <button
                 type="button"

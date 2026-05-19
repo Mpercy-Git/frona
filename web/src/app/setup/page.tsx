@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/auth/auth-guard";
 import { api } from "@/lib/api-client";
 import { CheckCircleIcon } from "@heroicons/react/24/outline";
+import { TimezoneSection } from "@/components/settings/sections/timezone-section";
 import { ProvidersSection } from "@/components/settings/sections/providers-section";
 import { ModelsSection } from "@/components/settings/sections/models-section";
 import { ServerSection } from "@/components/settings/sections/server-section";
@@ -31,6 +32,7 @@ function generateStrongSecret(length: number): string {
 }
 
 const STEPS = [
+  { id: "timezone" },
   { id: "providers" },
   { id: "models" },
   { id: "server" },
@@ -221,6 +223,12 @@ function SetupWizard() {
           )}
 
           <div className="min-h-[300px]">
+            {currentStep.id === "timezone" && (
+              <TimezoneSection
+                server={config.server}
+                onChange={(v) => updatePatch("server", v)}
+              />
+            )}
             {currentStep.id === "providers" && (
               <ProvidersSection
                 providers={config.providers}

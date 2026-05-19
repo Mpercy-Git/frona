@@ -14,6 +14,7 @@ import { ThemeSection } from "@/components/settings/sections/theme-section";
 import { ProvidersSection } from "@/components/settings/sections/providers-section";
 import { ModelsSection } from "@/components/settings/sections/models-section";
 import { ServerSection } from "@/components/settings/sections/server-section";
+import { TimezoneSection } from "@/components/settings/sections/timezone-section";
 import { AuthSection } from "@/components/settings/sections/auth-section";
 import { SsoSection } from "@/components/settings/sections/sso-section";
 import { BrowserSection } from "@/components/settings/sections/browser-section";
@@ -33,6 +34,7 @@ const TABS = [
   { id: "profile", label: "Profile", group: "user", saveable: false },
   { id: "theme", label: "Theme", group: "user", saveable: false },
   { id: "users", label: "Users", group: "user", saveable: false },
+  { id: "timezone", label: "Timezone", group: "config", saveable: true },
   { id: "providers", label: "Providers", group: "config", saveable: true },
   { id: "models", label: "Models", group: "config", saveable: true },
   { id: "channels", label: "Channels", group: "config", saveable: false },
@@ -279,6 +281,12 @@ export default function SettingsPage() {
 
               {config && (
                 <>
+                  {activeTab === "timezone" && (
+                    <TimezoneSection
+                      server={config.server}
+                      onChange={(v) => updatePatch("server", v)}
+                    />
+                  )}
                   {activeTab === "providers" && (
                     <ProvidersSection
                       providers={config.providers}
