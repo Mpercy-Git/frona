@@ -1,5 +1,6 @@
 pub mod discord;
 pub mod markdown;
+pub mod signal;
 pub mod slack;
 pub mod sms;
 pub mod storage;
