@@ -135,3 +135,29 @@ pub async fn text_inference(
     .await?;
     provider::extract_text_from_choice(&contents)
 }
+
+pub async fn structured_inference<T>(
+    registry: &ModelProviderRegistry,
+    model_group: &ModelGroup,
+    system_prompt: &str,
+    history: Vec<RigMessage>,
+    metrics_ctx: &InferenceMetricsContext,
+) -> Result<T, InferenceError>
+where
+    T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+{
+    let schema = serde_json::to_value(schemars::schema_for!(T))
+        .map_err(|e| InferenceError::InferenceFailed(format!("schema_for failed: {e}")))?;
+    let value = retry::structured_inference_with_retry_and_fallback(
+        registry,
+        model_group,
+        system_prompt,
+        history,
+        schema,
+        metrics_ctx,
+    )
+    .await?;
+    serde_json::from_value::<T>(value).map_err(|e| {
+        InferenceError::InferenceFailed(format!("submit args deserialization failed: {e}"))
+    })
+}

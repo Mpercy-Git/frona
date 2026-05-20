@@ -1,6 +1,16 @@
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::agent::task::models::{SignalMode, Task, TaskKind};
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct SignalOutput {
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Annotation {
@@ -187,6 +197,38 @@ mod tests {
         watch.expected_channels.clear();
         watch.expected_contacts.clear();
         assert!(!watch.has_criteria());
+    }
+
+    #[test]
+    fn signal_output_round_trips_through_json() {
+        let out = SignalOutput {
+            categories: vec!["verification_code".into(), "auth".into()],
+            summary: Some("code arrived".into()),
+        };
+        let json = serde_json::to_value(&out).unwrap();
+        let back: SignalOutput = serde_json::from_value(json).unwrap();
+        assert_eq!(back.categories, out.categories);
+        assert_eq!(back.summary, out.summary);
+    }
+
+    #[test]
+    fn signal_output_summary_omitted_when_none() {
+        let out = SignalOutput {
+            categories: vec!["x".into()],
+            summary: None,
+        };
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(json.get("summary").is_none(), "summary should be omitted, got {json}");
+    }
+
+    #[test]
+    fn signal_output_schema_declares_categories_and_summary() {
+        let schema = serde_json::to_value(schemars::schema_for!(SignalOutput)).unwrap();
+        let props = schema
+            .pointer("/properties")
+            .expect("schema has properties");
+        assert!(props.get("categories").is_some(), "schema missing categories: {schema}");
+        assert!(props.get("summary").is_some(), "schema missing summary: {schema}");
     }
 
     #[test]

@@ -903,6 +903,19 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
         }
         Ok(vec![rig::completion::AssistantContent::text(full_text)])
     }
+
+    async fn structured_inference(
+        &self,
+        _model_id: &str,
+        _system_prompt: &str,
+        _chat_history: Vec<rig::completion::Message>,
+        _schema: serde_json::Value,
+        _max_tokens: Option<u64>,
+        _temperature: Option<f64>,
+        _additional_params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, InferenceError> {
+        unreachable!("streaming test should not call structured_inference");
+    }
 }
 
 #[tokio::test]

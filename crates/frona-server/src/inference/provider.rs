@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use rig::completion::{
     AssistantContent, CompletionModel, CompletionRequest, CompletionResponse,
     Message as RigMessage,
-    message::{ToolCall, ToolFunction},
+    message::{ToolCall, ToolChoice, ToolFunction},
 };
 use rig::completion::request::{ToolDefinition as RigToolDefinition, Usage};
 use tokio::sync::mpsc;
@@ -26,6 +26,7 @@ struct CompletionRequestBuilder<'a> {
     max_tokens: Option<u64>,
     temperature: Option<f64>,
     additional_params: Option<serde_json::Value>,
+    tool_choice: Option<ToolChoice>,
 }
 
 impl<'a> CompletionRequestBuilder<'a> {
@@ -37,6 +38,7 @@ impl<'a> CompletionRequestBuilder<'a> {
             max_tokens: None,
             temperature: None,
             additional_params: None,
+            tool_choice: None,
         }
     }
 
@@ -60,6 +62,11 @@ impl<'a> CompletionRequestBuilder<'a> {
         self
     }
 
+    fn tool_choice(mut self, v: ToolChoice) -> Self {
+        self.tool_choice = Some(v);
+        self
+    }
+
     fn build(self) -> CompletionRequest {
         CompletionRequest {
             preamble: Some(self.system_prompt.to_string()),
@@ -69,7 +76,7 @@ impl<'a> CompletionRequestBuilder<'a> {
             tools: self.tools,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
-            tool_choice: None,
+            tool_choice: self.tool_choice,
             additional_params: self.additional_params,
         }
     }
@@ -177,7 +184,21 @@ pub trait ModelProvider: Send + Sync {
         temperature: Option<f64>,
         additional_params: Option<serde_json::Value>,
     ) -> Result<Vec<AssistantContent>, InferenceError>;
+
+    /// For typed extraction use `inference::structured_inference<T>`.
+    async fn structured_inference(
+        &self,
+        model_id: &str,
+        system_prompt: &str,
+        chat_history: Vec<RigMessage>,
+        schema: serde_json::Value,
+        max_tokens: Option<u64>,
+        temperature: Option<f64>,
+        additional_params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, InferenceError>;
 }
+
+pub const SUBMIT_TOOL_NAME: &str = "submit";
 
 pub struct RigProvider<C> {
     client: C,
@@ -310,6 +331,63 @@ where
         );
 
         Ok(contents)
+    }
+
+    async fn structured_inference(
+        &self,
+        model_id: &str,
+        system_prompt: &str,
+        chat_history: Vec<RigMessage>,
+        schema: serde_json::Value,
+        max_tokens: Option<u64>,
+        temperature: Option<f64>,
+        additional_params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, InferenceError> {
+        use rig::completion::CompletionModel as _;
+
+        let _guard = self.counter.guard();
+        let model = self.client.completion_model(model_id);
+
+        let submit = RigToolDefinition {
+            name: SUBMIT_TOOL_NAME.to_string(),
+            description: "Submit the structured output. You MUST call this tool exactly once with the required fields filled in.".to_string(),
+            parameters: schema,
+        };
+
+        let request = CompletionRequestBuilder::new(system_prompt, chat_history)
+            .tools(vec![submit])
+            .tool_choice(ToolChoice::Required)
+            .max_tokens(max_tokens)
+            .temperature(temperature)
+            .additional_params(additional_params)
+            .build();
+
+        tracing::debug!(model = %model_id, "LLM structured-output request");
+
+        let response: CompletionResponse<_> = model
+            .completion(request)
+            .await
+            .map_err(InferenceError::CompletionFailed)?;
+
+        let arguments = response
+            .choice
+            .into_iter()
+            .find_map(|c| match c {
+                AssistantContent::ToolCall(ToolCall {
+                    function: ToolFunction { name, arguments },
+                    ..
+                }) if name == SUBMIT_TOOL_NAME => Some(arguments),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                InferenceError::InferenceFailed(format!(
+                    "model {model_id} did not call the `{SUBMIT_TOOL_NAME}` tool"
+                ))
+            })?;
+
+        tracing::debug!(model = %model_id, arguments = %arguments, "LLM structured-output response");
+
+        Ok(arguments)
     }
 }
 

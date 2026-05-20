@@ -140,6 +140,30 @@ impl ModelProvider for MockModelProvider {
             MockResponse::Error(e) => Err(e),
         }
     }
+
+    async fn structured_inference(
+        &self,
+        _model_id: &str,
+        _system_prompt: &str,
+        _chat_history: Vec<RigMessage>,
+        _schema: serde_json::Value,
+        _max_tokens: Option<u64>,
+        _temperature: Option<f64>,
+        _additional_params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, InferenceError> {
+        match self.next_response() {
+            MockResponse::ToolCalls(mut calls) => {
+                let (_id, _name, args) = calls
+                    .pop()
+                    .ok_or_else(|| InferenceError::InferenceFailed("mock: empty ToolCalls".into()))?;
+                Ok(args)
+            }
+            MockResponse::Error(e) => Err(e),
+            _ => Err(InferenceError::InferenceFailed(
+                "mock structured_inference: queue head is not a ToolCalls response".into(),
+            )),
+        }
+    }
 }
 
 pub struct MockInternalTool {

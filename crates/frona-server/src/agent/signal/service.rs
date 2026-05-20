@@ -16,7 +16,7 @@ use crate::policy::service::PolicyService;
 
 use super::matcher::{Matcher, MatcherKind};
 use super::matchers::{CategoryMatcher, ChannelMatcher, ContactMatcher};
-use super::models::{CandidateEvent, Watch};
+use super::models::{Annotation, CandidateEvent, SignalOutput, Watch};
 
 type WatchIndex = HashMap<String, HashMap<String, Watch>>;
 
@@ -275,6 +275,188 @@ impl SignalService {
         };
         aggregate_category_hints(user_watches.values())
     }
+
+    /// The resulting agent message carries `dispatch_mode = Signal`, which
+    /// the outbound dispatcher refuses to deliver. See `attempt_send`.
+    pub async fn process_inbound_extract(
+        &self,
+        chat_service: &crate::chat::service::ChatService,
+        registry: &crate::inference::ModelProviderRegistry,
+        channel: &crate::chat::channel::Channel,
+        chat: &crate::chat::models::Chat,
+        msg: &crate::chat::message::models::Message,
+        awaiting: &[(String, String)],
+    ) -> Result<(), AppError> {
+        use rig::completion::Message as RigMessage;
+
+        let agent_msg = chat_service
+            .create_executing_signal_message(&chat.id, &chat.agent_id)
+            .await?;
+
+        let Some(agent) = self.agent_service.find_by_id(&chat.agent_id).await? else {
+            let _ = chat_service
+                .complete_agent_message(
+                    &agent_msg.id,
+                    format!("Signal extraction skipped: agent {} not found", chat.agent_id),
+                    vec![],
+                    None,
+                )
+                .await;
+            return Ok(());
+        };
+        let model_group = registry.resolve_model_group(&agent.model_group)?;
+
+        let system_prompt = self.compose_signal_prompt(&channel.provider, &chat.id, awaiting);
+        let history = vec![RigMessage::user(&msg.content)];
+        let metrics_ctx = crate::core::metrics::InferenceMetricsContext {
+            user_id: channel.user_id.clone(),
+            agent_id: chat.agent_id.clone(),
+            model_group: agent.model_group.clone(),
+        };
+
+        let output: SignalOutput = match crate::inference::structured_inference::<SignalOutput>(
+            registry,
+            &model_group,
+            &system_prompt,
+            history,
+            &metrics_ctx,
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!(
+                    channel_id = %channel.id,
+                    chat_id = %chat.id,
+                    error = %e,
+                    "Signal extraction failed",
+                );
+                let _ = chat_service
+                    .complete_agent_message(
+                        &agent_msg.id,
+                        format!("Signal extraction failed: {e}"),
+                        vec![],
+                        None,
+                    )
+                    .await;
+                return Ok(());
+            }
+        };
+
+        let allowed: Vec<String> = awaiting.iter().map(|(c, _)| c.clone()).collect();
+        let kept = filter_categories(output.categories, &allowed);
+
+        let annotator_id = format!("agent:{}", chat.agent_id);
+        let mut annotations: Vec<Annotation> = kept
+            .iter()
+            .map(|c| Annotation::category(annotator_id.clone(), c))
+            .collect();
+        if let Some(s) = output
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            annotations.push(Annotation::summary(annotator_id.clone(), s));
+        }
+
+        let fired = if annotations.is_empty() {
+            Vec::new()
+        } else {
+            let candidate = build_signal_candidate(&channel.user_id, channel, chat, msg, annotations);
+            self.evaluate(&channel.user_id, candidate).await?
+        };
+
+        let summary_text = if kept.is_empty() {
+            "Annotated: no categories matched.".to_string()
+        } else if fired.is_empty() {
+            format!(
+                "Annotated: {}. No pending signals matched.",
+                kept.join(", ")
+            )
+        } else {
+            format!(
+                "Annotated: {}. Fired {} signal(s).",
+                kept.join(", "),
+                fired.len()
+            )
+        };
+        let _ = chat_service
+            .complete_agent_message(&agent_msg.id, summary_text, vec![], None)
+            .await;
+        Ok(())
+    }
+
+    fn compose_signal_prompt(
+        &self,
+        channel: &str,
+        chat_id: &str,
+        awaiting: &[(String, String)],
+    ) -> String {
+        let categories_block = if awaiting.is_empty() {
+            String::new()
+        } else {
+            let awaiting_list = awaiting
+                .iter()
+                .map(|(cat, info)| format!("- {cat}: {info}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.prompts
+                .read_with_vars(
+                    "channel/categories.md",
+                    &[("awaiting_categories", &awaiting_list)],
+                )
+                .unwrap_or_default()
+        };
+        let vars: &[(&str, &str)] = &[
+            ("channel", channel),
+            ("chat_id", chat_id),
+            ("categories_block", &categories_block),
+        ];
+        self.prompts
+            .read_with_vars("channel/signal.md", vars)
+            .unwrap_or_default()
+    }
+}
+
+fn build_signal_candidate(
+    user_id: &str,
+    channel: &crate::chat::channel::Channel,
+    chat: &crate::chat::models::Chat,
+    msg: &crate::chat::message::models::Message,
+    annotations: Vec<Annotation>,
+) -> CandidateEvent {
+    CandidateEvent {
+        user_id: user_id.to_string(),
+        space_id: chat.space_id.clone(),
+        chat_id: Some(chat.id.clone()),
+        message_id: Some(msg.id.clone()),
+        connector_id: chat.space_id.clone(),
+        channel_id: Some(channel.provider.clone()),
+        contact_id: msg.contact_id.clone(),
+        sender: msg.from_address.clone(),
+        annotations,
+        content: msg.content.clone(),
+    }
+}
+
+/// Empty `allowed` disables filtering; unknown categories fall through and
+/// fail to match any watch downstream.
+fn filter_categories(raw: Vec<String>, allowed: &[String]) -> Vec<String> {
+    let allow_set: std::collections::HashSet<&str> =
+        allowed.iter().map(|s| s.as_str()).collect();
+    raw.into_iter()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .filter(|c| {
+            if allow_set.is_empty() || allow_set.contains(c.as_str()) {
+                true
+            } else {
+                tracing::debug!(category = %c, "dropping category not in watched set");
+                false
+            }
+        })
+        .collect()
 }
 
 fn aggregate_category_hints<'a, I>(watches: I) -> Vec<(String, String)>
@@ -382,6 +564,28 @@ mod tests {
     use crate::agent::signal::matchers::{CategoryMatcher, ChannelMatcher, ContactMatcher};
     use crate::agent::signal::models::Annotation;
     use chrono::Utc;
+
+    #[test]
+    fn filter_categories_drops_blanks_and_trims() {
+        let raw = vec!["  alert ".into(), "".into(), "   ".into(), "auth".into()];
+        let kept = filter_categories(raw, &[]);
+        assert_eq!(kept, vec!["alert".to_string(), "auth".to_string()]);
+    }
+
+    #[test]
+    fn filter_categories_drops_unwatched_when_allowlist_present() {
+        let raw = vec!["alert".into(), "intruder".into(), "auth".into()];
+        let allow = vec!["alert".to_string(), "auth".to_string()];
+        let kept = filter_categories(raw, &allow);
+        assert_eq!(kept, vec!["alert".to_string(), "auth".to_string()]);
+    }
+
+    #[test]
+    fn filter_categories_keeps_all_when_allowlist_empty() {
+        let raw = vec!["anything".into(), "goes".into()];
+        let kept = filter_categories(raw.clone(), &[]);
+        assert_eq!(kept, raw);
+    }
 
     fn default_matchers() -> Vec<Arc<dyn Matcher>> {
         vec![

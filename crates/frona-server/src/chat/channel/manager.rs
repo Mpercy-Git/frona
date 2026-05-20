@@ -28,7 +28,6 @@ use super::models::{
 };
 
 const INBOUND_BUFFER: usize = 64;
-const SIGNAL_MODE_TOOLS: &[&str] = &["annotate_message"];
 
 const DELIVERY_MAX_ATTEMPTS: u32 = 5;
 
@@ -1362,6 +1361,30 @@ async fn handle_inbound_message(
         Some(svc) => svc.pending_category_hints(user_id).await,
         None => Vec::new(),
     };
+
+    if matches!(mode, DispatchMode::Signal) {
+        // The chat row gets stamped with `dispatch_mode = Signal`, which the
+        // outbound dispatcher refuses to deliver. See `attempt_send`.
+        let Some(signal_service) = state.signal_service() else {
+            tracing::warn!(
+                channel_id = %channel_row.id,
+                "Signal-mode dispatch but signal_service unavailable; skipping",
+            );
+            return Ok(());
+        };
+        signal_service
+            .process_inbound_extract(
+                &state.chat_service,
+                state.chat_service.provider_registry(),
+                &channel_row,
+                &chat,
+                &msg,
+                &awaiting_categories,
+            )
+            .await?;
+        return Ok(());
+    }
+
     let inbound_prompt = compose_inbound_prompt(
         state,
         mode,
@@ -1378,10 +1401,6 @@ async fn handle_inbound_message(
         .await?;
 
     let cancel_token = CancellationToken::new();
-    let tool_filter: Option<&[&str]> = match mode {
-        DispatchMode::Message => None,
-        DispatchMode::Signal => Some(SIGNAL_MODE_TOOLS),
-    };
 
     let builder = Box::new(ChannelConversationBuilder {
         user_service: state.user_service.clone(),
@@ -1398,7 +1417,7 @@ async fn handle_inbound_message(
         &agent_msg.id,
         cancel_token,
         builder,
-        tool_filter,
+        None,
         None,
     )
     .await;
