@@ -23,3 +23,17 @@ backon = "1"
 bon = "3"
 moka = { version = "0.12", features = ["future", "sync"] }
 cedar-policy = { version = "4", features = ["partial-eval"] }
+# Git-only (crates.io stuck at 0.6.x). The pinned rev carries an unfixed
+# PNI-routing bug (PR #395); see signal/mod.rs for the user-visible impact.
+presage = { git = "https://github.com/whisperfish/presage", rev = "6793c3e8c30b807bddc7134c77049889bc57cf09" }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "6793c3e8c30b807bddc7134c77049889bc57cf09" }
+
+# Signal's fork of curve25519-dalek shares the upstream crate name, so
+# `[patch.crates-io]` is the only way to substitute it. Mirrors presage's
+# own root Cargo.toml.
+[patch.crates-io]
+curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }
+# Forces a single libsqlite3-sys across the graph: wa-rs's diesel wants 0.37
+# while presage-store-sqlite pins 0.36, and `links = "sqlite3"` cannot duplicate.
+libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }
+

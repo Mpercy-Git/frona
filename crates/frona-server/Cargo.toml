@@ -95,6 +95,11 @@ wa-rs-sqlite-storage = "0.2"
 wa-rs-tokio-transport = "0.2"
 wa-rs-ureq-http = "0.2"
 
+# Pure-Rust Signal client. See workspace Cargo.toml for the git rev and the
+# curve25519-dalek patch (both non-optional).
+presage = { workspace = true }
+presage-store-sqlite = { workspace = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 
