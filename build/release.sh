@@ -216,14 +216,19 @@ fi
 echo "Updating version files..."
 update_files "$NEW_VERSION"
 
-echo "Committing and tagging..."
+echo "Committing and tagging locally..."
 git add "$CARGO_TOML" "$PKG_JSON" "$PKG_LOCK"
 git commit -m "$(cat <<EOF
 release: $TAG
 EOF
 )"
 git tag -a "$TAG" -m "Release $TAG"
-git push origin HEAD --tags
+
+cleanup_local_release() {
+  echo "Rolling back local commit and tag..." >&2
+  git tag -d "$TAG" >/dev/null 2>&1 || true
+  git reset --hard HEAD~1 >/dev/null 2>&1 || true
+}
 
 if [[ "$SKIP_DOCKER" == "false" ]]; then
   echo "Building and pushing Docker image..."
@@ -237,10 +242,19 @@ if [[ "$SKIP_DOCKER" == "false" ]]; then
     TAGS+=(-t "$IMAGE:latest")
   fi
 
-  docker buildx build --platform linux/amd64,linux/arm64 \
+  if ! docker buildx build --platform linux/amd64,linux/arm64 \
     -f build/Dockerfile --target prod \
     "${TAGS[@]}" \
-    --push .
+    --push .; then
+    cleanup_local_release
+    die "Docker build failed; local commit and tag were rolled back."
+  fi
+fi
+
+echo "Pushing commit and tag..."
+if ! git push origin HEAD "$TAG"; then
+  cleanup_local_release
+  die "git push failed; local commit and tag were rolled back."
 fi
 
 echo ""
