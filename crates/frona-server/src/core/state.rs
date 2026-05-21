@@ -409,7 +409,7 @@ impl AppState {
             call_service: CallService::new(SurrealRepo::new(db.clone())),
             contact_service: ContactService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             chat_service,
-            task_service: TaskService::new(SurrealRepo::new(db.clone())),
+            task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions: ActiveSessions::default(),

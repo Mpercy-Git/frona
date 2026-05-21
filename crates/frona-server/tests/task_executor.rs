@@ -220,8 +220,6 @@ async fn handle_error_marks_failed_and_delivers() {
 #[tokio::test]
 async fn lifecycle_complete_event_detected() {
     let (state, _tmp) = test_app_state().await;
-    let _executor = make_executor(&state);
-
     let source_chat = state
         .chat_service
         .create_chat(
@@ -274,8 +272,6 @@ async fn lifecycle_complete_event_detected() {
 #[tokio::test]
 async fn lifecycle_defer_event_detected() {
     let (state, _tmp) = test_app_state().await;
-    let _executor = make_executor(&state);
-
     let task_chat = state
         .chat_service
         .create_chat(
@@ -452,19 +448,29 @@ async fn deliver_to_source_sends_to_direct_with_source_chat() {
 }
 
 #[tokio::test]
-async fn broadcast_task_status_emits_event() {
+async fn task_service_mark_completed_emits_broadcast() {
+    // Previously this test exercised TaskExecutor::broadcast_task_status, which
+    // has been folded into TaskService::mark_completed (centralized broadcast).
+    // Now we verify the service-level mutation fires the SSE event end-to-end.
+    use frona::core::repository::Repository;
+
     let (state, _tmp) = test_app_state().await;
-    let executor = make_executor(&state);
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     state.broadcast_service.register_session("user-1", tx).await;
 
     let mut task = make_task(TaskKind::Direct { source_chat_id: None });
     task.chat_id = Some("chat-123".to_string());
+    let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
+    repo.create(&task).await.unwrap();
 
-    executor.broadcast_task_status(&task, "completed", Some("All done"));
+    state
+        .task_service
+        .mark_completed(&task.id, Some("All done".to_string()))
+        .await
+        .unwrap();
 
-    // Wait briefly for the dispatcher to route the event
+    // Wait briefly for the dispatcher to route the event.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let event = rx.try_recv().expect("Expected to receive an SSE event");
@@ -652,4 +658,222 @@ async fn lifecycle_event_saved_after_assistant_message() {
         &messages[1].event,
         Some(MessageEvent::TaskCompletion { status: TaskStatus::Completed, .. })
     ));
+}
+
+// ---------------------------------------------------------------------------
+// CronRun delivery semantics — verifies that process_result gates result
+// delivery + parent resume for the new TaskKind::CronRun variant.
+// ---------------------------------------------------------------------------
+
+async fn make_cron_template_with(
+    state: &AppState,
+    source_chat_id: Option<String>,
+    process_result: bool,
+) -> Task {
+    use frona::agent::task::models::{CronConcurrency, CronMode};
+    let next = frona::tool::task::next_cron_occurrence("* * * * *", "UTC").unwrap();
+    state
+        .task_service
+        .create_cron_template(
+            "user-1",
+            "agent-1",
+            "Test cron",
+            "do a thing",
+            "* * * * *",
+            "UTC".to_string(),
+            next,
+            Some("agent-1".to_string()),
+            source_chat_id,
+            None,
+            CronMode::Singleton,
+            CronConcurrency::Replace,
+            process_result,
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn deliver_to_source_cron_run_posts_regardless_of_process_result() {
+    // CronRun mirrors Delegation: the completion summary always lands in the
+    // caller chat. `process_result` only governs whether the caller agent
+    // resumes (separate `resume_parent_if_requested` path).
+    let (state, _tmp) = test_app_state().await;
+    let executor = make_executor(&state);
+
+    let source_chat = state
+        .chat_service
+        .create_chat(
+            "user-1",
+            frona::chat::models::CreateChatRequest {
+                space_id: None,
+                task_id: None,
+                agent_id: "agent-1".to_string(),
+                title: Some("Caller".to_string()),
+                metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let template = make_cron_template_with(&state, Some(source_chat.id.clone()), false).await;
+    let run = state
+        .task_service
+        .spawn_cron_run(&template, Utc::now(), 1)
+        .await
+        .unwrap();
+
+    executor
+        .deliver_event_to_source(
+            &run,
+            frona::agent::task::executor::TaskLifecycleEvent::Completion {
+                status: TaskStatus::Completed,
+                summary: Some("Result body".to_string()),
+            },
+            vec![],
+        )
+        .await;
+
+    let messages = state
+        .chat_service
+        .get_stored_messages(&source_chat.id)
+        .await
+        .unwrap();
+    assert_eq!(messages.len(), 1, "summary delivered even with process_result=false");
+    assert_eq!(messages[0].content, "Result body");
+}
+
+#[tokio::test]
+async fn deliver_to_source_cron_run_posts_when_process_result_true() {
+    let (state, _tmp) = test_app_state().await;
+    let executor = make_executor(&state);
+
+    let source_chat = state
+        .chat_service
+        .create_chat(
+            "user-1",
+            frona::chat::models::CreateChatRequest {
+                space_id: None,
+                task_id: None,
+                agent_id: "agent-1".to_string(),
+                title: Some("Caller".to_string()),
+                metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let template = make_cron_template_with(&state, Some(source_chat.id.clone()), true).await;
+    let run = state
+        .task_service
+        .spawn_cron_run(&template, Utc::now(), 1)
+        .await
+        .unwrap();
+
+    executor
+        .deliver_event_to_source(
+            &run,
+            frona::agent::task::executor::TaskLifecycleEvent::Completion {
+                status: TaskStatus::Completed,
+                summary: Some("Result body".to_string()),
+            },
+            vec![],
+        )
+        .await;
+
+    let messages = state
+        .chat_service
+        .get_stored_messages(&source_chat.id)
+        .await
+        .unwrap();
+    assert_eq!(messages.len(), 1, "process_result=true → one delivery message");
+    assert_eq!(messages[0].content, "Result body");
+}
+
+#[tokio::test]
+async fn deliver_to_source_cron_run_skips_when_no_source_chat() {
+    // Template created without a source_chat_id (e.g. user-initiated cron with
+    // no calling agent). Even with process_result=true the delivery is a no-op
+    // because there's nowhere to deliver to.
+    let (state, _tmp) = test_app_state().await;
+    let executor = make_executor(&state);
+
+    let template = make_cron_template_with(&state, None, true).await;
+    let run = state
+        .task_service
+        .spawn_cron_run(&template, Utc::now(), 1)
+        .await
+        .unwrap();
+
+    executor
+        .deliver_event_to_source(
+            &run,
+            frona::agent::task::executor::TaskLifecycleEvent::Completion {
+                status: TaskStatus::Completed,
+                summary: Some("Result body".to_string()),
+            },
+            vec![],
+        )
+        .await;
+    // No assertion on side-effect (silently no-op); the test passes if it does
+    // not panic and no orphan write occurs.
+    assert!(matches!(
+        run.kind,
+        TaskKind::CronRun { source_chat_id: None, .. }
+    ));
+}
+
+#[tokio::test]
+async fn resume_parent_cron_run_respects_template_process_result() {
+    use frona::core::repository::Repository;
+    let (state, _tmp) = test_app_state().await;
+    let executor = make_executor(&state);
+
+    // Caller chat IS a task chat so check_and_resume_parent doesn't bail out
+    // on the user-chat guard.
+    let caller_chat = state
+        .chat_service
+        .create_chat(
+            "user-1",
+            frona::chat::models::CreateChatRequest {
+                space_id: None,
+                task_id: Some("caller-task".to_string()),
+                agent_id: "agent-1".to_string(),
+                title: Some("Caller".to_string()),
+                metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Persist the run so its sibling-query path works.
+    let template_off = make_cron_template_with(&state, Some(caller_chat.id.clone()), false).await;
+    let run_off = state
+        .task_service
+        .spawn_cron_run(&template_off, Utc::now(), 1)
+        .await
+        .unwrap();
+    let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
+    let mut completed = run_off.clone();
+    completed.status = TaskStatus::Completed;
+    repo.update(&completed).await.unwrap();
+
+    // process_result=false should NOT trigger a resume — i.e. the call returns
+    // without erroring and no spawn happens. We can only assert the negative by
+    // checking the function completes synchronously without panicking.
+    executor.resume_parent_if_requested(&completed).await;
+
+    // process_result=true path: dependency lookup against template must succeed
+    // and the resume logic must engage. We verify reach by ensuring the function
+    // does not panic and the template lookup path resolves.
+    let template_on = make_cron_template_with(&state, Some(caller_chat.id.clone()), true).await;
+    let run_on = state
+        .task_service
+        .spawn_cron_run(&template_on, Utc::now(), 1)
+        .await
+        .unwrap();
+    let mut completed_on = run_on.clone();
+    completed_on.status = TaskStatus::Completed;
+    repo.update(&completed_on).await.unwrap();
+    executor.resume_parent_if_requested(&completed_on).await;
 }

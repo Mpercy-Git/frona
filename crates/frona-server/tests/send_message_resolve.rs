@@ -204,6 +204,9 @@ fn test_task_kind_source_chat_id() {
         next_run_at: None,
         source_agent_id: None,
         source_chat_id: Some("chat-2".into()),
+        mode: Default::default(),
+        concurrency: Default::default(),
+        process_result: false,
     };
     assert_eq!(cron_with.source_chat_id(), Some("chat-2"));
 
@@ -213,6 +216,9 @@ fn test_task_kind_source_chat_id() {
         next_run_at: None,
         source_agent_id: None,
         source_chat_id: None,
+        mode: Default::default(),
+        concurrency: Default::default(),
+        process_result: false,
     };
     assert_eq!(cron_without.source_chat_id(), None);
 }

@@ -6,6 +6,7 @@ use crate::core::state::AppState;
 use crate::core::error::AppError;
 use crate::inference::conversation::{ConversationBuilder, DefaultConversationBuilder};
 use crate::inference::request::{InferenceRequest, InferenceResponse};
+use crate::tool::registry::ToolFilter;
 
 pub struct AgentLoopOutcome {
     pub response: InferenceResponse,
@@ -19,11 +20,11 @@ pub async fn run_agent_turn(
     message_id: &str,
     cancel_token: CancellationToken,
     builder: Box<dyn ConversationBuilder>,
-    tool_filter: Option<&[&str]>,
+    tool_filters: &[ToolFilter],
     event_sender: Option<&EventSender>,
 ) {
     let outcome = run_agent_loop(
-        state, user_id, chat_id, message_id, cancel_token, builder, tool_filter,
+        state, user_id, chat_id, message_id, cancel_token, builder, tool_filters,
     )
     .await;
     finalize_agent_outcome(state, message_id, outcome, event_sender).await;
@@ -68,7 +69,7 @@ pub async fn run_agent_loop(
     message_id: &str,
     cancel_token: CancellationToken,
     builder: Box<dyn ConversationBuilder>,
-    tool_filter: Option<&[&str]>,
+    tool_filters: &[ToolFilter],
 ) -> Result<AgentLoopOutcome, AppError> {
     let chat = state
         .chat_service
@@ -93,8 +94,8 @@ pub async fn run_agent_loop(
         }
     }
 
-    if let Some(allowed) = tool_filter {
-        tool_registry.restrict_to(allowed);
+    for filter in tool_filters {
+        tool_registry.apply_filter(filter);
     }
 
     let response = crate::inference::inference(InferenceRequest {
@@ -167,7 +168,7 @@ pub async fn resume_agent_loop(
         storage_service: state.storage_service.clone(),
     });
     run_agent_turn(
-        state, user_id, chat_id, message_id, cancel_token, builder, None, Some(&event_sender),
+        state, user_id, chat_id, message_id, cancel_token, builder, &[], Some(&event_sender),
     )
     .await;
 

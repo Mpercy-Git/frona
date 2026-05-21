@@ -15,6 +15,7 @@ pub fn router() -> Router<AppState> {
             get(get_task).put(update_task).delete(delete_task),
         )
         .route("/api/tasks/{id}/cancel", axum::routing::post(cancel_task))
+        .route("/api/tasks/{id}/runs", get(list_cron_runs))
 }
 
 async fn get_task(
@@ -41,15 +42,6 @@ async fn create_task(
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<Json<TaskResponse>, ApiError> {
     let response = state.task_service.create(&auth.user_id, req).await?;
-    state.broadcast_service.broadcast_task_update(
-        &auth.user_id,
-        &response.id,
-        "pending",
-        &response.title,
-        response.chat_id.as_deref(),
-        None,
-        None,
-    );
     Ok(Json(response))
 }
 
@@ -76,6 +68,10 @@ async fn delete_task(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<(), ApiError> {
+    // Fire tokens before DB teardown so in-flight tokios unwind cleanly.
+    if let Some(executor) = state.task_executor() {
+        executor.cancel_task(&id).await;
+    }
     state.task_service.delete(&auth.user_id, &id).await?;
     Ok(())
 }
@@ -92,4 +88,22 @@ async fn cancel_task(
     }
 
     Ok(Json(task.into()))
+}
+
+async fn list_cron_runs(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<TaskResponse>>, ApiError> {
+    let template = state
+        .task_service
+        .find_by_id(&id)
+        .await?
+        .ok_or_else(|| crate::core::error::AppError::NotFound("Task not found".into()))?;
+    if template.user_id != auth.user_id {
+        return Err(crate::core::error::AppError::Forbidden("Not your task".into()).into());
+    }
+
+    let runs = state.task_service.find_runs_by_cron(&id).await?;
+    Ok(Json(runs.into_iter().map(Into::into).collect()))
 }

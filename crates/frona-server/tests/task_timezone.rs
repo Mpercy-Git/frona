@@ -20,7 +20,7 @@ async fn test_db() -> Surreal<Db> {
 }
 
 fn make_task_service(db: Surreal<Db>) -> TaskService {
-    TaskService::new(SurrealRepo::new(db))
+    TaskService::new(SurrealRepo::new(db), frona::chat::broadcast::BroadcastService::new())
 }
 
 #[tokio::test]
@@ -39,6 +39,9 @@ async fn create_cron_template_snapshots_timezone() {
             None,
             None,
             None,
+            Default::default(),
+            Default::default(),
+            false,
         )
         .await
         .unwrap();
@@ -93,7 +96,7 @@ async fn cron_utc_legacy_behavior_preserved() {
 }
 
 #[tokio::test]
-async fn advance_cron_template_preserves_kind_and_chat() {
+async fn advance_cron_template_preserves_kind_and_timezone() {
     let svc = make_task_service(test_db().await);
     let first = next_cron_occurrence("0 9 * * *", "America/Los_Angeles").unwrap();
     let task = svc
@@ -108,6 +111,9 @@ async fn advance_cron_template_preserves_kind_and_chat() {
             None,
             None,
             None,
+            Default::default(),
+            Default::default(),
+            false,
         )
         .await
         .unwrap();
@@ -116,7 +122,7 @@ async fn advance_cron_template_preserves_kind_and_chat() {
         .map(|d| d + chrono::Duration::days(1))
         .unwrap();
     let advanced = svc
-        .advance_cron_template(&task.id, second, Some("chat-xyz"))
+        .advance_cron_template(&task.id, second)
         .await
         .unwrap();
 
@@ -131,7 +137,6 @@ async fn advance_cron_template_preserves_kind_and_chat() {
         }
         _ => panic!("expected Cron kind"),
     }
-    assert_eq!(advanced.chat_id.as_deref(), Some("chat-xyz"));
     assert_eq!(advanced.status, TaskStatus::Pending);
 }
 

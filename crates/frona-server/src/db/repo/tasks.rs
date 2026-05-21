@@ -120,26 +120,49 @@ impl TaskRepository for SurrealRepo<Task> {
         Ok(tasks)
     }
 
-    async fn find_crons_with_in_flight_execution(&self) -> Result<Vec<Task>, AppError> {
-        // Status filter excludes cancelled crons — otherwise a cancel-then-crash
-        // sequence would resurrect the cron and deliver a post-cancel reminder.
+    async fn find_runs_by_cron(&self, cron_id: &str) -> Result<Vec<Task>, AppError> {
         let query = format!(
-            "{SELECT_CLAUSE} FROM task WHERE kind.Cron IS NOT NONE \
-             AND (status.Pending IS NOT NONE OR status.InProgress IS NOT NONE) \
-             AND chat_id IS NOT NONE \
-             AND chat_id IN (SELECT VALUE chat_id FROM message WHERE status = $status)"
+            "{SELECT_CLAUSE} FROM task WHERE kind.CronRun.source_cron_id = $cron_id ORDER BY kind.CronRun.sequence_num DESC"
         );
         let mut result = self
             .db()
             .query(&query)
-            .bind(("status", crate::chat::message::models::MessageStatus::Executing))
+            .bind(("cron_id", cron_id.to_string()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
+        let tasks: Vec<Task> = result.take(0).map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(tasks)
+    }
 
-        let tasks: Vec<Task> = result
-            .take(0)
+    async fn find_active_runs_by_cron(&self, cron_id: &str) -> Result<Vec<Task>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM task WHERE kind.CronRun.source_cron_id = $cron_id \
+             AND (status.Pending IS NOT NONE OR status.InProgress IS NOT NONE) \
+             ORDER BY kind.CronRun.sequence_num ASC"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("cron_id", cron_id.to_string()))
+            .await
             .map_err(|e| AppError::Database(e.to_string()))?;
+        let tasks: Vec<Task> = result.take(0).map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(tasks)
+    }
 
+    /// Crash-recovery query: any CronRun still in Pending/InProgress on startup —
+    /// these were interrupted mid-flight and should be marked Failed (or restarted).
+    async fn find_orphaned_cron_runs(&self) -> Result<Vec<Task>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM task WHERE kind.CronRun IS NOT NONE \
+             AND (status.Pending IS NOT NONE OR status.InProgress IS NOT NONE)"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let tasks: Vec<Task> = result.take(0).map_err(|e| AppError::Database(e.to_string()))?;
         Ok(tasks)
     }
 

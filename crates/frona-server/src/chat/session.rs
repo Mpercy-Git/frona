@@ -135,7 +135,7 @@ impl ChatSessionContext {
             None
         };
 
-        // Cron must be excluded — TASK.md would prompt complete_task → status=Completed
+        // Cron must be excluded: TASK.md would prompt complete_task → status=Completed
         // → cron stops firing forever.
         let task_in_progress = task.as_ref().is_some_and(|t|
             !matches!(t.kind, crate::agent::task::models::TaskKind::Cron { .. })
@@ -150,6 +150,12 @@ impl ChatSessionContext {
         {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&task_prompt);
+        }
+
+        if task_in_progress {
+            tool_registry.apply_filter(
+                &crate::tool::registry::ToolFilter::DenyList(&["create_recurring_task"]),
+            );
         }
 
         for te in &tool_calls {

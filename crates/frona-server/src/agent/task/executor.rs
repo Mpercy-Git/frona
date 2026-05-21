@@ -23,14 +23,21 @@ const QUARANTINED_TASK_TOOLS: &[&str] = &["complete_task", "fail_task", "defer_t
 const QUARANTINED_CONTINUOUS_SIGNAL_TOOLS: &[&str] =
     &["report_signal", "complete_task", "fail_task"];
 
-fn quarantine_filter(task: &Task) -> Option<&'static [&'static str]> {
+fn quarantine_filter(task: &Task) -> Option<crate::tool::registry::ToolFilter> {
+    use crate::tool::registry::ToolFilter;
     if !task.quarantined {
         return None;
     }
     if let TaskKind::Signal { mode: SignalMode::Continuous, .. } = task.kind {
-        return Some(QUARANTINED_CONTINUOUS_SIGNAL_TOOLS);
+        return Some(ToolFilter::AllowList(QUARANTINED_CONTINUOUS_SIGNAL_TOOLS));
     }
-    Some(QUARANTINED_TASK_TOOLS)
+    Some(ToolFilter::AllowList(QUARANTINED_TASK_TOOLS))
+}
+
+/// Currently quarantine-only. The universal task-execution deny lives in
+/// `ChatSessionContext::build` so every entry point gets it.
+fn tool_filters_for_task(task: &Task) -> Vec<crate::tool::registry::ToolFilter> {
+    quarantine_filter(task).into_iter().collect()
 }
 
 pub enum TaskLifecycleEvent {
@@ -38,7 +45,7 @@ pub enum TaskLifecycleEvent {
         status: TaskStatus,
         summary: Option<String>,
     },
-    /// Non-terminal — do NOT resume parent.
+    /// Non-terminal. Do NOT resume parent.
     Match {
         attempt_index: u32,
         summary: String,
@@ -51,6 +58,7 @@ fn source_chat_id_for(task: &Task) -> Option<&str> {
         TaskKind::Delegation { source_chat_id, .. } => Some(source_chat_id.as_str()),
         TaskKind::Direct { source_chat_id: Some(source_chat_id) } => Some(source_chat_id.as_str()),
         TaskKind::Signal { source_chat_id, .. } => Some(source_chat_id.as_str()),
+        TaskKind::CronRun { source_chat_id: Some(source_chat_id), .. } => Some(source_chat_id.as_str()),
         _ => None,
     }
 }
@@ -66,6 +74,9 @@ fn source_chat_id_and_resume(task: &Task) -> Option<(&str, bool)> {
         TaskKind::Signal { source_chat_id, resume_parent, .. } => {
             Some((source_chat_id.as_str(), *resume_parent))
         }
+        // CronRun resolves its resume flag against the template (async), so
+        // resume_parent_if_requested handles it; skip this sync path.
+        TaskKind::CronRun { .. } => None,
         _ => None,
     }
 }
@@ -135,55 +146,32 @@ impl TaskExecutor {
         self.resume_in_flight_crons().await;
     }
 
-    /// Cron isn't in `find_resumable` because most pending crons are just
-    /// awaiting their next tick. This recovers only crons with an orphaned
-    /// `Executing` message from a crash mid-fire.
+    /// Marks crash-interrupted CronRuns Failed instead of restarting them.
+    /// The next scheduled tick fires fresh if the cron's concurrency allows.
     async fn resume_in_flight_crons(self: &Arc<Self>) {
-        let in_flight = match self
-            .app_state
-            .task_service
-            .find_crons_with_in_flight_execution()
-            .await
-        {
+        let orphans = match self.app_state.task_service.find_orphaned_cron_runs().await {
             Ok(t) => t,
             Err(e) => {
-                tracing::error!(error = %e, "Failed to query in-flight cron templates");
+                tracing::error!(error = %e, "Failed to query orphaned CronRuns");
                 return;
             }
         };
 
-        if in_flight.is_empty() {
+        if orphans.is_empty() {
             return;
         }
 
-        tracing::info!(count = in_flight.len(), "Recovering in-flight cron fires");
+        tracing::info!(count = orphans.len(), "Marking orphaned CronRuns as Failed");
 
-        for cron in in_flight {
-            let Some(chat_id) = cron.chat_id.clone() else { continue };
-
-            let msg = match self
+        for run in orphans {
+            if let Err(e) = self
                 .app_state
-                .chat_service
-                .find_executing_message_for_chat(&chat_id)
+                .task_service
+                .mark_failed(&run.id, "Server restarted while CronRun was in flight".to_string())
                 .await
             {
-                Ok(Some(m)) => m,
-                Ok(None) => continue,
-                Err(e) => {
-                    tracing::warn!(error = %e, task_id = %cron.id, "Failed to look up in-flight cron message");
-                    continue;
-                }
-            };
-
-            let app_state = self.app_state.clone();
-            let user_id = cron.user_id.clone();
-            let msg_id = msg.id.clone();
-            let chat_id = chat_id.clone();
-            tokio::spawn(async move {
-                if let Err(e) = execution::resume_agent_loop(&app_state, &user_id, &chat_id, &msg_id).await {
-                    tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume in-flight cron fire");
-                }
-            });
+                tracing::warn!(error = %e, task_id = %run.id, "Failed to mark orphan CronRun");
+            }
         }
     }
 
@@ -245,14 +233,42 @@ impl TaskExecutor {
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> bool {
-        let active = self.active_tasks.lock().await;
-        for (key, token) in active.iter() {
-            if key.ends_with(&format!(":{}", task_id)) {
-                token.cancel();
-                return true;
+        let direct = {
+            let active = self.active_tasks.lock().await;
+            let mut hit = false;
+            for (key, token) in active.iter() {
+                if key.ends_with(&format!(":{}", task_id)) {
+                    token.cancel();
+                    hit = true;
+                    break;
+                }
+            }
+            hit
+        };
+
+        // Cron templates aren't in active_tasks themselves; only their CronRun
+        // children are. Each cancelled run's tokio::spawn cleans itself up.
+        if let Ok(Some(task)) = self.app_state.task_service.find_by_id(task_id).await
+            && matches!(task.kind, TaskKind::Cron { .. })
+            && let Ok(active_runs) = self
+                .app_state
+                .task_service
+                .find_active_runs_by_cron(task_id)
+                .await
+        {
+            let active = self.active_tasks.lock().await;
+            for run in active_runs {
+                let suffix = format!(":{}", run.id);
+                for (key, token) in active.iter() {
+                    if key.ends_with(&suffix) {
+                        token.cancel();
+                        break;
+                    }
+                }
             }
         }
-        false
+
+        direct
     }
 
     pub async fn register_cancellation(&self, agent_id: &str, task_id: &str, token: CancellationToken) {
@@ -309,7 +325,6 @@ impl TaskExecutor {
             .mark_in_progress(&task_id, Some(&chat_id))
             .await?;
 
-        self.broadcast_task_status(&task, "inprogress", None);
         self.save_initial_message_if_needed(&task, &chat_id).await?;
 
         for turn in 0..MAX_TASK_RETRIES {
@@ -345,6 +360,7 @@ impl TaskExecutor {
                 storage_service: self.app_state.storage_service.clone(),
                 continuation_prompt: continuation_prompt.clone(),
             });
+            let filters = tool_filters_for_task(&task);
             let result = execution::run_agent_loop(
                 &self.app_state,
                 &task.user_id,
@@ -352,7 +368,7 @@ impl TaskExecutor {
                 &agent_msg_id,
                 cancel_token.clone(),
                 builder,
-                quarantine_filter(&task),
+                &filters,
             )
             .await;
             drop(session_token);
@@ -422,7 +438,6 @@ impl TaskExecutor {
         )
         .await;
         self.resume_parent_if_requested(&task).await;
-        self.broadcast_task_status(&task, "completed", Some("Task auto-completed after max retries"));
 
         Ok(())
     }
@@ -529,7 +544,6 @@ impl TaskExecutor {
                 )
                 .await;
                 self.resume_parent_if_requested(task).await;
-                self.broadcast_task_status(task, "completed", summary.as_deref());
             }
             LifecycleAction::Complete {
                 status: TaskStatus::Failed,
@@ -551,7 +565,6 @@ impl TaskExecutor {
                 )
                 .await;
                 self.resume_parent_if_requested(task).await;
-                self.broadcast_task_status(task, "failed", None);
             }
             LifecycleAction::Complete { .. } => {}
             LifecycleAction::Defer {
@@ -563,7 +576,6 @@ impl TaskExecutor {
                     .task_service
                     .mark_deferred(&task.id, run_at, &reason)
                     .await?;
-                self.broadcast_task_status(task, "deferred", Some(&reason));
             }
         }
         Ok(())
@@ -593,9 +605,8 @@ impl TaskExecutor {
         Ok(())
     }
 
-    /// Inject a system message into the task's chat and run one agent turn.
-    /// If the agent emits a `complete_task` / `fail_task` lifecycle event,
-    /// it's processed and the parent resumes via `deliver_to_source`.
+    /// Lifecycle events emitted by the turn (`complete_task` / `fail_task`)
+    /// resume the parent via `deliver_to_source`.
     pub async fn run_with_injected_message(
         self: &Arc<Self>,
         task: &Task,
@@ -605,7 +616,7 @@ impl TaskExecutor {
         let was_unset = task_for_chat.chat_id.is_none();
         let chat_id = self.ensure_task_chat(&mut task_for_chat).await?;
         if was_unset {
-            // ensure_task_chat populated chat_id on the local clone — persist
+            // ensure_task_chat populated chat_id on the local clone; persist
             // it so subsequent calls reuse C₂ instead of creating a new chat.
             self.app_state
                 .task_service
@@ -636,6 +647,7 @@ impl TaskExecutor {
             storage_service: self.app_state.storage_service.clone(),
             continuation_prompt: None,
         });
+        let filters = tool_filters_for_task(task);
         let outcome = execution::run_agent_loop(
             &self.app_state,
             &task.user_id,
@@ -643,7 +655,7 @@ impl TaskExecutor {
             &agent_msg_id,
             cancel_token,
             builder,
-            quarantine_filter(task),
+            &filters,
         )
         .await;
 
@@ -763,7 +775,6 @@ impl TaskExecutor {
             .task_service
             .mark_cancelled(&task.id)
             .await?;
-        self.broadcast_task_status(task, "cancelled", None);
         Ok(())
     }
 
@@ -784,7 +795,6 @@ impl TaskExecutor {
         )
         .await;
         self.resume_parent_if_requested(task).await;
-        self.broadcast_task_status(task, "failed", None);
         Ok(())
     }
 
@@ -818,8 +828,24 @@ impl TaskExecutor {
         }
     }
 
-    /// Terminal-only — Match would spawn concurrent loops.
+    /// Terminal-only. Match would spawn concurrent loops.
     pub async fn resume_parent_if_requested(&self, task: &Task) {
+        if let TaskKind::CronRun { source_cron_id, source_chat_id: Some(chat_id), .. } = &task.kind {
+            let template = match self.app_state.task_service.find_by_id(source_cron_id).await {
+                Ok(Some(t)) => t,
+                _ => return,
+            };
+            let process_result = matches!(
+                template.kind,
+                TaskKind::Cron { process_result: true, .. }
+            );
+            if !process_result {
+                return;
+            }
+            self.check_and_resume_parent(chat_id.as_str(), &task.user_id).await;
+            return;
+        }
+
         let Some((source_chat_id, true)) = source_chat_id_and_resume(task) else {
             return;
         };
@@ -829,7 +855,7 @@ impl TaskExecutor {
 
     async fn check_and_resume_parent(&self, source_chat_id: &str, user_id: &str) {
         // Only resume the parent if the source chat belongs to a task.
-        // For user chats, just deliver the message — don't trigger the agent.
+        // For user chats, just deliver the message; don't trigger the agent.
         let is_task_chat = matches!(
             self.app_state.chat_service.find_chat(source_chat_id).await,
             Ok(Some(chat)) if chat.task_id.is_some()
@@ -892,18 +918,6 @@ impl TaskExecutor {
             };
             resume_or_notify(&state, &user_id, &chat_id, &message_id).await;
         });
-    }
-
-    pub fn broadcast_task_status(&self, task: &Task, status: &str, summary: Option<&str>) {
-        self.app_state.broadcast_service.broadcast_task_update(
-            &task.user_id,
-            &task.id,
-            status,
-            &task.title,
-            task.chat_id.as_deref(),
-            task.kind.source_chat_id(),
-            summary,
-        );
     }
 
 }
@@ -1004,24 +1018,31 @@ mod tests {
 
     #[test]
     fn quarantine_filter_default_for_once_signal_and_other_kinds() {
+        use crate::tool::registry::ToolFilter;
         assert_eq!(
             quarantine_filter(&direct_task(true)),
-            Some(QUARANTINED_TASK_TOOLS)
+            Some(ToolFilter::AllowList(QUARANTINED_TASK_TOOLS))
         );
         assert_eq!(
             quarantine_filter(&signal_task(true, SignalMode::Once)),
-            Some(QUARANTINED_TASK_TOOLS)
+            Some(ToolFilter::AllowList(QUARANTINED_TASK_TOOLS))
         );
     }
 
     #[test]
     fn quarantine_filter_continuous_signal_swaps_in_report_signal() {
+        use crate::tool::registry::ToolFilter;
         let filter = quarantine_filter(&signal_task(true, SignalMode::Continuous))
             .expect("continuous quarantined task gets a filter");
-        assert_eq!(filter, QUARANTINED_CONTINUOUS_SIGNAL_TOOLS);
-        assert!(filter.contains(&"report_signal"));
-        assert!(filter.contains(&"complete_task"));
-        assert!(filter.contains(&"fail_task"));
-        assert!(!filter.contains(&"defer_task"));
+        let tools = match filter {
+            ToolFilter::AllowList(t) => t,
+            _ => panic!("expected AllowList"),
+        };
+        assert_eq!(tools, QUARANTINED_CONTINUOUS_SIGNAL_TOOLS);
+        assert!(tools.contains(&"report_signal"));
+        assert!(tools.contains(&"complete_task"));
+        assert!(tools.contains(&"fail_task"));
+        assert!(!tools.contains(&"defer_task"));
     }
+
 }

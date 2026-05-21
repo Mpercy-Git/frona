@@ -8,6 +8,16 @@ use crate::core::state::AppState;
 
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolFilter {
+    /// Lock the agent to a small set of tools. Used by signal-mode and
+    /// quarantined-task execution.
+    AllowList(&'static [&'static str]),
+    /// Hide specific tools while keeping everything else. Used to gate scheduling
+    /// tools (e.g. `create_recurring_task`) inside a running task.
+    DenyList(&'static [&'static str]),
+}
+
 pub struct AgentToolRegistry {
     tools: HashMap<String, Arc<dyn AgentTool>>,
     tool_name_to_owner: HashMap<String, String>,
@@ -49,8 +59,14 @@ impl AgentToolRegistry {
         self.mcp_bridge_mode
     }
 
-    /// Used by signal-mode inference to restrict the agent's blast radius —
-    /// even if Cedar permits a tool generally, the in-mode registry hides it.
+    pub fn apply_filter(&mut self, filter: &ToolFilter) {
+        match filter {
+            ToolFilter::AllowList(allowed) => self.restrict_to(allowed),
+            ToolFilter::DenyList(denied) => self.deny(denied),
+        }
+    }
+
+    /// Restrict beyond Cedar: even if a tool is permitted generally, hide it here.
     pub fn restrict_to(&mut self, allowed: &[&str]) {
         let allow_set: std::collections::HashSet<&str> = allowed.iter().copied().collect();
         self.definitions.retain(|d| allow_set.contains(d.id.as_str()));
@@ -59,6 +75,17 @@ impl AgentToolRegistry {
                 self.tool_name_to_owner.get(&d.id).cloned()
             }).collect();
         self.tool_name_to_owner.retain(|tool_id, _| allow_set.contains(tool_id.as_str()));
+        self.tools.retain(|owner, _| surviving_owners.contains(owner));
+    }
+
+    pub fn deny(&mut self, denied: &[&str]) {
+        let deny_set: std::collections::HashSet<&str> = denied.iter().copied().collect();
+        self.definitions.retain(|d| !deny_set.contains(d.id.as_str()));
+        let surviving_owners: std::collections::HashSet<String> =
+            self.definitions.iter().filter_map(|d| {
+                self.tool_name_to_owner.get(&d.id).cloned()
+            }).collect();
+        self.tool_name_to_owner.retain(|tool_id, _| !deny_set.contains(tool_id.as_str()));
         self.tools.retain(|owner, _| surviving_owners.contains(owner));
     }
 

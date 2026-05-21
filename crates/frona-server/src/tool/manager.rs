@@ -296,7 +296,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     if let Some(executor) = state.task_executor() {
         tools.push(Arc::new(TaskTool::new(
             state.task_service.clone(), state.agent_service.clone(), executor,
-            state.broadcast_service.clone(), state.policy_service.clone(), prompts.clone(),
+            state.policy_service.clone(), prompts.clone(),
             state.config.server.timezone.clone(),
         )));
     }

@@ -18,7 +18,7 @@ async fn build_task_service() -> (Surreal<surrealdb::engine::local::Db>, TaskSer
     db.use_ns("test").use_db("test").await.unwrap();
     setup_schema(&db).await.unwrap();
     let repo = SurrealRepo::new(db.clone());
-    (db, TaskService::new(repo))
+    (db, TaskService::new(repo, frona::chat::broadcast::BroadcastService::new()))
 }
 
 #[tokio::test]

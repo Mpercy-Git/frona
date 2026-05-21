@@ -26,7 +26,7 @@ async fn test_db() -> Surreal<Db> {
 }
 
 fn make_task_service(db: Surreal<Db>) -> TaskService {
-    TaskService::new(SurrealRepo::new(db))
+    TaskService::new(SurrealRepo::new(db), frona::chat::broadcast::BroadcastService::new())
 }
 
 /// Mirror of the TZ resolution logic in `TaskTool::resolve_timezone`:
@@ -69,6 +69,9 @@ async fn agent_creates_cron_in_user_local_time_persists_correct_utc_instant() {
             None,
             Some("chat-1".to_string()),
             None,
+            Default::default(),
+            Default::default(),
+            false,
         )
         .await
         .unwrap();
@@ -115,6 +118,9 @@ async fn agent_creates_cron_with_explicit_timezone_override() {
             None,
             Some("chat-1".to_string()),
             None,
+            Default::default(),
+            Default::default(),
+            false,
         )
         .await
         .unwrap();
@@ -202,6 +208,9 @@ async fn agent_with_no_user_tz_falls_back_to_server_default() {
             None,
             None,
             None,
+            Default::default(),
+            Default::default(),
+            false,
         )
         .await
         .unwrap();
@@ -231,6 +240,9 @@ async fn cron_advance_uses_snapshotted_timezone_not_server_default() {
             None,
             None,
             None,
+            Default::default(),
+            Default::default(),
+            false,
         )
         .await
         .unwrap();

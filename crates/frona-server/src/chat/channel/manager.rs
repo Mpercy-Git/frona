@@ -1417,7 +1417,7 @@ async fn handle_inbound_message(
         &agent_msg.id,
         cancel_token,
         builder,
-        None,
+        &[],
         None,
     )
     .await;

@@ -222,7 +222,7 @@ async fn complete_task_without_schema_accepts_any_string() {
 async fn create_signal_always_sets_quarantined_true() {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
-    let task_service = TaskService::new(SurrealRepo::new(db.clone()));
+    let task_service = TaskService::new(SurrealRepo::new(db.clone()), frona::chat::broadcast::BroadcastService::new());
 
     let schema = json!({"type": "string", "pattern": "^[0-9]{6}$"});
     let task = task_service
@@ -252,7 +252,7 @@ async fn create_signal_always_sets_quarantined_true() {
 async fn create_signal_rejects_malformed_schema_at_submission() {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
-    let task_service = TaskService::new(SurrealRepo::new(db.clone()));
+    let task_service = TaskService::new(SurrealRepo::new(db.clone()), frona::chat::broadcast::BroadcastService::new());
 
     let bad_schema = json!({"type": "string", "pattern": "[unterminated"});
     let err = task_service
@@ -288,7 +288,7 @@ async fn create_signal_rejects_malformed_schema_at_submission() {
 async fn create_signal_with_no_schema_still_quarantines() {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
-    let task_service = TaskService::new(SurrealRepo::new(db.clone()));
+    let task_service = TaskService::new(SurrealRepo::new(db.clone()), frona::chat::broadcast::BroadcastService::new());
 
     let task = task_service
         .create_signal(

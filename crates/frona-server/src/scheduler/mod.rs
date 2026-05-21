@@ -189,7 +189,7 @@ impl Scheduler {
                 match next_cron_occurrence(&cron_expr, &tz_clone) {
                     Ok(next) => {
                         if let Err(e) = task_service
-                            .advance_cron_template(&task_clone.id, next, task_clone.chat_id.as_deref())
+                            .advance_cron_template(&task_clone.id, next)
                             .await
                         {
                             tracing::warn!(error = %e, task_id = %task_clone.id, "Failed to advance cron template");
@@ -399,55 +399,65 @@ impl Scheduler {
     }
 }
 
-async fn execute_cron(
+pub async fn execute_cron(
     state: &AppState,
-    task: &crate::agent::task::models::Task,
+    template: &crate::agent::task::models::Task,
 ) -> Result<(), AppError> {
-    let user_id = &task.user_id;
-    let agent_id = &task.agent_id;
+    use crate::agent::task::models::CronConcurrency;
 
-    let chat_id = if let Some(ref cid) = task.chat_id {
-        cid.clone()
-    } else {
-        let chat = state
-            .chat_service
-            .create_chat(
-                user_id,
-                CreateChatRequest {
-                    space_id: None,
-                    task_id: Some(task.id.clone()),
-                    agent_id: agent_id.clone(),
-                    title: Some(format!("Cron: {}", task.title)),
-                    metadata: None,
-                },
-            )
-            .await?;
-
-        let _ = state
-            .task_service
-            .advance_cron_template(&task.id, Utc::now(), Some(&chat.id))
-            .await;
-
-        chat.id
+    let concurrency = match &template.kind {
+        TaskKind::Cron { concurrency, .. } => *concurrency,
+        _ => return Ok(()),
     };
 
-    let cancel_token = state.active_sessions.register(&chat_id).await;
+    let active = state
+        .task_service
+        .find_active_runs_by_cron(&template.id)
+        .await
+        .unwrap_or_default();
 
-    // Mirror into TaskExecutor.active_tasks so cancel_task finds cron tokens.
-    let executor = state.task_executor();
-    if let Some(ref exec) = executor {
-        exec.register_cancellation(agent_id, &task.id, cancel_token.clone()).await;
+    if !active.is_empty() {
+        match concurrency {
+            CronConcurrency::Allow => {}
+            CronConcurrency::Forbid => {
+                tracing::info!(
+                    template_id = %template.id,
+                    active = active.len(),
+                    "Cron concurrency=Forbid: skipping fire while previous still active"
+                );
+                return Ok(());
+            }
+            CronConcurrency::Replace => {
+                if let Some(executor) = state.task_executor() {
+                    for run in &active {
+                        executor.cancel_task(&run.id).await;
+                    }
+                }
+            }
+        }
     }
 
-    let result = execute_background_agent(
-        state, user_id, &chat_id, &task.description, cancel_token,
-    ).await;
+    let next_sequence = state
+        .task_service
+        .find_runs_by_cron(&template.id)
+        .await
+        .map(|runs| runs.len() as u64 + 1)
+        .unwrap_or(1);
 
-    if let Some(exec) = executor {
-        exec.unregister_cancellation(agent_id, &task.id).await;
+    let run = state
+        .task_service
+        .spawn_cron_run(template, Utc::now(), next_sequence)
+        .await?;
+
+    if let Some(executor) = state.task_executor() {
+        if let Err(e) = executor.spawn_execution(run).await {
+            tracing::warn!(error = %e, template_id = %template.id, "Failed to spawn CronRun execution");
+        }
+    } else {
+        tracing::warn!(template_id = %template.id, "No task executor available to spawn CronRun");
     }
 
-    result
+    Ok(())
 }
 
 async fn execute_heartbeat(
@@ -516,7 +526,7 @@ async fn execute_background_agent(
         storage_service: state.storage_service.clone(),
     });
     let result = execution::run_agent_loop(
-        state, user_id, chat_id, &agent_msg_id, cancel_token, builder, None,
+        state, user_id, chat_id, &agent_msg_id, cancel_token, builder, &[],
     )
     .await;
 
