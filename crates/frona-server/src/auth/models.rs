@@ -16,6 +16,7 @@ pub struct User {
     #[serde(default)]
     pub timezone: Option<String>,
     #[serde(default)]
+    #[surreal(default)]
     pub groups: Vec<String>,
     #[serde(default)]
     pub deactivated_at: Option<DateTime<Utc>>,
