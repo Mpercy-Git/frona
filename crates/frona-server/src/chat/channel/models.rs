@@ -213,12 +213,14 @@ pub trait ChannelAdapter: Send + Sync {
 
     async fn on_disconnect(&self, ctx: &ChannelCtx) -> Result<(), AppError>;
 
-    /// Default `Err` so adapters can't accidentally claim setup support.
+    /// Adapters that override this MUST check persisted state — returning
+    /// `Some` for an already-paired channel causes duplicate sessions.
     /// Distinct from `UserAddress.pairing_*` (which authenticates the sender).
-    async fn on_setup_begin(&self, _ctx: &ChannelCtx) -> Result<SetupConfig, AppError> {
-        Err(AppError::Validation(
-            "provider does not require setup".into(),
-        ))
+    async fn on_setup_begin(
+        &self,
+        _ctx: &ChannelCtx,
+    ) -> Result<Option<SetupConfig>, AppError> {
+        Ok(None)
     }
 
     /// Called by the manager after `report_setup_complete` runs. Adapters

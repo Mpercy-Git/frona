@@ -425,15 +425,24 @@ impl ChannelManager {
             });
         }
 
-        // `Err` from `on_setup_begin` means "no setup required, proceed".
         // The adapter is responsible for spawning the background watcher
         // that calls `report_setup_complete` when setup finishes.
-        if let Ok(setup) = adapter.on_setup_begin(&ctx).await {
-            state
-                .channel_service
-                .begin_setup(&channel.id, setup)
-                .await?;
-            return Ok(());
+        match adapter.on_setup_begin(&ctx).await {
+            Ok(Some(setup)) => {
+                state
+                    .channel_service
+                    .begin_setup(&channel.id, setup)
+                    .await?;
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(e) => {
+                state
+                    .channel_service
+                    .mark_status(&channel.id, ChannelStatus::Failed, Some(e.to_string()))
+                    .await?;
+                return Err(e);
+            }
         }
 
         let connect_result = adapter.on_connect(&ctx).await;

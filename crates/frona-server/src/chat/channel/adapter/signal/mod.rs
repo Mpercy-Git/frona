@@ -94,10 +94,12 @@ impl From<SignalConfig> for SignalAdapter {
 
 #[async_trait]
 impl ChannelAdapter for SignalAdapter {
-    async fn on_setup_begin(&self, ctx: &ChannelCtx) -> Result<SetupConfig, AppError> {
-        // Returning `Err` is how `ChannelManager::start_channel` skips setup
-        // and falls through to `on_connect`. Required when already linked,
-        // because `link_secondary_device` wipes the existing registration.
+    async fn on_setup_begin(
+        &self,
+        ctx: &ChannelCtx,
+    ) -> Result<Option<SetupConfig>, AppError> {
+        // `link_secondary_device` would wipe the existing registration, so
+        // skip setup entirely when the store already has one.
         let db_path = ctx.data_dir.join("store.db");
         if worker::is_already_registered(&db_path).await {
             tracing::info!(
@@ -105,7 +107,7 @@ impl ChannelAdapter for SignalAdapter {
                 db_path = %db_path.display(),
                 "Signal already linked - skipping setup, falling through to on_connect",
             );
-            return Err(AppError::Validation("Signal already linked".into()));
+            return Ok(None);
         }
 
         let device_name = resolve_device_name(ctx).await;
@@ -120,7 +122,7 @@ impl ChannelAdapter for SignalAdapter {
             has_qr = true,
             "Signal setup started - awaiting QR scan",
         );
-        Ok(SetupConfig {
+        Ok(Some(SetupConfig {
             qr: Some(qr),
             code: None,
             instructions: Some(
@@ -131,7 +133,7 @@ impl ChannelAdapter for SignalAdapter {
             ),
             expires_at: Some(Utc::now() + chrono::Duration::seconds(120)),
             initiated_at: None,
-        })
+        }))
     }
 
     async fn on_setup_complete(&self, _ctx: &ChannelCtx) -> Result<(), AppError> {

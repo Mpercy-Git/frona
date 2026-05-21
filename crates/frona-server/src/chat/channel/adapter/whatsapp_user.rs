@@ -42,7 +42,19 @@ impl From<WhatsAppUserConfig> for WhatsAppUserAdapter {
 
 #[async_trait]
 impl ChannelAdapter for WhatsAppUserAdapter {
-    async fn on_setup_begin(&self, ctx: &ChannelCtx) -> Result<SetupConfig, AppError> {
+    async fn on_setup_begin(
+        &self,
+        ctx: &ChannelCtx,
+    ) -> Result<Option<SetupConfig>, AppError> {
+        // Building a bot when paired makes WhatsApp kick one of the sessions
+        // with `conflict=replaced`, breaking delivery.
+        if is_already_paired(&ctx.data_dir).await {
+            tracing::info!(
+                channel_id = %ctx.channel.id,
+                "WhatsApp Personal already paired - skipping setup, falling through to on_connect",
+            );
+            return Ok(None);
+        }
         let (client, qr) = build_and_run_bot(ctx, /* expect_setup */ true).await?;
         *self.client.lock().await = Some(client);
         tracing::info!(
@@ -50,7 +62,7 @@ impl ChannelAdapter for WhatsAppUserAdapter {
             has_qr = %qr.is_some(),
             "WhatsApp Personal setup started - awaiting QR scan",
         );
-        Ok(SetupConfig {
+        Ok(Some(SetupConfig {
             qr,
             code: None,
             instructions: Some(
@@ -60,7 +72,7 @@ impl ChannelAdapter for WhatsAppUserAdapter {
             ),
             expires_at: Some(Utc::now() + chrono::Duration::seconds(60)),
             initiated_at: None,
-        })
+        }))
     }
 
     async fn on_setup_complete(&self, ctx: &ChannelCtx) -> Result<(), AppError> {
@@ -347,6 +359,46 @@ async fn build_and_run_bot(
     };
 
     Ok((client, qr))
+}
+
+/// Falls back to `false` on any I/O failure so callers re-enter the QR flow
+/// rather than silently skipping a needed setup.
+async fn is_already_paired(data_dir: &std::path::Path) -> bool {
+    use wa_rs::store::traits::DeviceStore;
+    let db_path = data_dir.join("session.db");
+    if !db_path.exists() {
+        return false;
+    }
+    let Some(db_str) = db_path.to_str() else {
+        tracing::warn!(
+            db_path = %db_path.display(),
+            "whatsapp_user is_already_paired: non-UTF8 path, treating as not paired",
+        );
+        return false;
+    };
+    let store = match SqliteStore::new(db_str).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                db_path = %db_path.display(),
+                error = %e,
+                "whatsapp_user is_already_paired: store open failed, treating as not paired",
+            );
+            return false;
+        }
+    };
+    match store.load().await {
+        Ok(Some(device)) => device.pn.is_some(),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(
+                db_path = %db_path.display(),
+                error = %e,
+                "whatsapp_user is_already_paired: device load failed, treating as not paired",
+            );
+            false
+        }
+    }
 }
 
 fn parse_external_id(s: &str) -> Result<String, AppError> {
