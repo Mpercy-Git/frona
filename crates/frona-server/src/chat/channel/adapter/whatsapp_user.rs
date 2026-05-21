@@ -219,13 +219,7 @@ async fn build_and_run_bot(
 
     // Device label shows in WhatsApp → Linked Devices. Platform type
     // stays `Desktop` - anything exotic risks tripping anti-abuse heuristics.
-    let device_label = ctx
-        .user_service
-        .find_by_id(&ctx.channel.user_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|u| u.username);
+    let device_label = Some(super::resolve_device_label(ctx).await);
 
     let mut bot = Bot::builder()
         .with_backend(backend)

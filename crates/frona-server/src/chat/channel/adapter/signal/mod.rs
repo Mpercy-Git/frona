@@ -110,7 +110,7 @@ impl ChannelAdapter for SignalAdapter {
             return Ok(None);
         }
 
-        let device_name = resolve_device_name(ctx).await;
+        let device_name = super::resolve_device_label(ctx).await;
         let (handle, qr) = worker::spawn(ctx, device_name, /* expect_setup */ true).await?;
         *self.handle.lock().await = Some(handle);
 
@@ -141,7 +141,7 @@ impl ChannelAdapter for SignalAdapter {
     }
 
     async fn on_connect(&self, ctx: &ChannelCtx) -> Result<(), AppError> {
-        let device_name = resolve_device_name(ctx).await;
+        let device_name = super::resolve_device_label(ctx).await;
         let (handle, _) = worker::spawn(ctx, device_name, /* expect_setup */ false).await?;
         *self.handle.lock().await = Some(handle);
         tracing::info!(
@@ -271,16 +271,6 @@ impl SignalAdapter {
         }
         Ok(())
     }
-}
-
-async fn resolve_device_name(ctx: &ChannelCtx) -> String {
-    ctx.user_service
-        .find_by_id(&ctx.channel.user_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|u| u.username)
-        .unwrap_or_else(|| "frona".to_string())
 }
 
 #[cfg(test)]
