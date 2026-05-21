@@ -10,6 +10,7 @@ interface ComboboxItem {
 
 interface ComboboxInputProps {
   label: ReactNode;
+  description?: ReactNode;
   value: string;
   items: ComboboxItem[];
   onChange: (value: string) => void;
@@ -21,6 +22,7 @@ interface ComboboxInputProps {
 
 export function ComboboxInput({
   label,
+  description,
   value,
   items,
   onChange,
@@ -98,6 +100,9 @@ export function ComboboxInput({
       >
         {label}
       </label>
+      {description && (
+        <p className="text-xs text-text-tertiary">{description}</p>
+      )}
       <div className="relative">
         <div className="flex">
           <input
