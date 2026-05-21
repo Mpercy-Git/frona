@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CARGO_TOML="Cargo.toml"
+CARGO_LOCK="Cargo.lock"
 PKG_JSON="web/package.json"
 PKG_LOCK="web/package-lock.json"
 IMAGE="ghcr.io/fronalabs/frona"
@@ -203,6 +204,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
   echo ""
   echo "  Files:"
   echo "    $CARGO_TOML"
+  echo "    $CARGO_LOCK"
   echo "    $PKG_JSON"
   echo "    $PKG_LOCK"
   exit 0
@@ -216,8 +218,11 @@ fi
 echo "Updating version files..."
 update_files "$NEW_VERSION"
 
+echo "Syncing Cargo.lock to new workspace version..."
+cargo update --workspace --offline
+
 echo "Committing and tagging locally..."
-git add "$CARGO_TOML" "$PKG_JSON" "$PKG_LOCK"
+git add "$CARGO_TOML" "$CARGO_LOCK" "$PKG_JSON" "$PKG_LOCK"
 git commit -m "$(cat <<EOF
 release: $TAG
 EOF
