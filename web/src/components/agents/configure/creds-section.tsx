@@ -129,6 +129,10 @@ export function AddCredentialForm({
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  // Latest predicate values consumed by the search effect — captured in a ref
+  // so the search doesn't refire when only these guards change.
+  const searchGuardsRef = useRef({ selectedItem, envVarManuallyEdited, bindingMode });
+  searchGuardsRef.current = { selectedItem, envVarManuallyEdited, bindingMode };
 
   useEffect(() => {
     if (!selectedConnection) return;
@@ -140,17 +144,18 @@ export function AddCredentialForm({
         const results = await api.get<VaultItem[]>(`/api/vaults/${selectedConnection}/items?q=${encodeURIComponent(searchQuery)}`);
         if (!controller.signal.aborted) {
           setItems(results);
-          if (results.length > 0 && !selectedItem) {
+          const guards = searchGuardsRef.current;
+          if (results.length > 0 && !guards.selectedItem) {
             const first = results[0];
             setSelectedItem(first.id);
-            if (!envVarManuallyEdited) setEnvVar(first.name.toUpperCase().replace(/[^A-Z0-9]/g, "_"));
+            if (!guards.envVarManuallyEdited) setEnvVar(first.name.toUpperCase().replace(/[^A-Z0-9]/g, "_"));
             setLoadingFields(true);
             api.get<string[]>(`/api/vaults/${selectedConnection}/items/${first.id}/fields`)
               .then((f) => {
                 setFields(f);
                 if (f.length > 0) {
                   setSelectedField(f[0]);
-                  if (!envVarManuallyEdited && bindingMode === "single") {
+                  if (!guards.envVarManuallyEdited && guards.bindingMode === "single") {
                     setEnvVar(`${first.name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_${f[0]}`);
                   }
                 }
@@ -168,13 +173,17 @@ export function AddCredentialForm({
     return () => { controller.abort(); if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [selectedConnection, searchQuery]);
 
+  const initialVaultItemId = initialSelection?.vault_item_id;
+  const didLoadInitialFieldsRef = useRef(false);
   useEffect(() => {
-    if (initialSelection?.vault_item_id && selectedConnection) {
-      api.get<string[]>(`/api/vaults/${selectedConnection}/items/${initialSelection.vault_item_id}/fields`)
+    if (didLoadInitialFieldsRef.current) return;
+    if (initialVaultItemId && selectedConnection) {
+      didLoadInitialFieldsRef.current = true;
+      api.get<string[]>(`/api/vaults/${selectedConnection}/items/${initialVaultItemId}/fields`)
         .then((f) => { setFields(f); if (f.length > 0) setSelectedField(f[0]); })
         .catch(() => setFields([]));
     }
-  }, []);
+  }, [initialVaultItemId, selectedConnection]);
 
   const createLocalItem = async () => {
     if (!newName.trim()) return;

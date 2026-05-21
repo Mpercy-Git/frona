@@ -422,7 +422,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     adapters: {
       attachments: fronaAttachmentAdapter,
     },
-  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel]);
+  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store]);
 
   const runtime = useExternalStoreRuntime(adapter);
 

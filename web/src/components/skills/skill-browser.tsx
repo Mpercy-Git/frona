@@ -256,7 +256,7 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     } finally {
       setInstallingAll(false);
     }
-  }, [agentId, reload, onEnabledChange, enabledSet]);
+  }, [agentId, reload, onEnabledChange, enabledSet, normalizeEnabled]);
 
   const handleSearch = useCallback(async (q: string) => {
     setQuery(q);
@@ -324,7 +324,7 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     } finally {
       setInstalling(null);
     }
-  }, [agentId, preview, reload, onEnabledChange, enabledSet]);
+  }, [agentId, preview, reload, onEnabledChange, enabledSet, normalizeEnabled]);
 
   const handleUninstall = useCallback(async (name: string) => {
     setUninstalling(name);

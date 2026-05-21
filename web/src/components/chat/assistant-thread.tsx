@@ -11,18 +11,19 @@ import { usePendingTools } from "@/lib/pending-tools-context";
 
 export function AssistantThread() {
   const wizard = useToolWizard();
+  const wizardSetCollapsed = wizard.setCollapsed;
   const lastScrollTop = useRef(0);
   const updating = useRef(false);
 
   const setCollapsed = useCallback(
     (v: boolean | ((prev: boolean) => boolean)) => {
       updating.current = true;
-      wizard.setCollapsed(v);
+      wizardSetCollapsed(v);
       requestAnimationFrame(() => {
         updating.current = false;
       });
     },
-    [wizard.setCollapsed],
+    [wizardSetCollapsed],
   );
 
   const handleScroll = useCallback(
