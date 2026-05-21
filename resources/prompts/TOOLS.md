@@ -23,11 +23,11 @@ Use `create_task` to:
 - **Delegate to a specialist** — set `target_agent` from `<available_agents>` (preferred when a specialist exists)
 - **Defer work** to a later time (set `delay_minutes` or `run_at`)
 - **Run background work** in a separate context (omit `target_agent` for a self-task)
-- **Parallelize** work across multiple agents
+- **Parallelize** work — spawn multiple subtasks (to yourself for parallel slices of your own work, or to other agents for specialty work) and re-engage once all return
 
-By default tasks are fire-and-forget: the result is posted directly to the chat. Set `process_result: true` only when you need to transform, combine, or act on the result yourself — you will be resumed once all dispatched tasks complete.
+Default is fire-and-forget: the task runs, its completion summary lands in this chat for the user to read, and you don't re-engage. Set `process_result: true` only when you'll process the result with a fresh inference turn — synthesize, compose with sibling subtasks, or follow up. The user sees the result either way.
 
-Instructions must be self-contained — the target agent cannot see this conversation. Use `list_tasks` to see active tasks, `delete_task` to cancel one.
+Instructions must be self-contained — the target agent cannot see this conversation. Use `list_tasks` to see active tasks, `delete_task` to cancel one. For recurring work, use `create_recurring_task` (see SCHEDULING).
 
 ## Time
 
