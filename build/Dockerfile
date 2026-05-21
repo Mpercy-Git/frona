@@ -118,9 +118,16 @@ CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch --poll -w cr
 # ============================
 
 FROM python:3.12-slim-bookworm AS prod
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG CREATED=unknown
 LABEL org.opencontainers.image.source="https://github.com/fronalabs/frona"
 LABEL org.opencontainers.image.description="Frona — personal AI assistant"
 LABEL org.opencontainers.image.licenses="BSL-1.1"
+LABEL org.opencontainers.image.title="frona"
+LABEL org.opencontainers.image.version="$VERSION"
+LABEL org.opencontainers.image.revision="$REVISION"
+LABEL org.opencontainers.image.created="$CREATED"
 RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \

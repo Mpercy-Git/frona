@@ -242,8 +242,14 @@ if [[ "$SKIP_DOCKER" == "false" ]]; then
     TAGS+=(-t "$IMAGE:latest")
   fi
 
+  REVISION=$(git rev-parse HEAD)
+  CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
   if ! docker buildx build --platform linux/amd64,linux/arm64 \
     -f build/Dockerfile --target prod \
+    --build-arg "VERSION=$NEW_VERSION" \
+    --build-arg "REVISION=$REVISION" \
+    --build-arg "CREATED=$CREATED" \
     "${TAGS[@]}" \
     --push .; then
     cleanup_local_release
