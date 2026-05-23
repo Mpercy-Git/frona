@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source build/common.sh
 
 CARGO_TOML="Cargo.toml"
 CARGO_LOCK="Cargo.lock"
 PKG_JSON="web/package.json"
 PKG_LOCK="web/package-lock.json"
-IMAGE="ghcr.io/fronalabs/frona"
-
-die() { echo "error: $*" >&2; exit 1; }
-
-current_version() {
-  grep -m1 '^version' "$CARGO_TOML" | sed 's/.*"\(.*\)"/\1/'
-}
 
 parse_version() {
   local ver="$1"
@@ -237,24 +231,18 @@ cleanup_local_release() {
 
 if [[ "$SKIP_DOCKER" == "false" ]]; then
   echo "Building and pushing Docker image..."
-
-  docker buildx inspect multiarch >/dev/null 2>&1 || \
-    docker buildx create --name multiarch --use
-  docker buildx use multiarch
+  ensure_multiarch_builder
 
   TAGS=(-t "$IMAGE:$TAG")
   if [[ "$IS_PRERELEASE" == "false" ]]; then
     TAGS+=(-t "$IMAGE:latest")
   fi
 
-  REVISION=$(git rev-parse HEAD)
-  CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  set_image_meta_args "$NEW_VERSION" "$(git rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-  if ! docker buildx build --platform linux/amd64,linux/arm64 \
-    -f build/Dockerfile --target prod \
-    --build-arg "VERSION=$NEW_VERSION" \
-    --build-arg "REVISION=$REVISION" \
-    --build-arg "CREATED=$CREATED" \
+  if ! docker buildx build --platform "$PLATFORMS" \
+    -f "$DOCKERFILE" --target "$TARGET" \
+    "${IMAGE_META_ARGS[@]}" \
     "${TAGS[@]}" \
     --push .; then
     cleanup_local_release
