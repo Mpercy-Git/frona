@@ -42,6 +42,11 @@ namespace Policy {
         enabled: Bool,
         model_group: String,
         tools: Set<String>,
+        // Per-user-unique human handle (e.g. "developer", "system"). The full
+        // entity id is `"<username>/<handle>"`, so policies that care about
+        // built-in agents across all users match on this attribute rather
+        // than the absolute id.
+        handle: String,
     };
 
     // An MCP (Model Context Protocol) server installed by a user. Subject to the
