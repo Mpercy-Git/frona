@@ -36,9 +36,9 @@ impl VirtualPath {
         }
     }
 
-    pub fn user(username: &str, path: &str) -> Self {
+    pub fn user(handle: &crate::core::Handle, path: &str) -> Self {
         Self {
-            namespace: Namespace::User(username.to_string()),
+            namespace: Namespace::User(handle.as_ref().to_string()),
             relative: path.to_string(),
         }
     }
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn display_round_trip() {
-        let vp = VirtualPath::user("mina", "report.pdf");
+        let vp = VirtualPath::user(&crate::handle!("mina"), "report.pdf");
         assert_eq!(vp.to_string(), "user://mina/report.pdf");
 
         let vp = VirtualPath::agent("dev", "output.csv");

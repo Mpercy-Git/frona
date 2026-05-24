@@ -72,6 +72,12 @@ impl ServerConfig {
             .or(self.base_url.as_deref())
             .map(|s| s.trim_end_matches('/').to_string())
     }
+
+    /// Always returns an openable URL (unlike `public_base_url()` which may be empty).
+    pub fn external_or_local_base_url(&self) -> String {
+        self.external_base_url()
+            .unwrap_or_else(|| format!("http://localhost:{}", self.port))
+    }
 }
 
 impl Default for ServerConfig {
@@ -156,8 +162,6 @@ pub struct AuthConfig {
     pub presign_expiry_secs: u64,
     #[schemars(description = "Ephemeral principal token lifetime in seconds (stateless; injected into sandboxed processes).")]
     pub ephemeral_token_expiry_secs: u64,
-    #[schemars(description = "Directory for per-invocation ephemeral token files. Created with mode 0700 at startup.")]
-    pub runtime_tokens_dir: PathBuf,
     #[schemars(description = "Allow anyone to sign up from the registration page. When off, only admins can add users.")]
     pub allow_registration: bool,
 }
@@ -170,7 +174,6 @@ impl Default for AuthConfig {
             refresh_token_expiry_secs: 604800,
             presign_expiry_secs: 86400,
             ephemeral_token_expiry_secs: 300,
-            runtime_tokens_dir: PathBuf::from("data/runtime/tokens"),
             allow_registration: true,
         }
     }
@@ -274,9 +277,9 @@ impl BrowserConfig {
         format!("/api/browser/debugger/{credential_id}")
     }
 
-    pub fn profile_path(&self, username: &str, provider: &str) -> PathBuf {
+    pub fn profile_path(&self, handle: &crate::core::Handle, provider: &str) -> PathBuf {
         PathBuf::from(&self.profiles_path)
-            .join(username)
+            .join(handle.as_ref())
             .join(provider)
     }
 }
@@ -292,29 +295,23 @@ pub struct SearchConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct StorageConfig {
-    #[schemars(description = "Path for agent workspace directories.")]
-    pub workspaces_path: String,
-    #[schemars(description = "Path for uploaded file storage.")]
-    pub files_path: String,
-    #[schemars(description = "Path to shared configuration resources.")]
+    #[schemars(description = "Root data directory. Per-user state lives at `{data_dir}/users/{user_handle}/...`.")]
+    pub data_dir: String,
+    #[schemars(description = "Path to shared configuration resources (read-only, ships with the binary).")]
     pub shared_config_dir: String,
     #[schemars(description = "Path for installed skills directory.")]
     pub skills_dir: String,
     #[schemars(description = "Path for system cache directory.")]
     pub cache_dir: String,
-    #[schemars(description = "Path for per-channel adapter data (sessions, etc).")]
-    pub channels_data_path: String,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            workspaces_path: "data/workspaces".into(),
-            files_path: "data/files".into(),
+            data_dir: "data".into(),
             shared_config_dir: "resources".into(),
             skills_dir: "data/skills".into(),
             cache_dir: "data/system/cache".into(),
-            channels_data_path: "data/channels".into(),
         }
     }
 }
@@ -801,9 +798,7 @@ impl Default for CacheConfig {
 pub struct McpConfig {
     #[schemars(description = "Whether MCP server support is enabled.")]
     pub enabled: bool,
-    #[schemars(description = "Base path for per-MCP-server workspace directories.")]
-    pub workspaces_path: String,
-    #[schemars(description = "Path for shared package caches (npm, uv). Defaults to `{workspaces_path}/cache`.")]
+    #[schemars(description = "Path for shared package caches (npm, uv). Defaults to `{data_dir}/system/mcp-cache`.")]
     #[serde(default)]
     pub cache_path: Option<String>,
     #[schemars(description = "Maximum number of MCP servers a user may have installed.")]
@@ -828,7 +823,6 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            workspaces_path: "data/mcp".into(),
             cache_path: None,
             max_servers_per_user: 32,
             startup_timeout_secs: 30,
@@ -906,11 +900,9 @@ impl Config {
 
         let mut builder = config::Config::builder()
             .set_default("database.path", format!("{data_dir}/db")).unwrap()
-            .set_default("storage.workspaces_path", format!("{data_dir}/workspaces")).unwrap()
-            .set_default("storage.files_path", format!("{data_dir}/files")).unwrap()
-            .set_default("storage.channels_data_path", format!("{data_dir}/channels")).unwrap()
-            .set_default("mcp.workspaces_path", format!("{data_dir}/mcp")).unwrap()
-            .set_default("auth.runtime_tokens_dir", format!("{data_dir}/runtime/tokens")).unwrap();
+            .set_default("storage.data_dir", data_dir.clone()).unwrap()
+            .set_default("storage.skills_dir", format!("{data_dir}/skills")).unwrap()
+            .set_default("storage.cache_dir", format!("{data_dir}/system/cache")).unwrap();
 
         if let Some(ref content) = yaml_content {
             let expanded = expand_env_vars(content);
@@ -919,9 +911,7 @@ impl Config {
             );
         }
 
-        // Collect FRONA_* env vars and remap the key so the section separator
-        // becomes "__" while field-name underscores are preserved.
-        // e.g. FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
+        // FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
         let frona_env: HashMap<String, String> = std::env::vars()
             .filter(|(k, _)| k.starts_with(ENV_PREFIX) && !EXCLUDED_ENV_VARS.contains(&k.as_str()))
             .map(|(k, v)| {
@@ -1278,8 +1268,8 @@ mod tests {
         assert_eq!(config.server.port, 3001);
         assert_eq!(config.auth.encryption_secret, "dev-secret-change-in-production");
         assert_eq!(config.database.path, "data/db");
-        assert_eq!(config.storage.workspaces_path, "data/workspaces");
-        assert_eq!(config.storage.files_path, "data/files");
+        assert_eq!(config.storage.data_dir, "data");
+        assert_eq!(config.storage.skills_dir, "data/skills");
         assert_eq!(config.scheduler.space_compaction_secs, 3600);
         assert!(!config.sso.enabled);
         assert!(config.sso.signups_match_email);
@@ -1388,7 +1378,7 @@ mod tests {
             profiles_path: "/data/profiles".into(),
             ..Default::default()
         };
-        let path = config.profile_path("bob", "github");
+        let path = config.profile_path(&crate::handle!("bob"), "github");
         assert_eq!(path, PathBuf::from("/data/profiles/bob/github"));
     }
 
