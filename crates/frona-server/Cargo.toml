@@ -118,6 +118,7 @@ required-features = ["__test-bins"]
 __test-bins = []
 
 [dev-dependencies]
+approx = "0.5"
 surrealdb = { version = "3.0.0", features = ["kv-mem"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"

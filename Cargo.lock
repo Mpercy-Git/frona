@@ -2727,6 +2727,7 @@ version = "2026.5.4"
 dependencies = [
  "aes-gcm",
  "agent-skills",
+ "approx",
  "argon2",
  "async-stream",
  "async-trait",
