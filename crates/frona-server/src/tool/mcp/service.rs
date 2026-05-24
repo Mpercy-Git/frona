@@ -2,7 +2,7 @@
 //! the caller's `user_id` via [`McpServerService::load_owned`].
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -22,7 +22,7 @@ use super::manager::McpManager;
 use super::metadata::{RegistryPackage, RegistryServerEntry};
 use super::models::{
     CachedMcpTool, CredentialBinding, McpPackage, McpRuntime, McpServer, McpServerInstall,
-    McpServerStatus, McpServerUpdate, TransportConfig, sanitize_slug,
+    McpServerStatus, McpServerUpdate, TransportConfig, sanitize_to_handle,
 };
 use super::registry::McpRegistryClient;
 use super::repository::McpServerRepository;
@@ -126,8 +126,8 @@ pub struct McpServerService {
     keypair_service: KeyPairService,
     user_service: UserService,
     policy_service: crate::policy::service::PolicyService,
+    storage_service: crate::storage::service::StorageService,
     api_base_url: String,
-    runtime_tokens_dir: PathBuf,
     ephemeral_token_expiry_secs: u64,
 }
 
@@ -137,8 +137,6 @@ pub struct StartResult {
 
 pub struct UpdateResult {
     pub server: McpServer,
-    /// `true` when the caller must stop + start the server for the changes to
-    /// take effect (because it was running when the patch landed).
     pub restart_required: bool,
 }
 
@@ -155,8 +153,8 @@ impl McpServerService {
         keypair_service: KeyPairService,
         user_service: UserService,
         policy_service: crate::policy::service::PolicyService,
+        storage_service: crate::storage::service::StorageService,
         api_base_url: String,
-        runtime_tokens_dir: PathBuf,
         ephemeral_token_expiry_secs: u64,
     ) -> Self {
         Self {
@@ -170,8 +168,8 @@ impl McpServerService {
             keypair_service,
             user_service,
             policy_service,
+            storage_service,
             api_base_url,
-            runtime_tokens_dir,
             ephemeral_token_expiry_secs,
         }
     }
@@ -218,9 +216,40 @@ impl McpServerService {
         self.registry.search(query.trim(), limit).await
     }
 
+    async fn resolve_unique_handle(
+        &self,
+        user_id: &str,
+        desired: &crate::core::Handle,
+    ) -> Result<crate::core::Handle, AppError> {
+        if self.repo.find_by_handle(user_id, desired).await?.is_none() {
+            return Ok(desired.clone());
+        }
+        for i in 2..100u32 {
+            let candidate_raw = format!("{}-{i}", desired.as_str());
+            let candidate_raw = if candidate_raw.len() > 32 {
+                let mut s = candidate_raw[..32].to_string();
+                s = s.trim_end_matches(['-', '_']).to_string();
+                s
+            } else {
+                candidate_raw
+            };
+            let Ok(candidate) = crate::core::Handle::try_new(&candidate_raw) else {
+                continue;
+            };
+            if self.repo.find_by_handle(user_id, &candidate).await?.is_none() {
+                return Ok(candidate);
+            }
+        }
+        Err(AppError::Validation(format!(
+            "could not find a free mcp handle near '{}' after 99 attempts",
+            desired.as_str()
+        )))
+    }
+
     pub async fn install(
         &self,
         user_id: &str,
+        user_handle: &crate::core::Handle,
         req: McpServerInstall,
     ) -> Result<McpServer, AppError> {
         let entry = self.resolve_entry(&req).await?;
@@ -236,18 +265,24 @@ impl McpServerService {
             validate_absolute_paths(&policy.write_paths)?;
         }
 
-        let slug_source = req
+        let handle_source = req
             .display_name_override
             .as_deref()
             .or(entry.title.as_deref())
             .unwrap_or(&entry.name);
-        let slug = sanitize_slug(slug_source);
+        let desired_handle = req
+            .handle
+            .clone()
+            .unwrap_or_else(|| sanitize_to_handle(handle_source));
+        let handle = self.resolve_unique_handle(user_id, &desired_handle).await?;
 
         let id = crate::core::repository::new_id();
         self.verify_grants(user_id, &id, &req.credentials).await?;
 
-        let workspace_dir = Path::new(self.manager.workspaces_path())
-            .join(&slug)
+        let workspace_dir = self
+            .manager
+            .storage()
+            .mcp_workspace_path(user_handle, &handle)
             .to_string_lossy()
             .into_owned();
         std::fs::create_dir_all(&workspace_dir).map_err(|e| {
@@ -265,7 +300,7 @@ impl McpServerService {
         let server = McpServer {
             id: id.clone(),
             user_id: user_id.to_string(),
-            slug,
+            handle,
             display_name: req
                 .display_name_override
                 .or(entry.title.clone())
@@ -461,13 +496,14 @@ impl McpServerService {
             .await?
             .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
 
+        let tokens_dir = self.storage_service.user_tokens_path(&user.handle);
         let token_guard = EphemeralTokenGuard::issue(
             &self.token_service,
             &self.keypair_service,
             &user,
             Principal::mcp_server(&server.id),
             self.ephemeral_token_expiry_secs,
-            &self.runtime_tokens_dir,
+            &tokens_dir,
         )
         .await?;
 
@@ -501,7 +537,7 @@ impl McpServerService {
         server.tool_cache = tools
             .iter()
             .map(|t| CachedMcpTool {
-                name: strip_namespace(&t.id, &server.slug),
+                name: strip_namespace(&t.id, server.handle.as_str()),
                 description: t.description.clone(),
                 input_schema: t.parameters.clone(),
             })
@@ -511,10 +547,11 @@ impl McpServerService {
         if !tools.is_empty() {
             let mcp_tool = Arc::new(super::mcp_tool::McpTool::new(
                 self.manager.clone(),
-                &server.slug,
+                server.handle.as_str(),
                 tools.clone(),
             ));
             self.tool_manager.register_user_tool(user_id, mcp_tool).await;
+            self.policy_service.invalidate_cache(user_id).await;
         }
 
         Ok(StartResult { tools })
@@ -527,8 +564,9 @@ impl McpServerService {
         server.updated_at = Utc::now();
         self.repo.update(&server).await?;
 
-        let owner_name = format!("mcp__{}", server.slug);
+        let owner_name = format!("mcp__{}", server.handle);
         self.tool_manager.deregister_user_tool(user_id, &owner_name).await;
+        self.policy_service.invalidate_cache(user_id).await;
 
         Ok(())
     }

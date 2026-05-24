@@ -79,9 +79,17 @@ impl Supervisor for McpSupervisor {
             .unwrap_or_else(|_| id.to_string())
     }
 
-    fn notification_data(&self, id: &str, action: &str) -> NotificationData {
+    async fn notification_data(&self, id: &str, action: &str) -> NotificationData {
+        // No dedicated `Mcp` notification variant — reuse `App`.
+        let handle = self
+            .service
+            .find_by_id(id)
+            .await
+            .ok()
+            .map(|s| s.handle.to_string())
+            .unwrap_or_else(|| id.to_string());
         NotificationData::App {
-            app_id: id.to_string(),
+            app_handle: handle,
             action: action.to_string(),
         }
     }
