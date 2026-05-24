@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use crate::Entity;
+use crate::core::Handle;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
@@ -35,6 +36,7 @@ pub struct App {
     pub id: String,
     pub agent_id: String,
     pub user_id: String,
+    pub handle: Handle,
     pub name: String,
     pub description: Option<String>,
     pub kind: String,
@@ -53,7 +55,8 @@ pub struct App {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppManifest {
-    pub id: String,
+    /// Served at `/apps/{handle}/`; source at `apps/{handle}/` in the workspace.
+    pub handle: Handle,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -73,8 +76,7 @@ pub struct AppManifest {
     pub static_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<bool>,
-    /// Reconciled into Cedar policies on deploy/update; not persisted on the
-    /// App row. Cedar is the runtime source of truth for sandbox access.
+    /// Reconciled into Cedar on deploy/update; Cedar is the runtime source of truth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_policy: Option<crate::policy::sandbox::SandboxPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,6 +178,7 @@ pub struct AppResponse {
     pub port: Option<u16>,
     pub status: AppStatus,
     pub manifest: serde_json::Value,
+    pub handle: String,
     pub url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -193,7 +196,7 @@ impl From<App> for AppResponse {
                 AppStatus::Running | AppStatus::Serving | AppStatus::Hibernated
             )
         {
-            Some(format!("/apps/{}/", app.id))
+            Some(format!("/apps/{}/", app.handle))
         } else {
             None
         };
@@ -201,6 +204,7 @@ impl From<App> for AppResponse {
         Self {
             id: app.id,
             agent_id: app.agent_id,
+            handle: app.handle.to_string(),
             name: app.name,
             description: app.description,
             kind: app.kind,
@@ -222,7 +226,7 @@ mod tests {
 
     fn minimal_manifest() -> AppManifest {
         serde_json::from_value(serde_json::json!({
-            "id": "test",
+            "handle": "test",
             "name": "Test"
         }))
         .unwrap()
@@ -234,6 +238,7 @@ mod tests {
             id: "app-1".to_string(),
             agent_id: "agent-1".to_string(),
             user_id: "user-1".to_string(),
+            handle: crate::handle!("test-app"),
             name: "Test App".to_string(),
             description: None,
             kind: "service".to_string(),
@@ -270,7 +275,7 @@ mod tests {
     #[test]
     fn manifest_effective_kind_uses_provided_value() {
         let m: AppManifest = serde_json::from_value(serde_json::json!({
-            "id": "test", "name": "Test", "kind": "static"
+            "handle": "test", "name": "Test", "kind": "static"
         }))
         .unwrap();
         assert_eq!(m.effective_kind(), "static");
@@ -284,7 +289,7 @@ mod tests {
     #[test]
     fn manifest_effective_expose_respects_false() {
         let m: AppManifest = serde_json::from_value(serde_json::json!({
-            "id": "test", "name": "Test", "expose": false
+            "handle": "test", "name": "Test", "expose": false
         }))
         .unwrap();
         assert!(!m.effective_expose());
@@ -298,7 +303,7 @@ mod tests {
     #[test]
     fn manifest_effective_hibernate_respects_false() {
         let m: AppManifest = serde_json::from_value(serde_json::json!({
-            "id": "test", "name": "Test", "hibernate": false
+            "handle": "test", "name": "Test", "hibernate": false
         }))
         .unwrap();
         assert!(!m.effective_hibernate());
@@ -312,7 +317,7 @@ mod tests {
     #[test]
     fn manifest_effective_restart_policy_uses_provided() {
         let m: AppManifest = serde_json::from_value(serde_json::json!({
-            "id": "test", "name": "Test", "restart_policy": "always"
+            "handle": "test", "name": "Test", "restart_policy": "always"
         }))
         .unwrap();
         assert_eq!(m.effective_restart_policy(), "always");
@@ -347,15 +352,15 @@ mod tests {
 
     #[test]
     fn app_response_url_present_when_running_and_exposed() {
-        let manifest = serde_json::json!({"id": "test", "name": "Test"});
+        let manifest = serde_json::json!({"handle": "test", "name": "Test"});
         let app = make_app(AppStatus::Running, manifest);
         let resp = AppResponse::from(app);
-        assert_eq!(resp.url, Some("/apps/app-1/".to_string()));
+        assert_eq!(resp.url, Some("/apps/test-app/".to_string()));
     }
 
     #[test]
     fn app_response_url_present_when_serving() {
-        let manifest = serde_json::json!({"id": "test", "name": "Test"});
+        let manifest = serde_json::json!({"handle": "test", "name": "Test"});
         let app = make_app(AppStatus::Serving, manifest);
         let resp = AppResponse::from(app);
         assert!(resp.url.is_some());
@@ -363,7 +368,7 @@ mod tests {
 
     #[test]
     fn app_response_url_present_when_hibernated() {
-        let manifest = serde_json::json!({"id": "test", "name": "Test"});
+        let manifest = serde_json::json!({"handle": "test", "name": "Test"});
         let app = make_app(AppStatus::Hibernated, manifest);
         let resp = AppResponse::from(app);
         assert!(resp.url.is_some());
@@ -371,7 +376,7 @@ mod tests {
 
     #[test]
     fn app_response_url_none_when_stopped() {
-        let manifest = serde_json::json!({"id": "test", "name": "Test"});
+        let manifest = serde_json::json!({"handle": "test", "name": "Test"});
         let app = make_app(AppStatus::Stopped, manifest);
         let resp = AppResponse::from(app);
         assert!(resp.url.is_none());
@@ -379,7 +384,7 @@ mod tests {
 
     #[test]
     fn app_response_url_none_when_failed() {
-        let manifest = serde_json::json!({"id": "test", "name": "Test"});
+        let manifest = serde_json::json!({"handle": "test", "name": "Test"});
         let app = make_app(AppStatus::Failed, manifest);
         let resp = AppResponse::from(app);
         assert!(resp.url.is_none());
@@ -387,7 +392,7 @@ mod tests {
 
     #[test]
     fn app_response_url_none_when_expose_false() {
-        let manifest = serde_json::json!({"id": "test", "name": "Test", "expose": false});
+        let manifest = serde_json::json!({"handle": "test", "name": "Test", "expose": false});
         let app = make_app(AppStatus::Running, manifest);
         let resp = AppResponse::from(app);
         assert!(resp.url.is_none());

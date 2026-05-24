@@ -13,6 +13,7 @@ pub struct AppService {
     manager: Arc<AppManager>,
     config: AppConfig,
     policy_service: crate::policy::service::PolicyService,
+    user_service: crate::auth::UserService,
 }
 
 impl AppService {
@@ -21,12 +22,14 @@ impl AppService {
         manager: Arc<AppManager>,
         config: AppConfig,
         policy_service: crate::policy::service::PolicyService,
+        user_service: crate::auth::UserService,
     ) -> Self {
         Self {
             repo: Arc::new(repo),
             manager,
             config,
             policy_service,
+            user_service,
         }
     }
 
@@ -42,12 +45,21 @@ impl AppService {
         manifest: &AppManifest,
         credential_env_vars: Vec<(String, String)>,
     ) -> Result<AppResponse, AppError> {
-        let existing = self.find_by_manifest_id(agent_id, &manifest.id).await?;
+        let existing = self.repo.find_by_user_handle(user_id, &manifest.handle).await?;
+
+        if let Some(ref e) = existing
+            && e.agent_id != agent_id
+        {
+            return Err(AppError::Forbidden(format!(
+                "App handle '{}' is owned by a different agent",
+                manifest.handle.as_str()
+            )));
+        }
 
         let app_id = if let Some(ref existing) = existing {
             existing.id.clone()
         } else {
-            manifest.id.clone()
+            crate::core::repository::new_id()
         };
 
         let kind = manifest.effective_kind().to_string();
@@ -76,6 +88,7 @@ impl AppService {
                     id: app_id,
                     agent_id: agent_id.to_string(),
                     user_id: user_id.to_string(),
+                    handle: manifest.handle.clone(),
                     name: manifest.name.clone(),
                     description: manifest.description.clone(),
                     kind,
@@ -118,6 +131,7 @@ impl AppService {
                     id: app_id,
                     agent_id: agent_id.to_string(),
                     user_id: user_id.to_string(),
+                    handle: manifest.handle.clone(),
                     name: manifest.name.clone(),
                     description: manifest.description.clone(),
                     kind: "service".to_string(),
@@ -140,12 +154,15 @@ impl AppService {
                     self.repo.create(&app).await?
                 };
 
-                // Reconcile before `start_and_update`: the spawn path reads
-                // only the evaluated Cedar policy, never the manifest field.
+                // Reconcile before spawn — sandbox reads Cedar, not the manifest.
+                let user_handle = self.user_service.handle_of(user_id).await?;
                 self.policy_service
                     .reconcile_sandbox_policy(
                         user_id,
-                        crate::policy::reconcile::EntityRef::App(app.id.clone()),
+                        crate::policy::reconcile::EntityRef::App(format!(
+                            "{user_handle}/{}",
+                            app.handle
+                        )),
                         manifest.sandbox_policy.as_ref().unwrap_or(&crate::policy::sandbox::SandboxPolicy::default()),
                     )
                     .await?;
@@ -238,10 +255,11 @@ impl AppService {
             self.manager.stop_app(app_id).await?;
         }
 
+        let user_handle = self.user_service.handle_of(&app.user_id).await?;
         self.policy_service
             .reconcile_sandbox_policy(
                 &app.user_id,
-                crate::policy::reconcile::EntityRef::App(app.id.clone()),
+                crate::policy::reconcile::EntityRef::App(format!("{user_handle}/{}", app.handle)),
                 &crate::policy::sandbox::SandboxPolicy::permissive(),
             )
             .await?;
@@ -260,6 +278,14 @@ impl AppService {
 
     pub async fn get(&self, app_id: &str) -> Result<Option<App>, AppError> {
         self.repo.find_by_id(app_id).await
+    }
+
+    pub async fn find_by_user_handle(
+        &self,
+        user_id: &str,
+        handle: &crate::core::Handle,
+    ) -> Result<Option<App>, AppError> {
+        self.repo.find_by_user_handle(user_id, handle).await
     }
 
     pub async fn get_by_user(
@@ -343,20 +369,6 @@ impl AppService {
         Ok(app)
     }
 
-    pub async fn find_by_manifest_id(
-        &self,
-        agent_id: &str,
-        manifest_id: &str,
-    ) -> Result<Option<App>, AppError> {
-        let apps = self.repo.find_by_agent_id(agent_id).await?;
-        let manifest_json_id = serde_json::Value::String(manifest_id.to_string());
-        Ok(apps.into_iter().find(|a| {
-            a.manifest
-                .get("id")
-                .is_some_and(|id| *id == manifest_json_id)
-        }))
-    }
-
     pub async fn deploy_and_await(
         &self,
         agent_id: &str,
@@ -414,9 +426,10 @@ impl AppService {
                         self.update_status(&app.id, AppStatus::Failed, None, None)
                             .await?;
                         self.manager.remove_process(&app.id).await;
-                        return Err(AppError::Tool(
-                            "App failed to start after all restart attempts. Check apps/{id}/logs/app.log for details.".into(),
-                        ));
+                        return Err(AppError::Tool(format!(
+                            "App failed to start after all restart attempts. Check apps/{}/logs/app.log for details.",
+                            app.handle
+                        )));
                     }
                 }
             }
@@ -424,7 +437,7 @@ impl AppService {
             if tokio::time::Instant::now() >= deadline {
                 return Err(AppError::Tool(format!(
                     "App started but health check on {} did not pass within {}s. The app may still be starting — check apps/{}/logs/app.log",
-                    hc.path, self.config.health_check_timeout_secs, app.id
+                    hc.path, self.config.health_check_timeout_secs, app.handle
                 )));
             }
 

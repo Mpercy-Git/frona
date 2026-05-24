@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use crate::app::models::{App, AppStatus};
 use crate::app::repository::AppRepository;
+use crate::core::Handle;
 use crate::core::error::AppError;
 
 use super::generic::SurrealRepo;
@@ -35,6 +36,25 @@ impl AppRepository for SurrealRepo<App> {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         result.take(0).map_err(|e| AppError::Database(e.to_string()))
+    }
+
+    async fn find_by_user_handle(
+        &self,
+        user_id: &str,
+        handle: &Handle,
+    ) -> Result<Option<App>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM app WHERE user_id = $user_id AND handle = $handle LIMIT 1"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("user_id", user_id.to_string()))
+            .bind(("handle", handle.as_str().to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows: Vec<App> = result.take(0).map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(rows.into_iter().next())
     }
 
     async fn find_running(&self) -> Result<Vec<App>, AppError> {

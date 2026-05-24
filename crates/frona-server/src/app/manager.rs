@@ -38,17 +38,24 @@ pub struct AppManager {
     allocated_ports: Arc<Mutex<HashSet<u16>>>,
     port_range: (u16, u16),
     sandbox_manager: Arc<SandboxManager>,
+    storage_service: crate::storage::service::StorageService,
     last_accessed: Arc<Mutex<HashMap<String, DateTime<Utc>>>>,
     policy_service: crate::policy::service::PolicyService,
+    user_service: crate::auth::UserService,
+    agent_service: crate::agent::service::AgentService,
     http: reqwest::Client,
 }
 
 impl AppManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sandbox_manager: Arc<SandboxManager>,
+        storage_service: crate::storage::service::StorageService,
         port_range_start: u16,
         port_range_end: u16,
         policy_service: crate::policy::service::PolicyService,
+        user_service: crate::auth::UserService,
+        agent_service: crate::agent::service::AgentService,
         http: reqwest::Client,
     ) -> Self {
         Self {
@@ -56,8 +63,11 @@ impl AppManager {
             allocated_ports: Arc::new(Mutex::new(HashSet::new())),
             port_range: (port_range_start, port_range_end),
             sandbox_manager,
+            storage_service,
             last_accessed: Arc::new(Mutex::new(HashMap::new())),
             policy_service,
+            user_service,
+            agent_service,
             http,
         }
     }
@@ -314,12 +324,19 @@ impl AppManager {
         manifest: &AppManifest,
         credential_env_vars: &[(String, String)],
     ) -> Result<(tokio::process::Child, PathBuf), AppError> {
-        // Per-app principal so two apps from the same agent get independent rules.
+        let user = self
+            .user_service
+            .find_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
         let policy = self
             .policy_service
             .evaluate_sandbox_policy(
-                user_id,
-                &crate::core::principal::Principal::app(&manifest.id),
+                crate::policy::service::SandboxPrincipalRef::app(
+                    user_id,
+                    &user.handle,
+                    &manifest.handle,
+                ),
                 true,
             )
             .await?;
@@ -331,9 +348,13 @@ impl AppManager {
         let mut env_vars = vec![("PORT".to_string(), port.to_string())];
         env_vars.extend(credential_env_vars.iter().cloned());
 
+        let agent = self.agent_service.get(user_id, agent_id).await?;
+        let workspace = self
+            .storage_service
+            .agent_workspace_path(&user.handle, &agent.handle);
         let mut sandbox = self
             .sandbox_manager
-            .get_sandbox(agent_id, policy.network_access, network_dests)
+            .get_sandbox(workspace, agent_id, policy.network_access, network_dests)
             .with_bind_ports(vec![port])
             .with_extra_env_vars(env_vars)
             .with_read_paths(policy.read_paths.clone())
@@ -341,7 +362,7 @@ impl AppManager {
             .with_denied_paths(policy.denied_paths.clone())
             .with_blocked_networks(policy.blocked_networks.clone());
 
-        let app_dir = sandbox.path().join("apps").join(&manifest.id);
+        let app_dir = sandbox.path().join("apps").join(manifest.handle.as_str());
         let app_log_dir = app_dir.join("logs");
         std::fs::create_dir_all(&app_log_dir)
             .map_err(|e| AppError::Tool(format!("Failed to create app directory: {e}")))?;
@@ -357,7 +378,7 @@ impl AppManager {
         if !has_source_files {
             return Err(AppError::Tool(format!(
                 "No source files found in apps/{}/ — write your app code there before deploying",
-                manifest.id
+                manifest.handle
             )));
         }
 
@@ -425,20 +446,105 @@ mod tests {
         crate::db::init::setup_schema(&db).await.unwrap();
         let schema = crate::policy::schema::build_schema();
         let repo: Arc<dyn crate::policy::repository::PolicyRepository> =
-            Arc::new(crate::db::repo::generic::SurrealRepo::<crate::policy::models::Policy>::new(db));
+            Arc::new(crate::db::repo::generic::SurrealRepo::<crate::policy::models::Policy>::new(db.clone()));
         let tool_manager = Arc::new(crate::tool::manager::ToolManager::new(false));
         let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
-        crate::policy::service::PolicyService::new(repo, schema, tool_manager, storage)
+        let user_service = crate::auth::UserService::new(
+            crate::db::repo::generic::SurrealRepo::new(db),
+            &crate::core::config::CacheConfig::default(),
+        );
+        crate::policy::service::PolicyService::new(repo, schema, tool_manager, storage, user_service)
     }
 
     async fn test_manager(port_start: u16, port_end: u16) -> AppManager {
         AppManager::new(
-            Arc::new(SandboxManager::new("/tmp/test_workspaces", true, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))),
+            Arc::new(SandboxManager::new(true, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))),
+            crate::storage::StorageService::new(&crate::core::config::Config::default()),
             port_start,
             port_end,
             test_policy_service().await,
+            test_user_service().await,
+            test_agent_service().await,
             crate::build_http_client(),
         )
+    }
+
+    async fn test_agent_service() -> crate::agent::service::AgentService {
+        use surrealdb::Surreal;
+        use surrealdb::engine::local::Mem;
+        let db = Surreal::new::<Mem>(()).await.unwrap();
+        crate::db::init::setup_schema(&db).await.unwrap();
+        let user_svc = crate::auth::UserService::new(
+            crate::db::repo::generic::SurrealRepo::new(db.clone()),
+            &crate::core::config::CacheConfig::default(),
+        );
+        let policy_repo: std::sync::Arc<dyn crate::policy::repository::PolicyRepository> = std::sync::Arc::new(
+            crate::db::repo::generic::SurrealRepo::<crate::policy::models::Policy>::new(db.clone())
+        );
+        let schema = crate::policy::schema::build_schema();
+        let tool_manager = std::sync::Arc::new(crate::tool::manager::ToolManager::new(false));
+        let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
+        let policy_svc = crate::policy::service::PolicyService::new(
+            policy_repo, schema, tool_manager, storage, user_svc.clone(),
+        );
+        let repo = crate::db::repo::agents::SurrealAgentRepo::new(db);
+        use crate::core::repository::Repository;
+        let now = chrono::Utc::now();
+        let _ = repo
+            .create(&crate::agent::models::Agent {
+                id: "agent-1".into(),
+                user_id: "user-1".into(),
+                handle: crate::handle!("agent-1"),
+                name: "Test Agent".into(),
+                description: String::new(),
+                model_group: "primary".into(),
+                enabled: true,
+                skills: None,
+                sandbox_limits: None,
+                max_concurrent_tasks: None,
+                avatar: None,
+                identity: std::collections::BTreeMap::new(),
+                prompt: None,
+                heartbeat_interval: None,
+                next_heartbeat_at: None,
+                heartbeat_chat_id: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await;
+        crate::agent::service::AgentService::new(
+            repo,
+            &crate::core::config::CacheConfig::default(),
+            std::sync::Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)),
+            policy_svc,
+            user_svc,
+        )
+    }
+
+    async fn test_user_service() -> crate::auth::UserService {
+        use surrealdb::Surreal;
+        use surrealdb::engine::local::Mem;
+        let db = Surreal::new::<Mem>(()).await.unwrap();
+        crate::db::init::setup_schema(&db).await.unwrap();
+        let svc = crate::auth::UserService::new(
+            crate::db::repo::generic::SurrealRepo::new(db),
+            &crate::core::config::CacheConfig::default(),
+        );
+        let now = chrono::Utc::now();
+        let user = crate::auth::User {
+            id: "user-1".into(),
+            handle: crate::handle!("user-1"),
+            email: "test@example.com".into(),
+            name: "Test".into(),
+            password_hash: String::new(),
+            timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        svc.create(&user).await.expect("seed test user-1");
+        svc
     }
 
     #[tokio::test]
@@ -499,15 +605,26 @@ mod tests {
         let tmp = tempfile::tempdir().expect("failed to create temp dir");
         let workspaces = tmp.path();
 
-        let app_dir = workspaces.join("agent-1").join("apps").join("test-app");
+        let app_dir = workspaces
+            .join("users")
+            .join("user-1")
+            .join("agents")
+            .join("agent-1")
+            .join("apps")
+            .join("test-app");
         std::fs::create_dir_all(&app_dir).unwrap();
         std::fs::write(app_dir.join("run.sh"), "#!/bin/sh\ntrue").unwrap();
 
+        let mut test_cfg = crate::core::config::Config::default();
+        test_cfg.storage.data_dir = workspaces.to_string_lossy().into_owned();
         let manager = AppManager::new(
-            Arc::new(SandboxManager::new(workspaces, true, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))),
+            Arc::new(SandboxManager::new(true, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))),
+            crate::storage::StorageService::new(&test_cfg),
             6000,
             6010,
             test_policy_service().await,
+            test_user_service().await,
+            test_agent_service().await,
             crate::build_http_client(),
         );
 
@@ -516,7 +633,7 @@ mod tests {
             .expect("failed to spawn dummy process");
 
         let manifest = crate::app::models::AppManifest {
-            id: "test-app".to_string(),
+            handle: crate::handle!("test-app"),
             name: "Test".to_string(),
             description: None,
             icon: None,
