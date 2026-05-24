@@ -14,7 +14,7 @@ parameters:
       - status
   manifest:
     type: object
-    description: "Full service manifest. Required for deploy/start. For stop/restart/destroy, only `id` is needed."
+    description: "Full service manifest. Required for deploy/start. For stop/restart/destroy/status, only `handle` is needed."
 required:
   - action
 ---
@@ -22,9 +22,9 @@ Manage web services deployed from your workspace. You can build a web app (any l
 
 ## Workflow
 
-1. Choose an app id (e.g. `my-dashboard`)
-2. Create the directory `apps/{id}/` and write your source code there
-3. Deploy with `manage_service` — commands run from `apps/{id}/` automatically
+1. Choose a URL-safe `handle` (e.g. `notes`, `my-dashboard`)
+2. Create the directory `apps/{handle}/` and write your source code there
+3. Deploy with `manage_service` — commands run from `apps/{handle}/` automatically. The app is served at `/apps/{handle}/`.
 
 ## Actions
 
@@ -33,7 +33,7 @@ Manage web services deployed from your workspace. You can build a web app (any l
 - **start** — Start a previously stopped service.
 - **restart** — Stop and restart a running service.
 - **destroy** — Stop the service and delete the app entity permanently.
-- **status** — Check the status of your services. If manifest.id is provided, returns that specific app. Otherwise returns all apps.
+- **status** — Check the status of your services. If `manifest.handle` is provided, returns that specific app. Otherwise returns all apps.
 
 ## Manifest Format
 
@@ -41,7 +41,7 @@ Always pass the full manifest with every call. The system automatically detects 
 
 ```json
 {
-  "id": "my-dashboard",
+  "handle": "my-dashboard",
   "name": "My Dashboard",
   "description": "A dashboard for monitoring metrics",
   "kind": "service",
@@ -61,10 +61,10 @@ Always pass the full manifest with every call. The system automatically detects 
 
 ### Key Fields
 
-- **id** (required): Stable identifier, e.g. "gold-dashboard". Your app lives in `apps/{id}/`.
+- **handle** (required): URL-safe per-user-unique identifier — your app's source lives at `apps/{handle}/` and is served at `/apps/{handle}/`. 2–32 chars, must start with a lowercase letter, then `a-z`, `0-9`, `-`, `_` (e.g. `"my-dashboard"`). Immutable once deployed.
 - **name** (required): Human-readable name
 - **kind**: "service" (default) runs a command, "static" serves files
-- **command**: Startup command (e.g. `python app.py`). Runs from `apps/{id}/`, so just use the filename. Your app MUST listen on the PORT environment variable.
+- **command**: Startup command (e.g. `python app.py`). Runs from `apps/{handle}/`, so just use the filename. Your app MUST listen on the PORT environment variable.
 - **static_dir**: Directory to serve for static mode, relative to workspace (e.g. "dist/")
 - **network_destinations**: Allowed outbound network destinations (host + port pairs)
 - **credentials**: Vault credentials to inject as environment variables
@@ -75,7 +75,7 @@ Always pass the full manifest with every call. The system automatically detects 
 
 ### Logs
 
-App output (stdout and stderr) is written to `apps/{id}/logs/app.log`. Read it with the shell tool to debug issues.
+App output (stdout and stderr) is written to `apps/{handle}/logs/app.log`. Read it with the shell tool to debug issues.
 
 ### Environment Variables
 
@@ -95,7 +95,7 @@ For static sites, build your HTML/CSS/JS and specify the output directory:
 
 ```json
 {
-  "id": "docs-site",
+  "handle": "docs-site",
   "name": "Documentation",
   "kind": "static",
   "static_dir": "build/"
