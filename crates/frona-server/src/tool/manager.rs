@@ -268,7 +268,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             state.task_service.clone(), prompts.clone(),
         )),
         Arc::new(ProduceFileTool::new(
-            std::path::PathBuf::from(&state.config.storage.workspaces_path), prompts.clone(),
+            state.storage_service.clone(), prompts.clone(),
         )),
         Arc::new(UpdateIdentityTool::new(state.agent_service.clone(), prompts.clone())),
         Arc::new(StoreAgentMemoryTool::new(
@@ -285,6 +285,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         Arc::new(super::manage_service::ManageServiceTool::new(
             state.app_service.clone(), prompts.clone(),
             state.notification_service.clone(), state.broadcast_service.clone(),
+            state.config.server.external_or_local_base_url(),
         )),
         Arc::new(super::create_agent::CreateAgentTool::new(
             state.agent_service.clone(), state.storage_service.clone(),
@@ -332,10 +333,12 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
 
     for tool_config in state.cli_tools_config.iter() {
         tools.push(Arc::new(CliTool::new(
-            tool_config.clone(), state.sandbox_manager.clone(), state.skill_service.clone(),
+            tool_config.clone(), state.sandbox_manager.clone(),
+            state.storage_service.clone(),
+            state.skill_service.clone(),
             state.token_service.clone(), state.keypair_service.clone(),
             state.policy_service.clone(),
-            state.config.server.public_base_url(), state.config.auth.runtime_tokens_dir.clone(),
+            state.config.server.public_base_url(),
             state.config.auth.ephemeral_token_expiry_secs,
             state.config.server.timezone.clone(),
         )));

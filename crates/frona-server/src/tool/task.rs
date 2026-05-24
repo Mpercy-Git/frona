@@ -87,16 +87,20 @@ impl TaskTool {
         let agent_id = &ctx.agent.id;
         match target_agent_name {
             Some(name) => {
-                let agent = self
-                    .agent_service
-                    .find_by_name(user_id, name)
-                    .await?
-                    .ok_or_else(|| {
-                        AppError::Validation(format!(
-                            "Agent '{}' not found. Check <available_agents> for valid agent names.",
-                            name
-                        ))
-                    })?;
+                let by_handle = self.agent_service.find_by_handle(user_id, name).await?;
+                let agent = match by_handle {
+                    Some(a) => a,
+                    None => self
+                        .agent_service
+                        .find_by_name(user_id, name)
+                        .await?
+                        .ok_or_else(|| {
+                            AppError::Validation(format!(
+                                "Agent '{}' not found. Check <available_agents> for valid agent names.",
+                                name
+                            ))
+                        })?,
+                };
                 if !agent.enabled {
                     return Err(AppError::Validation(format!(
                         "Agent '{}' is disabled and cannot accept tasks.",
@@ -126,6 +130,7 @@ impl TaskTool {
                 &ctx.agent,
                 PolicyAction::DelegateTask {
                     target_agent_id: target_agent.id.clone(),
+                    target_handle: target_agent.handle.clone(),
                 },
             )
             .await?;
@@ -350,8 +355,8 @@ impl TaskTool {
     ) -> Result<ToolOutput, AppError> {
         let run_at = super::resolve_run_at(arguments, timezone)?;
 
-        // Always set source_agent_id (including for self-targets) so the kind
-        // resolves to Delegation. Direct has no resume_parent machinery.
+        // source_agent_id set even for self-targets so kind=Delegation;
+        // Direct has no resume_parent machinery.
         let source_agent_id = Some(agent_id.to_string());
 
         let req = CreateTaskRequest {

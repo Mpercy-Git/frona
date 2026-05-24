@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -10,23 +9,24 @@ use crate::agent::task::schema::ResultSpec;
 use crate::core::error::AppError;
 use crate::inference::tool_call::MessageTool;
 use crate::storage::resolve_workspace_attachment;
+use crate::storage::service::StorageService;
 
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition};
 
 pub struct TaskControlTool {
-    workspaces_path: PathBuf,
+    storage: StorageService,
     prompts: PromptLoader,
     result_schema: Option<Arc<ResultSpec>>,
 }
 
 impl TaskControlTool {
     pub fn new(
-        workspaces_path: PathBuf,
+        storage: StorageService,
         prompts: PromptLoader,
         result_schema: Option<Arc<ResultSpec>>,
     ) -> Self {
         Self {
-            workspaces_path,
+            storage,
             prompts,
             result_schema,
         }
@@ -87,8 +87,9 @@ impl AgentTool for TaskControlTool {
                     for path_val in deliverables {
                         if let Some(path) = path_val.as_str() {
                             let attachment = resolve_workspace_attachment(
-                                &self.workspaces_path,
-                                &ctx.agent.id,
+                                &self.storage,
+                                &ctx.user.handle,
+                                &ctx.agent.handle,
                                 path,
                             )
                             .await?;
@@ -171,7 +172,11 @@ mod tests {
                 .join("resources/prompts"),
         );
         let spec = schema.map(|s| Arc::new(ResultSpec::new(s).expect("valid schema")));
-        TaskControlTool::new(PathBuf::from("/tmp"), prompts, spec)
+        TaskControlTool::new(
+            StorageService::new(&crate::core::config::Config::default()),
+            prompts,
+            spec,
+        )
     }
 
     #[test]

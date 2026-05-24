@@ -43,7 +43,7 @@ impl HeartbeatTool {
         let agent_id = &ctx.agent.id;
 
         if interval_minutes > 0 {
-            let ws = self.storage.agent_workspace(agent_id);
+            let ws = self.storage.agent_workspace(&ctx.user.handle, &ctx.agent.handle);
             match ws.read("HEARTBEAT.md") {
                 Some(content) if !content.trim().is_empty() => {}
                 _ => {

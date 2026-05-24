@@ -161,6 +161,7 @@ pub async fn build_agent_summaries(
                 &current_agent,
                 crate::policy::models::PolicyAction::DelegateTask {
                     target_agent_id: target.id.clone(),
+                    target_handle: target.handle.clone(),
                 },
             )
             .await;
@@ -205,7 +206,7 @@ mod tests {
         InferenceContext::new(
             crate::auth::User {
                 id: "test-user".into(),
-                username: "testuser".into(),
+                handle: crate::handle!("testuser"),
                 email: "test@test.com".into(),
                 name: "Test".into(),
                 password_hash: String::new(),
@@ -217,7 +218,8 @@ mod tests {
             },
             crate::agent::models::Agent {
                 id: "test-agent".into(),
-                user_id: Some("test-user".into()),
+                user_id: "test-user".into(),
+                handle: crate::handle!("test-agent"),
                 name: "Test Agent".into(),
                 description: String::new(),
                 model_group: "primary".into(),

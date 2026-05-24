@@ -82,7 +82,8 @@ impl CreateAgentTool {
             });
 
         let req = CreateAgentRequest {
-            id: Some(id),
+            id: Some(id.clone()),
+            handle: Some(id),
             name: name.clone(),
             description: summary,
             model_group,
@@ -94,7 +95,7 @@ impl CreateAgentTool {
 
         let agent = self.agent_service.create(&ctx.user.id, req).await?;
 
-        let workspace = self.storage_service.agent_workspace(&agent.id);
+        let workspace = self.storage_service.agent_workspace(&ctx.user.handle, &agent.handle);
         workspace
             .write("AGENT.md", &instructions)
             .map_err(|e| AppError::Internal(format!("Failed to write AGENT.md: {e}")))?;
