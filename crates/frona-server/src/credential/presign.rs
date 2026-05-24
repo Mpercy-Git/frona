@@ -1,6 +1,7 @@
 use crate::auth::jwt::JwtService;
 use crate::auth::UserService;
 use crate::chat::message::models::MessageResponse;
+use crate::core::Handle;
 use crate::core::error::{AppError, AuthErrorCode};
 use crate::credential::keypair::service::KeyPairService;
 
@@ -39,9 +40,9 @@ impl PresignService {
         owner: &str,
         path: &str,
         user_id: &str,
-        username: &str,
+        handle: &Handle,
     ) -> Result<String, AppError> {
-        self.sign_with_expiry(owner, path, user_id, username, self.expiry_secs).await
+        self.sign_with_expiry(owner, path, user_id, handle, self.expiry_secs).await
     }
 
     pub async fn sign_with_expiry(
@@ -49,10 +50,10 @@ impl PresignService {
         owner: &str,
         path: &str,
         user_id: &str,
-        username: &str,
+        handle: &Handle,
         expiry_secs: u64,
     ) -> Result<String, AppError> {
-        let segment = match attachment_url_segment(owner, path, Some(username)) {
+        let segment = match attachment_url_segment(owner, path, Some(handle.as_ref())) {
             Some(s) => s,
             None => return Ok(String::new()),
         };
@@ -81,8 +82,8 @@ impl PresignService {
         path: &str,
         user_id: &str,
     ) -> Result<String, AppError> {
-        let username = self.resolve_username(user_id).await?;
-        self.sign(owner, path, user_id, &username).await
+        let handle = self.user_service.handle_of(user_id).await?;
+        self.sign(owner, path, user_id, &handle).await
     }
 
     pub async fn sign_with_expiry_by_user_id(
@@ -92,8 +93,8 @@ impl PresignService {
         user_id: &str,
         expiry_secs: u64,
     ) -> Result<String, AppError> {
-        let username = self.resolve_username(user_id).await?;
-        self.sign_with_expiry(owner, path, user_id, &username, expiry_secs).await
+        let handle = self.user_service.handle_of(user_id).await?;
+        self.sign_with_expiry(owner, path, user_id, &handle, expiry_secs).await
     }
 
     pub async fn verify(&self, token: &str) -> Result<PresignClaims, AppError> {
@@ -105,25 +106,16 @@ impl PresignService {
         let decoding_key = self.keypair_svc.get_verifying_key(&kid).await?;
         self.jwt_svc.verify::<PresignClaims>(token, &decoding_key)
     }
-
-    async fn resolve_username(&self, user_id: &str) -> Result<String, AppError> {
-        let user = self
-            .user_service
-            .find_by_id(user_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("User {user_id} not found")))?;
-        Ok(user.username)
-    }
 }
 
 pub async fn presign_response(
     svc: &PresignService,
     msg: &mut MessageResponse,
     user_id: &str,
-    username: &str,
+    handle: &Handle,
 ) {
     for att in &mut msg.attachments {
-        match svc.sign(&att.owner, &att.path, user_id, username).await {
+        match svc.sign(&att.owner, &att.path, user_id, handle).await {
             Ok(url) if !url.is_empty() => att.url = Some(url),
             Ok(_) => {}
             Err(e) => {

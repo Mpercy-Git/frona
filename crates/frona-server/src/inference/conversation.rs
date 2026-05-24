@@ -267,9 +267,6 @@ fn group_tool_calls_by_message(
     map
 }
 
-/// Convert an agent message that has linked ToolCall records into RigMessages.
-/// Emits: for each turn, an Assistant message with tool calls + a User message with tool results.
-/// After all turns, emits the agent's final text (if status is Completed).
 fn convert_agent_with_tool_calls(
     msg: &Message,
     tool_calls: &[&ToolCall],
@@ -394,7 +391,7 @@ pub async fn resolve_attachment_path(
 ) -> String {
     let vpath = if let Some(user_id) = attachment.owner.strip_prefix("user:") {
         match user_service.find_by_id(user_id).await {
-            Ok(Some(user)) => VirtualPath::user(&user.username, &attachment.path),
+            Ok(Some(user)) => VirtualPath::user(&user.handle, &attachment.path),
             _ => return attachment.path.clone(),
         }
     } else if let Some(agent_id) = attachment.owner.strip_prefix("agent:") {

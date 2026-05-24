@@ -56,9 +56,9 @@ impl MemoryService {
         }
     }
 
-    fn load_prompt(&self, name: &str, agent_id: Option<&str>) -> Option<String> {
-        if let Some(aid) = agent_id {
-            let ws = self.storage.agent_workspace(aid);
+    fn load_prompt(&self, name: &str, agent: Option<(&crate::core::Handle, &crate::core::Handle)>) -> Option<String> {
+        if let Some((user_handle, agent_handle)) = agent {
+            let ws = self.storage.agent_workspace(user_handle, agent_handle);
             let loader = AgentPromptLoader::new(&ws, &self.prompts);
             return loader.read(name);
         }
@@ -432,8 +432,7 @@ impl MemoryService {
             compaction_input.push_str(&format!("- {}\n", entry.content));
         }
 
-        let agent_id = if source_type == MemorySourceType::Agent { Some(source_id) } else { None };
-        let prompt = self.load_prompt("MEMORY_COMPACTION.md", agent_id)
+        let prompt = self.load_prompt("MEMORY_COMPACTION.md", None)
             .expect("built-in MEMORY_COMPACTION.md missing");
         let summary = text_inference(
             &self.provider_registry,
@@ -599,7 +598,9 @@ impl MemoryService {
         &self,
         base_prompt: &str,
         agent_id: &str,
+        agent_handle: &crate::core::Handle,
         user_id: &str,
+        user_handle: &crate::core::Handle,
         space_id: Option<&str>,
         skills: &[crate::agent::skill::resolver::Skill],
         agent_summaries: &[(String, String)],
@@ -618,7 +619,7 @@ impl MemoryService {
             .all(|core_key| identity.keys().any(|k| k.eq_ignore_ascii_case(core_key)));
 
         if !has_core_identity
-            && let Some(identity_prompt) = self.load_prompt("IDENTITY.md", Some(agent_id))
+            && let Some(identity_prompt) = self.load_prompt("IDENTITY.md", Some((user_handle, agent_handle)))
         {
             result.push_str("\n\n");
             result.push_str(&identity_prompt);

@@ -28,7 +28,8 @@ pub struct VaultService {
     encryption_key: [u8; 32],
     vault_config: VaultConfig,
     data_dir: PathBuf,
-    files_path: PathBuf,
+    storage: crate::storage::service::StorageService,
+    user_service: crate::auth::UserService,
 }
 
 fn ensure_non_user_principal(principal: &Principal) -> Result<(), AppError> {
@@ -51,7 +52,8 @@ impl VaultService {
         encryption_secret: &str,
         vault_config: VaultConfig,
         data_dir: PathBuf,
-        files_path: PathBuf,
+        storage: crate::storage::service::StorageService,
+        user_service: crate::auth::UserService,
     ) -> Self {
         let encryption_key = derive_key(encryption_secret);
 
@@ -64,7 +66,8 @@ impl VaultService {
             encryption_key,
             vault_config,
             data_dir,
-            files_path,
+            storage,
+            user_service,
         }
     }
 
@@ -821,7 +824,14 @@ impl VaultService {
         let home_dir = if connection.system_managed {
             self.data_dir.join("system").join("vault").join(connection.id)
         } else {
-            self.files_path.join(&connection.user_id)
+            let owner = self
+                .user_service
+                .find_by_id(&connection.user_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("vault owner user {} not found", connection.user_id))
+                })?;
+            self.storage.user_vault_path(&owner.handle)
         };
 
         create_vault_provider(connection.provider, config, home_dir)
