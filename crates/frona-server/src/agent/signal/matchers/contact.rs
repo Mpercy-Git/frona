@@ -17,7 +17,7 @@ impl Matcher for ContactMatcher {
     }
 
     fn evaluate(&self, candidate: &CandidateEvent, watch: &Watch) -> Option<u32> {
-        let candidate_contact = candidate.contact_id.as_deref()?;
+        let candidate_contact = candidate.contact.as_ref().map(|c| c.id.as_str())?;
         if watch
             .expected_contacts
             .iter()
@@ -53,16 +53,8 @@ mod tests {
 
     fn candidate(contact: Option<&str>) -> CandidateEvent {
         CandidateEvent {
-            user_id: "u".into(),
-            space_id: None,
-            chat_id: None,
-            message_id: None,
-            connector_id: None,
-            channel_id: None,
-            contact_id: contact.map(|s| s.to_string()),
-            sender: None,
-            annotations: vec![],
-            content: String::new(),
+            contact: contact.map(crate::agent::signal::models::test_fixtures::contact),
+            ..crate::agent::signal::models::test_fixtures::candidate()
         }
     }
 

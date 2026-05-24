@@ -97,7 +97,7 @@ impl AnnotateTool {
         ctx: &InferenceContext,
         annotations: Vec<Annotation>,
     ) -> Result<CandidateEvent, AppError> {
-        let recent = self
+        let message = self
             .chat_service
             .get_stored_messages(&ctx.chat.id)
             .await?
@@ -111,68 +111,42 @@ impl AnnotateTool {
                 )
             });
 
-        let (message_id, content, sender, contact_id, channel_id, connector_id) =
-            if let Some(msg) = recent {
-                let sender = msg.from_address.clone();
-                let contact_id = msg.contact_id.clone();
-                (
-                    Some(msg.id),
-                    msg.content,
-                    sender,
-                    contact_id,
-                    None,
-                    None,
-                )
-            } else {
-                (None, String::new(), None, None, None, None)
-            };
+        let sender = message.as_ref().and_then(|m| m.from_address.clone());
+        let content = message
+            .as_ref()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
 
-        let space = if let Some(space_id) = ctx.chat.space_id.as_deref() {
-            self.space_service.find_by_id(space_id).await.ok().flatten()
-        } else {
-            None
-        };
-        let channel_id = if channel_id.is_some() {
-            channel_id
-        } else if let Some(s) = space.as_ref() {
+        let channel = if let Some(space_id) = ctx.chat.space_id.as_deref() {
             self.channel_service
-                .find_by_space(&s.id)
+                .find_by_space(space_id)
                 .await
                 .ok()
                 .flatten()
-                .map(|c| c.provider)
         } else {
             None
         };
-        let connector_id = connector_id.or(ctx.chat.space_id.clone());
 
-        let contact_id = if contact_id.is_some() {
-            contact_id
-        } else if let Some(ref address) = sender {
+        let contact = if let Some(addr) = sender.as_deref() {
             self.contact_service
                 .list(&ctx.user.id)
                 .await
                 .ok()
                 .and_then(|cs| {
-                    cs.into_iter()
-                        .find(|c| {
-                            c.phone.as_deref() == Some(address)
-                                || c.email.as_deref() == Some(address)
-                        })
-                        .map(|c| c.id)
+                    cs.into_iter().find(|c| {
+                        c.phone.as_deref() == Some(addr) || c.email.as_deref() == Some(addr)
+                    })
                 })
         } else {
             None
         };
 
         Ok(CandidateEvent {
-            user_id: ctx.user.id.clone(),
-            space_id: ctx.chat.space_id.clone(),
-            chat_id: Some(ctx.chat.id.clone()),
-            message_id,
-            connector_id,
-            channel_id,
-            contact_id,
+            user: ctx.user.clone(),
+            channel,
+            chat: Some(ctx.chat.clone()),
+            message,
+            contact,
             sender,
             annotations,
             content,

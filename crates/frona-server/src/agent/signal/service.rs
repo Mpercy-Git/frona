@@ -145,7 +145,7 @@ impl SignalService {
                 tracing::info!(
                     task_id = %watch.task_id,
                     agent_id = %watch.agent_id,
-                    channel_id = ?candidate.channel_id,
+                    channel = ?candidate.channel.as_ref().map(|c| c.provider.as_str()),
                     sender = ?candidate.sender,
                     "Signal match denied by policy"
                 );
@@ -182,34 +182,34 @@ impl SignalService {
         };
 
         let address = candidate.sender.clone().unwrap_or_default();
-        // Self-source already gated at inbound-persist.
         let paired_addresses: Vec<String> = Vec::new();
 
-        let sender_contact = if let Some(ref contact_id) = candidate.contact_id {
-            match self.contact_service.get(&watch.user_id, contact_id).await {
-                Ok(c) => PolicyContact {
-                    id: c.id,
-                    user_id: watch.user_id.clone(),
-                    name: c.name,
-                    address: address.clone(),
-                    addresses: [c.phone, c.email].into_iter().flatten().collect(),
-                },
-                Err(e) => {
-                    tracing::debug!(
-                        contact_id = %contact_id,
-                        error = %e,
-                        "Could not resolve contact for receive_signal policy check"
-                    );
-                    PolicyContact::unresolved(&watch.user_id, &address)
-                }
-            }
-        } else {
-            PolicyContact::unresolved(&watch.user_id, &address)
+        let sender_contact = match candidate.contact.as_ref() {
+            Some(c) => PolicyContact {
+                id: c.id.clone(),
+                user_id: watch.user_id.clone(),
+                name: c.name.clone(),
+                address: address.clone(),
+                addresses: [c.phone.clone(), c.email.clone()].into_iter().flatten().collect(),
+            },
+            None => PolicyContact::unresolved(&watch.user_id, &address),
         };
 
+        let channel_handle = candidate
+            .channel
+            .as_ref()
+            .map(|c| c.handle.clone())
+            .ok_or_else(|| {
+                AppError::Internal("Signal candidate missing channel".into())
+            })?;
+        let connector_id = candidate
+            .chat
+            .as_ref()
+            .and_then(|c| c.space_id.clone())
+            .unwrap_or_default();
         let action = PolicyAction::ReceiveSignal {
-            connector_id: candidate.connector_id.clone().unwrap_or_default(),
-            channel_id: candidate.channel_id.clone().unwrap_or_default(),
+            connector_id,
+            channel_handle,
             sender: sender_contact,
             paired_addresses,
         };
@@ -276,8 +276,7 @@ impl SignalService {
         aggregate_category_hints(user_watches.values())
     }
 
-    /// The resulting agent message carries `dispatch_mode = Signal`, which
-    /// the outbound dispatcher refuses to deliver. See `attempt_send`.
+    /// Emits `dispatch_mode = Signal`; the outbound dispatcher drops it.
     pub async fn process_inbound_extract(
         &self,
         chat_service: &crate::chat::service::ChatService,
@@ -363,7 +362,26 @@ impl SignalService {
         let fired = if annotations.is_empty() {
             Vec::new()
         } else {
-            let candidate = build_signal_candidate(&channel.user_id, channel, chat, msg, annotations);
+            let user = self
+                .user_service
+                .find_by_id(&channel.user_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("user {}", channel.user_id)))?;
+            let contact = if let Some(ref contact_id) = msg.contact_id {
+                self.contact_service.get(&channel.user_id, contact_id).await.ok()
+            } else {
+                None
+            };
+            let candidate = CandidateEvent {
+                user,
+                channel: Some(channel.clone()),
+                chat: Some(chat.clone()),
+                message: Some(msg.clone()),
+                contact,
+                sender: msg.from_address.clone(),
+                annotations,
+                content: msg.content.clone(),
+            };
             self.evaluate(&channel.user_id, candidate).await?
         };
 
@@ -419,29 +437,7 @@ impl SignalService {
     }
 }
 
-fn build_signal_candidate(
-    user_id: &str,
-    channel: &crate::chat::channel::Channel,
-    chat: &crate::chat::models::Chat,
-    msg: &crate::chat::message::models::Message,
-    annotations: Vec<Annotation>,
-) -> CandidateEvent {
-    CandidateEvent {
-        user_id: user_id.to_string(),
-        space_id: chat.space_id.clone(),
-        chat_id: Some(chat.id.clone()),
-        message_id: Some(msg.id.clone()),
-        connector_id: chat.space_id.clone(),
-        channel_id: Some(channel.provider.clone()),
-        contact_id: msg.contact_id.clone(),
-        sender: msg.from_address.clone(),
-        annotations,
-        content: msg.content.clone(),
-    }
-}
-
-/// Empty `allowed` disables filtering; unknown categories fall through and
-/// fail to match any watch downstream.
+/// Empty `allowed` disables filtering (does NOT match nothing).
 fn filter_categories(raw: Vec<String>, allowed: &[String]) -> Vec<String> {
     let allow_set: std::collections::HashSet<&str> =
         allowed.iter().map(|s| s.as_str()).collect();
@@ -535,7 +531,11 @@ impl SignalService {
         c: &CandidateEvent,
         mode: super::super::task::models::SignalMode,
     ) -> String {
-        let channel = c.channel_id.as_deref().unwrap_or("(unknown channel)");
+        let channel = c
+            .channel
+            .as_ref()
+            .map(|ch| ch.provider.as_str())
+            .unwrap_or("(unknown channel)");
         let sender = c.sender.as_deref().unwrap_or("(unknown sender)");
         let summary = c.summary().unwrap_or("(none)");
         let template = match mode {
@@ -621,20 +621,15 @@ mod tests {
         channel: Option<&str>,
         contact: Option<&str>,
     ) -> CandidateEvent {
+        use crate::agent::signal::models::test_fixtures;
         CandidateEvent {
-            user_id: "u".into(),
-            space_id: None,
-            chat_id: None,
-            message_id: None,
-            connector_id: None,
-            channel_id: channel.map(|s| s.to_string()),
-            contact_id: contact.map(|s| s.to_string()),
-            sender: None,
+            channel: channel.map(test_fixtures::channel),
+            contact: contact.map(test_fixtures::contact),
             annotations: cats
                 .iter()
                 .map(|c| Annotation::category("agent:test", *c))
                 .collect(),
-            content: String::new(),
+            ..test_fixtures::candidate()
         }
     }
 

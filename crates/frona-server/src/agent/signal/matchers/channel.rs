@@ -17,7 +17,7 @@ impl Matcher for ChannelMatcher {
     }
 
     fn evaluate(&self, candidate: &CandidateEvent, watch: &Watch) -> Option<u32> {
-        let candidate_channel = candidate.channel_id.as_deref()?;
+        let candidate_channel = candidate.channel.as_ref().map(|c| c.provider.as_str())?;
         if watch
             .expected_channels
             .iter()
@@ -53,16 +53,8 @@ mod tests {
 
     fn candidate(channel: Option<&str>) -> CandidateEvent {
         CandidateEvent {
-            user_id: "u".into(),
-            space_id: None,
-            chat_id: None,
-            message_id: None,
-            connector_id: None,
-            channel_id: channel.map(|s| s.to_string()),
-            contact_id: None,
-            sender: None,
-            annotations: vec![],
-            content: String::new(),
+            channel: channel.map(crate::agent::signal::models::test_fixtures::channel),
+            ..crate::agent::signal::models::test_fixtures::candidate()
         }
     }
 

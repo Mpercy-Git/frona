@@ -101,13 +101,11 @@ impl Watch {
 
 #[derive(Debug, Clone)]
 pub struct CandidateEvent {
-    pub user_id: String,
-    pub space_id: Option<String>,
-    pub chat_id: Option<String>,
-    pub message_id: Option<String>,
-    pub connector_id: Option<String>,
-    pub channel_id: Option<String>,
-    pub contact_id: Option<String>,
+    pub user: crate::auth::User,
+    pub channel: Option<crate::chat::channel::Channel>,
+    pub chat: Option<crate::chat::models::Chat>,
+    pub message: Option<crate::chat::message::models::Message>,
+    pub contact: Option<crate::contact::models::ContactResponse>,
     pub sender: Option<String>,
     pub annotations: Vec<Annotation>,
     pub content: String,
@@ -126,6 +124,85 @@ impl CandidateEvent {
             ("summary", AnnotationValue::Text(s)) => Some(s.as_str()),
             _ => None,
         })
+    }
+}
+
+#[cfg(test)]
+pub mod test_fixtures {
+    use super::CandidateEvent;
+    use chrono::Utc;
+
+    pub fn user() -> crate::auth::User {
+        let now = Utc::now();
+        crate::auth::User {
+            id: "u".into(),
+            handle: crate::handle!("test-user"),
+            email: "u@x".into(),
+            name: "u".into(),
+            password_hash: String::new(),
+            timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn channel(provider: &str) -> crate::chat::channel::Channel {
+        let now = Utc::now();
+        crate::chat::channel::Channel {
+            id: "ch".into(),
+            user_id: "u".into(),
+            handle: crate::core::Handle::try_new(provider).unwrap_or(crate::handle!("test-ch")),
+            space_id: "s".into(),
+            provider: provider.into(),
+            agent_id: "a".into(),
+            config: Default::default(),
+            dispatch_mode: Default::default(),
+            status: crate::chat::channel::models::ChannelStatus::Disconnected,
+            error_message: None,
+            last_started_at: None,
+            user_address: None,
+            setup: None,
+            retry: None,
+            created_at: now,
+            updated_at: now,
+            webhook_url: None,
+        }
+    }
+
+    pub fn contact(id: &str) -> crate::contact::models::ContactResponse {
+        let now = Utc::now();
+        crate::contact::models::Contact {
+            id: id.into(),
+            user_id: "u".into(),
+            name: id.into(),
+            space_id: None,
+            phone: None,
+            email: None,
+            company: None,
+            job_title: None,
+            notes: None,
+            avatar: None,
+            addresses: Vec::new(),
+            metadata: Default::default(),
+            created_at: now,
+            updated_at: now,
+        }
+        .into()
+    }
+
+    pub fn candidate() -> CandidateEvent {
+        CandidateEvent {
+            user: user(),
+            channel: None,
+            chat: None,
+            message: None,
+            contact: None,
+            sender: None,
+            annotations: Vec::new(),
+            content: String::new(),
+        }
     }
 }
 
@@ -234,20 +311,12 @@ mod tests {
     #[test]
     fn candidate_event_helpers_extract_typed_values() {
         let cand = CandidateEvent {
-            user_id: "u".into(),
-            space_id: None,
-            chat_id: None,
-            message_id: None,
-            connector_id: None,
-            channel_id: None,
-            contact_id: None,
-            sender: None,
             annotations: vec![
                 Annotation::category("agent:a", "verification_code"),
                 Annotation::category("agent:a", "auth"),
                 Annotation::summary("agent:a", "code arrived"),
             ],
-            content: String::new(),
+            ..super::test_fixtures::candidate()
         };
         let cats: Vec<&str> = cand.categories().collect();
         assert_eq!(cats, vec!["verification_code", "auth"]);
