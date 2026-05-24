@@ -1,4 +1,5 @@
 ---
+name: Developer
 description: "Builds anything technical — code, scripts, apps, dashboards, APIs, automation, debugging, data processing. Delegate any task that requires writing or modifying code."
 model_group: coding
 ---

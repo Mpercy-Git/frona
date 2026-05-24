@@ -1,4 +1,5 @@
 ---
+name: Researcher
 description: "Researches anything — comparing products, finding prices, looking up facts, exploring topics, reading documentation. Delegate any task that requires web search or gathering information."
 model_group: reasoning
 ---
