@@ -38,10 +38,9 @@ async fn validate_request_sandbox_paths(
         .list(&auth.user_id)
         .await?
         .into_iter()
-        .filter(|a| a.user_id.as_deref() == Some(auth.user_id.as_str()))
         .map(|a| a.id)
         .collect();
-    policy.validate_paths(&auth.username, |id| owned_agents.contains(id))
+    policy.validate_paths(&auth.handle, |id| owned_agents.contains(id))
 }
 
 async fn sync_agent_tools(
@@ -58,16 +57,16 @@ async fn sync_agent_tools(
         .map_err(crate::core::error::AppError::from)
 }
 
-fn resolve_default_prompt(state: &AppState, agent_id: &str) -> String {
+fn resolve_default_prompt(state: &AppState, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle) -> String {
     state
         .storage_service
-        .agent_workspace(agent_id)
+        .agent_workspace(user_handle, agent_handle)
         .read("AGENT.md")
         .map(|c| parse_frontmatter(&c).template)
         .unwrap_or_default()
 }
 
-async fn to_response(state: &AppState, user_id: &str, agent: Agent) -> Result<AgentResponse, AppError> {
+async fn to_response(state: &AppState, user_id: &str, user_handle: &crate::core::Handle, agent: Agent) -> Result<AgentResponse, AppError> {
     let registry = state
         .tool_manager
         .build_agent_registry(user_id, &agent, &state.policy_service)
@@ -76,8 +75,11 @@ async fn to_response(state: &AppState, user_id: &str, agent: Agent) -> Result<Ag
     let sandbox_policy = state
         .policy_service
         .evaluate_sandbox_policy(
-            user_id,
-            &crate::core::principal::Principal::agent(&agent.id),
+            crate::policy::service::SandboxPrincipalRef::agent(
+                user_id,
+                user_handle,
+                &agent.handle,
+            ),
             false,
         )
         .await?
@@ -121,8 +123,9 @@ async fn create_agent(
         sync_agent_tools(&state, &auth.user_id, &agent.id, &tool_list).await?;
     }
 
-    let mut response = to_response(&state, &auth.user_id, agent).await?;
-    response.default_prompt = resolve_default_prompt(&state, &response.id);
+    let handle = agent.handle.clone();
+    let mut response = to_response(&state, &auth.user_id, &auth.handle, agent).await?;
+    response.default_prompt = resolve_default_prompt(&state, &auth.handle, &handle);
     Ok(Json(response))
 }
 
@@ -149,18 +152,13 @@ async fn list_agents(
 
     let mut responses = Vec::new();
     for agent in agents {
-        let id = agent.id.clone();
-        let is_shared = agent.user_id.is_none();
-        let mut response = to_response(&state, &auth.user_id, agent).await?;
-
-        if is_shared && response.tools.iter().any(|t| !crate::tool::is_tool_available(&state, t)) {
-            continue;
-        }
+        let (id, handle) = (agent.id.clone(), agent.handle.clone());
+        let mut response = to_response(&state, &auth.user_id, &auth.handle, agent).await?;
 
         if let Some(&count) = count_map.get(id.as_str()) {
             response.chat_count = count;
         }
-        response.default_prompt = resolve_default_prompt(&state, &id);
+        response.default_prompt = resolve_default_prompt(&state, &auth.handle, &handle);
         responses.push(response);
     }
 
@@ -173,8 +171,9 @@ async fn get_agent(
     Path(id): Path<String>,
 ) -> Result<Json<AgentResponse>, ApiError> {
     let agent = state.agent_service.get(&auth.user_id, &id).await?;
-    let mut response = to_response(&state, &auth.user_id, agent).await?;
-    response.default_prompt = resolve_default_prompt(&state, &id);
+    let handle = agent.handle.clone();
+    let mut response = to_response(&state, &auth.user_id, &auth.handle, agent).await?;
+    response.default_prompt = resolve_default_prompt(&state, &auth.handle, &handle);
     Ok(Json(response))
 }
 
@@ -192,8 +191,9 @@ async fn update_agent(
         sync_agent_tools(&state, &auth.user_id, &id, &tool_list).await?;
     }
 
-    let mut response = to_response(&state, &auth.user_id, agent).await?;
-    response.default_prompt = resolve_default_prompt(&state, &id);
+    let handle = agent.handle.clone();
+    let mut response = to_response(&state, &auth.user_id, &auth.handle, agent).await?;
+    response.default_prompt = resolve_default_prompt(&state, &auth.handle, &handle);
 
     state.broadcast_service.send(BroadcastEvent {
         user_id: auth.user_id,
@@ -214,10 +214,11 @@ async fn delete_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<(), ApiError> {
+    let agent = state.agent_service.get(&auth.user_id, &id).await?;
     state.agent_service.delete(&auth.user_id, &id).await?;
     state
         .policy_service
-        .delete_agent_policies(&auth.user_id, &id)
+        .delete_agent_policies(&auth.user_id, &auth.handle, &agent.handle)
         .await?;
     Ok(())
 }
@@ -227,8 +228,8 @@ async fn list_agent_skills(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<crate::agent::skill::service::SkillListItem>>, ApiError> {
-    state.agent_service.get(&auth.user_id, &id).await?;
-    let skills = state.skill_service.list(&id, None).await;
+    let agent = state.agent_service.get(&auth.user_id, &id).await?;
+    let skills = state.skill_service.list(&auth.handle, &agent.handle, None).await;
     let items = skills.into_iter().map(|s| crate::agent::skill::service::SkillListItem {
         name: s.name,
         description: s.description,
@@ -247,7 +248,7 @@ async fn upload_avatar(
     Path(id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    state.agent_service.get(&auth.user_id, &id).await?;
+    let agent = state.agent_service.get(&auth.user_id, &id).await?;
 
     let mut file_data: Option<(String, Vec<u8>)> = None;
 
@@ -280,7 +281,7 @@ async fn upload_avatar(
         .unwrap_or("jpg");
     let avatar_filename = format!("avatar.{ext}");
 
-    let workspace = state.storage_service.agent_workspace(&id);
+    let workspace = state.storage_service.agent_workspace(&auth.handle, &agent.handle);
     workspace
         .write_bytes(&avatar_filename, &bytes)
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;

@@ -107,45 +107,30 @@ fn build_login_redirect(state: &AppState, app_redirect: &str) -> String {
 
 pub(crate) async fn proxy_app_root(
     State(state): State<AppState>,
-    Path(app_id): Path<String>,
+    Path(handle): Path<String>,
     headers: HeaderMap,
     request: Request,
 ) -> Response {
-    proxy_app_inner(state, app_id, String::new(), headers, request).await
+    proxy_app_inner(state, handle, String::new(), headers, request).await
 }
 
 pub(crate) async fn proxy_app_path(
     State(state): State<AppState>,
-    Path((app_id, sub_path)): Path<(String, String)>,
+    Path((handle, sub_path)): Path<(String, String)>,
     headers: HeaderMap,
     request: Request,
 ) -> Response {
-    proxy_app_inner(state, app_id, sub_path, headers, request).await
+    proxy_app_inner(state, handle, sub_path, headers, request).await
 }
 
 async fn proxy_app_inner(
     state: AppState,
-    app_id: String,
+    handle: String,
     sub_path: String,
     headers: HeaderMap,
     request: Request,
 ) -> Response {
-    tracing::debug!(app_id = %app_id, sub_path = %sub_path, "Proxy: incoming request");
-
-    let app = match state.app_service.get(&app_id).await {
-        Ok(Some(app)) => {
-            tracing::debug!(app_id = %app_id, status = ?app.status, kind = %app.kind, "Proxy: app found");
-            app
-        }
-        Ok(None) => {
-            tracing::warn!(app_id = %app_id, "Proxy: app not found in DB");
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        Err(e) => {
-            tracing::error!(app_id = %app_id, error = %e, "Proxy: DB error looking up app");
-            return StatusCode::NOT_FOUND.into_response();
-        }
-    };
+    tracing::debug!(handle = %handle, sub_path = %sub_path, "Proxy: incoming request");
 
     let user_id = match authenticate_proxy_request(&state, &headers).await {
         Some(uid) => uid,
@@ -156,12 +141,36 @@ async fn proxy_app_inner(
         }
     };
 
-    if app.user_id != user_id {
-        return StatusCode::FORBIDDEN.into_response();
-    }
+    let parsed_handle = match crate::core::Handle::try_new(&handle) {
+        Ok(h) => h,
+        Err(_) => {
+            tracing::warn!(handle = %handle, "Proxy: malformed handle");
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    };
 
-    state.app_service.manager().record_access(&app_id).await;
+    let app = match state
+        .app_service
+        .find_by_user_handle(&user_id, &parsed_handle)
+        .await
+    {
+        Ok(Some(app)) => {
+            tracing::debug!(handle = %handle, app_id = %app.id, status = ?app.status, kind = %app.kind, "Proxy: app found");
+            app
+        }
+        Ok(None) => {
+            tracing::warn!(handle = %handle, "Proxy: app not found for user");
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(e) => {
+            tracing::warn!(handle = %handle, error = %e, "Proxy: app lookup failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
+    state.app_service.manager().record_access(&app.id).await;
+
+    let app_handle = app.handle.to_string();
     match app.kind.as_str() {
         "static" => serve_static(&state, &app, &sub_path, request).await,
         _ => {
@@ -178,7 +187,7 @@ async fn proxy_app_inner(
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             }
 
-            forward_to_port(port, &sub_path, &app_id, request).await
+            forward_to_port(port, &sub_path, &app_handle, request).await
         }
     }
 }
@@ -211,8 +220,19 @@ async fn serve_static(
     request: Request,
 ) -> Response {
     let static_dir = app.static_dir.as_deref().unwrap_or("dist");
-    let workspace_path =
-        std::path::Path::new(&state.config.storage.workspaces_path).join(&app.agent_id);
+    let Ok(agent) = state
+        .agent_service
+        .get(&app.user_id, &app.agent_id)
+        .await
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(user) = state.user_service.find_by_id(&app.user_id).await.ok().flatten() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let workspace_path = state
+        .storage_service
+        .agent_workspace_path(&user.handle, &agent.handle);
     let serve_path = workspace_path.join(static_dir);
 
     if !serve_path.exists() {
@@ -330,7 +350,7 @@ async fn handle_hibernated_app(
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
 
-            forward_to_port(port, sub_path, &app.id, original_request).await
+            forward_to_port(port, sub_path, app.handle.as_str(), original_request).await
         }
         Err(_) => {
             let _ = state
@@ -361,7 +381,7 @@ fn rewrite_location(value: &str, app_prefix: &str) -> Option<String> {
 async fn forward_to_port(
     port: u16,
     path: &str,
-    app_id: &str,
+    app_handle: &str,
     original_request: Request,
 ) -> Response {
     let query = original_request.uri().query();
@@ -387,7 +407,6 @@ async fn forward_to_port(
 
     let mut upstream_req = client.request(reqwest_method, &uri);
 
-    // Forward request headers, skipping hop-by-hop and auth headers
     for (key, value) in &parts.headers {
         match key.as_str() {
             "host" | "connection" | "transfer-encoding" | "authorization" | "cookie" => continue,
@@ -401,7 +420,6 @@ async fn forward_to_port(
         }
     }
 
-    // Forward request body
     let body_bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -418,7 +436,7 @@ async fn forward_to_port(
     let status = StatusCode::from_u16(upstream_resp.status().as_u16())
         .unwrap_or(StatusCode::BAD_GATEWAY);
 
-    let app_prefix = format!("/apps/{app_id}/");
+    let app_prefix = format!("/apps/{app_handle}/");
     let mut builder = Response::builder().status(status);
     for (key, value) in upstream_resp.headers() {
         if let Ok(name) = axum::http::header::HeaderName::from_bytes(key.as_ref())
