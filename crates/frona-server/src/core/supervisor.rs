@@ -35,7 +35,7 @@ pub trait Supervisor: Send + Sync + 'static {
         false
     }
 
-    fn notification_data(&self, id: &str, action: &str)
+    async fn notification_data(&self, id: &str, action: &str)
         -> crate::notification::models::NotificationData;
 
     fn label(&self) -> &'static str;
@@ -199,7 +199,7 @@ async fn send_notification<S: Supervisor>(
     let Ok(user_id) = supervisor.owner_of(id).await else {
         return;
     };
-    let data = supervisor.notification_data(id, action);
+    let data = supervisor.notification_data(id, action).await;
     if let Ok(notification) = notification_service
         .create(&user_id, data, level, title.to_string(), body.to_string())
         .await
@@ -285,8 +285,8 @@ mod tests {
         async fn display_name(&self, id: &str) -> String {
             format!("Fake {id}")
         }
-        fn notification_data(&self, id: &str, action: &str) -> NotificationData {
-            NotificationData::App { app_id: id.to_string(), action: action.to_string() }
+        async fn notification_data(&self, id: &str, action: &str) -> NotificationData {
+            NotificationData::App { app_handle: id.to_string(), action: action.to_string() }
         }
     }
 

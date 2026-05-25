@@ -142,9 +142,8 @@ impl AppState {
         metrics_handle: PrometheusHandle,
         resource_manager: Arc<SystemResourceManager>,
     ) -> Self {
-        // Both `aws-lc-rs` and `ring` features are active on rustls 0.23 (via
-        // reqwest + slack-morphism); without an explicit default, rustls panics
-        // on first TLS construction.
+        // Both `aws-lc-rs` and `ring` are active via reqwest + slack-morphism;
+        // rustls 0.23 panics on first TLS use without an explicit default.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
         let http_client = crate::build_http_client();
@@ -163,7 +162,6 @@ impl AppState {
             .unwrap_or_else(|_| shared_config_dir.clone());
 
         let sandbox_manager = Arc::new(SandboxManager::new(
-            &config.storage.workspaces_path,
             config.sandbox.disabled,
             resource_manager.clone(),
         ).with_default_timeout(config.sandbox.default_limits.timeout_secs)
@@ -262,7 +260,8 @@ impl AppState {
             &config.auth.encryption_secret,
             config.vault.clone(),
             data_dir,
-            PathBuf::from(&config.storage.files_path),
+            storage.clone(),
+            user_service.clone(),
         );
 
         let oauth_service = if config.sso.enabled {
@@ -282,40 +281,36 @@ impl AppState {
             policy_schema,
             tool_manager.clone(),
             storage.clone(),
+            user_service.clone(),
             config.sandbox.disabled,
         );
 
-        let shared_agents_dir = PathBuf::from(&config.storage.shared_config_dir).join("agents");
         let agent_service = AgentService::new(
             SurrealRepo::new(db.clone()),
             &config.cache,
-            shared_agents_dir,
             resource_manager.clone(),
             policy_service.clone(),
+            user_service.clone(),
         );
 
         let app_manager = Arc::new(AppManager::new(
             sandbox_manager.clone(),
+            storage.clone(),
             config.app.port_range_start,
             config.app.port_range_end,
             policy_service.clone(),
+            user_service.clone(),
+            agent_service.clone(),
             http_client.clone(),
         ));
 
-        let mcp_workspaces = std::fs::canonicalize(&config.mcp.workspaces_path)
-            .unwrap_or_else(|_| {
-                std::fs::create_dir_all(&config.mcp.workspaces_path).ok();
-                std::fs::canonicalize(&config.mcp.workspaces_path)
-                    .unwrap_or_else(|_| PathBuf::from(&config.mcp.workspaces_path))
-            })
-            .to_string_lossy()
-            .into_owned();
         let mcp_manager = Arc::new(crate::tool::mcp::McpManager::new(
             sandbox_manager.clone(),
-            mcp_workspaces,
+            storage.clone(),
             config.mcp.port_range_start,
             config.mcp.port_range_end,
             policy_service.clone(),
+            user_service.clone(),
             http_client.clone(),
         ));
         let mcp_repo: Arc<dyn crate::tool::mcp::repository::McpServerRepository> =
@@ -344,8 +339,8 @@ impl AppState {
             keypair_service.clone(),
             user_service.clone(),
             policy_service.clone(),
+            storage.clone(),
             config.server.public_base_url(),
-            config.auth.runtime_tokens_dir.clone(),
             config.auth.ephemeral_token_expiry_secs,
         ));
 
@@ -354,6 +349,7 @@ impl AppState {
             app_manager,
             config.app.clone(),
             policy_service.clone(),
+            user_service.clone(),
         );
 
         let channel_registry = {

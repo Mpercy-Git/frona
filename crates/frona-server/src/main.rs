@@ -50,14 +50,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    verify_sandbox(&config.storage.workspaces_path, config.sandbox.disabled)
+    let users_root = std::path::PathBuf::from(&config.storage.data_dir).join("users");
+    std::fs::create_dir_all(&users_root).ok();
+    verify_sandbox(users_root.to_string_lossy().as_ref(), config.sandbox.disabled)
         .expect("Sandbox verification failed — filesystem may not support sandboxing. Set FRONA_SANDBOX_DISABLED=true to bypass.");
 
     frona::tool::sandbox::driver::resource_monitor::log_system_resources();
 
-    frona::auth::ephemeral_token::prepare_runtime_dir(&config.auth.runtime_tokens_dir);
-
     let storage = StorageService::new(&config);
+    frona::auth::ephemeral_token::prepare_runtime_dir(&storage.users_root());
 
     let metrics_handle = setup_metrics_recorder();
 
@@ -78,7 +79,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     resource_manager.start_polling();
 
     let state = AppState::new(surreal.clone(), &config, loaded.models, storage, metrics_handle, resource_manager);
-    db::seed_config_agents(&surreal, &state.agent_service, &state.storage_service).await?;
     state.agent_service.sync_agent_limits().await?;
     state.vault_service.sync_config_connections().await?;
     state.browser_session_manager.kill_all_sessions().await;
