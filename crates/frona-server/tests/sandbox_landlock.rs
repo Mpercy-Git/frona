@@ -12,12 +12,12 @@ fn test_manager() -> SandboxManager {
     let base = std::env::temp_dir()
         .join("frona_test_landlock")
         .join(uuid::Uuid::new_v4().to_string());
-    SandboxManager::new(base, false, test_resource_manager())
+    SandboxManager::new(false, test_resource_manager())
 }
 
 fn relative_path_manager() -> SandboxManager {
     let base = format!("target/test_landlock_{}", uuid::Uuid::new_v4());
-    SandboxManager::new(base, false, test_resource_manager())
+    SandboxManager::new(false, test_resource_manager())
 }
 
 #[tokio::test]
@@ -407,7 +407,7 @@ async fn test_sandbox_fallback_on_unsupported_fs() {
         return;
     }
 
-    let mgr = SandboxManager::new(base, false, test_resource_manager());
+    let mgr = SandboxManager::new(false, test_resource_manager());
     let ws = mgr.get_sandbox("landlock-fallback", false, vec![]);
 
     let output = ws
