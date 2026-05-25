@@ -35,7 +35,7 @@ pub fn router() -> Router<AppState> {
 #[derive(Serialize)]
 struct AdminUserListItem {
     id: String,
-    username: String,
+    handle: crate::core::Handle,
     email: String,
     name: String,
     groups: Vec<String>,
@@ -47,7 +47,7 @@ impl From<User> for AdminUserListItem {
     fn from(u: User) -> Self {
         Self {
             id: u.id,
-            username: u.username,
+            handle: u.handle,
             email: u.email,
             name: u.name,
             groups: u.groups,
@@ -88,7 +88,7 @@ fn default_include_deactivated() -> bool {
 
 #[derive(Deserialize)]
 struct CreateUserRequest {
-    username: String,
+    handle: String,
     email: String,
     name: String,
     password: String,
@@ -166,7 +166,7 @@ async fn create_user(
         .create_user_with_password(
             &state.user_service,
             crate::auth::models::RegisterRequest {
-                username: req.username,
+                handle: req.handle,
                 email: req.email,
                 name: req.name,
                 password: req.password,
@@ -175,6 +175,10 @@ async fn create_user(
         )
         .await?;
     state.user_service.ensure_admin_invariant().await?;
+    state
+        .agent_service
+        .clone_all_builtins_for_user(&user.id, &state.storage_service)
+        .await?;
 
     Ok((StatusCode::CREATED, Json(AdminUserListItem::from(user))))
 }
@@ -208,8 +212,6 @@ async fn patch_user(
 
     target.groups = req.groups;
     target.updated_at = Utc::now();
-    // The DB enforces the last-admin invariant via `refuse_last_admin_loss_on_update`;
-    // we map the resulting error to a 409.
     let updated = state
         .user_service
         .update(&target)
@@ -240,7 +242,6 @@ async fn deactivate_user(
         .deactivate(&target_id)
         .await
         .map_err(translate_invariant_violation)?;
-    // Revoke all sessions for the deactivated user so existing access tokens stop working.
     let _ = state
         .token_service
         .repo()
@@ -285,16 +286,12 @@ async fn delete_user(
     )
     .await?;
 
-    // Existence check (so we can return 404 not 500 for unknown ids).
     state
         .user_service
         .find_by_id(&target_id)
         .await?
         .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
-    // The DB enforces both invariants via events (`refuse_user_delete_with_owned`
-    // and `refuse_last_admin_loss_on_delete`). We attempt the delete and translate
-    // any THROW into a structured 409.
     state
         .user_service
         .delete(&target_id)
@@ -315,14 +312,12 @@ fn translate_invariant_violation(err: AppError) -> AppError {
     let AppError::Database(msg) = &err else {
         return err;
     };
-    // SurrealDB embeds the THROW string in the database error message. We match on
-    // our well-known prefixes.
+    // SurrealDB embeds the THROW string in the database error message.
     if msg.contains("'last_admin'") || msg.contains("\"last_admin\"") || msg.ends_with("last_admin")
     {
         return AppError::Conflict(json!({ "reason": "last_admin" }).to_string());
     }
-    // The owned-resources event throws `owned_resources:{"<table>":N,...}`
-    // where the JSON keys are the SurrealDB table names from USER_OWNED_RESOURCES.
+    // Event throws `owned_resources:{"<table>":N,...}`.
     if let Some(idx) = msg.find("owned_resources:{") {
         let payload = &msg[idx + "owned_resources:".len()..];
         if let Some(end) = payload.find('}') {
