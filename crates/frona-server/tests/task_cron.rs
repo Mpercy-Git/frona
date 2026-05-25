@@ -439,7 +439,6 @@ async fn find_resumable_mixed_scenario() {
     assert!(resumable_ids.contains(&pending_direct.id.as_str()));
     assert!(resumable_ids.contains(&in_progress_delegation.id.as_str()));
 
-    // Verify ordering: created_at ASC
     assert_eq!(resumable[0].id, pending_direct.id);
     assert_eq!(resumable[1].id, in_progress_delegation.id);
 }

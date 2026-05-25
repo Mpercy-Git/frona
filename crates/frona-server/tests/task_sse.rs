@@ -26,9 +26,6 @@ use helpers::{
     test_model_group,
 };
 
-// ---------------------------------------------------------------------------
-// Test infrastructure
-// ---------------------------------------------------------------------------
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -60,8 +57,7 @@ async fn test_app_state_with_mock(
             path: format!("{base}/db"),
         },
         storage: frona::core::config::StorageConfig {
-            workspaces_path: format!("{base}/workspaces"),
-            files_path: format!("{base}/files"),
+            data_dir: base.clone(),
             shared_config_dir: format!("{base}/config"),
             ..Default::default()
         },
@@ -74,23 +70,26 @@ async fn test_app_state_with_mock(
             80.0, 80.0, 90.0, 90.0,
         ),
     );
+    let user_service = frona::auth::UserService::new(
+        SurrealRepo::new(db.clone()),
+        &config.cache,
+    );
     let policy_service = {
         let schema = frona::policy::schema::build_schema();
         let repo: std::sync::Arc<dyn frona::policy::repository::PolicyRepository> =
             std::sync::Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
         let tool_manager = std::sync::Arc::new(frona::tool::manager::ToolManager::new(false));
         let storage = frona::storage::StorageService::new(&config);
-        frona::policy::service::PolicyService::new(repo, schema, tool_manager, storage)
+        frona::policy::service::PolicyService::new(repo, schema, tool_manager, storage, user_service.clone())
     };
     let agent_service = AgentService::new(
         SurrealRepo::new(db.clone()),
         &config.cache,
-        std::path::PathBuf::from(&config.storage.shared_config_dir).join("agents"),
         resource_manager.clone(),
         policy_service,
+        user_service.clone(),
     );
 
-    // Build a provider registry with the mock provider and a "primary" model group.
     let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
         HashMap::new();
     providers.insert("mock".to_string(), mock);
@@ -171,7 +170,8 @@ fn make_task() -> Task {
 async fn seed_agent(db: &Surreal<Db>) {
     let agent = frona::agent::models::Agent {
         id: "test-agent".to_string(),
-        user_id: Some("user-1".to_string()),
+        user_id: "user-1".to_string(),
+        handle: frona::handle!("test-agent"),
         name: "Test Agent".to_string(),
         description: String::new(),
         model_group: "primary".to_string(),
@@ -196,7 +196,7 @@ async fn seed_agent(db: &Surreal<Db>) {
 async fn seed_user(db: &Surreal<Db>) {
     let user = frona::auth::User {
         id: "user-1".to_string(),
-        username: "testuser".to_string(),
+        handle: frona::handle!("testuser"),
         email: "test@test.com".to_string(),
         name: "Test".to_string(),
         password_hash: String::new(),
@@ -210,9 +210,6 @@ async fn seed_user(db: &Surreal<Db>) {
     repo.create(&user).await.unwrap();
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 /// Execute a task that produces a simple text response and verify the
 /// complete sequence of SSE events the frontend would receive.
@@ -228,11 +225,9 @@ async fn task_execution_emits_expected_sse_events() {
     seed_agent(&state.db).await;
     seed_user(&state.db).await;
 
-    // Register an SSE session to capture all events for user-1.
     let (tx, mut rx) = mpsc::unbounded_channel();
     state.broadcast_service.register_session("user-1", tx).await;
 
-    // Create the task in DB.
     let task = make_task();
     let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
     repo.create(&task).await.unwrap();
@@ -242,7 +237,6 @@ async fn task_execution_emits_expected_sse_events() {
     let executor = Arc::new(TaskExecutor::new(state.clone()));
     executor.spawn_execution(task).await.unwrap();
 
-    // Wait for the task to reach a terminal status.
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if let Some(t) = repo.find_by_id(&task_id).await.unwrap() && matches!(t.status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled) {
@@ -354,7 +348,6 @@ async fn delegation_delivers_task_result_to_parent_chat() {
         .await
         .unwrap();
 
-    // Register SSE BEFORE spawning the task so we capture every event.
     let (tx, mut rx) = mpsc::unbounded_channel();
     state.broadcast_service.register_session("user-1", tx).await;
 

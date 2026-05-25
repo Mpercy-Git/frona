@@ -327,7 +327,6 @@ async fn service_delete_non_cron_does_not_touch_cron_runs() {
         .unwrap();
     let run = s.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
 
-    // Create an unrelated Direct task and delete it.
     use frona::agent::task::models::CreateTaskRequest;
     let direct = s
         .create(

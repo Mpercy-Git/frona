@@ -23,7 +23,32 @@ fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     let repo: Arc<dyn frona::policy::repository::PolicyRepository> =
         Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
-    PolicyService::new(repo, schema, Arc::new(ToolManager::new(false)), storage)
+    let user_service = test_user_service(db);
+    PolicyService::new(repo, schema, Arc::new(ToolManager::new(false)), storage, user_service)
+}
+
+fn test_user_service(db: &Surreal<Db>) -> frona::auth::UserService {
+    frona::auth::UserService::new(
+        SurrealRepo::new(db.clone()),
+        &frona::core::config::CacheConfig::default(),
+    )
+}
+
+async fn seed_user(user_service: &frona::auth::UserService, id: &str) {
+    let _ = user_service
+        .create(&frona::auth::User {
+            id: id.into(),
+            handle: frona::core::Handle::try_new(id).expect("test user id must be valid handle"),
+            email: format!("{id}@example.com"),
+            name: id.into(),
+            password_hash: String::new(),
+            timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await;
 }
 
 async fn test_db() -> Surreal<Db> {
@@ -36,7 +61,8 @@ fn test_agent(user_id: &str) -> Agent {
     let now = Utc::now();
     Agent {
         id: frona::core::repository::new_id(),
-        user_id: Some(user_id.to_string()),
+        user_id: user_id.to_string(),
+        handle: frona::core::Handle::try_new(format!("h-{}", &frona::core::repository::new_id().replace('-', "")[..28])).unwrap(),
         name: "Test Agent".to_string(),
         description: "A test agent".to_string(),
         model_group: "primary".to_string(),
@@ -94,7 +120,7 @@ async fn test_find_by_user_id() {
 
     let agents = repo.find_by_user_id("user-1").await.unwrap();
     assert_eq!(agents.len(), 2);
-    assert!(agents.iter().all(|a| a.user_id.as_deref() == Some("user-1")));
+    assert!(agents.iter().all(|a| a.user_id == "user-1"));
 
     let agents = repo.find_by_user_id("user-2").await.unwrap();
     assert_eq!(agents.len(), 1);
@@ -146,7 +172,7 @@ async fn test_find_by_id_not_found() {
 }
 
 #[tokio::test]
-async fn test_seed_config_agents_visible_in_find_by_user_id() {
+async fn test_clone_all_builtins_materializes_per_user_rows() {
     use frona::storage::StorageService;
     use frona::core::config::Config;
 
@@ -154,42 +180,56 @@ async fn test_seed_config_agents_visible_in_find_by_user_id() {
     let shared_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("resources");
     let config = Config {
         storage: frona::core::config::StorageConfig {
-            workspaces_path: "/tmp/frona_test_seed_visible".to_string(),
-            files_path: "/tmp/frona_test_seed_visible/files".to_string(),
+            data_dir: "/tmp/frona_test_clone_builtins".to_string(),
             shared_config_dir: shared_dir.to_string_lossy().to_string(),
             ..Default::default()
         },
         ..Default::default()
     };
     let storage = StorageService::new(&config);
+    let user_service = test_user_service(&db);
+    user_service
+        .create(&frona::auth::User {
+            id: "user-a".into(),
+            handle: frona::handle!("user-a"),
+            email: "a@example.com".into(),
+            name: "User A".into(),
+            password_hash: String::new(),
+            timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
     let agent_service = AgentService::new(
         SurrealAgentRepo::new(db.clone()),
         &CacheConfig::default(),
-        shared_dir.join("agents"),
         test_resource_manager(),
         test_policy_service(&db),
+        user_service,
     );
 
-    db::seed_config_agents(&db, &agent_service, &storage).await.unwrap();
+    agent_service.clone_all_builtins_for_user("user-a", &storage).await.unwrap();
+    // Idempotent: second call should not duplicate or error.
+    agent_service.clone_all_builtins_for_user("user-a", &storage).await.unwrap();
 
-    let repo = SurrealAgentRepo::new(db);
-    let agents = repo.find_by_user_id("any-user").await.unwrap();
-    let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
-
-    assert!(names.contains(&"developer"), "Seeded agents should include 'developer', got: {names:?}");
-    assert!(names.contains(&"researcher"), "Seeded agents should include 'researcher', got: {names:?}");
-    assert!(names.contains(&"receptionist"), "Seeded agents should include 'receptionist', got: {names:?}");
-    assert!(names.contains(&"system"), "Seeded agents should include 'system', got: {names:?}");
+    let agents = agent_service.list("user-a").await.unwrap();
+    let handles: Vec<&str> = agents.iter().map(|a| a.handle.as_ref()).collect();
+    assert!(handles.contains(&"developer"), "Expected developer handle, got: {handles:?}");
+    assert!(handles.contains(&"system"), "Expected system handle, got: {handles:?}");
+    // All cloned rows belong to the user (no user_id IS NONE rows surface).
+    for agent in &agents {
+        assert_eq!(agent.user_id, "user-a");
+    }
 }
 
-// ---------------------------------------------------------------------------
-// AgentService cache tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agent_service_find_by_id_caches() {
     let db = test_db().await;
-    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default(), "/nonexistent".into(), test_resource_manager(), test_policy_service(&db));
+    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default(), test_resource_manager(), test_policy_service(&db), test_user_service(&db));
     let repo = SurrealAgentRepo::new(db);
     let agent = test_agent("user-1");
     repo.create(&agent).await.unwrap();
@@ -205,16 +245,14 @@ async fn agent_service_update_invalidates_cache() {
     use frona::agent::models::UpdateAgentRequest;
 
     let db = test_db().await;
-    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default(), "/nonexistent".into(), test_resource_manager(), test_policy_service(&db));
+    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default(), test_resource_manager(), test_policy_service(&db), test_user_service(&db));
     let repo = SurrealAgentRepo::new(db);
     let agent = test_agent("user-1");
     repo.create(&agent).await.unwrap();
 
-    // Populate cache
     let cached = svc.find_by_id(&agent.id).await.unwrap().unwrap();
     assert_eq!(cached.name, "Test Agent");
 
-    // Update via service
     svc.update(
         "user-1",
         &agent.id,
@@ -234,7 +272,6 @@ async fn agent_service_update_invalidates_cache() {
     .await
     .unwrap();
 
-    // Next find_by_id should return updated data
     let after = svc.find_by_id(&agent.id).await.unwrap().unwrap();
     assert_eq!(after.name, "Renamed");
 }
@@ -242,32 +279,17 @@ async fn agent_service_update_invalidates_cache() {
 #[tokio::test]
 async fn agent_service_delete_invalidates_cache() {
     let db = test_db().await;
-    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default(), "/nonexistent".into(), test_resource_manager(), test_policy_service(&db));
+    let user_service = test_user_service(&db);
+    seed_user(&user_service, "user-1").await;
+    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default(), test_resource_manager(), test_policy_service(&db), user_service);
     let repo = SurrealAgentRepo::new(db);
     let agent = test_agent("user-1");
     repo.create(&agent).await.unwrap();
 
-    // Populate cache
     assert!(svc.find_by_id(&agent.id).await.unwrap().is_some());
 
-    // Delete via service
     svc.delete("user-1", &agent.id).await.unwrap();
 
-    // Should be gone
     assert!(svc.find_by_id(&agent.id).await.unwrap().is_none());
 }
 
-#[tokio::test]
-async fn agent_service_builtin_agent_ids() {
-    let db = test_db().await;
-    let shared_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("resources")
-        .join("agents");
-    let policy_service = test_policy_service(&db);
-    let svc = AgentService::new(SurrealAgentRepo::new(db), &CacheConfig::default(), shared_dir, test_resource_manager(), policy_service);
-    let ids = svc.builtin_agent_ids();
-    assert!(ids.contains(&"system".to_string()), "Should include 'system' agent");
-    assert!(ids.contains(&"researcher".to_string()), "Should include 'researcher' agent");
-}

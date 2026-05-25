@@ -66,7 +66,14 @@ fn ctx_with_task(quarantined: bool, result_schema: Option<Value>) -> frona::tool
 
 fn tool(schema: Option<Value>) -> TaskControlTool {
     let spec = schema.map(|s| Arc::new(ResultSpec::new(s).expect("schema compiles")));
-    TaskControlTool::new(workspace_root().join("storage/workspaces"), prompts(), spec)
+    let storage = frona::storage::StorageService::new(&frona::core::config::Config {
+        storage: frona::core::config::StorageConfig {
+            data_dir: workspace_root().to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    TaskControlTool::new(storage, prompts(), spec)
 }
 
 fn unwrap_validation_err(result: Result<frona::tool::ToolOutput, AppError>) -> String {

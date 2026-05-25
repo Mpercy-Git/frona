@@ -43,8 +43,7 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             connection_timeout_ms: 30000,
         }),
         storage: frona::core::config::StorageConfig {
-            workspaces_path: format!("{base}/workspaces"),
-            files_path: format!("{base}/files"),
+            data_dir: base.clone(),
             shared_config_dir: format!("{base}/config"),
             ..Default::default()
         },

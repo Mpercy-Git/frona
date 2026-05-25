@@ -44,7 +44,8 @@ fn make_agent(id: &str, user_id: &str, heartbeat_interval: Option<u64>, next_hea
     let now = Utc::now();
     Agent {
         id: id.to_string(),
-        user_id: Some(user_id.to_string()),
+        user_id: user_id.to_string(),
+        handle: frona::core::Handle::try_new(id).unwrap(),
         name: format!("Agent {id}"),
         description: "test agent".to_string(),
         model_group: "primary".to_string(),

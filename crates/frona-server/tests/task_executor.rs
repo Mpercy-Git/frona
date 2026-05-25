@@ -43,8 +43,7 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             connection_timeout_ms: 30000,
         }),
         storage: frona::core::config::StorageConfig {
-            workspaces_path: format!("{base}/workspaces"),
-            files_path: format!("{base}/files"),
+            data_dir: base.clone(),
             shared_config_dir: format!("{base}/config"),
             ..Default::default()
         },
@@ -62,7 +61,58 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let state = AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
+    // Seed the agent + user the test fixtures reference via `agent_id: "agent-1"`
+    // / `user_id: "user-1"`, so chat creation (which now validates agent
+    // existence + ownership) succeeds.
+    seed_user_and_agent(&state).await;
     (state, tmp)
+}
+
+async fn seed_user_and_agent(state: &AppState) {
+    use frona::auth::User;
+    use frona::core::repository::Repository;
+    use frona::db::repo::agents::SurrealAgentRepo;
+    let now = Utc::now();
+    let _ = state
+        .user_service
+        .create(&User {
+            id: "user-1".into(),
+            handle: frona::handle!("user-1"),
+            email: "user-1@example.com".into(),
+            name: "User 1".into(),
+            password_hash: String::new(),
+            timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await;
+    // Direct repo insert so the agent gets a fixed `id` (the existing fixtures
+    // reference it as "agent-1"); agent_service.create generates a fresh UUID.
+    let repo = SurrealAgentRepo::new(state.db.clone());
+    let _ = repo
+        .create(&frona::agent::models::Agent {
+            id: "agent-1".into(),
+            user_id: "user-1".into(),
+            handle: frona::handle!("agent-1"),
+            name: "Test Agent".into(),
+            description: String::new(),
+            model_group: "primary".into(),
+            enabled: true,
+            skills: None,
+            sandbox_limits: None,
+            max_concurrent_tasks: None,
+            avatar: None,
+            identity: std::collections::BTreeMap::new(),
+            prompt: None,
+            heartbeat_interval: None,
+            next_heartbeat_at: None,
+            heartbeat_chat_id: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await;
 }
 
 fn make_executor(state: &AppState) -> Arc<TaskExecutor> {
@@ -252,7 +302,6 @@ async fn lifecycle_complete_event_detected() {
         .await
         .unwrap();
 
-    // Verify the System message was saved
     let messages = state.chat_service.get_stored_messages(&source_chat.id).await.unwrap();
     let system_msgs: Vec<_> = messages
         .iter()
@@ -470,7 +519,6 @@ async fn task_service_mark_completed_emits_broadcast() {
         .await
         .unwrap();
 
-    // Wait briefly for the dispatcher to route the event.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let event = rx.try_recv().expect("Expected to receive an SSE event");
@@ -557,7 +605,6 @@ async fn deliver_to_source_saves_message_to_user_chat() {
     let (state, _tmp) = test_app_state().await;
     let executor = make_executor(&state);
 
-    // Create a user chat (no task_id) — resume_parent=true so
     // check_and_resume_parent runs, but it should bail out because
     // the source chat is not a task chat.
     let user_chat = state
@@ -648,7 +695,6 @@ async fn lifecycle_event_saved_after_assistant_message() {
         .await
         .unwrap();
 
-    // Verify ordering: assistant message comes before system event
     let messages = state.chat_service.get_stored_messages(&chat.id).await.unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, MessageRole::Agent);
@@ -660,10 +706,8 @@ async fn lifecycle_event_saved_after_assistant_message() {
     ));
 }
 
-// ---------------------------------------------------------------------------
 // CronRun delivery semantics — verifies that process_result gates result
 // delivery + parent resume for the new TaskKind::CronRun variant.
-// ---------------------------------------------------------------------------
 
 async fn make_cron_template_with(
     state: &AppState,
