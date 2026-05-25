@@ -18,7 +18,7 @@ fn test_user() -> User {
     let now = Utc::now();
     User {
         id: frona::core::repository::new_id(),
-        username: "testuser".to_string(),
+        handle: frona::handle!("testuser"),
         email: "test@example.com".to_string(),
         name: "Test User".to_string(),
         password_hash: "hashed_password".to_string(),
@@ -66,24 +66,24 @@ async fn test_find_by_email() {
 }
 
 #[tokio::test]
-async fn test_find_by_username() {
+async fn test_find_by_handle() {
     let db = test_db().await;
     let repo = SurrealUserRepo::new(db);
     let user = test_user();
 
     repo.create(&user).await.unwrap();
 
-    let found = repo.find_by_username("testuser").await.unwrap().unwrap();
+    let found = repo.find_by_handle(&frona::handle!("testuser")).await.unwrap().unwrap();
     assert_eq!(found.id, user.id);
-    assert_eq!(found.username, "testuser");
+    assert_eq!(found.handle, "testuser");
 }
 
 #[tokio::test]
-async fn test_find_by_username_not_found() {
+async fn test_find_by_handle_not_found() {
     let db = test_db().await;
     let repo = SurrealUserRepo::new(db);
 
-    let found = repo.find_by_username("nonexistent").await.unwrap();
+    let found = repo.find_by_handle(&frona::handle!("nonexistent")).await.unwrap();
     assert!(found.is_none());
 }
 
@@ -105,9 +105,6 @@ async fn test_find_by_id_not_found() {
     assert!(found.is_none());
 }
 
-// ---------------------------------------------------------------------------
-// UserService cache tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn user_service_find_by_id_caches() {
@@ -119,7 +116,7 @@ async fn user_service_find_by_id_caches() {
     let first = svc.find_by_id(&user.id).await.unwrap().unwrap();
     let second = svc.find_by_id(&user.id).await.unwrap().unwrap();
     assert_eq!(first.id, second.id);
-    assert_eq!(first.username, second.username);
+    assert_eq!(first.handle, second.handle);
 }
 
 #[tokio::test]
@@ -154,7 +151,6 @@ async fn user_service_delete_invalidates_cache() {
     // Populate cache
     assert!(svc.find_by_id(&user.id).await.unwrap().is_some());
 
-    // Delete
     svc.delete(&user.id).await.unwrap();
 
     // Should be gone

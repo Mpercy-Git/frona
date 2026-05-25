@@ -115,11 +115,10 @@ async fn test_email_matching_flow() {
     let user_repo: SurrealRepo<User> = SurrealRepo::new(db.clone());
     let oauth_repo: SurrealRepo<OAuthIdentity> = SurrealRepo::new(db.clone());
 
-    // Create a user with a specific email
     let now = Utc::now();
     let user = User {
         id: frona::core::repository::new_id(),
-        username: "existinguser".to_string(),
+        handle: frona::handle!("existinguser"),
         email: "existing@example.com".to_string(),
         name: "Existing User".to_string(),
         password_hash: "hash".to_string(),
@@ -145,7 +144,6 @@ async fn test_email_matching_flow() {
     let found_user = found_user.unwrap();
     assert_eq!(found_user.id, user.id);
 
-    // Create the identity link
     let identity = OAuthIdentity {
         id: frona::core::repository::new_id(),
         user_id: found_user.id.clone(),
