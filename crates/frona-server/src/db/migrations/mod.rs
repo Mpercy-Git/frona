@@ -25,6 +25,7 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
 mod backfill_empty_metadata;
+mod handle_unification;
 mod migrate_agent_sandbox_config_to_policies;
 mod migrate_agent_tools_to_policies;
 mod rename_directory_entity_to_path;
@@ -34,9 +35,7 @@ pub type MigrationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(), surrealdb::Error>> + Send + 'a>>;
 
 pub struct Migration {
-    /// Precomputed at macro-expansion time so the `inventory::submit!`
-    /// initializer is a pure-const expression. Use [`Migration::datetime`]
-    /// to recover a `DateTime<Utc>`.
+    /// Precomputed in the macro so `inventory::submit!` is pure-const.
     pub timestamp_nanos: i64,
     pub run: for<'a> fn(&'a Surreal<Db>) -> MigrationFuture<'a>,
 }
