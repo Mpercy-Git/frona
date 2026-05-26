@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { AuthGuard } from "@/components/auth/auth-guard";
+import { RequireAuth } from "@/components/require-auth";
 import { api } from "@/lib/api-client";
 import { CheckCircleIcon } from "@heroicons/react/24/outline";
 import { TimezoneSection } from "@/components/settings/sections/timezone-section";
@@ -48,9 +48,9 @@ const STEPS = [
 
 export default function SetupPage() {
   return (
-    <AuthGuard>
+    <RequireAuth>
       <SetupWizard />
-    </AuthGuard>
+    </RequireAuth>
   );
 }
 
@@ -163,7 +163,6 @@ function SetupWizard() {
       setConfig(result.config);
       setPatch({});
       setCompleted(true);
-      // restart_required is always true after config update
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save configuration");
     } finally {

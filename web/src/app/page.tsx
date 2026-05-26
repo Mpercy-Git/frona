@@ -7,19 +7,20 @@ import { Logo } from "@/components/logo";
 
 export default function Home() {
   const router = useRouter();
-  const { user, loading, needsSetup } = useAuth();
+  const { user, connectionState, needsSetup } = useAuth();
 
   useEffect(() => {
-    if (!loading) {
-      if (!user) {
-        router.replace("/login");
-      } else if (needsSetup) {
-        router.replace("/setup");
-      } else {
-        router.replace("/home");
-      }
+    if (connectionState === "loading" || connectionState === "offline") {
+      return;
     }
-  }, [user, loading, needsSetup, router]);
+    if (!user) {
+      router.replace("/login");
+    } else if (needsSetup) {
+      router.replace("/setup");
+    } else {
+      router.replace("/home");
+    }
+  }, [user, connectionState, needsSetup, router]);
 
   return (
     <div className="flex min-h-screen items-center justify-center">
