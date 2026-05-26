@@ -64,7 +64,7 @@ export function ProfileSection() {
             </div>
             <div>
               <label className="block text-xs font-medium text-text-tertiary mb-1">Username</label>
-              <p className="text-sm text-text-primary">@{user.username}</p>
+              <p className="text-sm text-text-primary">@{user.handle}</p>
             </div>
             <div>
               <label className="block text-xs font-medium text-text-tertiary mb-1">Email</label>

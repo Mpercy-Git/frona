@@ -7,7 +7,7 @@ import { SectionHeader } from "@/components/settings/field";
 
 interface AdminUser {
   id: string;
-  username: string;
+  handle: string;
   email: string;
   name: string;
   groups: string[];
@@ -98,7 +98,7 @@ export function UsersSection() {
     void reload();
   }, [reload]);
 
-  const displayName = (u: AdminUser) => u.name || u.username;
+  const displayName = (u: AdminUser) => u.name || u.handle;
 
   const requestAdminToggle = (u: AdminUser, makeAdmin: boolean) => {
     const groups = makeAdmin
@@ -136,7 +136,7 @@ export function UsersSection() {
   const requestDelete = (u: AdminUser) => {
     setPending({
       title: "Delete user?",
-      body: `Permanently delete ${displayName(u)} (@${u.username}). This cannot be undone. The user must have no chats or agents.`,
+      body: `Permanently delete ${displayName(u)} (@${u.handle}). This cannot be undone. The user must have no chats or agents.`,
       confirmLabel: "Delete",
       danger: true,
       context: "delete",
@@ -225,7 +225,7 @@ export function UsersSection() {
                     )}
                   </div>
                   <div className="text-xs text-text-tertiary truncate">
-                    {u.email} · @{u.username}
+                    {u.email} · @{u.handle}
                   </div>
                 </div>
                 <label className="shrink-0 flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
@@ -345,7 +345,7 @@ function CreateUserModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [username, setUsername] = useState("");
+  const [handle, setHandle] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -359,7 +359,7 @@ function CreateUserModal({
     setError(null);
     try {
       await api.post("/api/admin/users", {
-        username,
+        handle,
         email,
         name,
         password,
@@ -391,8 +391,8 @@ function CreateUserModal({
             type="text"
             required
             placeholder="Username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
+            value={handle}
+            onChange={(e) => setHandle(e.target.value)}
             className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
           />
           <input

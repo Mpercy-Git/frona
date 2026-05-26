@@ -160,7 +160,7 @@ export function SandboxSection({ sandbox, onChange, onValidChange }: SandboxSect
     const paths = attachments.map((a) => {
       const [kind, id] = a.owner.split(":");
       if (kind === "agent") return `agent://${id}/${a.path}`;
-      return `user://${user?.username ?? id}/${a.path}`;
+      return `user://${user?.handle ?? id}/${a.path}`;
     });
     const existingPaths = new Set(current.shared_paths.map((e) => e.path));
     const additions = paths

@@ -51,7 +51,7 @@ function AppList({ apps, onAction, onClose }: {
             key={app.id}
             className="group flex items-center gap-2 px-4 py-3 md:py-2 hover:bg-surface-tertiary transition cursor-pointer"
             onClick={() => {
-              window.open(`${API_URL}/apps/${app.id}/`, "_blank");
+              window.open(`${API_URL}/apps/${app.handle}/`, "_blank");
               onClose();
             }}
           >
@@ -131,9 +131,9 @@ export function AppDropdown() {
 
   const handleAction = async (action: "stop" | "restart" | "delete", app: AppResponse) => {
     if (action === "delete" && !confirm(`Delete app "${app.name}"?`)) return;
-    if (action === "stop") await api.post(`/api/apps/${app.id}/stop`, {});
-    else if (action === "restart") await api.post(`/api/apps/${app.id}/restart`, {});
-    else if (action === "delete") await api.delete(`/api/apps/${app.id}`);
+    if (action === "stop") await api.post(`/api/apps/${app.handle}/stop`, {});
+    else if (action === "restart") await api.post(`/api/apps/${app.handle}/restart`, {});
+    else if (action === "delete") await api.delete(`/api/apps/${app.handle}`);
     fetchApps();
   };
 
