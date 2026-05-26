@@ -920,3 +920,86 @@ async fn resume_parent_cron_run_respects_template_process_result() {
     repo.update(&completed_on).await.unwrap();
     executor.resume_parent_if_requested(&completed_on).await;
 }
+
+/// `max_concurrent_tasks=0` short-circuits `spawn_execution` so the test
+/// observes pure resume-orchestration DB state without an inference model.
+async fn test_app_state_no_spawning() -> (AppState, tempfile::TempDir) {
+    let db = test_db().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = test_config(&tmp);
+    config.server.max_concurrent_tasks = 0;
+    let storage = StorageService::new(&config);
+    let resource_manager = std::sync::Arc::new(
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+    );
+    let metrics_handle = frona::core::metrics::setup_metrics_recorder();
+    let state = AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
+    seed_user_and_agent(&state).await;
+    (state, tmp)
+}
+
+#[tokio::test]
+async fn resume_all_marks_only_in_progress_cron_runs_failed() {
+    let (state, _tmp) = test_app_state_no_spawning().await;
+    let executor = make_executor(&state);
+
+    let next = frona::tool::task::next_cron_occurrence("* * * * *", "UTC").unwrap();
+    let template = state
+        .task_service
+        .create_cron_template(
+            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
+            next, None, None, None,
+            frona::agent::task::models::CronMode::Singleton,
+            frona::agent::task::models::CronConcurrency::Replace,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Pending = scheduler queued, executor hadn't picked up before restart.
+    let pending_run = state
+        .task_service
+        .spawn_cron_run(&template, Utc::now(), 1)
+        .await
+        .unwrap();
+
+    // InProgress = crashed mid-execution.
+    let in_flight_run = state
+        .task_service
+        .spawn_cron_run(&template, Utc::now(), 2)
+        .await
+        .unwrap();
+    state
+        .task_service
+        .mark_in_progress(&in_flight_run.id, Some("chat-x"))
+        .await
+        .unwrap();
+
+    executor.resume_all().await;
+
+    let pending_after = state
+        .task_service
+        .find_by_id(&pending_run.id)
+        .await
+        .unwrap()
+        .expect("pending run still exists");
+    let in_flight_after = state
+        .task_service
+        .find_by_id(&in_flight_run.id)
+        .await
+        .unwrap()
+        .expect("in-flight run still exists");
+
+    assert_eq!(
+        in_flight_after.status,
+        TaskStatus::Failed,
+        "InProgress CronRun must be marked Failed by the orphan sweep"
+    );
+    assert_eq!(
+        pending_after.status,
+        TaskStatus::Pending,
+        "Pending CronRun must NOT be marked Failed — the bug pattern was \
+         resume_in_flight_crons running after spawn, catching just-spawned runs"
+    );
+}

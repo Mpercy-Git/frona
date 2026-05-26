@@ -112,7 +112,10 @@ async fn find_active_runs_excludes_completed() {
 }
 
 #[tokio::test]
-async fn find_orphaned_cron_runs_returns_stuck_runs() {
+async fn find_orphaned_cron_runs_returns_only_in_progress() {
+    // Pending CronRuns were spawned by the scheduler but the executor never
+    // picked them up — they're not crash orphans, just queued work. Only
+    // InProgress runs represent "crashed mid-execution" and should be matched.
     let s = svc(test_db().await);
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = s
@@ -123,15 +126,22 @@ async fn find_orphaned_cron_runs_returns_stuck_runs() {
         .await
         .unwrap();
 
-    let r1 = s.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
-    let r2 = s.spawn_cron_run(&template, Utc::now(), 2).await.unwrap();
+    let pending_run = s.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
+    let in_flight_run = s.spawn_cron_run(&template, Utc::now(), 2).await.unwrap();
 
-    s.mark_in_progress(&r2.id, Some("chat-x")).await.unwrap();
+    s.mark_in_progress(&in_flight_run.id, Some("chat-x")).await.unwrap();
 
     let orphans = s.find_orphaned_cron_runs().await.unwrap();
     let ids: Vec<String> = orphans.iter().map(|t| t.id.clone()).collect();
-    assert!(ids.contains(&r1.id));
-    assert!(ids.contains(&r2.id));
+    assert!(
+        !ids.contains(&pending_run.id),
+        "Pending CronRun must not be treated as orphan"
+    );
+    assert!(
+        ids.contains(&in_flight_run.id),
+        "InProgress CronRun must be returned as orphan"
+    );
+    assert_eq!(orphans.len(), 1, "exactly one orphan expected");
 }
 
 #[tokio::test]

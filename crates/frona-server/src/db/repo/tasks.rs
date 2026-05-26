@@ -153,9 +153,11 @@ impl TaskRepository for SurrealRepo<Task> {
     /// Crash-recovery query: any CronRun still in Pending/InProgress on startup —
     /// these were interrupted mid-flight and should be marked Failed (or restarted).
     async fn find_orphaned_cron_runs(&self) -> Result<Vec<Task>, AppError> {
+        // InProgress only — Pending CronRuns haven't started yet and should
+        // be picked up by `find_resumable`, not marked Failed.
         let query = format!(
             "{SELECT_CLAUSE} FROM task WHERE kind.CronRun IS NOT NONE \
-             AND (status.Pending IS NOT NONE OR status.InProgress IS NOT NONE)"
+             AND status.InProgress IS NOT NONE"
         );
         let mut result = self
             .db()

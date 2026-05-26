@@ -121,6 +121,12 @@ impl TaskExecutor {
     }
 
     pub async fn resume_all(self: &Arc<Self>) {
+        // Crash-orphan sweep MUST run before spawning resumable tasks: otherwise
+        // the freshly-spawned InProgress CronRuns would themselves be matched
+        // by the orphan query and flipped to Failed mid-turn, yanking
+        // `complete_task` out of the agent's registry on the next session build.
+        self.resume_in_flight_crons().await;
+
         let tasks = match self.app_state.task_service.find_resumable().await {
             Ok(tasks) => tasks,
             Err(e) => {
@@ -129,21 +135,21 @@ impl TaskExecutor {
             }
         };
 
-        if !tasks.is_empty() {
-            tracing::info!(count = tasks.len(), "Resuming tasks from previous run");
-
-            for task in tasks {
-                if task.status == TaskStatus::Cancelled {
-                    continue;
-                }
-
-                if let Err(e) = self.spawn_execution(task).await {
-                    tracing::warn!(error = %e, "Failed to spawn task during resume");
-                }
-            }
+        if tasks.is_empty() {
+            return;
         }
 
-        self.resume_in_flight_crons().await;
+        tracing::info!(count = tasks.len(), "Resuming tasks from previous run");
+
+        for task in tasks {
+            if task.status == TaskStatus::Cancelled {
+                continue;
+            }
+
+            if let Err(e) = self.spawn_execution(task).await {
+                tracing::warn!(error = %e, "Failed to spawn task during resume");
+            }
+        }
     }
 
     /// Marks crash-interrupted CronRuns Failed instead of restarting them.
