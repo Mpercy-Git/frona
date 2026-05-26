@@ -4,7 +4,8 @@ export interface UserPermissions {
 
 export interface UserInfo {
   id: string;
-  username: string;
+  /** Rendered as "Username" in UI copy. */
+  handle: string;
   email: string;
   name: string;
   timezone?: string;
@@ -23,7 +24,7 @@ export interface LoginRequest {
 }
 
 export interface RegisterRequest {
-  username: string;
+  handle: string;
   email: string;
   name: string;
   password: string;
@@ -57,6 +58,7 @@ export interface SandboxLimits {
 
 export interface Agent {
   id: string;
+  handle: string;
   name: string;
   description: string;
   model_group: string;
@@ -65,7 +67,6 @@ export interface Agent {
   skills: string[];
   avatar_url: string | null;
   identity: Record<string, string>;
-  /** Evaluated sandbox access — read-only on responses. */
   sandbox_policy: SandboxPolicy;
   sandbox_limits: SandboxLimits | null;
   prompt: string | null;
@@ -220,6 +221,8 @@ export type AppStatus = "starting" | "running" | "stopped" | "failed" | "serving
 export interface AppResponse {
   id: string;
   agent_id: string;
+  /** Served at `/apps/{handle}/`. */
+  handle: string;
   name: string;
   description?: string;
   kind: string;
@@ -339,7 +342,7 @@ export interface CredentialResponse {
 }
 
 export type NotificationData =
-  | { type: "App"; app_id: string; action: string }
+  | { type: "App"; app_handle: string; action: string }
   | { type: "Agent"; agent_id: string; chat_id: string }
   | { type: "Task"; task_id: string }
   | { type: "System" }
