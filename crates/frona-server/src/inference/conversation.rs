@@ -155,8 +155,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                     );
                 }
                 MessageRole::Agent => {
-                    let is_other_agent = msg.agent_id.as_deref() != Some(&ctx.agent_id);
-                    if !instruction_wrapped && is_other_agent {
+                    if !instruction_wrapped {
                         instruction_wrapped = true;
                         let content = format!("<task>\n{}\n</task>", msg.content);
                         result.push(RigMessage::user(&content));
