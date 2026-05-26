@@ -508,6 +508,7 @@ async fn assert_unique_handles(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn rewrite_cedar_policy_text(
     db: &Surreal<Db>,
     user_handle_by_id: &HashMap<String, String>,
