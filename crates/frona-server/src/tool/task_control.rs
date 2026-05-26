@@ -69,18 +69,43 @@ impl AgentTool for TaskControlTool {
 
         match tool_name {
             "complete_task" => {
-                let result = arguments
-                    .get("result")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                // `as_str` was load-bearing wrong: agents pass numbers, objects,
+                // arrays, or null and that silently dropped them to None.
+                let result_value = arguments.get("result").cloned();
 
-                if let (Some(spec), Some(value)) = (self.result_schema.as_ref(), result.as_deref())
-                    && let Err(reason) = spec.validate(value)
-                {
-                    return Err(AppError::Validation(format!(
-                        "result does not match the task's declared schema: {reason}"
-                    )));
-                }
+                let result: Option<String> = if let Some(spec) = self.result_schema.as_ref() {
+                    let schema_type = spec.schema.get("type").and_then(|t| t.as_str());
+                    // Legacy stringified-JSON fallback for older agent calls.
+                    let validation_value = match (&result_value, schema_type) {
+                        (Some(Value::String(s)), Some(t)) if t != "string" => {
+                            serde_json::from_str::<Value>(s)
+                                .unwrap_or_else(|_| Value::String(s.clone()))
+                        }
+                        (Some(v), _) => v.clone(),
+                        // Missing => null forces a tool error against non-nullable schemas.
+                        (None, _) => Value::Null,
+                    };
+                    if let Err(reason) = spec.validate_value(&validation_value) {
+                        return Err(AppError::Validation(format!(
+                            "result does not match the task's declared schema: {reason}"
+                        )));
+                    }
+                    // Storage must be roundtrippable by `ResultSpec::parse`,
+                    // hence the type=string asymmetry (raw vs JSON-encoded).
+                    if result_value.is_none() {
+                        None
+                    } else {
+                        Some(match (&validation_value, schema_type) {
+                            (Value::String(s), Some("string")) => s.clone(),
+                            _ => serde_json::to_string(&validation_value).unwrap_or_default(),
+                        })
+                    }
+                } else {
+                    result_value
+                        .as_ref()
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                };
 
                 let mut resolved_deliverables = Vec::new();
                 if let Some(deliverables) = arguments.get("deliverables").and_then(|v| v.as_array()) {
