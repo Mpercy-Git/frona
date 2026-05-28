@@ -62,6 +62,18 @@ impl ChatSessionContext {
             .build_agent_registry(user_id, &agent, &state.policy_service)
             .await;
 
+        // `send_message` initiates a new user-facing message; it only makes sense
+        // when the agent is firing autonomously in its heartbeat chat. In a task
+        // chat the delivery channel is `complete_task.result`; in a normal chat
+        // the agent already replies by streaming. Allowing it elsewhere lets the
+        // model duplicate work or, worse, satisfy a "send a reminder" instruction
+        // via `send_message` and then leave `complete_task.result` empty against
+        // a non-nullable schema.
+        let in_heartbeat_chat = agent.heartbeat_chat_id.as_deref() == Some(&chat.id);
+        if !in_heartbeat_chat {
+            tool_registry.deny(&["send_message"]);
+        }
+
         let allowed_tool_groups = tool_registry.tool_groups();
 
         let agent_summaries =
