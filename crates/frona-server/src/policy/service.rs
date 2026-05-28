@@ -67,7 +67,10 @@ impl<'a> SandboxPrincipalRef<'a> {
     }
 
     fn cache_key(&self) -> String {
-        format!("{}:{}:{}", self.user_handle, self.kind.cache_prefix(), self.handle)
+        // Prefix with user_id (not handle) so PolicyService::invalidate_cache,
+        // which scans `sandbox_cache` for keys starting with `{user_id}:`,
+        // actually evicts entries after a reconcile.
+        format!("{}:{}:{}", self.user_id, self.kind.cache_prefix(), self.handle)
     }
 }
 
