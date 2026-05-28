@@ -41,7 +41,7 @@ patch=2.7.6-7
 procps=2:4.0.2-3
 sensible-utils=0.0.17+nmu1
 rsync=3.2.7-1+deb12u5
-smbclient=2:4.17.12+dfsg-0+deb12u3
+smbclient=2:4.17.12+dfsg-0+deb12u4
 fd-find=8.6.0-3
 
 # Installed after NodeSource repo setup
