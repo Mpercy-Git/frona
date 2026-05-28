@@ -91,11 +91,15 @@ run = "build/publish.sh"
 
 [tasks."docker:dev"]
 description = "Run full dev stack in Docker (with hot-reload)"
+run = "docker compose -f build/docker-compose.yml --profile dev up"
+
+[tasks."docker:dev:build"]
+description = "Rebuild the dev image and run the stack"
 run = "docker compose -f build/docker-compose.yml --profile dev up --build"
 
 [tasks."docker:dev:down"]
-description = "Stop dev Docker stack"
-run = "docker compose -f build/docker-compose.yml --profile dev down"
+description = "Stop dev Docker stack and remove its volumes"
+run = "docker compose -f build/docker-compose.yml --profile dev down -v"
 
 [tasks."docker:prod"]
 description = "Run production stack in Docker"

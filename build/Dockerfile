@@ -105,6 +105,7 @@ COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal
 
 RUN groupadd -g 1000 frona && useradd -u 1000 -g frona -m -s /bin/bash frona
 RUN mkdir -p /app /app/target /app/frontend/node_modules /app/data /app/bin \
+    /usr/local/cargo/registry /usr/local/cargo/git \
     && chown -R frona:frona /app /usr/local/cargo
 ENV PATH="/app/bin:${PATH}"
 USER frona

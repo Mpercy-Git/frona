@@ -41,6 +41,8 @@ services:
       - ../Cargo.toml:/app/Cargo.toml
       - ../Cargo.lock:/app/Cargo.lock
       - cargo-cache:/app/target
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
       - node-modules:/app/web/node_modules
       - ../web:/app/web
       - ../resources:/app/resources
@@ -118,4 +120,6 @@ configs:
 
 volumes:
   cargo-cache:
+  cargo-registry:
+  cargo-git:
   node-modules:
