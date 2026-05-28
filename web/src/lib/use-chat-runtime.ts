@@ -440,12 +440,20 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     });
   }, [runtime]);
 
+  const loadOlder = useCallback(() => {
+    const id = currentChatIdRef.current;
+    if (id) store.loadOlder(id);
+  }, [store]);
+
   return {
     runtime,
     loaded: storeSnapshot.loaded,
     sendMessage,
     retryInfo: storeSnapshot.retryInfo,
     pendingTools: storeSnapshot.pendingTools,
+    hasMore: storeSnapshot.hasMore,
+    loadingMore: storeSnapshot.loadingMore,
+    loadOlder,
   };
 }
 

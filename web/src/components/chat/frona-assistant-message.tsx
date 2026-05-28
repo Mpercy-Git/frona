@@ -281,7 +281,7 @@ export function FronaAssistantMessage() {
 
   return (
     <MessagePrimitive.Root>
-      <div className="w-full">
+      <div className="w-full" data-message-id={message.id}>
         {!isContinuation && (
           <div className="flex items-center gap-2.5 h-8">
             <AgentAvatar name={agentName} avatar={agent?.avatar_url} />

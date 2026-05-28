@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { MessagePrimitive, AttachmentPrimitive } from "@assistant-ui/react";
+import { MessagePrimitive, AttachmentPrimitive, useMessage } from "@assistant-ui/react";
 import type { CompleteAttachment } from "@assistant-ui/react";
 import { presignFile } from "@/lib/api-client";
 import { getBackendAttachment } from "@/lib/use-chat-runtime";
@@ -65,9 +65,10 @@ function UserAttachment({ attachment }: { attachment: CompleteAttachment }) {
 }
 
 export function FronaUserMessage() {
+  const message = useMessage();
   return (
     <MessagePrimitive.Root>
-      <div className="w-full">
+      <div className="w-full" data-message-id={message.id}>
         <div className="flex items-center gap-2.5 h-8">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-medium bg-accent text-surface">
             Y
