@@ -51,7 +51,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
         let mut result = Vec::with_capacity(messages.len());
         for msg in messages {
             match msg.role {
-                MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                MessageRole::User | MessageRole::Contact => {
                     // Providers reject empty content blocks. Skip + warn.
                     if msg.content.trim().is_empty() && msg.attachments.is_empty() {
                         tracing::warn!(
@@ -59,6 +59,26 @@ impl ConversationBuilder for DefaultConversationBuilder {
                             chat_id = %msg.chat_id,
                             role = ?msg.role,
                             "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
+                        );
+                        continue;
+                    }
+                    result.push(
+                        build_user_message(
+                            &msg.content,
+                            &msg.attachments,
+                            &self.user_service,
+                            &self.storage_service,
+                        )
+                        .await,
+                    );
+                }
+                MessageRole::TaskCompletion => {
+                    // Event-only rows (no summary) are expected; the event payload still renders in UI.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::debug!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            "skipping empty task-completion message in chat history (event-only row with no body)",
                         );
                         continue;
                     }
@@ -121,7 +141,7 @@ impl ConversationBuilder for TaskConversationBuilder {
         let mut instruction_wrapped = false;
         for msg in messages {
             match msg.role {
-                MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                MessageRole::User | MessageRole::Contact => {
                     // Providers reject empty content blocks. Skip + warn.
                     if msg.content.trim().is_empty() && msg.attachments.is_empty() {
                         tracing::warn!(
@@ -129,6 +149,26 @@ impl ConversationBuilder for TaskConversationBuilder {
                             chat_id = %msg.chat_id,
                             role = ?msg.role,
                             "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
+                        );
+                        continue;
+                    }
+                    result.push(
+                        build_user_message(
+                            &msg.content,
+                            &msg.attachments,
+                            &self.user_service,
+                            &self.storage_service,
+                        )
+                        .await,
+                    );
+                }
+                MessageRole::TaskCompletion => {
+                    // Event-only rows (no summary) are expected; the event payload still renders in UI.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::debug!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            "skipping empty task-completion message in chat history (event-only row with no body)",
                         );
                         continue;
                     }
@@ -201,7 +241,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
         let mut result = Vec::with_capacity(messages.len());
         for msg in messages {
             match msg.role {
-                MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                MessageRole::User | MessageRole::Contact => {
                     // Providers reject empty content blocks. Skip + warn.
                     if msg.content.trim().is_empty() && msg.attachments.is_empty() {
                         tracing::warn!(
@@ -209,6 +249,26 @@ impl ConversationBuilder for ChannelConversationBuilder {
                             chat_id = %msg.chat_id,
                             role = ?msg.role,
                             "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
+                        );
+                        continue;
+                    }
+                    result.push(
+                        build_user_message(
+                            &msg.content,
+                            &msg.attachments,
+                            &self.user_service,
+                            &self.storage_service,
+                        )
+                        .await,
+                    );
+                }
+                MessageRole::TaskCompletion => {
+                    // Event-only rows (no summary) are expected; the event payload still renders in UI.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::debug!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            "skipping empty task-completion message in chat history (event-only row with no body)",
                         );
                         continue;
                     }
