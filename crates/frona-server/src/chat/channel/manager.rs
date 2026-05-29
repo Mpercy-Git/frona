@@ -305,16 +305,12 @@ impl ChannelManager {
         let (emit, rx) = mpsc::channel::<ExternalMessage>(INBOUND_BUFFER);
 
         let webhook_base = state.config.server.external_or_local_base_url();
-        let bare_id = channel
-            .id
-            .strip_prefix("channel:")
-            .unwrap_or(&channel.id);
         let webhook_url = format!(
             "{}{}/{}/{}",
             webhook_base.trim_end_matches('/'),
             super::WEBHOOK_PATH_PREFIX,
             channel.provider,
-            bare_id,
+            channel.id,
         );
 
         let handle = state

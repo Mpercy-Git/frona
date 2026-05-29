@@ -133,7 +133,7 @@ impl ChannelService {
         let now = Utc::now();
         let handle = self.allocate_channel_handle(user_id, &req.provider).await?;
         let channel = Channel {
-            id: format!("channel:{}", crate::core::repository::new_id()),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             handle,
             space_id: req.space_id,

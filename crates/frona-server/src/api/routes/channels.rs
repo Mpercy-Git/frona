@@ -48,16 +48,14 @@ async fn channel_webhook(
         .map_err(|e| AppError::Validation(format!("failed to read webhook body: {e}")))?;
     let request = axum::http::Request::from_parts(parts, bytes);
 
-    let full_id = format!("channel:{channel_id}");
-
     let channel = state
         .channel_service
-        .find_by_id(&full_id)
+        .find_by_id(&channel_id)
         .await
-        .map_err(|_| AppError::NotFound(format!("channel {full_id} not found")))?;
+        .map_err(|_| AppError::NotFound(format!("channel {channel_id} not found")))?;
     if channel.provider != provider {
         return Err(AppError::NotFound(format!(
-            "channel {full_id} provider {:?} does not match URL provider {provider:?}",
+            "channel {channel_id} provider {:?} does not match URL provider {provider:?}",
             channel.provider,
         ))
         .into());
@@ -65,7 +63,7 @@ async fn channel_webhook(
 
     let response = state
         .channel_manager
-        .dispatch_inbound_webhook(&full_id, request)
+        .dispatch_inbound_webhook(&channel_id, request)
         .await?;
     Ok(response)
 }
@@ -115,13 +113,12 @@ fn build_webhook_url(state: &AppState, channel: &Channel) -> String {
         .server
         .external_base_url()
         .unwrap_or_else(|| format!("http://localhost:{}", state.config.server.port));
-    let bare_id = channel.id.strip_prefix("channel:").unwrap_or(&channel.id);
     format!(
         "{}{}/{}/{}",
         base.trim_end_matches('/'),
         crate::chat::channel::WEBHOOK_PATH_PREFIX,
         channel.provider,
-        bare_id,
+        channel.id,
     )
 }
 

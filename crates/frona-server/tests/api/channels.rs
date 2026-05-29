@@ -50,7 +50,7 @@ async fn telegram_webhook_creates_entities_with_metadata() {
 
     let now = chrono::Utc::now();
     let channel = frona::chat::channel::Channel {
-        id: format!("channel:{}", frona::core::repository::new_id()),
+        id: frona::core::repository::new_id(),
         user_id: user_id.clone(),
         handle: frona::handle!("telegram"),
         space_id: space_id.to_string(),
@@ -109,7 +109,7 @@ async fn telegram_webhook_creates_entities_with_metadata() {
                 .method("POST")
                 .uri(format!(
                     "/api/webhooks/channels/telegram/{}",
-                    channel_id.strip_prefix("channel:").unwrap_or(channel_id),
+                    channel_id,
                 ))
                 .header("content-type", "application/json")
                 .body(Body::from(payload.to_string()))
@@ -179,7 +179,7 @@ async fn telegram_webhook_persists_when_channel_is_signal_mode() {
 
     let now = chrono::Utc::now();
     let channel = frona::chat::channel::Channel {
-        id: format!("channel:{}", frona::core::repository::new_id()),
+        id: frona::core::repository::new_id(),
         user_id: user_id.clone(),
         handle: frona::handle!("telegram"),
         space_id: space_id.to_string(),
@@ -231,7 +231,7 @@ async fn telegram_webhook_persists_when_channel_is_signal_mode() {
                 .method("POST")
                 .uri(format!(
                     "/api/webhooks/channels/telegram/{}",
-                    channel_id.strip_prefix("channel:").unwrap_or(channel_id),
+                    channel_id,
                 ))
                 .header("content-type", "application/json")
                 .body(Body::from(payload.to_string()))
@@ -305,7 +305,7 @@ async fn telegram_webhook_drops_inbound_when_receive_message_forbidden() {
 
     let now = chrono::Utc::now();
     let channel = frona::chat::channel::Channel {
-        id: format!("channel:{}", frona::core::repository::new_id()),
+        id: frona::core::repository::new_id(),
         user_id: user_id.clone(),
         handle: frona::handle!("telegram"),
         space_id: space_id.to_string(),
@@ -357,7 +357,7 @@ async fn telegram_webhook_drops_inbound_when_receive_message_forbidden() {
                 .method("POST")
                 .uri(format!(
                     "/api/webhooks/channels/telegram/{}",
-                    channel_id.strip_prefix("channel:").unwrap_or(channel_id),
+                    channel_id,
                 ))
                 .header("content-type", "application/json")
                 .body(Body::from(payload.to_string()))
@@ -413,7 +413,7 @@ async fn pairing_round_trip_flips_channel_to_connected() {
     let space_id = body_json(resp).await["id"].as_str().unwrap().to_string();
 
     let now = chrono::Utc::now();
-    let channel_id = format!("channel:{}", frona::core::repository::new_id());
+    let channel_id = frona::core::repository::new_id();
     let channel = frona::chat::channel::Channel {
         id: channel_id.clone(),
         user_id: user_id.clone(),
@@ -474,7 +474,7 @@ async fn pairing_round_trip_flips_channel_to_connected() {
             .method("POST")
             .uri(format!(
                 "/api/webhooks/channels/telegram/{}",
-                channel_id.strip_prefix("channel:").unwrap_or(&channel_id),
+                &channel_id,
             ))
             .header("content-type", "application/json")
             .body(Body::from(payload.to_string())).unwrap(),
@@ -516,7 +516,7 @@ async fn pairing_cancel_reverts_to_disconnected() {
     let space_id = body_json(resp).await["id"].as_str().unwrap().to_string();
 
     let now = chrono::Utc::now();
-    let channel_id = format!("channel:{}", frona::core::repository::new_id());
+    let channel_id = frona::core::repository::new_id();
     let channel = frona::chat::channel::Channel {
         id: channel_id.clone(),
         user_id: user_id.clone(),
@@ -556,7 +556,7 @@ async fn restart_clears_orphaned_pairing() {
         register_user(&state, "rstart", "rstart@example.com", "password123").await;
 
     let now = chrono::Utc::now();
-    let channel_id = format!("channel:{}", frona::core::repository::new_id());
+    let channel_id = frona::core::repository::new_id();
     let channel = frona::chat::channel::Channel {
         id: channel_id.clone(),
         user_id: user_id.clone(),
@@ -802,7 +802,7 @@ async fn inbound_webhook_persists_message_via_stub_adapter() {
 
     let now = chrono::Utc::now();
     let channel = frona::chat::channel::Channel {
-        id: format!("channel:{}", frona::core::repository::new_id()),
+        id: frona::core::repository::new_id(),
         user_id: user_id.clone(),
         handle: frona::handle!("telegram"),
         space_id: space_id.clone(),
@@ -837,7 +837,7 @@ async fn inbound_webhook_persists_message_via_stub_adapter() {
                 .method("POST")
                 .uri(format!(
                     "/api/webhooks/channels/test/{}",
-                    channel.id.strip_prefix("channel:").unwrap_or(&channel.id),
+                    &channel.id,
                 ))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from("from=%2B15551234567&text=hello"))
@@ -898,7 +898,7 @@ async fn agent_message_completion_dispatches_to_outbound_adapter() {
 
     let now = chrono::Utc::now();
     let channel = frona::chat::channel::Channel {
-        id: format!("channel:{}", frona::core::repository::new_id()),
+        id: frona::core::repository::new_id(),
         user_id: user_id.clone(),
         handle: frona::handle!("telegram"),
         space_id: space_id.clone(),
@@ -1007,7 +1007,7 @@ async fn fire_and_forget_agent_message_dispatches_to_outbound_adapter() {
 
     let now = chrono::Utc::now();
     let channel = frona::chat::channel::Channel {
-        id: format!("channel:{}", frona::core::repository::new_id()),
+        id: frona::core::repository::new_id(),
         user_id: user_id.clone(),
         handle: frona::handle!("telegram"),
         space_id: space_id.clone(),
@@ -1110,7 +1110,7 @@ async fn empty_agent_message_skips_adapter_and_marks_sent() {
 
     let now = chrono::Utc::now();
     let channel = frona::chat::channel::Channel {
-        id: format!("channel:{}", frona::core::repository::new_id()),
+        id: frona::core::repository::new_id(),
         user_id: user_id.clone(),
         handle: frona::handle!("telegram"),
         space_id: space_id.clone(),
@@ -1228,7 +1228,7 @@ async fn setup_segment_test(prefix: &str) -> SegmentTestSetup {
 
     let now = chrono::Utc::now();
     let channel = frona::chat::channel::Channel {
-        id: format!("channel:{}", frona::core::repository::new_id()),
+        id: frona::core::repository::new_id(),
         user_id: user_id.clone(),
         handle: frona::handle!("telegram"),
         space_id: space_id.clone(),
@@ -1602,7 +1602,7 @@ async fn slack_pairing_binds_slack_user_id_into_user_address() {
         register_user(&state, "slpair", "slpair@example.com", "password123").await;
 
     let now = chrono::Utc::now();
-    let channel_id = format!("channel:{}", frona::core::repository::new_id());
+    let channel_id = frona::core::repository::new_id();
     let channel = frona::chat::channel::Channel {
         id: channel_id.clone(),
         user_id: user_id.clone(),
