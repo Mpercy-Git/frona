@@ -69,7 +69,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/fronalabs/frona
+          images: ghcr.io/mpercy-git/frona
           tags: |
             type=raw,value=${{ steps.tag.outputs.name }}
             type=raw,value=latest,enable=${{ steps.check.outputs.is-prerelease == 'false' }}
@@ -114,13 +114,13 @@ jobs:
       - name: Update docker-compose image tag
         run: |
           TAG="${{ needs.docker.outputs.tag }}"
-          sed -i "s|image: ghcr.io/fronalabs/frona:.*|image: ghcr.io/fronalabs/frona:${TAG}|" \
+          sed -i "s|image: ghcr.io/mpercy-git/frona:.*|image: ghcr.io/mpercy-git/frona:${TAG}|" \
             examples/docker-compose/docker-compose.yml
 
       - name: Update Kubernetes deployment image tag
         run: |
           TAG="${{ needs.docker.outputs.tag }}"
-          sed -i "s|image: ghcr.io/fronalabs/frona:.*|image: ghcr.io/fronalabs/frona:${TAG}|" \
+          sed -i "s|image: ghcr.io/mpercy-git/frona:.*|image: ghcr.io/mpercy-git/frona:${TAG}|" \
             examples/kubernetes/frona-deployment.yaml
 
       - name: Commit and push updated examples
