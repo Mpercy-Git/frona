@@ -118,7 +118,7 @@ CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch --poll -w cr
 # ============================
 
 FROM python:3.12-slim-bookworm AS prod
-LABEL org.opencontainers.image.source="https://github.com/fronalabs/frona"
+LABEL org.opencontainers.image.source="https://github.com/Mpercy-Git/frona"
 LABEL org.opencontainers.image.description="Frona — personal AI assistant"
 LABEL org.opencontainers.image.licenses="BSL-1.1"
 RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
