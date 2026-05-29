@@ -39,7 +39,7 @@ export function ChatsTab() {
   const activeSpaceId = pathname === "/space"
     ? searchParams.get("id")
     : activeChat?.space_id ?? null;
-  const taskChats = tasks.filter((task) => task.chat_id && !task.space_id);
+  const tasksWithChats = tasks.filter((task) => task.chat_id && !task.space_id);
   const [creatingSpace, setCreatingSpace] = useState(false);
   const [spaceName, setSpaceName] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -171,14 +171,14 @@ export function ChatsTab() {
         </div>
       )}
 
-      {taskChats.length > 0 && (
+      {tasksWithChats.length > 0 && (
         <div className="pt-2">
           <div className="px-2 pb-1">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">
               Task chats
             </span>
           </div>
-          {taskChats.map((task) => (
+          {tasksWithChats.map((task) => (
             <TaskItem key={task.id} task={task} />
           ))}
         </div>
@@ -228,7 +228,7 @@ export function ChatsTab() {
         )}
       </div>
 
-      {spaces.length === 0 && standaloneChats.length === 0 && taskChats.length === 0 && !creatingSpace && (
+      {spaces.length === 0 && standaloneChats.length === 0 && tasksWithChats.length === 0 && !creatingSpace && (
         <p className="px-2 py-4 text-center text-xs text-text-tertiary">
           No chats yet. Start a new conversation!
         </p>
