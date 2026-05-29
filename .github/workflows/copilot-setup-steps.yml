@@ -25,13 +25,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Install mise
-        run: |
-          curl https://mise.run | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install configured toolchains
-        run: mise install
+      - name: Set up mise
+        uses: jdx/mise-action@v4
 
       - name: Install frontend dependencies
         working-directory: web
