@@ -48,12 +48,27 @@ async fn channel_webhook(
         .map_err(|e| AppError::Validation(format!("failed to read webhook body: {e}")))?;
     let request = axum::http::Request::from_parts(parts, bytes);
 
-    let channel = state
-        .channel_service
-        .find_by_id(&channel_id)
-        .await
-        .map_err(|_| AppError::NotFound(format!("channel {channel_id} not found")))?;
+    let channel = match state.channel_service.find_by_id(&channel_id).await {
+        Ok(c) => c,
+        Err(AppError::NotFound(_)) => {
+            tracing::warn!(
+                provider = %provider,
+                channel_id = %channel_id,
+                "inbound webhook for unknown channel — likely an orphaned upstream registration \
+                 still pointing at this server after the channel row was deleted; clear it on \
+                 the provider side",
+            );
+            return Err(AppError::NotFound(format!("channel {channel_id} not found")).into());
+        }
+        Err(e) => return Err(e.into()),
+    };
     if channel.provider != provider {
+        tracing::warn!(
+            url_provider = %provider,
+            channel_id = %channel_id,
+            channel_provider = ?channel.provider,
+            "inbound webhook provider does not match the channel's provider",
+        );
         return Err(AppError::NotFound(format!(
             "channel {channel_id} provider {:?} does not match URL provider {provider:?}",
             channel.provider,
