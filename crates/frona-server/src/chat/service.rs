@@ -1284,6 +1284,10 @@ impl ChatService {
         self.chat_repo.find_by_space_id(space_id).await
     }
 
+    pub async fn find_user_chats_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError> {
+        self.chat_repo.find_user_chats_by_space_id(space_id).await
+    }
+
     pub async fn find_standalone_chats_by_user(
         &self,
         user_id: &str,
