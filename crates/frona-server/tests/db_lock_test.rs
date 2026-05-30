@@ -38,5 +38,5 @@ async fn test_init_retries_then_succeeds_when_lock_released() {
     drop(db1);
 
     let result = handle.await.unwrap();
-    assert!(result.is_ok(), "init should succeed after lock is released");
+    assert!(result.is_ok(), "init should succeed after lock is released, got: {:?}", result.err());
 }

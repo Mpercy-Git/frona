@@ -2,9 +2,9 @@ use std::future::Future;
 use std::time::Instant;
 
 use backon::Retryable;
-use rig::completion::request::ToolDefinition as RigToolDefinition;
-use rig::completion::{AssistantContent, Message as RigMessage};
-use rig::completion::message::UserContent;
+use rig_core::completion::request::ToolDefinition as RigToolDefinition;
+use rig_core::completion::{AssistantContent, Message as RigMessage};
+use rig_core::completion::message::UserContent;
 use tokio::sync::mpsc;
 
 use crate::chat::broadcast::EventSender;
@@ -149,6 +149,134 @@ pub async fn inference_with_retry_and_fallback(
             Err(e) => {
                 let duration = start.elapsed();
                 tracing::warn!(model = %ref_str, error = %e, "Fallback failed");
+                metrics::record_inference_request(
+                    metrics_ctx,
+                    &fallback.model_id,
+                    &fallback.provider,
+                    duration,
+                    None,
+                    "error",
+                );
+                errors.push((ref_str, e.to_string()));
+            }
+        }
+    }
+
+    Err(InferenceError::AllFallbacksFailed(errors))
+}
+
+pub async fn structured_inference_with_retry_and_fallback(
+    registry: &ModelProviderRegistry,
+    model_group: &ModelGroup,
+    system_prompt: &str,
+    history: Vec<RigMessage>,
+    schema: serde_json::Value,
+    metrics_ctx: &InferenceMetricsContext,
+) -> Result<serde_json::Value, InferenceError> {
+    let mut errors = Vec::new();
+    let max_tokens = model_group.max_tokens;
+    let temperature = model_group.temperature;
+    let max_output = max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
+    let truncation_pct = model_group.inference.history_truncation_pct;
+
+    let truncated = truncate_history(
+        history,
+        system_prompt,
+        &model_group.main.model_id,
+        model_group.context_window,
+        max_output,
+        truncation_pct,
+    );
+
+    let ref_str = model_group.main.as_str();
+    let start = Instant::now();
+    match retry_with_backoff(&model_group.retry, &model_group.main, || async {
+        let provider = registry.get_provider(&model_group.main.provider)?;
+        provider
+            .structured_inference(
+                &model_group.main.model_id,
+                system_prompt,
+                truncated.clone(),
+                schema.clone(),
+                max_tokens,
+                temperature,
+                model_group.main.additional_params.clone(),
+            )
+            .await
+    })
+    .await
+    {
+        Ok(value) => {
+            let duration = start.elapsed();
+            tracing::info!(model = %ref_str, "Structured extraction succeeded");
+            metrics::record_inference_request(
+                metrics_ctx,
+                &model_group.main.model_id,
+                &model_group.main.provider,
+                duration,
+                None,
+                "success",
+            );
+            return Ok(value);
+        }
+        Err(e) => {
+            let duration = start.elapsed();
+            tracing::warn!(model = %ref_str, error = %e, "Structured extraction failed on main, trying fallbacks");
+            metrics::record_inference_request(
+                metrics_ctx,
+                &model_group.main.model_id,
+                &model_group.main.provider,
+                duration,
+                None,
+                "error",
+            );
+            errors.push((ref_str, e.to_string()));
+        }
+    }
+
+    for fallback in &model_group.fallbacks {
+        let ref_str = fallback.as_str();
+        let truncated_fb = truncate_history(
+            truncated.clone(),
+            system_prompt,
+            &fallback.model_id,
+            model_group.context_window,
+            max_output,
+            truncation_pct,
+        );
+        let start = Instant::now();
+        match retry_with_backoff(&model_group.retry, fallback, || async {
+            let provider = registry.get_provider(&fallback.provider)?;
+            provider
+                .structured_inference(
+                    &fallback.model_id,
+                    system_prompt,
+                    truncated_fb.clone(),
+                    schema.clone(),
+                    max_tokens,
+                    temperature,
+                    fallback.additional_params.clone(),
+                )
+                .await
+        })
+        .await
+        {
+            Ok(value) => {
+                let duration = start.elapsed();
+                tracing::info!(model = %ref_str, "Structured extraction fallback succeeded");
+                metrics::record_inference_request(
+                    metrics_ctx,
+                    &fallback.model_id,
+                    &fallback.provider,
+                    duration,
+                    None,
+                    "success",
+                );
+                return Ok(value);
+            }
+            Err(e) => {
+                let duration = start.elapsed();
+                tracing::warn!(model = %ref_str, error = %e, "Structured extraction fallback failed");
                 metrics::record_inference_request(
                     metrics_ctx,
                     &fallback.model_id,

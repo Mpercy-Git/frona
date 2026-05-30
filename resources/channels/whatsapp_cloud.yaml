@@ -1,0 +1,43 @@
+id: whatsapp_cloud
+display_name: WhatsApp (Meta Cloud API)
+description: |
+  Connect a **WhatsApp Business** number via Meta's official Cloud API. Requires a verified Meta Business account and a Phone Number ID issued through [Meta for Developers](https://developers.facebook.com/docs/whatsapp/cloud-api).
+webhook_url_visible: true
+setup_instructions: |
+  1. In **Meta for Developers → your App → WhatsApp → Configuration**, paste the **Callback URL** shown above and the **Verify Token** you entered below.
+  2. Click **Verify and save**.
+  3. Subscribe to the **messages** webhook field for this number.
+  4. (Optional) Send a test message from the Meta dashboard to confirm delivery.
+external_links:
+  - label: WhatsApp Business Messaging Policy
+    url: https://www.whatsapp.com/legal/business-policy
+  - label: WhatsApp Cloud API Documentation
+    url: https://developers.facebook.com/docs/whatsapp/cloud-api
+  - label: Meta Platform Terms
+    url: https://developers.facebook.com/terms
+  - label: WhatsApp Privacy Policy
+    url: https://www.whatsapp.com/legal/privacy-policy
+config_fields:
+  - name: phone_number_id
+    description: 'Phone Number ID from the WhatsApp app in Meta for Developers.'
+    is_required: true
+    is_secret: false
+  - name: business_account_id
+    description: 'WhatsApp Business Account ID.'
+    is_required: true
+    is_secret: false
+  - name: access_token
+    description: 'System User access token with the whatsapp_business_messaging scope.'
+    is_required: true
+    is_secret: true
+    format: password
+  - name: verify_token
+    description: 'Arbitrary string you choose; paste the same value here and in the Meta dashboard.'
+    is_required: true
+    is_secret: true
+    format: password
+  - name: app_secret
+    description: 'Meta App secret, used to verify X-Hub-Signature-256 on incoming events.'
+    is_required: true
+    is_secret: true
+    format: password

@@ -133,6 +133,11 @@ pub struct Message {
     pub from_address: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<MessageDelivery>,
+    /// The mode that authorized this inbound; may differ from the channel's
+    /// nominal mode when Message-mode falls back to `ReceiveSignal`. `None`
+    /// for non-channel messages (callers use the channel's nominal mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_mode: Option<crate::chat::channel::DispatchMode>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
@@ -152,6 +157,7 @@ impl Message {
             reasoning: None,
             from_address: None,
             delivery: None,
+            dispatch_mode: None,
             metadata: BTreeMap::new(),
         }
     }
@@ -169,6 +175,7 @@ pub struct MessageBuilder {
     reasoning: Option<Reasoning>,
     from_address: Option<String>,
     delivery: Option<MessageDelivery>,
+    dispatch_mode: Option<crate::chat::channel::DispatchMode>,
     metadata: BTreeMap<String, serde_json::Value>,
 }
 
@@ -218,9 +225,14 @@ impl MessageBuilder {
         self
     }
 
+    pub fn dispatch_mode(mut self, mode: crate::chat::channel::DispatchMode) -> Self {
+        self.dispatch_mode = Some(mode);
+        self
+    }
+
     pub fn build(self) -> Message {
         Message {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             chat_id: self.chat_id,
             role: self.role,
             content: self.content,
@@ -232,6 +244,7 @@ impl MessageBuilder {
             reasoning: self.reasoning,
             from_address: self.from_address,
             delivery: self.delivery,
+            dispatch_mode: self.dispatch_mode,
             metadata: self.metadata,
             created_at: chrono::Utc::now(),
         }

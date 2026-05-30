@@ -1,1 +1,1 @@
-App '{{app_name}}' has crashed and exceeded the maximum restart attempts. Check the log file at `apps/{{app_id}}/logs/app.log` for details, fix the issue, then use the `restart` action (not `deploy`) to bring it back up.
+App '{{app_name}}' has crashed and exceeded the maximum restart attempts. Check the log file at `apps/{{app_handle}}/logs/app.log` for details, fix the issue, then use the `restart` action (not `deploy`) to bring it back up.

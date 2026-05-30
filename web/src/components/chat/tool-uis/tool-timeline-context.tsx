@@ -7,6 +7,7 @@ import {
   useEffect,
   useCallback,
   useMemo,
+  useRef,
 } from "react";
 import { useMessage } from "@assistant-ui/react";
 import { useThreadIsRunning } from "@assistant-ui/core/react";
@@ -64,7 +65,13 @@ export function ToolTimelineProvider({
   // Stabilise the ID list so downstream memos only recompute when the
   // actual set of tool-call IDs changes, not on every content reference change.
   const toolCallKey = toolCallIds.join(",");
-  const stableToolCallIds = useMemo(() => toolCallIds, [toolCallKey]);
+  const stableIdsRef = useRef<string[]>([]);
+  const stableKeyRef = useRef<string>("");
+  if (stableKeyRef.current !== toolCallKey) {
+    stableIdsRef.current = toolCallIds;
+    stableKeyRef.current = toolCallKey;
+  }
+  const stableToolCallIds = stableIdsRef.current;
 
   const totalTools = stableToolCallIds.length;
 
@@ -94,21 +101,22 @@ export function ToolTimelineProvider({
     return set;
   }, [stableToolCallIds, userToggled]);
 
+  const messageIsLast = message.isLast;
+  const messageCreatedAt = (message as unknown as { createdAt?: Date }).createdAt;
   useEffect(() => {
-    if (isRunning && message.isLast) {
+    if (isRunning && messageIsLast) {
       if (!userToggled && collapsed) {
         setCollapsed(false);
       }
       return;
     }
-    if (!collapsed && !isRunning && message.isLast && totalTools > 0 && !userToggled) {
-      const ts = (message as unknown as { createdAt?: Date }).createdAt;
-      const age = ts ? Date.now() - new Date(ts).getTime() : COLLAPSE_DELAY_MS;
+    if (!collapsed && !isRunning && messageIsLast && totalTools > 0 && !userToggled) {
+      const age = messageCreatedAt ? Date.now() - new Date(messageCreatedAt).getTime() : COLLAPSE_DELAY_MS;
       const remaining = Math.max(100, COLLAPSE_DELAY_MS - age);
       const timer = setTimeout(() => setCollapsed(true), remaining);
       return () => clearTimeout(timer);
     }
-  }, [isRunning, message.isLast, totalTools, userToggled, collapsed]);
+  }, [isRunning, messageIsLast, messageCreatedAt, totalTools, userToggled, collapsed]);
 
   const isVisible = useCallback(
     (toolCallId: string) => {

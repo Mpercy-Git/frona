@@ -1,10 +1,7 @@
-use std::collections::BTreeMap;
-
 use serde_json::Value;
-use surrealdb::Surreal;
-use surrealdb::engine::local::Db;
-use surrealdb::types::RecordId;
 
+use crate::agent::models::UpdateAgentRequest;
+use crate::agent::service::AgentService;
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::inference::InferenceEventKind;
@@ -13,13 +10,13 @@ use frona_derive::agent_tool;
 use super::{InferenceContext, ToolOutput};
 
 pub struct UpdateIdentityTool {
-    db: Surreal<Db>,
+    agent_service: AgentService,
     prompts: PromptLoader,
 }
 
 impl UpdateIdentityTool {
-    pub fn new(db: Surreal<Db>, prompts: PromptLoader) -> Self {
-        Self { db, prompts }
+    pub fn new(agent_service: AgentService, prompts: PromptLoader) -> Self {
+        Self { agent_service, prompts }
     }
 }
 
@@ -37,72 +34,40 @@ impl UpdateIdentityTool {
 
         let agent_id = &ctx.agent.id;
         let user_id = &ctx.user.id;
-        let rid = RecordId::new("agent", &**agent_id);
 
-        let mut result = self
-            .db
-            .query("SELECT identity, name, user_id FROM agent WHERE id = $id LIMIT 1")
-            .bind(("id", rid.clone()))
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut identity = self
+            .agent_service
+            .get(user_id, agent_id)
+            .await?
+            .identity;
 
-        let record: Option<Value> = result
-            .take(0)
-            .map_err(|e| AppError::Database(e.to_string()))?;
-
-        let record = record.ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
-
-        let owner = record.get("user_id").and_then(|v| v.as_str());
-        if let Some(uid) = owner
-            && uid != user_id
-        {
-            return Err(AppError::Forbidden("Not your agent".into()));
-        }
-
-        let mut existing: BTreeMap<String, String> = record
-            .get("identity")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-
-        let mut new_name: Option<String> = None;
-
+        let mut normalized_keys: Vec<String> = Vec::with_capacity(attrs.len());
         for (key, value) in &attrs {
+            let key = key.to_lowercase();
             let val_str = match value {
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
-
             if val_str.is_empty() {
-                existing.remove(key);
+                identity.remove(&key);
             } else {
-                if key.eq_ignore_ascii_case("name") {
-                    new_name = Some(val_str.clone());
-                }
-                existing.insert(key.clone(), val_str);
+                identity.insert(key.clone(), val_str);
             }
+            normalized_keys.push(key);
         }
 
-        let current_name = record
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let agent_name = new_name.clone().unwrap_or(current_name);
-
-        self.db
-            .query("UPDATE agent SET identity = $identity, name = $name, updated_at = $now WHERE id = $id")
-            .bind(("id", rid))
-            .bind(("identity", serde_json::to_value(&existing).unwrap()))
-            .bind(("name", agent_name.clone()))
-            .bind(("now", chrono::Utc::now()))
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        let updated = self
+            .agent_service
+            .update(
+                user_id,
+                agent_id,
+                UpdateAgentRequest::builder().identity(identity).build(),
+            )
+            .await?;
 
         let mut entity_fields = serde_json::Map::new();
-        entity_fields.insert("identity".to_string(), serde_json::to_value(&existing).unwrap());
-        if new_name.is_some() {
-            entity_fields.insert("name".to_string(), serde_json::json!(agent_name));
-        }
+        entity_fields.insert("identity".to_string(), serde_json::to_value(&updated.identity).unwrap());
+        entity_fields.insert("name".to_string(), serde_json::json!(updated.name));
 
         ctx.event_tx.send(crate::inference::tool_loop::InferenceEvent {
             kind: InferenceEventKind::EntityUpdated {
@@ -112,14 +77,9 @@ impl UpdateIdentityTool {
             },
         });
 
-        let updated_keys: Vec<&String> = attrs.keys().collect();
         Ok(ToolOutput::text(format!(
             "Updated identity attributes: {}",
-            updated_keys
-                .iter()
-                .map(|k| k.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            normalized_keys.join(", ")
         )))
     }
 }

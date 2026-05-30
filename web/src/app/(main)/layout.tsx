@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense } from "react";
-import { AuthGuard } from "@/components/auth/auth-guard";
+import { AppGate } from "@/components/app-gate";
 import { NavigationProvider } from "@/lib/navigation-context";
 import { NotificationProvider } from "@/lib/notification-context";
 import { SessionProvider } from "@/lib/session-context";
@@ -13,8 +13,8 @@ export default function MainLayout({
   children: React.ReactNode;
 }) {
   return (
-    <AuthGuard>
-      <NavigationProvider>
+    <NavigationProvider>
+      <AppGate>
         <NotificationProvider>
           <Suspense>
             <SessionProvider>
@@ -27,7 +27,7 @@ export default function MainLayout({
             </SessionProvider>
           </Suspense>
         </NotificationProvider>
-      </NavigationProvider>
-    </AuthGuard>
+      </AppGate>
+    </NavigationProvider>
   );
 }

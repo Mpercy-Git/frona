@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rig::client::Nothing;
-use rig::providers::{
+use rig_core::client::Nothing;
+use rig_core::providers::{
     anthropic, cohere, deepseek, galadriel, gemini, groq, huggingface, hyperbolic, mira, mistral,
     moonshot, ollama, openai, openrouter, perplexity, together, xai,
 };
 
 use crate::chat::broadcast::BroadcastService;
+use super::hooks;
 use super::config::{InferenceConfig, ModelGroup, ModelRegistryConfig, ModelProviderConfig, RetryConfig};
 use super::error::InferenceError;
 use super::provider::{InferenceCounter, ModelProvider, ModelRef, RigProvider};
@@ -145,16 +146,26 @@ fn init_provider(
     counter: &InferenceCounter,
 ) -> Result<Arc<dyn ModelProvider>, InferenceError> {
     match name {
-        "openai" if entry.base_url.is_some() => {
+        // Chat Completions (not Responses API): Responses forces `strict: true`
+        // on every function tool with no per-tool opt-out, which rejects any
+        // schema with a free-form object — including MCP-published tools whose
+        // schemas we can't reshape.
+        "openai" => {
             let key = require_api_key(name, entry)?;
-            let client: openai::CompletionsClient = openai::CompletionsClient::builder()
-                .api_key(&key)
-                .base_url(entry.base_url.as_ref().unwrap())
-                .build()
-                .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?;
-            Ok(Arc::new(RigProvider::new(client, counter.clone())) as Arc<dyn ModelProvider>)
+            let client: openai::CompletionsClient = if let Some(url) = &entry.base_url {
+                openai::CompletionsClient::builder()
+                    .api_key(&key)
+                    .base_url(url)
+                    .build()
+                    .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?
+            } else {
+                openai::CompletionsClient::new(&key)
+                    .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?
+            };
+            Ok(Arc::new(
+                RigProvider::new(client, counter.clone()).with_hook(hooks::openai),
+            ) as Arc<dyn ModelProvider>)
         }
-        "openai" => init_api_key_provider!(name, entry, openai, counter),
         "anthropic" => init_builder_provider!(name, entry, anthropic, counter),
         "ollama" => {
             let client: ollama::Client = if let Some(url) = &entry.base_url {
@@ -167,7 +178,9 @@ fn init_provider(
                 ollama::Client::new(Nothing)
                     .map_err(|e| InferenceError::ConfigError(format!("ollama: {e}")))?
             };
-            Ok(Arc::new(RigProvider::new(client, counter.clone())))
+            Ok(Arc::new(
+                RigProvider::new(client, counter.clone()).with_hook(hooks::ollama),
+            ))
         }
         "groq" => init_api_key_provider!(name, entry, groq, counter),
         "openrouter" => init_api_key_provider!(name, entry, openrouter, counter),

@@ -7,6 +7,7 @@ import type { ExternalStoreAdapter } from "@assistant-ui/react";
 import { ChatStore, type RetryInfo } from "./chat-store";
 import { sseBus } from "./sse-event-bus";
 import { sendMessage as apiSendMessage, cancelGeneration, api, uploadFile } from "./api-client";
+import { computeTimeMarkers, useTimezone } from "./format-time";
 import type { MessageResponse, ChatResponse, Attachment } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -132,6 +133,8 @@ export function convertMessage(msg: MessageResponse) {
         custom: {
           originalRole: msg.role,
           contactId: msg.contact_id,
+          daySeparator: msg._daySeparator,
+          gap: msg._gap,
         },
       },
     };
@@ -252,6 +255,8 @@ export function convertMessage(msg: MessageResponse) {
           agentId: msg.agent_id,
           originalRole: msg.role,
           continuation: msg._continuation,
+          daySeparator: msg._daySeparator,
+          gap: msg._gap,
           ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
         },
       },
@@ -397,11 +402,21 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     }
   }, []);
 
-  // Filter out messages that convertMessage returns null for (e.g. signal-only task completions)
-  const filteredMessages = useMemo(
-    () => storeSnapshot.messages.filter((msg) => convertMessage(msg) !== null),
-    [storeSnapshot.messages],
-  );
+  const timeZone = useTimezone();
+
+  // Filter out messages that convertMessage returns null for (e.g. signal-only
+  // task completions) and annotate each with day-boundary / large-gap markers.
+  // Markers compute on the post-filter list so a hidden message can't create
+  // a phantom separator.
+  const filteredMessages = useMemo(() => {
+    const kept = storeSnapshot.messages.filter((msg) => convertMessage(msg) !== null);
+    const markers = computeTimeMarkers(kept, timeZone);
+    return kept.map((msg) => {
+      const marker = markers.get(msg.id);
+      if (!marker) return msg;
+      return { ...msg, _daySeparator: marker.daySeparator, _gap: marker.gap };
+    });
+  }, [storeSnapshot.messages, timeZone]);
 
   // Build the external store adapter with MessageResponse as the source type
   const adapter: ExternalStoreAdapter<MessageResponse> = useMemo(() => ({
@@ -422,7 +437,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     adapters: {
       attachments: fronaAttachmentAdapter,
     },
-  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel]);
+  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store]);
 
   const runtime = useExternalStoreRuntime(adapter);
 
@@ -440,12 +455,20 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     });
   }, [runtime]);
 
+  const loadOlder = useCallback(() => {
+    const id = currentChatIdRef.current;
+    if (id) store.loadOlder(id);
+  }, [store]);
+
   return {
     runtime,
     loaded: storeSnapshot.loaded,
     sendMessage,
     retryInfo: storeSnapshot.retryInfo,
     pendingTools: storeSnapshot.pendingTools,
+    hasMore: storeSnapshot.hasMore,
+    loadingMore: storeSnapshot.loadingMore,
+    loadOlder,
   };
 }
 

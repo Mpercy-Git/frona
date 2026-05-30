@@ -5,9 +5,6 @@ use tower::ServiceExt;
 
 use super::super::*;
 
-// ---------------------------------------------------------------------------
-// Download user files
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn download_user_file_returns_content() {
@@ -15,7 +12,7 @@ async fn download_user_file_returns_content() {
     let (token, _) =
         register_user(&state, "dluser", "dluser@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("dluser");
+    let user_dir = tmp.path().join("users").join("dluser").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("test.txt"), b"file content").await.unwrap();
 
@@ -40,7 +37,7 @@ async fn download_user_file_other_user_returns_403() {
     let (token_b, _) =
         register_user(&state, "dl-other", "dlother@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("dl-owner");
+    let user_dir = tmp.path().join("users").join("dl-owner").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("secret.txt"), b"private").await.unwrap();
 
@@ -69,9 +66,6 @@ async fn download_user_file_not_found_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-// ---------------------------------------------------------------------------
-// Download agent files
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn download_agent_file_returns_content() {
@@ -80,8 +74,14 @@ async fn download_agent_file_returns_content() {
         register_user(&state, "agentdl", "agentdl@example.com", "password123").await;
     let agent = create_agent(&state, &token, "DlAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
+    let agent_handle = agent["handle"].as_str().unwrap();
 
-    let agent_dir = tmp.path().join("workspaces").join(agent_id);
+    let agent_dir = tmp
+        .path()
+        .join("users")
+        .join("agentdl")
+        .join("agents")
+        .join(agent_handle);
     fs::create_dir_all(&agent_dir).await.unwrap();
     fs::write(agent_dir.join("output.csv"), b"col1,col2").await.unwrap();
 
@@ -112,7 +112,7 @@ async fn download_agent_file_other_user_returns_error() {
     let agent = create_agent(&state, &token_a, "PrivAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
-    let agent_dir = tmp.path().join("workspaces").join(agent_id);
+    let agent_dir = tmp.path().join("users").join(agent_id).join("agents").join(agent_id);
     fs::create_dir_all(&agent_dir).await.unwrap();
     fs::write(agent_dir.join("data.txt"), b"secret").await.unwrap();
 
@@ -131,9 +131,6 @@ async fn download_agent_file_other_user_returns_error() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Delete user files
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn delete_user_file_removes_file() {
@@ -141,7 +138,7 @@ async fn delete_user_file_removes_file() {
     let (token, _) =
         register_user(&state, "delfile", "delfile@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("delfile");
+    let user_dir = tmp.path().join("users").join("delfile").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("remove.txt"), b"bye").await.unwrap();
 
@@ -160,7 +157,7 @@ async fn delete_user_file_removes_directory() {
     let (token, _) =
         register_user(&state, "deldir", "deldir@example.com", "password123").await;
 
-    let sub_dir = tmp.path().join("files").join("deldir").join("mydir");
+    let sub_dir = tmp.path().join("users").join("deldir").join("files").join("mydir");
     fs::create_dir_all(&sub_dir).await.unwrap();
     fs::write(sub_dir.join("inner.txt"), b"data").await.unwrap();
 
@@ -195,7 +192,7 @@ async fn delete_user_file_other_user_returns_403() {
     let (token_b, _) =
         register_user(&state, "del-oth", "deloth@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("del-own");
+    let user_dir = tmp.path().join("users").join("del-own").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("mine.txt"), b"private").await.unwrap();
 
@@ -209,9 +206,6 @@ async fn delete_user_file_other_user_returns_403() {
     let _ = token_a;
 }
 
-// ---------------------------------------------------------------------------
-// Browse user files
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn list_user_files_empty_root() {
@@ -235,7 +229,7 @@ async fn list_user_files_returns_entries() {
     let (token, _) =
         register_user(&state, "browse-files", "browsefiles@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("browse-files");
+    let user_dir = tmp.path().join("users").join("browse-files").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("a.txt"), b"aaa").await.unwrap();
     fs::create_dir_all(user_dir.join("subdir")).await.unwrap();
@@ -261,7 +255,7 @@ async fn list_user_files_subdirectory() {
     let (token, _) =
         register_user(&state, "browse-sub", "browsesub@example.com", "password123").await;
 
-    let sub_dir = tmp.path().join("files").join("browse-sub").join("docs");
+    let sub_dir = tmp.path().join("users").join("browse-sub").join("files").join("docs");
     fs::create_dir_all(&sub_dir).await.unwrap();
     fs::write(sub_dir.join("nested.md"), b"# Hello").await.unwrap();
 
@@ -279,9 +273,6 @@ async fn list_user_files_subdirectory() {
     assert_eq!(entries[0]["parent"], "/docs");
 }
 
-// ---------------------------------------------------------------------------
-// Browse agent files
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn list_agent_files_root() {
@@ -290,8 +281,9 @@ async fn list_agent_files_root() {
         register_user(&state, "ag-browse", "agbrowse@example.com", "password123").await;
     let agent = create_agent(&state, &token, "BrowseAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
+    let handle = agent["handle"].as_str().unwrap();
 
-    let agent_dir = tmp.path().join("workspaces").join(agent_id);
+    let agent_dir = tmp.path().join("users").join("ag-browse").join("agents").join(handle);
     fs::create_dir_all(&agent_dir).await.unwrap();
     fs::write(agent_dir.join("file.txt"), b"data").await.unwrap();
 
@@ -315,11 +307,14 @@ async fn list_agent_files_subdir() {
         register_user(&state, "ag-sub", "agsub@example.com", "password123").await;
     let agent = create_agent(&state, &token, "SubAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
+    let handle = agent["handle"].as_str().unwrap();
 
     let sub = tmp
         .path()
-        .join("workspaces")
-        .join(agent_id)
+        .join("users")
+        .join("ag-sub")
+        .join("agents")
+        .join(handle)
         .join("output");
     fs::create_dir_all(&sub).await.unwrap();
     fs::write(sub.join("result.json"), b"{}").await.unwrap();
@@ -365,9 +360,6 @@ async fn list_agent_files_other_user_returns_error() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Search
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn search_files_finds_matching() {
@@ -375,7 +367,7 @@ async fn search_files_finds_matching() {
     let (token, _) =
         register_user(&state, "searcher", "searcher@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("searcher");
+    let user_dir = tmp.path().join("users").join("searcher").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("report.pdf"), b"pdf").await.unwrap();
     fs::write(user_dir.join("notes.txt"), b"txt").await.unwrap();
@@ -414,7 +406,7 @@ async fn search_files_user_scope() {
     let (token, _) =
         register_user(&state, "search-scope", "searchscope@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("search-scope");
+    let user_dir = tmp.path().join("users").join("search-scope").join("files");
     let sub = user_dir.join("docs");
     fs::create_dir_all(&sub).await.unwrap();
     fs::write(sub.join("readme.md"), b"hi").await.unwrap();
@@ -442,8 +434,9 @@ async fn search_files_agent_scope() {
         register_user(&state, "search-agent", "searchagent@example.com", "password123").await;
     let agent = create_agent(&state, &token, "SearchAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
+    let handle = agent["handle"].as_str().unwrap();
 
-    let agent_dir = tmp.path().join("workspaces").join(agent_id);
+    let agent_dir = tmp.path().join("users").join("search-agent").join("agents").join(handle);
     fs::create_dir_all(&agent_dir).await.unwrap();
     fs::write(agent_dir.join("found.csv"), b"data").await.unwrap();
 
@@ -461,9 +454,6 @@ async fn search_files_agent_scope() {
     assert_eq!(results.len(), 1);
 }
 
-// ---------------------------------------------------------------------------
-// Search default scope (user + agent)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn search_files_default_scope_includes_agents() {
@@ -471,13 +461,13 @@ async fn search_files_default_scope_includes_agents() {
     let (token, _) =
         register_user(&state, "search-def", "searchdef@example.com", "password123").await;
     let agent = create_agent(&state, &token, "DefAgent").await;
-    let agent_id = agent["id"].as_str().unwrap();
+    let handle = agent["handle"].as_str().unwrap();
 
-    let user_dir = tmp.path().join("files").join("search-def");
+    let user_dir = tmp.path().join("users").join("search-def").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("userfile.txt"), b"u").await.unwrap();
 
-    let agent_dir = tmp.path().join("workspaces").join(agent_id);
+    let agent_dir = tmp.path().join("users").join("search-def").join("agents").join(handle);
     fs::create_dir_all(&agent_dir).await.unwrap();
     fs::write(agent_dir.join("agentfile.txt"), b"a").await.unwrap();
 
@@ -496,9 +486,6 @@ async fn search_files_default_scope_includes_agents() {
     assert!(ids.iter().any(|id| id.contains("agentfile")));
 }
 
-// ---------------------------------------------------------------------------
-// Presigned URL downloads
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn download_user_file_with_presigned_url() {
@@ -506,7 +493,7 @@ async fn download_user_file_with_presigned_url() {
     let (token, user_id) =
         register_user(&state, "pre-dl", "predl@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("pre-dl");
+    let user_dir = tmp.path().join("users").join("pre-dl").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("presigned.txt"), b"presigned content")
         .await
@@ -557,8 +544,14 @@ async fn download_agent_file_with_presigned_url() {
         register_user(&state, "pre-ag-dl", "preagdl@example.com", "password123").await;
     let agent = create_agent(&state, &token, "PreDlAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
+    let agent_handle = agent["handle"].as_str().unwrap();
 
-    let agent_dir = tmp.path().join("workspaces").join(agent_id);
+    let agent_dir = tmp
+        .path()
+        .join("users")
+        .join("pre-ag-dl")
+        .join("agents")
+        .join(agent_handle);
     fs::create_dir_all(&agent_dir).await.unwrap();
     fs::write(agent_dir.join("report.csv"), b"agent data")
         .await
@@ -607,7 +600,7 @@ async fn download_user_file_presigned_wrong_path_returns_403() {
     let (token, user_id) =
         register_user(&state, "pre-wrong", "prewrong@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("pre-wrong");
+    let user_dir = tmp.path().join("users").join("pre-wrong").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("real.txt"), b"real").await.unwrap();
     fs::write(user_dir.join("other.txt"), b"other").await.unwrap();
@@ -644,9 +637,6 @@ async fn download_user_file_presigned_wrong_path_returns_403() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
-// ---------------------------------------------------------------------------
-// Path traversal validation
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn browse_path_traversal_returns_400() {
@@ -662,9 +652,6 @@ async fn browse_path_traversal_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ---------------------------------------------------------------------------
-// No-auth coverage for file endpoints
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn file_endpoints_reject_no_auth() {

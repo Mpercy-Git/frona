@@ -1,4 +1,4 @@
-use rig::completion::Message as RigMessage;
+use rig_core::completion::Message as RigMessage;
 pub use tokio_util::sync::CancellationToken;
 
 use crate::chat::broadcast::EventSender;
@@ -40,21 +40,39 @@ impl ChatSessionContext {
             .resolve_agent_config(&chat.agent_id)
             .await?;
 
-        let skills = state
-            .skill_service
-            .list(&chat.agent_id, agent_config.skills.as_deref())
-            .await;
-
         let agent = state
             .agent_service
             .find_by_id(&chat.agent_id)
             .await?
             .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
 
+        let user = state
+            .user_service
+            .find_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("User not found".into()))?;
+
+        let skills = state
+            .skill_service
+            .list(&user.handle, &agent.handle, agent_config.skills.as_deref())
+            .await;
+
         let mut tool_registry = state
             .tool_manager
             .build_agent_registry(user_id, &agent, &state.policy_service)
             .await;
+
+        // `send_message` initiates a new user-facing message; it only makes sense
+        // when the agent is firing autonomously in its heartbeat chat. In a task
+        // chat the delivery channel is `complete_task.result`; in a normal chat
+        // the agent already replies by streaming. Allowing it elsewhere lets the
+        // model duplicate work or, worse, satisfy a "send a reminder" instruction
+        // via `send_message` and then leave `complete_task.result` empty against
+        // a non-nullable schema.
+        let in_heartbeat_chat = agent.heartbeat_chat_id.as_deref() == Some(&chat.id);
+        if !in_heartbeat_chat {
+            tool_registry.deny(&["send_message"]);
+        }
 
         let allowed_tool_groups = tool_registry.tool_groups();
 
@@ -68,37 +86,42 @@ impl ChatSessionContext {
 
         let mcp_servers: Vec<(String, String)> = if state.config.mcp.bridge_mode {
             let servers = state.mcp_service.list_for_user(user_id).await.unwrap_or_default();
-            let allowed_slugs: std::collections::HashSet<String> = allowed_tool_groups
+            let allowed_handles: std::collections::HashSet<String> = allowed_tool_groups
                 .iter()
                 .filter_map(|id| {
                     id.strip_prefix("mcp:")
-                        .map(|slug| slug.to_string())
+                        .map(|handle| handle.to_string())
                 })
                 .collect();
             servers
                 .into_iter()
                 .filter(|s| s.status == crate::tool::mcp::models::McpServerStatus::Running)
-                .filter(|s| allowed_slugs.contains(&s.slug))
+                .filter(|s| allowed_handles.contains(s.handle.as_str()))
                 .map(|s| {
                     let desc = s.description.unwrap_or_else(|| s.display_name.clone());
-                    (s.slug, desc)
+                    (s.handle.to_string(), desc)
                 })
                 .collect()
         } else {
             Vec::new()
         };
 
+        let resolved_tz = user.resolved_timezone(&state.config.server.timezone);
+
         let mut system_prompt = match state
             .memory_service
             .build_augmented_system_prompt(
                 &agent_config.system_prompt,
                 &chat.agent_id,
+                &agent.handle,
                 user_id,
+                &user.handle,
                 chat.space_id.as_deref(),
                 &skills,
                 &agent_summaries,
                 &agent_config.identity,
                 &mcp_servers,
+                &resolved_tz,
             )
             .await
         {
@@ -126,16 +149,27 @@ impl ChatSessionContext {
             None
         };
 
-        let task_in_progress = task.as_ref().is_some_and(|t| matches!(t.status,
-            crate::agent::task::models::TaskStatus::Pending
-            | crate::agent::task::models::TaskStatus::InProgress
-        ));
+        // Cron must be excluded: TASK.md would prompt complete_task → status=Completed
+        // → cron stops firing forever.
+        let task_in_progress = task.as_ref().is_some_and(|t|
+            !matches!(t.kind, crate::agent::task::models::TaskKind::Cron { .. })
+            && matches!(t.status,
+                crate::agent::task::models::TaskStatus::Pending
+                | crate::agent::task::models::TaskStatus::InProgress
+            )
+        );
 
         if task_in_progress
             && let Some(task_prompt) = state.prompts.read("TASK.md")
         {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&task_prompt);
+        }
+
+        if task_in_progress {
+            tool_registry.apply_filter(
+                &crate::tool::registry::ToolFilter::DenyList(&["create_recurring_task"]),
+            );
         }
 
         for te in &tool_calls {
@@ -153,15 +187,17 @@ impl ChatSessionContext {
         };
 
         if let Some(ref task) = task {
-            let local = chrono::Local::now();
+            let tz: chrono_tz::Tz = resolved_tz
+                .parse()
+                .unwrap_or(chrono_tz::UTC);
             let fmt = "%Y-%m-%d %H:%M:%S %Z";
             let mut items = vec![
-                ("created_at".into(), task.created_at.with_timezone(&local.timezone()).format(fmt).to_string()),
+                ("created_at".into(), task.created_at.with_timezone(&tz).format(fmt).to_string()),
             ];
             if let Some(run_at) = task.run_at {
-                items.push(("scheduled_at".into(), run_at.with_timezone(&local.timezone()).format(fmt).to_string()));
+                items.push(("scheduled_at".into(), run_at.with_timezone(&tz).format(fmt).to_string()));
             }
-            items.push(("now".into(), local.format(fmt).to_string()));
+            items.push(("now".into(), chrono::Utc::now().with_timezone(&tz).format(fmt).to_string()));
             crate::agent::prompt::append_tagged_section(
                 &mut system_prompt,
                 "task_time",
@@ -173,12 +209,6 @@ impl ChatSessionContext {
         let rig_history = builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
 
         let registry = state.chat_service.provider_registry().clone();
-
-        let user = state
-            .user_service
-            .find_by_id(user_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
         if task_in_progress {
             let result_schema = task
@@ -193,7 +223,7 @@ impl ChatSessionContext {
                 });
             tool_registry.register(std::sync::Arc::new(
                 crate::tool::task_control::TaskControlTool::new(
-                    state.config.storage.workspaces_path.clone().into(),
+                    state.storage_service.clone(),
                     state.prompts.clone(),
                     result_schema.clone(),
                 ),

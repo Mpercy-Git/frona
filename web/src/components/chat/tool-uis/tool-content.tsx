@@ -94,10 +94,9 @@ type GrantDuration = "once" | { hours: number } | { days: number } | "permanent"
 
 export function VaultApprovalContent({ te, chatId, onSuccess, onFailure }: ToolContentProps) {
   const data = te.tool_data?.data as Record<string, unknown> | undefined;
-  if (!data) return null;
-  const query = data.query as string;
-  const reason = data.reason as string;
-  const envVarPrefix = data.env_var_prefix as string | null;
+  const query = (data?.query as string) ?? "";
+  const reason = data?.reason as string;
+  const envVarPrefix = data?.env_var_prefix as string | null;
 
   const [connections, setConnections] = useState<VaultConnection[]>([]);
   const [selectedConnection, setSelectedConnection] = useState("");
@@ -126,6 +125,8 @@ export function VaultApprovalContent({ te, chatId, onSuccess, onFailure }: ToolC
       })
       .finally(() => setSearching(false));
   }, [selectedConnection, searchQuery]);
+
+  if (!data) return null;
 
   const handleApprove = () => {
     if (!selectedItem) return;

@@ -12,4 +12,5 @@ pub trait TokenRepository: Repository<ApiToken> {
     async fn update_last_used(&self, id: &str) -> Result<(), AppError>;
     async fn delete_expired(&self) -> Result<u64, AppError>;
     async fn delete_by_refresh_pair(&self, pair_id: &str) -> Result<(), AppError>;
+    async fn delete_by_user_id(&self, user_id: &str) -> Result<(), AppError>;
 }

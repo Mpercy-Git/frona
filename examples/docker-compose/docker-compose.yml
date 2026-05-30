@@ -18,7 +18,7 @@ services:
     restart: unless-stopped
 
   browserless:
-    image: ghcr.io/browserless/chromium:latest
+    image: ghcr.io/browserless/chromium:v2.42.0
     environment:
       - CONCURRENT=10
     volumes:

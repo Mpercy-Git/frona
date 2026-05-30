@@ -13,7 +13,7 @@ use super::models::{McpServer, McpServerStatus, TransportConfig};
 
 pub struct McpConnection {
     pub server_id: String,
-    pub slug: String,
+    pub handle: crate::core::Handle,
     pub user_id: String,
     pub client: McpClient,
     pub tools: Vec<ToolDefinition>,
@@ -21,37 +21,39 @@ pub struct McpConnection {
     pub port: Option<u16>,
     pub restart_count: u32,
     pub log_path: Option<std::path::PathBuf>,
-    /// Per-server ephemeral auth token. Dropping unlinks the file; held
-    /// here so it lives exactly as long as the MCP process.
+    /// Lives as long as the MCP process; Drop unlinks the token file.
     pub token_guard: Option<EphemeralTokenGuard>,
 }
 
 pub struct McpManager {
     connections: Arc<RwLock<HashMap<String, McpConnection>>>,
     sandbox_manager: Arc<SandboxManager>,
-    workspaces_path: String,
+    storage: crate::storage::StorageService,
     allocated_ports: Arc<Mutex<HashSet<u16>>>,
     port_range: (u16, u16),
     policy_service: crate::policy::service::PolicyService,
+    user_service: crate::auth::UserService,
     http: reqwest::Client,
 }
 
 impl McpManager {
     pub fn new(
         sandbox_manager: Arc<SandboxManager>,
-        workspaces_path: String,
+        storage: crate::storage::StorageService,
         port_range_start: u16,
         port_range_end: u16,
         policy_service: crate::policy::service::PolicyService,
+        user_service: crate::auth::UserService,
         http: reqwest::Client,
     ) -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
             sandbox_manager,
-            workspaces_path,
+            storage,
             allocated_ports: Arc::new(Mutex::new(HashSet::new())),
             port_range: (port_range_start, port_range_end),
             policy_service,
+            user_service,
             http,
         }
     }
@@ -71,13 +73,12 @@ impl McpManager {
         self.allocated_ports.lock().await.remove(&port);
     }
 
-    pub fn workspaces_path(&self) -> &str {
-        &self.workspaces_path
+    pub fn storage(&self) -> &crate::storage::StorageService {
+        &self.storage
     }
 
-    /// Install-phase sandbox: permissive network (so `npx --yes` / `uv pip install`
-    /// can reach registries) plus write access to the shared cache and per-server
-    /// workspace. Bypasses per-principal Cedar evaluation.
+    /// Install-phase: permissive network for `npx`/`uv pip install` registries;
+    /// bypasses per-principal Cedar evaluation.
     pub fn build_install_sandbox(&self, server: &McpServer) -> Sandbox {
         let permissive = crate::policy::sandbox::SandboxPolicy::permissive();
         self.mcp_sandbox(server, &permissive)
@@ -101,11 +102,19 @@ impl McpManager {
         let mut env = package_manager_env_vars(&server.workspace_dir);
         env.extend(resolved_env);
 
+        let user = self
+            .user_service
+            .find_by_id(&server.user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {}", server.user_id)))?;
         let policy = self
             .policy_service
             .evaluate_sandbox_policy(
-                &server.user_id,
-                &crate::core::principal::Principal::mcp_server(&server.id),
+                crate::policy::service::SandboxPrincipalRef::mcp(
+                    &server.user_id,
+                    &user.handle,
+                    &server.handle,
+                ),
                 true,
             )
             .await?;
@@ -126,7 +135,7 @@ impl McpManager {
     fn mcp_sandbox(&self, server: &McpServer, policy: &crate::policy::sandbox::SandboxPolicy) -> Sandbox {
         let sandbox_id = format!("mcp-{}", server.id);
         self.sandbox_manager
-            .sandbox_at(
+            .get_sandbox(
                 std::path::PathBuf::from(&server.workspace_dir),
                 &sandbox_id,
                 policy.network_access,
@@ -325,8 +334,8 @@ impl McpManager {
         let tools: Vec<ToolDefinition> = cached
             .into_iter()
             .map(|c| ToolDefinition {
-                id: format!("mcp__{}__{}", server.slug, c.name),
-                provider_id: format!("mcp:{}", server.slug),
+                id: format!("mcp__{}__{}", server.handle, c.name),
+                provider_id: format!("mcp:{}", server.handle),
                 description: c.description,
                 parameters: c.input_schema,
             })
@@ -338,7 +347,7 @@ impl McpManager {
 
         let connection = McpConnection {
             server_id: server.id.clone(),
-            slug: server.slug.clone(),
+            handle: server.handle.clone(),
             user_id: server.user_id.clone(),
             client,
             tools: tools.clone(),
@@ -372,9 +381,6 @@ impl McpManager {
         }
     }
 
-    /// Gracefully shut down a running connection. Drops the `McpClient` which tears
-    /// down the transport (the child sees EOF on stdin) and then explicitly kills the
-    /// child if it hasn't exited on its own.
     pub async fn stop(&self, server_id: &str) -> Result<(), AppError> {
         let Some(mut connection) = self.connections.write().await.remove(server_id) else {
             return Ok(());
@@ -389,8 +395,7 @@ impl McpManager {
         Ok(())
     }
 
-    /// Invoke a remote tool. `tool_name` is the original un-namespaced name as the
-    /// server knows it, not the `mcp__{slug}__{name}` form.
+    /// `tool_name` is the server's un-namespaced name, not `mcp__{slug}__{name}`.
     pub async fn call(
         &self,
         server_id: &str,
@@ -404,9 +409,7 @@ impl McpManager {
         connection.client.call_tool(tool_name, arguments).await
     }
 
-    /// Flat list of every tool the user is allowed to see, filtered by `allowlist`.
-    /// An entry in `allowlist` with an empty `HashSet` value means "every tool from
-    /// that slug is allowed"; an absent slug means "none".
+    /// `allowlist` empty HashSet = all tools from that slug; absent slug = none.
     pub async fn tools_for_user(
         &self,
         user_id: &str,
@@ -417,18 +420,18 @@ impl McpManager {
             .values()
             .map(|c| ConnectionView {
                 user_id: &c.user_id,
-                slug: &c.slug,
+                handle: c.handle.as_str(),
                 tools: &c.tools,
             })
             .collect();
         filter_tools_for_user(&views, user_id, allowlist)
     }
 
-    pub async fn find_by_slug(&self, user_id: &str, slug: &str) -> Option<String> {
+    pub async fn find_by_handle(&self, user_id: &str, handle: &str) -> Option<String> {
         let connections = self.connections.read().await;
         connections
             .values()
-            .find(|c| c.user_id == user_id && c.slug == slug)
+            .find(|c| c.user_id == user_id && c.handle.as_str() == handle)
             .map(|c| c.server_id.clone())
     }
 
@@ -442,8 +445,6 @@ impl McpManager {
         None
     }
 
-    /// Return the ids of any connections whose child process has exited. The caller
-    /// (supervisor) uses this to decide which connections to restart.
     pub async fn health_check(&self) -> Vec<String> {
         let mut dead = Vec::new();
         let mut connections = self.connections.write().await;
@@ -470,13 +471,7 @@ impl McpManager {
         };
         match log_path {
             Some(path) => read_log_file(&path, max_bytes),
-            None => {
-                let fallback = std::path::PathBuf::from(self.workspaces_path())
-                    .join(server_id)
-                    .join("logs")
-                    .join("server.log");
-                read_log_file(&fallback, max_bytes)
-            }
+            None => String::new(),
         }
     }
 
@@ -496,8 +491,6 @@ impl McpManager {
     }
 }
 
-/// Transition hint for the service layer: which `McpServerStatus` a connection should
-/// land in after a successful `start` call.
 pub const STARTED_STATUS: McpServerStatus = McpServerStatus::Running;
 
 pub fn read_log_file(path: &std::path::Path, max_bytes: u64) -> String {
@@ -532,7 +525,7 @@ fn package_manager_env_vars(workspace_dir: &str) -> Vec<(String, String)> {
 
 struct ConnectionView<'a> {
     user_id: &'a str,
-    slug: &'a str,
+    handle: &'a str,
     tools: &'a [ToolDefinition],
 }
 
@@ -546,7 +539,7 @@ fn filter_tools_for_user(
         if conn.user_id != user_id {
             continue;
         }
-        let Some(allowed_names) = allowlist.get(conn.slug) else {
+        let Some(allowed_names) = allowlist.get(conn.handle) else {
             continue;
         };
         for def in conn.tools {
@@ -594,12 +587,12 @@ mod tests {
         let conns = vec![
             ConnectionView {
                 user_id: "user-1",
-                slug: "gmail",
+                handle: "gmail",
                 tools: &gmail,
             },
             ConnectionView {
                 user_id: "user-2",
-                slug: "github",
+                handle: "github",
                 tools: &github,
             },
         ];
@@ -619,7 +612,7 @@ mod tests {
         let gmail = gmail_tools();
         let conns = vec![ConnectionView {
             user_id: "user-1",
-            slug: "gmail",
+            handle: "gmail",
             tools: &gmail,
         }];
 
@@ -635,7 +628,7 @@ mod tests {
         let gmail = gmail_tools();
         let conns = vec![ConnectionView {
             user_id: "user-1",
-            slug: "gmail",
+            handle: "gmail",
             tools: &gmail,
         }];
 
@@ -658,7 +651,7 @@ mod tests {
         let gmail = gmail_tools();
         let conns = vec![ConnectionView {
             user_id: "user-1",
-            slug: "gmail",
+            handle: "gmail",
             tools: &gmail,
         }];
 
@@ -675,12 +668,12 @@ mod tests {
         let conns = vec![
             ConnectionView {
                 user_id: "user-1",
-                slug: "gmail",
+                handle: "gmail",
                 tools: &gmail,
             },
             ConnectionView {
                 user_id: "user-1",
-                slug: "github",
+                handle: "github",
                 tools: &github,
             },
         ];

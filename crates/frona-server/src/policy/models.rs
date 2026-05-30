@@ -29,21 +29,24 @@ pub struct AgentToolStatus {
 #[derive(Debug, Clone)]
 pub enum PolicyAction {
     InvokeTool { tool_name: String, tool_group: String },
-    DelegateTask { target_agent_id: String },
-    SendMessage { target_agent_id: String },
+    /// `target_handle` builds the Cedar UID; `target_agent_id` (UUID) is for internal lookups.
+    DelegateTask { target_agent_id: String, target_handle: crate::core::Handle },
+    SendMessage { target_agent_id: String, target_handle: crate::core::Handle },
     ReceiveSignal {
         connector_id: String,
-        channel_id: String,
+        channel_handle: crate::core::Handle,
         sender: PolicyContact,
         paired_addresses: Vec<String>,
     },
     /// Deny here + `ReceiveSignal` allow falls back to signal-mode inference; both deny means discard.
     ReceiveMessage {
         connector_id: String,
-        channel_id: String,
+        channel_handle: crate::core::Handle,
         sender: PolicyContact,
         paired_addresses: Vec<String>,
     },
+    ListUsers,
+    ManageUsers { target_user_id: String },
 }
 
 #[derive(Debug, Clone)]
@@ -56,7 +59,6 @@ pub struct PolicyContact {
 }
 
 impl PolicyContact {
-    /// Not persisted; lives only in the per-evaluation Cedar entity bundle.
     pub fn unresolved(user_id: &str, address: &str) -> Self {
         Self {
             id: format!("unresolved:{}", address),
@@ -93,6 +95,8 @@ impl PolicyAction {
             PolicyAction::SendMessage { .. } => "send_message",
             PolicyAction::ReceiveSignal { .. } => "receive_signal",
             PolicyAction::ReceiveMessage { .. } => "receive_message",
+            PolicyAction::ListUsers => "list_users",
+            PolicyAction::ManageUsers { .. } => "manage_users",
         }
     }
 }

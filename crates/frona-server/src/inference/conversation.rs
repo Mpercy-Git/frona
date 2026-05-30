@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use base64::Engine;
-use rig::completion::message::{DocumentSourceKind, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent};
-use rig::completion::{AssistantContent, Message as RigMessage};
+use rig_core::completion::message::{DocumentSourceKind, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent};
+use rig_core::completion::{AssistantContent, Message as RigMessage};
 
 use std::collections::HashMap;
 
@@ -51,7 +51,37 @@ impl ConversationBuilder for DefaultConversationBuilder {
         let mut result = Vec::with_capacity(messages.len());
         for msg in messages {
             match msg.role {
-                MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                MessageRole::User | MessageRole::Contact => {
+                    // Providers reject empty content blocks. Skip + warn.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::warn!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            role = ?msg.role,
+                            "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
+                        );
+                        continue;
+                    }
+                    result.push(
+                        build_user_message(
+                            &msg.content,
+                            &msg.attachments,
+                            &self.user_service,
+                            &self.storage_service,
+                        )
+                        .await,
+                    );
+                }
+                MessageRole::TaskCompletion => {
+                    // Event-only rows (no summary) are expected; the event payload still renders in UI.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::debug!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            "skipping empty task-completion message in chat history (event-only row with no body)",
+                        );
+                        continue;
+                    }
                     result.push(
                         build_user_message(
                             &msg.content,
@@ -111,7 +141,37 @@ impl ConversationBuilder for TaskConversationBuilder {
         let mut instruction_wrapped = false;
         for msg in messages {
             match msg.role {
-                MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                MessageRole::User | MessageRole::Contact => {
+                    // Providers reject empty content blocks. Skip + warn.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::warn!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            role = ?msg.role,
+                            "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
+                        );
+                        continue;
+                    }
+                    result.push(
+                        build_user_message(
+                            &msg.content,
+                            &msg.attachments,
+                            &self.user_service,
+                            &self.storage_service,
+                        )
+                        .await,
+                    );
+                }
+                MessageRole::TaskCompletion => {
+                    // Event-only rows (no summary) are expected; the event payload still renders in UI.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::debug!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            "skipping empty task-completion message in chat history (event-only row with no body)",
+                        );
+                        continue;
+                    }
                     result.push(
                         build_user_message(
                             &msg.content,
@@ -135,8 +195,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                     );
                 }
                 MessageRole::Agent => {
-                    let is_other_agent = msg.agent_id.as_deref() != Some(&ctx.agent_id);
-                    if !instruction_wrapped && is_other_agent {
+                    if !instruction_wrapped {
                         instruction_wrapped = true;
                         let content = format!("<task>\n{}\n</task>", msg.content);
                         result.push(RigMessage::user(&content));
@@ -182,7 +241,37 @@ impl ConversationBuilder for ChannelConversationBuilder {
         let mut result = Vec::with_capacity(messages.len());
         for msg in messages {
             match msg.role {
-                MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                MessageRole::User | MessageRole::Contact => {
+                    // Providers reject empty content blocks. Skip + warn.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::warn!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            role = ?msg.role,
+                            "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
+                        );
+                        continue;
+                    }
+                    result.push(
+                        build_user_message(
+                            &msg.content,
+                            &msg.attachments,
+                            &self.user_service,
+                            &self.storage_service,
+                        )
+                        .await,
+                    );
+                }
+                MessageRole::TaskCompletion => {
+                    // Event-only rows (no summary) are expected; the event payload still renders in UI.
+                    if msg.content.trim().is_empty() && msg.attachments.is_empty() {
+                        tracing::debug!(
+                            msg_id = %msg.id,
+                            chat_id = %msg.chat_id,
+                            "skipping empty task-completion message in chat history (event-only row with no body)",
+                        );
+                        continue;
+                    }
                     result.push(
                         build_user_message(
                             &msg.content,
@@ -237,9 +326,6 @@ fn group_tool_calls_by_message(
     map
 }
 
-/// Convert an agent message that has linked ToolCall records into RigMessages.
-/// Emits: for each turn, an Assistant message with tool calls + a User message with tool results.
-/// After all turns, emits the agent's final text (if status is Completed).
 fn convert_agent_with_tool_calls(
     msg: &Message,
     tool_calls: &[&ToolCall],
@@ -270,7 +356,7 @@ fn convert_agent_with_tool_calls(
         for te in tes {
             assistant_items.push(AssistantContent::tool_call(&te.provider_call_id, &te.name, te.arguments.clone()));
         }
-        if let Ok(content) = rig::OneOrMany::many(assistant_items) {
+        if let Ok(content) = rig_core::OneOrMany::many(assistant_items) {
             result.push(RigMessage::Assistant { id: None, content });
         }
 
@@ -280,11 +366,11 @@ fn convert_agent_with_tool_calls(
                 UserContent::ToolResult(ToolResult {
                     id: te.provider_call_id.clone(),
                     call_id: None,
-                    content: rig::OneOrMany::one(ToolResultContent::text(&te.result)),
+                    content: rig_core::OneOrMany::one(ToolResultContent::text(&te.result)),
                 })
             })
             .collect();
-        if let Ok(content) = rig::OneOrMany::many(tool_results) {
+        if let Ok(content) = rig_core::OneOrMany::many(tool_results) {
             result.push(RigMessage::User { content });
         }
     }
@@ -294,13 +380,15 @@ fn convert_agent_with_tool_calls(
         let mut items: Vec<AssistantContent> = Vec::new();
         if let Some(r) = &msg.reasoning {
             items.push(AssistantContent::Reasoning(
-                rig::completion::message::Reasoning::new(&r.content)
-                    .optional_id(r.id.clone())
-                    .with_signature(r.signature.clone()),
+                rig_core::completion::message::Reasoning::new_with_signature(
+                    &r.content,
+                    r.signature.clone(),
+                )
+                .optional_id(r.id.clone()),
             ));
         }
         items.push(AssistantContent::text(&msg.content));
-        if let Ok(content) = rig::OneOrMany::many(items) {
+        if let Ok(content) = rig_core::OneOrMany::many(items) {
             result.push(RigMessage::Assistant { id: None, content });
         }
     }
@@ -328,15 +416,17 @@ pub fn convert_agent_message(msg: &Message, agent_id: &str) -> Option<RigMessage
         if let Some(r) = &msg.reasoning {
             let mut items: Vec<AssistantContent> = vec![
                 AssistantContent::Reasoning(
-                    rig::completion::message::Reasoning::new(&r.content)
-                        .optional_id(r.id.clone())
-                        .with_signature(r.signature.clone()),
+                    rig_core::completion::message::Reasoning::new_with_signature(
+                        &r.content,
+                        r.signature.clone(),
+                    )
+                    .optional_id(r.id.clone()),
                 ),
             ];
             if !msg.content.is_empty() {
                 items.push(AssistantContent::text(&msg.content));
             }
-            if let Ok(content) = rig::OneOrMany::many(items) {
+            if let Ok(content) = rig_core::OneOrMany::many(items) {
                 return Some(RigMessage::Assistant { id: None, content });
             }
         }
@@ -360,7 +450,7 @@ pub async fn resolve_attachment_path(
 ) -> String {
     let vpath = if let Some(user_id) = attachment.owner.strip_prefix("user:") {
         match user_service.find_by_id(user_id).await {
-            Ok(Some(user)) => VirtualPath::user(&user.username, &attachment.path),
+            Ok(Some(user)) => VirtualPath::user(&user.handle, &attachment.path),
             _ => return attachment.path.clone(),
         }
     } else if let Some(agent_id) = attachment.owner.strip_prefix("agent:") {
@@ -432,7 +522,7 @@ pub async fn build_user_message(
     for (resolved_path, att) in &images {
         if let Ok(bytes) = tokio::fs::read(resolved_path).await {
             let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            contents.push(UserContent::Image(rig::completion::message::Image {
+            contents.push(UserContent::Image(rig_core::completion::message::Image {
                 data: DocumentSourceKind::Base64(b64),
                 media_type: ImageMediaType::from_mime_type(&att.content_type),
                 detail: None,
@@ -446,7 +536,7 @@ pub async fn build_user_message(
     }
 
     RigMessage::User {
-        content: rig::OneOrMany::many(contents).unwrap(),
+        content: rig_core::OneOrMany::many(contents).unwrap(),
     }
 }
 
@@ -471,6 +561,7 @@ mod tests {
             reasoning: None,
             from_address: None,
             delivery: None,
+            dispatch_mode: None,
             metadata: Default::default(),
             created_at: Utc::now(),
         }

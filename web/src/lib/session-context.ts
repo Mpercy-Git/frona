@@ -11,11 +11,10 @@ import {
 import { useSearchParams } from "next/navigation";
 import { api, getTask } from "./api-client";
 import { sseBus, type GlobalSSEEvent } from "./sse-event-bus";
-import { useNavigation } from "./navigation-context";
+import { useNavigation, useSystemAgent } from "./navigation-context";
 import { useNotifications } from "./notification-context";
 import type { Attachment, ChatResponse, CreateChatRequest, TaskResponse } from "./types";
 
-// --- Module-level state ---
 
 interface PendingMessage {
   content: string;
@@ -27,7 +26,6 @@ const sessionStore = {
   pendingMessage: null as PendingMessage | null,
 };
 
-// --- Context ---
 
 interface SessionContextValue {
   activeChatId: string | null;
@@ -53,12 +51,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const activeChatId = chatIdParam ?? activeTask?.chat_id ?? null;
   const activeTaskId = taskIdParam;
   const [activeChat, setActiveChat] = useState<ChatResponse | null>(null);
-  const agentId = activeChat?.agent_id ?? agentParam ?? "system";
+  const systemAgent = useSystemAgent();
+  const agentId = activeChat?.agent_id ?? agentParam ?? systemAgent.id;
   const [inferring, setInferring] = useState(false);
   const { updateChatTitle, updateAgent, updateTaskInList, setActiveTab, standaloneChats, spaces, archivedChats } = useNavigation();
   const { addNotification } = useNotifications();
 
-  // Render-time: resolve chat from navigation context when active chat changes
   const [prevActiveChatId, setPrevActiveChatId] = useState(activeChatId);
   const [prevAgentParam, setPrevAgentParam] = useState(agentParam);
   if (activeChatId !== prevActiveChatId) {
@@ -73,7 +71,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setActiveChat(found);
     }
   }
-  // Clear activeChat when navigating away from ?agent= (e.g. clicking logo)
   if (agentParam !== prevAgentParam) {
     setPrevAgentParam(agentParam);
     if (!agentParam && !activeChatId) {
@@ -81,7 +78,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  // Render-time: reset task when param clears
   const [prevTaskId, setPrevTaskId] = useState(taskIdParam);
   if (taskIdParam !== prevTaskId) {
     setPrevTaskId(taskIdParam);
@@ -90,7 +86,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  // Effect: sync module-level activeTaskId
   useEffect(() => {
     sessionStore.activeTaskId = taskIdParam;
   }, [taskIdParam]);
@@ -101,7 +96,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
   }, [taskIdParam, setActiveTab]);
 
-  // Fetch task data
   useEffect(() => {
     if (!taskIdParam) return;
     let cancelled = false;
@@ -111,7 +105,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, [taskIdParam]);
 
-  // Fallback: fetch chat metadata from API only if not resolved from navigation context (e.g. deep-link)
+  // Fallback for deep-links not yet resolved from navigation context.
   useEffect(() => {
     if (!activeChatId || activeChat?.id === activeChatId) return;
     let cancelled = false;
@@ -121,7 +115,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, [activeChatId, activeChat]);
 
-  // Connect SSE event bus and handle global events
   useEffect(() => {
     const controller = new AbortController();
     sseBus.connect(controller.signal);

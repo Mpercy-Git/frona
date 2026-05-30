@@ -41,4 +41,11 @@ pub trait MessageRepository: Repository<Message> {
         channel_id: &str,
         now: DateTime<Utc>,
     ) -> Result<u64, AppError>;
+
+    /// Orphans from a crash between `status = Completed` and the watcher
+    /// stamping delivery - swept on channel start.
+    async fn find_undelivered_completed_for_channel(
+        &self,
+        channel_id: &str,
+    ) -> Result<Vec<Message>, AppError>;
 }

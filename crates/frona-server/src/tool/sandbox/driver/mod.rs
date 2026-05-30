@@ -14,13 +14,11 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Specific /etc paths allowed for read access.
-/// We intentionally exclude /etc/shadow, /etc/ssh/, and other sensitive files.
+/// Intentionally excludes /etc/shadow, /etc/ssh/, and other sensitive files.
 pub const ETC_READ_ALLOWLIST: &[&str] = &[
-    // Dynamic linker
     "/etc/ld.so.cache",
     "/etc/ld.so.conf",
     "/etc/ld.so.conf.d",
-    // DNS / networking
     "/etc/resolv.conf",
     "/etc/hosts",
     "/etc/host.conf",
@@ -28,41 +26,32 @@ pub const ETC_READ_ALLOWLIST: &[&str] = &[
     "/etc/gai.conf",
     "/etc/protocols",
     "/etc/services",
-    // SSL / TLS certificates
     "/etc/ssl",
     "/etc/ca-certificates",
     "/etc/pki",
-    // Timezone
     "/etc/localtime",
     "/etc/timezone",
     "/etc/zoneinfo",
-    // Locale
     "/etc/locale.conf",
     "/etc/default",
-    // Shell config (needed by bash -c)
     "/etc/bash.bashrc",
     "/etc/profile",
     "/etc/profile.d",
     "/etc/inputrc",
     "/etc/environment",
-    // Fonts (needed by matplotlib, ImageMagick, etc.)
     "/etc/fonts",
-    // Misc
     "/etc/hostname",
     "/etc/machine-id",
     "/etc/mime.types",
     "/etc/alternatives",
     "/etc/login.defs",
-    // OS identification (needed by pip/distro)
     "/etc/os-release",
     "/etc/lsb-release",
     "/etc/debian_version",
-    // Language runtimes
     "/etc/python3",
     "/etc/pip.conf",
-    // XDG base directory spec
     "/etc/xdg",
-    // User/group lookup (world-readable, needed by getpwnam/getgrnam)
+    // World-readable; needed by getpwnam/getgrnam.
     "/etc/passwd",
     "/etc/group",
 ];
@@ -76,10 +65,8 @@ pub struct SandboxConfig {
     pub allowed_network_destinations: Vec<String>,
     pub allowed_bind_ports: Vec<u16>,
     pub additional_read_paths: Vec<String>,
-    /// Individual files (not directories) granted read access. Use this
-    /// instead of `additional_read_paths` when the sandbox should see a
-    /// single file without listing or reading siblings in the same
-    /// directory — e.g. per-invocation ephemeral token files.
+    /// Files (not directories) granted read access — sandbox sees just the
+    /// file, no listing or sibling reads. Used for ephemeral token files.
     pub additional_read_files: Vec<String>,
     pub additional_write_paths: Vec<String>,
     pub additional_path_dirs: Vec<String>,
@@ -343,7 +330,6 @@ pub async fn execute_sandboxed(
     let mut cancelled = false;
     let mut resource_killed = false;
 
-    // Register process for resource monitoring
     let tracked_pid = child.id();
     if let (Some(rm), Some(aid), Some(pid)) = (resource_manager, agent_id, tracked_pid) {
         rm.register(pid, aid);
@@ -388,7 +374,6 @@ pub async fn execute_sandboxed(
         }
     }
 
-    // Unregister and check if killed by resource monitor
     if let (Some(rm), Some(pid)) = (resource_manager, tracked_pid) {
         resource_killed = rm.is_killed(pid);
         rm.unregister(pid);
@@ -441,6 +426,7 @@ async fn kill_process_group(child: &mut tokio::process::Child) {
         let _ = child.kill().await;
     }
 }
+
 
 fn truncate_output(s: String, max_bytes: usize) -> String {
     if s.len() <= max_bytes {

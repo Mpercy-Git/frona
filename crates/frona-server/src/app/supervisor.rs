@@ -192,16 +192,17 @@ impl Supervisor for AppSupervisor {
                 .update_crash_fix_attempts(&app.id, app.crash_fix_attempts)
                 .await;
         }
+        let app_handle = app.handle.to_string();
         let Some(crash_msg) = self.state.prompts.read_with_vars(
             "APP_CRASH.md",
-            &[("app_name", &app.name), ("app_id", &app.id)],
+            &[("app_name", &app.name), ("app_handle", &app_handle)],
         ) else {
             return false;
         };
         let _ = self
             .state
             .chat_service
-            .save_system_message(&app.chat_id, crash_msg)
+            .save_system_message(&app.user_id, None, &app.chat_id, crash_msg)
             .await;
         let state = self.state.clone();
         let user_id = app.user_id.clone();
@@ -218,7 +219,7 @@ impl Supervisor for AppSupervisor {
                     info!(chat_id = %chat_id, "Creating agent message for crash fix");
                     match state
                         .chat_service
-                        .create_executing_agent_message(&chat_id, &agent_id, None)
+                        .create_executing_agent_message(&chat_id, &agent_id)
                         .await
                     {
                         Ok(msg) => msg.id,
@@ -241,9 +242,19 @@ impl Supervisor for AppSupervisor {
         true
     }
 
-    fn notification_data(&self, id: &str, action: &str) -> NotificationData {
+    async fn notification_data(&self, id: &str, action: &str) -> NotificationData {
+        // Resolve UUID → handle for the notification deep-link.
+        let handle = self
+            .state
+            .app_service
+            .get(id)
+            .await
+            .ok()
+            .flatten()
+            .map(|a| a.handle.to_string())
+            .unwrap_or_else(|| id.to_string());
         NotificationData::App {
-            app_id: id.to_string(),
+            app_handle: handle,
             action: action.to_string(),
         }
     }

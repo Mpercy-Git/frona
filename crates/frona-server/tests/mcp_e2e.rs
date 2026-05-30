@@ -37,7 +37,7 @@ fn make_server(id: &str, binary: &str, workspace: &str) -> McpServer {
     McpServer {
         id: id.to_string(),
         user_id: "test-user".to_string(),
-        slug: format!("fake_{id}"),
+        handle: frona::core::Handle::try_new(format!("fake-{id}")).expect("test handle invalid"),
         display_name: format!("Fake {id}"),
         description: None,
         repository_url: None,
@@ -62,25 +62,33 @@ fn make_server(id: &str, binary: &str, workspace: &str) -> McpServer {
 }
 
 async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
-    let sandbox = Arc::new(SandboxManager::new(
-        tmp.join("sandbox"),
-        true,
-        Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
+    let sandbox = Arc::new(SandboxManager::new(true, Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
     ));
     let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
     let policy_schema = frona::policy::schema::build_schema();
     let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(frona::db::repo::generic::SurrealRepo::<frona::policy::models::Policy>::new(db));
+        Arc::new(frona::db::repo::generic::SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
     let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
-    let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
-    let policy_service = frona::policy::service::PolicyService::new(policy_repo, policy_schema, tool_manager, storage);
+    let storage = frona::storage::StorageService::new(&frona::core::config::Config {
+        storage: frona::core::config::StorageConfig {
+            data_dir: tmp.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let user_service = frona::auth::UserService::new(
+        frona::db::repo::generic::SurrealRepo::new(db),
+        &frona::core::config::CacheConfig::default(),
+    );
+    let policy_service = frona::policy::service::PolicyService::new(policy_repo, policy_schema, tool_manager, storage.clone(), user_service.clone());
     Arc::new(McpManager::new(
         sandbox,
-        tmp.join("workspaces").to_string_lossy().into_owned(),
+        storage,
         4100,
         4200,
         policy_service,
+        user_service,
         frona::build_http_client(),
     ))
 }

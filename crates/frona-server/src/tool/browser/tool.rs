@@ -1,6 +1,9 @@
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::error::AppError;
@@ -8,6 +11,7 @@ use crate::credential::vault::service::VaultService;
 use crate::tool::{AgentTool, ImageData, InferenceContext, ToolDefinition, ToolOutput};
 
 use super::session::BrowserSessionManager;
+use frona_browser::{BrowserConnection, ElementTarget, ExtractFormat};
 
 pub struct BrowserTool {
     session_manager: Arc<BrowserSessionManager>,
@@ -26,6 +30,47 @@ impl BrowserTool {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn element_target(selector: Option<&str>, index: Option<usize>) -> Result<ElementTarget<'_>, AppError> {
+    match (selector, index) {
+        (Some(s), None) => Ok(ElementTarget::Selector(s)),
+        (None, Some(i)) => Ok(ElementTarget::Index(i)),
+        (Some(_), Some(_)) => Err(AppError::Validation(
+            "specify either selector or index, not both".into(),
+        )),
+        (None, None) => Err(AppError::Validation(
+            "must specify selector or index".into(),
+        )),
+    }
+}
+
+async fn run_with_reconnect<T, F, Fut>(
+    mgr: &BrowserSessionManager,
+    user_handle: &crate::core::Handle,
+    provider: &str,
+    op: F,
+) -> Result<T, AppError>
+where
+    F: Fn(BrowserConnection) -> Fut,
+    Fut: std::future::Future<Output = Result<T, frona_browser::Error>>,
+{
+    let conn = mgr.connection(user_handle, provider).await?;
+    match op(conn).await {
+        Ok(v) => Ok(v),
+        Err(e) if e.is_disconnect() => {
+            tracing::warn!("Browser session dead, reconnecting");
+            let conn = mgr.reconnect(user_handle, provider).await?;
+            op(conn)
+                .await
+                .map_err(|e| AppError::Browser(e.to_string()))
+        }
+        Err(e) => Err(AppError::Browser(e.to_string())),
+    }
+}
+
 #[async_trait]
 impl AgentTool for BrowserTool {
     fn name(&self) -> &str {
@@ -41,15 +86,8 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "url": {
-                            "type": "string",
-                            "description": "URL to navigate to"
-                        },
-                        "wait_for_load": {
-                            "type": "boolean",
-                            "description": "Wait for navigation to complete",
-                            "default": true
-                        }
+                        "url": { "type": "string", "description": "URL to navigate to" },
+                        "wait_for_load": { "type": "boolean", "description": "Wait for navigation to complete", "default": true }
                     },
                     "required": ["url"]
                 }),
@@ -58,28 +96,19 @@ impl AgentTool for BrowserTool {
                 provider_id: "browser".to_string(),
                 id: "browser_go_back".to_string(),
                 description: "Navigate back in browser history.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
             },
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_go_forward".to_string(),
                 description: "Navigate forward in browser history.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
             },
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_close".to_string(),
                 description: "Close the browser when the task is complete.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
             },
             ToolDefinition {
                 provider_id: "browser".to_string(),
@@ -88,16 +117,8 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "selector": {
-                            "type": "string",
-                            "description": "CSS selector to extract from (defaults to body)"
-                        },
-                        "format": {
-                            "type": "string",
-                            "enum": ["text", "html"],
-                            "description": "Output format",
-                            "default": "text"
-                        }
+                        "selector": {"type":"string","description":"CSS selector to extract from (defaults to body)"},
+                        "format": {"type":"string","enum":["text","html"],"description":"Output format","default":"text"}
                     }
                 }),
             },
@@ -105,10 +126,7 @@ impl AgentTool for BrowserTool {
                 provider_id: "browser".to_string(),
                 id: "browser_read_links".to_string(),
                 description: "Get all links on the current page with their text and URLs.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
             },
             ToolDefinition {
                 provider_id: "browser".to_string(),
@@ -117,18 +135,8 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "page": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "description": "Page number to extract (1-based)",
-                            "default": 1
-                        },
-                        "page_size": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "description": "Maximum characters per page",
-                            "default": 100000
-                        }
+                        "page": {"type":"integer","minimum":1,"description":"Page number to extract (1-based)","default":1},
+                        "page_size": {"type":"integer","minimum":1,"description":"Maximum characters per page","default":100000}
                     }
                 }),
             },
@@ -139,11 +147,8 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "incremental": {
-                            "type": "boolean",
-                            "description": "Return incremental snapshot instead of full",
-                            "default": false
-                        }
+                        "incremental": {"type":"boolean","description":"Return unified diff against the previous snapshot instead of full tree","default":false},
+                        "compact": {"type":"boolean","description":"Strip non-actionable lines from the output to save tokens","default":false}
                     }
                 }),
             },
@@ -154,15 +159,8 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to save the screenshot"
-                        },
-                        "full_page": {
-                            "type": "boolean",
-                            "description": "Capture full page instead of viewport",
-                            "default": false
-                        }
+                        "path": {"type":"string","description":"Path to save the screenshot"},
+                        "full_page": {"type":"boolean","description":"Capture full page instead of viewport","default":false}
                     },
                     "required": ["path"]
                 }),
@@ -174,15 +172,8 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "code": {
-                            "type": "string",
-                            "description": "JavaScript code to execute"
-                        },
-                        "await_promise": {
-                            "type": "boolean",
-                            "description": "Wait for promise resolution",
-                            "default": false
-                        }
+                        "code": {"type":"string","description":"JavaScript code to execute"},
+                        "await_promise": {"type":"boolean","description":"Wait for promise resolution","default":false}
                     },
                     "required": ["code"]
                 }),
@@ -194,15 +185,8 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "selector": {
-                            "type": "string",
-                            "description": "CSS selector of the element to click"
-                        },
-                        "index": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Snapshot index of the element to click"
-                        }
+                        "selector": {"type":"string","description":"CSS selector of the element to click"},
+                        "index": {"type":"integer","minimum":0,"description":"Snapshot index of the element to click"}
                     }
                 }),
             },
@@ -213,15 +197,8 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "selector": {
-                            "type": "string",
-                            "description": "CSS selector of the element to hover"
-                        },
-                        "index": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Snapshot index of the element to hover"
-                        }
+                        "selector": {"type":"string","description":"CSS selector of the element to hover"},
+                        "index": {"type":"integer","minimum":0,"description":"Snapshot index of the element to hover"}
                     }
                 }),
             },
@@ -232,19 +209,9 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "selector": {
-                            "type": "string",
-                            "description": "CSS selector of the dropdown"
-                        },
-                        "index": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Snapshot index of the dropdown"
-                        },
-                        "value": {
-                            "type": "string",
-                            "description": "Value to select in the dropdown"
-                        }
+                        "selector": {"type":"string","description":"CSS selector of the dropdown"},
+                        "index": {"type":"integer","minimum":0,"description":"Snapshot index of the dropdown"},
+                        "value": {"type":"string","description":"Value to select in the dropdown"}
                     },
                     "required": ["value"]
                 }),
@@ -256,24 +223,10 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "selector": {
-                            "type": "string",
-                            "description": "CSS selector of the input element"
-                        },
-                        "index": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Snapshot index of the input element"
-                        },
-                        "text": {
-                            "type": "string",
-                            "description": "Text to type into the element"
-                        },
-                        "clear": {
-                            "type": "boolean",
-                            "description": "Clear existing content first",
-                            "default": false
-                        }
+                        "selector": {"type":"string","description":"CSS selector of the input element"},
+                        "index": {"type":"integer","minimum":0,"description":"Snapshot index of the input element"},
+                        "text": {"type":"string","description":"Text to type into the element"},
+                        "clear": {"type":"boolean","description":"Clear existing content first","default":false}
                     },
                     "required": ["text"]
                 }),
@@ -284,12 +237,7 @@ impl AgentTool for BrowserTool {
                 description: "Press a keyboard key (e.g. Enter, Tab, Escape, ArrowDown).".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
-                    "properties": {
-                        "key": {
-                            "type": "string",
-                            "description": "Name of the key to press"
-                        }
-                    },
+                    "properties": {"key": {"type":"string","description":"Name of the key to press"}},
                     "required": ["key"]
                 }),
             },
@@ -299,12 +247,7 @@ impl AgentTool for BrowserTool {
                 description: "Scroll the page by a pixel amount. Positive = down, negative = up. Omit to scroll to bottom.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
-                    "properties": {
-                        "amount": {
-                            "type": "integer",
-                            "description": "Pixels to scroll (positive=down, negative=up). Omit to scroll to bottom."
-                        }
-                    }
+                    "properties": {"amount": {"type":"integer","description":"Pixels to scroll (positive=down, negative=up). Omit to scroll to bottom."}}
                 }),
             },
             ToolDefinition {
@@ -314,16 +257,8 @@ impl AgentTool for BrowserTool {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "selector": {
-                            "type": "string",
-                            "description": "CSS selector to wait for"
-                        },
-                        "timeout_ms": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Timeout in milliseconds",
-                            "default": 30000
-                        }
+                        "selector": {"type":"string","description":"CSS selector to wait for"},
+                        "timeout_ms": {"type":"integer","minimum":0,"description":"Timeout in milliseconds","default":30000}
                     },
                     "required": ["selector"]
                 }),
@@ -334,12 +269,7 @@ impl AgentTool for BrowserTool {
                 description: "Open a new tab and navigate to the specified URL.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
-                    "properties": {
-                        "url": {
-                            "type": "string",
-                            "description": "URL to open in the new tab"
-                        }
-                    },
+                    "properties": {"url": {"type":"string","description":"URL to open in the new tab"}},
                     "required": ["url"]
                 }),
             },
@@ -347,10 +277,7 @@ impl AgentTool for BrowserTool {
                 provider_id: "browser".to_string(),
                 id: "browser_tab_list".to_string(),
                 description: "List all open browser tabs with their titles and URLs.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
             },
             ToolDefinition {
                 provider_id: "browser".to_string(),
@@ -358,13 +285,7 @@ impl AgentTool for BrowserTool {
                 description: "Switch to a specific tab by index.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
-                    "properties": {
-                        "index": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Tab index to switch to (0-based)"
-                        }
-                    },
+                    "properties": {"index": {"type":"integer","minimum":0,"description":"Tab index to switch to (0-based)"}},
                     "required": ["index"]
                 }),
             },
@@ -372,16 +293,18 @@ impl AgentTool for BrowserTool {
                 provider_id: "browser".to_string(),
                 id: "browser_close_tab".to_string(),
                 description: "Close the current active tab.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
             },
         ]
     }
 
-    async fn execute(&self, tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
-        let session_key = &ctx.user.username;
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        let session_key = &ctx.user.handle;
         let provider = self
             .vault_service
             .list_credentials(&ctx.user.id)
@@ -390,53 +313,298 @@ impl AgentTool for BrowserTool {
             .and_then(|creds| creds.into_iter().next())
             .map(|c| c.provider)
             .unwrap_or_else(|| "default".to_string());
+        let mgr = self.session_manager.as_ref();
 
-        let browser_tool_name = match tool_name {
-            "browser_navigate" => "navigate",
-            "browser_go_back" => "go_back",
-            "browser_go_forward" => "go_forward",
-            "browser_close" => "close",
-            "browser_extract" => "extract",
-            "browser_read_links" => "read_links",
-            "browser_get_markdown" => "get_markdown",
-            "browser_snapshot" => "snapshot",
-            "browser_screenshot" => "screenshot",
-            "browser_evaluate" => "evaluate",
-            "browser_click" => "click",
-            "browser_hover" => "hover",
-            "browser_select" => "select",
-            "browser_input_fill" => "input",
-            "browser_press_key" => "press_key",
-            "browser_scroll" => "scroll",
-            "browser_wait" => "wait",
-            "browser_new_tab" => "new_tab",
-            "browser_tab_list" => "tab_list",
-            "browser_switch_tab" => "switch_tab",
-            "browser_close_tab" => "close_tab",
-            _ => {
-                return Err(AppError::Tool(format!(
-                    "Unknown browser sub-tool: {tool_name}"
-                )))
+        match tool_name {
+            "browser_navigate" => {
+                #[derive(Deserialize)]
+                struct P {
+                    url: String,
+                    #[serde(default = "default_true")]
+                    wait_for_load: bool,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let url = p.url.as_str();
+                let wait = p.wait_for_load;
+                let info = run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.navigate(url, wait).await
+                })
+                .await?;
+                Ok(ToolOutput::text(serde_json::to_string(&info)?))
             }
-        };
-
-        let result = self
-            .session_manager
-            .execute_tool(session_key, &provider, browser_tool_name, arguments)
-            .await?;
-
-        if tool_name == "browser_screenshot"
-            && let Ok(parsed) = serde_json::from_str::<Value>(&result)
-            && let Some(path) = parsed.get("path").and_then(|p| p.as_str())
-            && let Ok(bytes) = std::fs::read(path)
-        {
-            return Ok(ToolOutput::mixed(result, vec![ImageData {
-                bytes,
-                media_type: "image/png".into(),
-            }]));
+            "browser_go_back" => {
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.go_back().await
+                })
+                .await?;
+                Ok(ToolOutput::text(String::new()))
+            }
+            "browser_go_forward" => {
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.go_forward().await
+                })
+                .await?;
+                Ok(ToolOutput::text(String::new()))
+            }
+            "browser_close" => {
+                mgr.close_session(session_key, &provider).await?;
+                Ok(ToolOutput::text("Browser closed."))
+            }
+            "browser_extract" => {
+                #[derive(Deserialize)]
+                struct P {
+                    selector: Option<String>,
+                    #[serde(default)]
+                    format: Option<String>,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let format = match p.format.as_deref() {
+                    Some("html") => ExtractFormat::Html,
+                    _ => ExtractFormat::Text,
+                };
+                let selector = p.selector.as_deref();
+                let content = run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.extract(selector, format).await
+                })
+                .await?;
+                Ok(ToolOutput::text(content))
+            }
+            "browser_read_links" => {
+                let links = run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.read_links().await
+                })
+                .await?;
+                Ok(ToolOutput::text(serde_json::to_string(&links)?))
+            }
+            "browser_get_markdown" => {
+                #[derive(Deserialize)]
+                struct P {
+                    #[serde(default = "page_default")]
+                    page: usize,
+                    #[serde(default = "page_size_default")]
+                    page_size: usize,
+                }
+                fn page_default() -> usize {
+                    1
+                }
+                fn page_size_default() -> usize {
+                    100_000
+                }
+                let p: P = serde_json::from_value(arguments).unwrap_or(P {
+                    page: 1,
+                    page_size: 100_000,
+                });
+                let md = run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.get_markdown(p.page, p.page_size).await
+                })
+                .await?;
+                Ok(ToolOutput::text(serde_json::to_string(&md)?))
+            }
+            "browser_snapshot" => {
+                #[derive(Deserialize)]
+                struct P {
+                    #[serde(default)]
+                    incremental: bool,
+                    #[serde(default)]
+                    compact: bool,
+                }
+                let p: P = serde_json::from_value(arguments).unwrap_or(P {
+                    incremental: false,
+                    compact: false,
+                });
+                let snap = run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.snapshot(p.incremental, p.compact).await
+                })
+                .await?;
+                Ok(ToolOutput::text(serde_json::to_string(&snap)?))
+            }
+            "browser_screenshot" => {
+                #[derive(Deserialize)]
+                struct P {
+                    path: String,
+                    #[serde(default)]
+                    full_page: bool,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let path = Path::new(&p.path);
+                let full_page = p.full_page;
+                let result = run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.screenshot(path, full_page).await
+                })
+                .await?;
+                let text = serde_json::to_string(&result)?;
+                if let Ok(bytes) = std::fs::read(&p.path) {
+                    return Ok(ToolOutput::mixed(text, vec![ImageData {
+                        bytes,
+                        media_type: "image/png".into(),
+                    }]));
+                }
+                Ok(ToolOutput::text(text))
+            }
+            "browser_evaluate" => {
+                #[derive(Deserialize)]
+                struct P {
+                    code: String,
+                    #[serde(default)]
+                    await_promise: bool,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let code = p.code.as_str();
+                let await_promise = p.await_promise;
+                let value = run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.evaluate(code, await_promise).await
+                })
+                .await?;
+                Ok(ToolOutput::text(serde_json::to_string(&value)?))
+            }
+            "browser_click" => {
+                #[derive(Deserialize)]
+                struct P {
+                    selector: Option<String>,
+                    index: Option<usize>,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let target = element_target(p.selector.as_deref(), p.index)?;
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.click(target).await
+                })
+                .await?;
+                Ok(ToolOutput::text("clicked"))
+            }
+            "browser_hover" => {
+                #[derive(Deserialize)]
+                struct P {
+                    selector: Option<String>,
+                    index: Option<usize>,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let target = element_target(p.selector.as_deref(), p.index)?;
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.hover(target).await
+                })
+                .await?;
+                Ok(ToolOutput::text("hovered"))
+            }
+            "browser_select" => {
+                #[derive(Deserialize)]
+                struct P {
+                    selector: Option<String>,
+                    index: Option<usize>,
+                    value: String,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let target = element_target(p.selector.as_deref(), p.index)?;
+                let value = p.value.as_str();
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.select(target, value).await
+                })
+                .await?;
+                Ok(ToolOutput::text("selected"))
+            }
+            "browser_input_fill" => {
+                #[derive(Deserialize)]
+                struct P {
+                    selector: Option<String>,
+                    index: Option<usize>,
+                    text: String,
+                    #[serde(default)]
+                    clear: bool,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let target = element_target(p.selector.as_deref(), p.index)?;
+                let text = p.text.as_str();
+                let clear = p.clear;
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.input_fill(target, text, clear).await
+                })
+                .await?;
+                Ok(ToolOutput::text("input filled"))
+            }
+            "browser_press_key" => {
+                #[derive(Deserialize)]
+                struct P {
+                    key: String,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let key = p.key.as_str();
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.press_key(key).await
+                })
+                .await?;
+                Ok(ToolOutput::text(format!("pressed {}", p.key)))
+            }
+            "browser_scroll" => {
+                #[derive(Deserialize)]
+                struct P {
+                    amount: Option<i64>,
+                }
+                let p: P = serde_json::from_value(arguments).unwrap_or(P { amount: None });
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.scroll(p.amount).await
+                })
+                .await?;
+                Ok(ToolOutput::text("scrolled"))
+            }
+            "browser_wait" => {
+                #[derive(Deserialize)]
+                struct P {
+                    selector: String,
+                    #[serde(default = "wait_default")]
+                    timeout_ms: u64,
+                }
+                fn wait_default() -> u64 {
+                    30000
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let timeout = Duration::from_millis(p.timeout_ms);
+                let selector = p.selector.as_str();
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.wait_for_selector(selector, timeout).await
+                })
+                .await?;
+                Ok(ToolOutput::text(format!("found {}", p.selector)))
+            }
+            "browser_new_tab" => {
+                #[derive(Deserialize)]
+                struct P {
+                    url: String,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                let url = p.url.as_str();
+                let info = run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.new_tab(url).await
+                })
+                .await?;
+                Ok(ToolOutput::text(serde_json::to_string(&info)?))
+            }
+            "browser_tab_list" => {
+                let tabs = run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.tabs().await
+                })
+                .await?;
+                Ok(ToolOutput::text(serde_json::to_string(&tabs)?))
+            }
+            "browser_switch_tab" => {
+                #[derive(Deserialize)]
+                struct P {
+                    index: usize,
+                }
+                let p: P = serde_json::from_value(arguments)?;
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.switch_tab(p.index).await
+                })
+                .await?;
+                Ok(ToolOutput::text(format!("switched to tab {}", p.index)))
+            }
+            "browser_close_tab" => {
+                run_with_reconnect(mgr, session_key, &provider, |c| async move {
+                    c.close_active_tab().await
+                })
+                .await?;
+                Ok(ToolOutput::text("tab closed"))
+            }
+            other => Err(AppError::Tool(format!("Unknown browser sub-tool: {other}"))),
         }
-
-        Ok(ToolOutput::text(result))
     }
 
     async fn cleanup(&self) -> Result<(), AppError> {

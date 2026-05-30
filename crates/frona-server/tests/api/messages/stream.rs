@@ -18,9 +18,6 @@ async fn collect_sse_frames(body: Body, timeout_ms: u64) -> String {
     collected
 }
 
-// ---------------------------------------------------------------------------
-// Event stream (GET /api/stream) — broadcast SSE
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn event_stream_without_auth_returns_401() {
@@ -244,9 +241,6 @@ async fn event_stream_filters_other_user_task_updates() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Stream message (POST /api/chats/{id}/messages/stream) — auth checks
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn stream_message_without_auth_returns_401() {

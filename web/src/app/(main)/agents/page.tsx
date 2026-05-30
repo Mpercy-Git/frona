@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { ArrowLeftIcon } from "@heroicons/react/24/outline";
 import { api } from "@/lib/api-client";
 import { useNavigation } from "@/lib/navigation-context";
+import { getConfig, type SandboxConfig } from "@/lib/config-types";
 import type { Agent, SandboxLimits, SandboxPolicy } from "@/lib/types";
 
 /** Legacy "merged" shape the SandboxSection still edits. We project it from
@@ -49,7 +50,10 @@ function fromAgent(agent: Agent): SandboxFormShape {
   };
 }
 
-function toRequest(s: SandboxFormShape): { sandbox_policy: SandboxPolicy; sandbox_limits?: SandboxLimits } {
+function toRequest(
+  s: SandboxFormShape,
+  defaults: SandboxConfig | null,
+): { sandbox_policy: SandboxPolicy; sandbox_limits?: SandboxLimits } {
   const entries = s.shared_paths.filter((e) => e.path);
   const sandbox_policy: SandboxPolicy = {
     network_access: s.network_access,
@@ -57,9 +61,19 @@ function toRequest(s: SandboxFormShape): { sandbox_policy: SandboxPolicy; sandbo
     read_paths: entries.map((e) => e.path),
     write_paths: entries.filter((e) => e.write).map((e) => e.path),
   };
+  // The form treats an empty field as "use the server default" (the input
+  // placeholders show those defaults). SandboxLimits on the wire requires all
+  // three fields, so fill the unset ones from the server config whenever the
+  // user has customised at least one.
+  const anySet =
+    s.max_cpu_pct !== undefined || s.max_memory_pct !== undefined || s.timeout_secs !== undefined;
   const limits =
-    s.max_cpu_pct !== undefined && s.max_memory_pct !== undefined && s.timeout_secs !== undefined
-      ? { max_cpu_pct: s.max_cpu_pct, max_memory_pct: s.max_memory_pct, timeout_secs: s.timeout_secs }
+    anySet && defaults
+      ? {
+          max_cpu_pct: s.max_cpu_pct ?? defaults.max_cpu_pct,
+          max_memory_pct: s.max_memory_pct ?? defaults.max_memory_pct,
+          timeout_secs: s.timeout_secs ?? defaults.timeout_secs,
+        }
       : undefined;
   return { sandbox_policy, sandbox_limits: limits };
 }
@@ -108,6 +122,7 @@ function AgentSettings() {
   }, [searchParams, router]);
   const [hasAgentRemovals, setHasAgentRemovals] = useState(false);
   const [sandboxValid, setSandboxValid] = useState(true);
+  const [sandboxDefaults, setSandboxDefaults] = useState<SandboxConfig | null>(null);
   const skillBrowserRef = useRef<SkillBrowserHandle>(null);
 
   useEffect(() => {
@@ -119,6 +134,10 @@ function AgentSettings() {
       .catch(() => setError("Agent not found"))
       .finally(() => setLoading(false));
   }, [agentId]);
+
+  useEffect(() => {
+    getConfig().then((c) => setSandboxDefaults(c.sandbox)).catch(() => {});
+  }, []);
 
   const merged = agent ? { ...agent, ...patch } : null;
   const hasPendingChanges = Object.keys(patch).length > 0 || hasAgentRemovals;
@@ -137,7 +156,7 @@ function AgentSettings() {
       }
       if (payload.sandbox_form !== undefined) {
         const form = payload.sandbox_form as SandboxFormShape;
-        const split = toRequest(form);
+        const split = toRequest(form, sandboxDefaults);
         payload.sandbox_policy = split.sandbox_policy;
         if (split.sandbox_limits) payload.sandbox_limits = split.sandbox_limits;
         delete payload.sandbox_form;
@@ -151,7 +170,7 @@ function AgentSettings() {
     } finally {
       setSaving(false);
     }
-  }, [patch, hasPendingChanges, agent, agentId, updateAgent]);
+  }, [patch, hasPendingChanges, agent, agentId, updateAgent, sandboxDefaults]);
 
   const handleSave = useCallback(() => {
     if (skillBrowserRef.current) {
@@ -242,6 +261,7 @@ function AgentSettings() {
                 description={(merged.description as string) ?? ""}
                 enabled={(merged.enabled as boolean) ?? true}
                 identity={(merged.identity as Record<string, string>) ?? {}}
+                avatarUrl={(merged.avatar_url as string | null) ?? null}
                 onChange={update}
                 onIdentityChange={(v) => update({ identity: v })}
               />

@@ -1,3 +1,4 @@
+mod admin;
 mod agents;
 mod app_supervisor;
 mod apps;
@@ -46,8 +47,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
             ..Default::default()
         },
         storage: frona::core::config::StorageConfig {
-            workspaces_path: format!("{base}/workspaces"),
-            files_path: format!("{base}/files"),
+            data_dir: base.clone(),
             shared_config_dir: format!("{base}/config"),
             ..Default::default()
         },
@@ -83,8 +83,8 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
             state.keypair_service.clone(),
             state.user_service.clone(),
             state.policy_service.clone(),
+            state.storage_service.clone(),
             state.config.server.public_base_url(),
-            state.config.auth.runtime_tokens_dir.clone(),
             state.config.auth.ephemeral_token_expiry_secs,
         ));
     }
@@ -96,6 +96,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
 
 fn build_app(state: AppState) -> Router {
     Router::new()
+        .merge(routes::admin::router())
         .merge(routes::auth::router())
         .merge(routes::agents::router())
         .merge(routes::chats::router())
@@ -218,7 +219,7 @@ async fn register_user(
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::json!({
-                "username": username,
+                "handle": username,
                 "email": email,
                 "name": username,
                 "password": password,

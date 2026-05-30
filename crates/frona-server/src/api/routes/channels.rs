@@ -18,7 +18,7 @@ pub fn router() -> Router<AppState> {
                 "{}/{{provider}}/{{channel_id}}",
                 crate::chat::channel::WEBHOOK_PATH_PREFIX,
             ),
-            post(channel_webhook),
+            post(channel_webhook).get(channel_webhook),
         )
         .route("/api/channels/manifests", get(list_manifests))
         .route("/api/channels", get(list_channels).post(create_channel))
@@ -32,6 +32,7 @@ pub fn router() -> Router<AppState> {
             "/api/channels/{id}/pair",
             post(initiate_pairing).delete(cancel_pairing),
         )
+        .route("/api/channels/{id}/setup/refresh", post(refresh_setup))
 }
 
 const MAX_WEBHOOK_BYTES: usize = 10 * 1024 * 1024;
@@ -47,16 +48,29 @@ async fn channel_webhook(
         .map_err(|e| AppError::Validation(format!("failed to read webhook body: {e}")))?;
     let request = axum::http::Request::from_parts(parts, bytes);
 
-    let full_id = format!("channel:{channel_id}");
-
-    let channel = state
-        .channel_service
-        .find_by_id(&full_id)
-        .await
-        .map_err(|_| AppError::NotFound(format!("channel {full_id} not found")))?;
+    let channel = match state.channel_service.find_by_id(&channel_id).await {
+        Ok(c) => c,
+        Err(AppError::NotFound(_)) => {
+            tracing::warn!(
+                provider = %provider,
+                channel_id = %channel_id,
+                "inbound webhook for unknown channel — likely an orphaned upstream registration \
+                 still pointing at this server after the channel row was deleted; clear it on \
+                 the provider side",
+            );
+            return Err(AppError::NotFound(format!("channel {channel_id} not found")).into());
+        }
+        Err(e) => return Err(e.into()),
+    };
     if channel.provider != provider {
+        tracing::warn!(
+            url_provider = %provider,
+            channel_id = %channel_id,
+            channel_provider = ?channel.provider,
+            "inbound webhook provider does not match the channel's provider",
+        );
         return Err(AppError::NotFound(format!(
-            "channel {full_id} provider {:?} does not match URL provider {provider:?}",
+            "channel {channel_id} provider {:?} does not match URL provider {provider:?}",
             channel.provider,
         ))
         .into());
@@ -64,7 +78,7 @@ async fn channel_webhook(
 
     let response = state
         .channel_manager
-        .dispatch_inbound_webhook(&full_id, request)
+        .dispatch_inbound_webhook(&channel_id, request)
         .await?;
     Ok(response)
 }
@@ -99,8 +113,28 @@ async fn get_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Channel>, ApiError> {
-    let channel = state.channel_service.find_owned(&auth.user_id, &id).await?;
+    let mut channel = state.channel_service.find_owned(&auth.user_id, &id).await?;
+    if let Some(manifest) = state.channel_registry.get_manifest(&channel.provider)
+        && manifest.webhook_url_visible
+    {
+        channel.webhook_url = Some(build_webhook_url(&state, &channel));
+    }
     Ok(Json(channel))
+}
+
+fn build_webhook_url(state: &AppState, channel: &Channel) -> String {
+    let base = state
+        .config
+        .server
+        .external_base_url()
+        .unwrap_or_else(|| format!("http://localhost:{}", state.config.server.port));
+    format!(
+        "{}{}/{}/{}",
+        base.trim_end_matches('/'),
+        crate::chat::channel::WEBHOOK_PATH_PREFIX,
+        channel.provider,
+        channel.id,
+    )
 }
 
 async fn update_channel(
@@ -118,7 +152,7 @@ async fn delete_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    state.channel_service.delete(&auth.user_id, &id).await?;
+    state.channel_service.delete(&state, &auth.user_id, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -173,4 +207,18 @@ async fn cancel_pairing(
         .cancel_pairing(&auth.user_id, &id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn refresh_setup(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Channel>, ApiError> {
+    // Authorise: must own the channel.
+    let _channel = state.channel_service.find_owned(&auth.user_id, &id).await?;
+    state.channel_manager.stop_channel(&id).await;
+    let channel = state.channel_service.find_by_id(&id).await?;
+    state.channel_manager.start_channel(&state, &channel).await?;
+    let channel = state.channel_service.find_by_id(&id).await?;
+    Ok(Json(channel))
 }

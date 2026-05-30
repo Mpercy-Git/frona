@@ -21,7 +21,7 @@ async fn test_oauth_identity_create_and_find_by_sub() {
 
     let now = Utc::now();
     let identity = OAuthIdentity {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         user_id: "user-1".to_string(),
         external_sub: "google-sub-123".to_string(),
         external_email: Some("user@gmail.com".to_string()),
@@ -55,7 +55,7 @@ async fn test_oauth_identity_find_by_user() {
 
     let now = Utc::now();
     let identity = OAuthIdentity {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         user_id: "user-2".to_string(),
         external_sub: "provider-sub-456".to_string(),
         external_email: None,
@@ -81,7 +81,7 @@ async fn test_oauth_identity_unique_sub() {
 
     let now = Utc::now();
     let identity1 = OAuthIdentity {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         user_id: "user-1".to_string(),
         external_sub: "same-sub".to_string(),
         external_email: None,
@@ -95,7 +95,7 @@ async fn test_oauth_identity_unique_sub() {
     // Creating another with the same external_sub should still work at the repo level
     // (the unique index would reject it in SurrealDB)
     let identity2 = OAuthIdentity {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         user_id: "user-2".to_string(),
         external_sub: "same-sub".to_string(),
         external_email: None,
@@ -115,15 +115,16 @@ async fn test_email_matching_flow() {
     let user_repo: SurrealRepo<User> = SurrealRepo::new(db.clone());
     let oauth_repo: SurrealRepo<OAuthIdentity> = SurrealRepo::new(db.clone());
 
-    // Create a user with a specific email
     let now = Utc::now();
     let user = User {
-        id: uuid::Uuid::new_v4().to_string(),
-        username: "existinguser".to_string(),
+        id: frona::core::repository::new_id(),
+        handle: frona::handle!("existinguser"),
         email: "existing@example.com".to_string(),
         name: "Existing User".to_string(),
         password_hash: "hash".to_string(),
         timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
         created_at: now,
         updated_at: now,
     };
@@ -143,9 +144,8 @@ async fn test_email_matching_flow() {
     let found_user = found_user.unwrap();
     assert_eq!(found_user.id, user.id);
 
-    // Create the identity link
     let identity = OAuthIdentity {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         user_id: found_user.id.clone(),
         external_sub: "sso-sub-new".to_string(),
         external_email: Some("existing@example.com".to_string()),

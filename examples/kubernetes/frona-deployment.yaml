@@ -43,7 +43,7 @@ spec:
             periodSeconds: 30
 
         - name: browserless
-          image: ghcr.io/browserless/chromium:latest
+          image: ghcr.io/browserless/chromium:v2.42.0
           env:
             - name: CONCURRENT
               value: "10"

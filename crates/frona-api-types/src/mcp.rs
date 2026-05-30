@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeServerInfo {
-    pub slug: String,
+    pub handle: String,
     pub display_name: String,
     pub description: Option<String>,
     pub tool_count: usize,
@@ -10,7 +10,7 @@ pub struct BridgeServerInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeServerDetail {
-    pub slug: String,
+    pub handle: String,
     pub display_name: String,
     pub description: Option<String>,
     pub tools: Vec<BridgeToolInfo>,

@@ -58,7 +58,8 @@ fn test_agent(id: &str, user_id: &str, heartbeat_chat_id: Option<&str>) -> Agent
     let now = Utc::now();
     Agent {
         id: id.to_string(),
-        user_id: Some(user_id.to_string()),
+        user_id: user_id.to_string(),
+        handle: frona::core::Handle::try_new(id).unwrap(),
         name: format!("Agent {id}"),
         description: String::new(),
         model_group: "primary".to_string(),
@@ -126,7 +127,6 @@ async fn test_task_chain_walk_resolves_to_origin() {
     let chat3 = test_chat("chat-3", user_id, "agent-c", Some("task-2"));
     chat_repo.create(&chat3).await.unwrap();
 
-    // Verify chain: chat-3 → task-2 → source_chat_id=chat-2 → task-1 → source_chat_id=chat-1 → no task_id → FOUND
     let chat_loaded = chat_repo.find_by_id("chat-3").await.unwrap().unwrap();
     assert_eq!(chat_loaded.task_id.as_deref(), Some("task-2"));
 
@@ -152,7 +152,6 @@ async fn test_heartbeat_chat_excluded_from_standalone() {
 
     let user_id = "user-1";
 
-    // Create a regular chat and a heartbeat chat
     let regular = test_chat("chat-regular", user_id, "agent-a", None);
     chat_repo.create(&regular).await.unwrap();
 
@@ -200,17 +199,25 @@ fn test_task_kind_source_chat_id() {
 
     let cron_with = TaskKind::Cron {
         cron_expression: "* * * * *".into(),
+        timezone: None,
         next_run_at: None,
         source_agent_id: None,
         source_chat_id: Some("chat-2".into()),
+        mode: Default::default(),
+        concurrency: Default::default(),
+        process_result: false,
     };
     assert_eq!(cron_with.source_chat_id(), Some("chat-2"));
 
     let cron_without = TaskKind::Cron {
         cron_expression: "* * * * *".into(),
+        timezone: None,
         next_run_at: None,
         source_agent_id: None,
         source_chat_id: None,
+        mode: Default::default(),
+        concurrency: Default::default(),
+        process_result: false,
     };
     assert_eq!(cron_without.source_chat_id(), None);
 }

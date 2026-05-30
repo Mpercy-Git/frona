@@ -28,7 +28,8 @@ pub struct VaultService {
     encryption_key: [u8; 32],
     vault_config: VaultConfig,
     data_dir: PathBuf,
-    files_path: PathBuf,
+    storage: crate::storage::service::StorageService,
+    user_service: crate::auth::UserService,
 }
 
 fn ensure_non_user_principal(principal: &Principal) -> Result<(), AppError> {
@@ -51,7 +52,8 @@ impl VaultService {
         encryption_secret: &str,
         vault_config: VaultConfig,
         data_dir: PathBuf,
-        files_path: PathBuf,
+        storage: crate::storage::service::StorageService,
+        user_service: crate::auth::UserService,
     ) -> Self {
         let encryption_key = derive_key(encryption_secret);
 
@@ -64,7 +66,8 @@ impl VaultService {
             encryption_key,
             vault_config,
             data_dir,
-            files_path,
+            storage,
+            user_service,
         }
     }
 
@@ -76,7 +79,7 @@ impl VaultService {
         let (encrypted, nonce) = self.encrypt_config(&req.config)?;
         let now = Utc::now();
         let connection = VaultConnection {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             name: req.name,
             provider: req.provider,
@@ -217,7 +220,7 @@ impl VaultService {
         };
 
         let grant = VaultGrant {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             connection_id: connection_id.to_string(),
             vault_item_id: vault_item_id.to_string(),
@@ -243,7 +246,7 @@ impl VaultService {
     ) -> Result<VaultAccessLog, AppError> {
         ensure_non_user_principal(&principal)?;
         let log = VaultAccessLog {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             principal,
             chat_id: chat_id.to_string(),
@@ -339,7 +342,7 @@ impl VaultService {
     ) -> Result<PrincipalCredentialBinding, AppError> {
         ensure_non_user_principal(&principal)?;
         let binding = PrincipalCredentialBinding {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             principal,
             query: query.to_string(),
@@ -630,17 +633,6 @@ impl VaultService {
             ));
         }
 
-        if let Some(app_key) = &self.vault_config.keeper_app_key {
-            entries.push((
-                "keeper".to_string(),
-                VaultProviderType::Keeper,
-                "Keeper".to_string(),
-                VaultConnectionConfig::Keeper {
-                    app_key: app_key.clone(),
-                    server: None,
-                },
-            ));
-        }
 
         entries
     }
@@ -678,7 +670,7 @@ impl VaultService {
         };
 
         let credential = Credential {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             name,
             provider,
@@ -832,7 +824,14 @@ impl VaultService {
         let home_dir = if connection.system_managed {
             self.data_dir.join("system").join("vault").join(connection.id)
         } else {
-            self.files_path.join(&connection.user_id)
+            let owner = self
+                .user_service
+                .find_by_id(&connection.user_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("vault owner user {} not found", connection.user_id))
+                })?;
+            self.storage.user_vault_path(&owner.handle)
         };
 
         create_vault_provider(connection.provider, config, home_dir)

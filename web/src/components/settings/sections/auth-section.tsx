@@ -1,7 +1,7 @@
 "use client";
 
 import type { AuthConfig } from "@/lib/config-types";
-import { NumberInput, SensitiveInput, SectionHeader, SectionPanel } from "@/components/settings/field";
+import { NumberInput, SensitiveInput, SectionHeader, SectionPanel, Toggle } from "@/components/settings/field";
 import { KeyIcon } from "@heroicons/react/24/outline";
 
 interface AuthSectionProps {
@@ -53,6 +53,13 @@ export function AuthSection({ auth, onChange }: AuthSectionProps) {
         onChange={(hours) => onChange({ ...auth, presign_expiry_secs: hours * 3600 })}
         min={1}
         placeholder="24"
+      />
+
+      <Toggle
+        label="Allow open registration"
+        description="When off, the public registration form is disabled. Admins can still add users from Settings → Users."
+        value={auth.allow_registration}
+        onChange={(allow_registration) => onChange({ ...auth, allow_registration })}
       />
       </SectionPanel>
     </div>

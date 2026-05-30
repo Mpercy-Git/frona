@@ -1,10 +1,7 @@
-//! Per-invocation ephemeral token files.
-//!
-//! Sandboxed processes (CLI tools, MCP servers) need to authenticate back to
-//! Frona's HTTP API. We issue a short-lived JWT per spawn, atomically write it
-//! to a uniquely-named file outside any sandbox workspace, and grant the
-//! sandbox read access to only that one file. The caller holds an
-//! [`EphemeralTokenGuard`]; when it drops, the file is unlinked.
+//! Per-invocation ephemeral token files. A short-lived JWT is written to a
+//! uniquely-named file outside the sandbox workspace; the sandbox is granted
+//! read access to only that file. The file is unlinked when the
+//! [`EphemeralTokenGuard`] drops.
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +14,6 @@ use crate::core::Principal;
 use crate::core::error::AppError;
 use crate::credential::keypair::service::KeyPairService;
 
-/// Owns one live ephemeral token file. The file is unlinked on drop.
 pub struct EphemeralTokenGuard {
     path: PathBuf,
 }
@@ -38,8 +34,17 @@ impl EphemeralTokenGuard {
             ))
         })?;
 
-        // Sandbox drivers (syd, landlock) require absolute paths in their
-        // allowlists. Canonicalize after create_dir_all so the directory exists.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = tokio::fs::set_permissions(
+                root,
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .await;
+        }
+
+        // Sandbox drivers (syd, landlock) need absolute paths in allowlists.
         let root = tokio::fs::canonicalize(root).await.map_err(|e| {
             AppError::Internal(format!(
                 "Failed to canonicalize runtime tokens dir {}: {e}",
@@ -80,31 +85,18 @@ impl Drop for EphemeralTokenGuard {
     }
 }
 
-/// Create the runtime tokens directory (mode 0o700) and sweep stale files
-/// left behind by a prior crash (where Drop didn't run). Call once at boot.
-pub fn prepare_runtime_dir(root: &Path) {
-    if let Err(e) = std::fs::create_dir_all(root) {
-        tracing::warn!(
-            error = %e,
-            dir = %root.display(),
-            "Failed to create runtime tokens directory"
-        );
+/// Sweeps stale token files left after a prior crash.
+pub fn prepare_runtime_dir(users_root: &Path) {
+    let Ok(entries) = std::fs::read_dir(users_root) else {
         return;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)) {
-            tracing::warn!(
-                error = %e,
-                dir = %root.display(),
-                "Failed to tighten runtime tokens directory permissions to 0o700"
-            );
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
         }
+        let tokens_dir = entry.path().join("tokens");
+        cleanup_stale(&tokens_dir);
     }
-
-    cleanup_stale(root);
 }
 
 fn cleanup_stale(root: &Path) {

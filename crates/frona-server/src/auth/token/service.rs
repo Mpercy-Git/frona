@@ -61,7 +61,7 @@ impl TokenService {
     ) -> Result<CreatedToken, AppError> {
         let now = Utc::now();
         let expires_at = now + Duration::seconds(req.ttl_secs as i64);
-        let token_id = uuid::Uuid::new_v4().to_string();
+        let token_id = crate::core::repository::new_id();
 
         let owner = format!("user:{}", user.id);
         let (encoding_key, kid) = keypair_svc.get_signing_key(&owner).await?;
@@ -74,7 +74,7 @@ impl TokenService {
 
         let claims = Claims {
             sub: user.id.clone(),
-            username: user.username.clone(),
+            handle: user.handle.clone(),
             email: user.email.clone(),
             exp: expires_at.timestamp() as usize,
             iat: now.timestamp() as usize,
@@ -117,7 +117,7 @@ impl TokenService {
         keypair_svc: &KeyPairService,
         user: &User,
     ) -> Result<(String, String), AppError> {
-        let pair_id = uuid::Uuid::new_v4().to_string();
+        let pair_id = crate::core::repository::new_id();
         let principal = Principal::user(&user.id);
 
         let access = self
@@ -210,6 +210,13 @@ impl TokenService {
                 message: "User no longer exists".into(),
                 code: AuthErrorCode::TokenInvalid,
             })?;
+
+        if user.deactivated_at.is_some() {
+            return Err(AppError::Auth {
+                message: "Account deactivated".into(),
+                code: AuthErrorCode::AccountDeactivated,
+            });
+        }
 
         let (access_jwt, refresh_jwt) = self.create_session_pair(keypair_svc, &user).await?;
         Ok((access_jwt, refresh_jwt, claims))

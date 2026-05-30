@@ -1,4 +1,4 @@
-use rig::completion::Message as RigMessage;
+use rig_core::completion::Message as RigMessage;
 
 const KNOWN_CONTEXT_WINDOWS: &[(&str, usize)] = &[
     ("claude", 200_000),
@@ -44,11 +44,11 @@ pub fn estimate_message_tokens(msg: &RigMessage) -> usize {
         RigMessage::User { content } => {
             content.iter().map(|c| -> usize {
                 match c {
-                    rig::completion::message::UserContent::Text(t) => t.text.len(),
-                    rig::completion::message::UserContent::ToolResult(tr) => {
+                    rig_core::completion::message::UserContent::Text(t) => t.text.len(),
+                    rig_core::completion::message::UserContent::ToolResult(tr) => {
                         tr.content.iter().map(|c| -> usize {
                             match c {
-                                rig::completion::message::ToolResultContent::Text(t) => t.text.len(),
+                                rig_core::completion::message::ToolResultContent::Text(t) => t.text.len(),
                                 _ => 100,
                             }
                         }).sum::<usize>()
@@ -60,14 +60,15 @@ pub fn estimate_message_tokens(msg: &RigMessage) -> usize {
         RigMessage::Assistant { content, .. } => {
             content.iter().map(|c| -> usize {
                 match c {
-                    rig::completion::AssistantContent::Text(t) => t.text.len(),
-                    rig::completion::AssistantContent::ToolCall(tc) => {
+                    rig_core::completion::AssistantContent::Text(t) => t.text.len(),
+                    rig_core::completion::AssistantContent::ToolCall(tc) => {
                         tc.function.name.len() + tc.function.arguments.to_string().len()
                     }
                     _ => 100,
                 }
             }).sum::<usize>()
         }
+        RigMessage::System { content } => content.len(),
     };
 
     content_len / 4 + 4

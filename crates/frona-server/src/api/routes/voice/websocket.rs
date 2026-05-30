@@ -257,7 +257,6 @@ async fn handle_voice_socket(
                 )
                 .await;
             executor.resume_parent_if_requested(&task).await;
-            executor.broadcast_task_status(&task, "completed", None);
         }
     }
 }
@@ -290,7 +289,7 @@ async fn handle_voice_turn(
             Ok(Some(msg)) => msg.id,
             _ => {
                 let msg = state.chat_service
-                    .create_executing_agent_message(chat_id, &chat.agent_id, None)
+                    .create_executing_agent_message(chat_id, &chat.agent_id)
                     .await?;
                 msg.id
             }
@@ -300,7 +299,7 @@ async fn handle_voice_turn(
             user_service: state.user_service.clone(),
             storage_service: state.storage_service.clone(),
         });
-        let outcome = run_agent_loop(state, user_id, chat_id, &agent_msg_id, cancel_token.clone(), builder, None).await?;
+        let outcome = run_agent_loop(state, user_id, chat_id, &agent_msg_id, cancel_token.clone(), builder, &[]).await?;
 
         match outcome.response {
             InferenceResponse::ExternalToolPending {

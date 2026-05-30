@@ -1,19 +1,21 @@
 "use client";
 
-import { useCallback, useState, useEffect, useRef } from "react";
+import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { useSession } from "@/lib/session-context";
-import { useNavigation } from "@/lib/navigation-context";
+import { useNavigation, useSystemAgent } from "@/lib/navigation-context";
 import { useNotifications } from "@/lib/notification-context";
 import { ChatProvider } from "@/lib/chat-context";
 import { useChatRuntime } from "@/lib/use-chat-runtime";
 import { RetryContext } from "@/lib/retry-context";
 import { PendingToolsContext } from "@/lib/pending-tools-context";
+import { ChatPaginationContext } from "@/lib/chat-pagination-context";
 import { ChatHeader } from "./chat-header";
 import { TaskHeader } from "./task-header";
 import { AssistantThread } from "./assistant-thread";
 import { ToolUIRegistry } from "./tool-uis";
+import { CronRunsTable } from "./cron-runs-table";
 import type { ChatResponse } from "@/lib/types";
 
 function ChatView({
@@ -36,7 +38,11 @@ function ChatView({
     onChatPromoted?.(chat.id);
   }, [addStandaloneChat, setActiveChat, onChatPromoted]);
 
-  const { runtime, loaded, sendMessage, retryInfo, pendingTools } = useChatRuntime({ chatId, agentId, onChatCreated });
+  const { runtime, loaded, sendMessage, retryInfo, pendingTools, hasMore, loadingMore, loadOlder } = useChatRuntime({ chatId, agentId, onChatCreated });
+  const pagination = useMemo(
+    () => ({ hasMore, loadingMore, loadOlder }),
+    [hasMore, loadingMore, loadOlder],
+  );
 
   const pendingHandled = useRef(false);
   useEffect(() => {
@@ -58,6 +64,7 @@ function ChatView({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <PendingToolsContext value={pendingTools}>
+      <ChatPaginationContext value={pagination}>
       <RetryContext value={retryInfo}>
         {currentChatId ? (
           <ChatProvider chatId={currentChatId} agentId={agentId}>
@@ -67,6 +74,7 @@ function ChatView({
           content
         )}
       </RetryContext>
+      </ChatPaginationContext>
       </PendingToolsContext>
     </AssistantRuntimeProvider>
   );
@@ -91,12 +99,13 @@ export function ConversationPanel() {
   const router = useRouter();
   const { activeChatId, activeChat, activeTask, agentId } = useSession();
   const { markReadByChat } = useNotifications();
+  const systemAgent = useSystemAgent();
 
   const [pendingSessionId, setPendingSessionId] = useState(0);
   const [prevActiveChat, setPrevActiveChat] = useState(activeChat);
   const [slots, setSlots] = useState<ChatSlot[]>(() =>
     activeChatId
-      ? [{ slotId: activeChatId, chatId: activeChatId, agentId: agentId ?? "system", lastActiveAt: Date.now() }]
+      ? [{ slotId: activeChatId, chatId: activeChatId, agentId: agentId ?? systemAgent.id, lastActiveAt: Date.now() }]
       : [],
   );
 
@@ -107,15 +116,13 @@ export function ConversationPanel() {
     }
   }
 
-  const effectiveAgentId = agentId ?? "system";
+  const effectiveAgentId = agentId ?? systemAgent.id;
 
-  // Ensure active chat is in the slot set with LRU tracking
   const [prevActiveChatId, setPrevActiveChatId] = useState(activeChatId);
   if (activeChatId !== prevActiveChatId) {
     setPrevActiveChatId(activeChatId);
     if (activeChatId) {
       setSlots((prev) => {
-        // Already tracked (either as a promoted pending slot or a previously visited chat)
         const existing = prev.find((c) => c.chatId === activeChatId);
         if (existing) {
           return prev.map((c) =>
@@ -137,14 +144,12 @@ export function ConversationPanel() {
     if (activeChatId) markReadByChat(activeChatId);
   }, [activeChatId, markReadByChat]);
 
-  // Ensure a pending slot exists when there is no active chat
   const pendingSlotId = !activeChatId ? `pending-${pendingSessionId}` : null;
   if (pendingSlotId && !slots.some((s) => s.slotId === pendingSlotId)) {
     setSlots((prev) => [...prev, { slotId: pendingSlotId, chatId: null, agentId: effectiveAgentId, lastActiveAt: Date.now() }]);
   }
 
-  // Called by the pending ChatView when the adapter creates a real chat.
-  // Updates the slot's chatId in place (no remount) and navigates to the chat URL.
+  // Updates slot in place (no remount) and navigates to the chat URL.
   const promotePendingSlot = useCallback((slotId: string, chatId: string) => {
     setSlots((prev) => prev.map((s) =>
       s.slotId === slotId ? { ...s, chatId, lastActiveAt: Date.now() } : s,
@@ -153,12 +158,15 @@ export function ConversationPanel() {
   }, [router]);
 
   if (activeTask) {
+    const isCronTemplate = activeTask.kind.type === "Cron";
     return (
       <div className="flex-1 overflow-hidden bg-surface flex flex-col min-w-0">
         <div className="mx-auto w-full max-w-3xl">
           <TaskHeader />
         </div>
-        {activeChatId ? (
+        {isCronTemplate ? (
+          <CronRunsTable cronId={activeTask.id} task={activeTask} />
+        ) : activeChatId ? (
           <ChatView key={activeChatId} chatId={activeChatId} agentId={effectiveAgentId} />
         ) : (
           <div className="flex flex-1 items-center justify-center">
@@ -169,8 +177,6 @@ export function ConversationPanel() {
     );
   }
 
-  // A slot is visible when it matches the active chat,
-  // or when it's the pending slot and there's no active chat.
   const isActive = (s: ChatSlot) =>
     (s.chatId != null && s.chatId === activeChatId) ||
     (s.chatId == null && !activeChatId && s.slotId === pendingSlotId);

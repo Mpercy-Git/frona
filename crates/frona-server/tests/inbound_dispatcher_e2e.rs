@@ -41,10 +41,10 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             path: format!("{base}/db"),
         },
         storage: frona::core::config::StorageConfig {
-            workspaces_path: format!("{base}/workspaces"),
-            files_path: format!("{base}/files"),
+            data_dir: format!("{base}/data"),
             shared_config_dir: format!("{base}/config"),
-            ..Default::default()
+            skills_dir: format!("{base}/skills"),
+            cache_dir: format!("{base}/cache"),
         },
         ..Default::default()
     }
@@ -92,6 +92,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.memory_service.clone(),
         prompts,
         state.broadcast_service.clone(),
+        state.presign_service.clone(),
     );
     state.chat_service = chat_service;
 
@@ -106,11 +107,13 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
     SurrealRepo::<User>::new(state.db.clone())
         .create(&User {
             id: user_id.into(),
-            username: format!("user-{user_id}"),
+            handle: frona::handle!("test-user"),
             email: format!("{user_id}@test.com"),
             name: "Test User".into(),
             password_hash: String::new(),
             timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })
@@ -120,7 +123,8 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
     SurrealRepo::<Agent>::new(state.db.clone())
         .create(&Agent {
             id: agent_id.into(),
-            user_id: Some(user_id.into()),
+            user_id: user_id.into(),
+            handle: frona::handle!("channel-agent"),
             name: "Channel Agent".into(),
             description: String::new(),
             model_group: "test".into(),
@@ -164,6 +168,7 @@ async fn seed_space_and_chat(
     let channel = frona::chat::channel::Channel {
         id: format!("channel-{user_id}"),
         user_id: user_id.into(),
+        handle: frona::handle!("telegram"),
         space_id: space.id.clone(),
         provider: "telegram".into(),
         agent_id: agent_id.into(),
@@ -173,8 +178,11 @@ async fn seed_space_and_chat(
         error_message: None,
         last_started_at: None,
         user_address: None,
+        setup: None,
+        retry: None,
         created_at: now,
         updated_at: now,
+        webhook_url: None,
     };
     use frona::core::repository::Repository;
     SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
@@ -306,7 +314,7 @@ async fn dispatcher_skips_non_user_messages() {
 
     state
         .chat_service
-        .save_system_message(&chat.id, "system note".into())
+        .save_system_message("user-1", None, &chat.id, "system note".into())
         .await
         .unwrap();
 

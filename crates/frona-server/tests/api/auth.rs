@@ -14,7 +14,7 @@ async fn register_returns_201_with_token() {
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::json!({
-                "username": "alice",
+                "handle": "alice",
                 "email": "alice@example.com",
                 "name": "Alice",
                 "password": "password123",
@@ -37,7 +37,7 @@ async fn register_returns_201_with_token() {
     let json = body_json(resp).await;
     assert!(json["token"].is_string());
     assert!(json["user"]["id"].is_string());
-    assert_eq!(json["user"]["username"], "alice");
+    assert_eq!(json["user"]["handle"], "alice");
 }
 
 #[tokio::test]
@@ -52,7 +52,7 @@ async fn register_duplicate_email_returns_400() {
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::json!({
-                "username": "user2",
+                "handle": "user2",
                 "email": "dup@example.com",
                 "name": "User2",
                 "password": "password123",
@@ -66,7 +66,7 @@ async fn register_duplicate_email_returns_400() {
 }
 
 #[tokio::test]
-async fn register_duplicate_username_returns_400() {
+async fn register_duplicate_handle_returns_400() {
     let (state, _tmp) = test_app_state().await;
     register_user(&state, "dupuser", "first@example.com", "password123").await;
 
@@ -77,7 +77,7 @@ async fn register_duplicate_username_returns_400() {
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::json!({
-                "username": "dupuser",
+                "handle": "dupuser",
                 "email": "second@example.com",
                 "name": "Dup",
                 "password": "password123",
@@ -100,7 +100,7 @@ async fn register_short_password_returns_400() {
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::json!({
-                "username": "shortpw",
+                "handle": "shortpw",
                 "email": "short@example.com",
                 "name": "Short",
                 "password": "abc",
@@ -137,11 +137,11 @@ async fn login_returns_token() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert!(json["token"].is_string());
-    assert_eq!(json["user"]["username"], "loginuser");
+    assert_eq!(json["user"]["handle"], "loginuser");
 }
 
 #[tokio::test]
-async fn login_by_username() {
+async fn login_by_handle() {
     let (state, _tmp) = test_app_state().await;
     register_user(&state, "namelogin", "namelogin@example.com", "password123").await;
 
@@ -162,7 +162,7 @@ async fn login_by_username() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["user"]["username"], "namelogin");
+    assert_eq!(json["user"]["handle"], "namelogin");
 }
 
 #[tokio::test]
@@ -198,7 +198,7 @@ async fn me_returns_user_info() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["username"], "meuser");
+    assert_eq!(json["handle"], "meuser");
     assert_eq!(json["email"], "me@example.com");
 }
 
@@ -307,7 +307,7 @@ async fn refresh_returns_new_token() {
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::json!({
-                "username": "refreshuser",
+                "handle": "refreshuser",
                 "email": "refresh@example.com",
                 "name": "Refresh",
                 "password": "password123",
@@ -357,10 +357,9 @@ async fn refresh_without_cookie_returns_401() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ─── Change Username ────────────────────────────────────────────────
 
 #[tokio::test]
-async fn change_username_succeeds() {
+async fn change_handle_succeeds() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) =
         register_user(&state, "oldname", "chname@example.com", "password123").await;
@@ -368,20 +367,20 @@ async fn change_username_succeeds() {
     let app = build_app(state);
     let resp = app
         .oneshot(auth_put_json(
-            "/api/auth/username",
+            "/api/auth/handle",
             &token,
-            serde_json::json!({"username": "newname"}),
+            serde_json::json!({"handle": "newname"}),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["user"]["username"], "newname");
+    assert_eq!(json["user"]["handle"], "newname");
     assert!(json["token"].is_string());
 }
 
 #[tokio::test]
-async fn change_username_duplicate_returns_400() {
+async fn change_handle_duplicate_returns_400() {
     let (state, _tmp) = test_app_state().await;
     register_user(&state, "taken-name", "taken@example.com", "password123").await;
     let (token, _) =
@@ -390,9 +389,9 @@ async fn change_username_duplicate_returns_400() {
     let app = build_app(state);
     let resp = app
         .oneshot(auth_put_json(
-            "/api/auth/username",
+            "/api/auth/handle",
             &token,
-            serde_json::json!({"username": "taken-name"}),
+            serde_json::json!({"handle": "taken-name"}),
         ))
         .await
         .unwrap();
@@ -400,7 +399,7 @@ async fn change_username_duplicate_returns_400() {
 }
 
 #[tokio::test]
-async fn change_username_same_returns_400() {
+async fn change_handle_same_returns_400() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) =
         register_user(&state, "samename", "same@example.com", "password123").await;
@@ -408,16 +407,15 @@ async fn change_username_same_returns_400() {
     let app = build_app(state);
     let resp = app
         .oneshot(auth_put_json(
-            "/api/auth/username",
+            "/api/auth/handle",
             &token,
-            serde_json::json!({"username": "samename"}),
+            serde_json::json!({"handle": "samename"}),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ─── PAT Management ────────────────────────────────────────────────
 
 #[tokio::test]
 async fn create_pat_returns_201() {
@@ -530,7 +528,7 @@ async fn pat_can_authenticate() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["username"], "patauth");
+    assert_eq!(json["handle"], "patauth");
 }
 
 #[tokio::test]
@@ -603,17 +601,16 @@ async fn logout_with_pat_deletes_token() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ─── SSO ────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn sso_status_returns_disabled_by_default() {
+async fn auth_config_returns_defaults() {
     let (state, _tmp) = test_app_state().await;
     let app = build_app(state);
     let resp = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/auth/sso")
+                .uri("/api/auth/config")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -621,8 +618,9 @@ async fn sso_status_returns_disabled_by_default() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["enabled"], false);
-    assert_eq!(json["disable_local_auth"], false);
+    assert_eq!(json["sso"]["enabled"], false);
+    assert_eq!(json["sso"]["disable_local_auth"], false);
+    assert_eq!(json["allow_registration"], true);
 }
 
 #[tokio::test]
@@ -661,7 +659,68 @@ async fn sso_callback_without_provider_redirects_with_error() {
     assert!(location.starts_with("/login?sso_error="));
 }
 
-// ─── SSO-Only Mode ──────────────────────────────────────────────────
+
+fn build_disabled_registration_state(state: &AppState) -> AppState {
+    let mut new_state = state.clone();
+    let mut config = (*new_state.config).clone();
+    config.auth.allow_registration = false;
+    new_state.config = std::sync::Arc::new(config);
+    new_state
+}
+
+#[tokio::test]
+async fn register_returns_403_when_disabled() {
+    let (state, _tmp) = test_app_state().await;
+    // Seed a user so we're not in the "no users" startup-precondition case.
+    register_user(&state, "first", "first@example.com", "password123").await;
+
+    let disabled = build_disabled_registration_state(&state);
+    let app = build_app(disabled);
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/register")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "handle": "newuser",
+                "email": "new@example.com",
+                "name": "New",
+                "password": "password123",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    with_connect_info(&mut req);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn register_returns_403_when_disabled_even_with_no_users() {
+    let (state, _tmp) = test_app_state().await;
+    let disabled = build_disabled_registration_state(&state);
+    let app = build_app(disabled);
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/register")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "handle": "newuser",
+                "email": "new@example.com",
+                "name": "New",
+                "password": "password123",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    with_connect_info(&mut req);
+    let resp = app.oneshot(req).await.unwrap();
+    // No bootstrap escape — even with zero users, the route refuses.
+    // (The startup precondition is what gates whether the server reaches this state at all.)
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
 
 fn build_sso_only_state(state: &AppState) -> AppState {
     let mut sso_state = state.clone();
@@ -682,7 +741,7 @@ async fn register_with_sso_only_returns_400() {
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::json!({
-                "username": "ssouser",
+                "handle": "ssouser",
                 "email": "sso@example.com",
                 "name": "SSO",
                 "password": "password123",
@@ -719,7 +778,6 @@ async fn login_with_sso_only_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ─── Secure Cookie ──────────────────────────────────────────────────
 
 #[tokio::test]
 async fn register_with_https_base_url_sets_secure_cookie() {
@@ -736,7 +794,7 @@ async fn register_with_https_base_url_sets_secure_cookie() {
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::json!({
-                "username": "secureuser",
+                "handle": "secureuser",
                 "email": "secure@example.com",
                 "name": "Secure",
                 "password": "password123",
@@ -754,4 +812,186 @@ async fn register_with_https_base_url_sets_secure_cookie() {
         .to_str()
         .unwrap();
     assert!(cookie.contains("Secure"));
+}
+
+
+#[tokio::test]
+async fn first_password_register_becomes_admin() {
+    let (state, _tmp) = test_app_state().await;
+    // Seed the admins group (normally done at server startup).
+    state.user_group_service.seed_built_in().await.unwrap();
+
+    let (_, user_id) = register_user(&state, "firstadmin", "first@example.com", "password123").await;
+
+    let user = state.user_service.find_by_id(&user_id).await.unwrap().unwrap();
+    assert!(
+        user.groups.iter().any(|g| g == "admins"),
+        "first registered user should be promoted to admins, got groups: {:?}",
+        user.groups
+    );
+}
+
+#[tokio::test]
+async fn second_register_is_not_admin() {
+    let (state, _tmp) = test_app_state().await;
+    state.user_group_service.seed_built_in().await.unwrap();
+
+    register_user(&state, "firstadmin", "first@example.com", "password123").await;
+    let (_, second_id) = register_user(&state, "second", "second@example.com", "password123").await;
+
+    let user = state.user_service.find_by_id(&second_id).await.unwrap().unwrap();
+    assert!(
+        !user.groups.iter().any(|g| g == "admins"),
+        "second registered user should not be admin, got groups: {:?}",
+        user.groups
+    );
+}
+
+#[tokio::test]
+async fn ensure_admin_invariant_is_idempotent() {
+    let (state, _tmp) = test_app_state().await;
+    state.user_group_service.seed_built_in().await.unwrap();
+    register_user(&state, "onlyone", "only@example.com", "password123").await;
+
+    // Run twice in a row; second call should be a no-op (idempotent).
+    state.user_service.ensure_admin_invariant().await.unwrap();
+    state.user_service.ensure_admin_invariant().await.unwrap();
+
+    let users = state.user_service.list_all(true).await.unwrap();
+    let admin_count = users
+        .iter()
+        .filter(|u| u.deactivated_at.is_none() && u.groups.iter().any(|g| g == "admins"))
+        .count();
+    assert_eq!(admin_count, 1);
+}
+
+#[tokio::test]
+async fn startup_promotes_oldest_active_user_when_no_admin() {
+    use chrono::Utc;
+    use frona::core::repository::new_id;
+    use frona::auth::User as UserModel;
+
+    let (state, _tmp) = test_app_state().await;
+    state.user_group_service.seed_built_in().await.unwrap();
+
+    // Insert two users via the repo (bypass the register flow so neither is auto-admin).
+    let now = Utc::now();
+    let older = UserModel {
+        id: new_id(),
+        handle: frona::handle!("older"),
+        email: "older@example.com".into(),
+        name: "Older".into(),
+        password_hash: "x".into(),
+        timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let newer = UserModel {
+        id: new_id(),
+        handle: frona::handle!("newer"),
+        email: "newer@example.com".into(),
+        name: "Newer".into(),
+        password_hash: "x".into(),
+        timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
+        created_at: now + chrono::Duration::seconds(1),
+        updated_at: now + chrono::Duration::seconds(1),
+    };
+    state.user_service.create(&older).await.unwrap();
+    state.user_service.create(&newer).await.unwrap();
+
+    // Pre-condition: no admin.
+    let users_before = state.user_service.list_all(true).await.unwrap();
+    assert!(
+        users_before
+            .iter()
+            .all(|u| !u.groups.iter().any(|g| g == "admins")),
+        "expected no admins before repair"
+    );
+
+    // Run the invariant repair (this is what main.rs does at boot).
+    state.user_service.ensure_admin_invariant().await.unwrap();
+
+    let promoted = state.user_service.find_by_id(&older.id).await.unwrap().unwrap();
+    assert!(promoted.groups.iter().any(|g| g == "admins"));
+    let untouched = state.user_service.find_by_id(&newer.id).await.unwrap().unwrap();
+    assert!(!untouched.groups.iter().any(|g| g == "admins"));
+}
+
+#[tokio::test]
+async fn login_refuses_deactivated_user() {
+    let (state, _tmp) = test_app_state().await;
+    state.user_group_service.seed_built_in().await.unwrap();
+    // First user becomes admin via bootstrap; the DB events refuse deactivating the
+    // last admin, so we need a second non-admin user to deactivate.
+    register_user(&state, "firstadmin", "admin@example.com", "password123").await;
+    let (_, user_id) =
+        register_user(&state, "tobedisabled", "disabled@example.com", "password123").await;
+
+    state.user_service.deactivate(&user_id).await.unwrap();
+
+    let app = build_app(state);
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "identifier": "disabled@example.com",
+                "password": "password123",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    with_connect_info(&mut req);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let json = body_json(resp).await;
+    assert!(json["error"].as_str().unwrap_or("").to_lowercase().contains("deactivated"));
+}
+
+#[tokio::test]
+async fn refresh_refuses_deactivated_user() {
+    let (state, _tmp) = test_app_state().await;
+    state.user_group_service.seed_built_in().await.unwrap();
+    // First user is auto-admin; we need a second non-admin to deactivate.
+    register_user(&state, "firstadmin", "admin@example.com", "password123").await;
+    let (_, user_id) = register_user(&state, "refreshuser", "refresh@example.com", "password123").await;
+
+    // Capture the refresh cookie from registration.
+    let app = build_app(state.clone());
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "identifier": "refresh@example.com",
+                "password": "password123",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    with_connect_info(&mut req);
+    let login_resp = app.oneshot(req).await.unwrap();
+    assert_eq!(login_resp.status(), StatusCode::OK);
+    let cookie = login_resp.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    let refresh_cookie = cookie.split(';').next().unwrap().to_string();
+
+    // Deactivate the user, then try to refresh with the captured cookie.
+    state.user_service.deactivate(&user_id).await.unwrap();
+
+    let app = build_app(state);
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/refresh")
+        .header("cookie", refresh_cookie)
+        .body(Body::empty())
+        .unwrap();
+    with_connect_info(&mut req);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }

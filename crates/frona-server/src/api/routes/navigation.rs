@@ -41,7 +41,7 @@ async fn get_navigation(
     for space in spaces {
         let chats = state
             .chat_service
-            .find_chats_by_space_id(&space.id)
+            .find_user_chats_by_space_id(&space.id)
             .await?;
         space_with_chats.push(SpaceWithChats {
             space,

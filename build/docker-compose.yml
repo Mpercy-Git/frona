@@ -1,6 +1,6 @@
 services:
   browserless:
-    image: ghcr.io/browserless/chromium:v2.24.2
+    image: ghcr.io/browserless/chromium:v2.42.0
     ports:
       - "3333:3333"
     environment:
@@ -13,7 +13,7 @@ services:
     restart: unless-stopped
 
   searxng:
-    image: searxng/searxng:2026.2.16-8e824017d
+    image: searxng/searxng:2026.5.9-0cba32c15
     ports:
       - "8080:8080"
     environment:
@@ -40,6 +40,8 @@ services:
       - ../Cargo.toml:/app/Cargo.toml
       - ../Cargo.lock:/app/Cargo.lock
       - cargo-cache:/app/target
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
       - node-modules:/app/web/node_modules
       - ../web:/app/web
       - ../resources:/app/resources
@@ -126,4 +128,6 @@ configs:
 
 volumes:
   cargo-cache:
+  cargo-registry:
+  cargo-git:
   node-modules:

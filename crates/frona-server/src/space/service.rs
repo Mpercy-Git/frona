@@ -39,7 +39,7 @@ impl SpaceService {
     ) -> Result<SpaceResponse, AppError> {
         let now = chrono::Utc::now();
         let space = Space {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             name: req.name,
             metadata: req.metadata.unwrap_or_default(),

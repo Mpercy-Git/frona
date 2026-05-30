@@ -37,7 +37,7 @@ async fn run_inner(client: BridgeClient, args: Vec<String>) -> Result<ExitCode, 
             } else {
                 for s in &servers {
                     let desc = s.description.as_deref().unwrap_or("");
-                    println!("{:<20} {:<30} ({} tools)  {}", s.slug, s.display_name, s.tool_count, desc);
+                    println!("{:<20} {:<30} ({} tools)  {}", s.handle, s.display_name, s.tool_count, desc);
                 }
             }
             Ok(ExitCode::SUCCESS)
@@ -102,7 +102,7 @@ async fn print_server_help(
     let detail = client.server_tools(server).await?;
     let desc = detail.description.as_deref().unwrap_or("");
 
-    println!("{} — {}", detail.slug, desc);
+    println!("{} — {}", detail.handle, desc);
     println!();
     println!("TOOLS:");
 
@@ -113,8 +113,8 @@ async fn print_server_help(
 
     println!();
     println!("USAGE:");
-    println!("    mcpctl {} <TOOL> [OPTIONS]", detail.slug);
-    println!("    mcpctl {} <TOOL> --help", detail.slug);
+    println!("    mcpctl {} <TOOL> [OPTIONS]", detail.handle);
+    println!("    mcpctl {} <TOOL> --help", detail.handle);
     Ok(())
 }
 

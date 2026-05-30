@@ -79,7 +79,7 @@ async fn list_messages(
         .await?;
 
     for msg in &mut result.messages {
-        presign_response(&state.presign_service, msg, &auth.user_id, &auth.username).await;
+        presign_response(&state.presign_service, msg, &auth.user_id, &auth.handle).await;
     }
 
     Ok(Json(result))

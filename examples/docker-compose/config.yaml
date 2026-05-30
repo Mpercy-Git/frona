@@ -88,7 +88,6 @@
 #   hashicorp_mount: "secret"
 #   keepass_path: "/path/to/database.kdbx"
 #   keepass_password: "your-password"
-#   keeper_app_key: "your-app-key"
 
 # app:
 #   port_range_start: 4000

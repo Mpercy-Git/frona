@@ -23,6 +23,25 @@ pub enum SignalMode {
     Continuous,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, SurrealValue)]
+#[serde(rename_all = "snake_case")]
+#[surreal(crate = "surrealdb::types", lowercase)]
+pub enum CronMode {
+    #[default]
+    Singleton,
+    PerInstance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, SurrealValue)]
+#[serde(rename_all = "snake_case")]
+#[surreal(crate = "surrealdb::types", lowercase)]
+pub enum CronConcurrency {
+    Allow,
+    Forbid,
+    #[default]
+    Replace,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[serde(tag = "type")]
 #[surreal(crate = "surrealdb::types", tag = "type")]
@@ -39,9 +58,29 @@ pub enum TaskKind {
     },
     Cron {
         cron_expression: String,
+        #[serde(default)]
+        timezone: Option<String>,
         next_run_at: Option<DateTime<Utc>>,
         source_agent_id: Option<String>,
         source_chat_id: Option<String>,
+        #[serde(default)]
+        #[surreal(default)]
+        mode: CronMode,
+        #[serde(default)]
+        #[surreal(default)]
+        concurrency: CronConcurrency,
+        #[serde(default)]
+        #[surreal(default)]
+        process_result: bool,
+    },
+    CronRun {
+        source_cron_id: String,
+        #[serde(default)]
+        source_chat_id: Option<String>,
+        #[serde(default)]
+        source_agent_id: Option<String>,
+        fire_at: DateTime<Utc>,
+        sequence_num: u64,
     },
     Signal {
         source_chat_id: String,
@@ -76,6 +115,7 @@ impl TaskKind {
             TaskKind::Direct { source_chat_id } => source_chat_id.as_deref(),
             TaskKind::Delegation { source_chat_id, .. } => Some(source_chat_id),
             TaskKind::Cron { source_chat_id, .. } => source_chat_id.as_deref(),
+            TaskKind::CronRun { source_chat_id, .. } => source_chat_id.as_deref(),
             TaskKind::Signal { source_chat_id, .. } => Some(source_chat_id),
         }
     }
@@ -100,6 +140,7 @@ pub struct Task {
     pub result_summary: Option<String>,
     pub error_message: Option<String>,
     #[serde(default)]
+    #[surreal(default)]
     pub quarantined: bool,
     #[serde(default)]
     pub result_schema: Option<serde_json::Value>,
@@ -201,9 +242,13 @@ mod tests {
     fn source_chat_id_cron_with_value() {
         let kind = TaskKind::Cron {
             cron_expression: "0 9 * * *".to_string(),
+            timezone: None,
             next_run_at: None,
             source_agent_id: None,
             source_chat_id: Some("c2".to_string()),
+            mode: CronMode::Singleton,
+            concurrency: CronConcurrency::Replace,
+            process_result: false,
         };
         assert_eq!(kind.source_chat_id(), Some("c2"));
     }
@@ -212,9 +257,13 @@ mod tests {
     fn source_chat_id_cron_without_value() {
         let kind = TaskKind::Cron {
             cron_expression: "0 9 * * *".to_string(),
+            timezone: None,
             next_run_at: None,
             source_agent_id: None,
             source_chat_id: None,
+            mode: CronMode::Singleton,
+            concurrency: CronConcurrency::Replace,
+            process_result: false,
         };
         assert_eq!(kind.source_chat_id(), None);
     }

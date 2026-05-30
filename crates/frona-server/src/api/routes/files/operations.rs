@@ -18,7 +18,7 @@ pub(crate) async fn rename_user_file(
     Json(req): Json<RenameRequest>,
 ) -> Result<(), ApiError> {
     let trimmed = req.path.trim_start_matches('/');
-    let vpath = VirtualPath::user(&auth.username, trimmed);
+    let vpath = VirtualPath::user(&auth.handle, trimmed);
     let resolved = state.storage_service.resolve_virtual_path(&vpath)?;
 
     if !resolved.exists() {
@@ -60,8 +60,8 @@ fn resolve_file_virtual_path(
 ) -> Result<PathBuf, ApiError> {
     if let Some(rest) = path.strip_prefix("user://") {
         let slash = rest.find('/').unwrap_or(rest.len());
-        let path_username = &rest[..slash];
-        if path_username != auth.username {
+        let path_handle = &rest[..slash];
+        if auth.handle != *path_handle {
             return Err(ApiError(AppError::Forbidden(
                 "Cannot access another user's files".into(),
             )));
@@ -73,7 +73,7 @@ fn resolve_file_virtual_path(
         storage.resolve_virtual_path(&vpath).map_err(ApiError)
     } else {
         let trimmed = path.trim_start_matches('/');
-        let vpath = VirtualPath::user(&auth.username, trimmed);
+        let vpath = VirtualPath::user(&auth.handle, trimmed);
         storage.resolve_virtual_path(&vpath).map_err(ApiError)
     }
 }
@@ -206,7 +206,7 @@ pub(crate) async fn create_user_folder(
     let trimmed = req.path.trim_start_matches('/');
     validate_relative_path(trimmed)?;
 
-    let vpath = VirtualPath::user(&auth.username, trimmed);
+    let vpath = VirtualPath::user(&auth.handle, trimmed);
     let resolved = state.storage_service.resolve_virtual_path(&vpath)?;
 
     fs::create_dir_all(&resolved)

@@ -29,7 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/files", post(upload::upload_file))
         .route("/api/files/presign", post(upload::presign_file))
         .route(
-            "/api/files/user/{username}/{*filename}",
+            "/api/files/user/{handle}/{*filename}",
             get(browse::download_user_file).delete(browse::delete_user_file),
         )
         .route(
@@ -76,6 +76,7 @@ impl FromRequestParts<AppState> for FileAuth {
         let claims = state.presign_service.verify(token).await?;
 
         Ok(FileAuth::Presigned {
+            sub: claims.sub,
             owner: claims.owner,
             path: claims.path,
         })
@@ -84,20 +85,24 @@ impl FromRequestParts<AppState> for FileAuth {
 
 pub(super) async fn serve_file(vpath: &VirtualPath, state: &AppState) -> Result<Response, ApiError> {
     let resolved = state.storage_service.resolve_virtual_path(vpath)?;
+    serve_path(&resolved).await
+}
 
-    if !resolved.exists() {
+/// Caller is responsible for path traversal / ownership checks.
+pub(super) async fn serve_path(path: &std::path::Path) -> Result<Response, ApiError> {
+    if !path.exists() {
         return Err(ApiError(AppError::NotFound(
             "File not found".into(),
         )));
     }
 
-    let filename = resolved
+    let filename = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("download");
     let content_type = detect_content_type(filename);
 
-    let file = fs::File::open(&resolved)
+    let file = fs::File::open(path)
         .await
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
     let stream = ReaderStream::new(file);

@@ -189,7 +189,7 @@ describe("convertMessage: tool executions", () => {
     const msg = makeAgentMessage({
       tool_calls: [
         makeToolCall({
-          provider_call_id: "tc-1",
+          id: "te-1",
           name: "web_search",
           arguments: { query: "test" },
           result: "Found it",
@@ -201,7 +201,7 @@ describe("convertMessage: tool executions", () => {
     const result = convertMessage(msg);
     const toolPart = result!.content.find((p: any) => p.type === "tool-call") as any;
     expect(toolPart).toBeDefined();
-    expect(toolPart.toolCallId).toBe("tc-1");
+    expect(toolPart.toolCallId).toBe("te-1");
     expect(toolPart.toolName).toBe("web_search");
     expect(toolPart.args.description).toBe("Searching");
     expect(toolPart.result).toBe("Found it");

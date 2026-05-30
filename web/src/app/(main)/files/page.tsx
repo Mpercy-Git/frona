@@ -329,7 +329,7 @@ export default function FilesPage() {
           if (!isMyFilesPath(id)) continue;
           const filePath = userSubpath(id);
           try {
-            await deleteFile(user.username, filePath);
+            await deleteFile(user.handle, filePath);
           } catch {}
         }
       });
@@ -342,9 +342,9 @@ export default function FilesPage() {
             const sub = agentSubpath(id);
             return `agent://${agentId}/${sub}`;
           }
-          return `user://${user.username}/${userSubpath(id)}`;
+          return `user://${user.handle}/${userSubpath(id)}`;
         });
-        const dest = `user://${user.username}/${userSubpath(ev.target)}`;
+        const dest = `user://${user.handle}/${userSubpath(ev.target)}`;
         try {
           await copyFiles(sources, dest);
         } catch {}
@@ -356,9 +356,9 @@ export default function FilesPage() {
           if (!isMyFilesPath(id)) return;
         }
         const sources = ev.ids.map(
-          (id: string) => `user://${user.username}/${userSubpath(id)}`,
+          (id: string) => `user://${user.handle}/${userSubpath(id)}`,
         );
-        const dest = `user://${user.username}/${userSubpath(ev.target)}`;
+        const dest = `user://${user.handle}/${userSubpath(ev.target)}`;
         try {
           await moveFiles(sources, dest);
         } catch {}

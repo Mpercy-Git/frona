@@ -18,6 +18,7 @@ pub struct ManageServiceTool {
     prompts: PromptLoader,
     notification_service: NotificationService,
     broadcast_service: BroadcastService,
+    public_base_url: String,
 }
 
 impl ManageServiceTool {
@@ -26,12 +27,14 @@ impl ManageServiceTool {
         prompts: PromptLoader,
         notification_service: NotificationService,
         broadcast_service: BroadcastService,
+        public_base_url: String,
     ) -> Self {
         Self {
             app_service,
             prompts,
             notification_service,
             broadcast_service,
+            public_base_url,
         }
     }
 }
@@ -76,18 +79,13 @@ impl ManageServiceTool {
         let apps = self.app_service.list(agent_id).await?;
 
         if let Some(ref mv) = manifest_value
-            && let Some(manifest_id) = mv.get("id").and_then(|v| v.as_str())
+            && let Some(handle_str) = mv.get("handle").and_then(|v| v.as_str())
         {
-            if let Some(app) = apps.iter().find(|a| {
-                a.manifest
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|id| id == manifest_id)
-            }) {
+            if let Some(app) = apps.iter().find(|a| a.handle.as_str() == handle_str) {
                 return Ok(ToolOutput::text(serde_json::to_string_pretty(app).unwrap_or_default()));
             }
             return Ok(ToolOutput::text(format!(
-                "No app found with id '{manifest_id}'"
+                "No app found with handle '{handle_str}'"
             )));
         }
 
@@ -108,9 +106,9 @@ impl ManageServiceTool {
             .ok_or_else(|| AppError::Validation("manifest is required for deploy".into()))?;
 
         let manifest: AppManifest = serde_json::from_value(manifest_value.clone())
-            .map_err(|e| AppError::Validation(format!("Invalid manifest: {e}")))?;
+            .map_err(|e| AppError::Validation(format!("Invalid manifest: {e}. Tip: `handle` is required — a short URL-safe identifier (e.g. \"notes\", \"my-dashboard\"). Apps are served at /apps/{{handle}}/.")))?;
 
-        let existing = self.app_service.find_by_manifest_id(&ctx.agent.id, &manifest.id).await?;
+        let existing = self.app_service.find_by_user_handle(&ctx.user.id, &manifest.handle).await?;
 
         let needs_approval = check_needs_approval(&existing, &manifest_value);
 
@@ -132,20 +130,32 @@ impl ManageServiceTool {
             .as_pending_external());
         }
 
-        if let Some(ref existing) = existing {
-            let app = self
-                .app_service
+        let app = if let Some(ref existing) = existing {
+            self.app_service
                 .restart(&ctx.agent.id, &existing.id, &ctx.chat.id)
-                .await?;
-            return Ok(ToolOutput::text(format_app_result("restarted", &app)));
+                .await?
+        } else {
+            self.app_service
+                .deploy_and_await(&ctx.agent.id, &ctx.user.id, &ctx.chat.id, &manifest, Vec::new())
+                .await?
+        };
+
+        Ok(ToolOutput::text(self.format_running_result("deployed successfully", &app)))
+    }
+
+    fn format_running_result(&self, action: &str, app: &AppResponse) -> String {
+        let mut out = format_app_result(action, app);
+
+        if app.kind == "service"
+            && let Some(port) = app.port
+        {
+            out.push_str(&format!("\nInternal URL: http://localhost:{port}"));
         }
 
-        let app = self
-            .app_service
-            .deploy_and_await(&ctx.agent.id, &ctx.user.id, &ctx.chat.id, &manifest, Vec::new())
-            .await?;
-
-        Ok(ToolOutput::text(format_app_result("deployed successfully", &app)))
+        if let Some(rel) = app.url.as_deref() {
+            out.push_str(&format!("\nPublic URL: {}{rel}", self.public_base_url));
+        }
+        out
     }
 
     async fn handle_stop(
@@ -156,7 +166,7 @@ impl ManageServiceTool {
         let app_id = self.resolve_app_id(ctx, manifest_value.as_ref()).await?;
 
         let app = self.app_service.stop(&ctx.agent.id, &app_id, &ctx.chat.id).await?;
-        self.emit_notification(ctx, &app_id, "stop", NotificationLevel::Info, &format!("App '{}' stopped", app.name)).await;
+        self.emit_notification(ctx, &app.handle, "stop", NotificationLevel::Info, &format!("App '{}' stopped", app.name)).await;
         Ok(ToolOutput::text(format!(
             "App '{}' stopped. Status: {}",
             app.name, app.status
@@ -175,8 +185,8 @@ impl ManageServiceTool {
             .start(&ctx.agent.id, &app_id, &ctx.chat.id, Vec::new())
             .await?;
 
-        self.emit_notification(ctx, &app_id, "start", NotificationLevel::Success, &format!("App '{}' started", app.name)).await;
-        Ok(ToolOutput::text(format_app_result("started", &app)))
+        self.emit_notification(ctx, &app.handle, "start", NotificationLevel::Success, &format!("App '{}' started", app.name)).await;
+        Ok(ToolOutput::text(self.format_running_result("started", &app)))
     }
 
     async fn handle_restart(
@@ -188,8 +198,8 @@ impl ManageServiceTool {
 
         let app = self.app_service.restart(&ctx.agent.id, &app_id, &ctx.chat.id).await?;
 
-        self.emit_notification(ctx, &app_id, "restart", NotificationLevel::Info, &format!("App '{}' restarted", app.name)).await;
-        Ok(ToolOutput::text(format_app_result("restarted", &app)))
+        self.emit_notification(ctx, &app.handle, "restart", NotificationLevel::Info, &format!("App '{}' restarted", app.name)).await;
+        Ok(ToolOutput::text(self.format_running_result("restarted", &app)))
     }
 
     async fn handle_destroy(
@@ -214,7 +224,7 @@ impl ManageServiceTool {
     async fn emit_notification(
         &self,
         ctx: &InferenceContext,
-        app_id: &str,
+        app_handle: &str,
         action: &str,
         level: NotificationLevel,
         title: &str,
@@ -224,7 +234,7 @@ impl ManageServiceTool {
             .create(
                 &ctx.user.id,
                 NotificationData::App {
-                    app_id: app_id.to_string(),
+                    app_handle: app_handle.to_string(),
                     action: action.to_string(),
                 },
                 level,
@@ -242,20 +252,30 @@ impl ManageServiceTool {
         ctx: &InferenceContext,
         manifest_value: Option<&Value>,
     ) -> Result<String, AppError> {
-        let manifest_id = manifest_value
-            .and_then(|v| v.get("id"))
+        let handle_str = manifest_value
+            .and_then(|v| v.get("handle"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                AppError::Validation("manifest.id is required to identify the app".into())
+                AppError::Validation(
+                    "manifest.handle is required to identify the app".into(),
+                )
+            })?;
+        let handle = crate::core::Handle::try_new(handle_str)?;
+
+        let app = self
+            .app_service
+            .find_by_user_handle(&ctx.user.id, &handle)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("No app found with handle '{handle_str}'"))
             })?;
 
-        self.app_service
-            .find_by_manifest_id(&ctx.agent.id, manifest_id)
-            .await?
-            .map(|a| a.id)
-            .ok_or_else(|| {
-                AppError::NotFound(format!("No app found with manifest id '{manifest_id}'"))
-            })
+        if app.agent_id != ctx.agent.id {
+            return Err(AppError::Forbidden(
+                "App is owned by a different agent".into(),
+            ));
+        }
+        Ok(app.id)
     }
 }
 
@@ -294,6 +314,7 @@ mod tests {
             id: "app-1".to_string(),
             agent_id: "agent-1".to_string(),
             user_id: "user-1".to_string(),
+            handle: crate::handle!("test"),
             name: "Test".to_string(),
             description: None,
             kind: "service".to_string(),
@@ -313,77 +334,77 @@ mod tests {
 
     #[test]
     fn approval_required_for_new_app() {
-        let manifest = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py"});
+        let manifest = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py"});
         assert!(check_needs_approval(&None, &manifest));
     }
 
     #[test]
     fn no_approval_when_manifest_identical() {
-        let manifest = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py"});
+        let manifest = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py"});
         let app = make_app(manifest.clone());
         assert!(!check_needs_approval(&Some(app), &manifest));
     }
 
     #[test]
     fn no_approval_when_only_name_changes() {
-        let old = serde_json::json!({"id": "test", "name": "Old Name", "command": "python app.py"});
-        let new = serde_json::json!({"id": "test", "name": "New Name", "command": "python app.py"});
+        let old = serde_json::json!({"id": "test", "handle": "test", "name": "Old Name", "command": "python app.py"});
+        let new = serde_json::json!({"id": "test", "handle": "test", "name": "New Name", "command": "python app.py"});
         let app = make_app(old);
         assert!(!check_needs_approval(&Some(app), &new));
     }
 
     #[test]
     fn no_approval_when_only_description_changes() {
-        let old = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py"});
-        let new = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py", "description": "new desc"});
+        let old = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py"});
+        let new = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py", "description": "new desc"});
         let app = make_app(old);
         assert!(!check_needs_approval(&Some(app), &new));
     }
 
     #[test]
     fn no_approval_when_only_health_check_changes() {
-        let old = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py"});
-        let new = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py", "health_check": {"path": "/healthz"}});
+        let old = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py"});
+        let new = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py", "health_check": {"path": "/healthz"}});
         let app = make_app(old);
         assert!(!check_needs_approval(&Some(app), &new));
     }
 
     #[test]
     fn approval_required_when_command_changes() {
-        let old = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py"});
-        let new = serde_json::json!({"id": "test", "name": "Test", "command": "node server.js"});
+        let old = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py"});
+        let new = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "node server.js"});
         let app = make_app(old);
         assert!(check_needs_approval(&Some(app), &new));
     }
 
     #[test]
     fn approval_required_when_sandbox_policy_changes() {
-        let old = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py"});
-        let new = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py", "sandbox_policy": {"network_destinations": ["evil.com:443"]}});
+        let old = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py"});
+        let new = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py", "sandbox_policy": {"network_destinations": ["evil.com:443"]}});
         let app = make_app(old);
         assert!(check_needs_approval(&Some(app), &new));
     }
 
     #[test]
     fn approval_required_when_credentials_change() {
-        let old = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py"});
-        let new = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py", "credentials": [{"query": "api-key", "reason": "need it", "env_var_prefix": "API"}]});
+        let old = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py"});
+        let new = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py", "credentials": [{"query": "api-key", "reason": "need it", "env_var_prefix": "API"}]});
         let app = make_app(old);
         assert!(check_needs_approval(&Some(app), &new));
     }
 
     #[test]
     fn approval_required_when_expose_changes() {
-        let old = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py", "expose": false});
-        let new = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py", "expose": true});
+        let old = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py", "expose": false});
+        let new = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py", "expose": true});
         let app = make_app(old);
         assert!(check_needs_approval(&Some(app), &new));
     }
 
     #[test]
     fn approval_required_when_kind_changes() {
-        let old = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py"});
-        let new = serde_json::json!({"id": "test", "name": "Test", "kind": "static", "static_dir": "dist/"});
+        let old = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py"});
+        let new = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "kind": "static", "static_dir": "dist/"});
         let app = make_app(old);
         assert!(check_needs_approval(&Some(app), &new));
     }
@@ -391,7 +412,7 @@ mod tests {
     #[test]
     fn approval_required_when_stored_manifest_unparseable() {
         let old = serde_json::json!("not a valid manifest");
-        let new = serde_json::json!({"id": "test", "name": "Test", "command": "python app.py"});
+        let new = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py"});
         let app = make_app(old);
         assert!(check_needs_approval(&Some(app), &new));
     }

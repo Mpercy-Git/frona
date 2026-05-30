@@ -4,7 +4,7 @@ use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use teloxide::Bot;
-use teloxide::payloads::SendMessageSetters;
+use teloxide::payloads::{DeleteWebhookSetters, SendMessageSetters};
 use teloxide::prelude::Requester;
 use teloxide::types::{ChatAction, ChatId, ParseMode, Recipient, ThreadId};
 use url::Url;
@@ -71,6 +71,49 @@ impl ChannelAdapter for TelegramAdapter {
         let url = Url::parse(&ctx.webhook_url).map_err(|e| {
             AppError::Validation(format!("invalid webhook URL {}: {e}", ctx.webhook_url))
         })?;
+
+        // Probe Telegram's current view: skip the round-trip if it's already
+        // ours, and explicitly clear any stale registration (with its queued
+        // updates) before installing ours so we don't inherit the backlog.
+        let info = self.bot.get_webhook_info().await.map_err(|e| {
+            tracing::warn!(
+                channel_id = %ctx.channel.id,
+                error = %e,
+                "Telegram getWebhookInfo failed — channel will be marked Failed",
+            );
+            AppError::Internal(format!("Telegram getWebhookInfo failed: {e}"))
+        })?;
+        let current = info.url.as_ref().map(|u| u.as_str().to_string());
+
+        if current.as_deref() == Some(url.as_str()) {
+            tracing::info!(
+                channel_id = %ctx.channel.id,
+                url = %ctx.webhook_url,
+                "Telegram webhook already registered correctly, skipping setWebhook",
+            );
+            return Ok(());
+        }
+
+        if let Some(existing) = current.as_deref() {
+            tracing::info!(
+                channel_id = %ctx.channel.id,
+                existing = %existing,
+                "Telegram bot held a different webhook URL; clearing it (with pending updates) before re-registering",
+            );
+            if let Err(e) = self
+                .bot
+                .delete_webhook()
+                .drop_pending_updates(true)
+                .await
+            {
+                tracing::warn!(
+                    channel_id = %ctx.channel.id,
+                    error = %e,
+                    "Telegram deleteWebhook failed before re-registering (continuing to setWebhook)",
+                );
+            }
+        }
+
         self.bot.set_webhook(url).await.map_err(|e| {
             tracing::warn!(
                 channel_id = %ctx.channel.id,
@@ -262,6 +305,7 @@ async fn emit_inbound_update(
         sender_external_id: Some(from.id.to_string()),
         sender_display_name: Some(display_name),
         content: message.text.unwrap_or_default(),
+        attachments: vec![],
     };
 
     ctx.emit

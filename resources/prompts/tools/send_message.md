@@ -13,4 +13,4 @@ parameters:
 required:
   - content
 ---
-Send a message to the user. The message will be delivered to the most relevant chat automatically. Use this to proactively notify the user about important information, completed work, reminders, or anything they should know about.
+Initiate a new message to the user in their primary chat. Only available during autonomous heartbeat execution, where your current chat is the heartbeat scratch thread and you need to reach out to the user to surface something actionable. Do not use to confirm or restate work already done — inside a task, `complete_task.result` is the delivery channel; inside a chat, your reply text is already visible.

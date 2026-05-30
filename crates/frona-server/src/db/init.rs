@@ -1,23 +1,51 @@
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, RocksDb};
-use surrealdb::types::RecordId;
 use tracing::info;
 
-use crate::agent::config::parse_frontmatter;
-use crate::agent::service::AgentService;
-use crate::storage::StorageService;
+const USER_OWNED_RESOURCES: &[(&str, &str)] = &[
+    ("chat", "user_id"),
+    ("agent", "user_id"),
+];
+
+fn build_refuse_user_delete_event() -> String {
+    let mut lets = String::new();
+    let mut conditions = Vec::new();
+    let mut payload_parts = Vec::new();
+    for (table, fk) in USER_OWNED_RESOURCES {
+        lets.push_str(&format!(
+            "            LET ${table}_count = (SELECT count() FROM {table} \
+              WHERE {fk} = meta::id($before.id) GROUP ALL)[0].count ?? 0;\n"
+        ));
+        conditions.push(format!("${table}_count > 0"));
+        payload_parts.push(format!("'\"{table}\":' + <string>${table}_count"));
+    }
+    format!(
+        "DEFINE EVENT IF NOT EXISTS refuse_user_delete_with_owned ON TABLE user
+          WHEN $event = 'DELETE'
+          THEN {{
+{lets}            IF {cond} {{
+              THROW 'owned_resources:{{' + {payload} + '}}';
+            }};
+          }};",
+        cond = conditions.join(" OR "),
+        payload = payload_parts.join(" + ',' + "),
+    )
+}
 
 pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
     db.use_ns("frona").use_db("frona").await?;
 
-    db.query(
-        "
+    let static_schema = "
         DEFINE TABLE IF NOT EXISTS user SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS unique_email ON TABLE user COLUMNS email UNIQUE;
-        DEFINE INDEX IF NOT EXISTS unique_username ON TABLE user COLUMNS username UNIQUE;
+        DEFINE INDEX IF NOT EXISTS unique_handle ON TABLE user COLUMNS handle UNIQUE;
+
+        DEFINE TABLE IF NOT EXISTS user_group SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_user_group_name ON TABLE user_group COLUMNS name UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS agent SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_agent_user ON TABLE agent COLUMNS user_id;
+        DEFINE INDEX IF NOT EXISTS idx_agent_user_handle ON TABLE agent COLUMNS user_id, handle UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS space SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_space_user ON TABLE space COLUMNS user_id;
@@ -78,17 +106,19 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_app_agent ON TABLE app COLUMNS agent_id;
         DEFINE INDEX IF NOT EXISTS idx_app_user ON TABLE app COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_app_status ON TABLE app COLUMNS status;
+        DEFINE INDEX IF NOT EXISTS idx_app_user_handle ON TABLE app COLUMNS user_id, handle UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS mcp_server SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_mcp_server_user ON TABLE mcp_server COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_mcp_server_status ON TABLE mcp_server COLUMNS status;
-        DEFINE INDEX IF NOT EXISTS idx_mcp_server_user_slug ON TABLE mcp_server COLUMNS user_id, slug UNIQUE;
+        DEFINE INDEX IF NOT EXISTS idx_mcp_server_user_handle ON TABLE mcp_server COLUMNS user_id, handle UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS channel SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_channel_user ON TABLE channel COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_channel_space ON TABLE channel COLUMNS space_id;
         DEFINE INDEX IF NOT EXISTS idx_channel_status ON TABLE channel COLUMNS status;
         DEFINE INDEX IF NOT EXISTS idx_channel_space_unique ON TABLE channel COLUMNS space_id UNIQUE;
+        DEFINE INDEX IF NOT EXISTS idx_channel_user_handle ON TABLE channel COLUMNS user_id, handle UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS vault_connection SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_vault_connection_user ON TABLE vault_connection COLUMNS user_id;
@@ -132,57 +162,38 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE EVENT IF NOT EXISTS cascade_delete_task_chat ON TABLE task
           WHEN $event = 'DELETE' AND $before.chat_id IS NOT NONE
           THEN (DELETE type::record('chat', $before.chat_id));
-        ",
-    )
-    .await?;
 
-    Ok(())
-}
+        DEFINE EVENT IF NOT EXISTS refuse_last_admin_loss_on_delete ON TABLE user
+          WHEN $event = 'DELETE'
+            AND $before.deactivated_at IS NONE
+            AND $before.groups CONTAINS 'admins'
+          THEN {
+            LET $remaining = (SELECT count() FROM user
+                                WHERE deactivated_at IS NONE
+                                  AND groups CONTAINS 'admins'
+                                GROUP ALL)[0].count ?? 0;
+            IF $remaining < 1 { THROW 'last_admin'; };
+          };
 
-pub async fn seed_config_agents(db: &Surreal<Db>, agent_service: &AgentService, storage: &StorageService) -> Result<(), surrealdb::Error> {
-    let agent_ids = agent_service.builtin_agent_ids();
-    info!(agents = ?agent_ids, "Builtin agent IDs from config");
-    for agent_id in agent_ids {
-        let rid = RecordId::new("agent", agent_id.as_str());
-        let mut result = db
-            .query("SELECT meta::id(id) as id FROM agent WHERE id = $id LIMIT 1")
-            .bind(("id", rid))
-            .await?;
+        DEFINE EVENT IF NOT EXISTS refuse_last_admin_loss_on_update ON TABLE user
+          WHEN $event = 'UPDATE'
+            AND $before.deactivated_at IS NONE
+            AND $before.groups CONTAINS 'admins'
+            AND ($after.deactivated_at IS NOT NONE
+              OR !($after.groups CONTAINS 'admins'))
+          THEN {
+            LET $remaining = (SELECT count() FROM user
+                                WHERE deactivated_at IS NONE
+                                  AND groups CONTAINS 'admins'
+                                GROUP ALL)[0].count ?? 0;
+            IF $remaining < 1 { THROW 'last_admin'; };
+          };
+        ";
 
-        let existing: Option<serde_json::Value> = result.take(0)?;
-        if existing.is_some() {
-            continue;
-        }
+    let owned_event = build_refuse_user_delete_event();
+    let schema = format!("{static_schema}\n{owned_event}");
 
-        let ws = storage.agent_workspace(&agent_id);
-        let (description, model_group) = ws
-            .read("AGENT.md")
-            .map(|content| {
-                let entry = parse_frontmatter(&content);
-                let desc = entry.metadata.get("description").cloned().unwrap_or_default();
-                let mg = entry.metadata.get("model_group").cloned().unwrap_or_else(|| "primary".to_string());
-                (desc, mg)
-            })
-            .unwrap_or_default();
-
-        db.query(
-            "CREATE type::record('agent', $id) SET
-                name = $id,
-                description = $description,
-                model_group = $model_group,
-                enabled = true,
-                skills = [],
-                identity = {},
-                created_at = time::now(),
-                updated_at = time::now()"
-        )
-        .bind(("id", agent_id.clone()))
-        .bind(("description", description))
-        .bind(("model_group", model_group))
-        .await?;
-
-        info!(agent_id = %agent_id, "Seeded config agent into database");
-    }
+    db.query(schema).await?;
 
     Ok(())
 }

@@ -20,6 +20,7 @@ pub enum AccessIntent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EntityRef {
+    /// Cedar id `"{user_handle}/{agent_handle}"`. Construct via `Self::agent`.
     Agent(String),
     Mcp(String),
     App(String),
@@ -31,6 +32,10 @@ pub enum EntityRef {
 }
 
 impl EntityRef {
+    pub fn agent(user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle) -> Self {
+        Self::Agent(format!("{user_handle}/{agent_handle}"))
+    }
+
     pub fn cedar_type(&self) -> &'static str {
         match self {
             Self::Agent(_) => "Policy::Agent",
@@ -1166,7 +1171,7 @@ mod tests {
     fn stored(name: &str, text: &str) -> StoredPolicy {
         let now = chrono::Utc::now();
         StoredPolicy {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: Some("u".into()),
             name: name.into(),
             description: String::new(),

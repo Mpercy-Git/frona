@@ -28,7 +28,7 @@ impl AgentRepository for SurrealRepo<Agent> {
     }
 
     async fn find_by_user_id(&self, user_id: &str) -> Result<Vec<Agent>, AppError> {
-        let query = format!("{SELECT_CLAUSE} FROM agent WHERE user_id = $user_id OR user_id IS NONE ORDER BY created_at DESC");
+        let query = format!("{SELECT_CLAUSE} FROM agent WHERE user_id = $user_id ORDER BY created_at DESC");
         let mut result = self
             .db()
             .query(&query)
@@ -45,13 +45,32 @@ impl AgentRepository for SurrealRepo<Agent> {
 
     async fn find_by_name(&self, user_id: &str, name: &str) -> Result<Option<Agent>, AppError> {
         let query = format!(
-            "{SELECT_CLAUSE} FROM agent WHERE (user_id = $user_id OR user_id IS NONE) AND string::lowercase(name) = string::lowercase($name) LIMIT 1"
+            "{SELECT_CLAUSE} FROM agent WHERE user_id = $user_id AND string::lowercase(name) = string::lowercase($name) LIMIT 1"
         );
         let mut result = self
             .db()
             .query(&query)
             .bind(("user_id", user_id.to_string()))
             .bind(("name", name.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let agent: Option<Agent> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(agent)
+    }
+
+    async fn find_by_handle(&self, user_id: &str, handle: &crate::core::Handle) -> Result<Option<Agent>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM agent WHERE user_id = $user_id AND handle = $handle LIMIT 1"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("user_id", user_id.to_string()))
+            .bind(("handle", handle.as_ref().to_string()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 

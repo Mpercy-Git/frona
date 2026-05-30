@@ -11,12 +11,16 @@ import {
   InformationCircleIcon,
   Cog6ToothIcon,
   KeyIcon,
+  ClipboardDocumentIcon,
+  CheckIcon,
 } from "@heroicons/react/24/outline";
 import { api } from "@/lib/api-client";
 import { sseBus } from "@/lib/sse-event-bus";
 import { SectionHeader, SectionPanel } from "@/components/settings/field";
 import { AddCredentialForm } from "@/components/agents/configure/creds-section";
 import type { VaultGrant, VaultConnection, PendingCredential } from "@/components/agents/configure/creds-section";
+import { ManifestInfo, MarkdownProse, type ExternalLink } from "@/components/channels/manifest-info";
+import { QRCodeSVG } from "qrcode.react";
 import { formatDistanceToNow } from "date-fns";
 import type { Agent, SpaceResponse } from "@/lib/types";
 
@@ -25,6 +29,21 @@ interface UserAddress {
   pairing_code: string | null;
   pairing_initiated_at: string | null;
   paired_at: string | null;
+}
+
+interface SetupConfig {
+  code: string | null;
+  qr: string | null;
+  instructions: string | null;
+  expires_at: string | null;
+  initiated_at: string | null;
+}
+
+interface RetryConfig {
+  max_retries: number;
+  initial_backoff_ms: number;
+  backoff_multiplier: number;
+  max_backoff_ms: number;
 }
 
 interface Channel {
@@ -39,8 +58,11 @@ interface Channel {
   error_message: string | null;
   last_started_at: string | null;
   user_address: UserAddress | null;
+  setup: SetupConfig | null;
+  retry: RetryConfig | null;
   created_at: string;
   updated_at: string;
+  webhook_url?: string;
 }
 
 interface ChannelConfigField {
@@ -60,16 +82,67 @@ const DISPATCH_MODE_LABEL: Record<string, string> = {
   signal: "Hand off to a waiting agent",
 };
 
+const RETRY_FOREVER = 4294967295;
+const CHANNEL_RETRY_DEFAULTS: RetryConfig = {
+  max_retries: RETRY_FOREVER,
+  initial_backoff_ms: 1000,
+  backoff_multiplier: 2.0,
+  max_backoff_ms: 60000,
+};
+
+function RetryNumberInput({
+  label,
+  value,
+  placeholder,
+  step,
+  forever,
+  onChange,
+}: {
+  label: string;
+  value: number | undefined;
+  placeholder?: string;
+  step?: number;
+  forever?: boolean;
+  onChange: (v: number | null) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-xs text-text-secondary">{label}</span>
+      <input
+        type="number"
+        min={0}
+        step={step ?? 1}
+        value={forever ? "" : (value ?? "")}
+        placeholder={forever ? "Forever" : placeholder}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") {
+            onChange(null);
+          } else {
+            const n = Number(raw);
+            onChange(Number.isFinite(n) ? n : null);
+          }
+        }}
+        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none font-mono"
+      />
+    </label>
+  );
+}
+
 interface ChannelManifest {
   id: string;
   display_name: string;
   description: string;
   config_fields: ChannelConfigField[];
+  webhook_url_visible?: boolean;
+  setup_instructions?: string | null;
+  external_links?: ExternalLink[];
 }
 
 const SECTIONS = [
   { id: "status", label: "Status" },
   { id: "config", label: "Config" },
+  { id: "about", label: "About" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -100,6 +173,36 @@ function providerBadgeClass(providerId: string, manifests: ChannelManifest[]): s
   return PROVIDER_COLORS[idx % PROVIDER_COLORS.length];
 }
 
+function WebhookUrlField({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="relative">
+      <input
+        readOnly
+        value={url}
+        onFocus={(e) => e.currentTarget.select()}
+        className="w-full rounded-lg border border-border bg-surface pl-3 pr-10 py-2 text-sm font-mono text-text-primary focus:border-accent focus:outline-none"
+      />
+      <button
+        onClick={handleCopy}
+        aria-label={copied ? "Copied" : "Copy webhook URL"}
+        className="absolute top-1/2 -translate-y-1/2 right-1.5 flex items-center justify-center h-7 w-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition"
+      >
+        {copied ? (
+          <CheckIcon className="h-4 w-4 text-[#4fd1c5]" />
+        ) : (
+          <ClipboardDocumentIcon className="h-4 w-4" />
+        )}
+      </button>
+    </div>
+  );
+}
+
 function ChannelDetailPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -119,6 +222,7 @@ function ChannelDetailPage() {
   const [agentId, setAgentId] = useState("");
   const [dispatchMode, setDispatchMode] = useState<"message" | "signal">("message");
   const [config, setConfig] = useState<Record<string, string>>({});
+  const [retry, setRetry] = useState<RetryConfig | null>(null);
 
   // Picker writes are staged locally; the page Save button commits pending
   // grants and deleted grants alongside config changes so the swap is atomic.
@@ -166,6 +270,7 @@ function ChannelDetailPage() {
       setAgentId(c.agent_id);
       setDispatchMode(c.dispatch_mode);
       setConfig(c.config ?? {});
+      setRetry(c.retry);
       setConnections(new Map(conns.map((cn) => [cn.id, cn])));
       setGrants(
         allGrants.filter(
@@ -186,6 +291,27 @@ function ChannelDetailPage() {
     reload();
   }, [reload]);
 
+  // Hide Config only when there's literally nothing to show - no fields
+  // AND no webhook URL.
+  const configTabHasContent = (m: ChannelManifest) =>
+    m.config_fields.length > 0 || !!m.webhook_url_visible;
+  const visibleSections = SECTIONS.filter((s) => {
+    if (s.id === "config" && manifest && !configTabHasContent(manifest)) {
+      return false;
+    }
+    return true;
+  });
+
+  // Don't redirect off Config during `setup` with a non-empty config -
+  // that's exactly when the user needs to be there to fill the fields.
+  useEffect(() => {
+    if (activeSection !== "config" || !channel || !manifest) return;
+    const tabHidden = !configTabHasContent(manifest);
+    if (tabHidden || channel.status === "pairing") {
+      setActiveSection("status");
+    }
+  }, [activeSection, channel, manifest, setActiveSection]);
+
   const save = async () => {
     if (!channel) return;
     setSaving(true);
@@ -205,6 +331,8 @@ function ChannelDetailPage() {
       if (dispatchMode !== channel.dispatch_mode) patch.dispatch_mode = dispatchMode;
       const cfgChanged = JSON.stringify(config) !== JSON.stringify(channel.config ?? {});
       if (cfgChanged) patch.config = config;
+      const retryChanged = JSON.stringify(retry) !== JSON.stringify(channel.retry);
+      if (retryChanged) patch.retry = retry;
       if (Object.keys(patch).length > 0) {
         await api.patch(`/api/channels/${channelId}`, patch);
       }
@@ -302,7 +430,10 @@ function ChannelDetailPage() {
     return <p className="p-8 text-sm text-error-text">{error || "Channel not found"}</p>;
   }
 
-  const canStart = channel.status === "disconnected" || channel.status === "failed";
+  const canStart =
+    channel.status === "disconnected"
+    || channel.status === "failed"
+    || channel.status === "setup";
   const canStop = channel.status === "connected" || channel.status === "connecting";
   const displayName = space?.name ?? manifest?.display_name ?? channel.provider;
 
@@ -342,7 +473,7 @@ function ChannelDetailPage() {
         </div>
 
         <nav className="space-y-1 flex-1">
-          {SECTIONS.map((s) => (
+          {visibleSections.map((s) => (
             <button
               key={s.id}
               onClick={() => setActiveSection(s.id)}
@@ -360,6 +491,24 @@ function ChannelDetailPage() {
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto p-8 space-y-6">
+          {activeSection === "about" && manifest && (
+            <div className="space-y-6">
+              <SectionHeader
+                title="About"
+                description="What this provider is and how to set it up."
+                icon={InformationCircleIcon}
+              />
+              <SectionPanel title={manifest.display_name}>
+                <ManifestInfo manifest={manifest} />
+              </SectionPanel>
+              {channel.status === "setup" && manifest.setup_instructions && (
+                <SectionPanel title="Setup">
+                  <MarkdownProse source={manifest.setup_instructions} />
+                </SectionPanel>
+              )}
+            </div>
+          )}
+
           {activeSection === "status" && (
             <div className="space-y-6">
               <SectionHeader
@@ -422,6 +571,58 @@ function ChannelDetailPage() {
                   </div>
                 )}
               </div>
+
+              {channel.status === "setup"
+                && channel.setup
+                && (channel.setup.code || channel.setup.qr) && (
+                <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 p-4 space-y-4">
+                  <div>
+                    <h4 className="text-sm font-semibold text-text-primary">
+                      Awaiting setup
+                    </h4>
+                    {channel.setup.instructions ? (
+                      <p className="text-xs text-text-tertiary mt-1 whitespace-pre-line">
+                        {channel.setup.instructions}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-text-tertiary mt-1">
+                        Complete the {channel.setup.qr ? "QR scan" : "code entry"} below to finish provider setup.
+                      </p>
+                    )}
+                  </div>
+
+                  {channel.setup.qr && (
+                    <div className="flex justify-center rounded-lg bg-white p-4">
+                      <QRCodeSVG
+                        value={channel.setup.qr}
+                        size={224}
+                        level="M"
+                        marginSize={0}
+                      />
+                    </div>
+                  )}
+
+                  {channel.setup.code && (
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 rounded-lg border border-border bg-surface px-3 py-3 text-center text-2xl font-mono font-semibold tracking-[0.3em] text-text-primary">
+                        {channel.setup.code}
+                      </code>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(channel.setup!.code!)}
+                        className="rounded-lg border border-border px-3 py-2 text-xs text-text-secondary hover:bg-surface-tertiary transition"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  )}
+
+                  {channel.setup.expires_at && (
+                    <div className="text-[11px] text-text-tertiary text-center">
+                      Expires {formatDistanceToNow(new Date(channel.setup.expires_at), { addSuffix: true })}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {channel.status === "pairing" && channel.user_address?.pairing_code && (
                 <div className="rounded-xl border border-purple-500/30 bg-purple-500/5 p-4 space-y-3">
@@ -563,6 +764,15 @@ function ChannelDetailPage() {
                 </div>
               </SectionPanel>
 
+              {channel.webhook_url && (
+                <SectionPanel title="Webhook URL">
+                  <p className="text-sm text-text-secondary mb-2">
+                    Paste this into the provider&apos;s webhook configuration.
+                  </p>
+                  <WebhookUrlField url={channel.webhook_url} />
+                </SectionPanel>
+              )}
+
               {manifest && manifest.config_fields.length > 0 && (
                 <SectionPanel title="Provider Config">
                   <div className="space-y-3">
@@ -689,6 +899,79 @@ function ChannelDetailPage() {
                   </div>
                 </SectionPanel>
               )}
+
+              <SectionPanel>
+                <h3 className="text-sm font-medium text-text-primary mb-3">Retry policy</h3>
+                <p className="text-xs text-text-tertiary mb-4">
+                  Override the channel-restart backoff for this channel. Leave blank to inherit the
+                  global default. Set max retries to <code>0</code> to disable auto-retry.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <RetryNumberInput
+                    label="Max retries"
+                    value={retry?.max_retries}
+                    placeholder="Forever"
+                    onChange={(v) => {
+                      const next = retry ?? { ...CHANNEL_RETRY_DEFAULTS };
+                      setRetry({ ...next, max_retries: v ?? CHANNEL_RETRY_DEFAULTS.max_retries });
+                      setDirty(true);
+                    }}
+                    forever={retry?.max_retries === RETRY_FOREVER}
+                  />
+                  <RetryNumberInput
+                    label="Initial backoff (ms)"
+                    value={retry?.initial_backoff_ms}
+                    placeholder={`${CHANNEL_RETRY_DEFAULTS.initial_backoff_ms}`}
+                    onChange={(v) => {
+                      const next = retry ?? { ...CHANNEL_RETRY_DEFAULTS };
+                      setRetry({
+                        ...next,
+                        initial_backoff_ms: v ?? CHANNEL_RETRY_DEFAULTS.initial_backoff_ms,
+                      });
+                      setDirty(true);
+                    }}
+                  />
+                  <RetryNumberInput
+                    label="Backoff multiplier"
+                    value={retry?.backoff_multiplier}
+                    placeholder={`${CHANNEL_RETRY_DEFAULTS.backoff_multiplier}`}
+                    step={0.1}
+                    onChange={(v) => {
+                      const next = retry ?? { ...CHANNEL_RETRY_DEFAULTS };
+                      setRetry({
+                        ...next,
+                        backoff_multiplier: v ?? CHANNEL_RETRY_DEFAULTS.backoff_multiplier,
+                      });
+                      setDirty(true);
+                    }}
+                  />
+                  <RetryNumberInput
+                    label="Max backoff (ms)"
+                    value={retry?.max_backoff_ms}
+                    placeholder={`${CHANNEL_RETRY_DEFAULTS.max_backoff_ms}`}
+                    onChange={(v) => {
+                      const next = retry ?? { ...CHANNEL_RETRY_DEFAULTS };
+                      setRetry({
+                        ...next,
+                        max_backoff_ms: v ?? CHANNEL_RETRY_DEFAULTS.max_backoff_ms,
+                      });
+                      setDirty(true);
+                    }}
+                  />
+                </div>
+                {retry !== null && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRetry(null);
+                      setDirty(true);
+                    }}
+                    className="mt-3 text-xs text-text-secondary hover:text-text-primary transition"
+                  >
+                    Reset to inherit global default
+                  </button>
+                )}
+              </SectionPanel>
             </div>
           )}
 
@@ -732,7 +1015,7 @@ function ChannelDetailPage() {
             />
           )}
 
-          {activeSection !== "status" && (
+          {activeSection === "config" && (
             <div className="pt-4 border-t border-border flex items-center justify-end gap-2">
               <button
                 onClick={() => {

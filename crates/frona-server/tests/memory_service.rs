@@ -43,8 +43,7 @@ fn make_memory_service(db: Surreal<Db>) -> MemoryService {
         ),
         StorageService::new(&frona::core::config::Config {
             storage: frona::core::config::StorageConfig {
-                workspaces_path: "/nonexistent".to_string(),
-                files_path: "/nonexistent".to_string(),
+                data_dir: "/nonexistent".to_string(),
                 shared_config_dir: "/nonexistent".to_string(),
                 ..Default::default()
             },
@@ -97,7 +96,7 @@ async fn test_build_augmented_prompt_includes_agent_memory() {
         .unwrap();
 
     let prompt = svc
-        .build_augmented_system_prompt("Base prompt", "agent-1", "user-1", None, &[], &[], &std::collections::BTreeMap::new(), &[])
+        .build_augmented_system_prompt("Base prompt", "agent-1", &frona::handle!("agent-1"), "user-1", &frona::handle!("test-user"), None, &[], &[], &std::collections::BTreeMap::new(), &[], "UTC")
         .await
         .unwrap();
 
@@ -119,7 +118,7 @@ async fn test_build_augmented_prompt_includes_user_memory() {
         .unwrap();
 
     let prompt = svc
-        .build_augmented_system_prompt("Base prompt", "agent-1", "user-1", None, &[], &[], &std::collections::BTreeMap::new(), &[])
+        .build_augmented_system_prompt("Base prompt", "agent-1", &frona::handle!("agent-1"), "user-1", &frona::handle!("test-user"), None, &[], &[], &std::collections::BTreeMap::new(), &[], "UTC")
         .await
         .unwrap();
 
@@ -143,7 +142,7 @@ async fn test_build_augmented_prompt_includes_new_entries_after_compaction() {
     let compacted_until = Utc::now() - Duration::seconds(60);
     let memory_repo: SurrealRepo<Memory> = SurrealRepo::new(db.clone());
     let compacted_memory = Memory {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         source_type: MemorySourceType::Agent,
         source_id: "agent-1".to_string(),
         content: "- Previously compacted memory".to_string(),
@@ -158,7 +157,7 @@ async fn test_build_augmented_prompt_includes_new_entries_after_compaction() {
 
     let repo: SurrealMemoryEntryRepo = SurrealRepo::new(db.clone());
     let new_entry = MemoryEntry {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         agent_id: "agent-1".to_string(),
         user_id: None,
         content: "Brand new memory after compaction".to_string(),
@@ -168,7 +167,7 @@ async fn test_build_augmented_prompt_includes_new_entries_after_compaction() {
     repo.create(&new_entry).await.unwrap();
 
     let prompt = svc
-        .build_augmented_system_prompt("Base prompt", "agent-1", "user-1", None, &[], &[], &std::collections::BTreeMap::new(), &[])
+        .build_augmented_system_prompt("Base prompt", "agent-1", &frona::handle!("agent-1"), "user-1", &frona::handle!("test-user"), None, &[], &[], &std::collections::BTreeMap::new(), &[], "UTC")
         .await
         .unwrap();
 
@@ -209,7 +208,7 @@ async fn test_build_augmented_prompt_appends_tools_guide() {
     let svc = make_memory_service(db.clone());
 
     let prompt = svc
-        .build_augmented_system_prompt("Base prompt", "agent-1", "user-1", None, &[], &[], &std::collections::BTreeMap::new(), &[])
+        .build_augmented_system_prompt("Base prompt", "agent-1", &frona::handle!("agent-1"), "user-1", &frona::handle!("test-user"), None, &[], &[], &std::collections::BTreeMap::new(), &[], "UTC")
         .await
         .unwrap();
 
@@ -233,7 +232,7 @@ async fn test_build_augmented_prompt_appends_memory_guide() {
     let svc = make_memory_service(db.clone());
 
     let prompt = svc
-        .build_augmented_system_prompt("Base prompt", "agent-1", "user-1", None, &[], &[], &std::collections::BTreeMap::new(), &[])
+        .build_augmented_system_prompt("Base prompt", "agent-1", &frona::handle!("agent-1"), "user-1", &frona::handle!("test-user"), None, &[], &[], &std::collections::BTreeMap::new(), &[], "UTC")
         .await
         .unwrap();
 

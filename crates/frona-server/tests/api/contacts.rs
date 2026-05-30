@@ -164,7 +164,6 @@ async fn delete_contact() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Verify it's gone
     let app = build_app(state);
     let resp = app
         .oneshot(auth_get("/api/contacts", &token))

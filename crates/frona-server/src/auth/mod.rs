@@ -1,4 +1,5 @@
 pub mod ephemeral_token;
+pub mod group_service;
 pub mod jwt;
 pub mod lockout;
 pub mod models;
@@ -10,7 +11,7 @@ use async_trait::async_trait;
 
 pub use self::models::User;
 pub use self::user_service::UserService;
-use self::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateUsernameRequest, UserInfo};
+use self::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo, UserPermissions};
 use crate::auth::token::service::TokenService;
 use crate::core::config::Config;
 use crate::core::error::{AppError, AuthErrorCode};
@@ -20,8 +21,15 @@ use crate::credential::keypair::service::KeyPairService;
 #[async_trait]
 pub trait UserRepository: Repository<User> {
     async fn find_by_email(&self, email: &str) -> Result<Option<User>, AppError>;
-    async fn find_by_username(&self, username: &str) -> Result<Option<User>, AppError>;
+    async fn find_by_handle(&self, handle: &crate::core::Handle) -> Result<Option<User>, AppError>;
     async fn has_users(&self) -> Result<bool, AppError>;
+    async fn find_any_active_admin(&self) -> Result<Option<User>, AppError>;
+    async fn find_oldest_active(&self) -> Result<Option<User>, AppError>;
+    async fn list_all(&self, include_deactivated: bool) -> Result<Vec<User>, AppError>;
+}
+
+pub fn can_create_users(config: &Config) -> bool {
+    (config.auth.allow_registration && !config.sso.disable_local_auth) || config.sso.enabled
 }
 
 #[derive(Default)]
@@ -32,6 +40,42 @@ impl AuthService {
         Self
     }
 
+    pub async fn create_user_with_password(
+        &self,
+        user_service: &UserService,
+        req: RegisterRequest,
+        groups: Vec<String>,
+    ) -> Result<User, AppError> {
+        let handle = crate::core::Handle::try_new(req.handle)?;
+        Self::validate_password(&req.password)?;
+
+        if user_service.find_by_email(&req.email).await?.is_some() {
+            return Err(AppError::Validation("Email already registered".into()));
+        }
+        if user_service.find_by_handle(&handle).await?.is_some() {
+            return Err(AppError::Validation("Username already taken".into()));
+        }
+
+        let password_hash = self.hash_password(&req.password)?;
+        let now = chrono::Utc::now();
+        let user = User {
+            id: crate::core::repository::new_id(),
+            handle,
+            email: req.email,
+            name: req.name,
+            password_hash,
+            timezone: None,
+            groups,
+            deactivated_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let user = user_service.create(&user).await?;
+        user_service.ensure_admin_invariant().await?;
+        // Re-read so the caller sees any admin promotion.
+        Ok(user_service.find_by_id(&user.id).await?.unwrap_or(user))
+    }
+
     pub async fn register(
         &self,
         user_service: &UserService,
@@ -39,30 +83,9 @@ impl AuthService {
         token_svc: &TokenService,
         req: RegisterRequest,
     ) -> Result<(AuthResponse, String), AppError> {
-        Self::validate_username(&req.username)?;
-        Self::validate_password(&req.password)?;
-
-        if user_service.find_by_email(&req.email).await?.is_some() {
-            return Err(AppError::Validation("Email already registered".into()));
-        }
-        if user_service.find_by_username(&req.username).await?.is_some() {
-            return Err(AppError::Validation("Username already taken".into()));
-        }
-
-        let password_hash = self.hash_password(&req.password)?;
-        let now = chrono::Utc::now();
-        let user = User {
-            id: uuid::Uuid::new_v4().to_string(),
-            username: req.username,
-            email: req.email,
-            name: req.name,
-            password_hash,
-            timezone: None,
-            created_at: now,
-            updated_at: now,
-        };
-
-        let user = user_service.create(&user).await?;
+        let user = self
+            .create_user_with_password(user_service, req, Vec::new())
+            .await?;
         let (access_jwt, refresh_jwt) =
             token_svc.create_session_pair(keypair_svc, &user).await?;
 
@@ -70,11 +93,12 @@ impl AuthService {
             token: access_jwt,
             user: UserInfo {
                 id: user.id,
-                username: user.username,
+                handle: user.handle,
                 email: user.email,
                 name: user.name,
                 timezone: user.timezone,
                 needs_setup: None,
+                permissions: UserPermissions::default(),
             },
         };
 
@@ -91,9 +115,20 @@ impl AuthService {
         let user = if req.identifier.contains('@') {
             user_service.find_by_email(&req.identifier).await?
         } else {
-            user_service.find_by_username(&req.identifier).await?
+            // Invalid handle → no such user.
+            match crate::core::Handle::try_new(req.identifier.clone()) {
+                Ok(h) => user_service.find_by_handle(&h).await?,
+                Err(_) => None,
+            }
         }
         .ok_or_else(|| AppError::Auth { message: "Invalid credentials".into(), code: AuthErrorCode::InvalidCredentials })?;
+
+        if user.deactivated_at.is_some() {
+            return Err(AppError::Auth {
+                message: "Account deactivated".into(),
+                code: AuthErrorCode::AccountDeactivated,
+            });
+        }
 
         self.verify_password(&req.password, &user.password_hash)?;
         let (access_jwt, refresh_jwt) =
@@ -103,11 +138,12 @@ impl AuthService {
             token: access_jwt,
             user: UserInfo {
                 id: user.id,
-                username: user.username,
+                handle: user.handle,
                 email: user.email,
                 name: user.name,
                 timezone: user.timezone,
                 needs_setup: None,
+                permissions: UserPermissions::default(),
             },
         };
 
@@ -123,30 +159,7 @@ impl AuthService {
         Ok(())
     }
 
-    pub fn validate_username(username: &str) -> Result<(), AppError> {
-        if username.len() < 2 || username.len() > 32 {
-            return Err(AppError::Validation(
-                "Username must be 2-32 characters".into(),
-            ));
-        }
-        if !username.starts_with(|c: char| c.is_ascii_lowercase()) {
-            return Err(AppError::Validation(
-                "Username must start with a lowercase letter".into(),
-            ));
-        }
-        if !username
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-        {
-            return Err(AppError::Validation(
-                "Username may only contain lowercase letters, digits, hyphens, and underscores"
-                    .into(),
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn derive_username_from_email(email: &str) -> String {
+    pub fn derive_handle_from_email(email: &str) -> String {
         let prefix = email.split('@').next().unwrap_or(email);
         prefix
             .to_lowercase()
@@ -163,10 +176,10 @@ impl AuthService {
             .to_string()
     }
 
-    pub async fn generate_unique_username(
+    pub async fn generate_unique_handle(
         user_service: &UserService,
         base: &str,
-    ) -> Result<String, AppError> {
+    ) -> Result<crate::core::Handle, AppError> {
         let base = if base.is_empty() || !base.starts_with(|c: char| c.is_ascii_lowercase()) {
             format!("u-{base}")
         } else {
@@ -175,30 +188,40 @@ impl AuthService {
 
         let truncated = if base.len() > 29 { &base[..29] } else { &base };
 
-        if user_service.find_by_username(truncated).await?.is_none() {
-            return Ok(truncated.to_string());
+        if let Ok(h) = crate::core::Handle::try_new(truncated)
+            && user_service.find_by_handle(&h).await?.is_none()
+        {
+            return Ok(h);
         }
         for i in 2..1000 {
             let candidate = format!("{truncated}-{i}");
-            if candidate.len() <= 32 && user_service.find_by_username(&candidate).await?.is_none() {
-                return Ok(candidate);
+            if candidate.len() > 32 {
+                continue;
+            }
+            let Ok(h) = crate::core::Handle::try_new(&candidate) else {
+                continue;
+            };
+            if user_service.find_by_handle(&h).await?.is_none() {
+                return Ok(h);
             }
         }
-        Err(AppError::Internal("Could not generate unique username".into()))
+        Err(AppError::Internal("Could not generate unique handle".into()))
     }
 
-    pub async fn change_username(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn change_handle(
         &self,
         user_service: &UserService,
         keypair_svc: &KeyPairService,
         token_svc: &TokenService,
+        storage: &crate::storage::service::StorageService,
         config: &Config,
         user_id: &str,
-        req: UpdateUsernameRequest,
+        req: UpdateHandleRequest,
     ) -> Result<(AuthResponse, String), AppError> {
-        Self::validate_username(&req.username)?;
+        let new_handle = crate::core::Handle::try_new(req.handle)?;
 
-        if user_service.find_by_username(&req.username).await?.is_some() {
+        if user_service.find_by_handle(&new_handle).await?.is_some() {
             return Err(AppError::Validation("Username already taken".into()));
         }
 
@@ -207,26 +230,28 @@ impl AuthService {
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
-        let old_username = user.username.clone();
-        if old_username == req.username {
+        let old_handle = user.handle.clone();
+        if old_handle == new_handle {
             return Err(AppError::Validation("Username is the same".into()));
         }
 
-        user.username = req.username.clone();
+        user.handle = new_handle.clone();
         user.updated_at = chrono::Utc::now();
         user_service.update(&user).await?;
 
-        let old_files_dir = std::path::Path::new(&config.storage.files_path).join(&old_username);
-        let new_files_dir = std::path::Path::new(&config.storage.files_path).join(&req.username);
-        if old_files_dir.exists() {
-            tokio::fs::rename(&old_files_dir, &new_files_dir)
-                .await
-                .map_err(|e| AppError::Internal(format!("Failed to rename files directory: {e}")))?;
+        // Single rename moves every per-user subsystem atomically.
+        let old_user_root = storage.user_root(&old_handle);
+        let new_user_root = storage.user_root(&new_handle);
+        if old_user_root.exists() {
+            tokio::fs::rename(&old_user_root, &new_user_root).await.map_err(|e| {
+                AppError::Internal(format!("Failed to rename user data directory: {e}"))
+            })?;
         }
 
+        // Browser profiles dir is a Docker volume mount, not under user_root.
         if let Some(browser) = &config.browser {
-            let old_profiles_dir = std::path::Path::new(&browser.profiles_path).join(&old_username);
-            let new_profiles_dir = std::path::Path::new(&browser.profiles_path).join(&req.username);
+            let old_profiles_dir = std::path::Path::new(&browser.profiles_path).join(old_handle.as_ref());
+            let new_profiles_dir = std::path::Path::new(&browser.profiles_path).join(new_handle.as_ref());
             if old_profiles_dir.exists() {
                 tokio::fs::rename(&old_profiles_dir, &new_profiles_dir)
                     .await
@@ -246,11 +271,12 @@ impl AuthService {
             token: access_jwt,
             user: UserInfo {
                 id: user.id,
-                username: user.username,
+                handle: user.handle,
                 email: user.email,
                 name: user.name,
                 timezone: user.timezone,
                 needs_setup: None,
+                permissions: UserPermissions::default(),
             },
         };
 
@@ -268,17 +294,28 @@ impl AuthService {
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
-        user.timezone = req.timezone;
+        if let Some(ref tz) = req.timezone
+            && !tz.is_empty()
+            && tz.parse::<chrono_tz::Tz>().is_err()
+        {
+            return Err(AppError::Validation(format!(
+                "Invalid timezone '{}'. Use an IANA name like 'America/Los_Angeles', 'Asia/Tokyo', or 'UTC'.",
+                tz
+            )));
+        }
+
+        user.timezone = req.timezone.filter(|s| !s.is_empty());
         user.updated_at = chrono::Utc::now();
         user_service.update(&user).await?;
 
         Ok(UserInfo {
             id: user.id,
-            username: user.username,
+            handle: user.handle,
             email: user.email,
             name: user.name,
             timezone: user.timezone,
             needs_setup: None,
+            permissions: UserPermissions::default(),
         })
     }
 

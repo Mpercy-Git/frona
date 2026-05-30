@@ -64,7 +64,7 @@ pub(crate) async fn upload_file(
         ))
     })?;
 
-    let user_ws = state.storage_service.user_workspace(&auth.username);
+    let user_ws = state.storage_service.user_workspace(&auth.handle);
     let base = user_ws.base_path().to_path_buf();
 
     let (dir, filename_for_dedup, virtual_relative) = if let Some(ref rel_path) = relative_path {
@@ -112,7 +112,7 @@ pub(crate) async fn upload_file(
 
     let url = state
         .presign_service
-        .sign(&owner, &relative, &auth.user_id, &auth.username)
+        .sign(&owner, &relative, &auth.user_id, &auth.handle)
         .await
         .ok()
         .filter(|u| !u.is_empty());
@@ -141,7 +141,7 @@ pub(crate) async fn presign_file(
     }
 
     let vpath = if req.owner.starts_with("user:") {
-        VirtualPath::user(&auth.username, &req.path)
+        VirtualPath::user(&auth.handle, &req.path)
     } else if let Some(agent_id) = req.owner.strip_prefix("agent:") {
         VirtualPath::agent(agent_id, &req.path)
     } else {
@@ -153,7 +153,7 @@ pub(crate) async fn presign_file(
 
     let url = state
         .presign_service
-        .sign(&req.owner, &req.path, &auth.user_id, &auth.username)
+        .sign(&req.owner, &req.path, &auth.user_id, &auth.handle)
         .await?;
 
     if url.is_empty() {

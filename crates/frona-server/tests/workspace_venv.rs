@@ -11,10 +11,14 @@ fn python3_available() -> bool {
 }
 
 fn test_manager() -> SandboxManager {
-    let base = std::env::temp_dir()
+    SandboxManager::new(false, Arc::new(SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))
+}
+
+fn test_workspace(id: &str) -> std::path::PathBuf {
+    std::env::temp_dir()
         .join("frona_test_venv_integration")
-        .join(uuid::Uuid::new_v4().to_string());
-    SandboxManager::new(base, false, Arc::new(SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))
+        .join(uuid::Uuid::new_v4().to_string())
+        .join(id)
 }
 
 #[tokio::test]
@@ -25,7 +29,7 @@ async fn test_execute_uses_venv_python() {
     }
 
     let mgr = test_manager();
-    let ws = mgr.get_sandbox("agent-venv-prefix", false, vec![]);
+    let ws = mgr.get_sandbox(test_workspace("agent-venv-prefix"), "agent-venv-prefix", false, vec![]);
 
     let output = ws
         .execute(
@@ -62,7 +66,7 @@ async fn test_shell_uses_venv_python() {
     }
 
     let mgr = test_manager();
-    let ws = mgr.get_sandbox("agent-venv-which", false, vec![]);
+    let ws = mgr.get_sandbox(test_workspace("agent-venv-which"), "agent-venv-which", false, vec![]);
 
     let output = ws
         .execute("which", &["python3"], 30, None, None, None)
@@ -86,8 +90,8 @@ async fn test_pip_install_isolated() {
     }
 
     let mgr = test_manager();
-    let ws_a = mgr.get_sandbox("agent-pip-a", true, vec![]);
-    let ws_b = mgr.get_sandbox("agent-pip-b", false, vec![]);
+    let ws_a = mgr.get_sandbox(test_workspace("agent-pip-a"), "agent-pip-a", true, vec![]);
+    let ws_b = mgr.get_sandbox(test_workspace("agent-pip-b"), "agent-pip-b", false, vec![]);
 
     let install = ws_a
         .execute("pip", &["install", "cowsay"], 60, None, None, None)

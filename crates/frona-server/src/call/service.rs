@@ -1,5 +1,4 @@
 use chrono::Utc;
-use uuid::Uuid;
 
 use crate::db::repo::generic::SurrealRepo;
 use crate::core::error::AppError;
@@ -27,7 +26,7 @@ impl CallService {
     ) -> Result<Call, AppError> {
         let now = Utc::now();
         let call = Call {
-            id: Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             chat: surrealdb::types::RecordId::new("chat", chat_id),
             contact_id: contact_id.to_string(),
             status: CallStatus::Ringing,

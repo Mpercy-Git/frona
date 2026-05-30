@@ -23,14 +23,21 @@ const QUARANTINED_TASK_TOOLS: &[&str] = &["complete_task", "fail_task", "defer_t
 const QUARANTINED_CONTINUOUS_SIGNAL_TOOLS: &[&str] =
     &["report_signal", "complete_task", "fail_task"];
 
-fn quarantine_filter(task: &Task) -> Option<&'static [&'static str]> {
+fn quarantine_filter(task: &Task) -> Option<crate::tool::registry::ToolFilter> {
+    use crate::tool::registry::ToolFilter;
     if !task.quarantined {
         return None;
     }
     if let TaskKind::Signal { mode: SignalMode::Continuous, .. } = task.kind {
-        return Some(QUARANTINED_CONTINUOUS_SIGNAL_TOOLS);
+        return Some(ToolFilter::AllowList(QUARANTINED_CONTINUOUS_SIGNAL_TOOLS));
     }
-    Some(QUARANTINED_TASK_TOOLS)
+    Some(ToolFilter::AllowList(QUARANTINED_TASK_TOOLS))
+}
+
+/// Currently quarantine-only. The universal task-execution deny lives in
+/// `ChatSessionContext::build` so every entry point gets it.
+fn tool_filters_for_task(task: &Task) -> Vec<crate::tool::registry::ToolFilter> {
+    quarantine_filter(task).into_iter().collect()
 }
 
 pub enum TaskLifecycleEvent {
@@ -38,7 +45,7 @@ pub enum TaskLifecycleEvent {
         status: TaskStatus,
         summary: Option<String>,
     },
-    /// Non-terminal — do NOT resume parent.
+    /// Non-terminal. Do NOT resume parent.
     Match {
         attempt_index: u32,
         summary: String,
@@ -51,6 +58,7 @@ fn source_chat_id_for(task: &Task) -> Option<&str> {
         TaskKind::Delegation { source_chat_id, .. } => Some(source_chat_id.as_str()),
         TaskKind::Direct { source_chat_id: Some(source_chat_id) } => Some(source_chat_id.as_str()),
         TaskKind::Signal { source_chat_id, .. } => Some(source_chat_id.as_str()),
+        TaskKind::CronRun { source_chat_id: Some(source_chat_id), .. } => Some(source_chat_id.as_str()),
         _ => None,
     }
 }
@@ -66,21 +74,80 @@ fn source_chat_id_and_resume(task: &Task) -> Option<(&str, bool)> {
         TaskKind::Signal { source_chat_id, resume_parent, .. } => {
             Some((source_chat_id.as_str(), *resume_parent))
         }
+        // CronRun resolves its resume flag against the template (async), so
+        // resume_parent_if_requested handles it; skip this sync path.
+        TaskKind::CronRun { .. } => None,
         _ => None,
     }
 }
 
-fn build_message_event(task: &Task, event: TaskLifecycleEvent) -> (String, MessageEvent) {
+/// `None` means skip the row (silent fire). Schema-parse failure falls back to
+/// the raw `summary` so system-generated strings like the max-retries auto-
+/// complete sentinel still get delivered. `process_result=true` emits JSON in
+/// `<task_result>` for parent consumption; otherwise renders human-readable.
+fn render_completion_body(
+    task: &Task,
+    status: &TaskStatus,
+    summary: Option<&str>,
+    process_result: bool,
+) -> Option<String> {
+    let legacy = || summary.unwrap_or("").to_string();
+    // `Failed` summaries are operator-written reasons, not schema-shaped.
+    if !matches!(status, TaskStatus::Completed) {
+        return Some(legacy());
+    }
+    let Some(schema) = task.result_schema.as_ref() else {
+        return Some(legacy());
+    };
+    let summary_str = summary.unwrap_or("");
+    let spec = match crate::agent::task::schema::ResultSpec::new(schema.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(task_id = %task.id, error = %e, "task.result_schema is invalid; using raw summary");
+            return Some(legacy());
+        }
+    };
+    let value = match spec.parse(summary_str) {
+        Ok(v) => v,
+        Err(_) => return Some(legacy()),
+    };
+    // Silent skip applies regardless of process_result.
+    if value.is_null() {
+        return None;
+    }
+    if let Some(obj) = value.as_object()
+        && obj.is_empty()
+    {
+        return None;
+    }
+    if let Some(arr) = value.as_array()
+        && arr.is_empty()
+    {
+        return None;
+    }
+    if process_result {
+        let json = serde_json::to_string(&value).unwrap_or_default();
+        Some(format!("<task_result>{json}</task_result>"))
+    } else {
+        crate::agent::task::schema::render_result(schema, &value)
+    }
+}
+
+fn build_message_event(
+    task: &Task,
+    event: TaskLifecycleEvent,
+    process_result: bool,
+) -> Option<(String, MessageEvent)> {
     match event {
         TaskLifecycleEvent::Completion { status, summary } => {
-            let text = summary.unwrap_or_default();
+            let text = render_completion_body(task, &status, summary.as_deref(), process_result)?;
             let evt = MessageEvent::TaskCompletion {
                 task_id: task.id.clone(),
                 chat_id: task.chat_id.clone(),
                 status,
                 summary: if text.is_empty() { None } else { Some(text.clone()) },
             };
-            (text, evt)
+            Some((text, evt))
         }
         TaskLifecycleEvent::Match { attempt_index, summary, result } => {
             let content = summary.clone();
@@ -91,7 +158,7 @@ fn build_message_event(task: &Task, event: TaskLifecycleEvent) -> (String, Messa
                 summary,
                 result,
             };
-            (content, evt)
+            Some((content, evt))
         }
     }
 }
@@ -110,6 +177,12 @@ impl TaskExecutor {
     }
 
     pub async fn resume_all(self: &Arc<Self>) {
+        // Crash-orphan sweep MUST run before spawning resumable tasks: otherwise
+        // the freshly-spawned InProgress CronRuns would themselves be matched
+        // by the orphan query and flipped to Failed mid-turn, yanking
+        // `complete_task` out of the agent's registry on the next session build.
+        self.resume_in_flight_crons().await;
+
         let tasks = match self.app_state.task_service.find_resumable().await {
             Ok(tasks) => tasks,
             Err(e) => {
@@ -131,6 +204,35 @@ impl TaskExecutor {
 
             if let Err(e) = self.spawn_execution(task).await {
                 tracing::warn!(error = %e, "Failed to spawn task during resume");
+            }
+        }
+    }
+
+    /// Marks crash-interrupted CronRuns Failed instead of restarting them.
+    /// The next scheduled tick fires fresh if the cron's concurrency allows.
+    async fn resume_in_flight_crons(self: &Arc<Self>) {
+        let orphans = match self.app_state.task_service.find_orphaned_cron_runs().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to query orphaned CronRuns");
+                return;
+            }
+        };
+
+        if orphans.is_empty() {
+            return;
+        }
+
+        tracing::info!(count = orphans.len(), "Marking orphaned CronRuns as Failed");
+
+        for run in orphans {
+            if let Err(e) = self
+                .app_state
+                .task_service
+                .mark_failed(&run.id, "Server restarted while CronRun was in flight".to_string())
+                .await
+            {
+                tracing::warn!(error = %e, task_id = %run.id, "Failed to mark orphan CronRun");
             }
         }
     }
@@ -193,14 +295,52 @@ impl TaskExecutor {
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> bool {
-        let active = self.active_tasks.lock().await;
-        for (key, token) in active.iter() {
-            if key.ends_with(&format!(":{}", task_id)) {
-                token.cancel();
-                return true;
+        let direct = {
+            let active = self.active_tasks.lock().await;
+            let mut hit = false;
+            for (key, token) in active.iter() {
+                if key.ends_with(&format!(":{}", task_id)) {
+                    token.cancel();
+                    hit = true;
+                    break;
+                }
+            }
+            hit
+        };
+
+        // Cron templates aren't in active_tasks themselves; only their CronRun
+        // children are. Each cancelled run's tokio::spawn cleans itself up.
+        if let Ok(Some(task)) = self.app_state.task_service.find_by_id(task_id).await
+            && matches!(task.kind, TaskKind::Cron { .. })
+            && let Ok(active_runs) = self
+                .app_state
+                .task_service
+                .find_active_runs_by_cron(task_id)
+                .await
+        {
+            let active = self.active_tasks.lock().await;
+            for run in active_runs {
+                let suffix = format!(":{}", run.id);
+                for (key, token) in active.iter() {
+                    if key.ends_with(&suffix) {
+                        token.cancel();
+                        break;
+                    }
+                }
             }
         }
-        false
+
+        direct
+    }
+
+    pub async fn register_cancellation(&self, agent_id: &str, task_id: &str, token: CancellationToken) {
+        let key = format!("{}:{}", agent_id, task_id);
+        self.active_tasks.lock().await.insert(key, token);
+    }
+
+    pub async fn unregister_cancellation(&self, agent_id: &str, task_id: &str) {
+        let key = format!("{}:{}", agent_id, task_id);
+        self.active_tasks.lock().await.remove(&key);
     }
 
     async fn get_agent_concurrent_limit(&self, agent_id: &str) -> usize {
@@ -247,7 +387,6 @@ impl TaskExecutor {
             .mark_in_progress(&task_id, Some(&chat_id))
             .await?;
 
-        self.broadcast_task_status(&task, "inprogress", None);
         self.save_initial_message_if_needed(&task, &chat_id).await?;
 
         for turn in 0..MAX_TASK_RETRIES {
@@ -271,7 +410,7 @@ impl TaskExecutor {
                 Ok(Some(msg)) => msg.id,
                 _ => {
                     let msg = self.app_state.chat_service
-                        .create_executing_agent_message(&chat_id, &task.agent_id, None)
+                        .create_executing_agent_message(&chat_id, &task.agent_id)
                         .await?;
                     msg.id
                 }
@@ -283,6 +422,7 @@ impl TaskExecutor {
                 storage_service: self.app_state.storage_service.clone(),
                 continuation_prompt: continuation_prompt.clone(),
             });
+            let filters = tool_filters_for_task(&task);
             let result = execution::run_agent_loop(
                 &self.app_state,
                 &task.user_id,
@@ -290,7 +430,7 @@ impl TaskExecutor {
                 &agent_msg_id,
                 cancel_token.clone(),
                 builder,
-                quarantine_filter(&task),
+                &filters,
             )
             .await;
             drop(session_token);
@@ -299,21 +439,9 @@ impl TaskExecutor {
             match result {
                 Ok(execution::AgentLoopOutcome { response }) => match response {
                     InferenceResponse::Completed { text, attachments, lifecycle_event, reasoning, .. } => {
-                        if let Ok(mut msg) = self.app_state.chat_service
+                        let _ = self.app_state.chat_service
                             .complete_agent_message(&agent_msg_id, text.clone(), attachments.clone(), reasoning)
-                            .await
-                        {
-                            // Populate tool_calls so the SSE has complete_task/TaskCompletion data
-                            if let Ok(tes) = self.app_state.chat_service
-                                .get_tool_calls_by_message(&agent_msg_id).await
-                            {
-                                msg.tool_calls = tes.into_iter().map(Into::into).collect();
-                            }
-                            crate::credential::presign::presign_response_by_user_id(
-                                &self.app_state.presign_service, &mut msg, &task.user_id,
-                            ).await;
-                            event_sender.send_kind(BroadcastEventKind::InferenceDone { message: msg });
-                        }
+                            .await;
 
                         if let Some(event) = lifecycle_event {
                             let action = self.lifecycle_action_from_event(event);
@@ -340,9 +468,6 @@ impl TaskExecutor {
                         let _ = self.app_state.chat_service
                             .complete_agent_message(&agent_msg_id, text, vec![], None)
                             .await;
-                        event_sender.send_kind(BroadcastEventKind::InferenceCancelled {
-                            reason: "Task cancelled".to_string(),
-                        });
                         self.handle_cancelled(&task).await?;
                         return Ok(());
                     }
@@ -350,9 +475,6 @@ impl TaskExecutor {
                 Err(e) => {
                     let _ = self.app_state.chat_service
                         .fail_agent_message(&agent_msg_id).await;
-                    event_sender.send_kind(BroadcastEventKind::InferenceError {
-                        error: e.to_string(),
-                    });
                     self.handle_error(&task, &e).await?;
                     return Ok(());
                 }
@@ -378,7 +500,6 @@ impl TaskExecutor {
         )
         .await;
         self.resume_parent_if_requested(&task).await;
-        self.broadcast_task_status(&task, "completed", Some("Task auto-completed after max retries"));
 
         Ok(())
     }
@@ -485,7 +606,6 @@ impl TaskExecutor {
                 )
                 .await;
                 self.resume_parent_if_requested(task).await;
-                self.broadcast_task_status(task, "completed", summary.as_deref());
             }
             LifecycleAction::Complete {
                 status: TaskStatus::Failed,
@@ -507,7 +627,6 @@ impl TaskExecutor {
                 )
                 .await;
                 self.resume_parent_if_requested(task).await;
-                self.broadcast_task_status(task, "failed", None);
             }
             LifecycleAction::Complete { .. } => {}
             LifecycleAction::Defer {
@@ -519,7 +638,6 @@ impl TaskExecutor {
                     .task_service
                     .mark_deferred(&task.id, run_at, &reason)
                     .await?;
-                self.broadcast_task_status(task, "deferred", Some(&reason));
             }
         }
         Ok(())
@@ -549,9 +667,8 @@ impl TaskExecutor {
         Ok(())
     }
 
-    /// Inject a system message into the task's chat and run one agent turn.
-    /// If the agent emits a `complete_task` / `fail_task` lifecycle event,
-    /// it's processed and the parent resumes via `deliver_to_source`.
+    /// Lifecycle events emitted by the turn (`complete_task` / `fail_task`)
+    /// resume the parent via `deliver_to_source`.
     pub async fn run_with_injected_message(
         self: &Arc<Self>,
         task: &Task,
@@ -561,7 +678,7 @@ impl TaskExecutor {
         let was_unset = task_for_chat.chat_id.is_none();
         let chat_id = self.ensure_task_chat(&mut task_for_chat).await?;
         if was_unset {
-            // ensure_task_chat populated chat_id on the local clone — persist
+            // ensure_task_chat populated chat_id on the local clone; persist
             // it so subsequent calls reuse C₂ instead of creating a new chat.
             self.app_state
                 .task_service
@@ -571,13 +688,18 @@ impl TaskExecutor {
 
         self.app_state
             .chat_service
-            .save_system_message(&chat_id, system_message)
+            .save_system_message(
+                &task.user_id,
+                task.space_id.as_deref(),
+                &chat_id,
+                system_message,
+            )
             .await?;
 
         let agent_msg = self
             .app_state
             .chat_service
-            .create_executing_agent_message(&chat_id, &task.agent_id, None)
+            .create_executing_agent_message(&chat_id, &task.agent_id)
             .await?;
         let agent_msg_id = agent_msg.id.clone();
         let cancel_token = CancellationToken::new();
@@ -587,6 +709,7 @@ impl TaskExecutor {
             storage_service: self.app_state.storage_service.clone(),
             continuation_prompt: None,
         });
+        let filters = tool_filters_for_task(task);
         let outcome = execution::run_agent_loop(
             &self.app_state,
             &task.user_id,
@@ -594,7 +717,7 @@ impl TaskExecutor {
             &agent_msg_id,
             cancel_token,
             builder,
-            quarantine_filter(task),
+            &filters,
         )
         .await;
 
@@ -691,21 +814,18 @@ impl TaskExecutor {
             } => source_agent_id.as_str(),
             _ => &task.agent_id,
         };
-        let msg = self
+        self
             .app_state
             .chat_service
-            .save_agent_message(chat_id, source_agent_id, task.description.clone(), None)
+            .save_agent_message(
+                &task.user_id,
+                task.space_id.as_deref(),
+                chat_id,
+                source_agent_id,
+                task.description.clone(),
+                None,
+            )
             .await?;
-        let space_id = self
-            .app_state
-            .chat_service
-            .get_chat(&task.user_id, chat_id)
-            .await
-            .ok()
-            .and_then(|c| c.space_id);
-        self.app_state
-            .broadcast_service
-            .broadcast_chat_message(&task.user_id, chat_id, space_id, msg);
         Ok(())
     }
 
@@ -717,7 +837,6 @@ impl TaskExecutor {
             .task_service
             .mark_cancelled(&task.id)
             .await?;
-        self.broadcast_task_status(task, "cancelled", None);
         Ok(())
     }
 
@@ -738,8 +857,25 @@ impl TaskExecutor {
         )
         .await;
         self.resume_parent_if_requested(task).await;
-        self.broadcast_task_status(task, "failed", None);
         Ok(())
+    }
+
+    /// CronRun's flag lives on the template, not the run — others read directly.
+    async fn resolve_process_result(&self, task: &Task) -> bool {
+        match &task.kind {
+            TaskKind::CronRun { source_cron_id, .. } => {
+                match self.app_state.task_service.find_by_id(source_cron_id).await {
+                    Ok(Some(template)) => matches!(
+                        template.kind,
+                        TaskKind::Cron { process_result: true, .. }
+                    ),
+                    _ => false,
+                }
+            }
+            TaskKind::Delegation { resume_parent, .. }
+            | TaskKind::Signal { resume_parent, .. } => *resume_parent,
+            TaskKind::Direct { .. } | TaskKind::Cron { .. } => false,
+        }
     }
 
     pub async fn deliver_event_to_source(
@@ -752,40 +888,49 @@ impl TaskExecutor {
             return;
         };
 
-        let (content, message_event) = build_message_event(task, event);
+        let process_result = self.resolve_process_result(task).await;
 
-        match self
+        let Some((content, message_event)) = build_message_event(task, event, process_result) else {
+            tracing::debug!(task_id = %task.id, "schema rendered to silent — skipping source-chat delivery");
+            return;
+        };
+
+        if let Err(e) = self
             .app_state
             .chat_service
-            .save_task_lifecycle_message(source_chat_id, &task.agent_id, content, message_event, attachments)
+            .save_task_lifecycle_message(
+                &task.user_id,
+                task.space_id.as_deref(),
+                source_chat_id,
+                &task.agent_id,
+                content,
+                message_event,
+                attachments,
+            )
             .await
         {
-            Ok(mut msg) => {
-                crate::credential::presign::presign_response_by_user_id(
-                    &self.app_state.presign_service, &mut msg, &task.user_id,
-                ).await;
-                let space_id = self
-                    .app_state
-                    .chat_service
-                    .get_chat(&task.user_id, source_chat_id)
-                    .await
-                    .ok()
-                    .and_then(|c| c.space_id);
-                self.app_state.broadcast_service.broadcast_chat_message(
-                    &task.user_id,
-                    source_chat_id,
-                    space_id,
-                    msg,
-                );
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, task_id = %task.id, "Failed to deliver task result to source chat");
-            }
+            tracing::warn!(error = %e, task_id = %task.id, "Failed to deliver task result to source chat");
         }
     }
 
-    /// Terminal-only — Match would spawn concurrent loops.
+    /// Terminal-only. Match would spawn concurrent loops.
     pub async fn resume_parent_if_requested(&self, task: &Task) {
+        if let TaskKind::CronRun { source_cron_id, source_chat_id: Some(chat_id), .. } = &task.kind {
+            let template = match self.app_state.task_service.find_by_id(source_cron_id).await {
+                Ok(Some(t)) => t,
+                _ => return,
+            };
+            let process_result = matches!(
+                template.kind,
+                TaskKind::Cron { process_result: true, .. }
+            );
+            if !process_result {
+                return;
+            }
+            self.check_and_resume_parent(chat_id.as_str(), &task.user_id).await;
+            return;
+        }
+
         let Some((source_chat_id, true)) = source_chat_id_and_resume(task) else {
             return;
         };
@@ -794,15 +939,8 @@ impl TaskExecutor {
     }
 
     async fn check_and_resume_parent(&self, source_chat_id: &str, user_id: &str) {
-        // Only resume the parent if the source chat belongs to a task.
-        // For user chats, just deliver the message — don't trigger the agent.
-        let is_task_chat = matches!(
-            self.app_state.chat_service.find_chat(source_chat_id).await,
-            Ok(Some(chat)) if chat.task_id.is_some()
-        );
-        if !is_task_chat {
-            return;
-        }
+        // The flag opt-in is enforced by the caller, so user chats and task
+        // chats are both eligible — that's the difference from the prior gate.
 
         let siblings = match self
             .app_state
@@ -842,34 +980,45 @@ impl TaskExecutor {
         let user_id = user_id.to_string();
         let chat_id = source_chat_id.to_string();
         tokio::spawn(async move {
-            let message_id = match state.chat_service
+            let existing = match state.chat_service
                 .find_executing_message_for_chat(&chat_id)
                 .await
             {
-                Ok(Some(msg)) => msg.id,
-                Ok(None) => {
-                    tracing::warn!(chat_id = %chat_id, "No executing message found for child task resume");
-                    return;
-                }
+                Ok(msg) => msg,
                 Err(e) => {
                     tracing::error!(error = %e, chat_id = %chat_id, "Failed to find executing message");
                     return;
                 }
             };
+            let message_id = if let Some(msg) = existing {
+                msg.id
+            } else {
+                // User chats settle their assistant turn before tasks complete;
+                // mint a fresh executing message so the loop has a write target.
+                let agent_id = match state.chat_service.find_chat(&chat_id).await {
+                    Ok(Some(chat)) => chat.agent_id,
+                    Ok(None) => {
+                        tracing::warn!(chat_id = %chat_id, "Source chat not found; cannot resume");
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, chat_id = %chat_id, "Failed to lookup source chat");
+                        return;
+                    }
+                };
+                match state.chat_service
+                    .create_executing_agent_message(&chat_id, &agent_id)
+                    .await
+                {
+                    Ok(msg) => msg.id,
+                    Err(e) => {
+                        tracing::error!(error = %e, chat_id = %chat_id, "Failed to create executing message for resume");
+                        return;
+                    }
+                }
+            };
             resume_or_notify(&state, &user_id, &chat_id, &message_id).await;
         });
-    }
-
-    pub fn broadcast_task_status(&self, task: &Task, status: &str, summary: Option<&str>) {
-        self.app_state.broadcast_service.broadcast_task_update(
-            &task.user_id,
-            &task.id,
-            status,
-            &task.title,
-            task.chat_id.as_deref(),
-            task.kind.source_chat_id(),
-            summary,
-        );
     }
 
 }
@@ -970,24 +1119,31 @@ mod tests {
 
     #[test]
     fn quarantine_filter_default_for_once_signal_and_other_kinds() {
+        use crate::tool::registry::ToolFilter;
         assert_eq!(
             quarantine_filter(&direct_task(true)),
-            Some(QUARANTINED_TASK_TOOLS)
+            Some(ToolFilter::AllowList(QUARANTINED_TASK_TOOLS))
         );
         assert_eq!(
             quarantine_filter(&signal_task(true, SignalMode::Once)),
-            Some(QUARANTINED_TASK_TOOLS)
+            Some(ToolFilter::AllowList(QUARANTINED_TASK_TOOLS))
         );
     }
 
     #[test]
     fn quarantine_filter_continuous_signal_swaps_in_report_signal() {
+        use crate::tool::registry::ToolFilter;
         let filter = quarantine_filter(&signal_task(true, SignalMode::Continuous))
             .expect("continuous quarantined task gets a filter");
-        assert_eq!(filter, QUARANTINED_CONTINUOUS_SIGNAL_TOOLS);
-        assert!(filter.contains(&"report_signal"));
-        assert!(filter.contains(&"complete_task"));
-        assert!(filter.contains(&"fail_task"));
-        assert!(!filter.contains(&"defer_task"));
+        let tools = match filter {
+            ToolFilter::AllowList(t) => t,
+            _ => panic!("expected AllowList"),
+        };
+        assert_eq!(tools, QUARANTINED_CONTINUOUS_SIGNAL_TOOLS);
+        assert!(tools.contains(&"report_signal"));
+        assert!(tools.contains(&"complete_task"));
+        assert!(tools.contains(&"fail_task"));
+        assert!(!tools.contains(&"defer_task"));
     }
+
 }

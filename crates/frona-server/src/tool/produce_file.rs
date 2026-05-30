@@ -1,23 +1,22 @@
-use std::path::PathBuf;
-
 use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
 use crate::storage::resolve_workspace_attachment;
+use crate::storage::service::StorageService;
 use crate::core::error::AppError;
 use frona_derive::agent_tool;
 
 use super::{InferenceContext, ToolOutput};
 
 pub struct ProduceFileTool {
-    workspaces_path: PathBuf,
+    storage: StorageService,
     prompts: PromptLoader,
 }
 
 impl ProduceFileTool {
-    pub fn new(workspaces_path: PathBuf, prompts: PromptLoader) -> Self {
+    pub fn new(storage: StorageService, prompts: PromptLoader) -> Self {
         Self {
-            workspaces_path,
+            storage,
             prompts,
         }
     }
@@ -32,8 +31,9 @@ impl ProduceFileTool {
             .ok_or_else(|| AppError::Validation("Missing 'path' parameter".into()))?;
 
         let attachment = resolve_workspace_attachment(
-            &self.workspaces_path,
-            &ctx.agent.id,
+            &self.storage,
+            &ctx.user.handle,
+            &ctx.agent.handle,
             relative_path,
         ).await?;
 

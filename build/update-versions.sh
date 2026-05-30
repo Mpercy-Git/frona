@@ -48,8 +48,9 @@ update_apt_file() {
 	echo "  [$label] Querying from $image..."
 	local names changed=false
 	names=$(pkg_names "$file")
+	local prep="apt-get update -qq >/dev/null 2>&1 && apt-get install -y --no-install-recommends curl ca-certificates gnupg >/dev/null 2>&1"
 	APT_CACHE=$(docker run --rm "$image" bash -c \
-		"${pre_cmd:+$pre_cmd >/dev/null 2>&1 && }apt-get update -qq >/dev/null 2>&1 && apt-cache policy $names")
+		"${pre_cmd:+$prep && $pre_cmd >/dev/null 2>&1 && }apt-get update -qq >/dev/null 2>&1 && apt-cache policy $names")
 
 	local tmpfile
 	tmpfile=$(mktemp)
@@ -94,7 +95,7 @@ update_cargo_file() {
 		local crate="${line%%=*}"
 		local old_ver="${line#*=}"
 		local new_ver
-		new_ver=$(curl -sf "https://crates.io/api/v1/crates/$crate" |
+		new_ver=$(curl -sf -H 'User-Agent: frona-update-versions (https://github.com/fronalabs/frona)' "https://crates.io/api/v1/crates/$crate" |
 			python3 -c "import sys,json; print(json.load(sys.stdin)['crate']['max_stable_version'])")
 		if [[ -z "$new_ver" ]]; then
 			echo "    WARNING: could not resolve $crate, keeping current" >&2
@@ -184,7 +185,7 @@ main() {
 
 	update_apt_file "$PKGS_DIR/builder-rust-apt.txt" "$rust_image"
 	update_apt_file "$PKGS_DIR/builder-python-apt.txt" "$python_image"
-	update_apt_file "$PKGS_DIR/prod-apt.txt" "$python_image"
+	update_apt_file "$PKGS_DIR/prod-apt.txt" "$python_image" "$nodesource_setup"
 	update_apt_file "$PKGS_DIR/dev-apt.txt" "$rust_image" "$nodesource_setup"
 	update_cargo_file "$PKGS_DIR/builder-rust-cargo.txt"
 	update_cargo_file "$PKGS_DIR/dev-rust-cargo.txt"

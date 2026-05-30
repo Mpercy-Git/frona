@@ -14,17 +14,19 @@ use crate::core::state::AppState;
 pub(crate) async fn download_user_file(
     file_auth: FileAuth,
     State(state): State<AppState>,
-    AxumPath((username, filename)): AxumPath<(String, String)>,
+    AxumPath((handle_raw, filename)): AxumPath<(String, String)>,
 ) -> Result<Response, ApiError> {
+    let handle = crate::core::Handle::try_new(handle_raw)
+        .map_err(|_| ApiError(AppError::NotFound("File not found".into())))?;
     match file_auth {
         FileAuth::User(auth) => {
-            if username != auth.username {
+            if handle != auth.handle {
                 return Err(ApiError(AppError::Forbidden(
                     "Cannot access another user's files".into(),
                 )));
             }
         }
-        FileAuth::Presigned { owner, path } => {
+        FileAuth::Presigned { sub: _, owner, path } => {
             if !owner.starts_with("user:") || path != filename {
                 return Err(ApiError(AppError::Forbidden(
                     "Presigned URL does not match requested file".into(),
@@ -33,47 +35,65 @@ pub(crate) async fn download_user_file(
         }
     }
 
-    let vpath = VirtualPath::user(&username, &filename);
+    let vpath = VirtualPath::user(&handle, &filename);
     super::serve_file(&vpath, &state).await
 }
 
 pub(crate) async fn download_agent_file(
     file_auth: FileAuth,
     State(state): State<AppState>,
-    AxumPath((agent_id, filepath)): AxumPath<(String, String)>,
+    AxumPath((agent_seg, filepath)): AxumPath<(String, String)>,
 ) -> Result<Response, ApiError> {
-    match &file_auth {
-        FileAuth::User(auth) => {
-            state
-                .agent_service
-                .get(&auth.user_id, &agent_id)
-                .await?;
-        }
-        FileAuth::Presigned { owner, path } => {
-            if owner != &format!("agent:{agent_id}") || *path != filepath {
+    let (user_id, user_handle) = match &file_auth {
+        FileAuth::User(auth) => (auth.user_id.clone(), auth.handle.clone()),
+        FileAuth::Presigned { sub, owner, path } => {
+            // Older avatar presigns used `agent:{uuid}`; accept both shapes.
+            let expected_handle = format!("agent:{agent_seg}");
+            let owner_ok = owner == &expected_handle || owner.starts_with("agent:");
+            if !owner_ok || path != &filepath {
                 return Err(ApiError(AppError::Forbidden(
                     "Presigned URL does not match requested file".into(),
                 )));
             }
+            let user_handle = state.user_service.handle_of(sub).await?;
+            (sub.clone(), user_handle)
         }
+    };
+
+    let agent = state.agent_service.owned_by(&user_id, &agent_seg).await?;
+
+    if let FileAuth::Presigned { owner, .. } = &file_auth
+        && owner.starts_with("agent:")
+        && owner != &format!("agent:{}", agent.handle)
+        && owner != &format!("agent:{}", agent.id)
+    {
+        return Err(ApiError(AppError::Forbidden(
+            "Presigned URL owner does not match requested agent".into(),
+        )));
     }
 
-    let vpath = VirtualPath::agent(&agent_id, &filepath);
-    super::serve_file(&vpath, &state).await
+    let path = state
+        .storage_service
+        .agent_workspace_path(&user_handle, &agent.handle)
+        .join(&filepath);
+
+    super::serve_path(&path).await
 }
 
 pub(crate) async fn delete_user_file(
     auth: AuthUser,
     State(state): State<AppState>,
-    AxumPath((username, filename)): AxumPath<(String, String)>,
+    AxumPath((handle_raw, filename)): AxumPath<(String, String)>,
 ) -> Result<(), ApiError> {
-    if username != auth.username {
+    let handle = crate::core::Handle::try_new(handle_raw)
+        .map_err(|_| ApiError(AppError::NotFound("File not found".into())))?;
+    if handle != auth.handle {
         return Err(ApiError(AppError::Forbidden(
             "Cannot delete another user's files".into(),
         )));
     }
 
-    let vpath = VirtualPath::user(&username, &filename);
+    let vpath = VirtualPath::user(&handle, &filename);
     let resolved = state.storage_service.resolve_virtual_path(&vpath)?;
 
     if !resolved.exists() {
@@ -105,7 +125,7 @@ pub(crate) async fn list_user_files(
         validate_relative_path(&rel)?;
     }
 
-    let user_ws = state.storage_service.user_workspace(&auth.username);
+    let user_ws = state.storage_service.user_workspace(&auth.handle);
     let base = user_ws.base_path().to_path_buf();
     let dir = if rel.is_empty() {
         base
@@ -126,16 +146,16 @@ pub(crate) async fn list_user_files(
 async fn list_agent_dir(
     auth: &AuthUser,
     state: &AppState,
-    agent_id: &str,
+    agent_seg: &str,
     rel: &str,
 ) -> Result<Json<Vec<FileEntry>>, ApiError> {
-    state.agent_service.get(&auth.user_id, agent_id).await?;
+    let agent = state.agent_service.owned_by(&auth.user_id, agent_seg).await?;
 
     if !rel.is_empty() {
         validate_relative_path(rel)?;
     }
 
-    let ws = state.storage_service.agent_workspace(agent_id);
+    let ws = state.storage_service.agent_workspace(&auth.handle, &agent.handle);
     let base = ws.base_path().to_path_buf();
     let dir = if rel.is_empty() {
         base
@@ -183,22 +203,22 @@ pub(crate) async fn search_files(
     match query.scope.as_deref() {
         Some(scope) if scope.starts_with("agent:") => {
             let rest = &scope["agent:".len()..];
-            let (agent_id, subpath) = match rest.find('/') {
+            let (agent_seg, subpath) = match rest.find('/') {
                 Some(i) => (&rest[..i], Some(&rest[i + 1..])),
                 None => (rest, None),
             };
-            state.agent_service.get(&auth.user_id, agent_id).await?;
-            let ws = state.storage_service.agent_workspace(agent_id);
+            let agent = state.agent_service.owned_by(&auth.user_id, agent_seg).await?;
+            let ws = state.storage_service.agent_workspace(&auth.handle, &agent.handle);
             let root = ws.base_path().to_path_buf();
             let dir = match subpath {
                 Some(sub) => root.join(sub),
                 None => root.clone(),
             };
-            targets.push(SearchTarget { dir, root, source: agent_id.to_string() });
+            targets.push(SearchTarget { dir, root, source: agent_seg.to_string() });
         }
         Some(scope) if scope.starts_with("user") => {
             let subpath = scope.strip_prefix("user:").unwrap_or("");
-            let ws = state.storage_service.user_workspace(&auth.username);
+            let ws = state.storage_service.user_workspace(&auth.handle);
             let base = ws.base_path().to_path_buf();
             let dir = if subpath.is_empty() {
                 base.clone()
@@ -208,13 +228,13 @@ pub(crate) async fn search_files(
             targets.push(SearchTarget { dir, root: base, source: "user".to_string() });
         }
         _ => {
-            let user_ws = state.storage_service.user_workspace(&auth.username);
+            let user_ws = state.storage_service.user_workspace(&auth.handle);
             let user_dir = user_ws.base_path().to_path_buf();
             targets.push(SearchTarget { dir: user_dir.clone(), root: user_dir, source: "user".to_string() });
 
             let user_agents = state.agent_service.list(&auth.user_id).await?;
             for agent in &user_agents {
-                let ws = state.storage_service.agent_workspace(&agent.id);
+                let ws = state.storage_service.agent_workspace(&auth.handle, &agent.handle);
                 let agent_dir = ws.base_path().to_path_buf();
                 if agent_dir.is_dir() {
                     targets.push(SearchTarget { dir: agent_dir.clone(), root: agent_dir, source: agent.id.clone() });

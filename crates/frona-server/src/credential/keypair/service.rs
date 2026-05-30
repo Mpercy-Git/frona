@@ -57,7 +57,7 @@ impl KeyPairService {
 
         let now = chrono::Utc::now();
         let kp = KeyPair {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             owner: owner.to_string(),
             public_key_bytes: public_bytes.to_vec(),
             private_key_enc: encrypted,

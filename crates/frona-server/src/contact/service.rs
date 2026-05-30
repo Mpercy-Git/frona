@@ -1,5 +1,4 @@
 use chrono::Utc;
-use uuid::Uuid;
 
 use crate::chat::broadcast::{BroadcastService, EntityAction};
 use crate::db::repo::generic::SurrealRepo;
@@ -42,7 +41,7 @@ impl ContactService {
         }
         let now = Utc::now();
         let contact = Contact {
-            id: Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             name: name.to_string(),
             space_id: None,
@@ -86,7 +85,7 @@ impl ContactService {
     ) -> Result<ContactResponse, AppError> {
         let now = Utc::now();
         let contact = Contact {
-            id: Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             name: req.name,
             space_id: req.space_id,
@@ -171,7 +170,7 @@ impl ContactService {
         }
         let now = Utc::now();
         let contact = Contact {
-            id: Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             name: default_name.to_string(),
             space_id: Some(space_id.to_string()),

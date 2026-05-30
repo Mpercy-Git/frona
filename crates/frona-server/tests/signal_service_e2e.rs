@@ -29,9 +29,6 @@ use helpers::{init_metrics, test_model_group, MockModelProvider, MockResponse};
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 
-// ---------------------------------------------------------------------------
-// Test harness
-// ---------------------------------------------------------------------------
 
 fn test_config(tmp: &tempfile::TempDir) -> Config {
     let base = tmp.path().to_string_lossy().to_string();
@@ -50,10 +47,10 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             path: format!("{base}/db"),
         },
         storage: frona::core::config::StorageConfig {
-            workspaces_path: format!("{base}/workspaces"),
-            files_path: format!("{base}/files"),
+            data_dir: format!("{base}/data"),
             shared_config_dir: format!("{base}/config"),
-            ..Default::default()
+            skills_dir: format!("{base}/skills"),
+            cache_dir: format!("{base}/cache"),
         },
         ..Default::default()
     }
@@ -94,6 +91,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.memory_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
+        state.presign_service.clone(),
     );
     state.chat_service = chat_service;
 
@@ -111,11 +109,13 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
     user_repo
         .create(&User {
             id: user_id.into(),
-            username: format!("user-{user_id}"),
+            handle: frona::handle!("test-user"),
             email: format!("{user_id}@test.com"),
             name: "Test User".into(),
             password_hash: String::new(),
             timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })
@@ -127,7 +127,8 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
     agent_repo
         .create(&Agent {
             id: agent_id.into(),
-            user_id: Some(user_id.into()),
+            user_id: user_id.into(),
+            handle: frona::handle!("test-agent"),
             name: "Test Agent".into(),
             description: String::new(),
             model_group: "test".into(),
@@ -214,14 +215,44 @@ fn make_candidate(
     sender: Option<&str>,
 ) -> CandidateEvent {
     use frona::agent::signal::Annotation;
-    CandidateEvent {
+    let now = chrono::Utc::now();
+    let user = frona::auth::User {
+        id: user_id.into(),
+        handle: frona::handle!("test-user"),
+        email: "u@x".into(),
+        name: "u".into(),
+        password_hash: String::new(),
+        timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let channel = channel.map(|p| frona::chat::channel::Channel {
+        id: "ch".into(),
         user_id: user_id.into(),
-        space_id: None,
-        chat_id: None,
-        message_id: None,
-        connector_id: Some("space-test".into()),
-        channel_id: channel.map(String::from),
-        contact_id: None,
+        handle: frona::core::Handle::try_new(p).unwrap_or(frona::handle!("test-ch")),
+        space_id: "s".into(),
+        provider: p.into(),
+        agent_id: "a".into(),
+        config: Default::default(),
+        dispatch_mode: Default::default(),
+        status: frona::chat::channel::ChannelStatus::Disconnected,
+        error_message: None,
+        last_started_at: None,
+        user_address: None,
+        setup: None,
+        retry: None,
+        created_at: now,
+        updated_at: now,
+        webhook_url: None,
+    });
+    CandidateEvent {
+        user,
+        channel,
+        chat: None,
+        message: None,
+        contact: None,
         sender: sender.map(String::from),
         annotations: categories
             .into_iter()
@@ -242,9 +273,236 @@ async fn signal_service(state: &AppState) -> Arc<SignalService> {
     state.signal_service().expect("signal service initialized")
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+struct ForbidToolsProvider {
+    structured_calls: AtomicUsize,
+    inference_calls: AtomicUsize,
+    stream_calls: AtomicUsize,
+    canned_extract: serde_json::Value,
+}
+
+impl ForbidToolsProvider {
+    fn new(canned: serde_json::Value) -> Self {
+        Self {
+            structured_calls: AtomicUsize::new(0),
+            inference_calls: AtomicUsize::new(0),
+            stream_calls: AtomicUsize::new(0),
+            canned_extract: canned,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
+    async fn inference(
+        &self,
+        _model_id: &str,
+        _system_prompt: &str,
+        _chat_history: Vec<rig_core::completion::Message>,
+        _tools: Vec<rig_core::completion::request::ToolDefinition>,
+        _max_tokens: Option<u64>,
+        _temperature: Option<f64>,
+        _additional_params: Option<serde_json::Value>,
+    ) -> Result<
+        (Vec<rig_core::completion::AssistantContent>, frona::inference::Usage),
+        frona::inference::InferenceError,
+    > {
+        self.inference_calls.fetch_add(1, Ordering::SeqCst);
+        panic!(
+            "ForbidToolsProvider::inference invoked — Signal mode must not enter the agentic tool loop"
+        );
+    }
+
+    async fn stream_inference(
+        &self,
+        _model_id: &str,
+        _system_prompt: &str,
+        _chat_history: Vec<rig_core::completion::Message>,
+        _tools: Vec<rig_core::completion::request::ToolDefinition>,
+        _token_tx: tokio::sync::mpsc::Sender<frona::inference::provider::StreamToken>,
+        _max_tokens: Option<u64>,
+        _temperature: Option<f64>,
+        _additional_params: Option<serde_json::Value>,
+    ) -> Result<Vec<rig_core::completion::AssistantContent>, frona::inference::InferenceError> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        panic!(
+            "ForbidToolsProvider::stream_inference invoked — Signal mode must not stream"
+        );
+    }
+
+    async fn structured_inference(
+        &self,
+        _model_id: &str,
+        _system_prompt: &str,
+        _chat_history: Vec<rig_core::completion::Message>,
+        _schema: serde_json::Value,
+        _max_tokens: Option<u64>,
+        _temperature: Option<f64>,
+        _additional_params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, frona::inference::InferenceError> {
+        self.structured_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.canned_extract.clone())
+    }
+}
+
+async fn build_state_with_dyn(
+    provider: Arc<dyn frona::inference::provider::ModelProvider>,
+) -> (AppState, tempfile::TempDir) {
+    init_metrics();
+    let db: Surreal<Db> = Surreal::new::<Mem>(()).await.unwrap();
+    db_init::setup_schema(&db).await.unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let storage = StorageService::new(&config);
+    let resource_manager = std::sync::Arc::new(
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+    );
+    let metrics_handle = frona::core::metrics::setup_metrics_recorder();
+
+    let mut state = AppState::new(
+        db.clone(),
+        &config,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics_handle,
+        resource_manager,
+    );
+
+    let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
+        HashMap::new();
+    providers.insert("mock".to_string(), provider);
+    let mut groups = HashMap::new();
+    groups.insert("test".to_string(), test_model_group());
+    let mock_registry = ModelProviderRegistry::for_testing(providers, groups);
+
+    let chat_service = ChatService::new(
+        SurrealRepo::new(db.clone()),
+        SurrealRepo::new(db.clone()),
+        SurrealRepo::new(db.clone()),
+        state.agent_service.clone(),
+        mock_registry,
+        state.storage_service.clone(),
+        state.user_service.clone(),
+        state.memory_service.clone(),
+        state.prompts.clone(),
+        state.broadcast_service.clone(),
+        state.presign_service.clone(),
+    );
+    state.chat_service = chat_service;
+
+    state.init_task_executor();
+    let signal_svc = state.init_signal_service();
+    state.policy_service.sync_base_policies().await.unwrap();
+    signal_svc.start().await.unwrap();
+
+    (state, tmp)
+}
+
+#[tokio::test]
+async fn signal_extract_never_enters_tool_loop_or_streaming() {
+    let provider = Arc::new(ForbidToolsProvider::new(serde_json::json!({
+        "categories": ["verification_code"],
+        "summary": "test code"
+    })));
+    let (state, _tmp) = build_state_with_dyn(provider.clone()).await;
+    seed_user_and_agent(&state, "user-q", "agent-q").await;
+
+    let now = Utc::now();
+    let space = frona::space::models::Space {
+        id: "space-q".into(),
+        user_id: "user-q".into(),
+        name: "Quarantine".into(),
+        metadata: Default::default(),
+        created_at: now,
+        updated_at: now,
+    };
+    SurrealRepo::<frona::space::models::Space>::new(state.db.clone())
+        .create(&space)
+        .await
+        .unwrap();
+
+    let channel = frona::chat::channel::Channel {
+        id: "channel-q".into(),
+        user_id: "user-q".into(),
+        handle: frona::handle!("telegram"),
+        space_id: space.id.clone(),
+        provider: "telegram".into(),
+        agent_id: "agent-q".into(),
+        config: std::collections::BTreeMap::new(),
+        dispatch_mode: frona::chat::channel::DispatchMode::Message,
+        status: frona::chat::channel::ChannelStatus::Connected,
+        error_message: None,
+        last_started_at: None,
+        user_address: None,
+        setup: None,
+        retry: None,
+        created_at: now,
+        updated_at: now,
+        webhook_url: None,
+    };
+    SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
+        .create(&channel)
+        .await
+        .unwrap();
+
+    let chat = state
+        .chat_service
+        .upsert_channel_chat(
+            "user-q",
+            &space.id,
+            "agent-q",
+            &channel.id,
+            "dm:42",
+            Some("Quarantine chat"),
+        )
+        .await
+        .unwrap();
+
+    let inbound = frona::chat::message::models::Message::builder(
+        &chat.id,
+        frona::chat::message::models::MessageRole::User,
+        "your code is 123456".into(),
+    )
+    .from_address("unpaired@example.com".to_string())
+    .dispatch_mode(frona::chat::channel::DispatchMode::Signal)
+    .build();
+    use frona::core::repository::Repository;
+    let inbound = SurrealRepo::<frona::chat::message::models::Message>::new(state.db.clone())
+        .create(&inbound)
+        .await
+        .unwrap();
+
+    let svc = signal_service(&state).await;
+    svc.process_inbound_extract(
+        &state.chat_service,
+        state.chat_service.provider_registry(),
+        &channel,
+        &chat,
+        &inbound,
+        &[("verification_code".into(), "1 task waiting".into())],
+    )
+    .await
+    .expect("process_inbound_extract should succeed");
+
+    assert_eq!(
+        provider.structured_calls.load(Ordering::SeqCst),
+        1,
+        "Signal extraction must call structured_inference exactly once",
+    );
+    assert_eq!(
+        provider.inference_calls.load(Ordering::SeqCst),
+        0,
+        "Signal extraction must NOT enter the agentic tool loop",
+    );
+    assert_eq!(
+        provider.stream_calls.load(Ordering::SeqCst),
+        0,
+        "Signal extraction must NOT use streaming inference",
+    );
+}
+
 
 #[tokio::test]
 async fn register_and_unregister_round_trip() {
@@ -511,10 +769,10 @@ async fn evaluate_with_forbid_policy_blocks_fire() -> Result<(), AppError> {
         &state,
         "block-test-connector",
         r#"forbid(
-            principal == Policy::Agent::"agent-1",
+            principal == Policy::Agent::"test-user/test-agent",
             action == Policy::Action::"receive_signal",
             resource
-        ) when { resource.connector_id == "space-test" };"#,
+        );"#,
     )
     .await;
 
@@ -550,7 +808,6 @@ async fn evaluate_with_handle_based_policy_blocks_match() -> Result<(), AppError
     let (state, _tmp) = build_state(provider.clone()).await;
     seed_user_and_agent(&state, "user-1", "agent-1").await;
 
-    // Create a contact that will be referenced by the candidate.
     let contact = state
         .contact_service
         .find_or_create_by_phone("user-1", "+15551234", "Test Contact")
@@ -591,7 +848,7 @@ forbid(
         Some("sms"),
         Some("+15551234"),
     );
-    cand.contact_id = Some(contact.id.clone());
+    cand.contact = Some(contact.clone().into());
 
     let fired = svc.evaluate("user-1", cand).await?;
     assert!(fired.is_empty(), "handle-based policy denial must drop the match");

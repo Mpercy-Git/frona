@@ -42,6 +42,8 @@ pub struct ServerConfig {
     pub shutdown_timeout_secs: u64,
     #[schemars(description = "Seconds to buffer SSE events after a client disconnects, allowing reconnects to receive missed events. 0 disables.")]
     pub sse_pending_events_secs: u64,
+    #[schemars(description = "Server-default IANA timezone (e.g. \"America/Los_Angeles\"). Used when a user has no timezone set and no per-task override is provided. Leave empty to auto-detect from TZ env var, /etc/localtime, or fall back to UTC.")]
+    pub timezone: String,
 }
 
 impl ServerConfig {
@@ -70,6 +72,12 @@ impl ServerConfig {
             .or(self.base_url.as_deref())
             .map(|s| s.trim_end_matches('/').to_string())
     }
+
+    /// Always returns an openable URL (unlike `public_base_url()` which may be empty).
+    pub fn external_or_local_base_url(&self) -> String {
+        self.external_base_url()
+            .unwrap_or_else(|| format!("http://localhost:{}", self.port))
+    }
 }
 
 impl Default for ServerConfig {
@@ -87,6 +95,7 @@ impl Default for ServerConfig {
             max_body_size_bytes: 104_857_600,
             shutdown_timeout_secs: 60,
             sse_pending_events_secs: 60,
+            timezone: String::new(),
         }
     }
 }
@@ -153,8 +162,8 @@ pub struct AuthConfig {
     pub presign_expiry_secs: u64,
     #[schemars(description = "Ephemeral principal token lifetime in seconds (stateless; injected into sandboxed processes).")]
     pub ephemeral_token_expiry_secs: u64,
-    #[schemars(description = "Directory for per-invocation ephemeral token files. Created with mode 0700 at startup.")]
-    pub runtime_tokens_dir: PathBuf,
+    #[schemars(description = "Allow anyone to sign up from the registration page. When off, only admins can add users.")]
+    pub allow_registration: bool,
 }
 
 impl Default for AuthConfig {
@@ -165,7 +174,7 @@ impl Default for AuthConfig {
             refresh_token_expiry_secs: 604800,
             presign_expiry_secs: 86400,
             ephemeral_token_expiry_secs: 300,
-            runtime_tokens_dir: PathBuf::from("data/runtime/tokens"),
+            allow_registration: true,
         }
     }
 }
@@ -250,14 +259,6 @@ impl Default for BrowserConfig {
 }
 
 impl BrowserConfig {
-    pub fn ws_url_for_profile(&self, username: &str, provider: &str) -> String {
-        let user_data_dir = self.profile_path(username, provider);
-        format!(
-            "{}?--user-data-dir={}",
-            self.ws_url,
-            user_data_dir.display()
-        )
-    }
 
     pub fn http_base_url(&self) -> String {
         self.ws_url
@@ -276,9 +277,9 @@ impl BrowserConfig {
         format!("/api/browser/debugger/{credential_id}")
     }
 
-    pub fn profile_path(&self, username: &str, provider: &str) -> PathBuf {
+    pub fn profile_path(&self, handle: &crate::core::Handle, provider: &str) -> PathBuf {
         PathBuf::from(&self.profiles_path)
-            .join(username)
+            .join(handle.as_ref())
             .join(provider)
     }
 }
@@ -294,11 +295,9 @@ pub struct SearchConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct StorageConfig {
-    #[schemars(description = "Path for agent workspace directories.")]
-    pub workspaces_path: String,
-    #[schemars(description = "Path for uploaded file storage.")]
-    pub files_path: String,
-    #[schemars(description = "Path to shared configuration resources.")]
+    #[schemars(description = "Root data directory. Per-user state lives at `{data_dir}/users/{user_handle}/...`.")]
+    pub data_dir: String,
+    #[schemars(description = "Path to shared configuration resources (read-only, ships with the binary).")]
     pub shared_config_dir: String,
     #[schemars(description = "Path for installed skills directory.")]
     pub skills_dir: String,
@@ -309,8 +308,7 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            workspaces_path: "data/workspaces".into(),
-            files_path: "data/files".into(),
+            data_dir: "data".into(),
             shared_config_dir: "resources".into(),
             skills_dir: "data/skills".into(),
             cache_dir: "data/system/cache".into(),
@@ -339,9 +337,10 @@ impl Default for SchedulerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, surrealdb::types::SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
 pub struct RetryConfig {
-    #[schemars(description = "Maximum number of retry attempts.")]
+    #[schemars(description = "Maximum number of retry attempts. 0 disables retry.")]
     pub max_retries: u32,
     #[schemars(description = "Initial backoff delay in milliseconds.")]
     pub initial_backoff_ms: u64,
@@ -368,6 +367,26 @@ impl Default for RetryConfig {
             initial_backoff_ms: 1_000,
             backoff_multiplier: 2.0,
             max_backoff_ms: 60_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
+pub struct ChannelConfig {
+    #[schemars(description = "Default retry policy for failed channel connections. Per-channel overrides take precedence.")]
+    pub retry: RetryConfig,
+}
+
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        Self {
+            retry: RetryConfig {
+                max_retries: u32::MAX,
+                initial_backoff_ms: 1_000,
+                backoff_multiplier: 2.0,
+                max_backoff_ms: 60_000,
+            },
         }
     }
 }
@@ -738,8 +757,6 @@ pub struct VaultConfig {
     pub keepass_path: Option<String>,
     #[schemars(description = "KeePass database password.")]
     pub keepass_password: Option<String>,
-    #[schemars(description = "Keeper Secrets Manager app key.")]
-    pub keeper_app_key: Option<String>,
 }
 
 
@@ -793,9 +810,7 @@ impl Default for CacheConfig {
 pub struct McpConfig {
     #[schemars(description = "Whether MCP server support is enabled.")]
     pub enabled: bool,
-    #[schemars(description = "Base path for per-MCP-server workspace directories.")]
-    pub workspaces_path: String,
-    #[schemars(description = "Path for shared package caches (npm, uv). Defaults to `{workspaces_path}/cache`.")]
+    #[schemars(description = "Path for shared package caches (npm, uv). Defaults to `{data_dir}/system/mcp-cache`.")]
     #[serde(default)]
     pub cache_path: Option<String>,
     #[schemars(description = "Maximum number of MCP servers a user may have installed.")]
@@ -820,7 +835,6 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            workspaces_path: "data/mcp".into(),
             cache_path: None,
             max_servers_per_user: 32,
             startup_timeout_secs: 30,
@@ -852,6 +866,8 @@ pub struct Config {
     pub app: AppConfig,
     pub cache: CacheConfig,
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub channel: ChannelConfig,
     #[serde(default)]
     pub signal: SignalConfig,
     #[serde(default)]
@@ -896,10 +912,9 @@ impl Config {
 
         let mut builder = config::Config::builder()
             .set_default("database.path", format!("{data_dir}/db")).unwrap()
-            .set_default("storage.workspaces_path", format!("{data_dir}/workspaces")).unwrap()
-            .set_default("storage.files_path", format!("{data_dir}/files")).unwrap()
-            .set_default("mcp.workspaces_path", format!("{data_dir}/mcp")).unwrap()
-            .set_default("auth.runtime_tokens_dir", format!("{data_dir}/runtime/tokens")).unwrap();
+            .set_default("storage.data_dir", data_dir.clone()).unwrap()
+            .set_default("storage.skills_dir", format!("{data_dir}/skills")).unwrap()
+            .set_default("storage.cache_dir", format!("{data_dir}/system/cache")).unwrap();
 
         if let Some(ref content) = yaml_content {
             let expanded = expand_env_vars(content);
@@ -908,9 +923,7 @@ impl Config {
             );
         }
 
-        // Collect FRONA_* env vars and remap the key so the section separator
-        // becomes "__" while field-name underscores are preserved.
-        // e.g. FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
+        // FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
         let frona_env: HashMap<String, String> = std::env::vars()
             .filter(|(k, _)| k.starts_with(ENV_PREFIX) && !EXCLUDED_ENV_VARS.contains(&k.as_str()))
             .map(|(k, v)| {
@@ -932,9 +945,11 @@ impl Config {
 
         let built = builder.build().expect("Failed to build config");
 
-        let config: Config = built
+        let mut config: Config = built
             .try_deserialize()
             .expect("Failed to deserialize config");
+
+        resolve_server_timezone(&mut config.server);
 
         let models = if !config.models.is_empty() || !config.providers.is_empty() {
             Some(crate::inference::config::ModelRegistryConfig {
@@ -972,11 +987,41 @@ pub const SENSITIVE_PATHS: &[&[&str]] = &[
     &["vault", "bitwarden_master_password"],
     &["vault", "hashicorp_token"],
     &["vault", "keepass_password"],
-    &["vault", "keeper_app_key"],
 ];
 
 /// Provider fields that are sensitive (applied to each provider in the map).
 pub const SENSITIVE_PROVIDER_FIELDS: &[&str] = &["api_key"];
+
+/// Panics on explicit invalid config (fail-fast at startup, not silently mis-schedule).
+pub fn resolve_server_timezone(server: &mut ServerConfig) {
+    if !server.timezone.is_empty() {
+        if server.timezone.parse::<chrono_tz::Tz>().is_err() {
+            panic!(
+                "Invalid server.timezone '{}' — must be an IANA timezone (e.g. 'America/Los_Angeles', 'Asia/Tokyo', 'UTC')",
+                server.timezone
+            );
+        }
+        tracing::info!(timezone = %server.timezone, "Server timezone resolved (explicit)");
+        return;
+    }
+
+    // iana_time_zone ignores TZ when /etc/timezone disagrees → "Etc/UTC" in containers.
+    if let Ok(tz_env) = std::env::var("TZ")
+        && !tz_env.is_empty()
+        && tz_env.parse::<chrono_tz::Tz>().is_ok()
+    {
+        tracing::info!(timezone = %tz_env, "Server timezone resolved (TZ env var)");
+        server.timezone = tz_env;
+        return;
+    }
+
+    let detected = iana_time_zone::get_timezone().ok();
+    let resolved = detected
+        .filter(|tz| tz.parse::<chrono_tz::Tz>().is_ok())
+        .unwrap_or_else(|| "UTC".to_string());
+    tracing::info!(timezone = %resolved, "Server timezone resolved (auto-detected)");
+    server.timezone = resolved;
+}
 
 pub fn config_file_path() -> String {
     let data_dir = std::env::var("FRONA_SERVER_DATA_DIR")
@@ -1235,8 +1280,8 @@ mod tests {
         assert_eq!(config.server.port, 3001);
         assert_eq!(config.auth.encryption_secret, "dev-secret-change-in-production");
         assert_eq!(config.database.path, "data/db");
-        assert_eq!(config.storage.workspaces_path, "data/workspaces");
-        assert_eq!(config.storage.files_path, "data/files");
+        assert_eq!(config.storage.data_dir, "data");
+        assert_eq!(config.storage.skills_dir, "data/skills");
         assert_eq!(config.scheduler.space_compaction_secs, 3600);
         assert!(!config.sso.enabled);
         assert!(config.sso.signups_match_email);
@@ -1287,12 +1332,50 @@ mod tests {
     }
 
     #[test]
-    fn browser_config_ws_url_for_profile() {
-        let config = BrowserConfig { ws_url: "ws://localhost:3333".into(), ..Default::default() };
-        let url = config.ws_url_for_profile("alice", "google");
-        assert!(url.starts_with("ws://localhost:3333?--user-data-dir="));
-        assert!(url.contains("alice"));
-        assert!(url.contains("google"));
+    fn env_var_overrides_auth_allow_registration() {
+        unsafe { std::env::set_var("FRONA_AUTH_ALLOW_REGISTRATION", "false") };
+        let loaded = Config::load();
+        assert!(!loaded.config.auth.allow_registration);
+        unsafe { std::env::remove_var("FRONA_AUTH_ALLOW_REGISTRATION") };
+    }
+
+    #[test]
+    fn server_timezone_explicit_valid_passes() {
+        let mut server = ServerConfig {
+            timezone: "Asia/Tokyo".to_string(),
+            ..Default::default()
+        };
+        resolve_server_timezone(&mut server);
+        assert_eq!(server.timezone, "Asia/Tokyo");
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid server.timezone")]
+    fn server_timezone_explicit_invalid_panics() {
+        let mut server = ServerConfig {
+            timezone: "Mars/Olympus".to_string(),
+            ..Default::default()
+        };
+        resolve_server_timezone(&mut server);
+    }
+
+    #[test]
+    fn server_timezone_empty_falls_back_to_detection() {
+        let mut server = ServerConfig::default();
+        assert!(server.timezone.is_empty());
+        resolve_server_timezone(&mut server);
+        assert!(!server.timezone.is_empty());
+        assert!(
+            server.timezone.parse::<chrono_tz::Tz>().is_ok(),
+            "detected timezone '{}' must be a valid IANA name",
+            server.timezone
+        );
+    }
+
+    #[test]
+    fn auth_allow_registration_defaults_to_true() {
+        let config = AuthConfig::default();
+        assert!(config.allow_registration);
     }
 
     #[test]
@@ -1307,7 +1390,7 @@ mod tests {
             profiles_path: "/data/profiles".into(),
             ..Default::default()
         };
-        let path = config.profile_path("bob", "github");
+        let path = config.profile_path(&crate::handle!("bob"), "github");
         assert_eq!(path, PathBuf::from("/data/profiles/bob/github"));
     }
 

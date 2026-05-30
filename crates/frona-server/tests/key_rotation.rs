@@ -59,7 +59,7 @@ async fn insert_credential(
     let data = serde_json::json!({
         "type": "UsernamePassword",
         "data": {
-            "username": "testuser",
+            "handle": "testuser",
             "password_encrypted": password_encrypted
         }
     });
@@ -173,7 +173,6 @@ async fn first_run_stores_secret_no_rotation() {
     let rotation = KeyRotation::check(&db, secret).await.unwrap();
     assert!(rotation.is_none(), "First run should not trigger rotation");
 
-    // Verify secret was stored
     let mut result = db
         .query("SELECT `value` FROM runtime_config WHERE `key` = 'encryption_secret' LIMIT 1")
         .await
@@ -232,7 +231,6 @@ async fn rotate_vault_connections() {
     assert_eq!(report.vault_connections.failed, 0);
     assert!(report.all_succeeded());
 
-    // Verify decryption with new key works
     let (new_enc, new_nonce) = get_vault_connection_encrypted(&db, "vc1").await;
     let decrypted = decrypt_blob(&new_enc, &new_nonce, &new_key);
     assert_eq!(decrypted, plaintext);
@@ -340,7 +338,6 @@ async fn retry_skips_already_rotated_records() {
     assert_eq!(report.vault_connections.success, 0);
     assert_eq!(report.vault_connections.failed, 0);
 
-    // Verify data is still decryptable with new key
     let (enc, nonce) = get_vault_connection_encrypted(&db, "vc-a").await;
     let decrypted = decrypt_blob(&enc, &nonce, &new_key);
     assert_eq!(decrypted, plaintext);

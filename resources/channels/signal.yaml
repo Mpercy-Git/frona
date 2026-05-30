@@ -1,0 +1,16 @@
+id: signal
+display_name: Signal
+description: |
+  Link **Signal** by scanning a QR code with the Signal app on your phone.
+
+  ⚠ **Bot use is not supported by Signal.** Signal does not offer an official bot API. This integration links your account as a secondary device using the [presage](https://github.com/whisperfish/presage) Rust library. Excessive automated use may result in your account being banned. You are responsible for any actions taken against your account.
+
+  Registering a new phone number (instead of linking) is **not supported in this version** — use the linking flow only.
+setup_instructions: |
+  Open Signal on your phone, go to **Settings → Linked devices → Link new device**, and scan the QR code displayed here. The connection completes automatically once the scan succeeds. If the QR expires before you scan, click **Refresh** for a new one.
+external_links:
+  - label: Signal Terms of Service
+    url: https://signal.org/legal/
+  - label: Signal Privacy Policy
+    url: https://signal.org/privacy/
+config_fields: []

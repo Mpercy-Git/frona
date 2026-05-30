@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -30,9 +29,7 @@ pub struct CliToolConfig {
     #[serde(default)]
     pub required: Vec<String>,
     pub timeout_secs: Option<u64>,
-    /// Optional provider grouping. Multiple CLI tools sharing the same `provider`
-    /// are surfaced as one provider in the agent settings UI. Defaults to the
-    /// tool's own name so each CLI tool becomes its own provider by default.
+    /// CLI tools sharing this id are grouped under one provider in the UI.
     #[serde(default)]
     pub provider: Option<String>,
 }
@@ -40,13 +37,14 @@ pub struct CliToolConfig {
 pub struct CliTool {
     config: CliToolConfig,
     sandbox_manager: Arc<SandboxManager>,
+    storage_service: crate::storage::service::StorageService,
     skill_service: SkillService,
     token_service: TokenService,
     keypair_service: KeyPairService,
     policy_service: PolicyService,
     api_base_url: String,
-    runtime_tokens_dir: PathBuf,
     ephemeral_token_expiry_secs: u64,
+    server_timezone: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -54,24 +52,26 @@ impl CliTool {
     pub fn new(
         config: CliToolConfig,
         sandbox_manager: Arc<SandboxManager>,
+        storage_service: crate::storage::service::StorageService,
         skill_service: SkillService,
         token_service: TokenService,
         keypair_service: KeyPairService,
         policy_service: PolicyService,
         api_base_url: String,
-        runtime_tokens_dir: PathBuf,
         ephemeral_token_expiry_secs: u64,
+        server_timezone: String,
     ) -> Self {
         Self {
             config,
             sandbox_manager,
+            storage_service,
             skill_service,
             token_service,
             keypair_service,
             policy_service,
             api_base_url,
-            runtime_tokens_dir,
             ephemeral_token_expiry_secs,
+            server_timezone,
         }
     }
 
@@ -146,21 +146,28 @@ impl AgentTool for CliTool {
         let policy = self
             .policy_service
             .evaluate_sandbox_policy(
-                &ctx.user.id,
-                &crate::core::principal::Principal::agent(agent_id),
+                crate::policy::service::SandboxPrincipalRef::agent(
+                    &ctx.user.id,
+                    &ctx.user.handle,
+                    &ctx.agent.handle,
+                ),
                 true,
             )
             .await?;
 
         let skill_read_paths: Vec<String> = self
             .skill_service
-            .list(agent_id, ctx.agent.skills.as_deref())
+            .list(&ctx.user.handle, &ctx.agent.handle, ctx.agent.skills.as_deref())
             .await
             .into_iter()
             .map(|s| s.path)
             .collect();
 
+        let workspace = self
+            .storage_service
+            .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
         let mut sandbox = self.sandbox_manager.get_sandbox(
+            workspace,
             agent_id,
             policy.network_access,
             policy.network_destinations.clone(),
@@ -176,13 +183,14 @@ impl AgentTool for CliTool {
             sandbox = sandbox.with_write_paths(ctx.file_paths.clone());
         }
 
+        let tokens_dir = self.storage_service.user_tokens_path(&ctx.user.handle);
         let token_guard = EphemeralTokenGuard::issue(
             &self.token_service,
             &self.keypair_service,
             &ctx.user,
             Principal::agent(agent_id),
             self.ephemeral_token_expiry_secs,
-            &self.runtime_tokens_dir,
+            &tokens_dir,
         )
         .await?;
 
@@ -192,9 +200,10 @@ impl AgentTool for CliTool {
 
         {
             let mut extra_vars = ctx.vault_env_vars.read().await.clone();
-            if let Some(tz) = &ctx.user.timezone {
-                extra_vars.push(("TZ".to_string(), tz.clone()));
-            }
+            extra_vars.push((
+                "TZ".to_string(),
+                ctx.user.resolved_timezone(&self.server_timezone),
+            ));
             extra_vars.push((
                 "FRONA_TOKEN_FILE".to_string(),
                 token_guard.path().to_string_lossy().into_owned(),
@@ -430,10 +439,28 @@ mod tests {
         crate::db::init::setup_schema(&db).await.unwrap();
         let schema = crate::policy::schema::build_schema();
         let repo: std::sync::Arc<dyn PolicyRepository> =
-            std::sync::Arc::new(SurrealRepo::<crate::policy::models::Policy>::new(db));
+            std::sync::Arc::new(SurrealRepo::<crate::policy::models::Policy>::new(db.clone()));
         let tool_manager = std::sync::Arc::new(crate::tool::manager::ToolManager::new(false));
         let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
-        PolicyService::new(repo, schema, tool_manager, storage)
+        let user_service = crate::auth::UserService::new(
+            SurrealRepo::new(db),
+            &crate::core::config::CacheConfig::default(),
+        );
+        let _ = user_service
+            .create(&crate::auth::User {
+                id: "test-user".into(),
+                handle: crate::handle!("testuser"),
+                email: "t@example.com".into(),
+                name: "Test".into(),
+                password_hash: String::new(),
+                timezone: None,
+                groups: Vec::new(),
+                deactivated_at: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await;
+        PolicyService::new(repo, schema, tool_manager, storage, user_service)
     }
 
     #[tokio::test]
@@ -457,19 +484,21 @@ mod tests {
             provider: None,
         };
 
-        let wm = Arc::new(SandboxManager::new("/tmp/test", false, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0))));
+        let wm = Arc::new(SandboxManager::new(false, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0))));
+        let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
         let service = mock_skill_service();
         let (tokens, keypair) = mock_token_services().await;
         let tool = CliTool::new(
             config,
             wm,
+            storage,
             service,
             tokens,
             keypair,
             mock_policy_service().await,
             "http://localhost".into(),
-            std::env::temp_dir().join("frona-cli-def-tokens"),
             300,
+            "UTC".to_string(),
         );
         let defs = tool.definitions();
 
@@ -483,17 +512,20 @@ mod tests {
         InferenceContext::new(
             crate::auth::User {
                 id: "test-user".into(),
-                username: "testuser".into(),
+                handle: crate::handle!("testuser"),
                 email: "test@test.com".into(),
                 name: "Test".into(),
                 password_hash: String::new(),
                 timezone: None,
+                groups: Vec::new(),
+                deactivated_at: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
             crate::agent::models::Agent {
                 id: "test-agent".into(),
-                user_id: Some("test-user".into()),
+                user_id: "test-user".into(),
+                handle: crate::handle!("test-agent"),
                 name: "Test Agent".into(),
                 description: String::new(),
                 model_group: "primary".into(),
@@ -554,20 +586,23 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_test_cli_tool");
         let _ = std::fs::create_dir_all(&tmp);
 
-        let wm = Arc::new(SandboxManager::new(&tmp, false, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0))));
+        let wm = Arc::new(SandboxManager::new(false, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0))));
+        let mut config_obj = crate::core::config::Config::default();
+        config_obj.storage.data_dir = tmp.to_string_lossy().into_owned();
+        let storage = crate::storage::StorageService::new(&config_obj);
         let service = mock_skill_service();
         let (tokens, keypair) = mock_token_services().await;
-        let runtime_tokens = tmp.join("tokens");
         let tool = CliTool::new(
             config,
             wm,
+            storage,
             service,
             tokens,
             keypair,
             mock_policy_service().await,
             "http://localhost".into(),
-            runtime_tokens,
             300,
+            "UTC".to_string(),
         );
         let ctx = mock_context();
 

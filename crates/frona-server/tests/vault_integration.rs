@@ -44,6 +44,17 @@ fn build_service(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> Vault
     let binding_repo: Arc<
         dyn frona::credential::vault::repository::PrincipalCredentialBindingRepository,
     > = Arc::new(SurrealRepo::<PrincipalCredentialBinding>::new(db.clone()));
+    let storage = frona::storage::StorageService::new(&frona::core::config::Config {
+        storage: frona::core::config::StorageConfig {
+            data_dir: "/tmp/test-data".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let user_service = frona::auth::UserService::new(
+        SurrealRepo::new(db.clone()),
+        &frona::core::config::CacheConfig::default(),
+    );
     VaultService::new(
         connection_repo,
         grant_repo,
@@ -53,7 +64,8 @@ fn build_service(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> Vault
         "test-secret",
         VaultConfig::default(),
         std::path::PathBuf::from("/tmp/test-data"),
-        std::path::PathBuf::from("/tmp/test-files"),
+        storage,
+        user_service,
     )
 }
 
@@ -173,7 +185,7 @@ async fn expired_grant_is_cleaned_up() {
         Arc::new(SurrealRepo::<VaultGrant>::new(db.clone()));
 
     let expired_grant = VaultGrant {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         user_id: "user1".into(),
         connection_id: conn.id,
         vault_item_id: "item1".into(),

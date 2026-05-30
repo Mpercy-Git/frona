@@ -66,7 +66,14 @@ fn ctx_with_task(quarantined: bool, result_schema: Option<Value>) -> frona::tool
 
 fn tool(schema: Option<Value>) -> TaskControlTool {
     let spec = schema.map(|s| Arc::new(ResultSpec::new(s).expect("schema compiles")));
-    TaskControlTool::new(workspace_root().join("storage/workspaces"), prompts(), spec)
+    let storage = frona::storage::StorageService::new(&frona::core::config::Config {
+        storage: frona::core::config::StorageConfig {
+            data_dir: workspace_root().to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    TaskControlTool::new(storage, prompts(), spec)
 }
 
 fn unwrap_validation_err(result: Result<frona::tool::ToolOutput, AppError>) -> String {
@@ -197,6 +204,133 @@ async fn complete_task_object_schema_rejects_malformed_json() {
     );
 }
 
+/// Regression: agent passes `result` as a JSON number (not a quoted string).
+/// Pre-fix the tool read via `as_str()` → returned None → schema validation
+/// skipped → summary persisted as None → empty body in source chat ("nothing
+/// delivered to the parent chat").
+#[tokio::test]
+async fn complete_task_accepts_numeric_result_against_number_schema() {
+    let schema = json!({"type": "number", "description": "random number"});
+    let t = tool(Some(schema.clone()));
+    let ctx = ctx_with_task(false, Some(schema));
+
+    let out = t
+        .execute("complete_task", json!({"result": 554669}), &ctx)
+        .await
+        .expect("numeric result against number schema must validate");
+
+    match out.tool_data() {
+        Some(frona::inference::tool_call::MessageTool::TaskCompletion { summary, .. }) => {
+            assert_eq!(summary.as_deref(), Some("554669"));
+        }
+        other => panic!("expected TaskCompletion tool_data, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn complete_task_accepts_boolean_result_against_boolean_schema() {
+    let schema = json!({"type": "boolean"});
+    let t = tool(Some(schema.clone()));
+    let ctx = ctx_with_task(false, Some(schema));
+
+    let out = t
+        .execute("complete_task", json!({"result": true}), &ctx)
+        .await
+        .expect("boolean result must validate");
+    match out.tool_data() {
+        Some(frona::inference::tool_call::MessageTool::TaskCompletion { summary, .. }) => {
+            assert_eq!(summary.as_deref(), Some("true"));
+        }
+        _ => panic!("expected TaskCompletion"),
+    }
+}
+
+#[tokio::test]
+async fn complete_task_accepts_object_result_as_actual_object() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string"},
+            "price": {"type": "number"}
+        },
+        "required": ["symbol", "price"]
+    });
+    let t = tool(Some(schema.clone()));
+    let ctx = ctx_with_task(false, Some(schema));
+
+    let out = t
+        .execute(
+            "complete_task",
+            json!({"result": {"symbol": "AAPL", "price": 234}}),
+            &ctx,
+        )
+        .await
+        .expect("object result must validate");
+    match out.tool_data() {
+        Some(frona::inference::tool_call::MessageTool::TaskCompletion { summary, .. }) => {
+            // Stored as JSON-encoded so ResultSpec::parse can roundtrip it.
+            let s = summary.as_deref().expect("summary should be set");
+            let parsed: serde_json::Value = serde_json::from_str(s).unwrap();
+            assert_eq!(parsed, json!({"symbol": "AAPL", "price": 234}));
+        }
+        _ => panic!("expected TaskCompletion"),
+    }
+}
+
+#[tokio::test]
+async fn complete_task_rejects_missing_result_against_required_schema() {
+    let schema = json!({"type": "string"});
+    let t = tool(Some(schema.clone()));
+    let ctx = ctx_with_task(false, Some(schema));
+
+    let msg = unwrap_validation_err(
+        t.execute("complete_task", json!({}), &ctx).await,
+    );
+    assert!(
+        msg.contains("schema"),
+        "missing result must surface schema error: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn complete_task_accepts_null_against_nullable_schema() {
+    let schema = json!({"type": ["string", "null"]});
+    let t = tool(Some(schema.clone()));
+    let ctx = ctx_with_task(false, Some(schema));
+
+    let out = t
+        .execute("complete_task", json!({"result": null}), &ctx)
+        .await
+        .expect("null against nullable schema must validate");
+    match out.tool_data() {
+        Some(frona::inference::tool_call::MessageTool::TaskCompletion { summary, .. }) => {
+            assert_eq!(summary.as_deref(), Some("null"));
+        }
+        _ => panic!("expected TaskCompletion"),
+    }
+}
+
+#[tokio::test]
+async fn complete_task_accepts_missing_against_nullable_schema_as_silent() {
+    // Agents often call complete_task() with no args. Against a nullable
+    // schema this should be treated as null (silent close), not a validation
+    // error.
+    let schema = json!({"type": ["string", "null"]});
+    let t = tool(Some(schema.clone()));
+    let ctx = ctx_with_task(false, Some(schema));
+
+    let out = t
+        .execute("complete_task", json!({}), &ctx)
+        .await
+        .expect("missing result against nullable schema must validate");
+    match out.tool_data() {
+        Some(frona::inference::tool_call::MessageTool::TaskCompletion { summary, .. }) => {
+            assert_eq!(summary.as_deref(), None);
+        }
+        _ => panic!("expected TaskCompletion"),
+    }
+}
+
 #[tokio::test]
 async fn complete_task_without_schema_accepts_any_string() {
     let t = tool(None);
@@ -222,7 +356,7 @@ async fn complete_task_without_schema_accepts_any_string() {
 async fn create_signal_always_sets_quarantined_true() {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
-    let task_service = TaskService::new(SurrealRepo::new(db.clone()));
+    let task_service = TaskService::new(SurrealRepo::new(db.clone()), frona::chat::broadcast::BroadcastService::new());
 
     let schema = json!({"type": "string", "pattern": "^[0-9]{6}$"});
     let task = task_service
@@ -252,7 +386,7 @@ async fn create_signal_always_sets_quarantined_true() {
 async fn create_signal_rejects_malformed_schema_at_submission() {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
-    let task_service = TaskService::new(SurrealRepo::new(db.clone()));
+    let task_service = TaskService::new(SurrealRepo::new(db.clone()), frona::chat::broadcast::BroadcastService::new());
 
     let bad_schema = json!({"type": "string", "pattern": "[unterminated"});
     let err = task_service
@@ -288,7 +422,7 @@ async fn create_signal_rejects_malformed_schema_at_submission() {
 async fn create_signal_with_no_schema_still_quarantines() {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
-    let task_service = TaskService::new(SurrealRepo::new(db.clone()));
+    let task_service = TaskService::new(SurrealRepo::new(db.clone()), frona::chat::broadcast::BroadcastService::new());
 
     let task = task_service
         .create_signal(

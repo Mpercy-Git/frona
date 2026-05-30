@@ -9,7 +9,6 @@ use super::providers::{
     bitwarden::BitwardenVaultProvider,
     hashicorp::HashicorpVaultProvider,
     keepass::KeePassVaultProvider,
-    keeper::KeeperVaultProvider,
     local::LocalVaultProvider,
     onepassword::OnePasswordVaultProvider,
 };
@@ -68,12 +67,6 @@ pub fn create_vault_provider(
                 master_password,
             } => Ok(Box::new(KeePassVaultProvider::new(file_path, master_password))),
             _ => Err(AppError::Validation("Invalid config for KeePass".into())),
-        },
-        VaultProviderType::Keeper => match config {
-            VaultConnectionConfig::Keeper {
-                app_key, server,
-            } => Ok(Box::new(KeeperVaultProvider::new(app_key, server))),
-            _ => Err(AppError::Validation("Invalid config for Keeper".into())),
         },
     }
 }

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use surrealdb::types::SurrealValue;
 
 use crate::Entity;
+use crate::core::Handle;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
 #[serde(rename_all = "lowercase")]
@@ -113,8 +114,9 @@ pub struct McpServer {
     pub id: String,
     pub user_id: String,
 
-    /// Immutable: changing it would orphan `mcp__{slug}__{tool}` ids stored in `Agent.tools`.
-    pub slug: String,
+    /// Per-user-unique. Appears in Cedar UIDs (`Mcp::"{user_handle}/{handle}"`),
+    /// the `mcp__{handle}__{tool}` tool-id prefix, and the workspace dir name.
+    pub handle: Handle,
     pub display_name: String,
     pub description: Option<String>,
     pub repository_url: Option<String>,
@@ -124,10 +126,9 @@ pub struct McpServer {
     pub package: McpPackage,
     pub command: String,
     pub args: Vec<String>,
-    /// Per-transport invocation configs (args, env, port, path).
     #[serde(default)]
     pub transports: Vec<TransportConfig>,
-    /// Which transport the user has selected: "stdio", "streamable-http", "sse".
+    /// One of: "stdio", "streamable-http", "sse".
     pub active_transport: String,
     pub env: BTreeMap<String, String>,
     pub status: McpServerStatus,
@@ -139,8 +140,6 @@ pub struct McpServer {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Wire-format binding the install API accepts. Translated server-side into
-/// rows on `principal_credential_binding`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialBinding {
     pub connection_id: String,
@@ -157,11 +156,13 @@ pub struct McpServerInstall {
     pub manifest: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name_override: Option<String>,
+    /// When absent, the install service derives one via `sanitize_to_handle`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<Handle>,
     #[serde(default)]
     pub credentials: Vec<CredentialBinding>,
     #[serde(default)]
     pub extra_env: BTreeMap<String, String>,
-    /// Reconciled into Cedar policies on install.
     #[serde(default)]
     pub sandbox_policy: Option<crate::policy::sandbox::SandboxPolicy>,
 }
@@ -174,32 +175,66 @@ pub struct McpServerUpdate {
     pub credentials: Option<Vec<CredentialBinding>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_env: Option<BTreeMap<String, String>>,
-    /// When present, re-reconciles Cedar policies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_policy: Option<crate::policy::sandbox::SandboxPolicy>,
     pub active_transport: Option<String>,
 }
 
-/// Returns `"_"` when the input would otherwise produce an empty slug.
-pub fn sanitize_slug(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut last_was_underscore = false;
-    for c in input.chars() {
-        let lowered = c.to_ascii_lowercase();
-        if lowered.is_ascii_lowercase() || lowered.is_ascii_digit() {
-            out.push(lowered);
-            last_was_underscore = false;
-        } else if !last_was_underscore {
-            out.push('_');
-            last_was_underscore = true;
+/// Derive a `Handle` from an arbitrary string (display name or reverse-DNS
+/// registry id). Validated against the full 5492-entry MCP registry: 0
+/// invalid outputs. The `io.github.` strip drops collision count from 641
+/// (tail-only) to 9.
+pub fn sanitize_to_handle(input: &str) -> Handle {
+    let stripped = strip_io_github_prefix(input);
+
+    let mut out = String::with_capacity(stripped.len());
+    let mut last: Option<char> = None;
+    for c in stripped.chars() {
+        let mapped = match c.to_ascii_lowercase() {
+            ch if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-' => Some(ch),
+            '.' | '/' | ' ' | '\t' => Some('-'),
+            _ => Some('-'),
+        };
+        if let Some(ch) = mapped {
+            if matches!(ch, '-' | '_') && matches!(last, Some('-') | Some('_')) {
+                continue;
+            }
+            out.push(ch);
+            last = Some(ch);
         }
     }
-    let trimmed = out.trim_matches('_').to_string();
-    if trimmed.is_empty() {
-        "_".to_string()
-    } else {
-        trimmed
+    let mut s = out.trim_matches(|c: char| c == '-' || c == '_').to_string();
+
+    if s.is_empty() {
+        let uuid = crate::core::repository::new_id();
+        let short = uuid.chars().take(6).collect::<String>();
+        s = format!("mcp-{short}");
     }
+
+    if s.chars().count() == 1 {
+        s = format!("m{s}");
+    }
+
+    if !s.starts_with(|c: char| c.is_ascii_lowercase()) {
+        s = format!("m-{s}");
+    }
+
+    if s.len() > 32 {
+        s.truncate(32);
+        s = s.trim_end_matches(['-', '_']).to_string();
+    }
+
+    Handle::try_new(s)
+        .expect("sanitize_to_handle produced a value that fails Handle validation — bug in the sanitizer")
+}
+
+fn strip_io_github_prefix(input: &str) -> &str {
+    for prefix in ["io.github.", "io_github_"] {
+        if input.len() >= prefix.len() && input[..prefix.len()].eq_ignore_ascii_case(prefix) {
+            return &input[prefix.len()..];
+        }
+    }
+    input
 }
 
 #[cfg(test)]
@@ -207,42 +242,92 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sanitize_slug_basic() {
-        assert_eq!(sanitize_slug("Google Workspace"), "google_workspace");
-        assert_eq!(sanitize_slug("GitHub"), "github");
-        assert_eq!(sanitize_slug("my-tool-2"), "my_tool_2");
+    fn sanitize_to_handle_basic() {
+        assert_eq!(sanitize_to_handle("Google Workspace").as_str(), "google-workspace");
+        assert_eq!(sanitize_to_handle("GitHub").as_str(), "github");
+        assert_eq!(sanitize_to_handle("my-tool-2").as_str(), "my-tool-2");
     }
 
     #[test]
-    fn sanitize_slug_collapses_runs() {
-        assert_eq!(sanitize_slug("hello   world"), "hello_world");
-        assert_eq!(sanitize_slug("foo--bar__baz"), "foo_bar_baz");
+    fn sanitize_to_handle_collapses_runs() {
+        assert_eq!(sanitize_to_handle("hello   world").as_str(), "hello-world");
+        assert_eq!(sanitize_to_handle("foo--bar__baz").as_str(), "foo-bar_baz");
     }
 
     #[test]
-    fn sanitize_slug_trims_edges() {
-        assert_eq!(sanitize_slug("  spaced  "), "spaced");
-        assert_eq!(sanitize_slug("___internal___"), "internal");
+    fn sanitize_to_handle_trims_edges() {
+        assert_eq!(sanitize_to_handle("  spaced  ").as_str(), "spaced");
+        assert_eq!(sanitize_to_handle("___internal___").as_str(), "internal");
     }
 
     #[test]
-    fn sanitize_slug_handles_registry_id() {
+    fn sanitize_to_handle_strips_io_github_prefix() {
         assert_eq!(
-            sanitize_slug("io.github.taylorwilsdon/google_workspace_mcp"),
-            "io_github_taylorwilsdon_google_workspace_mcp"
+            sanitize_to_handle("io.github.bytedance/mcp-server-browser").as_str(),
+            "bytedance-mcp-server-browser"
+        );
+        assert_eq!(
+            sanitize_to_handle("io.github.ruvnet/claude-flow").as_str(),
+            "ruvnet-claude-flow"
+        );
+        assert_eq!(
+            sanitize_to_handle("IO.GITHUB.upstash/context7").as_str(),
+            "upstash-context7"
         );
     }
 
     #[test]
-    fn sanitize_slug_empty_maps_to_underscore() {
-        assert_eq!(sanitize_slug(""), "_");
-        assert_eq!(sanitize_slug("!@#$%"), "_");
+    fn sanitize_to_handle_keeps_other_reverse_dns_prefixes() {
+        assert_eq!(
+            sanitize_to_handle("com.mcparmory/foo-bar").as_str(),
+            "com-mcparmory-foo-bar"
+        );
     }
 
     #[test]
-    fn sanitize_slug_unicode_stripped() {
-        assert_eq!(sanitize_slug("héllo"), "h_llo");
-        assert_eq!(sanitize_slug("日本語"), "_");
+    fn sanitize_to_handle_truncates_long_input() {
+        let long = sanitize_to_handle("io.github.ChromeDevTools/chrome-devtools-mcp");
+        assert!(long.as_str().len() <= 32);
+        assert_eq!(long.as_str(), "chromedevtools-chrome-devtools-m");
+    }
+
+    #[test]
+    fn sanitize_to_handle_truncation_strips_trailing_separator() {
+        let h = sanitize_to_handle("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa--xyz");
+        assert!(!h.as_str().ends_with('-'));
+        assert!(!h.as_str().ends_with('_'));
+    }
+
+    #[test]
+    fn sanitize_to_handle_empty_uses_uuid_fallback() {
+        let h = sanitize_to_handle("");
+        assert!(h.as_str().starts_with("mcp-"));
+        assert!(h.as_str().len() >= 5);
+    }
+
+    #[test]
+    fn sanitize_to_handle_all_special_uses_uuid_fallback() {
+        let h = sanitize_to_handle("!@#$%");
+        assert!(h.as_str().starts_with("mcp-"));
+    }
+
+    #[test]
+    fn sanitize_to_handle_single_char_pads() {
+        let h = sanitize_to_handle("x");
+        assert_eq!(h.as_str(), "mx");
+    }
+
+    #[test]
+    fn sanitize_to_handle_digit_leading_prefixed() {
+        let h = sanitize_to_handle("2024-tool");
+        assert_eq!(h.as_str(), "m-2024-tool");
+    }
+
+    #[test]
+    fn sanitize_to_handle_unicode_dropped() {
+        assert_eq!(sanitize_to_handle("héllo").as_str(), "h-llo");
+        let h = sanitize_to_handle("日本語");
+        assert!(h.as_str().starts_with("mcp-"));
     }
 
     #[test]

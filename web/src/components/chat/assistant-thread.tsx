@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { FronaUserMessage } from "./frona-user-message";
 import { FronaAssistantMessage } from "./frona-assistant-message";
@@ -8,28 +8,36 @@ import { FronaComposer } from "./frona-composer";
 import { ExternalToolDrawer, CollapsedToolTab, useToolWizard } from "./external-tool-drawer";
 import { WizardAnswersContext } from "@/lib/wizard-answers-context";
 import { usePendingTools } from "@/lib/pending-tools-context";
+import { useChatPagination } from "@/lib/chat-pagination-context";
 
 export function AssistantThread() {
   const wizard = useToolWizard();
+  const wizardSetCollapsed = wizard.setCollapsed;
   const lastScrollTop = useRef(0);
   const updating = useRef(false);
+  const { hasMore, loadingMore, loadOlder } = useChatPagination();
+  const viewportElRef = useRef<HTMLElement | null>(null);
+  // Anchor on a real message DOM node so scroll position survives the
+  // prepend regardless of async height changes (markdown, images, etc).
+  const anchorRef = useRef<{ id: string; offset: number } | null>(null);
 
   const setCollapsed = useCallback(
     (v: boolean | ((prev: boolean) => boolean)) => {
       updating.current = true;
-      wizard.setCollapsed(v);
+      wizardSetCollapsed(v);
       requestAnimationFrame(() => {
         updating.current = false;
       });
     },
-    [wizard.setCollapsed],
+    [wizardSetCollapsed],
   );
 
   const handleScroll = useCallback(
     (e: React.UIEvent<HTMLDivElement>) => {
+      const el = e.currentTarget;
+      viewportElRef.current = el;
       if (updating.current) return;
 
-      const el = e.currentTarget;
       const { scrollTop, scrollHeight, clientHeight } = el;
       const delta = scrollTop - lastScrollTop.current;
       lastScrollTop.current = scrollTop;
@@ -41,9 +49,37 @@ export function AssistantThread() {
       } else if (isNearBottom) {
         setCollapsed(false);
       }
+
+      if (scrollTop < 200 && hasMore && !loadingMore && !anchorRef.current) {
+        const firstMsg = el.querySelector<HTMLElement>("[data-message-id]");
+        if (firstMsg) {
+          const vTop = el.getBoundingClientRect().top;
+          anchorRef.current = {
+            id: firstMsg.dataset.messageId!,
+            offset: firstMsg.getBoundingClientRect().top - vTop,
+          };
+        }
+        loadOlder();
+      }
     },
-    [setCollapsed, wizard.submitted],
+    [setCollapsed, wizard.submitted, hasMore, loadingMore, loadOlder],
   );
+
+  useLayoutEffect(() => {
+    if (loadingMore) return;
+    const el = viewportElRef.current;
+    const anchor = anchorRef.current;
+    if (!el || !anchor) return;
+    const target = el.querySelector<HTMLElement>(
+      `[data-message-id="${CSS.escape(anchor.id)}"]`,
+    );
+    if (target) {
+      const vTop = el.getBoundingClientRect().top;
+      const currentOffset = target.getBoundingClientRect().top - vTop;
+      el.scrollTop += currentOffset - anchor.offset;
+    }
+    anchorRef.current = null;
+  }, [loadingMore]);
 
   const safeWizard = useMemo(
     () => ({ ...wizard, setCollapsed }),

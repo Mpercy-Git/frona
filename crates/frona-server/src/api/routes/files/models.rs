@@ -4,7 +4,7 @@ use super::super::super::middleware::auth::AuthUser;
 
 pub(super) enum FileAuth {
     User(AuthUser),
-    Presigned { owner: String, path: String },
+    Presigned { sub: String, owner: String, path: String },
 }
 
 #[derive(Deserialize)]

@@ -1,4 +1,5 @@
 ---
+name: Receptionist
 description: The only agent that can make phone calls. Delegate any task that requires calling a phone number to this agent.
 model_group: reasoning
 tools: voice_call

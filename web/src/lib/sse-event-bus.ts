@@ -1,7 +1,6 @@
 import { ensureAccessToken, API_URL } from "./api-client";
 import type { MessageResponse, Notification, ToolCall } from "./types";
 
-// --- Chat-scoped events ---
 
 export type ChatSSEEvent =
   | { type: "token"; content: string }
@@ -16,7 +15,6 @@ export type ChatSSEEvent =
   | { type: "inference_cancelled"; reason: string }
   | { type: "inference_error"; error: string };
 
-// --- Global events ---
 
 export type GlobalSSEEvent =
   | { type: "title"; chatId: string; title: string }
@@ -25,7 +23,6 @@ export type GlobalSSEEvent =
   | { type: "inference_count"; count: number }
   | { type: "notification"; notification: Notification };
 
-// --- Internal subscriber types ---
 
 interface ChatSubscriber {
   chatId: string;
@@ -47,7 +44,6 @@ export class SSEEventBus {
   private activeSignal: AbortSignal | null = null;
 
   connect(signal: AbortSignal): void {
-    // Already connected with a live signal — skip
     if (this.activeSignal && !this.activeSignal.aborted) return;
     this.activeSignal = signal;
     this.runLoop(signal);
@@ -63,7 +59,6 @@ export class SSEEventBus {
     const bus = this;
     return {
       [Symbol.asyncIterator]() {
-        // Drain any buffered events that arrived before this subscriber existed
         const buffered = bus.chatBuffers.get(chatId);
         const queue: ChatSSEEvent[] = buffered ? buffered.splice(0) : [];
         if (buffered && buffered.length === 0) bus.chatBuffers.delete(chatId);
@@ -149,7 +144,6 @@ export class SSEEventBus {
       }
       return;
     }
-    // No subscribers yet — buffer the event for later pickup
     let buffer = this.chatBuffers.get(chatId);
     if (!buffer) {
       buffer = [];
@@ -170,9 +164,7 @@ export class SSEEventBus {
         sub.notifyReconnect();
       }
     }
-    // Only clear buffers for chats that have active subscribers (they were just
-    // notified above). Preserve buffers for chats with no subscriber yet — e.g.
-    // a just-created chat whose React effect hasn't fired.
+    // Preserve buffers for chats with no subscriber yet (React effect race).
     for (const chatId of [...this.chatBuffers.keys()]) {
       if (this.chatSubscribers.has(chatId)) {
         this.chatBuffers.delete(chatId);
@@ -209,9 +201,9 @@ export class SSEEventBus {
   }
 
   private async connectStream(signal: AbortSignal, onConnected?: () => void): Promise<void> {
-    const token = await ensureAccessToken();
+    const tokenResult = await ensureAccessToken();
     const headers: Record<string, string> = {};
-    if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (tokenResult.ok) headers["Authorization"] = `Bearer ${tokenResult.token}`;
 
     let res: Response;
     try {
@@ -250,7 +242,6 @@ export class SSEEventBus {
               const chatId = (parsed.chat_id as string) ?? "";
               this.routeEvent(currentEvent, chatId, parsed);
             } catch {
-              // skip malformed JSON
             }
             currentEvent = "";
           }

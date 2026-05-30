@@ -356,6 +356,7 @@ impl TwilioWebhook {
             sender_external_id: Some(self.from.clone()),
             sender_display_name: Some(self.from.clone()),
             content: self.body.clone(),
+            attachments: vec![],
         };
         ctx.emit
             .send(event)

@@ -11,7 +11,7 @@ COPY web/ .
 RUN npm run build
 
 # Stage 2: cargo-chef planner
-FROM rust:1.89-bookworm AS planner
+FROM rust:1.95-bookworm AS planner
 RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo.txt \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \
@@ -23,7 +23,7 @@ COPY crates/ crates/
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 3: backend builder
-FROM rust:1.89-bookworm AS backend-builder
+FROM rust:1.95-bookworm AS backend-builder
 RUN --mount=type=bind,source=build/pkgs/builder-rust-apt.txt,target=/tmp/packages.txt \
   apt-get update && apt-get install -y --no-install-recommends \
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
@@ -39,6 +39,7 @@ COPY resources/ resources/
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY resources/ resources/
 RUN cargo build --release -p frona-server -p frona-cli-mcp
 
 # Stage 4: CLI tools (op, bw, syd)
@@ -84,7 +85,7 @@ RUN pip install --no-cache-dir --prefix=/install -r builder-python-pip.txt
 # DEV TARGET
 # ============================
 
-FROM rust:1.89-bookworm AS dev
+FROM rust:1.95-bookworm AS dev
 RUN --mount=type=bind,source=build/pkgs/dev-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -105,6 +106,7 @@ COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal
 
 RUN groupadd -g 1000 frona && useradd -u 1000 -g frona -m -s /bin/bash frona
 RUN mkdir -p /app /app/target /app/frontend/node_modules /app/data /app/bin \
+    /usr/local/cargo/registry /usr/local/cargo/git \
     && chown -R frona:frona /app /usr/local/cargo
 ENV PATH="/app/bin:${PATH}"
 USER frona
@@ -118,9 +120,16 @@ CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch --poll -w cr
 # ============================
 
 FROM python:3.12-slim-bookworm AS prod
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG CREATED=unknown
 LABEL org.opencontainers.image.source="https://github.com/Mpercy-Git/frona"
 LABEL org.opencontainers.image.description="Frona — personal AI assistant"
 LABEL org.opencontainers.image.licenses="BSL-1.1"
+LABEL org.opencontainers.image.title="frona"
+LABEL org.opencontainers.image.version="$VERSION"
+LABEL org.opencontainers.image.revision="$REVISION"
+LABEL org.opencontainers.image.created="$CREATED"
 RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \

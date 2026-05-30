@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source build/common.sh
 
 CARGO_TOML="Cargo.toml"
+CARGO_LOCK="Cargo.lock"
 PKG_JSON="web/package.json"
 PKG_LOCK="web/package-lock.json"
-IMAGE="ghcr.io/fronalabs/frona"
-
-die() { echo "error: $*" >&2; exit 1; }
-
-current_version() {
-  grep -m1 '^version' "$CARGO_TOML" | sed 's/.*"\(.*\)"/\1/'
-}
 
 parse_version() {
   local ver="$1"
@@ -39,12 +34,22 @@ format_version() {
   echo "$ver"
 }
 
-bump_segment() {
-  case "$1" in
-    patch) PATCH=$((PATCH + 1)) ;;
-    minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-    major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-  esac
+today_calver() {
+  date +%Y.%-m
+}
+
+roll_to_today() {
+  local today today_year today_month
+  today=$(today_calver)
+  today_year="${today%.*}"
+  today_month="${today#*.}"
+  if [[ "$MAJOR" == "$today_year" && "$MINOR" == "$today_month" ]]; then
+    PATCH=$((PATCH + 1))
+  else
+    MAJOR="$today_year"
+    MINOR="$today_month"
+    PATCH=0
+  fi
 }
 
 update_files() {
@@ -87,46 +92,52 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$COMMAND" ]] || die "Usage: release.sh <command> [pre-release] [--dry-run] [--skip-docker] [--skip-tests]
+USAGE="Usage: release.sh [command] [--dry-run] [--skip-docker] [--skip-tests]
+
+Frona uses CalVer YYYY.M.PATCH (year.month.in-month-patch).
 
 Commands:
-  patch / minor / major       Bump to stable release
-  minor alpha / major beta    Bump + start pre-release at 1
-  alpha / beta / rc           Increment existing pre-release number
-  stable                      Promote pre-release to stable
-  <version>                   Set exact version (e.g., 1.0.0-RC1)"
+  (no arg) / today            Cut today's release; bumps PATCH within the current month
+                              or resets to YYYY.M.0 when the month rolls over
+  patch                       Increment PATCH within the current YYYY.M (strict — errors
+                              if the calendar month has changed since the last release)
+  alpha / beta / rc           Start or advance a pre-release; rolls to today's YYYY.M
+                              if current version is already stable
+  stable                      Promote current pre-release to stable
+  <version>                   Set exact version (e.g., 2026.5.0-RC1)"
 
 OLD_VERSION=$(current_version)
 parse_version "$OLD_VERSION"
 
 case "$COMMAND" in
-  patch)
-    [[ -z "$PRE_RELEASE_TYPE" ]] || die "Pre-releases are not supported for patch bumps. Use 'minor $PRE_RELEASE_TYPE' or 'major $PRE_RELEASE_TYPE'."
+  ""|today)
+    [[ -z "$PRE_RELEASE_TYPE" ]] || die "Pre-releases are not supported here. Use 'alpha', 'beta', or 'rc' to start one."
     if [[ -n "$PRE_TAG" ]]; then
-      die "Current version is a pre-release ($OLD_VERSION). Use 'stable' to promote or specify a pre-release type."
+      die "Current version is a pre-release ($OLD_VERSION). Use 'stable' to promote or 'alpha'/'beta'/'rc' to advance."
     fi
-    bump_segment "patch"
+    roll_to_today
     PRE_TAG="" PRE_NUM=""
     ;;
-  minor|major)
-    if [[ -n "$PRE_RELEASE_TYPE" ]]; then
-      bump_segment "$COMMAND"
-      PRE_TAG=$(echo "$PRE_RELEASE_TYPE" | tr '[:lower:]' '[:upper:]')
-      PRE_NUM=1
-    else
-      if [[ -n "$PRE_TAG" ]]; then
-        die "Current version is a pre-release ($OLD_VERSION). Use 'stable' to promote or specify a pre-release type."
-      fi
-      bump_segment "$COMMAND"
-      PRE_TAG="" PRE_NUM=""
+  patch)
+    [[ -z "$PRE_RELEASE_TYPE" ]] || die "Pre-releases are not supported for patch bumps. Use 'alpha', 'beta', or 'rc'."
+    if [[ -n "$PRE_TAG" ]]; then
+      die "Current version is a pre-release ($OLD_VERSION). Use 'stable' to promote or 'alpha'/'beta'/'rc' to advance."
     fi
+    today=$(today_calver)
+    today_year="${today%.*}"
+    today_month="${today#*.}"
+    if [[ "$MAJOR" != "$today_year" || "$MINOR" != "$today_month" ]]; then
+      die "Current version ($OLD_VERSION) is in a previous month. Run 'mise run release' (no arg) to cut ${today}.0 for this month."
+    fi
+    PATCH=$((PATCH + 1))
     ;;
   alpha|beta|rc)
     REQUESTED_TAG=$(echo "$COMMAND" | tr '[:lower:]' '[:upper:]')
     if [[ -z "$PRE_TAG" ]]; then
-      die "Current version ($OLD_VERSION) is not a pre-release. Use 'minor $COMMAND' to start one."
-    fi
-    if [[ "$PRE_TAG" == "$REQUESTED_TAG" ]]; then
+      roll_to_today
+      PRE_TAG="$REQUESTED_TAG"
+      PRE_NUM=1
+    elif [[ "$PRE_TAG" == "$REQUESTED_TAG" ]]; then
       PRE_NUM=$((PRE_NUM + 1))
     else
       PRE_TAG="$REQUESTED_TAG"
@@ -144,7 +155,9 @@ case "$COMMAND" in
         PRE_TAG=$(echo "$PRE_TAG" | tr '[:lower:]' '[:upper:]')
       fi
     else
-      die "Invalid version or command: $COMMAND"
+      die "Invalid version or command: $COMMAND
+
+$USAGE"
     fi
     ;;
 esac
@@ -185,6 +198,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
   echo ""
   echo "  Files:"
   echo "    $CARGO_TOML"
+  echo "    $CARGO_LOCK"
   echo "    $PKG_JSON"
   echo "    $PKG_LOCK"
   exit 0
@@ -198,31 +212,48 @@ fi
 echo "Updating version files..."
 update_files "$NEW_VERSION"
 
-echo "Committing and tagging..."
-git add "$CARGO_TOML" "$PKG_JSON" "$PKG_LOCK"
+echo "Syncing Cargo.lock to new workspace version..."
+cargo update --workspace --offline
+
+echo "Committing and tagging locally..."
+git add "$CARGO_TOML" "$CARGO_LOCK" "$PKG_JSON" "$PKG_LOCK"
 git commit -m "$(cat <<EOF
 release: $TAG
 EOF
 )"
 git tag -a "$TAG" -m "Release $TAG"
-git push origin HEAD --tags
+
+cleanup_local_release() {
+  echo "Rolling back local commit and tag..." >&2
+  git tag -d "$TAG" >/dev/null 2>&1 || true
+  git reset --hard HEAD~1 >/dev/null 2>&1 || true
+}
 
 if [[ "$SKIP_DOCKER" == "false" ]]; then
   echo "Building and pushing Docker image..."
-
-  docker buildx inspect multiarch >/dev/null 2>&1 || \
-    docker buildx create --name multiarch --use
-  docker buildx use multiarch
+  ensure_multiarch_builder
 
   TAGS=(-t "$IMAGE:$TAG")
   if [[ "$IS_PRERELEASE" == "false" ]]; then
     TAGS+=(-t "$IMAGE:latest")
   fi
 
-  docker buildx build --platform linux/amd64,linux/arm64 \
-    -f build/Dockerfile --target prod \
+  set_image_meta_args "$NEW_VERSION" "$(git rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  if ! docker buildx build --platform "$PLATFORMS" \
+    -f "$DOCKERFILE" --target "$TARGET" \
+    "${IMAGE_META_ARGS[@]}" \
     "${TAGS[@]}" \
-    --push .
+    --push .; then
+    cleanup_local_release
+    die "Docker build failed; local commit and tag were rolled back."
+  fi
+fi
+
+echo "Pushing commit and tag..."
+if ! git push origin HEAD "$TAG"; then
+  cleanup_local_release
+  die "git push failed; local commit and tag were rolled back."
 fi
 
 echo ""
