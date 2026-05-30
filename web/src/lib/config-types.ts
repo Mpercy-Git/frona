@@ -65,6 +65,12 @@ export interface VoiceConfig {
   twilio_from_number: string | null;
   twilio_voice_id: string | null;
   twilio_speech_model: string | null;
+  callback_base_url: string | null;
+  inbound_enabled: boolean;
+  inbound_user_id: string | null;
+  inbound_agent_id: string | null;
+  inbound_welcome_greeting: string | null;
+  inbound_allowlist: string[];
 }
 
 export interface VaultConfig {
