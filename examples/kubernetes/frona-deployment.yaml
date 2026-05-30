@@ -45,10 +45,8 @@ spec:
         - name: browserless
           image: ghcr.io/browserless/chromium:latest
           env:
-            - name: MAX_CONCURRENT_SESSIONS
+            - name: CONCURRENT
               value: "10"
-            - name: PREBOOT_CHROME
-              value: "true"
           volumeMounts:
             - name: data
               mountPath: /profiles
