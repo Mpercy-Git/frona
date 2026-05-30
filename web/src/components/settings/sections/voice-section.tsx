@@ -127,7 +127,7 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
           <TextInput
             label="Inbound Static Allowlist"
             description="Comma- or newline-separated E.164 phone numbers allowed for inbound answering"
-            value={voice.inbound_allowlist.join(", ")}
+            value={voice.inbound_allowlist?.join(", ") ?? ""}
             onChange={(raw) => onChange({ ...voice, inbound_allowlist: parseAllowlist(raw) })}
             placeholder="+15551234567, +447700900123"
           />
