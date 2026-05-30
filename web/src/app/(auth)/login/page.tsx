@@ -18,7 +18,7 @@ function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get("redirect") || "/home";
-  const { login, user, revalidate, ssoStatus, initiateSso } = useAuth();
+  const { login, user, revalidate, authConfig, initiateSso } = useAuth();
 
   useEffect(() => {
     revalidate();
@@ -69,8 +69,9 @@ function LoginContent() {
     }
   };
 
-  const showPasswordForm = !ssoStatus?.disable_local_auth;
-  const showSsoButton = ssoStatus?.enabled;
+  const showPasswordForm = !authConfig?.sso.disable_local_auth;
+  const showSsoButton = authConfig?.sso.enabled;
+  const showRegisterLink = authConfig?.allow_registration ?? true;
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
@@ -140,7 +141,7 @@ function LoginContent() {
             Sign in with SSO
           </button>
         )}
-        {showPasswordForm && (
+        {showPasswordForm && showRegisterLink && (
           <p className="text-center text-sm text-text-secondary">
             Don&apos;t have an account?{" "}
             <Link href="/register" className="font-medium text-text-primary hover:underline">

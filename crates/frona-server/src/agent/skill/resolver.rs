@@ -58,10 +58,10 @@ impl SkillResolver {
     /// 3. Built-in FS (resources/skills/) — filtered by agent_skills when Some
     ///
     /// None = all enabled (default), Some([]) = none, Some([...]) = specific
-    pub fn list(&self, agent_id: &str, agent_skills: Option<&[String]>) -> Vec<Skill> {
+    pub fn list(&self, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle, agent_skills: Option<&[String]>) -> Vec<Skill> {
         let mut seen = HashMap::new();
 
-        let ws = self.storage.agent_workspace(agent_id);
+        let ws = self.storage.agent_workspace(user_handle, agent_handle);
         for name in ws.read_dir("skills") {
             if seen.contains_key(&name) {
                 continue;

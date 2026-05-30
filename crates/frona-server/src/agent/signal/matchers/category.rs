@@ -50,19 +50,11 @@ mod tests {
 
     fn candidate(cats: &[&str]) -> CandidateEvent {
         CandidateEvent {
-            user_id: "u".into(),
-            space_id: None,
-            chat_id: None,
-            message_id: None,
-            connector_id: None,
-            channel_id: None,
-            contact_id: None,
-            sender: None,
             annotations: cats
                 .iter()
                 .map(|c| Annotation::category("agent:test", *c))
                 .collect(),
-            content: String::new(),
+            ..crate::agent::signal::models::test_fixtures::candidate()
         }
     }
 

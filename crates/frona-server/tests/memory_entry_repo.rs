@@ -16,7 +16,7 @@ async fn test_db() -> Surreal<Db> {
 
 fn make_entry(agent_id: &str, content: &str, created_at: chrono::DateTime<chrono::Utc>) -> MemoryEntry {
     MemoryEntry {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         agent_id: agent_id.to_string(),
         user_id: None,
         content: content.to_string(),
@@ -27,7 +27,7 @@ fn make_entry(agent_id: &str, content: &str, created_at: chrono::DateTime<chrono
 
 fn make_user_entry(user_id: &str, content: &str, created_at: chrono::DateTime<chrono::Utc>) -> MemoryEntry {
     MemoryEntry {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         agent_id: String::new(),
         user_id: Some(user_id.to_string()),
         content: content.to_string(),

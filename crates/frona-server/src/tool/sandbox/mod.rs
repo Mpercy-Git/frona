@@ -12,7 +12,6 @@ use self::driver::{SandboxConfig, SandboxOutput, create_driver, execute_sandboxe
 use self::driver::resource_monitor::SystemResourceManager;
 
 pub struct SandboxManager {
-    base_path: PathBuf,
     driver: Arc<dyn driver::SandboxDriver>,
     shared_read_paths: Vec<String>,
     resource_manager: Arc<SystemResourceManager>,
@@ -21,12 +20,10 @@ pub struct SandboxManager {
 
 impl SandboxManager {
     pub fn new(
-        base_path: impl Into<PathBuf>,
         sandbox_disabled: bool,
         resource_manager: Arc<SystemResourceManager>,
     ) -> Self {
         Self {
-            base_path: base_path.into(),
             driver: Arc::from(create_driver(sandbox_disabled)),
             shared_read_paths: Vec::new(),
             resource_manager,
@@ -58,24 +55,13 @@ impl SandboxManager {
 
     pub fn get_sandbox(
         &self,
+        workspace: PathBuf,
         agent_id: &str,
         network_access: bool,
         allowed_network_destinations: Vec<String>,
     ) -> Sandbox {
-        let sanitized = agent_id.replace(['/', '\\', ':', '\0'], "_");
-        let path = self.base_path.join(&sanitized);
-        self.sandbox_at(path, agent_id, network_access, allowed_network_destinations)
-    }
-
-    pub fn sandbox_at(
-        &self,
-        path: PathBuf,
-        id: &str,
-        network_access: bool,
-        allowed_network_destinations: Vec<String>,
-    ) -> Sandbox {
         Sandbox {
-            path,
+            path: workspace,
             driver: Arc::clone(&self.driver),
             network_access,
             allowed_network_destinations,
@@ -86,7 +72,7 @@ impl SandboxManager {
             shared_write_paths: Vec::new(),
             denied_paths: Vec::new(),
             blocked_networks: Vec::new(),
-            agent_id: id.to_string(),
+            agent_id: agent_id.to_string(),
             resource_manager: Arc::clone(&self.resource_manager),
             init_venv: true,
             init_node: true,
@@ -367,7 +353,6 @@ impl Sandbox {
             .spawn()
             .map_err(|e| AppError::Tool(format!("Failed to spawn process: {e}")))?;
 
-        // Register process for resource monitoring
         if let Some(pid) = child.id() {
             self.resource_manager.register(pid, &self.agent_id);
         }

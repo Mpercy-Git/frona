@@ -9,7 +9,6 @@ use crate::agent::service::AgentService;
 use crate::agent::task::executor::TaskExecutor;
 use crate::agent::task::models::CreateTaskRequest;
 use crate::agent::task::service::TaskService;
-use crate::chat::broadcast::BroadcastService;
 use crate::core::error::AppError;
 use crate::policy::models::PolicyAction;
 use crate::policy::service::PolicyService;
@@ -23,11 +22,18 @@ pub fn parse_cron(expression: &str) -> Result<cron::Schedule, AppError> {
         .map_err(|e| AppError::Validation(format!("Invalid cron expression '{}': {}", expression, e)))
 }
 
-pub fn next_cron_occurrence(expression: &str) -> Result<DateTime<Utc>, AppError> {
+pub fn next_cron_occurrence(expression: &str, timezone: &str) -> Result<DateTime<Utc>, AppError> {
     let schedule = parse_cron(expression)?;
+    let tz: chrono_tz::Tz = timezone.parse().map_err(|e| {
+        AppError::Validation(format!(
+            "Invalid timezone '{}': {}. Use an IANA name like 'America/Los_Angeles', 'Asia/Tokyo', or 'UTC'.",
+            timezone, e
+        ))
+    })?;
     schedule
-        .upcoming(Utc)
+        .upcoming(tz)
         .next()
+        .map(|dt| dt.with_timezone(&Utc))
         .ok_or_else(|| AppError::Validation("Cron expression has no future occurrences".into()))
 }
 
@@ -35,9 +41,9 @@ pub struct TaskTool {
     task_service: TaskService,
     agent_service: AgentService,
     task_executor: Arc<TaskExecutor>,
-    broadcast_service: BroadcastService,
     policy_service: PolicyService,
     prompts: PromptLoader,
+    server_timezone: String,
 }
 
 impl TaskTool {
@@ -45,21 +51,99 @@ impl TaskTool {
         task_service: TaskService,
         agent_service: AgentService,
         task_executor: Arc<TaskExecutor>,
-        broadcast_service: BroadcastService,
         policy_service: PolicyService,
         prompts: PromptLoader,
+        server_timezone: String,
     ) -> Self {
         Self {
             task_service,
             agent_service,
             task_executor,
-            broadcast_service,
             policy_service,
             prompts,
+            server_timezone,
         }
     }
 
-    async fn handle_create(&self, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    fn resolve_timezone(&self, arguments: &Value, user: &crate::auth::models::User) -> Result<String, AppError> {
+        if let Some(arg) = arguments.get("timezone").and_then(|v| v.as_str()) {
+            arg.parse::<chrono_tz::Tz>().map_err(|e| {
+                AppError::Validation(format!(
+                    "Invalid timezone '{}': {}. Use an IANA name like 'America/Los_Angeles', 'Asia/Tokyo', or 'UTC'.",
+                    arg, e
+                ))
+            })?;
+            return Ok(arg.to_string());
+        }
+        Ok(user.resolved_timezone(&self.server_timezone))
+    }
+
+    async fn resolve_target_agent(
+        &self,
+        ctx: &InferenceContext,
+        target_agent_name: Option<&str>,
+    ) -> Result<(crate::agent::models::Agent, bool), AppError> {
+        let user_id = &ctx.user.id;
+        let agent_id = &ctx.agent.id;
+        match target_agent_name {
+            Some(name) => {
+                let by_handle = self.agent_service.find_by_handle(user_id, name).await?;
+                let agent = match by_handle {
+                    Some(a) => a,
+                    None => self
+                        .agent_service
+                        .find_by_name(user_id, name)
+                        .await?
+                        .ok_or_else(|| {
+                            AppError::Validation(format!(
+                                "Agent '{}' not found. Check <available_agents> for valid agent names.",
+                                name
+                            ))
+                        })?,
+                };
+                if !agent.enabled {
+                    return Err(AppError::Validation(format!(
+                        "Agent '{}' is disabled and cannot accept tasks.",
+                        agent.name
+                    )));
+                }
+                let is_self = agent.id == *agent_id;
+                Ok((agent, is_self))
+            }
+            None => Ok((ctx.agent.clone(), true)),
+        }
+    }
+
+    async fn authorize_delegation(
+        &self,
+        ctx: &InferenceContext,
+        target_agent: &crate::agent::models::Agent,
+        is_self: bool,
+    ) -> Result<Option<ToolOutput>, AppError> {
+        if is_self {
+            return Ok(None);
+        }
+        let decision = self
+            .policy_service
+            .authorize(
+                &ctx.user.id,
+                &ctx.agent,
+                PolicyAction::DelegateTask {
+                    target_agent_id: target_agent.id.clone(),
+                    target_handle: target_agent.handle.clone(),
+                },
+            )
+            .await?;
+        if decision.is_denied() {
+            return Ok(Some(ToolOutput::error(format!(
+                "Authorization denied: agent '{}' is not permitted to delegate tasks to '{}'.",
+                ctx.agent.name, target_agent.name
+            ))));
+        }
+        Ok(None)
+    }
+
+    async fn handle_create_task(&self, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
         let user_id = &ctx.user.id;
         let agent_id = &ctx.agent.id;
         let chat_id = &ctx.chat.id;
@@ -69,118 +153,116 @@ impl TaskTool {
             .get("title")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::Validation("Missing 'title' parameter".into()))?;
-
         let instruction = arguments
             .get("instruction")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::Validation("Missing 'instruction' parameter".into()))?;
-
         let target_agent_name = arguments.get("target_agent").and_then(|v| v.as_str());
         let process_result = arguments
             .get("process_result")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let cron_expression = arguments.get("cron_expression").and_then(|v| v.as_str());
+
+        if arguments.get("cron_expression").is_some() {
+            return Err(AppError::Validation(
+                "cron_expression is no longer accepted by create_task. Use create_recurring_task for scheduled work.".into(),
+            ));
+        }
+
         let has_delay_minutes = arguments.get("delay_minutes").and_then(|v| v.as_u64()).is_some();
         let has_run_at = arguments.get("run_at").is_some();
-
-        let (target_agent, is_self) = match target_agent_name {
-            Some(name) => {
-                let agent = self
-                    .agent_service
-                    .find_by_name(user_id, name)
-                    .await?
-                    .ok_or_else(|| {
-                        AppError::Validation(format!(
-                            "Agent '{}' not found. Check <available_agents> for valid agent names.",
-                            name
-                        ))
-                    })?;
-                if !agent.enabled {
-                    return Err(AppError::Validation(format!(
-                        "Agent '{}' is disabled and cannot accept tasks.",
-                        agent.name
-                    )));
-                }
-                let is_self = agent.id == *agent_id;
-                (agent, is_self)
-            }
-            None => (ctx.agent.clone(), true),
-        };
-
-        if !is_self {
-            let decision = self
-                .policy_service
-                .authorize(
-                    user_id,
-                    &ctx.agent,
-                    PolicyAction::DelegateTask {
-                        target_agent_id: target_agent.id.clone(),
-                    },
-                )
-                .await?;
-            if decision.is_denied() {
-                return Ok(ToolOutput::error(format!(
-                    "Authorization denied: agent '{}' is not permitted to delegate tasks to '{}'.",
-                    ctx.agent.name, target_agent.name
-                )));
-            }
-        }
-
-        if is_self && process_result {
-            return Err(AppError::Validation(
-                "Cannot use process_result on a task targeting yourself.".into(),
-            ));
-        }
-        if cron_expression.is_some() && process_result {
-            return Err(AppError::Validation(
-                "Cannot use process_result on a recurring task.".into(),
-            ));
-        }
-        if cron_expression.is_some() && has_delay_minutes {
-            return Err(AppError::Validation(
-                "Cannot use delay_minutes with cron_expression. Use run_at to set the first cron run time.".into(),
-            ));
-        }
         if has_delay_minutes && has_run_at {
             return Err(AppError::Validation(
                 "Cannot use both delay_minutes and run_at.".into(),
             ));
         }
 
-        if let Some(cron_expr) = cron_expression {
-            self.handle_create_cron(
-                user_id, agent_id, chat_id, &target_agent, is_self, title, instruction, cron_expr, &arguments,
-            )
-            .await
-        } else {
-            self.handle_create_oneoff(
-                user_id, agent_id, chat_id, space_id, &target_agent, is_self, process_result, title, instruction,
-                &arguments,
-            )
-            .await
+        let (target_agent, is_self) = self.resolve_target_agent(ctx, target_agent_name).await?;
+        if let Some(denied) = self.authorize_delegation(ctx, &target_agent, is_self).await? {
+            return Ok(denied);
         }
+
+        if ctx.chat.task_id.is_some() {
+            if has_delay_minutes || has_run_at {
+                return Err(AppError::Validation(
+                    "Cannot create a deferred task from inside a running task. Use `defer_task` to retry the current task later instead of scheduling a duplicate.".into(),
+                ));
+            }
+            if is_self {
+                return Err(AppError::Validation(
+                    "Cannot create a self-targeted task from inside a running task. Do the work directly, or delegate to a different agent via `target_agent`.".into(),
+                ));
+            }
+        }
+
+        let timezone = self.resolve_timezone(&arguments, &ctx.user)?;
+
+        self.handle_create_oneoff(
+            user_id, agent_id, chat_id, space_id, &target_agent, is_self, process_result, title, instruction,
+            &timezone, &arguments,
+        )
+        .await
+    }
+
+    async fn handle_create_recurring(&self, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+        let user_id = &ctx.user.id;
+        let agent_id = &ctx.agent.id;
+        let chat_id = &ctx.chat.id;
+        let space_id = ctx.chat.space_id.clone();
+
+        let title = arguments
+            .get("title")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Validation("Missing 'title' parameter".into()))?;
+        let instruction = arguments
+            .get("instruction")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Validation("Missing 'instruction' parameter".into()))?;
+        let cron_expression = arguments
+            .get("cron_expression")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Validation("Missing 'cron_expression' parameter".into()))?;
+        let target_agent_name = arguments.get("target_agent").and_then(|v| v.as_str());
+
+        if arguments.get("delay_minutes").is_some() || arguments.get("run_at").is_some() {
+            return Err(AppError::Validation(
+                "delay_minutes and run_at are not allowed on create_recurring_task. The cron_expression controls when the task fires.".into(),
+            ));
+        }
+
+        let (target_agent, is_self) = self.resolve_target_agent(ctx, target_agent_name).await?;
+        if let Some(denied) = self.authorize_delegation(ctx, &target_agent, is_self).await? {
+            return Ok(denied);
+        }
+
+        let timezone = self.resolve_timezone(&arguments, &ctx.user)?;
+        self.handle_create_recurring_internal(
+            user_id, agent_id, chat_id, space_id, &target_agent, is_self, title, instruction, cron_expression, &timezone, &arguments,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn handle_create_cron(
+    async fn handle_create_recurring_internal(
         &self,
         user_id: &str,
         agent_id: &str,
         chat_id: &str,
+        space_id: Option<String>,
         target_agent: &crate::agent::models::Agent,
         is_self: bool,
         title: &str,
         instruction: &str,
         cron_expression: &str,
+        timezone: &str,
         arguments: &Value,
     ) -> Result<ToolOutput, AppError> {
-        let run_at = super::resolve_run_at(arguments)?;
+        let run_at = super::resolve_run_at(arguments, timezone)?;
 
         parse_cron(cron_expression)?;
         let next_run_at = match run_at {
             Some(dt) => dt,
-            None => next_cron_occurrence(cron_expression)?,
+            None => next_cron_occurrence(cron_expression, timezone)?,
         };
 
         let source_agent_id = if is_self {
@@ -188,6 +270,52 @@ impl TaskTool {
         } else {
             Some(agent_id.to_string())
         };
+
+        use crate::agent::task::models::{CronConcurrency, CronMode};
+        let cron_mode = match arguments.get("cron_mode").and_then(|v| v.as_str()) {
+            None => CronMode::Singleton,
+            Some("singleton") => CronMode::Singleton,
+            Some("per_instance") => CronMode::PerInstance,
+            Some(other) => {
+                return Err(AppError::Validation(format!(
+                    "Invalid cron_mode '{}'. Use 'singleton' or 'per_instance'.",
+                    other
+                )))
+            }
+        };
+        let cron_concurrency = match arguments.get("cron_concurrency").and_then(|v| v.as_str()) {
+            Some("allow") => CronConcurrency::Allow,
+            Some("forbid") => CronConcurrency::Forbid,
+            Some("replace") => CronConcurrency::Replace,
+            None => match cron_mode {
+                CronMode::Singleton => CronConcurrency::Replace,
+                CronMode::PerInstance => CronConcurrency::Forbid,
+            },
+            Some(other) => {
+                return Err(AppError::Validation(format!(
+                    "Invalid cron_concurrency '{}'. Use 'allow', 'forbid', or 'replace'.",
+                    other
+                )))
+            }
+        };
+        let process_result = arguments
+            .get("process_result")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let result_schema = arguments
+            .get("result_schema")
+            .cloned()
+            .ok_or_else(|| AppError::Validation(
+                "Missing 'result_schema' parameter. Declare the shape each fire's `result` will take (see create_recurring_task tool docs for examples).".into(),
+            ))?;
+        crate::agent::task::schema::validate_schema_doc(&result_schema)
+            .map_err(AppError::Validation)?;
+        if !crate::agent::task::schema::is_simple_schema(&result_schema) && !process_result {
+            return Err(AppError::Validation(
+                "Complex result_schema (nested objects, arrays of objects, etc.) cannot be rendered deterministically. Set process_result=true so the parent agent can render the structured result, or simplify the schema to a top-level scalar / array-of-scalars / oneOf-of-scalars / object-with-scalar-properties.".into(),
+            ));
+        }
 
         let task = self
             .task_service
@@ -197,21 +325,31 @@ impl TaskTool {
                 title,
                 instruction,
                 cron_expression,
+                timezone.to_string(),
                 next_run_at,
+                space_id,
                 source_agent_id,
                 Some(chat_id.to_string()),
                 run_at,
+                cron_mode,
+                cron_concurrency,
+                process_result,
+                Some(result_schema),
             )
             .await?;
+
+        let tz: chrono_tz::Tz = timezone.parse().expect("timezone was validated earlier");
+        let next_local = next_run_at.with_timezone(&tz);
 
         Ok(ToolOutput::text(
             serde_json::json!({
                 "task_id": task.id,
                 "cron_expression": cron_expression,
+                "timezone": timezone,
                 "next_run_at": next_run_at.to_rfc3339(),
                 "message": format!(
-                    "Cron job '{}' created for {}. Next run at {}.",
-                    title, target_agent.name, next_run_at.format("%Y-%m-%d %H:%M UTC")
+                    "Cron job '{}' created for {}. Next run at {} ({}).",
+                    title, target_agent.name, next_local.format("%Y-%m-%d %H:%M %Z"), timezone
                 )
             })
             .to_string(),
@@ -230,15 +368,28 @@ impl TaskTool {
         process_result: bool,
         title: &str,
         instruction: &str,
+        timezone: &str,
         arguments: &Value,
     ) -> Result<ToolOutput, AppError> {
-        let run_at = super::resolve_run_at(arguments)?;
+        let run_at = super::resolve_run_at(arguments, timezone)?;
 
-        let source_agent_id = if is_self {
-            None
-        } else {
-            Some(agent_id.to_string())
-        };
+        let result_schema = arguments
+            .get("result_schema")
+            .cloned()
+            .ok_or_else(|| AppError::Validation(
+                "Missing 'result_schema' parameter. Declare the shape the task's `result` will take (see create_task tool docs for examples).".into(),
+            ))?;
+        crate::agent::task::schema::validate_schema_doc(&result_schema)
+            .map_err(AppError::Validation)?;
+        if !crate::agent::task::schema::is_simple_schema(&result_schema) && !process_result {
+            return Err(AppError::Validation(
+                "Complex result_schema (nested objects, arrays of objects, etc.) cannot be rendered deterministically. Set process_result=true so the parent agent can render the structured result, or simplify the schema to a top-level scalar / array-of-scalars / oneOf-of-scalars / object-with-scalar-properties.".into(),
+            ));
+        }
+
+        // source_agent_id set even for self-targets so kind=Delegation;
+        // Direct has no resume_parent machinery.
+        let source_agent_id = Some(agent_id.to_string());
 
         let req = CreateTaskRequest {
             agent_id: target_agent.id.clone(),
@@ -251,21 +402,11 @@ impl TaskTool {
             resume_parent: Some(process_result),
             run_at,
             quarantined: false,
-            result_schema: None,
+            result_schema: Some(result_schema),
         };
 
         let task_response = self.task_service.create(user_id, req).await?;
         let task_id = task_response.id.clone();
-
-        self.broadcast_service.broadcast_task_update(
-            user_id,
-            &task_id,
-            "pending",
-            &task_response.title,
-            task_response.chat_id.as_deref(),
-            Some(chat_id),
-            None,
-        );
 
         if run_at.is_none() {
             let task = self
@@ -279,12 +420,17 @@ impl TaskTool {
             }
         }
 
+        let tz: chrono_tz::Tz = timezone.parse().expect("timezone was validated earlier");
+        let format_local = |at: DateTime<Utc>| {
+            at.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z").to_string()
+        };
+
         let message = if is_self {
             match run_at {
                 Some(at) => format!(
                     "Task '{}' created, deferred until {}.",
                     title,
-                    at.format("%Y-%m-%d %H:%M UTC")
+                    format_local(at)
                 ),
                 None => format!("Task '{}' created and running.", title),
             }
@@ -294,7 +440,7 @@ impl TaskTool {
                     "Task '{}' assigned to {}, deferred until {}.",
                     title,
                     target_agent.name,
-                    at.format("%Y-%m-%d %H:%M UTC")
+                    format_local(at)
                 ),
                 (None, false) => format!(
                     "Task '{}' assigned to {}. Results will be posted to this chat when complete.",
@@ -354,17 +500,8 @@ impl TaskTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::Validation("Missing 'task_id' parameter".into()))?;
 
-        let task = self
-            .task_service
-            .find_by_id(task_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Task not found".into()))?;
-
-        if task.user_id != ctx.user.id {
-            return Err(AppError::Forbidden("Not your task".into()));
-        }
-
-        self.task_service.mark_cancelled(task_id).await?;
+        let task = self.task_service.cancel(&ctx.user.id, task_id).await?;
+        self.task_executor.cancel_task(task_id).await;
 
         Ok(ToolOutput::text(
             serde_json::json!({
@@ -375,7 +512,7 @@ impl TaskTool {
     }
 }
 
-#[agent_tool(name = "task", files("create_task", "list_tasks", "delete_task"))]
+#[agent_tool(name = "task", files("create_task", "create_recurring_task", "list_tasks", "delete_task"))]
 impl TaskTool {
     async fn execute(
         &self,
@@ -384,7 +521,8 @@ impl TaskTool {
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
         match tool_name {
-            "create_task" => self.handle_create(arguments, ctx).await,
+            "create_task" => self.handle_create_task(arguments, ctx).await,
+            "create_recurring_task" => self.handle_create_recurring(arguments, ctx).await,
             "list_tasks" => self.handle_list(ctx).await,
             "delete_task" => self.handle_delete(arguments, ctx).await,
             _ => Err(AppError::Validation(format!("Unknown task tool: {}", tool_name))),
@@ -459,26 +597,54 @@ mod tests {
 
     #[test]
     fn next_cron_occurrence_returns_future() {
-        let next = next_cron_occurrence("* * * * *").unwrap();
+        let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
         assert!(next > Utc::now());
     }
 
     #[test]
     fn next_cron_occurrence_daily_has_correct_time() {
-        let next = next_cron_occurrence("30 14 * * *").unwrap();
+        let next = next_cron_occurrence("30 14 * * *", "UTC").unwrap();
         assert_eq!(next.hour(), 14);
         assert_eq!(next.minute(), 30);
     }
 
     #[test]
     fn next_cron_occurrence_multiple_calls_are_consistent() {
-        let a = next_cron_occurrence("0 0 * * *").unwrap();
-        let b = next_cron_occurrence("0 0 * * *").unwrap();
+        let a = next_cron_occurrence("0 0 * * *", "UTC").unwrap();
+        let b = next_cron_occurrence("0 0 * * *", "UTC").unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn next_cron_occurrence_invalid_returns_error() {
-        assert!(next_cron_occurrence("invalid").is_err());
+        assert!(next_cron_occurrence("invalid", "UTC").is_err());
+    }
+
+    #[test]
+    fn next_cron_occurrence_resolves_in_named_tz() {
+        // 8am LA → 16:00 UTC (winter, PST) or 15:00 UTC (summer, PDT). Verify
+        // the time when projected back into the LA clock is 08:00.
+        let next = next_cron_occurrence("0 8 * * *", "America/Los_Angeles").unwrap();
+        let la: chrono_tz::Tz = "America/Los_Angeles".parse().unwrap();
+        let next_la = next.with_timezone(&la);
+        assert_eq!(next_la.hour(), 8);
+        assert_eq!(next_la.minute(), 0);
+    }
+
+    #[test]
+    fn next_cron_occurrence_in_tokyo() {
+        let next = next_cron_occurrence("0 8 * * *", "Asia/Tokyo").unwrap();
+        let tokyo: chrono_tz::Tz = "Asia/Tokyo".parse().unwrap();
+        let next_tokyo = next.with_timezone(&tokyo);
+        assert_eq!(next_tokyo.hour(), 8);
+        assert_eq!(next_tokyo.minute(), 0);
+    }
+
+    #[test]
+    fn next_cron_occurrence_invalid_tz_rejected() {
+        let err = next_cron_occurrence("0 8 * * *", "Mars/Olympus").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid timezone"), "got: {msg}");
+        assert!(msg.contains("IANA"), "expected IANA hint, got: {msg}");
     }
 }

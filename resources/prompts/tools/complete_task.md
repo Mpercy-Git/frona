@@ -4,7 +4,7 @@ provider: task
 parameters:
   result:
     type: string
-    description: The full markdown message to deliver to the user or parent agent. Write the complete result — not a summary. Omit when the task's action was already performed (reminders, calls, deploys) — don't duplicate work that's already done.
+    description: The deliverable, matching the task's declared `result_schema`. This is the only thing the requester sees — produce the full content, not a one-line summary. If the schema is nullable, pass `null` only when there is genuinely nothing user-facing to report.
   deliverables:
     type: array
     items:
@@ -12,4 +12,4 @@ parameters:
     description: File paths (relative to your workspace) to deliver as output artifacts. Only listed files are delivered.
 required: []
 ---
-Signal that the current task is complete. Provide `result` with the full deliverable text when the task produces information (research, analysis, answers). List output files in `deliverables`. When the task's action was already performed (sent a reminder, made a call, triggered a deploy), call with no arguments — don't duplicate work that's already done.
+Signal that the current task is complete. `result` is your only delivery channel to the requester — the per-task chat is invisible to them, so put the full deliverable here. Conform to the declared `result_schema`: if it demands a value, supply one (even for action-style tasks like "send a reminder" — the reminder text itself is the value). Pass `null` only when the schema permits it and there is nothing to report. List output files in `deliverables`.

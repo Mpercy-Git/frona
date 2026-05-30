@@ -8,6 +8,8 @@ import { ChevronDownIcon, ChevronRightIcon } from "@heroicons/react/16/solid";
 import { useSession } from "@/lib/session-context";
 import { useNavigation } from "@/lib/navigation-context";
 import { useRetryInfo } from "@/lib/retry-context";
+import { formatFullTimestamp, formatTime, useTimezone } from "@/lib/format-time";
+import { TimeMarkers } from "./time-markers";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/components/ui/code-block";
@@ -54,8 +56,7 @@ function StreamingIndicator() {
 }
 
 function AvatarContent({ avatar, letter }: { avatar?: string | null; letter: string }) {
-  if (avatar && (avatar.startsWith("data:") || avatar.startsWith("http") || avatar.startsWith("/api/"))) {
-    // eslint-disable-next-line @next/next/no-img-element
+  if (avatar) {
     return <img src={avatar} alt="" className="h-8 w-8 rounded-full object-cover" />;
   }
   return (
@@ -275,20 +276,33 @@ export function FronaAssistantMessage() {
   const messageAgentId = (message.metadata as Record<string, any>)?.custom?.agentId;
   const agentId = messageAgentId ?? sessionAgentId ?? undefined;
   const { agents } = useNavigation();
+  const tz = useTimezone();
 
   const agent = agents.find((a) => a.id === agentId);
   const agentName = agentDisplayName(agentId, agent?.name);
-  const isContinuation = (message.metadata as Record<string, any>)?.custom?.continuation;
+  const custom = (message.metadata as Record<string, any>)?.custom ?? {};
+  const isContinuation = custom.continuation;
+  const isoTime = message.createdAt?.toISOString();
 
   return (
     <MessagePrimitive.Root>
-      <div className="w-full">
+      <TimeMarkers daySeparator={custom.daySeparator} gap={custom.gap} />
+      <div className="group w-full" data-message-id={message.id}>
         {!isContinuation && (
           <div className="flex items-center gap-2.5 h-8">
-            <AgentAvatar name={agentName} avatar={agent?.identity?.avatar} />
+            <AgentAvatar name={agentName} avatar={agent?.avatar_url} />
             <p className="text-xs font-medium text-text-tertiary">
               {agentName}
             </p>
+            {isoTime && (
+              <time
+                dateTime={isoTime}
+                title={formatFullTimestamp(isoTime, tz)}
+                className="text-xs text-text-tertiary opacity-0 group-hover:opacity-100 transition"
+              >
+                {formatTime(isoTime, tz)}
+              </time>
+            )}
             <MessagePrimitive.If last>
               <RetryBadge />
             </MessagePrimitive.If>

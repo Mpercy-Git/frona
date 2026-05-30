@@ -199,6 +199,12 @@ impl OAuthService {
                 .find_by_id(&identity.user_id)
                 .await?
                 .ok_or_else(|| AppError::Internal("Linked user not found".into()))?;
+            if user.deactivated_at.is_some() {
+                return Err(AppError::Auth {
+                    message: "Account deactivated".into(),
+                    code: AuthErrorCode::AccountDeactivated,
+                });
+            }
             return Ok((user, false));
         }
 
@@ -206,9 +212,15 @@ impl OAuthService {
             && let Some(ref email) = external_email
             && let Some(existing_user) = user_service.find_by_email(email).await?
         {
+            if existing_user.deactivated_at.is_some() {
+                return Err(AppError::Auth {
+                    message: "Account deactivated".into(),
+                    code: AuthErrorCode::AccountDeactivated,
+                });
+            }
             let now = Utc::now();
             let identity = OAuthIdentity {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: crate::core::repository::new_id(),
                 user_id: existing_user.id.clone(),
                 external_sub,
                 external_email: external_email.clone(),
@@ -221,16 +233,16 @@ impl OAuthService {
         }
 
         let now = Utc::now();
-        let base_username = if let Some(ref email) = external_email {
-            AuthService::derive_username_from_email(email)
+        let base_handle = if let Some(ref email) = external_email {
+            AuthService::derive_handle_from_email(email)
         } else {
             format!("sso-{external_sub}")
         };
-        let username = AuthService::generate_unique_username(user_service, &base_username).await?;
+        let handle = AuthService::generate_unique_handle(user_service, &base_handle).await?;
 
         let new_user = User {
-            id: uuid::Uuid::new_v4().to_string(),
-            username,
+            id: crate::core::repository::new_id(),
+            handle,
             email: external_email
                 .clone()
                 .unwrap_or_else(|| format!("sso-{external_sub}@unknown")),
@@ -239,13 +251,16 @@ impl OAuthService {
                 .unwrap_or_else(|| "SSO User".to_string()),
             password_hash: String::new(),
             timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
             created_at: now,
             updated_at: now,
         };
         let user = user_service.create(&new_user).await?;
+        user_service.ensure_admin_invariant().await?;
 
         let identity = OAuthIdentity {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user.id.clone(),
             external_sub,
             external_email,

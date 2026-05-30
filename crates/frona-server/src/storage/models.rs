@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
@@ -41,17 +39,19 @@ pub struct SearchTarget {
     pub source: String,
 }
 
-/// Resolve a relative workspace path to an Attachment struct by reading file metadata.
 pub async fn resolve_workspace_attachment(
-    workspaces_path: &Path,
-    agent_id: &str,
+    storage: &crate::storage::service::StorageService,
+    user_handle: &crate::core::Handle,
+    agent_handle: &crate::core::Handle,
     relative_path: &str,
 ) -> Result<Attachment, AppError> {
     if relative_path.contains("..") {
         return Err(AppError::Validation("Path traversal not allowed".into()));
     }
 
-    let resolved = workspaces_path.join(agent_id).join(relative_path);
+    let resolved = storage
+        .agent_workspace_path(user_handle, agent_handle)
+        .join(relative_path);
 
     if !resolved.exists() {
         return Err(AppError::NotFound(format!(
@@ -75,18 +75,15 @@ pub async fn resolve_workspace_attachment(
         filename,
         content_type,
         size_bytes: metadata.len(),
-        owner: format!("agent:{agent_id}"),
+        owner: format!("agent:{agent_handle}"),
         path: relative_path.to_string(),
         url: None,
     })
 }
 
-/// Build the URL path segment for an attachment.
-/// For user files: "user/{username}/{relative_path}"
-/// For agent files: "agent/{agent_id}/{relative_path}"
-pub fn attachment_url_segment(owner: &str, path: &str, username: Option<&str>) -> Option<String> {
+pub fn attachment_url_segment(owner: &str, path: &str, user_handle: Option<&str>) -> Option<String> {
     if owner.starts_with("user:") {
-        Some(format!("user/{}/{path}", username?))
+        Some(format!("user/{}/{path}", user_handle?))
     } else {
         owner
             .strip_prefix("agent:")
@@ -107,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn attachment_url_segment_user_no_username() {
+    fn attachment_url_segment_user_no_handle() {
         assert_eq!(
             attachment_url_segment("user:uid-123", "report.pdf", None),
             None,

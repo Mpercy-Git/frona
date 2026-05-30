@@ -8,13 +8,10 @@ use frona::inference::text_inference;
 use frona::inference::tool_loop::{run_tool_loop, ToolLoopOutcome};
 use frona::tool::registry::AgentToolRegistry;
 use helpers::*;
-use rig::completion::Message as RigMessage;
+use rig_core::completion::Message as RigMessage;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-// ---------------------------------------------------------------------------
-// tool_loop tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_tool_loop_simple_text_response() {
@@ -597,9 +594,6 @@ async fn test_tool_loop_provider_error() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// fallback tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_fallback_main_succeeds() {
@@ -846,9 +840,6 @@ async fn test_fallback_multiple_fallbacks_order() {
     assert_eq!(result, "fb2 ok");
 }
 
-// ---------------------------------------------------------------------------
-// streaming timing tests
-// ---------------------------------------------------------------------------
 
 /// A mock provider that sends tokens one-by-one with a delay between each,
 /// simulating realistic LLM streaming behavior.
@@ -874,12 +865,12 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
         &self,
         _model_id: &str,
         _system_prompt: &str,
-        _chat_history: Vec<rig::completion::Message>,
-        _tools: Vec<rig::completion::request::ToolDefinition>,
+        _chat_history: Vec<rig_core::completion::Message>,
+        _tools: Vec<rig_core::completion::request::ToolDefinition>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
         _additional_params: Option<serde_json::Value>,
-    ) -> Result<(Vec<rig::completion::AssistantContent>, frona::inference::Usage), InferenceError> {
+    ) -> Result<(Vec<rig_core::completion::AssistantContent>, frona::inference::Usage), InferenceError> {
         unreachable!("streaming test should not call non-streaming inference");
     }
 
@@ -887,13 +878,13 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
         &self,
         _model_id: &str,
         _system_prompt: &str,
-        _chat_history: Vec<rig::completion::Message>,
-        _tools: Vec<rig::completion::request::ToolDefinition>,
+        _chat_history: Vec<rig_core::completion::Message>,
+        _tools: Vec<rig_core::completion::request::ToolDefinition>,
         token_tx: mpsc::Sender<frona::inference::provider::StreamToken>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
         _additional_params: Option<serde_json::Value>,
-    ) -> Result<Vec<rig::completion::AssistantContent>, InferenceError> {
+    ) -> Result<Vec<rig_core::completion::AssistantContent>, InferenceError> {
         *self.call_count.lock().unwrap() += 1;
         let mut full_text = String::new();
         for token in &self.tokens {
@@ -901,7 +892,20 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
             let _ = token_tx.send(frona::inference::provider::StreamToken::Text(token.clone())).await;
             tokio::time::sleep(self.delay_between).await;
         }
-        Ok(vec![rig::completion::AssistantContent::text(full_text)])
+        Ok(vec![rig_core::completion::AssistantContent::text(full_text)])
+    }
+
+    async fn structured_inference(
+        &self,
+        _model_id: &str,
+        _system_prompt: &str,
+        _chat_history: Vec<rig_core::completion::Message>,
+        _schema: serde_json::Value,
+        _max_tokens: Option<u64>,
+        _temperature: Option<f64>,
+        _additional_params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, InferenceError> {
+        unreachable!("streaming test should not call structured_inference");
     }
 }
 
@@ -966,7 +970,6 @@ async fn test_streaming_tokens_arrive_individually() {
 
     let _ = handle.await;
 
-    // Verify we got individual tokens, not batched chunks
     assert!(
         received.len() >= tokens.len(),
         "Expected at least {} text events, got {} — tokens are being batched",
@@ -974,7 +977,6 @@ async fn test_streaming_tokens_arrive_individually() {
         received.len(),
     );
 
-    // Verify tokens arrived spread over time, not in bursts.
     // With 10ms delay per token, 20 tokens should take ~200ms.
     // If they all arrive within <50ms, something is batching them.
     let total_elapsed = received.last().unwrap().1.duration_since(start);
@@ -1008,9 +1010,6 @@ async fn test_streaming_tokens_arrive_individually() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// reasoning support tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_tool_loop_reasoning_in_completed_outcome() {

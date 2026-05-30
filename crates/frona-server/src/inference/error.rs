@@ -15,7 +15,7 @@ pub enum InferenceError {
     StreamingFailed(String),
 
     #[error("Completion error: {0}")]
-    CompletionFailed(#[from] rig::completion::CompletionError),
+    CompletionFailed(#[from] rig_core::completion::CompletionError),
 
     #[error("Invalid model reference: {0}")]
     InvalidModelRef(String),
@@ -52,8 +52,8 @@ impl InferenceError {
         match self {
             InferenceError::RateLimited { .. } | InferenceError::EmptyResponse => true,
             InferenceError::Cancelled(_) => false,
-            InferenceError::CompletionFailed(rig::completion::CompletionError::HttpError(http_err)) => {
-                    use rig::http_client::Error;
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(http_err)) => {
+                    use rig_core::http_client::Error;
                     match http_err {
                         Error::InvalidStatusCode(s)
                         | Error::InvalidStatusCodeWithMessage(s, _) => {
@@ -68,7 +68,7 @@ impl InferenceError {
                         _ => false,
                     }
             }
-            InferenceError::CompletionFailed(rig::completion::CompletionError::ProviderError(msg)) => {
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::ProviderError(msg)) => {
                 !has_non_retryable_status(msg)
             }
             InferenceError::CompletionFailed(_) => false,
@@ -85,15 +85,15 @@ impl InferenceError {
     pub fn is_rate_limited(&self) -> bool {
         match self {
             InferenceError::RateLimited { .. } => true,
-            InferenceError::CompletionFailed(rig::completion::CompletionError::HttpError(http_err)) => {
-                use rig::http_client::Error;
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(http_err)) => {
+                use rig_core::http_client::Error;
                 matches!(
                     http_err,
                     Error::InvalidStatusCode(s) | Error::InvalidStatusCodeWithMessage(s, _)
                     if s.as_u16() == 429
                 )
             }
-            InferenceError::CompletionFailed(rig::completion::CompletionError::ProviderError(msg)) => {
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::ProviderError(msg)) => {
                 provider_error_contains_status(msg, &[429])
             }
             _ => false,
@@ -106,10 +106,10 @@ impl InferenceError {
         }
         match self {
             InferenceError::EmptyResponse => "empty_response",
-            InferenceError::CompletionFailed(rig::completion::CompletionError::HttpError(
-                rig::http_client::Error::Instance(_),
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(
+                rig_core::http_client::Error::Instance(_),
             )) => "network_error",
-            InferenceError::CompletionFailed(rig::completion::CompletionError::HttpError(_)) => "server_error",
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(_)) => "server_error",
             InferenceError::StreamingFailed(msg) if msg.to_lowercase().contains("timeout") => "timeout",
             InferenceError::InferenceFailed(msg) if msg.to_lowercase().contains("overloaded") => "overloaded",
             _ => "server_error",

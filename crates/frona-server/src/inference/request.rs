@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rig::completion::Message as RigMessage;
+use rig_core::completion::Message as RigMessage;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 

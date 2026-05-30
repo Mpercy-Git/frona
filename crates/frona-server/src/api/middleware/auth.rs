@@ -6,11 +6,10 @@ use crate::core::error::{AppError, AuthErrorCode};
 use crate::core::principal::{Principal, PrincipalKind};
 use crate::core::state::AppState;
 
-/// Authenticated principal — accepts any principal kind (User, Agent, McpServer, App).
-/// Use this for endpoints that need to serve both users and non-user callers (e.g. bridge APIs).
+/// Accepts any principal kind (User, Agent, McpServer, App).
 pub struct AuthPrincipal {
     pub user_id: String,
-    pub username: String,
+    pub handle: crate::core::Handle,
     pub email: String,
     pub token_id: String,
     pub token_type: String,
@@ -43,7 +42,7 @@ impl FromRequestParts<AppState> for AuthPrincipal {
 
         Ok(AuthPrincipal {
             user_id: claims.sub,
-            username: claims.username,
+            handle: claims.handle,
             email: claims.email,
             token_id: claims.token_id,
             token_type: claims.token_type,
@@ -54,11 +53,10 @@ impl FromRequestParts<AppState> for AuthPrincipal {
     }
 }
 
-/// Authenticated user — rejects non-User principals.
-/// This is the default extractor for all user-facing API endpoints.
+/// Rejects non-User principals.
 pub struct AuthUser {
     pub user_id: String,
-    pub username: String,
+    pub handle: crate::core::Handle,
     pub email: String,
     pub token_id: String,
     pub token_type: String,
@@ -104,7 +102,7 @@ impl FromRequestParts<AppState> for AuthUser {
 
         Ok(AuthUser {
             user_id: claims.sub,
-            username: claims.username,
+            handle: claims.handle,
             email: claims.email,
             token_id: claims.token_id,
             token_type: claims.token_type,

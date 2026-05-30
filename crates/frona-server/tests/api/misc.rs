@@ -4,9 +4,6 @@ use tower::ServiceExt;
 
 use super::*;
 
-// ---------------------------------------------------------------------------
-// Tools
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn list_tools_returns_builtin() {
@@ -42,9 +39,6 @@ async fn list_tools_returns_builtin() {
     assert!(first["configurable"].is_boolean());
 }
 
-// ---------------------------------------------------------------------------
-// Well-known
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn openid_configuration_returns_json() {
@@ -88,9 +82,6 @@ async fn jwks_returns_keys() {
     assert!(json["keys"].is_array());
 }
 
-// ---------------------------------------------------------------------------
-// Metrics
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn metrics_returns_text() {
@@ -112,9 +103,6 @@ async fn metrics_returns_text() {
     assert!(content_type.contains("text/plain"));
 }
 
-// ---------------------------------------------------------------------------
-// Health
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn health_check_returns_ok() {
@@ -156,9 +144,6 @@ async fn healthz_alias_returns_ok() {
     assert_eq!(json["status"], "ok");
 }
 
-// ---------------------------------------------------------------------------
-// System
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn system_version_returns_json() {
@@ -194,9 +179,6 @@ async fn system_version_without_auth_returns_401() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn get_config_schema_returns_json() {

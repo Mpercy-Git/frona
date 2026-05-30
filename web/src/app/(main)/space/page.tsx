@@ -5,7 +5,7 @@ import { useRouter, useSearchParams, redirect } from "next/navigation";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { api } from "@/lib/api-client";
 import { useSession } from "@/lib/session-context";
-import { useNavigation } from "@/lib/navigation-context";
+import { useNavigation, useSystemAgent } from "@/lib/navigation-context";
 import { useChatRuntime } from "@/lib/use-chat-runtime";
 import { FronaComposer } from "@/components/chat/frona-composer";
 import type { Attachment, ChatResponse } from "@/lib/types";
@@ -14,15 +14,16 @@ function SpaceComposer({ spaceId }: { spaceId: string }) {
   const router = useRouter();
   const { refresh } = useNavigation();
   const { setPendingMessage } = useSession();
-  const { runtime } = useChatRuntime({ agentId: "system" });
+  const systemAgent = useSystemAgent();
+  const { runtime } = useChatRuntime({ agentId: systemAgent.id });
 
   const handleSend = useCallback((content: string, attachments?: Attachment[]) => {
-    api.post<ChatResponse>("/api/chats", { space_id: spaceId, agent_id: "system" }).then((chat) => {
+    api.post<ChatResponse>("/api/chats", { space_id: spaceId, agent_id: systemAgent.id }).then((chat) => {
       refresh();
       setPendingMessage(content, attachments);
       router.push(`/chat?id=${chat.id}`);
     });
-  }, [spaceId, refresh, setPendingMessage, router]);
+  }, [spaceId, refresh, setPendingMessage, router, systemAgent.id]);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>

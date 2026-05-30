@@ -176,12 +176,12 @@ impl SkillService {
         });
     }
 
-    pub async fn list(&self, agent_id: &str, agent_skills: Option<&[String]>) -> Vec<Skill> {
-        let cache_key = format!("{agent_id}:{}", skills_hash(agent_skills));
+    pub async fn list(&self, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle, agent_skills: Option<&[String]>) -> Vec<Skill> {
+        let cache_key = format!("{user_handle}/{agent_handle}:{}", skills_hash(agent_skills));
         if let Some(cached) = self.list_cache.get(&cache_key).await {
             return cached;
         }
-        let result = self.resolver.list(agent_id, agent_skills);
+        let result = self.resolver.list(user_handle, agent_handle, agent_skills);
         self.list_cache.insert(cache_key, result.clone()).await;
         result
     }
@@ -294,7 +294,7 @@ impl SkillService {
         })
     }
 
-    pub async fn install(&self, repo: &str, skill_name: &str, agent_id: Option<&str>) -> Result<SkillListItem, AppError> {
+    pub async fn install(&self, repo: &str, skill_name: &str, agent: Option<(&crate::core::Handle, &crate::core::Handle)>) -> Result<SkillListItem, AppError> {
         let (dir_path, sha, description) = self.discover_skill(repo, skill_name).await?;
         let discovered = super::registry::DiscoveredSkill {
             name: skill_name.to_string(),
@@ -304,8 +304,8 @@ impl SkillService {
         };
         let fetched = self.registry.fetch_skill_from_cache(repo, &discovered).await?;
 
-        if let Some(aid) = agent_id {
-            let ws = self.storage.agent_workspace(aid);
+        if let Some((user_handle, agent_handle)) = agent {
+            let ws = self.storage.agent_workspace(user_handle, agent_handle);
             let skill_base = format!("skills/{}", &fetched.name);
             ws.write(&format!("{skill_base}/SKILL.md"), &fetched.content)?;
             for file in &fetched.files {
@@ -360,7 +360,7 @@ impl SkillService {
         })
     }
 
-    pub async fn install_batch(&self, repo: &str, skill_names: &[String], agent_id: Option<&str>) -> Result<Vec<SkillListItem>, AppError> {
+    pub async fn install_batch(&self, repo: &str, skill_names: &[String], agent: Option<(&crate::core::Handle, &crate::core::Handle)>) -> Result<Vec<SkillListItem>, AppError> {
         let browse = self.get_skills(repo).await?;
         let now = Utc::now();
         let mut items = Vec::new();
@@ -379,8 +379,8 @@ impl SkillService {
             };
             let fetched = self.registry.fetch_skill_from_cache(repo, &discovered).await?;
 
-            if let Some(aid) = agent_id {
-                let ws = self.storage.agent_workspace(aid);
+            if let Some((user_handle, agent_handle)) = agent {
+                let ws = self.storage.agent_workspace(user_handle, agent_handle);
                 let skill_base = format!("skills/{}", &fetched.name);
                 ws.write(&format!("{skill_base}/SKILL.md"), &fetched.content)?;
                 for file in &fetched.files {
@@ -417,7 +417,7 @@ impl SkillService {
             });
         }
 
-        if agent_id.is_none() {
+        if agent.is_none() {
             self.write_lock(&lock)?;
         }
         self.invalidate_caches().await;
@@ -459,8 +459,8 @@ impl SkillService {
         Ok(items)
     }
 
-    pub async fn uninstall_agent_skill(&self, agent_id: &str, name: &str) -> Result<(), AppError> {
-        let ws = self.storage.agent_workspace(agent_id);
+    pub async fn uninstall_agent_skill(&self, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle, name: &str) -> Result<(), AppError> {
+        let ws = self.storage.agent_workspace(user_handle, agent_handle);
         let skill_dir = format!("skills/{name}");
         if !ws.exists(&skill_dir) {
             return Err(AppError::NotFound(format!("Skill '{name}' is not installed for this agent")));

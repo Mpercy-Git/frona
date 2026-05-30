@@ -7,7 +7,7 @@ import { api } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth";
 import { useChatRuntime } from "@/lib/use-chat-runtime";
 import { useSession } from "@/lib/session-context";
-import { useNavigation } from "@/lib/navigation-context";
+import { useNavigation, useSystemAgent } from "@/lib/navigation-context";
 import { FronaComposer } from "@/components/chat/frona-composer";
 import { Logo } from "@/components/logo";
 import { agentDisplayName, type Attachment, type ChatResponse } from "@/lib/types";
@@ -22,21 +22,21 @@ const quickActions = [
 
 function HomeComposer() {
   const router = useRouter();
-  const { agents, addStandaloneChat } = useNavigation();
+  const { addStandaloneChat } = useNavigation();
   const { setPendingMessage } = useSession();
-  const { runtime } = useChatRuntime({ agentId: "system" });
-  const systemAgent = agents.find((a) => a.id === "system");
-  const agentName = agentDisplayName(systemAgent?.id, systemAgent?.name);
+  const systemAgent = useSystemAgent();
+  const { runtime } = useChatRuntime({ agentId: systemAgent.id });
+  const agentName = agentDisplayName(systemAgent.handle, systemAgent.name);
 
   const handleSend = useCallback(
     (content: string, attachments?: Attachment[]) => {
-      api.post<ChatResponse>("/api/chats", { agent_id: "system" }).then((chat) => {
+      api.post<ChatResponse>("/api/chats", { agent_id: systemAgent.id }).then((chat) => {
         addStandaloneChat(chat);
         setPendingMessage(content, attachments);
         router.push(`/chat?id=${chat.id}`);
       });
     },
-    [addStandaloneChat, setPendingMessage, router],
+    [addStandaloneChat, setPendingMessage, router, systemAgent.id],
   );
 
   return (

@@ -80,11 +80,19 @@ async fn preview_skill(
 }
 
 async fn install_skill(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<InstallRequest>,
 ) -> Result<Json<Vec<SkillListItem>>, ApiError> {
-    let items = state.skill_service.install_batch(&req.repo, &req.skill_names, req.agent_id.as_deref()).await?;
+    let agent_pair = match req.agent_id.as_deref() {
+        Some(agent_id) => {
+            let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
+            Some((auth.handle.clone(), agent.handle))
+        }
+        None => None,
+    };
+    let agent_ref = agent_pair.as_ref().map(|(u, h)| (u, h));
+    let items = state.skill_service.install_batch(&req.repo, &req.skill_names, agent_ref).await?;
     Ok(Json(items))
 }
 
@@ -94,13 +102,14 @@ struct UninstallQuery {
 }
 
 async fn uninstall_skill(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(name): Path<String>,
     Query(params): Query<UninstallQuery>,
 ) -> Result<Json<()>, ApiError> {
     if let Some(agent_id) = &params.agent_id {
-        state.skill_service.uninstall_agent_skill(agent_id, &name).await?;
+        let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
+        state.skill_service.uninstall_agent_skill(&auth.handle, &agent.handle, &name).await?;
     } else {
         state.skill_service.uninstall(&name).await?;
     }

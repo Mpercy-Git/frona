@@ -28,7 +28,6 @@ async fn get_navigation_with_standalone_chat() {
     let agent = create_agent(&state, &token, "NavAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
-    // Create a chat without a space (standalone)
     create_chat(&state, &token, agent_id, Some("Standalone")).await;
 
     let app = build_app(state);

@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { AuthGuard } from "@/components/auth/auth-guard";
+import { RequireAuth } from "@/components/require-auth";
 import { api } from "@/lib/api-client";
 import { CheckCircleIcon } from "@heroicons/react/24/outline";
+import { TimezoneSection } from "@/components/settings/sections/timezone-section";
 import { ProvidersSection } from "@/components/settings/sections/providers-section";
 import { ModelsSection } from "@/components/settings/sections/models-section";
 import { ServerSection } from "@/components/settings/sections/server-section";
@@ -31,6 +32,7 @@ function generateStrongSecret(length: number): string {
 }
 
 const STEPS = [
+  { id: "timezone" },
   { id: "providers" },
   { id: "models" },
   { id: "server" },
@@ -46,9 +48,9 @@ const STEPS = [
 
 export default function SetupPage() {
   return (
-    <AuthGuard>
+    <RequireAuth>
       <SetupWizard />
-    </AuthGuard>
+    </RequireAuth>
   );
 }
 
@@ -120,6 +122,11 @@ function SetupWizard() {
   const [loading, setLoading] = useState(true);
   const [providersBlock, setProvidersBlock] = useState<string | null>(null);
 
+  const updatePatch = useCallback((section: string, value: unknown) => {
+    setPatch((prev) => ({ ...prev, [section]: value }));
+    setConfig((prev) => prev ? { ...prev, [section]: value } as Config : prev);
+  }, []);
+
   useEffect(() => {
     getConfig()
       .then((cfg) => {
@@ -131,7 +138,7 @@ function SetupWizard() {
       })
       .catch(() => setError("Failed to load configuration"))
       .finally(() => setLoading(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [updatePatch]);
 
   const currentStep = STEPS[step];
   const isLastStep = step === STEPS.length - 1;
@@ -148,11 +155,6 @@ function SetupWizard() {
   const blockReason = getBlockReason();
   const canAdvance = !blockReason;
 
-  const updatePatch = useCallback((section: string, value: unknown) => {
-    setPatch((prev) => ({ ...prev, [section]: value }));
-    setConfig((prev) => prev ? { ...prev, [section]: value } as Config : prev);
-  }, []);
-
   const handleComplete = useCallback(async () => {
     setSaving(true);
     setError(null);
@@ -161,7 +163,6 @@ function SetupWizard() {
       setConfig(result.config);
       setPatch({});
       setCompleted(true);
-      // restart_required is always true after config update
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save configuration");
     } finally {
@@ -221,6 +222,12 @@ function SetupWizard() {
           )}
 
           <div className="min-h-[300px]">
+            {currentStep.id === "timezone" && (
+              <TimezoneSection
+                server={config.server}
+                onChange={(v) => updatePatch("server", v)}
+              />
+            )}
             {currentStep.id === "providers" && (
               <ProvidersSection
                 providers={config.providers}

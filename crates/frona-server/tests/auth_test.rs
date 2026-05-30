@@ -25,12 +25,14 @@ async fn test_db() -> Surreal<Db> {
 fn test_user() -> User {
     let now = Utc::now();
     User {
-        id: uuid::Uuid::new_v4().to_string(),
-        username: "testuser".to_string(),
+        id: frona::core::repository::new_id(),
+        handle: frona::handle!("testuser"),
         email: "test@example.com".to_string(),
         name: "Test User".to_string(),
         password_hash: "$argon2id$v=19$m=19456,t=2,p=1$test$test".to_string(),
         timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
         created_at: now,
         updated_at: now,
     }
@@ -67,7 +69,6 @@ async fn test_keypair_get_or_create() {
     assert!(kp1.active);
     assert_eq!(kp1.public_key_bytes.len(), 32);
 
-    // Calling again returns the same keypair
     let kp2 = keypair_svc.get_or_create(owner).await.unwrap();
     assert_eq!(kp1.id, kp2.id);
 }
@@ -86,7 +87,7 @@ async fn test_keypair_signing_and_verifying() {
     let jwt_svc = JwtService::new();
     let claims = frona::auth::models::Claims {
         sub: "test-456".to_string(),
-        username: "testuser".to_string(),
+        handle: frona::handle!("testuser"),
         email: "test@example.com".to_string(),
         exp: (Utc::now().timestamp() + 3600) as usize,
         iat: Utc::now().timestamp() as usize,
@@ -117,12 +118,10 @@ async fn test_session_pair_creation() {
         .await
         .unwrap();
 
-    // Validate access token
     let access_claims = token_svc.validate(&keypair_svc, &access_jwt).await.unwrap();
     assert_eq!(access_claims.sub, user.id);
     assert_eq!(access_claims.token_type, "access");
 
-    // Validate refresh token
     let refresh_claims = token_svc.validate(&keypair_svc, &refresh_jwt).await.unwrap();
     assert_eq!(refresh_claims.sub, user.id);
     assert_eq!(refresh_claims.token_type, "refresh");
@@ -142,7 +141,6 @@ async fn test_token_refresh_rotation() {
         .await
         .unwrap();
 
-    // Refresh the token
     let (new_access, new_refresh, claims) = token_svc
         .refresh(&keypair_svc, &refresh_jwt)
         .await
@@ -150,18 +148,15 @@ async fn test_token_refresh_rotation() {
 
     assert_eq!(claims.sub, user.id);
 
-    // New tokens should be valid
     let new_access_claims = token_svc.validate(&keypair_svc, &new_access).await.unwrap();
     assert_eq!(new_access_claims.sub, user.id);
 
-    // Old tokens should be revoked
     let old_result = token_svc.validate(&keypair_svc, &access_jwt).await;
     assert!(old_result.is_err());
 
     let old_refresh_result = token_svc.validate(&keypair_svc, &refresh_jwt).await;
     assert!(old_refresh_result.is_err());
 
-    // New refresh should work
     let new_refresh_claims = token_svc.validate(&keypair_svc, &new_refresh).await.unwrap();
     assert_eq!(new_refresh_claims.token_type, "refresh");
 }
@@ -180,15 +175,12 @@ async fn test_token_revocation() {
         .await
         .unwrap();
 
-    // Token should be valid
     let claims = token_svc.validate(&keypair_svc, &access_jwt).await.unwrap();
 
-    // Revoke the session
     let token_record = token_svc.repo().find_active_by_id(&claims.token_id).await.unwrap().unwrap();
     let pair_id = token_record.refresh_pair_id.unwrap();
     token_svc.revoke_session(&pair_id).await.unwrap();
 
-    // Token should now be invalid
     let result = token_svc.validate(&keypair_svc, &access_jwt).await;
     assert!(result.is_err());
 }
@@ -219,23 +211,19 @@ async fn test_pat_creation_and_validation() {
     assert_eq!(pat.name, "My API Key");
     assert!(!pat.token.is_empty());
 
-    // Validate PAT
     let claims = token_svc.validate(&keypair_svc, &pat.token).await.unwrap();
     assert_eq!(claims.sub, user.id);
     assert_eq!(claims.token_type, "pat");
     assert_eq!(claims.scopes, Some(vec!["read".to_string()]));
 
-    // List PATs
     let pats = token_svc.list_pats(&user.id).await.unwrap();
     assert_eq!(pats.len(), 1);
     assert_eq!(pats[0].name, "My API Key");
 
-    // Delete PAT
     token_svc.delete_pat(&user.id, &pat.id).await.unwrap();
     let pats = token_svc.list_pats(&user.id).await.unwrap();
     assert!(pats.is_empty());
 
-    // Deleted PAT should be invalid
     let result = token_svc.validate(&keypair_svc, &pat.token).await;
     assert!(result.is_err());
 }
@@ -263,7 +251,6 @@ async fn test_pat_ownership_check() {
         .await
         .unwrap();
 
-    // Another user cannot delete it
     let result = token_svc.delete_pat("other-user-id", &pat.id).await;
     assert!(result.is_err());
 }
@@ -273,11 +260,9 @@ async fn test_jwks_listing() {
     let db = test_db().await;
     let (keypair_svc, _) = setup_services(&db);
 
-    // No keys initially
     let jwks = keypair_svc.list_jwks().await.unwrap();
     assert!(jwks.is_empty());
 
-    // Create a keypair
     keypair_svc.get_or_create("user:test-1").await.unwrap();
 
     let jwks = keypair_svc.list_jwks().await.unwrap();
@@ -295,14 +280,13 @@ async fn test_register_and_login_flow() {
     let (keypair_svc, token_svc) = setup_services(&db);
     let auth_svc = AuthService::new();
 
-    // Register
     let (register_resp, register_refresh) = auth_svc
         .register(
             &user_service,
             &keypair_svc,
             &token_svc,
             frona::auth::models::RegisterRequest {
-                username: "newuser".to_string(),
+                handle: "newuser".to_string(),
                 email: "new@example.com".to_string(),
                 name: "New User".to_string(),
                 password: "password123".to_string(),
@@ -315,14 +299,12 @@ async fn test_register_and_login_flow() {
     assert!(!register_refresh.is_empty());
     assert_eq!(register_resp.user.email, "new@example.com");
 
-    // Access token should be valid
     let claims = token_svc
         .validate(&keypair_svc, &register_resp.token)
         .await
         .unwrap();
     assert_eq!(claims.email, "new@example.com");
 
-    // Login with same credentials
     let (login_resp, _login_refresh) = auth_svc
         .login(
             &user_service,
@@ -347,14 +329,13 @@ async fn test_login_wrong_password() {
     let (keypair_svc, token_svc) = setup_services(&db);
     let auth_svc = AuthService::new();
 
-    // Register first
     auth_svc
         .register(
             &user_service,
             &keypair_svc,
             &token_svc,
             frona::auth::models::RegisterRequest {
-                username: "wrongpwtest".to_string(),
+                handle: "wrongpwtest".to_string(),
                 email: "test@example.com".to_string(),
                 name: "Test".to_string(),
                 password: "correct-password".to_string(),
@@ -363,7 +344,6 @@ async fn test_login_wrong_password() {
         .await
         .unwrap();
 
-    // Login with wrong password
     let result = auth_svc
         .login(
             &user_service,
@@ -387,7 +367,7 @@ async fn test_duplicate_registration() {
     let auth_svc = AuthService::new();
 
     let req = frona::auth::models::RegisterRequest {
-        username: "dupuser".to_string(),
+        handle: "dupuser".to_string(),
         email: "dup@example.com".to_string(),
         name: "User".to_string(),
         password: "password123".to_string(),
@@ -399,7 +379,7 @@ async fn test_duplicate_registration() {
         .unwrap();
 
     let req2 = frona::auth::models::RegisterRequest {
-        username: "dupuser2".to_string(),
+        handle: "dupuser2".to_string(),
         email: "dup@example.com".to_string(),
         name: "User 2".to_string(),
         password: "password456".to_string(),
@@ -426,17 +406,14 @@ async fn test_refresh_survives_service_restart() {
         .await
         .unwrap();
 
-    // Grab the refresh token's claims before dropping services
     let refresh_claims = token_svc
         .validate(&keypair_svc, &refresh_jwt)
         .await
         .unwrap();
 
-    // Drop services to clear all in-memory caches (simulates server restart)
     drop(token_svc);
     drop(keypair_svc);
 
-    // Verify the api_token record still exists in the DB via raw query
     let raw: Option<String> = db
         .query("SELECT VALUE meta::id(id) FROM api_token WHERE meta::id(id) = $id")
         .bind(("id", refresh_claims.token_id.clone()))
@@ -449,10 +426,8 @@ async fn test_refresh_survives_service_restart() {
         "api_token record missing from DB after service drop"
     );
 
-    // Create fresh services from the same DB (restart)
     let (keypair_svc2, token_svc2) = setup_services(&db);
 
-    // Refresh must succeed with new service instances
     let (new_access, new_refresh, claims) = token_svc2
         .refresh(&keypair_svc2, &refresh_jwt)
         .await
@@ -460,7 +435,6 @@ async fn test_refresh_survives_service_restart() {
 
     assert_eq!(claims.sub, user.id);
 
-    // New tokens should be valid
     let access_claims = token_svc2
         .validate(&keypair_svc2, &new_access)
         .await
@@ -485,7 +459,7 @@ async fn test_expired_token_not_found_by_find_active() {
 
     let now = Utc::now();
     let token = ApiToken {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         user_id: "user-1".to_string(),
         name: "short-lived".to_string(),
         token_type: TokenType::Access,
@@ -525,27 +499,22 @@ async fn test_refresh_cookie_round_trip() {
     let user = test_user();
     user_repo.create(&user).await.unwrap();
 
-    // Step 1: Create session pair (same as login/register handler)
     let (_access_jwt, refresh_jwt) = token_svc
         .create_session_pair(&keypair_svc, &user)
         .await
         .unwrap();
 
-    // Step 2: Build Set-Cookie header (same as HTTP handler)
     let cookie_header = make_refresh_cookie(&refresh_jwt, token_svc.refresh_expiry_secs(), false);
     let cookie_str = cookie_header.to_str().unwrap();
 
-    // Step 3: Extract refresh token from cookie (same as refresh handler)
     let extracted = extract_refresh_token_from_cookie_header(cookie_str)
         .expect("refresh_token must be extractable from cookie");
     assert_eq!(extracted, refresh_jwt);
 
-    // Step 4: Simulate server restart — drop and recreate services
     drop(token_svc);
     drop(keypair_svc);
     let (keypair_svc2, token_svc2) = setup_services(&db);
 
-    // Step 5: Use extracted cookie value to refresh (same as refresh handler)
     let (new_access, new_refresh, claims) = token_svc2
         .refresh(&keypair_svc2, extracted)
         .await
@@ -554,7 +523,6 @@ async fn test_refresh_cookie_round_trip() {
     assert_eq!(claims.sub, user.id);
     assert_eq!(claims.token_type, "refresh");
 
-    // Step 6: Verify new tokens work
     let access_claims = token_svc2
         .validate(&keypair_svc2, &new_access)
         .await

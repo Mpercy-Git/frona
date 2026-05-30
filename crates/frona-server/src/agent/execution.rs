@@ -2,11 +2,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chat::broadcast::{BroadcastEventKind, EventSender};
 use crate::chat::session::ChatSessionContext;
-use crate::credential::presign::presign_response_by_user_id;
 use crate::core::state::AppState;
 use crate::core::error::AppError;
 use crate::inference::conversation::{ConversationBuilder, DefaultConversationBuilder};
 use crate::inference::request::{InferenceRequest, InferenceResponse};
+use crate::tool::registry::ToolFilter;
 
 pub struct AgentLoopOutcome {
     pub response: InferenceResponse,
@@ -20,19 +20,18 @@ pub async fn run_agent_turn(
     message_id: &str,
     cancel_token: CancellationToken,
     builder: Box<dyn ConversationBuilder>,
-    tool_filter: Option<&[&str]>,
+    tool_filters: &[ToolFilter],
     event_sender: Option<&EventSender>,
 ) {
     let outcome = run_agent_loop(
-        state, user_id, chat_id, message_id, cancel_token, builder, tool_filter,
+        state, user_id, chat_id, message_id, cancel_token, builder, tool_filters,
     )
     .await;
-    finalize_agent_outcome(state, user_id, message_id, outcome, event_sender).await;
+    finalize_agent_outcome(state, message_id, outcome, event_sender).await;
 }
 
 pub async fn finalize_agent_outcome(
     state: &AppState,
-    user_id: &str,
     message_id: &str,
     outcome: Result<AgentLoopOutcome, AppError>,
     event_sender: Option<&EventSender>,
@@ -40,26 +39,13 @@ pub async fn finalize_agent_outcome(
     match outcome {
         Ok(AgentLoopOutcome { response }) => match response {
             InferenceResponse::Completed { text, attachments, reasoning, .. } => {
-                if let Ok(mut msg) = state
+                let _ = state
                     .chat_service
                     .complete_agent_message(message_id, text, attachments, reasoning)
-                    .await
-                    && let Some(es) = event_sender
-                {
-                    if let Ok(tes) = state.chat_service.get_tool_calls_by_message(message_id).await {
-                        msg.tool_calls = tes.into_iter().map(Into::into).collect();
-                    }
-                    presign_response_by_user_id(&state.presign_service, &mut msg, user_id).await;
-                    es.send_kind(BroadcastEventKind::InferenceDone { message: msg });
-                }
+                    .await;
             }
             InferenceResponse::Cancelled(text) => {
                 let _ = state.chat_service.cancel_agent_message(message_id, text).await;
-                if let Some(es) = event_sender {
-                    es.send_kind(BroadcastEventKind::InferenceCancelled {
-                        reason: "Cancelled".to_string(),
-                    });
-                }
             }
             InferenceResponse::ExternalToolPending { tool_calls, .. } => {
                 if let Some(es) = event_sender {
@@ -72,11 +58,6 @@ pub async fn finalize_agent_outcome(
         Err(e) => {
             tracing::warn!(message_id, error = %e, "agent loop failed");
             let _ = state.chat_service.fail_agent_message(message_id).await;
-            if let Some(es) = event_sender {
-                es.send_kind(BroadcastEventKind::InferenceError {
-                    error: e.to_string(),
-                });
-            }
         }
     }
 }
@@ -88,7 +69,7 @@ pub async fn run_agent_loop(
     message_id: &str,
     cancel_token: CancellationToken,
     builder: Box<dyn ConversationBuilder>,
-    tool_filter: Option<&[&str]>,
+    tool_filters: &[ToolFilter],
 ) -> Result<AgentLoopOutcome, AppError> {
     let chat = state
         .chat_service
@@ -113,8 +94,8 @@ pub async fn run_agent_loop(
         }
     }
 
-    if let Some(allowed) = tool_filter {
-        tool_registry.restrict_to(allowed);
+    for filter in tool_filters {
+        tool_registry.apply_filter(filter);
     }
 
     let response = crate::inference::inference(InferenceRequest {
@@ -187,7 +168,7 @@ pub async fn resume_agent_loop(
         storage_service: state.storage_service.clone(),
     });
     run_agent_turn(
-        state, user_id, chat_id, message_id, cancel_token, builder, None, Some(&event_sender),
+        state, user_id, chat_id, message_id, cancel_token, builder, &[], Some(&event_sender),
     )
     .await;
 

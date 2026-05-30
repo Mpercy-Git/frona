@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use rig::completion::Message as RigMessage;
+use rig_core::completion::Message as RigMessage;
 
 use crate::agent::prompt::append_tagged_section;
 use crate::agent::workspace::AgentPromptLoader;
@@ -56,9 +56,9 @@ impl MemoryService {
         }
     }
 
-    fn load_prompt(&self, name: &str, agent_id: Option<&str>) -> Option<String> {
-        if let Some(aid) = agent_id {
-            let ws = self.storage.agent_workspace(aid);
+    fn load_prompt(&self, name: &str, agent: Option<(&crate::core::Handle, &crate::core::Handle)>) -> Option<String> {
+        if let Some((user_handle, agent_handle)) = agent {
+            let ws = self.storage.agent_workspace(user_handle, agent_handle);
             let loader = AgentPromptLoader::new(&ws, &self.prompts);
             return loader.read(name);
         }
@@ -180,7 +180,7 @@ impl MemoryService {
             id: existing_memory
                 .as_ref()
                 .map(|m| m.id.clone())
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                .unwrap_or_else(crate::core::repository::new_id),
             source_type: MemorySourceType::Chat,
             source_id: chat_id.to_string(),
             content: summary,
@@ -217,7 +217,7 @@ impl MemoryService {
         tracing::debug!(agent_id = %agent_id, content = %content, "Storing agent memory entry");
 
         let entry = MemoryEntry {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             agent_id: agent_id.to_string(),
             user_id: None,
             content: content.to_string(),
@@ -237,7 +237,7 @@ impl MemoryService {
         tracing::debug!(user_id = %user_id, content = %content, "Storing user memory entry");
 
         let entry = MemoryEntry {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             agent_id: String::new(),
             user_id: Some(user_id.to_string()),
             content: content.to_string(),
@@ -374,7 +374,7 @@ impl MemoryService {
             id: existing_memory
                 .as_ref()
                 .map(|m| m.id.clone())
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                .unwrap_or_else(crate::core::repository::new_id),
             source_type: MemorySourceType::User,
             source_id: user_id.to_string(),
             content: summary,
@@ -432,8 +432,7 @@ impl MemoryService {
             compaction_input.push_str(&format!("- {}\n", entry.content));
         }
 
-        let agent_id = if source_type == MemorySourceType::Agent { Some(source_id) } else { None };
-        let prompt = self.load_prompt("MEMORY_COMPACTION.md", agent_id)
+        let prompt = self.load_prompt("MEMORY_COMPACTION.md", None)
             .expect("built-in MEMORY_COMPACTION.md missing");
         let summary = text_inference(
             &self.provider_registry,
@@ -460,7 +459,7 @@ impl MemoryService {
             id: existing_memory
                 .as_ref()
                 .map(|m| m.id.clone())
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                .unwrap_or_else(crate::core::repository::new_id),
             source_type,
             source_id: source_id.to_string(),
             content: summary,
@@ -525,7 +524,7 @@ impl MemoryService {
             id: existing_memory
                 .as_ref()
                 .map(|m| m.id.clone())
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                .unwrap_or_else(crate::core::repository::new_id),
             source_type: MemorySourceType::Space,
             source_id: space_id.to_string(),
             content: summary,
@@ -599,12 +598,15 @@ impl MemoryService {
         &self,
         base_prompt: &str,
         agent_id: &str,
+        agent_handle: &crate::core::Handle,
         user_id: &str,
+        user_handle: &crate::core::Handle,
         space_id: Option<&str>,
         skills: &[crate::agent::skill::resolver::Skill],
         agent_summaries: &[(String, String)],
         identity: &std::collections::BTreeMap<String, String>,
         mcp_servers: &[(String, String)],
+        user_timezone: &str,
     ) -> Result<String, AppError> {
         // Prompt is ordered static → almost-static → dynamic to maximise
         // the cacheable prefix for LLM prompt caching.
@@ -617,7 +619,7 @@ impl MemoryService {
             .all(|core_key| identity.keys().any(|k| k.eq_ignore_ascii_case(core_key)));
 
         if !has_core_identity
-            && let Some(identity_prompt) = self.load_prompt("IDENTITY.md", Some(agent_id))
+            && let Some(identity_prompt) = self.load_prompt("IDENTITY.md", Some((user_handle, agent_handle)))
         {
             result.push_str("\n\n");
             result.push_str(&identity_prompt);
@@ -780,6 +782,19 @@ impl MemoryService {
                 result.push_str("</agent_memory>");
             }
         }
+
+        // Date-only (no time-of-day) keeps this byte-stable across requests within
+        // a day so provider prefix caches stay warm. Don't add hour/minute here.
+        let tz: chrono_tz::Tz = user_timezone.parse().unwrap_or(chrono_tz::UTC);
+        let now_local = chrono::Utc::now().with_timezone(&tz);
+        let items = vec![
+            (
+                "current_date_local".to_string(),
+                format!("{} ({})", now_local.format("%Y-%m-%d"), now_local.format("%A")),
+            ),
+            ("user_timezone".to_string(), user_timezone.to_string()),
+        ];
+        append_tagged_section(&mut result, "temporal_context", None, &items);
 
         Ok(result)
     }

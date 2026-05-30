@@ -268,9 +268,9 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             state.task_service.clone(), prompts.clone(),
         )),
         Arc::new(ProduceFileTool::new(
-            std::path::PathBuf::from(&state.config.storage.workspaces_path), prompts.clone(),
+            state.storage_service.clone(), prompts.clone(),
         )),
-        Arc::new(UpdateIdentityTool::new(state.db.clone(), prompts.clone())),
+        Arc::new(UpdateIdentityTool::new(state.agent_service.clone(), prompts.clone())),
         Arc::new(StoreAgentMemoryTool::new(
             state.memory_service.clone(), state.compaction_model_group(), prompts.clone(),
         )),
@@ -280,11 +280,12 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         Arc::new(BrowserTool::new(state.browser_session_manager.clone(), state.vault_service.clone())),
         Arc::new(WebFetchTool::new(state.browser_session_manager.clone(), prompts.clone())),
         Arc::new(WebSearchTool::new(state.search_provider.clone(), prompts.clone())),
-        Arc::new(HeartbeatTool::new(state.agent_service.clone(), state.storage_service.clone(), prompts.clone())),
+        Arc::new(HeartbeatTool::new(state.agent_service.clone(), state.storage_service.clone(), prompts.clone(), state.config.server.timezone.clone())),
         Arc::new(RequestCredentialsTool::new(state.vault_service.clone(), prompts.clone())),
         Arc::new(super::manage_service::ManageServiceTool::new(
             state.app_service.clone(), prompts.clone(),
             state.notification_service.clone(), state.broadcast_service.clone(),
+            state.config.server.external_or_local_base_url(),
         )),
         Arc::new(super::create_agent::CreateAgentTool::new(
             state.agent_service.clone(), state.storage_service.clone(),
@@ -296,7 +297,8 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     if let Some(executor) = state.task_executor() {
         tools.push(Arc::new(TaskTool::new(
             state.task_service.clone(), state.agent_service.clone(), executor,
-            state.broadcast_service.clone(), state.policy_service.clone(), prompts.clone(),
+            state.policy_service.clone(), prompts.clone(),
+            state.config.server.timezone.clone(),
         )));
     }
 
@@ -304,9 +306,11 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         tools.push(Arc::new(super::await_signal::AwaitSignalTool::new(
             state.task_service.clone(),
             signal_service.clone(),
+            state.broadcast_service.clone(),
             prompts.clone(),
             state.config.signal.default_max_evaluations,
             state.config.signal.default_max_continuous_evaluations,
+            state.config.server.timezone.clone(),
         )));
         tools.push(Arc::new(super::annotate::AnnotateTool::new(
             signal_service,
@@ -329,11 +333,14 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
 
     for tool_config in state.cli_tools_config.iter() {
         tools.push(Arc::new(CliTool::new(
-            tool_config.clone(), state.sandbox_manager.clone(), state.skill_service.clone(),
+            tool_config.clone(), state.sandbox_manager.clone(),
+            state.storage_service.clone(),
+            state.skill_service.clone(),
             state.token_service.clone(), state.keypair_service.clone(),
             state.policy_service.clone(),
-            state.config.server.public_base_url(), state.config.auth.runtime_tokens_dir.clone(),
+            state.config.server.public_base_url(),
             state.config.auth.ephemeral_token_expiry_secs,
+            state.config.server.timezone.clone(),
         )));
     }
 

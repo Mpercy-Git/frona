@@ -4,7 +4,7 @@ provider: identity
 parameters:
   attributes:
     type: object
-    description: "Key-value pairs of identity attributes to set. Use an empty string value to remove an attribute."
+    description: "Key-value pairs of identity attributes to set. Keys are normalized to lowercase (e.g. \"Name\" and \"name\" refer to the same attribute) — prefer lowercase snake_case. Use an empty string value to remove an attribute."
 required:
   - attributes
 ---

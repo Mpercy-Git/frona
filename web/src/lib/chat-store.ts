@@ -25,6 +25,8 @@ export interface StoreSnapshot {
   loaded: boolean;
   retryInfo: RetryInfo | null;
   pendingTools: ToolCall[];
+  hasMore: boolean;
+  loadingMore: boolean;
 }
 
 /**
@@ -44,6 +46,8 @@ export class ChatStore {
   isRunning = false;
   retryInfo: RetryInfo | null = null;
   loaded = false;
+  hasMore = false;
+  loadingMore = false;
 
   /** Tracks text position at the time of each tool call for turnText extraction. */
   private lastTextSnapshot = 0;
@@ -64,6 +68,8 @@ export class ChatStore {
         loaded: this.loaded,
         retryInfo: this.retryInfo,
         pendingTools: this.getPendingExternalTools(),
+        hasMore: this.hasMore,
+        loadingMore: this.loadingMore,
       };
     }
     return this._snapshot;
@@ -106,23 +112,50 @@ export class ChatStore {
 
   async loadMessages(chatId: string) {
     try {
-      const { messages } = await api.get<{ messages: MessageResponse[]; has_more: boolean }>(
+      const { messages, has_more } = await api.get<{ messages: MessageResponse[]; has_more: boolean }>(
         `/api/chats/${chatId}/messages`,
       );
-      // Don't overwrite if messages were added while we were fetching
-      // (e.g. optimistic user message from onNew)
+      // Merge instead of overwrite so messages that arrived first — via
+      // buffered SSE events on an unloaded chat, or the optimistic user
+      // message from onNew — survive the historical fetch. Historical
+      // messages predate anything in the store, so they go in front.
       if (this.messages.length === 0) {
         this.messages = messages;
+      } else {
+        const existing = new Set(this.messages.map((m) => m.id));
+        const historical = messages.filter((m) => !existing.has(m.id));
+        this.messages = [...historical, ...this.messages];
       }
+      this.hasMore = has_more;
     } catch {
-      // only clear if nothing was added in the meantime
-      if (this.messages.length === 0) {
-        this.messages = [];
-      }
+      // leave any optimistic/SSE-delivered messages alone
     }
     this.hydrateExternalTools();
     this.loaded = true;
     this.notify();
+  }
+
+  async loadOlder(chatId: string) {
+    if (this.loadingMore || !this.hasMore) return;
+    const earliest = this.messages.find((m) => !m.id.startsWith("__"));
+    if (!earliest) return;
+    this.loadingMore = true;
+    this.notify();
+    try {
+      const params = new URLSearchParams({ before: earliest.created_at, limit: "50" });
+      const { messages, has_more } = await api.get<{ messages: MessageResponse[]; has_more: boolean }>(
+        `/api/chats/${chatId}/messages?${params}`,
+      );
+      const existing = new Set(this.messages.map((m) => m.id));
+      const older = messages.filter((m) => !existing.has(m.id));
+      this.messages = [...older, ...this.messages];
+      this.hasMore = has_more;
+    } catch {
+      // Keep hasMore as-is so a future scroll can retry.
+    } finally {
+      this.loadingMore = false;
+      this.notify();
+    }
   }
 
   /** Scan loaded messages for pending external tool calls and populate the map. */

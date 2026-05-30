@@ -26,10 +26,9 @@ async fn validate_request_sandbox_paths(
         .list(&auth.user_id)
         .await?
         .into_iter()
-        .filter(|a| a.user_id.as_deref() == Some(auth.user_id.as_str()))
         .map(|a| a.id)
         .collect();
-    policy.validate_paths(&auth.username, |id| owned_agents.contains(id))
+    policy.validate_paths(&auth.handle, |id| owned_agents.contains(id))
 }
 
 pub fn router() -> Router<AppState> {
@@ -53,7 +52,7 @@ pub fn router() -> Router<AppState> {
 #[derive(Serialize)]
 struct McpServerResponse {
     id: String,
-    slug: String,
+    handle: String,
     display_name: String,
     description: Option<String>,
     repository_url: Option<String>,
@@ -65,8 +64,7 @@ struct McpServerResponse {
     active_transport: String,
     transports: Vec<crate::tool::mcp::TransportConfig>,
     env: std::collections::BTreeMap<String, String>,
-    /// Evaluated sandbox policy. Filled in by handlers via `to_response`,
-    /// not by `From<McpServer>` (the row carries no access fields).
+    /// Set by handlers via `to_response`; not by `From<McpServer>`.
     #[serde(default)]
     sandbox_policy: crate::policy::sandbox::SandboxPolicy,
     installed_at: String,
@@ -77,7 +75,7 @@ impl From<crate::tool::mcp::McpServer> for McpServerResponse {
     fn from(s: crate::tool::mcp::McpServer) -> Self {
         Self {
             id: s.id,
-            slug: s.slug,
+            handle: s.handle.to_string(),
             display_name: s.display_name,
             description: s.description,
             repository_url: s.repository_url,
@@ -103,7 +101,7 @@ async fn list_servers(
     let servers = state.mcp_service.list_for_user(&auth.user_id).await?;
     let mut responses: Vec<McpServerResponse> = Vec::with_capacity(servers.len());
     for s in servers {
-        responses.push(to_response(&state, &auth.user_id, s).await?);
+        responses.push(to_response(&state, &auth.user_id, &auth.handle,s).await?);
     }
     Ok(Json(responses))
 }
@@ -111,12 +109,19 @@ async fn list_servers(
 async fn to_response(
     state: &AppState,
     user_id: &str,
+    user_handle: &crate::core::Handle,
     server: crate::tool::mcp::McpServer,
 ) -> Result<McpServerResponse, ApiError> {
-    let principal = crate::core::principal::Principal::mcp_server(&server.id);
     let evaluated = state
         .policy_service
-        .evaluate_sandbox_policy(user_id, &principal, false)
+        .evaluate_sandbox_policy(
+            crate::policy::service::SandboxPrincipalRef::mcp(
+                user_id,
+                user_handle,
+                &server.handle,
+            ),
+            false,
+        )
         .await
         .map_err(ApiError::from)?
         .as_ref()
@@ -136,7 +141,7 @@ async fn get_server(
         .into_iter()
         .find(|s| s.id == id)
         .ok_or_else(|| ApiError::from(crate::core::error::AppError::NotFound(format!("mcp server {id}"))))?;
-    let resp = to_response(&state, &auth.user_id, server).await?;
+    let resp = to_response(&state, &auth.user_id, &auth.handle,server).await?;
     Ok(Json(resp))
 }
 
@@ -146,8 +151,8 @@ async fn install_server(
     Json(req): Json<McpServerInstall>,
 ) -> Result<Json<McpServerResponse>, ApiError> {
     validate_request_sandbox_paths(&state, &auth, req.sandbox_policy.as_ref()).await?;
-    let server = state.mcp_service.install(&auth.user_id, req).await?;
-    let resp = to_response(&state, &auth.user_id, server).await?;
+    let server = state.mcp_service.install(&auth.user_id, &auth.handle, req).await?;
+    let resp = to_response(&state, &auth.user_id, &auth.handle,server).await?;
     Ok(Json(resp))
 }
 
@@ -159,7 +164,7 @@ async fn update_server(
 ) -> Result<Json<UpdateResponse>, ApiError> {
     validate_request_sandbox_paths(&state, &auth, req.sandbox_policy.as_ref()).await?;
     let result = state.mcp_service.update(&auth.user_id, &id, req).await?;
-    let server = to_response(&state, &auth.user_id, result.server).await?;
+    let server = to_response(&state, &auth.user_id, &auth.handle,result.server).await?;
     Ok(Json(UpdateResponse {
         server,
         restart_required: result.restart_required,
@@ -238,10 +243,7 @@ async fn resolve_log_path(state: &AppState, server_id: &str) -> std::path::PathB
             .join("logs")
             .join("server.log");
     }
-    std::path::PathBuf::from(state.mcp_manager.workspaces_path())
-        .join(server_id)
-        .join("logs")
-        .join("server.log")
+    std::path::PathBuf::from("data").join("nonexistent-mcp-log")
 }
 
 async fn get_logs(
@@ -266,7 +268,6 @@ async fn stream_logs(
     tokio::spawn(async move {
         use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
 
-        // Wait for the file to exist
         let file = loop {
             match tokio::fs::File::open(&log_path).await {
                 Ok(f) => break f,
@@ -279,12 +280,11 @@ async fn stream_logs(
 
         let mut reader = BufReader::new(file);
 
-        // Seek to end minus 8KB to send recent context on connect
+        // Send recent context on connect by seeking 8KB from end.
         if let Ok(metadata) = tokio::fs::metadata(&log_path).await {
             let len = metadata.len();
             if len > 8192 {
                 let _ = reader.seek(std::io::SeekFrom::End(-8192)).await;
-                // Skip partial line
                 let mut partial = String::new();
                 let _ = reader.read_line(&mut partial).await;
             }
@@ -295,7 +295,6 @@ async fn stream_logs(
             line.clear();
             match reader.read_line(&mut line).await {
                 Ok(0) => {
-                    // EOF — wait for more data
                     if tx.is_closed() { return; }
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
@@ -339,8 +338,6 @@ async fn search_registry(
     Ok(Json(results))
 }
 
-// --- Bridge endpoints (accept User + Agent principals) ---
-
 fn allowed_mcp_tools(defs: &[crate::tool::ToolDefinition]) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
     let mut map: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
     for def in defs {
@@ -374,12 +371,12 @@ async fn bridge_list_servers(
     let result = running
         .into_iter()
         .filter(|s| {
-            slug_filter.as_ref().is_none_or(|f| f.contains_key(&s.slug))
+            slug_filter.as_ref().is_none_or(|f| f.contains_key(s.handle.as_str()))
         })
         .map(|s| {
             let tool_count = s.tool_cache.len();
             frona_api_types::mcp::BridgeServerInfo {
-                slug: s.slug,
+                handle: s.handle.to_string(),
                 display_name: s.display_name,
                 description: s.description,
                 tool_count,
@@ -393,15 +390,15 @@ async fn bridge_list_servers(
 async fn bridge_server_tools(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path(slug): Path<String>,
+    Path(handle): Path<String>,
 ) -> Result<Json<frona_api_types::mcp::BridgeServerDetail>, ApiError> {
     let servers = state.mcp_service.list_for_user(&auth.user_id).await?;
     let server = servers
         .into_iter()
-        .find(|s| s.slug == slug && s.status == McpServerStatus::Running)
+        .find(|s| s.handle.as_str() == handle && s.status == McpServerStatus::Running)
         .ok_or_else(|| {
             ApiError::from(crate::core::error::AppError::NotFound(format!(
-                "MCP server '{slug}'"
+                "MCP server '{handle}'"
             )))
         })?;
 
@@ -409,7 +406,7 @@ async fn bridge_server_tools(
         let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
         let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service).await;
         let map = allowed_mcp_tools(registry.definitions());
-        map.get(&slug).cloned()
+        map.get(&handle).cloned()
     } else {
         None
     };
@@ -430,7 +427,7 @@ async fn bridge_server_tools(
         .collect();
 
     Ok(Json(frona_api_types::mcp::BridgeServerDetail {
-        slug: server.slug,
+        handle: server.handle.to_string(),
         display_name: server.display_name,
         description: server.description,
         tools,
@@ -440,27 +437,27 @@ async fn bridge_server_tools(
 async fn bridge_call_tool(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((slug, tool_name)): Path<(String, String)>,
+    Path((handle, tool_name)): Path<(String, String)>,
     Json(req): Json<frona_api_types::mcp::BridgeCallRequest>,
 ) -> Result<Json<frona_api_types::mcp::BridgeCallResponse>, ApiError> {
     if let Some(agent_id) = auth.agent_id() {
         let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
         let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service).await;
-        let expected = format!("mcp__{slug}__{tool_name}");
+        let expected = format!("mcp__{handle}__{tool_name}");
         if !registry.definitions().iter().any(|d| d.id == expected) {
             return Err(ApiError::from(crate::core::error::AppError::Forbidden(
-                format!("Agent does not have access to tool '{tool_name}' on server '{slug}'"),
+                format!("Agent does not have access to tool '{tool_name}' on server '{handle}'"),
             )));
         }
     }
 
     let server_id = state
         .mcp_manager
-        .find_by_slug(&auth.user_id, &slug)
+        .find_by_handle(&auth.user_id, &handle)
         .await
         .ok_or_else(|| {
             ApiError::from(crate::core::error::AppError::NotFound(format!(
-                "Running MCP server '{slug}'"
+                "Running MCP server '{handle}'"
             )))
         })?;
 

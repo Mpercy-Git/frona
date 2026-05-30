@@ -15,7 +15,7 @@ use crate::inference::provider::ModelRef;
 use crate::memory::service::MemoryService;
 use crate::agent::prompt::PromptLoader;
 use crate::core::repository::Repository;
-use rig::completion::Message as RigMessage;
+use rig_core::completion::Message as RigMessage;
 
 pub struct AgentConfig {
     pub system_prompt: String,
@@ -58,6 +58,7 @@ pub struct ChatService {
     memory_service: MemoryService,
     prompts: PromptLoader,
     broadcast: crate::chat::broadcast::BroadcastService,
+    presign: crate::credential::presign::PresignService,
 }
 
 impl ChatService {
@@ -73,6 +74,7 @@ impl ChatService {
         memory_service: MemoryService,
         prompts: PromptLoader,
         broadcast: crate::chat::broadcast::BroadcastService,
+        presign: crate::credential::presign::PresignService,
     ) -> Self {
         Self {
             chat_repo,
@@ -85,6 +87,7 @@ impl ChatService {
             memory_service,
             prompts,
             broadcast,
+            presign,
         }
     }
 
@@ -99,7 +102,8 @@ impl ChatService {
         );
     }
 
-    fn broadcast_message_entity(
+    /// Fires `chat_message` (frontend) AND `entity_updated` (channel watcher).
+    fn broadcast_message_persisted(
         &self,
         msg: &Message,
         chat: &Chat,
@@ -112,6 +116,12 @@ impl ChatService {
             action,
             chat.space_id.clone(),
             None,
+        );
+        self.broadcast.broadcast_chat_message(
+            &chat.user_id,
+            &chat.id,
+            chat.space_id.clone(),
+            msg.clone().into(),
         );
     }
 
@@ -129,9 +139,21 @@ impl ChatService {
         user_id: &str,
         req: CreateChatRequest,
     ) -> Result<ChatResponse, AppError> {
+        // Fail eagerly on bad `agent_id` — first /messages/stream would silently 404.
+        let agent = self
+            .agent_service
+            .find_by_id(&req.agent_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Agent '{}' not found", req.agent_id))
+            })?;
+        if agent.user_id != user_id {
+            return Err(AppError::Forbidden("Not your agent".into()));
+        }
+
         let now = chrono::Utc::now();
         let chat = Chat {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             space_id: req.space_id,
             task_id: req.task_id,
@@ -228,7 +250,7 @@ impl ChatService {
         }
         let now = chrono::Utc::now();
         let chat = Chat {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             space_id: Some(space_id.to_string()),
             task_id: None,
@@ -286,14 +308,14 @@ impl ChatService {
             crate::core::metadata::apply_metadata_patch(&mut msg.metadata, patch);
         }
         let saved = self.message_repo.update(&msg).await?;
-        self.broadcast_message_entity(&saved, &chat, crate::chat::broadcast::EntityAction::Updated);
+        self.broadcast_message_persisted(&saved, &chat, crate::chat::broadcast::EntityAction::Updated);
         Ok(saved.into())
     }
 
     pub async fn persist_inbound_message(&self, msg: &Message) -> Result<Message, AppError> {
         let saved = self.message_repo.create(msg).await?;
         if let Ok(Some(chat)) = self.chat_repo.find_by_id(&saved.chat_id).await {
-            self.broadcast_message_entity(
+            self.broadcast_message_persisted(
                 &saved,
                 &chat,
                 crate::chat::broadcast::EntityAction::Created,
@@ -315,7 +337,7 @@ impl ChatService {
         crate::core::metadata::apply_metadata_patch(&mut msg.metadata, patch);
         let saved = self.message_repo.update(&msg).await?;
         if let Ok(Some(chat)) = self.chat_repo.find_by_id(&saved.chat_id).await {
-            self.broadcast_message_entity(&saved, &chat, crate::chat::broadcast::EntityAction::Updated);
+            self.broadcast_message_persisted(&saved, &chat, crate::chat::broadcast::EntityAction::Updated);
         }
         Ok(saved)
     }
@@ -392,7 +414,14 @@ impl ChatService {
             user_message_builder = user_message_builder.metadata(md.clone());
         }
         let user_message = user_message_builder.build();
-        let user_message = self.message_repo.create(&user_message).await?;
+        let user_message = self
+            .save_message_and_broadcast(
+                user_message,
+                user_id,
+                chat.space_id.as_deref(),
+                crate::chat::broadcast::EntityAction::Created,
+            )
+            .await?;
 
         let agent_config = self.resolve_agent_config(&chat.agent_id).await?;
         let system_prompt = agent_config.system_prompt;
@@ -424,14 +453,22 @@ impl ChatService {
 
         let assistant_message = Message::builder(chat_id, MessageRole::Agent, response_text)
             .agent_id(chat.agent_id.clone())
+            .status(MessageStatus::Completed)
             .build();
-        let assistant_message = self.message_repo.create(&assistant_message).await?;
+        let assistant_message = self
+            .save_message_and_broadcast(
+                assistant_message,
+                user_id,
+                chat.space_id.as_deref(),
+                crate::chat::broadcast::EntityAction::Created,
+            )
+            .await?;
 
         if let Some(handle) = title_handle {
             let _ = handle.await;
         }
 
-        Ok(vec![user_message.into(), assistant_message.into()])
+        Ok(vec![user_message, assistant_message])
     }
 
     pub async fn list_messages(
@@ -525,12 +562,18 @@ impl ChatService {
         content: &str,
         attachments: Vec<crate::storage::Attachment>,
     ) -> Result<MessageResponse, AppError> {
-        self.get_chat(user_id, chat_id).await?;
+        let chat = self.get_chat(user_id, chat_id).await?;
 
         let msg = Message::builder(chat_id, MessageRole::User, content.to_string())
             .attachments(attachments)
             .build();
-        self.save_message(msg).await
+        self.save_message_and_broadcast(
+            msg,
+            user_id,
+            chat.space_id.as_deref(),
+            crate::chat::broadcast::EntityAction::Created,
+        )
+        .await
     }
 
     pub async fn create_contact_message(
@@ -540,13 +583,19 @@ impl ChatService {
         content: &str,
         contact_id: Option<&str>,
     ) -> Result<MessageResponse, AppError> {
-        self.get_chat(user_id, chat_id).await?;
+        let chat = self.get_chat(user_id, chat_id).await?;
 
         let mut builder = Message::builder(chat_id, MessageRole::Contact, content.to_string());
         if let Some(cid) = contact_id {
             builder = builder.contact_id(cid);
         }
-        self.save_message(builder.build()).await
+        self.save_message_and_broadcast(
+            builder.build(),
+            user_id,
+            chat.space_id.as_deref(),
+            crate::chat::broadcast::EntityAction::Created,
+        )
+        .await
     }
 
     pub async fn save_live_call_message(
@@ -556,42 +605,105 @@ impl ChatService {
         content: &str,
         contact_id: Option<&str>,
     ) -> Result<MessageResponse, AppError> {
-        self.get_chat(user_id, chat_id).await?;
+        let chat = self.get_chat(user_id, chat_id).await?;
 
         let mut builder = Message::builder(chat_id, MessageRole::LiveCall, content.to_string());
         if let Some(cid) = contact_id {
             builder = builder.contact_id(cid);
         }
-        self.save_message(builder.build()).await
+        self.save_message_and_broadcast(
+            builder.build(),
+            user_id,
+            chat.space_id.as_deref(),
+            crate::chat::broadcast::EntityAction::Created,
+        )
+        .await
     }
 
+    /// No-broadcast persist. Broadcasting an empty Executing row renders
+    /// a phantom message while tokens stream.
     async fn save_message(&self, message: Message) -> Result<MessageResponse, AppError> {
         let saved = self.message_repo.create(&message).await?;
         Ok(saved.into())
     }
 
+    /// Presigns attachments before broadcasting so live SSE matches the
+    /// GET response — without this the file widget renders broken until refresh.
+    async fn save_message_and_broadcast(
+        &self,
+        message: Message,
+        user_id: &str,
+        space_id: Option<&str>,
+        action: crate::chat::broadcast::EntityAction,
+    ) -> Result<MessageResponse, AppError> {
+        let saved = self.message_repo.create(&message).await?;
+
+        let mut response: MessageResponse = saved.clone().into();
+        crate::credential::presign::presign_response_by_user_id(
+            &self.presign,
+            &mut response,
+            user_id,
+        )
+        .await;
+
+        let space_id_owned = space_id.map(String::from);
+        self.broadcast.broadcast_entity_updated(
+            user_id,
+            "message",
+            &saved.id,
+            action,
+            space_id_owned.clone(),
+            None,
+        );
+        self.broadcast.broadcast_chat_message(
+            user_id,
+            &saved.chat_id,
+            space_id_owned,
+            response.clone(),
+        );
+        Ok(response)
+    }
+
     pub async fn save_system_event(
         &self,
+        user_id: &str,
+        space_id: Option<&str>,
         chat_id: &str,
         event: MessageEvent,
     ) -> Result<MessageResponse, AppError> {
         let msg = Message::builder(chat_id, MessageRole::System, String::new())
             .event(event)
             .build();
-        self.save_message(msg).await
+        self.save_message_and_broadcast(
+            msg,
+            user_id,
+            space_id,
+            crate::chat::broadcast::EntityAction::Created,
+        )
+        .await
     }
 
     pub async fn save_system_message(
         &self,
+        user_id: &str,
+        space_id: Option<&str>,
         chat_id: &str,
         content: String,
     ) -> Result<MessageResponse, AppError> {
         let msg = Message::builder(chat_id, MessageRole::System, content).build();
-        self.save_message(msg).await
+        self.save_message_and_broadcast(
+            msg,
+            user_id,
+            space_id,
+            crate::chat::broadcast::EntityAction::Created,
+        )
+        .await
     }
 
     pub async fn save_agent_message(
         &self,
+        user_id: &str,
+        space_id: Option<&str>,
         chat_id: &str,
         agent_id: &str,
         content: String,
@@ -602,12 +714,20 @@ impl ChatService {
         if let Some(d) = delivery {
             builder = builder.delivery(d);
         }
-        let msg = builder.build();
-        self.save_message(msg).await
+        self.save_message_and_broadcast(
+            builder.build(),
+            user_id,
+            space_id,
+            crate::chat::broadcast::EntityAction::Created,
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn save_task_lifecycle_message(
         &self,
+        user_id: &str,
+        space_id: Option<&str>,
         chat_id: &str,
         agent_id: &str,
         content: String,
@@ -619,27 +739,43 @@ impl ChatService {
             .event(event)
             .attachments(attachments)
             .build();
-        self.save_message(msg).await
+        self.save_message_and_broadcast(
+            msg,
+            user_id,
+            space_id,
+            crate::chat::broadcast::EntityAction::Created,
+        )
+        .await
     }
-
-    // ── Tool call persistence ────────────────────────────────────────
 
     pub async fn create_executing_agent_message(
         &self,
         chat_id: &str,
         agent_id: &str,
-        delivery: Option<crate::chat::message::models::MessageDelivery>,
     ) -> Result<MessageResponse, AppError> {
-        let mut builder = Message::builder(chat_id, MessageRole::Agent, String::new())
+        let msg = Message::builder(chat_id, MessageRole::Agent, String::new())
             .agent_id(agent_id.to_string())
-            .status(MessageStatus::Executing);
-        if let Some(d) = delivery {
-            builder = builder.delivery(d);
-        }
-        let msg = builder.build();
+            .status(MessageStatus::Executing)
+            .build();
         self.save_message(msg).await
     }
 
+    /// Stamps `dispatch_mode = Signal` so the outbound dispatcher refuses delivery.
+    pub async fn create_executing_signal_message(
+        &self,
+        chat_id: &str,
+        agent_id: &str,
+    ) -> Result<MessageResponse, AppError> {
+        let msg = Message::builder(chat_id, MessageRole::Agent, String::new())
+            .agent_id(agent_id.to_string())
+            .status(MessageStatus::Executing)
+            .dispatch_mode(crate::chat::channel::DispatchMode::Signal)
+            .build();
+        self.save_message(msg).await
+    }
+
+    /// Fires `entity_updated` + `inference_done` (NOT `chat_message`) —
+    /// `inference_done` doubles as the row payload and clears streaming buffers.
     pub async fn complete_agent_message(
         &self,
         message_id: &str,
@@ -659,18 +795,38 @@ impl ChatService {
         message.status = Some(MessageStatus::Completed);
 
         let updated = self.message_repo.update(&message).await?;
-        // Broadcast the completion so the channel outbound dispatcher and
-        // any SSE subscribers see the finished agent message — without this
-        // the row sits Completed in the DB but no one delivers it externally
-        // and the UI shows a perpetual typing indicator.
-        if let Ok(Some(chat)) = self.chat_repo.find_by_id(&updated.chat_id).await {
-            self.broadcast_message_entity(
-                &updated,
-                &chat,
+        let chat = self.chat_repo.find_by_id(&updated.chat_id).await?;
+
+        let mut response: MessageResponse = updated.clone().into();
+        if let Ok(tes) = self.get_tool_calls_by_message(message_id).await {
+            response.tool_calls = tes.into_iter().map(Into::into).collect();
+        }
+        if let Some(ref chat) = chat {
+            crate::credential::presign::presign_response_by_user_id(
+                &self.presign,
+                &mut response,
+                &chat.user_id,
+            )
+            .await;
+        }
+
+        if let Some(chat) = chat {
+            self.broadcast.broadcast_entity_updated(
+                &chat.user_id,
+                "message",
+                &updated.id,
                 crate::chat::broadcast::EntityAction::Updated,
+                chat.space_id.clone(),
+                None,
+            );
+            self.broadcast.broadcast_inference_done(
+                &chat.user_id,
+                &chat.id,
+                chat.space_id.clone(),
+                response.clone(),
             );
         }
-        Ok(updated.into())
+        Ok(response)
     }
 
     pub async fn cancel_agent_message(
@@ -688,10 +844,26 @@ impl ChatService {
         message.status = Some(MessageStatus::Cancelled);
 
         let updated = self.message_repo.update(&message).await?;
+        if let Ok(Some(chat)) = self.chat_repo.find_by_id(&updated.chat_id).await {
+            self.broadcast.broadcast_entity_updated(
+                &chat.user_id,
+                "message",
+                &updated.id,
+                crate::chat::broadcast::EntityAction::Updated,
+                chat.space_id.clone(),
+                None,
+            );
+            self.broadcast.broadcast_inference_cancelled(
+                &chat.user_id,
+                &chat.id,
+                chat.space_id.clone(),
+                "Cancelled".to_string(),
+            );
+        }
         Ok(updated.into())
     }
 
-    pub async fn fail_agent_message(&self, message_id: &str) -> Result<(), AppError> {
+    pub async fn fail_agent_message(&self, message_id: &str) -> Result<MessageResponse, AppError> {
         let mut message = self
             .message_repo
             .find_by_id(message_id)
@@ -699,8 +871,24 @@ impl ChatService {
             .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
 
         message.status = Some(MessageStatus::Failed);
-        self.message_repo.update(&message).await?;
-        Ok(())
+        let updated = self.message_repo.update(&message).await?;
+        if let Ok(Some(chat)) = self.chat_repo.find_by_id(&updated.chat_id).await {
+            self.broadcast.broadcast_entity_updated(
+                &chat.user_id,
+                "message",
+                &updated.id,
+                crate::chat::broadcast::EntityAction::Updated,
+                chat.space_id.clone(),
+                None,
+            );
+            self.broadcast.broadcast_inference_error(
+                &chat.user_id,
+                &chat.id,
+                chat.space_id.clone(),
+                "Inference failed".to_string(),
+            );
+        }
+        Ok(updated.into())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -974,51 +1162,37 @@ impl ChatService {
     }
 
     pub async fn resolve_agent_config(&self, agent_id: &str) -> Result<AgentConfig, AppError> {
-        let ws = self.storage_service.agent_workspace(agent_id);
+        let agent = self
+            .agent_service
+            .find_by_id(agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Agent {agent_id} not found")))?;
+        let user = self
+            .user_service
+            .find_by_id(&agent.user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("User {} not found", agent.user_id)))?;
+        let ws = self.storage_service.agent_workspace(&user.handle, &agent.handle);
 
-        if let Ok(Some(agent)) = self.agent_service.find_by_id(agent_id).await {
-            tracing::debug!(agent_id, user_id = ?agent.user_id, "Resolved agent from DB");
+        tracing::debug!(agent_id, user_id = %agent.user_id, "Resolved agent from DB");
 
-            let raw_prompt = if let Some(ref prompt) = agent.prompt {
-                if !prompt.is_empty() {
-                    prompt.clone()
-                } else {
-                    ws.read("AGENT.md")
-                        .map(|c| parse_frontmatter(&c).template)
-                        .ok_or_else(|| AppError::Internal(format!("No AGENT.md found for agent {agent_id}")))?
-                }
-            } else {
-                ws.read("AGENT.md")
-                    .map(|c| parse_frontmatter(&c).template)
-                    .ok_or_else(|| AppError::Internal(format!("No AGENT.md found for agent {agent_id}")))?
-            };
+        let raw_prompt = match agent.prompt.as_deref().filter(|p| !p.is_empty()) {
+            Some(prompt) => prompt.to_string(),
+            None => ws
+                .read("AGENT.md")
+                .map(|c| parse_frontmatter(&c).template)
+                .ok_or_else(|| AppError::Internal(format!("No AGENT.md found for agent {agent_id}")))?,
+        };
 
-            let system_prompt = render_template(&raw_prompt, &[("agent_name", &agent.name)])
-                .unwrap_or(raw_prompt);
-
-            return Ok(AgentConfig {
-                system_prompt,
-                model_group: agent.model_group,
-                skills: agent.skills,
-                sandbox_limits: agent.sandbox_limits,
-                identity: agent.identity,
-            });
-        }
-
-        let raw_content = ws.read("AGENT.md")
-            .ok_or_else(|| AppError::Internal(format!("No AGENT.md found for agent {agent_id}")))?;
-        let parsed = parse_frontmatter(&raw_content);
-
-        let model_group = parsed.metadata.get("model_group")
-            .cloned()
-            .unwrap_or_else(|| "primary".to_string());
+        let system_prompt = render_template(&raw_prompt, &[("agent_name", &agent.name)])
+            .unwrap_or(raw_prompt);
 
         Ok(AgentConfig {
-            system_prompt: parsed.template,
-            model_group,
-            skills: None,
-            sandbox_limits: None,
-            identity: std::collections::BTreeMap::new(),
+            system_prompt,
+            model_group: agent.model_group,
+            skills: agent.skills,
+            sandbox_limits: agent.sandbox_limits,
+            identity: agent.identity,
         })
     }
 
@@ -1028,7 +1202,17 @@ impl ChatService {
         agent_id: &str,
         user_content: &str,
     ) -> Result<String, AppError> {
-        let ws = self.storage_service.agent_workspace(agent_id);
+        let agent = self
+            .agent_service
+            .find_by_id(agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Agent {agent_id} not found")))?;
+        let user = self
+            .user_service
+            .find_by_id(&agent.user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("User {} not found", agent.user_id)))?;
+        let ws = self.storage_service.agent_workspace(&user.handle, &agent.handle);
         let prompts = AgentPromptLoader::new(&ws, &self.prompts);
         let content = prompts.read("TITLE.md")
             .ok_or_else(|| AppError::Internal("No title generation prompt found".into()))?;
@@ -1060,7 +1244,7 @@ impl ChatService {
                     main: model_ref,
                     fallbacks: vec![],
                     max_tokens: Some(100),
-                    temperature: Some(0.7),
+                    temperature: None,
                     context_window: None,
                     retry: Default::default(),
                     inference: Default::default(),
@@ -1076,7 +1260,7 @@ impl ChatService {
             main: base.main.clone(),
             fallbacks: base.fallbacks.clone(),
             max_tokens: Some(100),
-            temperature: Some(0.7),
+            temperature: base.temperature,
             context_window: None,
             retry: base.retry.clone(),
             inference: base.inference.clone(),
@@ -1098,6 +1282,10 @@ impl ChatService {
 
     pub async fn find_chats_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError> {
         self.chat_repo.find_by_space_id(space_id).await
+    }
+
+    pub async fn find_user_chats_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError> {
+        self.chat_repo.find_user_chats_by_space_id(space_id).await
     }
 
     pub async fn find_standalone_chats_by_user(

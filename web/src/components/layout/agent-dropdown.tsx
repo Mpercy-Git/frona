@@ -11,12 +11,10 @@ import { useNavigation } from "@/lib/navigation-context";
 import { agentDisplayName, type Agent } from "@/lib/types";
 
 function AgentIcon({ agent }: { agent: Agent }) {
-  const avatar = agent.identity?.avatar;
-  if (avatar && (avatar.startsWith("data:") || avatar.startsWith("http") || avatar.startsWith("/api/"))) {
+  if (agent.avatar_url) {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={avatar}
+        src={agent.avatar_url}
         alt={agent.name}
         className="h-7 w-7 shrink-0 rounded-full object-cover"
       />

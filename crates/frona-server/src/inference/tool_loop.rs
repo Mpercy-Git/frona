@@ -1,11 +1,11 @@
 use std::time::Instant;
 
 use base64::Engine;
-use rig::completion::message::{
+use rig_core::completion::message::{
     DocumentSourceKind, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent,
 };
-use rig::completion::request::ToolDefinition as RigToolDefinition;
-use rig::completion::{AssistantContent, Message as RigMessage};
+use rig_core::completion::request::ToolDefinition as RigToolDefinition;
+use rig_core::completion::{AssistantContent, Message as RigMessage};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::broadcast::EventSender;
@@ -87,8 +87,8 @@ pub fn extract_reasoning(contents: &[AssistantContent]) -> Option<Reasoning> {
         if let AssistantContent::Reasoning(r) = c {
             Some(Reasoning {
                 id: r.id.clone(),
-                content: r.reasoning.join(""),
-                signature: r.signature.clone(),
+                content: r.display_text(),
+                signature: r.first_signature().map(|s| s.to_string()),
             })
         } else {
             None
@@ -146,8 +146,8 @@ async fn process_model_response(
 
     let assistant_msg = RigMessage::Assistant {
         id: None,
-        content: rig::OneOrMany::many(assistant_content_items)
-            .unwrap_or_else(|_| rig::OneOrMany::one(AssistantContent::text(""))),
+        content: rig_core::OneOrMany::many(assistant_content_items)
+            .unwrap_or_else(|_| rig_core::OneOrMany::one(AssistantContent::text(""))),
     };
     chat_history.push(assistant_msg);
 
@@ -164,13 +164,13 @@ fn build_tool_result_message(
         let tool_result_content = UserContent::ToolResult(ToolResult {
             id: tool_call_id,
             call_id: None,
-            content: rig::OneOrMany::one(ToolResultContent::text(&result)),
+            content: rig_core::OneOrMany::one(ToolResultContent::text(&result)),
         });
         let mut user_contents = vec![tool_result_content];
         for img in tool_output.images() {
             let b64 = base64::engine::general_purpose::STANDARD.encode(&img.bytes);
             user_contents.push(UserContent::Image(
-                rig::completion::message::Image {
+                rig_core::completion::message::Image {
                     data: DocumentSourceKind::Base64(b64),
                     media_type: ImageMediaType::from_mime_type(&img.media_type),
                     detail: None,
@@ -179,7 +179,7 @@ fn build_tool_result_message(
             ));
         }
         RigMessage::User {
-            content: rig::OneOrMany::many(user_contents).unwrap(),
+            content: rig_core::OneOrMany::many(user_contents).unwrap(),
         }
     } else {
         RigMessage::tool_result(tool_call_id, result)
@@ -230,7 +230,7 @@ async fn execute_tool_calls(
             .and_then(|obj| obj.remove("description"))
             .and_then(|v| v.as_str().map(String::from));
 
-        let te_id = uuid::Uuid::new_v4().to_string();
+        let te_id = crate::core::repository::new_id();
 
         event_tx.send(InferenceEvent {
             kind: InferenceEventKind::ToolCall {
@@ -553,15 +553,17 @@ pub async fn run_tool_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::completion::AssistantContent;
+    use rig_core::completion::AssistantContent;
 
     #[test]
     fn extract_reasoning_from_contents() {
         let contents = vec![
             AssistantContent::Reasoning(
-                rig::completion::message::Reasoning::new("thinking hard")
-                    .with_id("r-1".to_string())
-                    .with_signature(Some("sig-123".to_string())),
+                rig_core::completion::message::Reasoning::new_with_signature(
+                    "thinking hard",
+                    Some("sig-123".to_string()),
+                )
+                .with_id("r-1".to_string()),
             ),
             AssistantContent::text("final answer"),
         ];
@@ -585,12 +587,12 @@ mod tests {
     fn extract_reasoning_joins_multi_chunk() {
         let contents = vec![
             AssistantContent::Reasoning(
-                rig::completion::message::Reasoning::multi(
+                rig_core::completion::message::Reasoning::multi(
                     vec!["chunk1 ".to_string(), "chunk2".to_string()],
                 ),
             ),
         ];
         let r = extract_reasoning(&contents).unwrap();
-        assert_eq!(r.content, "chunk1 chunk2");
+        assert_eq!(r.content, "chunk1 \nchunk2");
     }
 }

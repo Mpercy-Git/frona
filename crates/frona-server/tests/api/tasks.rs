@@ -223,7 +223,7 @@ async fn cancel_pending_task() {
 }
 
 #[tokio::test]
-async fn cancel_completed_task_returns_400() {
+async fn cancel_completed_task_is_idempotent() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) =
         register_user(&state, "cancelcomp", "cancelcomp@example.com", "password123").await;
@@ -252,5 +252,7 @@ async fn cancel_completed_task_returns_400() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["status"], "completed", "terminal status preserved");
 }

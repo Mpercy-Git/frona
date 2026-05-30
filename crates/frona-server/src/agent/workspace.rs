@@ -40,7 +40,7 @@ mod tests {
 
     fn test_service(tmp: &std::path::Path) -> StorageService {
         let mut config = Config::default();
-        config.storage.workspaces_path = tmp.join("workspaces").to_string_lossy().into_owned();
+        config.storage.data_dir = tmp.to_string_lossy().into_owned();
         config.storage.shared_config_dir = shared_dir().to_string_lossy().into_owned();
         StorageService::new(&config)
     }
@@ -50,7 +50,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_ws_test_prompt_agent");
         let _ = std::fs::remove_dir_all(&tmp);
         let svc = test_service(&tmp);
-        let ws = svc.agent_workspace("system");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("system"));
 
         let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
@@ -64,7 +64,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_ws_test_prompt_fallback");
         let _ = std::fs::remove_dir_all(&tmp);
         let svc = test_service(&tmp);
-        let ws = svc.agent_workspace("nonexistent_agent");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("nonexistent_agent"));
 
         let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
@@ -80,7 +80,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_ws_test_prompt_shadow");
         let _ = std::fs::remove_dir_all(&tmp);
         let svc = test_service(&tmp);
-        let ws = svc.agent_workspace("test_agent");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("test_agent"));
 
         ws.write("prompts/CHAT_COMPACTION.md", "Agent-specific compaction").unwrap();
 
@@ -97,7 +97,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_ws_test_prompt_root");
         let _ = std::fs::remove_dir_all(&tmp);
         let svc = test_service(&tmp);
-        let ws = svc.agent_workspace("test_agent");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("test_agent"));
 
         ws.write("TOOLS.md", "Root-level prompt").unwrap();
 
@@ -115,7 +115,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_ws_test_prompt_root_shadow");
         let _ = std::fs::remove_dir_all(&tmp);
         let svc = test_service(&tmp);
-        let ws = svc.agent_workspace("test_agent");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("test_agent"));
 
         ws.write("MY_PROMPT.md", "From root").unwrap();
         ws.write("prompts/MY_PROMPT.md", "From prompts dir").unwrap();

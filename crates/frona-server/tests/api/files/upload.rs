@@ -5,9 +5,6 @@ use tower::ServiceExt;
 
 use super::super::*;
 
-// ---------------------------------------------------------------------------
-// Upload
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn upload_file_returns_attachment() {
@@ -97,9 +94,6 @@ async fn upload_deduplicates_filename() {
     assert_eq!(second["filename"], "dup-1.txt");
 }
 
-// ---------------------------------------------------------------------------
-// Upload path validation
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn upload_with_traversal_path_returns_400() {
@@ -152,9 +146,6 @@ async fn upload_with_unknown_field_only_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ---------------------------------------------------------------------------
-// Presign
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn presign_file_returns_url() {
@@ -162,7 +153,7 @@ async fn presign_file_returns_url() {
     let (token, user_id) =
         register_user(&state, "presigner", "presigner@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("presigner");
+    let user_dir = tmp.path().join("users").join("presigner").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("doc.pdf"), b"pdf content").await.unwrap();
 
@@ -229,9 +220,6 @@ async fn presign_invalid_owner_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ---------------------------------------------------------------------------
-// Presign for agent files
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn presign_agent_file_returns_url() {
@@ -241,7 +229,7 @@ async fn presign_agent_file_returns_url() {
     let agent = create_agent(&state, &token, "PreAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
-    let agent_dir = tmp.path().join("workspaces").join(agent_id);
+    let agent_dir = tmp.path().join("users").join(agent_id).join("agents").join(agent_id);
     fs::create_dir_all(&agent_dir).await.unwrap();
     fs::write(agent_dir.join("out.csv"), b"csv data").await.unwrap();
 

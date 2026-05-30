@@ -10,7 +10,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use frona::storage::StorageService;
@@ -50,14 +50,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    verify_sandbox(&config.storage.workspaces_path, config.sandbox.disabled)
+    let users_root = std::path::PathBuf::from(&config.storage.data_dir).join("users");
+    std::fs::create_dir_all(&users_root).ok();
+    verify_sandbox(users_root.to_string_lossy().as_ref(), config.sandbox.disabled)
         .expect("Sandbox verification failed — filesystem may not support sandboxing. Set FRONA_SANDBOX_DISABLED=true to bypass.");
 
     frona::tool::sandbox::driver::resource_monitor::log_system_resources();
 
-    frona::auth::ephemeral_token::prepare_runtime_dir(&config.auth.runtime_tokens_dir);
-
     let storage = StorageService::new(&config);
+    frona::auth::ephemeral_token::prepare_runtime_dir(&storage.users_root());
 
     let metrics_handle = setup_metrics_recorder();
 
@@ -78,7 +79,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     resource_manager.start_polling();
 
     let state = AppState::new(surreal.clone(), &config, loaded.models, storage, metrics_handle, resource_manager);
-    db::seed_config_agents(&surreal, &state.agent_service, &state.storage_service).await?;
     state.agent_service.sync_agent_limits().await?;
     state.vault_service.sync_config_connections().await?;
     state.browser_session_manager.kill_all_sessions().await;
@@ -218,11 +218,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let has_users = state.user_service.has_users().await.unwrap_or(true);
+    if !has_users && !frona::auth::can_create_users(&config) {
+        error!(
+            "Cannot start: no users exist and no path to create one is available. \
+             Set FRONA_AUTH_ALLOW_REGISTRATION=true (and ensure sso.disable_local_auth is false) \
+             to allow the first user to register, or enable SSO so the first admin can sign in \
+             via the configured identity provider."
+        );
+        std::process::exit(1);
+    }
     if !has_users {
         info!("No users found — registration redirect active. Restart after setup.");
     }
 
+    if let Err(e) = state.user_group_service.seed_built_in().await {
+        error!(error = %e, "Failed to seed built-in user groups");
+        std::process::exit(1);
+    }
+    if let Err(e) = state.user_service.ensure_admin_invariant().await {
+        error!(error = %e, "Failed to ensure admin invariant");
+        std::process::exit(1);
+    }
+
     let mut api = axum::Router::new()
+        .merge(routes::admin::router())
         .merge(routes::auth::router())
         .merge(routes::well_known::router())
         .merge(routes::agents::router())

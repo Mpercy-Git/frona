@@ -1,10 +1,16 @@
+export interface UserPermissions {
+  list_users: boolean;
+}
+
 export interface UserInfo {
   id: string;
-  username: string;
+  /** Rendered as "Username" in UI copy. */
+  handle: string;
   email: string;
   name: string;
   timezone?: string;
   needs_setup?: boolean;
+  permissions?: UserPermissions;
 }
 
 export interface AuthResponse {
@@ -18,7 +24,7 @@ export interface LoginRequest {
 }
 
 export interface RegisterRequest {
-  username: string;
+  handle: string;
   email: string;
   name: string;
   password: string;
@@ -27,6 +33,11 @@ export interface RegisterRequest {
 export interface SsoStatus {
   enabled: boolean;
   disable_local_auth: boolean;
+}
+
+export interface AuthConfig {
+  sso: SsoStatus;
+  allow_registration: boolean;
 }
 
 export interface SandboxPolicy {
@@ -47,15 +58,15 @@ export interface SandboxLimits {
 
 export interface Agent {
   id: string;
+  handle: string;
   name: string;
   description: string;
   model_group: string;
   enabled: boolean;
   tools: string[];
   skills: string[];
-  avatar: string | null;
+  avatar_url: string | null;
   identity: Record<string, string>;
-  /** Evaluated sandbox access — read-only on responses. */
   sandbox_policy: SandboxPolicy;
   sandbox_limits: SandboxLimits | null;
   prompt: string | null;
@@ -203,6 +214,10 @@ export interface MessageResponse {
   created_at: string;
   /** Set by mergeConsecutiveMessages — this message continues the previous agent message. */
   _continuation?: boolean;
+  /** Set by computeTimeMarkers — render a day-boundary chip above this message. */
+  _daySeparator?: string;
+  /** Set by computeTimeMarkers — render a "N minutes later" chip above this message. */
+  _gap?: string;
 }
 
 export type AppStatus = "starting" | "running" | "stopped" | "failed" | "serving" | "hibernated";
@@ -210,6 +225,8 @@ export type AppStatus = "starting" | "running" | "stopped" | "failed" | "serving
 export interface AppResponse {
   id: string;
   agent_id: string;
+  /** Served at `/apps/{handle}/`. */
+  handle: string;
   name: string;
   description?: string;
   kind: string;
@@ -224,8 +241,39 @@ export interface AppResponse {
 }
 
 export type TaskKind =
-  | { type: "Direct" }
-  | { type: "Delegation"; source_agent_id: string; source_chat_id: string };
+  | { type: "Direct"; source_chat_id?: string | null }
+  | { type: "Delegation"; source_agent_id: string; source_chat_id: string; resume_parent?: boolean }
+  | {
+      type: "Cron";
+      cron_expression: string;
+      timezone?: string | null;
+      next_run_at?: string | null;
+      source_agent_id?: string | null;
+      source_chat_id?: string | null;
+      mode?: "singleton" | "per_instance";
+      concurrency?: "allow" | "forbid" | "replace";
+      process_result?: boolean;
+    }
+  | {
+      type: "CronRun";
+      source_cron_id: string;
+      source_chat_id?: string | null;
+      source_agent_id?: string | null;
+      fire_at: string;
+      sequence_num: number;
+    }
+  | {
+      type: "Signal";
+      source_chat_id: string;
+      resume_parent?: boolean;
+      mode?: "Once" | "Continuous";
+      expected_categories?: string[];
+      expected_channels?: string[];
+      expected_contacts?: string[];
+      expires_at?: string | null;
+      max_evaluations?: number;
+      evaluation_count?: number;
+    };
 
 export interface TaskResponse {
   id: string;
@@ -298,7 +346,7 @@ export interface CredentialResponse {
 }
 
 export type NotificationData =
-  | { type: "App"; app_id: string; action: string }
+  | { type: "App"; app_handle: string; action: string }
   | { type: "Agent"; agent_id: string; chat_id: string }
   | { type: "Task"; task_id: string }
   | { type: "System" }

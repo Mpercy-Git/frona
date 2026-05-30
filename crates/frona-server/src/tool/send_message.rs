@@ -4,7 +4,7 @@ use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::task::service::TaskService;
 use crate::chat::broadcast::BroadcastService;
-use crate::chat::models::CreateChatRequest;
+use crate::chat::models::{Chat, CreateChatRequest};
 use crate::chat::service::ChatService;
 use crate::core::error::AppError;
 use crate::core::metrics::InferenceMetricsContext;
@@ -12,7 +12,7 @@ use crate::inference;
 use crate::notification::models::{NotificationData, NotificationLevel};
 use crate::notification::service::NotificationService;
 use frona_derive::agent_tool;
-use rig::completion::Message as RigMessage;
+use rig_core::completion::Message as RigMessage;
 
 use super::{InferenceContext, ToolOutput};
 
@@ -66,17 +66,27 @@ impl SendMessageTool {
 
         let _ = attachments; // TODO: resolve file paths to Attachment structs
 
-        let (resolved_chat_id, is_new_chat) =
+        let (resolved_chat, is_new_chat) =
             self.resolve_target_chat(ctx, &content).await?;
 
+        // Broadcast space_id must match the resolved chat — task chats are
+        // None-spaced, but the resolved channel chat lives in the channel's
+        // space, and the outbound dispatcher filters on it.
         let message = self
             .chat_service
-            .save_agent_message(&resolved_chat_id, &ctx.agent.id, content.clone(), None)
+            .save_agent_message(
+                &ctx.user.id,
+                resolved_chat.space_id.as_deref(),
+                &resolved_chat.id,
+                &ctx.agent.id,
+                content.clone(),
+                None,
+            )
             .await?;
 
         if is_new_chat {
             let svc = self.chat_service.clone();
-            let cid = resolved_chat_id.clone();
+            let cid = resolved_chat.id.clone();
             let aid = ctx.agent.id.clone();
             let c = content.clone();
             tokio::spawn(async move {
@@ -85,13 +95,6 @@ impl SendMessageTool {
                 }
             });
         }
-
-        let space_id = ctx
-            .chat
-            .space_id
-            .clone();
-        self.broadcast_service
-            .broadcast_chat_message(&ctx.user.id, &resolved_chat_id, space_id, message.clone());
 
         let truncated_body = if content.len() > 200 {
             format!("{}…", &content[..200])
@@ -105,7 +108,7 @@ impl SendMessageTool {
                 &ctx.user.id,
                 NotificationData::Agent {
                     agent_id: ctx.agent.id.clone(),
-                    chat_id: resolved_chat_id.clone(),
+                    chat_id: resolved_chat.id.clone(),
                 },
                 NotificationLevel::Info,
                 ctx.agent.name.clone(),
@@ -120,7 +123,7 @@ impl SendMessageTool {
         Ok(ToolOutput::text(
             serde_json::json!({
                 "status": "sent",
-                "chat_id": resolved_chat_id,
+                "chat_id": resolved_chat.id,
                 "message_id": message.id,
             })
             .to_string(),
@@ -133,26 +136,23 @@ impl SendMessageTool {
         &self,
         ctx: &InferenceContext,
         message_content: &str,
-    ) -> Result<(String, bool), AppError> {
-        // 1. Already user-facing: no task, not a heartbeat chat
+    ) -> Result<(Chat, bool), AppError> {
         if ctx.chat.task_id.is_none()
             && ctx.agent.heartbeat_chat_id.as_deref() != Some(&ctx.chat.id)
         {
-            return Ok((ctx.chat.id.clone(), false));
+            return Ok((ctx.chat.clone(), false));
         }
 
-        // 2. Task chain walk: follow source_chat_id to find originating user-facing chat
         if ctx.chat.task_id.is_some()
-            && let Some(chat_id) = self.walk_task_chain(ctx).await
+            && let Some(chat) = self.walk_task_chain(ctx).await
         {
-            return Ok((chat_id, false));
+            return Ok((chat, false));
         }
 
-        // 3. LLM-assisted resolution
         self.llm_resolve_chat(ctx, message_content).await
     }
 
-    async fn walk_task_chain(&self, ctx: &InferenceContext) -> Option<String> {
+    async fn walk_task_chain(&self, ctx: &InferenceContext) -> Option<Chat> {
         let mut current_chat_id = ctx.chat.id.clone();
         let mut depth = 0;
         const MAX_DEPTH: usize = 10;
@@ -170,7 +170,7 @@ impl SendMessageTool {
                 .ok()?;
 
             match &chat.task_id {
-                None => return Some(current_chat_id),
+                None => return Some(chat),
                 Some(task_id) => {
                     let task = self.task_service.find_by_id(task_id).await.ok()??;
                     match task.kind.source_chat_id() {
@@ -189,7 +189,7 @@ impl SendMessageTool {
         &self,
         ctx: &InferenceContext,
         message_content: &str,
-    ) -> Result<(String, bool), AppError> {
+    ) -> Result<(Chat, bool), AppError> {
         let heartbeat_ids = self
             .agent_service
             .heartbeat_chat_ids(&ctx.user.id)
@@ -248,19 +248,18 @@ impl SendMessageTool {
             return self.create_new_chat(ctx).await;
         }
 
-        if candidates.iter().any(|c| c.id == chosen) {
-            return Ok((chosen.to_string(), false));
+        if let Some(c) = candidates.iter().find(|c| c.id == chosen) {
+            return Ok((c.clone(), false));
         }
 
-        // LLM returned something unexpected — fall back to most recent chat
-        Ok((candidates[0].id.clone(), false))
+        Ok((candidates.into_iter().next().unwrap(), false))
     }
 
     async fn create_new_chat(
         &self,
         ctx: &InferenceContext,
-    ) -> Result<(String, bool), AppError> {
-        let chat = self
+    ) -> Result<(Chat, bool), AppError> {
+        let created = self
             .chat_service
             .create_chat(
                 &ctx.user.id,
@@ -273,6 +272,7 @@ impl SendMessageTool {
                 },
             )
             .await?;
-        Ok((chat.id, true))
+        let chat = self.chat_service.get_chat(&ctx.user.id, &created.id).await?;
+        Ok((chat, true))
     }
 }

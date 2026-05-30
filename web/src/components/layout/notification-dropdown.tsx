@@ -51,7 +51,7 @@ function getNotificationLink(notification: Notification): {
     const { action } = notification.data;
     if (action === "stop" || notification.level === "error") return null;
     return {
-      href: `${API_URL}/apps/${notification.data.app_id}/`,
+      href: `${API_URL}/apps/${notification.data.app_handle}/`,
       external: true,
     };
   }

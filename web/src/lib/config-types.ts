@@ -14,6 +14,9 @@ export interface ServerConfig {
   frontend_url: string | null;
   external_url: string | null;
   max_body_size_bytes: number;
+  /** Default IANA timezone for users with no profile timezone set.
+      Empty string → auto-detect from TZ env var / /etc/localtime / fall back to UTC. */
+  timezone: string;
 }
 
 export interface SandboxConfig {
@@ -33,6 +36,7 @@ export interface AuthConfig {
   access_token_expiry_secs: number;
   refresh_token_expiry_secs: number;
   presign_expiry_secs: number;
+  allow_registration: boolean;
 }
 
 export interface SsoConfig {
@@ -85,7 +89,6 @@ export interface VaultConfig {
   hashicorp_mount: string | null;
   keepass_path: string | null;
   keepass_password: SensitiveField;
-  keeper_app_key: SensitiveField;
 }
 
 export interface RetryConfig {

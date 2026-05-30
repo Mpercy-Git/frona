@@ -1,17 +1,20 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { XMarkIcon } from "@heroicons/react/24/outline";
+import { useAuth } from "@/lib/auth";
 import { useMobile } from "@/lib/use-mobile";
 import { useNavigation } from "@/lib/navigation-context";
 import { RestartBanner } from "@/components/settings/restart-banner";
 import { SettingsProvider } from "@/components/settings/settings-context";
 import type { SectionHandlers } from "@/components/settings/settings-context";
+import { UsersSection } from "@/components/settings/sections/users-section";
 import { ProfileSection } from "@/components/settings/sections/profile-section";
 import { ThemeSection } from "@/components/settings/sections/theme-section";
 import { ProvidersSection } from "@/components/settings/sections/providers-section";
 import { ModelsSection } from "@/components/settings/sections/models-section";
 import { ServerSection } from "@/components/settings/sections/server-section";
+import { TimezoneSection } from "@/components/settings/sections/timezone-section";
 import { AuthSection } from "@/components/settings/sections/auth-section";
 import { SsoSection } from "@/components/settings/sections/sso-section";
 import { BrowserSection } from "@/components/settings/sections/browser-section";
@@ -30,6 +33,8 @@ import type { Config } from "@/lib/config-types";
 const TABS = [
   { id: "profile", label: "Profile", group: "user", saveable: false },
   { id: "theme", label: "Theme", group: "user", saveable: false },
+  { id: "users", label: "Users", group: "user", saveable: false },
+  { id: "timezone", label: "Timezone", group: "config", saveable: true },
   { id: "providers", label: "Providers", group: "config", saveable: true },
   { id: "models", label: "Models", group: "config", saveable: true },
   { id: "channels", label: "Channels", group: "config", saveable: false },
@@ -139,8 +144,13 @@ export default function SettingsPage() {
   const mobile = useMobile();
   const { mobileSubNavOpen: sidebarOpen, setMobileSubNavOpen: setSidebarOpen } = useNavigation();
 
-  const userTabs = TABS.filter((t) => t.group === "user");
-  const configTabs = TABS.filter((t) => t.group === "config");
+  const { user } = useAuth();
+  const visibleTabs = useMemo(() => {
+    const canListUsers = user?.permissions?.list_users === true;
+    return TABS.filter((t) => t.id !== "users" || canListUsers);
+  }, [user]);
+  const userTabs = visibleTabs.filter((t) => t.group === "user");
+  const configTabs = visibleTabs.filter((t) => t.group === "config");
 
   const sidebarContent = (
     <>
@@ -256,6 +266,7 @@ export default function SettingsPage() {
             <div className="min-h-[400px]">
               {activeTab === "profile" && <ProfileSection />}
               {activeTab === "theme" && <ThemeSection />}
+              {activeTab === "users" && <UsersSection />}
               {isConfigTab && configLoading && (
                 <p className="text-sm text-text-tertiary">Loading configuration...</p>
               )}
@@ -270,6 +281,12 @@ export default function SettingsPage() {
 
               {config && (
                 <>
+                  {activeTab === "timezone" && (
+                    <TimezoneSection
+                      server={config.server}
+                      onChange={(v) => updatePatch("server", v)}
+                    />
+                  )}
                   {activeTab === "providers" && (
                     <ProvidersSection
                       providers={config.providers}

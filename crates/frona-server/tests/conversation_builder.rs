@@ -9,8 +9,8 @@ use frona::inference::conversation::{
 use frona::inference::provider::ModelRef;
 use frona::inference::tool_call::ToolCall;
 use frona::storage::StorageService;
-use rig::completion::message::UserContent;
-use rig::completion::{AssistantContent, Message as RigMessage};
+use rig_core::completion::message::UserContent;
+use rig_core::completion::{AssistantContent, Message as RigMessage};
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 
@@ -25,8 +25,7 @@ fn test_builder(db: &Surreal<Db>) -> DefaultConversationBuilder {
     let base = tmp.path().to_string_lossy().to_string();
     let config = frona::core::config::Config {
         storage: frona::core::config::StorageConfig {
-            workspaces_path: format!("{base}/workspaces"),
-            files_path: format!("{base}/files"),
+            data_dir: base.clone(),
             shared_config_dir: format!("{base}/config"),
             ..Default::default()
         },
@@ -64,11 +63,11 @@ fn agent_message(chat_id: &str, content: &str, status: Option<MessageStatus>) ->
 
 fn tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> ToolCall {
     ToolCall {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         chat_id: chat_id.to_string(),
         message_id: message_id.to_string(),
         turn,
-        provider_call_id: format!("call-{}", uuid::Uuid::new_v4()),
+        provider_call_id: format!("call-{}", frona::core::repository::new_id()),
         name: name.to_string(),
         arguments: serde_json::json!({"query": "test"}),
         result: "tool output".to_string(),

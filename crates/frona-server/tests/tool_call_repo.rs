@@ -16,11 +16,11 @@ async fn test_db() -> Surreal<Db> {
 
 fn test_tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> ToolCall {
     ToolCall {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         chat_id: chat_id.to_string(),
         message_id: message_id.to_string(),
         turn,
-        provider_call_id: format!("call-{}", uuid::Uuid::new_v4()),
+        provider_call_id: format!("call-{}", frona::core::repository::new_id()),
         name: name.to_string(),
         arguments: serde_json::json!({"query": "test"}),
         result: "tool result".to_string(),
@@ -194,7 +194,7 @@ async fn begin_creates_incomplete_record() {
     let repo: SurrealRepo<ToolCall> = SurrealRepo::new(db);
 
     let te = ToolCall {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         chat_id: "chat-1".to_string(),
         message_id: "msg-1".to_string(),
         turn: 0,
@@ -257,7 +257,7 @@ async fn begin_without_finish_leaves_incomplete() {
 
     // Simulate crash: only begin, never finish
     let te = ToolCall {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: frona::core::repository::new_id(),
         chat_id: "chat-1".to_string(),
         message_id: "msg-1".to_string(),
         turn: 0,

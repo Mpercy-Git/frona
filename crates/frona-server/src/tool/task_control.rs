@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -10,23 +9,24 @@ use crate::agent::task::schema::ResultSpec;
 use crate::core::error::AppError;
 use crate::inference::tool_call::MessageTool;
 use crate::storage::resolve_workspace_attachment;
+use crate::storage::service::StorageService;
 
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition};
 
 pub struct TaskControlTool {
-    workspaces_path: PathBuf,
+    storage: StorageService,
     prompts: PromptLoader,
     result_schema: Option<Arc<ResultSpec>>,
 }
 
 impl TaskControlTool {
     pub fn new(
-        workspaces_path: PathBuf,
+        storage: StorageService,
         prompts: PromptLoader,
         result_schema: Option<Arc<ResultSpec>>,
     ) -> Self {
         Self {
-            workspaces_path,
+            storage,
             prompts,
             result_schema,
         }
@@ -69,26 +69,52 @@ impl AgentTool for TaskControlTool {
 
         match tool_name {
             "complete_task" => {
-                let result = arguments
-                    .get("result")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                // `as_str` was load-bearing wrong: agents pass numbers, objects,
+                // arrays, or null and that silently dropped them to None.
+                let result_value = arguments.get("result").cloned();
 
-                if let (Some(spec), Some(value)) = (self.result_schema.as_ref(), result.as_deref())
-                    && let Err(reason) = spec.validate(value)
-                {
-                    return Err(AppError::Validation(format!(
-                        "result does not match the task's declared schema: {reason}"
-                    )));
-                }
+                let result: Option<String> = if let Some(spec) = self.result_schema.as_ref() {
+                    let schema_type = spec.schema.get("type").and_then(|t| t.as_str());
+                    // Legacy stringified-JSON fallback for older agent calls.
+                    let validation_value = match (&result_value, schema_type) {
+                        (Some(Value::String(s)), Some(t)) if t != "string" => {
+                            serde_json::from_str::<Value>(s)
+                                .unwrap_or_else(|_| Value::String(s.clone()))
+                        }
+                        (Some(v), _) => v.clone(),
+                        // Missing => null forces a tool error against non-nullable schemas.
+                        (None, _) => Value::Null,
+                    };
+                    if let Err(reason) = spec.validate_value(&validation_value) {
+                        return Err(AppError::Validation(format!(
+                            "result does not match the task's declared schema: {reason}"
+                        )));
+                    }
+                    // Storage must be roundtrippable by `ResultSpec::parse`,
+                    // hence the type=string asymmetry (raw vs JSON-encoded).
+                    if result_value.is_none() {
+                        None
+                    } else {
+                        Some(match (&validation_value, schema_type) {
+                            (Value::String(s), Some("string")) => s.clone(),
+                            _ => serde_json::to_string(&validation_value).unwrap_or_default(),
+                        })
+                    }
+                } else {
+                    result_value
+                        .as_ref()
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                };
 
                 let mut resolved_deliverables = Vec::new();
                 if let Some(deliverables) = arguments.get("deliverables").and_then(|v| v.as_array()) {
                     for path_val in deliverables {
                         if let Some(path) = path_val.as_str() {
                             let attachment = resolve_workspace_attachment(
-                                &self.workspaces_path,
-                                &ctx.agent.id,
+                                &self.storage,
+                                &ctx.user.handle,
+                                &ctx.agent.handle,
                                 path,
                             )
                             .await?;
@@ -171,7 +197,11 @@ mod tests {
                 .join("resources/prompts"),
         );
         let spec = schema.map(|s| Arc::new(ResultSpec::new(s).expect("valid schema")));
-        TaskControlTool::new(PathBuf::from("/tmp"), prompts, spec)
+        TaskControlTool::new(
+            StorageService::new(&crate::core::config::Config::default()),
+            prompts,
+            spec,
+        )
     }
 
     #[test]

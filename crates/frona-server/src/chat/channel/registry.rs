@@ -53,6 +53,9 @@ mod tests {
                 display_name: "Stub".into(),
                 description: "test".into(),
                 config_fields: vec![],
+                webhook_url_visible: false,
+                setup_instructions: None,
+                external_links: vec![],
             }
         }
         fn create(&self, _config: serde_json::Value) -> Result<Box<dyn ChannelAdapter>, AppError> {

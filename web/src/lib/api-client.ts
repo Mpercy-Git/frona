@@ -1,16 +1,25 @@
 export const API_URL = process.env.NEXT_PUBLIC_FRONA_SERVER_BACKEND_URL || "";
 
+/// `kind: "unavailable"` (network failure or 5xx) means "don't infer
+/// session validity" — callers should retry / show offline, not log out.
 class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public kind: "http" | "unavailable" = "http",
   ) {
     super(message);
   }
 }
 
+export { ApiError };
+
+export type RefreshResult =
+  | { ok: true; token: string }
+  | { ok: false; reason: "unauthenticated" | "unavailable" };
+
 let accessToken: string | null = null;
-let refreshPromise: Promise<string | null> | null = null;
+let refreshPromise: Promise<RefreshResult> | null = null;
 
 export function setAccessToken(token: string | null) {
   accessToken = token;
@@ -20,23 +29,30 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
-async function refreshAccessToken(): Promise<string | null> {
+async function refreshAccessToken(): Promise<RefreshResult> {
   try {
     const res = await fetch(`${API_URL}/api/auth/refresh`, {
       method: "POST",
       credentials: "include",
     });
-    if (!res.ok) return null;
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, reason: "unauthenticated" };
+    }
+    if (!res.ok) {
+      // 5xx → "unavailable", not "unauthenticated": we don't know if the
+      // session is valid.
+      return { ok: false, reason: "unavailable" };
+    }
     const data = await res.json();
     accessToken = data.token;
-    return accessToken;
+    return { ok: true, token: accessToken! };
   } catch {
-    return null;
+    return { ok: false, reason: "unavailable" };
   }
 }
 
-export async function ensureAccessToken(): Promise<string | null> {
-  if (accessToken) return accessToken;
+export async function ensureAccessToken(): Promise<RefreshResult> {
+  if (accessToken) return { ok: true, token: accessToken };
   if (refreshPromise) return refreshPromise;
   refreshPromise = refreshAccessToken().finally(() => {
     refreshPromise = null;
@@ -53,31 +69,48 @@ async function request<T>(
     ...((options.headers as Record<string, string>) || {}),
   };
 
-  const token = await ensureAccessToken();
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  const tokenResult = await ensureAccessToken();
+  if (tokenResult.ok) {
+    headers["Authorization"] = `Bearer ${tokenResult.token}`;
+  } else if (tokenResult.reason === "unavailable") {
+    throw new ApiError(0, "Server unavailable", "unavailable");
+  }
+  // On "unauthenticated" we still try — some endpoints are public, and a 401
+  // here surfaces a real auth failure the caller can act on.
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers,
+      credentials: "include",
+    });
+  } catch {
+    throw new ApiError(0, "Server unavailable", "unavailable");
   }
 
-  let res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers,
-    credentials: "include",
-  });
-
-  // On 401, try refreshing the access token and retry once
-  if (res.status === 401 && token) {
-    const newToken = await refreshAccessToken();
-    if (newToken) {
-      headers["Authorization"] = `Bearer ${newToken}`;
-      res = await fetch(`${API_URL}${path}`, {
-        ...options,
-        headers,
-        credentials: "include",
-      });
+  if (res.status === 401 && tokenResult.ok) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed.ok) {
+      headers["Authorization"] = `Bearer ${refreshed.token}`;
+      try {
+        res = await fetch(`${API_URL}${path}`, {
+          ...options,
+          headers,
+          credentials: "include",
+        });
+      } catch {
+        throw new ApiError(0, "Server unavailable", "unavailable");
+      }
+    } else if (refreshed.reason === "unavailable") {
+      throw new ApiError(0, "Server unavailable", "unavailable");
     }
   }
 
   if (!res.ok) {
+    if (res.status >= 500) {
+      throw new ApiError(res.status, "Server error", "unavailable");
+    }
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new ApiError(res.status, body.error || "Request failed");
   }
@@ -103,10 +136,10 @@ export async function uploadFile(file: File, relativePath?: string): Promise<Att
     formData.append("path", relativePath);
   }
 
-  const token = await ensureAccessToken();
+  const tokenResult = await ensureAccessToken();
   const headers: Record<string, string> = {};
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  if (tokenResult.ok) {
+    headers["Authorization"] = `Bearer ${tokenResult.token}`;
   }
 
   const res = await fetch(`${API_URL}/api/files`, {
@@ -206,8 +239,8 @@ export async function searchFiles(query: string, scope?: string): Promise<Search
   });
 }
 
-export async function deleteFile(username: string, path: string): Promise<void> {
-  await request(`/api/files/user/${username}/${path}`, { method: "DELETE" });
+export async function deleteFile(handle: string, path: string): Promise<void> {
+  await request(`/api/files/user/${handle}/${path}`, { method: "DELETE" });
 }
 
 export async function presignFile(owner: string, path: string): Promise<string> {
@@ -231,10 +264,10 @@ export async function sendMessage(
 }
 
 export async function cancelGeneration(chatId: string): Promise<void> {
-  const token = await ensureAccessToken();
+  const tokenResult = await ensureAccessToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  if (tokenResult.ok) {
+    headers["Authorization"] = `Bearer ${tokenResult.token}`;
   }
   await fetch(`${API_URL}/api/chats/${chatId}/cancel`, {
     method: "POST",
@@ -252,6 +285,10 @@ export function deleteTask(taskId: string) {
 
 export function getTask(id: string) {
   return api.get<import("./types").TaskResponse>(`/api/tasks/${id}`);
+}
+
+export function getCronRuns(cronId: string) {
+  return api.get<import("./types").TaskResponse[]>(`/api/tasks/${cronId}/runs`);
 }
 
 export function archiveChat(chatId: string) {
@@ -278,7 +315,6 @@ export function getContacts() {
   return request<import("./types").Contact[]>("/api/contacts");
 }
 
-// Skill types
 export type SkillScope = "builtin" | "shared" | "agent";
 
 export interface SkillSearchResult {
@@ -368,9 +404,9 @@ export const api = {
   uploadFile: async <T = { url: string }>(path: string, file: File): Promise<T> => {
     const formData = new FormData();
     formData.append("file", file);
-    const token = await ensureAccessToken();
+    const tokenResult = await ensureAccessToken();
     const headers: Record<string, string> = {};
-    if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (tokenResult.ok) headers["Authorization"] = `Bearer ${tokenResult.token}`;
     const res = await fetch(`${API_URL}${path}`, { method: "PUT", body: formData, headers });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }));

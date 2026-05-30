@@ -34,15 +34,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/agents/{id}/tools", get(agent_tools))
 }
 
-/// Returns the effective provider id for a CLI tool: its `provider` override if set,
-/// otherwise falls back to the tool's own name (one-provider-per-tool default).
 fn cli_provider_id(cli: &crate::tool::cli::CliToolConfig) -> String {
     cli.provider.clone().unwrap_or_else(|| cli.name.clone())
 }
 
-/// Metadata for synthetic providers that group multiple CLI tools. If a CLI tool declares
-/// `provider: code` in its frontmatter but no entry exists here, the id is used as-is and
-/// the description is borrowed from the first tool in the group.
 fn synthetic_provider_metadata(id: &str) -> Option<(&'static str, &'static str)> {
     match id {
         "code" => Some(("code", "Execute arbitrary code the agent writes in a supported language.")),
@@ -50,8 +45,6 @@ fn synthetic_provider_metadata(id: &str) -> Option<(&'static str, &'static str)>
     }
 }
 
-/// Build the full provider+tool catalog for the user. Built-in providers come from the static
-/// catalog; MCP providers from running and stopped servers; CLI providers from config.
 async fn build_catalog(state: &AppState, user_id: &str) -> Vec<ToolProviderWithTools> {
     let mut all_allowed: Vec<String> = BUILTIN_PROVIDERS
         .iter()
@@ -88,7 +81,6 @@ async fn build_catalog(state: &AppState, user_id: &str) -> Vec<ToolProviderWithT
         })
         .collect();
 
-    // Synthesize CLI providers, grouping configs that share the same effective provider id.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for cli in state.cli_tools_config.iter() {
         let provider_id = cli_provider_id(cli);
@@ -113,7 +105,6 @@ async fn build_catalog(state: &AppState, user_id: &str) -> Vec<ToolProviderWithT
         });
     }
 
-    // MCP providers: derive from installed servers (running or stopped).
     if let Ok(servers) = state.mcp_service.list_for_user(user_id).await {
         for server in servers {
             let status = if state.mcp_manager.is_running(&server.id).await {
@@ -127,14 +118,14 @@ async fn build_catalog(state: &AppState, user_id: &str) -> Vec<ToolProviderWithT
                 .tool_cache
                 .iter()
                 .map(|t| ToolInfo {
-                    id: format!("mcp__{}__{}", server.slug, t.name),
+                    id: format!("mcp__{}__{}", server.handle, t.name),
                     description: t.description.clone(),
                     configurable: true,
                 })
                 .collect();
             providers.push(ToolProviderWithTools {
                 provider: ToolProvider {
-                    id: format!("mcp:{}", server.slug),
+                    id: format!("mcp:{}", server.handle),
                     display_name: server.display_name.clone(),
                     description: server.description.clone(),
                     icon: None,
@@ -153,7 +144,6 @@ async fn build_catalog(state: &AppState, user_id: &str) -> Vec<ToolProviderWithT
     providers
 }
 
-/// All providers and their tools available in the system, for the agent settings UI.
 async fn list_tools(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -161,7 +151,6 @@ async fn list_tools(
     Json(build_catalog(&state, &auth.user_id).await)
 }
 
-/// Tools currently assigned to a specific agent (flat list of selected tool ids).
 async fn agent_tools(
     auth: AuthUser,
     State(state): State<AppState>,

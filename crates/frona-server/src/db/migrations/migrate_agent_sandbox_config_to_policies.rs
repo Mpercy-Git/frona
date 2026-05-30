@@ -90,7 +90,7 @@ async fn migrate_agent_sandbox_config_to_policies(db: &Surreal<Db>) -> Result<()
                         updated_at: $now,
                     }",
                 )
-                .bind(("id", uuid::Uuid::new_v4().to_string()))
+                .bind(("id", crate::core::repository::new_id()))
                 .bind(("user_id", user_id.clone()))
                 .bind(("name", name))
                 .bind(("policy_text", text))

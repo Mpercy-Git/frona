@@ -460,6 +460,51 @@ impl BroadcastService {
         });
     }
 
+    pub fn broadcast_inference_done(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        space_id: Option<String>,
+        message: MessageResponse,
+    ) {
+        self.dispatch(BroadcastEvent {
+            user_id: user_id.to_string(),
+            chat_id: Some(chat_id.to_string()),
+            space_id,
+            kind: BroadcastEventKind::InferenceDone { message },
+        });
+    }
+
+    pub fn broadcast_inference_cancelled(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        space_id: Option<String>,
+        reason: String,
+    ) {
+        self.dispatch(BroadcastEvent {
+            user_id: user_id.to_string(),
+            chat_id: Some(chat_id.to_string()),
+            space_id,
+            kind: BroadcastEventKind::InferenceCancelled { reason },
+        });
+    }
+
+    pub fn broadcast_inference_error(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        space_id: Option<String>,
+        error: String,
+    ) {
+        self.dispatch(BroadcastEvent {
+            user_id: user_id.to_string(),
+            chat_id: Some(chat_id.to_string()),
+            space_id,
+            kind: BroadcastEventKind::InferenceError { error },
+        });
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn broadcast_task_update(
         &self,

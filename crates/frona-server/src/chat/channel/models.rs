@@ -19,9 +19,23 @@ use crate::tool::mcp::models::CredentialBinding;
 pub struct ChannelManifest {
     pub id: String,
     pub display_name: String,
+    /// Markdown.
     pub description: String,
     #[serde(default)]
     pub config_fields: Vec<ChannelConfigField>,
+    #[serde(default)]
+    pub webhook_url_visible: bool,
+    /// Markdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_links: Vec<ExternalLink>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalLink {
+    pub label: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +74,9 @@ pub trait ChannelFactory: Send + Sync {
 pub struct Channel {
     pub id: String,
     pub user_id: String,
+    /// Per-user-unique. Appears in Cedar UIDs (`Channel::"{user_handle}/{handle}"`)
+    /// and the FS layout (`{user_root}/channels/{handle}/`).
+    pub handle: crate::core::Handle,
     pub space_id: String,
     pub provider: String,
     pub agent_id: String,
@@ -74,8 +91,14 @@ pub struct Channel {
     pub last_started_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub user_address: Option<UserAddress>,
+    #[serde(default)]
+    pub setup: Option<SetupConfig>,
+    #[serde(default)]
+    pub retry: Option<crate::core::config::RetryConfig>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(skip_deserializing, default, skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
@@ -103,6 +126,24 @@ pub struct UserAddress {
     pub paired_at: Option<DateTime<Utc>>,
 }
 
+/// Provider setup (e.g. QR/code) — distinct from `UserAddress.pairing_*`
+/// which authenticates the sender.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
+pub struct SetupConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Stamped by the manager in `begin_setup`; adapters leave as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiated_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateChannelRequest {
     pub space_id: String,
@@ -114,6 +155,8 @@ pub struct CreateChannelRequest {
     pub credentials: Vec<CredentialBinding>,
     #[serde(default)]
     pub dispatch_mode: DispatchMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<crate::core::config::RetryConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -126,16 +169,19 @@ pub struct UpdateChannelRequest {
     pub credentials: Option<Vec<CredentialBinding>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_mode: Option<DispatchMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<Option<crate::core::config::RetryConfig>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ExternalMessage {
     pub external_chat_id: String,
     pub sender_address: String,
-    /// `None` → no real Contact, synthesized for Cedar only.
+    /// `None` → synthesize for Cedar only; no real Contact.
     pub sender_external_id: Option<String>,
     pub sender_display_name: Option<String>,
     pub content: String,
+    pub attachments: Vec<crate::storage::Attachment>,
 }
 
 #[derive(Clone)]
@@ -145,6 +191,11 @@ pub struct ChannelCtx {
     pub emit: tokio::sync::mpsc::Sender<ExternalMessage>,
     pub channel_manager: std::sync::Arc<super::ChannelManager>,
     pub webhook_url: String,
+    pub storage_service: crate::storage::StorageService,
+    pub user_service: crate::auth::UserService,
+    pub data_dir: std::path::PathBuf,
+    /// Adapters with long-running tasks MUST observe this — sole `stop_channel` signal.
+    pub cancel: tokio_util::sync::CancellationToken,
 }
 
 #[async_trait]
@@ -152,6 +203,19 @@ pub trait ChannelAdapter: Send + Sync {
     async fn on_connect(&self, ctx: &ChannelCtx) -> Result<(), AppError>;
 
     async fn on_disconnect(&self, ctx: &ChannelCtx) -> Result<(), AppError>;
+
+    /// Adapters overriding this MUST check persisted state — returning `Some`
+    /// for an already-paired channel causes duplicate sessions.
+    async fn on_setup_begin(
+        &self,
+        _ctx: &ChannelCtx,
+    ) -> Result<Option<SetupConfig>, AppError> {
+        Ok(None)
+    }
+
+    async fn on_setup_complete(&self, _ctx: &ChannelCtx) -> Result<(), AppError> {
+        Ok(())
+    }
 
     async fn on_tool(
         &self,
@@ -277,6 +341,9 @@ mod tests {
                 default_from: None,
                 default_resolved: None,
             }],
+            webhook_url_visible: false,
+            setup_instructions: None,
+            external_links: vec![],
         };
         assert_eq!(m.id, "telegram");
         assert_eq!(m.config_fields.len(), 1);

@@ -6,6 +6,7 @@ use axum::routing::{any, get, post};
 use axum::{Json, Router};
 
 use crate::app::models::{App, AppResponse};
+use crate::core::error::AppError;
 use crate::core::state::AppState;
 
 use super::super::error::ApiError;
@@ -16,28 +17,25 @@ use models::ServiceActionRequest;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/apps", get(list_apps))
-        .route("/api/apps/{id}", get(get_app).delete(delete_app))
-        .route("/api/apps/{id}/stop", post(stop_app))
-        .route("/api/apps/{id}/restart", post(restart_app))
+        .route("/api/apps/{handle}", get(get_app).delete(delete_app))
+        .route("/api/apps/{handle}/stop", post(stop_app))
+        .route("/api/apps/{handle}/restart", post(restart_app))
         .route("/api/apps/approve", post(approve_service))
         .route("/api/apps/deny", post(deny_service))
         .route("/api/auth/apps", get(proxy::auth_gate))
-        .route("/apps/{id}", any(proxy::proxy_app_root))
-        .route("/apps/{id}/", any(proxy::proxy_app_root))
-        .route("/apps/{id}/{*path}", any(proxy::proxy_app_path))
+        .route("/apps/{handle}", any(proxy::proxy_app_root))
+        .route("/apps/{handle}/", any(proxy::proxy_app_root))
+        .route("/apps/{handle}/{*path}", any(proxy::proxy_app_path))
 }
 
-async fn get_user_app(state: &AppState, auth: &AuthUser, id: &str) -> Result<App, ApiError> {
+/// 400 for malformed handles, 404 for missing or cross-user.
+async fn resolve_user_app(state: &AppState, auth: &AuthUser, handle: &str) -> Result<App, ApiError> {
+    let handle = crate::core::Handle::try_new(handle)?;
     let app = state
         .app_service
-        .get(id)
+        .find_by_user_handle(&auth.user_id, &handle)
         .await?
-        .ok_or_else(|| ApiError::from(crate::core::error::AppError::NotFound("App not found".into())))?;
-    if app.user_id != auth.user_id {
-        return Err(ApiError::from(crate::core::error::AppError::Forbidden(
-            "Not your app".into(),
-        )));
-    }
+        .ok_or_else(|| ApiError(AppError::NotFound(format!("App '{}' not found", handle.as_str()))))?;
     Ok(app)
 }
 
@@ -52,39 +50,39 @@ async fn list_apps(
 async fn get_app(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(handle): Path<String>,
 ) -> Result<Json<AppResponse>, ApiError> {
-    let app = state.app_service.get_by_user(&auth.user_id, &id).await?;
-    Ok(Json(app))
+    let app = resolve_user_app(&state, &auth, &handle).await?;
+    Ok(Json(app.into()))
 }
 
 async fn delete_app(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(handle): Path<String>,
 ) -> Result<(), ApiError> {
-    let app = get_user_app(&state, &auth, &id).await?;
-    state.app_service.destroy(&app.agent_id, &id).await?;
+    let app = resolve_user_app(&state, &auth, &handle).await?;
+    state.app_service.destroy(&app.agent_id, &app.id).await?;
     Ok(())
 }
 
 async fn stop_app(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(handle): Path<String>,
 ) -> Result<Json<AppResponse>, ApiError> {
-    let app = get_user_app(&state, &auth, &id).await?;
-    let resp = state.app_service.stop(&app.agent_id, &id, &app.chat_id).await?;
+    let app = resolve_user_app(&state, &auth, &handle).await?;
+    let resp = state.app_service.stop(&app.agent_id, &app.id, &app.chat_id).await?;
     Ok(Json(resp))
 }
 
 async fn restart_app(
     auth: AuthUser,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(handle): Path<String>,
 ) -> Result<Json<AppResponse>, ApiError> {
-    let app = get_user_app(&state, &auth, &id).await?;
-    let resp = state.app_service.restart(&app.agent_id, &id, &app.chat_id).await?;
+    let app = resolve_user_app(&state, &auth, &handle).await?;
+    let resp = state.app_service.restart(&app.agent_id, &app.id, &app.chat_id).await?;
     Ok(Json(resp))
 }
 
@@ -141,20 +139,20 @@ async fn approve_service(
     tokio::spawn(async move {
         let base_url = state_clone.config.server.public_base_url();
 
-        let (result_text, level, title, body, app_id) = match state_clone
+        let (result_text, level, title, body, app_handle) = match state_clone
             .app_service
             .deploy_and_await(&agent_id, &user_id, &chat_id, &manifest, Vec::new())
             .await
         {
             Ok(app) => {
                 let app_url = format!("{base_url}{}", app.url.as_deref().unwrap_or(""));
-                let id = app.id.clone();
+                let handle = app.handle.clone();
                 (
                     crate::tool::manage_service::format_app_result("deployed successfully", &app),
                     crate::notification::models::NotificationLevel::Success,
                     format!("App '{}' deployed", manifest_name),
                     app_url,
-                    id,
+                    handle,
                 )
             }
             Err(e) => (
@@ -186,7 +184,7 @@ async fn approve_service(
             .create(
                 &user_id,
                 crate::notification::models::NotificationData::App {
-                    app_id,
+                    app_handle,
                     action: "deploy".to_string(),
                 },
                 level,

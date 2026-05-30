@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use rig::completion::request::Usage;
+use rig_core::completion::request::Usage;
 
 pub const HTTP_REQUESTS_TOTAL: &str = "frona_http_requests_total";
 pub const HTTP_REQUEST_DURATION_SECONDS: &str = "frona_http_request_duration_seconds";

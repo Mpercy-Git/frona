@@ -26,8 +26,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
             ..Default::default()
         },
         storage: frona::core::config::StorageConfig {
-            workspaces_path: format!("{base}/workspaces"),
-            files_path: format!("{base}/files"),
+            data_dir: base.clone(),
             shared_config_dir: format!("{base}/config"),
             ..Default::default()
         },
@@ -102,8 +101,7 @@ async fn twilio_callback_valid_token_returns_xml() {
             ..Default::default()
         },
         storage: frona::core::config::StorageConfig {
-            workspaces_path: format!("{base}/workspaces"),
-            files_path: format!("{base}/files"),
+            data_dir: base.clone(),
             shared_config_dir: format!("{base}/config"),
             ..Default::default()
         },
@@ -122,11 +120,13 @@ async fn twilio_callback_valid_token_returns_xml() {
     // through the ApiToken DB row it creates for access tokens.
     let user = User {
         id: "user-123".to_string(),
-        username: "testuser".to_string(),
+        handle: frona::handle!("testuser"),
         email: "test@example.com".to_string(),
         name: "Test".to_string(),
         password_hash: String::new(),
         timezone: None,
+        groups: Vec::new(),
+        deactivated_at: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

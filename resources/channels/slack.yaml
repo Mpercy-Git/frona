@@ -1,0 +1,14 @@
+id: slack
+display_name: Slack
+description: Connect a Slack bot via tokens from api.slack.com/apps.
+config_fields:
+  - name: bot_token
+    description: 'Bot User OAuth Token from the Slack App OAuth & Permissions page (starts with "xoxb-").'
+    is_required: true
+    is_secret: true
+    format: password
+  - name: app_token
+    description: 'App-Level Token with the connections:write scope (starts with "xapp-"). Generated on the Basic Information page.'
+    is_required: true
+    is_secret: true
+    format: password

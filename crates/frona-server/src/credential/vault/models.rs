@@ -135,7 +135,6 @@ pub enum VaultProviderType {
     Bitwarden,
     Hashicorp,
     KeePass,
-    Keeper,
 }
 
 impl std::fmt::Display for VaultProviderType {
@@ -146,7 +145,6 @@ impl std::fmt::Display for VaultProviderType {
             Self::Bitwarden => write!(f, "bitwarden"),
             Self::Hashicorp => write!(f, "hashicorp"),
             Self::KeePass => write!(f, "keepass"),
-            Self::Keeper => write!(f, "keeper"),
         }
     }
 }
@@ -172,10 +170,6 @@ pub enum VaultConnectionConfig {
     KeePass {
         file_path: String,
         master_password: String,
-    },
-    Keeper {
-        app_key: String,
-        server: Option<String>,
     },
 }
 

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
+use crate::core::Handle;
 use crate::core::config::Config;
 use crate::core::error::AppError;
 
@@ -9,10 +10,11 @@ use super::models::{FileEntry, SearchTarget};
 use super::path::{Namespace, VirtualPath, validate_no_traversal};
 use super::workspace::Workspace;
 
+/// Per-user state at `{data_dir}/users/{user_handle}/{subsystem}/...`;
+/// shared/template state at `{data_dir}/system/...` or under `shared_config_dir`.
 #[derive(Clone)]
 pub struct StorageService {
-    workspaces_path: PathBuf,
-    files_path: PathBuf,
+    data_dir: PathBuf,
     shared_agents_dir: PathBuf,
 }
 
@@ -20,23 +22,72 @@ impl StorageService {
     pub fn new(config: &Config) -> Self {
         let shared_config_dir = PathBuf::from(&config.storage.shared_config_dir);
         Self {
-            workspaces_path: PathBuf::from(&config.storage.workspaces_path),
-            files_path: PathBuf::from(&config.storage.files_path),
+            data_dir: PathBuf::from(&config.storage.data_dir),
             shared_agents_dir: shared_config_dir.join("agents"),
         }
     }
 
-    pub fn agent_workspace(&self, agent_id: &str) -> Workspace {
-        let sanitized = agent_id.replace(['/', '\\', ':', '\0'], "_");
-        let workspace_path = self.workspaces_path.join(&sanitized);
-        let shared_path = self.shared_agents_dir.join(&sanitized);
+    pub fn users_root(&self) -> PathBuf {
+        self.data_dir.join("users")
+    }
 
+    pub fn user_root(&self, user_handle: &Handle) -> PathBuf {
+        self.users_root().join(user_handle.as_ref())
+    }
+
+    /// Raw path. Use [`Self::agent_workspace`] for the layered Workspace.
+    pub fn agent_workspace_path(&self, user_handle: &Handle, agent_handle: &Handle) -> PathBuf {
+        self.user_root(user_handle)
+            .join("agents")
+            .join(agent_handle.as_ref())
+    }
+
+    pub fn mcp_workspace_path(&self, user_handle: &Handle, mcp_handle: &Handle) -> PathBuf {
+        self.user_root(user_handle)
+            .join("mcps")
+            .join(mcp_handle.as_ref())
+    }
+
+    pub fn user_files_path(&self, user_handle: &Handle) -> PathBuf {
+        self.user_root(user_handle).join("files")
+    }
+
+    pub fn channel_data_path(&self, user_handle: &Handle, channel_handle: &Handle) -> PathBuf {
+        self.user_root(user_handle)
+            .join("channels")
+            .join(channel_handle.as_ref())
+    }
+
+    pub fn browser_profile_path(&self, user_handle: &Handle, provider: &str) -> PathBuf {
+        self.user_root(user_handle).join("browser").join(provider)
+    }
+
+    pub fn user_vault_path(&self, user_handle: &Handle) -> PathBuf {
+        self.user_root(user_handle).join("vault")
+    }
+
+    pub fn user_tokens_path(&self, user_handle: &Handle) -> PathBuf {
+        self.user_root(user_handle).join("tokens")
+    }
+
+    pub fn system_root(&self) -> PathBuf {
+        self.data_dir.join("system")
+    }
+
+    /// Writes go to the per-user override; reads fall back to the shared template.
+    pub fn agent_workspace(&self, user_handle: &Handle, agent_handle: &Handle) -> Workspace {
+        let workspace_path = self.agent_workspace_path(user_handle, agent_handle);
+        let shared_path = self.shared_agents_dir.join(agent_handle.as_ref());
         Workspace::new(vec![workspace_path], Some(shared_path))
     }
 
-    pub fn user_workspace(&self, username: &str) -> Workspace {
-        let user_path = self.files_path.join(username);
-        Workspace::new(vec![user_path], None)
+    pub fn builtin_template_workspace(&self, handle: &Handle) -> Workspace {
+        let shared_path = self.shared_agents_dir.join(handle.as_ref());
+        Workspace::new(vec![shared_path.clone()], Some(shared_path))
+    }
+
+    pub fn user_workspace(&self, handle: &Handle) -> Workspace {
+        Workspace::new(vec![self.user_files_path(handle)], None)
     }
 
     pub fn resolve(&self, path: &str) -> Result<PathBuf, AppError> {
@@ -48,20 +99,26 @@ impl StorageService {
     }
 
     pub fn resolve_virtual_path(&self, path: &VirtualPath) -> Result<PathBuf, AppError> {
+        let users_root = self.users_root();
+        let users_root_str = users_root.to_string_lossy().into_owned();
         let resolved = match &path.namespace {
             Namespace::User(name) => {
-                let resolved = self.files_path.join(name).join(&path.relative);
-                validate_no_traversal(&resolved, self.files_path.to_str().unwrap_or(""))?;
+                let handle = Handle::try_new(name)?;
+                let resolved = self.user_files_path(&handle).join(&path.relative);
+                validate_no_traversal(&resolved, &users_root_str)?;
                 resolved
             }
             Namespace::Agent(name) => {
-                let resolved = self.workspaces_path.join(name).join(&path.relative);
-                validate_no_traversal(&resolved, self.workspaces_path.to_str().unwrap_or(""))?;
+                let resolved = if name.contains('/') {
+                    users_root.join(name).join(&path.relative)
+                } else {
+                    users_root.join(name).join("agents").join(name).join(&path.relative)
+                };
+                validate_no_traversal(&resolved, &users_root_str)?;
                 resolved
             }
         };
 
-        // Return absolute path so agents can access files regardless of working directory
         if resolved.is_absolute() {
             Ok(resolved)
         } else {
@@ -224,10 +281,10 @@ mod tests {
     #[test]
     fn resolve_user_path() {
         let svc = test_service();
-        let vp = VirtualPath::user("uid-123", "report.pdf");
+        let vp = VirtualPath::user(&crate::handle!("uid-123"), "report.pdf");
         let result = svc.resolve_virtual_path(&vp).unwrap();
         assert!(result.is_absolute());
-        assert!(result.ends_with("data/files/uid-123/report.pdf"));
+        assert!(result.ends_with("data/users/uid-123/files/report.pdf"));
     }
 
     #[test]
@@ -236,7 +293,7 @@ mod tests {
         let vp = VirtualPath::agent("dev", "output.csv");
         let result = svc.resolve_virtual_path(&vp).unwrap();
         assert!(result.is_absolute());
-        assert!(result.ends_with("data/workspaces/dev/output.csv"));
+        assert!(result.ends_with("data/users/dev/agents/dev/output.csv"));
     }
 
     #[test]
@@ -245,13 +302,13 @@ mod tests {
         let vp = VirtualPath::agent("dev", "subdir/nested/file.txt");
         let result = svc.resolve_virtual_path(&vp).unwrap();
         assert!(result.is_absolute());
-        assert!(result.ends_with("data/workspaces/dev/subdir/nested/file.txt"));
+        assert!(result.ends_with("data/users/dev/agents/dev/subdir/nested/file.txt"));
     }
 
     #[test]
     fn resolve_path_traversal_rejected() {
         let svc = test_service();
-        let vp = VirtualPath::user("uid", "../../../etc/passwd");
+        let vp = VirtualPath::user(&crate::handle!("uid"), "../../../etc/passwd");
         let result = svc.resolve_virtual_path(&vp);
         assert!(result.is_err());
     }
@@ -267,10 +324,10 @@ mod tests {
     fn workspace_read_builtin() {
         let tmp = std::env::temp_dir().join("frona_storage_test_read_builtin");
         let mut config = Config::default();
-        config.storage.workspaces_path = tmp.join("workspaces").to_string_lossy().into_owned();
+        config.storage.data_dir = tmp.to_string_lossy().into_owned();
         config.storage.shared_config_dir = shared_dir().to_string_lossy().into_owned();
         let svc = StorageService::new(&config);
-        let ws = svc.agent_workspace("system");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("system"));
         let content = ws.read("AGENT.md");
         assert!(content.is_some(), "Should read AGENT.md from shared layer");
         assert!(content.unwrap().contains("You're not a chatbot"));
@@ -281,10 +338,10 @@ mod tests {
     fn workspace_read_not_found() {
         let tmp = std::env::temp_dir().join("frona_storage_test_read_not_found");
         let mut config = Config::default();
-        config.storage.workspaces_path = tmp.join("workspaces").to_string_lossy().into_owned();
+        config.storage.data_dir = tmp.to_string_lossy().into_owned();
         config.storage.shared_config_dir = shared_dir().to_string_lossy().into_owned();
         let svc = StorageService::new(&config);
-        let ws = svc.agent_workspace("system");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("system"));
         assert!(ws.read("nonexistent.md").is_none());
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -294,10 +351,10 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_storage_test_shadow");
         let _ = std::fs::remove_dir_all(&tmp);
         let mut config = Config::default();
-        config.storage.workspaces_path = tmp.join("workspaces").to_string_lossy().into_owned();
+        config.storage.data_dir = tmp.to_string_lossy().into_owned();
         config.storage.shared_config_dir = shared_dir().to_string_lossy().into_owned();
         let svc = StorageService::new(&config);
-        let ws = svc.agent_workspace("system");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("system"));
 
         ws.write("AGENT.md", "Custom prompt").unwrap();
         let content = ws.read("AGENT.md").unwrap();
@@ -311,10 +368,10 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_storage_test_write");
         let _ = std::fs::remove_dir_all(&tmp);
         let mut config = Config::default();
-        config.storage.workspaces_path = tmp.join("workspaces").to_string_lossy().into_owned();
+        config.storage.data_dir = tmp.to_string_lossy().into_owned();
         config.storage.shared_config_dir = shared_dir().to_string_lossy().into_owned();
         let svc = StorageService::new(&config);
-        let ws = svc.agent_workspace("test_agent");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("test_agent"));
 
         ws.write("test.md", "hello").unwrap();
         assert_eq!(ws.read("test.md").unwrap(), "hello");
@@ -326,10 +383,10 @@ mod tests {
     fn workspace_exists_builtin() {
         let tmp = std::env::temp_dir().join("frona_storage_test_exists_builtin");
         let mut config = Config::default();
-        config.storage.workspaces_path = tmp.join("workspaces").to_string_lossy().into_owned();
+        config.storage.data_dir = tmp.to_string_lossy().into_owned();
         config.storage.shared_config_dir = shared_dir().to_string_lossy().into_owned();
         let svc = StorageService::new(&config);
-        let ws = svc.agent_workspace("system");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("system"));
         assert!(ws.exists("AGENT.md"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -338,10 +395,10 @@ mod tests {
     fn workspace_read_dir_builtin() {
         let tmp = std::env::temp_dir().join("frona_storage_test_read_dir_builtin");
         let mut config = Config::default();
-        config.storage.workspaces_path = tmp.join("workspaces").to_string_lossy().into_owned();
+        config.storage.data_dir = tmp.to_string_lossy().into_owned();
         config.storage.shared_config_dir = shared_dir().to_string_lossy().into_owned();
         let svc = StorageService::new(&config);
-        let ws = svc.agent_workspace("system");
+        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("system"));
         let entries = ws.read_dir("");
         assert!(entries.contains(&"AGENT.md".to_string()));
         let _ = std::fs::remove_dir_all(&tmp);
@@ -350,7 +407,7 @@ mod tests {
     #[test]
     fn user_workspace_no_shared_dir() {
         let svc = test_service();
-        let ws = svc.user_workspace("testuser");
-        assert_eq!(ws.base_path(), Path::new("data/files/testuser"));
+        let ws = svc.user_workspace(&crate::handle!("testuser"));
+        assert_eq!(ws.base_path(), Path::new("data/users/testuser/files"));
     }
 }

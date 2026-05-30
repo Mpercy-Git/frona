@@ -23,7 +23,7 @@ impl NotificationService {
         body: String,
     ) -> Result<Notification, AppError> {
         let notification = Notification {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             data,
             level,

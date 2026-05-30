@@ -9,7 +9,7 @@ use crate::Entity;
 #[surreal(crate = "surrealdb::types")]
 pub enum NotificationData {
     App {
-        app_id: String,
+        app_handle: String,
         action: String,
     },
     Task {

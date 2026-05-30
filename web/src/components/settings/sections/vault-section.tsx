@@ -17,14 +17,13 @@ interface VaultSectionProps {
   onChange: (vault: VaultConfig) => void;
 }
 
-import { Si1password, SiBitwarden, SiVault, SiKeepassxc, SiKeeper } from "@icons-pack/react-simple-icons";
+import { Si1password, SiBitwarden, SiVault, SiKeepassxc } from "@icons-pack/react-simple-icons";
 
 const VAULT_LOGOS: Record<string, React.ComponentType<{ className?: string; size?: number; color?: string }>> = {
   onepassword: Si1password,
   bitwarden: SiBitwarden,
   hashicorp: SiVault,
   keepass: SiKeepassxc,
-  keeper: SiKeeper,
 };
 
 interface ProviderCardProps {
@@ -491,8 +490,7 @@ type VaultTestConfig =
   | { type: "OnePassword"; service_account_token: string; default_vault_id: string | null }
   | { type: "Bitwarden"; client_id: string; client_secret: string; master_password: string; server_url: string | null }
   | { type: "Hashicorp"; address: string; token: string; mount_path: string | null }
-  | { type: "KeePass"; file_path: string; master_password: string }
-  | { type: "Keeper"; app_key: string; server: string | null };
+  | { type: "KeePass"; file_path: string; master_password: string };
 
 /** Build test payloads for each vault provider that has enough config to test.
  *  Only includes providers where all required secrets are actual string values (not redacted). */
@@ -539,15 +537,6 @@ function buildTestable(vault: VaultConfig): { id: string; provider: string; conf
     });
   }
 
-  const krKey = sensitiveStr(vault.keeper_app_key);
-  if (krKey) {
-    result.push({
-      id: "keeper",
-      provider: "keeper",
-      config: { type: "Keeper", app_key: krKey, server: null },
-    });
-  }
-
   return result;
 }
 
@@ -556,7 +545,6 @@ const VAULT_CLEAR_FIELDS: Record<string, Partial<VaultConfig>> = {
   bitwarden: { bitwarden_client_id: null, bitwarden_client_secret: { is_set: false }, bitwarden_master_password: { is_set: false }, bitwarden_server_url: null },
   hashicorp: { hashicorp_address: null, hashicorp_token: { is_set: false }, hashicorp_mount: null },
   keepass: { keepass_path: null, keepass_password: { is_set: false } },
-  keeper: { keeper_app_key: { is_set: false } },
 };
 
 export function VaultSection({ vault, onChange }: VaultSectionProps) {
@@ -594,7 +582,6 @@ export function VaultSection({ vault, onChange }: VaultSectionProps) {
     !!vault.hashicorp_address || isSensitiveSet(vault.hashicorp_token) || !!vault.hashicorp_mount;
   const keepassConfigured =
     !!vault.keepass_path || isSensitiveSet(vault.keepass_password);
-  const keeperConfigured = isSensitiveSet(vault.keeper_app_key);
 
   const testable = buildTestable(vault);
 
@@ -607,7 +594,6 @@ export function VaultSection({ vault, onChange }: VaultSectionProps) {
     if (vault.bitwarden_client_id !== prevVault.bitwarden_client_id || vault.bitwarden_client_secret !== prevVault.bitwarden_client_secret || vault.bitwarden_master_password !== prevVault.bitwarden_master_password || vault.bitwarden_server_url !== prevVault.bitwarden_server_url) changed.push("bitwarden");
     if (vault.hashicorp_address !== prevVault.hashicorp_address || vault.hashicorp_token !== prevVault.hashicorp_token || vault.hashicorp_mount !== prevVault.hashicorp_mount) changed.push("hashicorp");
     if (vault.keepass_path !== prevVault.keepass_path || vault.keepass_password !== prevVault.keepass_password) changed.push("keepass");
-    if (vault.keeper_app_key !== prevVault.keeper_app_key) changed.push("keeper");
     if (changed.length > 0) {
       setTestStatuses((prev) => {
         const next = { ...prev };
@@ -780,24 +766,6 @@ expanded={!!expanded.keepass}
             value={vault.keepass_password}
             onChange={(keepass_password) => onChange({ ...vault, keepass_password })}
             placeholder="Enter password"
-          />
-        </ProviderCard>
-
-        <ProviderCard
-          id="keeper"
-          name="Keeper"
-enabled={isEnabled("keeper", keeperConfigured)}
-          testStatus={keeperConfigured ? testStatuses.keeper : undefined}
-expanded={!!expanded.keeper}
-          onToggle={() => toggle("keeper")}
-          onEnabledChange={(v) => setProviderEnabled("keeper", v)}
-        >
-          <SensitiveInput
-            label="App Key"
-            description="Keeper Secrets Manager application key"
-            value={vault.keeper_app_key}
-            onChange={(keeper_app_key) => onChange({ ...vault, keeper_app_key })}
-            placeholder="Enter app key"
           />
         </ProviderCard>
 

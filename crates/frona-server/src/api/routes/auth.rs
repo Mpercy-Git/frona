@@ -12,7 +12,8 @@ use crate::api::cookie::{
     make_clear_refresh_cookie, make_clear_sso_csrf_cookie, make_refresh_cookie,
     make_sso_csrf_cookie,
 };
-use crate::auth::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateUsernameRequest, UserInfo};
+use crate::auth::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo, UserPermissions};
+use crate::policy::models::PolicyAction;
 use crate::auth::token::models::CreatePatRequest;
 use crate::core::error::{AppError, AuthErrorCode};
 
@@ -49,11 +50,11 @@ pub fn router() -> Router<AppState> {
         .merge(rate_limited_refresh)
         .route("/api/auth/me", get(me))
         .route("/api/auth/logout", post(logout))
-        .route("/api/auth/username", put(change_username))
+        .route("/api/auth/handle", put(change_handle))
         .route("/api/auth/profile", put(update_profile))
         .route("/api/auth/tokens", post(create_pat).get(list_pats))
         .route("/api/auth/tokens/{id}", delete(delete_pat))
-        .route("/api/auth/sso", get(sso_status))
+        .route("/api/auth/config", get(auth_config))
         .route("/api/auth/sso/authorize", get(sso_authorize))
         .route("/api/auth/sso/callback", get(sso_callback))
 }
@@ -68,6 +69,11 @@ async fn register(
             "SSO registration required".into(),
         )));
     }
+    if !state.config.auth.allow_registration {
+        return Err(ApiError(AppError::Forbidden(
+            "Registration is disabled".into(),
+        )));
+    }
 
     let (response, refresh_jwt) = state
         .auth_service
@@ -77,6 +83,10 @@ async fn register(
             &state.token_service,
             req,
         )
+        .await?;
+    state
+        .agent_service
+        .clone_all_builtins_for_user(&response.user.id, &state.storage_service)
         .await?;
 
     let secure = state.config.server.base_url.as_deref().is_some_and(|u| u.starts_with("https://"));
@@ -157,28 +167,37 @@ async fn me(
     let setup_completed = state.get_runtime_config_bool("setup_completed").await;
     let needs_setup = if setup_completed { None } else { Some(true) };
 
+    let list_users_decision = state
+        .policy_service
+        .authorize_user(&user, PolicyAction::ListUsers)
+        .await?;
+
     Ok(Json(UserInfo {
         id: user.id,
-        username: user.username,
+        handle: user.handle,
         email: user.email,
         name: user.name,
         timezone: user.timezone,
         needs_setup,
+        permissions: UserPermissions {
+            list_users: list_users_decision.allowed,
+        },
     }))
 }
 
-async fn change_username(
+async fn change_handle(
     auth: AuthUser,
     State(state): State<AppState>,
-    Json(req): Json<UpdateUsernameRequest>,
+    Json(req): Json<UpdateHandleRequest>,
 ) -> Result<([(axum::http::HeaderName, axum::http::HeaderValue); 1], Json<AuthResponse>), ApiError>
 {
     let (response, refresh_jwt) = state
         .auth_service
-        .change_username(
+        .change_handle(
             &state.user_service,
             &state.keypair_service,
             &state.token_service,
+            &state.storage_service,
             &state.config,
             &auth.user_id,
             req,
@@ -306,17 +325,26 @@ async fn delete_pat(
 }
 
 #[derive(serde::Serialize)]
-struct SsoStatusResponse {
+struct SsoStatus {
     enabled: bool,
     disable_local_auth: bool,
 }
 
-async fn sso_status(
+#[derive(serde::Serialize)]
+struct AuthConfigResponse {
+    sso: SsoStatus,
+    allow_registration: bool,
+}
+
+async fn auth_config(
     State(state): State<AppState>,
-) -> Json<SsoStatusResponse> {
-    Json(SsoStatusResponse {
-        enabled: state.config.sso.enabled,
-        disable_local_auth: state.config.sso.disable_local_auth,
+) -> Json<AuthConfigResponse> {
+    Json(AuthConfigResponse {
+        sso: SsoStatus {
+            enabled: state.config.sso.enabled,
+            disable_local_auth: state.config.sso.disable_local_auth,
+        },
+        allow_registration: state.config.auth.allow_registration,
     })
 }
 
@@ -401,7 +429,7 @@ async fn sso_callback_inner(
         .get("code")
         .ok_or_else(|| AppError::Validation("Missing authorization code".into()))?;
 
-    let (user, _is_new) = oauth_svc
+    let (user, is_new) = oauth_svc
         .handle_callback(
             code,
             callback_state,
@@ -410,6 +438,13 @@ async fn sso_callback_inner(
             &state.token_service,
         )
         .await?;
+
+    if is_new {
+        state
+            .agent_service
+            .clone_all_builtins_for_user(&user.id, &state.storage_service)
+            .await?;
+    }
 
     let (_access_jwt, refresh_jwt) = state
         .token_service

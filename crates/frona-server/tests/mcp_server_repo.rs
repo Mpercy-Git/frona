@@ -15,16 +15,16 @@ async fn test_db() -> Surreal<Db> {
     db
 }
 
-fn make_server(id: &str, user_id: &str, slug: &str, status: McpServerStatus) -> McpServer {
+fn make_server(id: &str, user_id: &str, handle: &str, status: McpServerStatus) -> McpServer {
     let now = chrono::Utc::now();
     McpServer {
         id: id.to_string(),
         user_id: user_id.to_string(),
-        slug: slug.to_string(),
+        handle: frona::core::Handle::try_new(handle).expect("test handle invalid"),
         display_name: format!("Server {id}"),
         description: Some("An MCP server".to_string()),
         repository_url: Some("https://github.com/example/server".to_string()),
-        registry_id: Some(format!("io.github.example/{slug}")),
+        registry_id: Some(format!("io.github.example/{handle}")),
         server_info: None,
         package: McpPackage {
             runtime: McpRuntime::Npm,
@@ -52,7 +52,7 @@ async fn create_and_find_by_id() {
     let server = make_server("srv-1", "user-1", "example", McpServerStatus::Installed);
     let created = repo.create(&server).await.unwrap();
     assert_eq!(created.id, "srv-1");
-    assert_eq!(created.slug, "example");
+    assert_eq!(created.handle.as_str(), "example");
 
     let found = repo.find_by_id("srv-1").await.unwrap().unwrap();
     assert_eq!(found.user_id, "user-1");
@@ -92,19 +92,19 @@ async fn find_running_only_returns_running() {
     let db = test_db().await;
     let repo = SurrealRepo::<McpServer>::new(db);
 
-    repo.create(&make_server("s1", "user-1", "a", McpServerStatus::Installed))
+    repo.create(&make_server("s1", "user-1", "aa", McpServerStatus::Installed))
         .await
         .unwrap();
-    repo.create(&make_server("s2", "user-1", "b", McpServerStatus::Running))
+    repo.create(&make_server("s2", "user-1", "bb", McpServerStatus::Running))
         .await
         .unwrap();
-    repo.create(&make_server("s3", "user-1", "c", McpServerStatus::Stopped))
+    repo.create(&make_server("s3", "user-1", "cc", McpServerStatus::Stopped))
         .await
         .unwrap();
-    repo.create(&make_server("s4", "user-2", "d", McpServerStatus::Running))
+    repo.create(&make_server("s4", "user-2", "dd", McpServerStatus::Running))
         .await
         .unwrap();
-    repo.create(&make_server("s5", "user-1", "e", McpServerStatus::Failed))
+    repo.create(&make_server("s5", "user-1", "ee", McpServerStatus::Failed))
         .await
         .unwrap();
 
@@ -120,13 +120,13 @@ async fn find_running_includes_starting_status() {
     let db = test_db().await;
     let repo = SurrealRepo::<McpServer>::new(db);
 
-    repo.create(&make_server("s1", "user-1", "a", McpServerStatus::Running))
+    repo.create(&make_server("s1", "user-1", "aa", McpServerStatus::Running))
         .await
         .unwrap();
-    repo.create(&make_server("s2", "user-1", "b", McpServerStatus::Starting))
+    repo.create(&make_server("s2", "user-1", "bb", McpServerStatus::Starting))
         .await
         .unwrap();
-    repo.create(&make_server("s3", "user-1", "c", McpServerStatus::Installed))
+    repo.create(&make_server("s3", "user-1", "cc", McpServerStatus::Installed))
         .await
         .unwrap();
 
@@ -171,7 +171,7 @@ async fn delete_removes_row() {
     let db = test_db().await;
     let repo = SurrealRepo::<McpServer>::new(db);
 
-    repo.create(&make_server("s1", "user-1", "a", McpServerStatus::Installed))
+    repo.create(&make_server("s1", "user-1", "aa", McpServerStatus::Installed))
         .await
         .unwrap();
     repo.delete("s1").await.unwrap();

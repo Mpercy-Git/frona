@@ -9,6 +9,7 @@ use crate::agent::signal::{SignalService, Watch};
 use crate::agent::task::models::SignalMode;
 use crate::agent::task::schema::validate_schema_doc;
 use crate::agent::task::service::TaskService;
+use crate::chat::broadcast::BroadcastService;
 use crate::core::error::AppError;
 use crate::tool::{
     AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition,
@@ -17,25 +18,31 @@ use crate::tool::{
 pub struct AwaitSignalTool {
     pub task_service: TaskService,
     pub signal_service: Arc<SignalService>,
+    pub broadcast_service: BroadcastService,
     pub prompts: PromptLoader,
     pub default_max_evaluations: u32,
     pub default_max_continuous_evaluations: u32,
+    pub server_timezone: String,
 }
 
 impl AwaitSignalTool {
     pub fn new(
         task_service: TaskService,
         signal_service: Arc<SignalService>,
+        broadcast_service: BroadcastService,
         prompts: PromptLoader,
         default_max_evaluations: u32,
         default_max_continuous_evaluations: u32,
+        server_timezone: String,
     ) -> Self {
         Self {
             task_service,
             signal_service,
+            broadcast_service,
             prompts,
             default_max_evaluations,
             default_max_continuous_evaluations,
+            server_timezone,
         }
     }
 }
@@ -89,7 +96,8 @@ impl AgentTool for AwaitSignalTool {
         };
         let expected_channels = parse_string_array(&arguments, "expected_channels")?;
         let expected_contacts = parse_string_array(&arguments, "expected_contacts")?;
-        let expires_at = resolve_expires_at(&arguments)?;
+        let tz = ctx.user.resolved_timezone(&self.server_timezone);
+        let expires_at = resolve_expires_at(&arguments, &tz)?;
         let resume_parent = arguments
             .get("resume_parent")
             .and_then(|v| v.as_bool())
@@ -143,6 +151,16 @@ impl AgentTool for AwaitSignalTool {
             self.signal_service.register(watch).await;
         }
 
+        self.broadcast_service.broadcast_task_update(
+            &ctx.user.id,
+            &task.id,
+            "pending",
+            &task.title,
+            None,
+            Some(&ctx.chat.id),
+            None,
+        );
+
         let body = match mode {
             SignalMode::Once => format!(
                 "Signal task created (id: {}). The current chat will resume when a matching candidate arrives and you confirm it via complete_task in the signal task's chat.",
@@ -175,7 +193,7 @@ fn parse_mode(arguments: &Value) -> Result<SignalMode, AppError> {
     }
 }
 
-fn resolve_expires_at(arguments: &Value) -> Result<Option<DateTime<Utc>>, AppError> {
+fn resolve_expires_at(arguments: &Value, tz: &str) -> Result<Option<DateTime<Utc>>, AppError> {
     let has_minutes = arguments.get("expires_in_minutes").is_some();
     let has_absolute = arguments.get("expires_at").is_some();
 
@@ -203,7 +221,7 @@ fn resolve_expires_at(arguments: &Value) -> Result<Option<DateTime<Utc>>, AppErr
     let Some(value) = arguments.get("expires_at") else {
         return Ok(None);
     };
-    super::parse_run_at(value)
+    super::parse_run_at(value, tz)
         .map_err(|e| AppError::Validation(e.to_string().replace("run_at", "expires_at")))
 }
 

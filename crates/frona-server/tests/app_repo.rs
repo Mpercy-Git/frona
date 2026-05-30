@@ -18,6 +18,7 @@ fn make_app(id: &str, agent_id: &str, user_id: &str, status: AppStatus) -> App {
         id: id.to_string(),
         agent_id: agent_id.to_string(),
         user_id: user_id.to_string(),
+        handle: frona::core::Handle::try_new(format!("app-{id}")).expect("test handle invalid"),
         name: format!("App {id}"),
         description: None,
         kind: "service".to_string(),

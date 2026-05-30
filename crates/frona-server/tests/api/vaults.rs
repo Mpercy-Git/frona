@@ -4,9 +4,6 @@ use tower::ServiceExt;
 
 use super::*;
 
-// ---------------------------------------------------------------------------
-// Local items CRUD
-// ---------------------------------------------------------------------------
 
 async fn create_local_item(
     state: &AppState,
@@ -181,7 +178,6 @@ async fn delete_local_item() {
     let json = body_json(resp).await;
     assert_eq!(json["deleted"], true);
 
-    // Verify it's gone
     let app = build_app(state);
     let resp = app
         .oneshot(auth_get("/api/vaults/local/items", &token))
@@ -191,9 +187,6 @@ async fn delete_local_item() {
     assert_eq!(json.as_array().unwrap().len(), 0);
 }
 
-// ---------------------------------------------------------------------------
-// Connections
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn list_connections_empty() {
@@ -211,9 +204,6 @@ async fn list_connections_empty() {
     assert_eq!(json.as_array().unwrap().len(), 0);
 }
 
-// ---------------------------------------------------------------------------
-// Grants
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn list_grants_empty() {
@@ -265,9 +255,6 @@ async fn create_grant_returns_json() {
     assert_eq!(json["principal"]["id"], "test-agent");
 }
 
-// ---------------------------------------------------------------------------
-// No-auth coverage
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn vault_endpoints_reject_no_auth() {

@@ -1,5 +1,5 @@
 [tools]
-rust = "1.89"
+rust = "1.95.0"
 node = "22"
 rust-analyzer = "latest"
 "cargo:cargo-watch" = "latest"
@@ -89,13 +89,28 @@ run = "build/release.sh"
 description = "Build production image and push to GHCR"
 run = "build/publish.sh"
 
+[tasks."docker:publish:preview"]
+description = "Build prod image and push to your personal preview registry (set FRONA_PREVIEW_IMAGE/FRONA_PREVIEW_TAG in mise.local.toml)"
+run = '''
+: "${FRONA_PREVIEW_IMAGE:?Set FRONA_PREVIEW_IMAGE in mise.local.toml}"
+: "${FRONA_PREVIEW_TAG:?Set FRONA_PREVIEW_TAG in mise.local.toml}"
+case "$FRONA_PREVIEW_IMAGE" in
+  ghcr.io/fronalabs/frona) echo "FRONA_PREVIEW_IMAGE must not be the prod registry" >&2; exit 1 ;;
+esac
+build/publish.sh "$FRONA_PREVIEW_IMAGE:$FRONA_PREVIEW_TAG"
+'''
+
 [tasks."docker:dev"]
 description = "Run full dev stack in Docker (with hot-reload)"
+run = "docker compose -f build/docker-compose.yml --profile dev up"
+
+[tasks."docker:dev:build"]
+description = "Rebuild the dev image and run the stack"
 run = "docker compose -f build/docker-compose.yml --profile dev up --build"
 
 [tasks."docker:dev:down"]
-description = "Stop dev Docker stack"
-run = "docker compose -f build/docker-compose.yml --profile dev down"
+description = "Stop dev Docker stack and remove its volumes"
+run = "docker compose -f build/docker-compose.yml --profile dev down -v"
 
 [tasks."docker:prod"]
 description = "Run production stack in Docker"

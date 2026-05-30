@@ -13,6 +13,7 @@ import {
 import { api } from "@/lib/api-client";
 import { ComboboxInput } from "@/components/settings/combobox";
 import { HelpTip } from "@/components/settings/field";
+import { ManifestInfo, markdownToPlainText, type ExternalLink } from "@/components/channels/manifest-info";
 import { formatDistanceToNow } from "date-fns";
 import { useRouter } from "next/navigation";
 import type { Agent, SpaceResponse } from "@/lib/types";
@@ -54,6 +55,9 @@ interface ChannelManifest {
   display_name: string;
   description: string;
   config_fields: ChannelConfigField[];
+  webhook_url_visible?: boolean;
+  setup_instructions?: string | null;
+  external_links?: ExternalLink[];
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -229,7 +233,7 @@ export function ChannelsSection() {
                 <ChatBubbleLeftRightIcon className="h-8 w-8 rounded-lg shrink-0 mt-0.5 text-text-tertiary" />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-text-primary">{m.display_name}</div>
-                  <div className="text-xs text-text-tertiary line-clamp-2">{m.description}</div>
+                  <div className="text-xs text-text-tertiary line-clamp-2">{markdownToPlainText(m.description)}</div>
                 </div>
                 <button
                   onClick={() => setInstallManifest(m)}
@@ -424,9 +428,10 @@ function CreateChannelDialog({
           <ChatBubbleLeftRightIcon className="h-10 w-10 text-text-tertiary shrink-0" />
           <div className="flex-1 min-w-0">
             <h3 className="text-lg font-semibold text-text-primary">{manifest.display_name}</h3>
-            <p className="text-xs text-text-tertiary line-clamp-2">{manifest.description}</p>
           </div>
         </div>
+
+        <ManifestInfo manifest={manifest} />
 
         <div className="space-y-3">
           <ComboboxInput

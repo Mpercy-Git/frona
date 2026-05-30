@@ -40,6 +40,7 @@ async fn info_handler(_auth: AuthUser, State(state): State<AppState>) -> axum::J
         "cpus": cpus,
         "total_memory_bytes": total_memory,
         "sandbox_driver": state.sandbox_manager.driver_id(),
+        "server_timezone": state.config.server.timezone,
     }))
 }
 
@@ -48,50 +49,15 @@ async fn version_handler(_auth: AuthUser) -> axum::Json<serde_json::Value> {
 }
 
 async fn timezones_handler(_auth: AuthUser) -> axum::Json<Vec<String>> {
-    axum::Json(list_system_timezones())
+    axum::Json(list_iana_timezones())
 }
 
-fn list_system_timezones() -> Vec<String> {
-    use std::path::Path;
-
-    let zoneinfo = Path::new("/usr/share/zoneinfo");
-    if !zoneinfo.exists() {
-        return Vec::new();
-    }
-
-    let mut zones = Vec::new();
-    let mut stack = vec![zoneinfo.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-
-            // Skip non-IANA directories and special files
-            if name_str.starts_with('.') || name_str == "posix" || name_str == "right"
-                || name_str == "posixrules" || name_str == "leap-seconds.list"
-                || name_str == "leapseconds" || name_str == "tzdata.zi"
-                || name_str == "zone.tab" || name_str == "zone1970.tab"
-                || name_str == "iso3166.tab" || name_str == "+VERSION"
-            {
-                continue;
-            }
-
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file()
-                && let Ok(relative) = path.strip_prefix(zoneinfo)
-            {
-                let tz = relative.to_string_lossy().to_string();
-                if tz.contains('/') {
-                    zones.push(tz);
-                }
-            }
-        }
-    }
-
+fn list_iana_timezones() -> Vec<String> {
+    let mut zones: Vec<String> = chrono_tz::TZ_VARIANTS
+        .iter()
+        .map(|tz| tz.name().to_string())
+        .filter(|s| s.contains('/'))
+        .collect();
     zones.sort();
     zones
 }

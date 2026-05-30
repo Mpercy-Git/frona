@@ -92,6 +92,7 @@ pub struct AppState {
     pub auth_service: Arc<AuthService>,
     pub app_service: AppService,
     pub user_service: UserService,
+    pub user_group_service: crate::auth::group_service::UserGroupService,
     pub agent_service: AgentService,
     pub space_service: SpaceService,
     pub call_service: CallService,
@@ -142,6 +143,10 @@ impl AppState {
         metrics_handle: PrometheusHandle,
         resource_manager: Arc<SystemResourceManager>,
     ) -> Self {
+        // Both `aws-lc-rs` and `ring` are active via reqwest + slack-morphism;
+        // rustls 0.23 panics on first TLS use without an explicit default.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let http_client = crate::build_http_client();
 
         let broadcast_service = BroadcastService::with_pending_events_secs(config.server.sse_pending_events_secs);
@@ -158,7 +163,6 @@ impl AppState {
             .unwrap_or_else(|_| shared_config_dir.clone());
 
         let sandbox_manager = Arc::new(SandboxManager::new(
-            &config.storage.workspaces_path,
             config.sandbox.disabled,
             resource_manager.clone(),
         ).with_default_timeout(config.sandbox.default_limits.timeout_secs)
@@ -204,6 +208,7 @@ impl AppState {
             Arc::new(keypair_repo),
         );
         let user_service = UserService::new(SurrealRepo::new(db.clone()), &config.cache);
+        let user_group_service = crate::auth::group_service::UserGroupService::new(db.clone());
         let presign_service = PresignService::new(
             keypair_service.clone(),
             user_service.clone(),
@@ -256,7 +261,8 @@ impl AppState {
             &config.auth.encryption_secret,
             config.vault.clone(),
             data_dir,
-            PathBuf::from(&config.storage.files_path),
+            storage.clone(),
+            user_service.clone(),
         );
 
         let oauth_service = if config.sso.enabled {
@@ -276,40 +282,36 @@ impl AppState {
             policy_schema,
             tool_manager.clone(),
             storage.clone(),
+            user_service.clone(),
             config.sandbox.disabled,
         );
 
-        let shared_agents_dir = PathBuf::from(&config.storage.shared_config_dir).join("agents");
         let agent_service = AgentService::new(
             SurrealRepo::new(db.clone()),
             &config.cache,
-            shared_agents_dir,
             resource_manager.clone(),
             policy_service.clone(),
+            user_service.clone(),
         );
 
         let app_manager = Arc::new(AppManager::new(
             sandbox_manager.clone(),
+            storage.clone(),
             config.app.port_range_start,
             config.app.port_range_end,
             policy_service.clone(),
+            user_service.clone(),
+            agent_service.clone(),
             http_client.clone(),
         ));
 
-        let mcp_workspaces = std::fs::canonicalize(&config.mcp.workspaces_path)
-            .unwrap_or_else(|_| {
-                std::fs::create_dir_all(&config.mcp.workspaces_path).ok();
-                std::fs::canonicalize(&config.mcp.workspaces_path)
-                    .unwrap_or_else(|_| PathBuf::from(&config.mcp.workspaces_path))
-            })
-            .to_string_lossy()
-            .into_owned();
         let mcp_manager = Arc::new(crate::tool::mcp::McpManager::new(
             sandbox_manager.clone(),
-            mcp_workspaces,
+            storage.clone(),
             config.mcp.port_range_start,
             config.mcp.port_range_end,
             policy_service.clone(),
+            user_service.clone(),
             http_client.clone(),
         ));
         let mcp_repo: Arc<dyn crate::tool::mcp::repository::McpServerRepository> =
@@ -338,8 +340,8 @@ impl AppState {
             keypair_service.clone(),
             user_service.clone(),
             policy_service.clone(),
+            storage.clone(),
             config.server.public_base_url(),
-            config.auth.runtime_tokens_dir.clone(),
             config.auth.ephemeral_token_expiry_secs,
         ));
 
@@ -348,12 +350,18 @@ impl AppState {
             app_manager,
             config.app.clone(),
             policy_service.clone(),
+            user_service.clone(),
         );
 
         let channel_registry = {
             let reg = Arc::new(crate::chat::channel::ChannelRegistry::new());
             reg.register_factory(Arc::new(crate::chat::channel::adapter::telegram::TelegramAdapterFactory));
             reg.register_factory(Arc::new(crate::chat::channel::adapter::sms::SmsAdapterFactory));
+            reg.register_factory(Arc::new(crate::chat::channel::adapter::slack::SlackAdapterFactory));
+            reg.register_factory(Arc::new(crate::chat::channel::adapter::whatsapp_cloud::WhatsAppCloudAdapterFactory));
+            reg.register_factory(Arc::new(crate::chat::channel::adapter::whatsapp_user::WhatsAppUserAdapterFactory));
+            reg.register_factory(Arc::new(crate::chat::channel::adapter::discord::DiscordAdapterFactory));
+            reg.register_factory(Arc::new(crate::chat::channel::adapter::signal::SignalAdapterFactory));
             reg
         };
         let channel_repo: Arc<dyn crate::chat::channel::repository::ChannelRepository> =
@@ -378,24 +386,27 @@ impl AppState {
             memory_service.clone(),
             prompt_loader.clone(),
             broadcast_service.clone(),
+            presign_service.clone(),
         );
         let message_repo_for_channel: Arc<dyn crate::chat::message::repository::MessageRepository> =
             Arc::new(SurrealRepo::<crate::chat::message::models::Message>::new(db.clone()));
         let channel_manager = Arc::new(crate::chat::channel::ChannelManager::new(
             message_repo_for_channel,
             chat_service.clone(),
+            channel_service.clone(),
         ));
         Self {
             db: db.clone(),
             auth_service: Arc::new(AuthService::new()),
             app_service,
             user_service: user_service.clone(),
+            user_group_service: user_group_service.clone(),
             agent_service: agent_service.clone(),
             space_service: SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             call_service: CallService::new(SurrealRepo::new(db.clone())),
             contact_service: ContactService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             chat_service,
-            task_service: TaskService::new(SurrealRepo::new(db.clone())),
+            task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions: ActiveSessions::default(),

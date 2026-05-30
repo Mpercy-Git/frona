@@ -52,8 +52,11 @@ async fn list_agents_returns_only_own() {
         .unwrap();
     let json = body_json(resp).await;
     let agents = json.as_array().unwrap();
-    assert_eq!(agents.len(), 1);
-    assert_eq!(agents[0]["name"], "AgentA");
+    // user-A sees their own builtin clones + AgentA; the user-scoping
+    // assertion is that AgentB doesn't leak in.
+    let names: Vec<&str> = agents.iter().filter_map(|a| a["name"].as_str()).collect();
+    assert!(names.contains(&"AgentA"), "missing AgentA: {names:?}");
+    assert!(!names.contains(&"AgentB"), "AgentB leaked across users: {names:?}");
 }
 
 #[tokio::test]
@@ -75,8 +78,11 @@ async fn list_agents_includes_chat_count() {
         .unwrap();
     let json = body_json(resp).await;
     let agents = json.as_array().unwrap();
-    assert_eq!(agents.len(), 1);
-    assert_eq!(agents[0]["chat_count"], 2);
+    let count_me = agents
+        .iter()
+        .find(|a| a["name"] == "CountMe")
+        .expect("CountMe agent missing from list");
+    assert_eq!(count_me["chat_count"], 2);
 }
 
 #[tokio::test]

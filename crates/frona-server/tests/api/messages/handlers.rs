@@ -62,9 +62,6 @@ async fn message_metadata_round_trip_via_send_and_patch() {
     assert_eq!(patched["metadata"]["extra"], "x");
 }
 
-// ---------------------------------------------------------------------------
-// List messages
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn list_messages_empty_chat() {
@@ -134,9 +131,6 @@ async fn list_messages_other_user_returns_error() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Cancel generation
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn cancel_generation_returns_json() {
@@ -189,9 +183,6 @@ async fn cancel_generation_other_user_returns_error() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Resolve tool call — auth checks
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn resolve_tool_call_without_auth_returns_401() {
@@ -241,9 +232,6 @@ async fn resolve_tool_call_other_user_returns_error() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Send message — auth checks
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn send_message_without_auth_returns_401() {

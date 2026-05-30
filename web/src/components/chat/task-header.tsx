@@ -29,6 +29,14 @@ const statusLabels: Record<string, string> = {
   cancelled: "Cancelled",
 };
 
+// Show "Recurring" for active crons so users don't see a stuck "Pending" badge.
+function displayLabel(task: { status: string; kind: { type: string } }) {
+  if (task.kind.type === "Cron" && task.status !== "cancelled") {
+    return "Recurring";
+  }
+  return statusLabels[task.status] ?? task.status;
+}
+
 const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
 const activeStatuses = new Set(["pending", "inprogress"]);
 
@@ -55,10 +63,13 @@ export function TaskHeader() {
 
   const agent = agents.find((a) => a.id === activeTask.agent_id);
   const agentName = agentDisplayName(activeTask.agent_id, agent?.name);
-  const colorClass = statusColors[activeTask.status] ?? "bg-surface-tertiary text-text-secondary";
-  const label = statusLabels[activeTask.status] ?? activeTask.status;
-  const canCancel = activeStatuses.has(activeTask.status);
-  const canDelete = terminalStatuses.has(activeTask.status);
+  const isCron = activeTask.kind.type === "Cron";
+  const colorClass = isCron && activeTask.status !== "cancelled"
+    ? "bg-info-bg text-info-text"
+    : statusColors[activeTask.status] ?? "bg-surface-tertiary text-text-secondary";
+  const label = displayLabel(activeTask);
+  const canCancel = isCron ? activeTask.status !== "cancelled" : activeStatuses.has(activeTask.status);
+  const canDelete = isCron ? activeTask.status === "cancelled" : terminalStatuses.has(activeTask.status);
 
   const handleCancel = async () => {
     setMenuOpen(false);

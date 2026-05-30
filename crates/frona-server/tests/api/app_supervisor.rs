@@ -55,10 +55,12 @@ async fn display_name_falls_back_to_id_when_missing() {
 async fn notification_data_has_correct_shape() {
     let (state, _tmp) = test_app_state().await;
     let supervisor = AppSupervisor::new(state);
-    let data = supervisor.notification_data("app-123", "crash");
+    let data = supervisor.notification_data("app-123", "crash").await;
     match data {
-        frona::notification::models::NotificationData::App { app_id, action } => {
-            assert_eq!(app_id, "app-123");
+        frona::notification::models::NotificationData::App { app_handle, action } => {
+            // No app row exists for "app-123" in the test fixture, so the
+            // supervisor falls back to using the id verbatim.
+            assert_eq!(app_handle, "app-123");
             assert_eq!(action, "crash");
         }
         _ => panic!("expected App notification data"),

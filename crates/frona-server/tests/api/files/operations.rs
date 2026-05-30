@@ -4,9 +4,6 @@ use tower::ServiceExt;
 
 use super::super::*;
 
-// ---------------------------------------------------------------------------
-// Rename
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn rename_user_file_succeeds() {
@@ -14,7 +11,7 @@ async fn rename_user_file_succeeds() {
     let (token, _) =
         register_user(&state, "renamer", "renamer@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("renamer");
+    let user_dir = tmp.path().join("users").join("renamer").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("old.txt"), b"data").await.unwrap();
 
@@ -56,7 +53,7 @@ async fn rename_file_invalid_name_returns_400() {
     let (token, _) =
         register_user(&state, "rename-bad", "renamebad@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("rename-bad");
+    let user_dir = tmp.path().join("users").join("rename-bad").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("file.txt"), b"data").await.unwrap();
 
@@ -78,7 +75,7 @@ async fn rename_file_destination_exists_returns_400() {
     let (token, _) =
         register_user(&state, "rename-dup", "renamedup@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("rename-dup");
+    let user_dir = tmp.path().join("users").join("rename-dup").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("a.txt"), b"a").await.unwrap();
     fs::write(user_dir.join("b.txt"), b"b").await.unwrap();
@@ -101,7 +98,7 @@ async fn rename_path_traversal_returns_400() {
     let (token, _) =
         register_user(&state, "rename-trav", "renametrav@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("rename-trav");
+    let user_dir = tmp.path().join("users").join("rename-trav").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("ok.txt"), b"data").await.unwrap();
 
@@ -117,9 +114,6 @@ async fn rename_path_traversal_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ---------------------------------------------------------------------------
-// Copy
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn copy_files_succeeds() {
@@ -127,7 +121,7 @@ async fn copy_files_succeeds() {
     let (token, _) =
         register_user(&state, "copier", "copier@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("copier");
+    let user_dir = tmp.path().join("users").join("copier").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("src.txt"), b"source data").await.unwrap();
 
@@ -155,7 +149,7 @@ async fn copy_directory_recursive() {
     let (token, _) =
         register_user(&state, "copydir", "copydir@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("copydir");
+    let user_dir = tmp.path().join("users").join("copydir").join("files");
     let src_dir = user_dir.join("project");
     fs::create_dir_all(src_dir.join("sub")).await.unwrap();
     fs::write(src_dir.join("root.txt"), b"root").await.unwrap();
@@ -189,7 +183,7 @@ async fn copy_to_agent_workspace_returns_403() {
     let (token, _) =
         register_user(&state, "copy-ag", "copyag@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("copy-ag");
+    let user_dir = tmp.path().join("users").join("copy-ag").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("f.txt"), b"data").await.unwrap();
 
@@ -231,9 +225,6 @@ async fn copy_from_other_user_via_prefix_returns_403() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
-// ---------------------------------------------------------------------------
-// Move
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn move_files_succeeds() {
@@ -241,7 +232,7 @@ async fn move_files_succeeds() {
     let (token, _) =
         register_user(&state, "mover", "mover@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("mover");
+    let user_dir = tmp.path().join("users").join("mover").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("moveme.txt"), b"moving").await.unwrap();
 
@@ -289,7 +280,7 @@ async fn move_to_agent_workspace_returns_403() {
     let (token, _) =
         register_user(&state, "move-ag2", "moveag2@example.com", "password123").await;
 
-    let user_dir = tmp.path().join("files").join("move-ag2");
+    let user_dir = tmp.path().join("users").join("move-ag2").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
     fs::write(user_dir.join("f.txt"), b"data").await.unwrap();
 
@@ -331,9 +322,6 @@ async fn move_from_other_user_via_prefix_returns_403() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
-// ---------------------------------------------------------------------------
-// Mkdir
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn create_folder_succeeds() {
@@ -351,7 +339,7 @@ async fn create_folder_succeeds() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(tmp.path().join("files").join("mkdir-user").join("new-folder").join("sub").is_dir());
+    assert!(tmp.path().join("users").join("mkdir-user").join("files").join("new-folder").join("sub").is_dir());
 }
 
 #[tokio::test]

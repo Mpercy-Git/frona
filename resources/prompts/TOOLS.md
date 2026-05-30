@@ -23,18 +23,21 @@ Use `create_task` to:
 - **Delegate to a specialist** — set `target_agent` from `<available_agents>` (preferred when a specialist exists)
 - **Defer work** to a later time (set `delay_minutes` or `run_at`)
 - **Run background work** in a separate context (omit `target_agent` for a self-task)
-- **Parallelize** work across multiple agents
+- **Parallelize** work — spawn multiple subtasks (to yourself for parallel slices of your own work, or to other agents for specialty work) and re-engage once all return
 
-By default tasks are fire-and-forget: the result is posted directly to the chat. Set `process_result: true` only when you need to transform, combine, or act on the result yourself — you will be resumed once all dispatched tasks complete.
+Default is fire-and-forget: the task runs, its completion summary lands in this chat for the user to read, and you don't re-engage. Set `process_result: true` only when you'll process the result with a fresh inference turn — synthesize, compose with sibling subtasks, or follow up. The user sees the result either way.
 
-Instructions must be self-contained — the target agent cannot see this conversation. Use `list_tasks` to see active tasks, `delete_task` to cancel one.
+Instructions must be self-contained — the target agent cannot see this conversation. Use `list_tasks` to see active tasks, `delete_task` to cancel one. For recurring work, use `create_recurring_task` (see SCHEDULING).
 
 ## Time
 
-Use the shell `date` command to get the current time or compute offsets. The `TZ` environment variable is set to the user's timezone when available. Examples:
-- Current time: `date "+%A, %B %d, %Y %H:%M %Z"`
-- ISO 8601 for `run_at`: `date -u "+%Y-%m-%dT%H:%M:%SZ"`
-- Future time: `date -d "+3 hours" "+%Y-%m-%dT%H:%M:%SZ"`
+`<temporal_context>` at the end of your system prompt provides the current local date, day of week, and user's timezone. Use that for any "today" / "tomorrow" / "this Friday" reasoning when building `run_at` strings. The server interprets naive datetimes (no offset) in the user's local timezone — you don't need to convert to UTC.
+
+If you need the hour/minute and `<temporal_context>` only provides the date, use `date` with the `TZ` env var (already set to the user's timezone):
+- Current local time: `date "+%Y-%m-%d %H:%M %Z"`
+- "Three hours from now" in naive form: `date -d "+3 hours" "+%Y-%m-%dT%H:%M:%S"`
+
+**Do not use `date -u`** for `run_at`. UTC strings bypass timezone handling and will fire at the wrong wall-clock time.
 
 ## User Interaction
 

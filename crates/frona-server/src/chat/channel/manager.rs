@@ -13,6 +13,7 @@ use crate::agent::execution;
 use crate::agent::models::Agent;
 use crate::chat::broadcast::{BroadcastEvent, BroadcastEventKind, EntityAction};
 use crate::chat::message::models::{DeliveryState, Message, MessageRole, MessageStatus};
+use crate::chat::channel::service::ChannelService;
 use crate::chat::message::repository::MessageRepository;
 use crate::chat::service::ChatService;
 use crate::contact::models::Contact;
@@ -27,7 +28,6 @@ use super::models::{
 };
 
 const INBOUND_BUFFER: usize = 64;
-const SIGNAL_MODE_TOOLS: &[&str] = &["annotate_message"];
 
 const DELIVERY_MAX_ATTEMPTS: u32 = 5;
 
@@ -46,6 +46,14 @@ fn backoff_for(attempts: u32) -> Duration {
     }
     let idx = (attempts as usize - 1).min(DELIVERY_BACKOFF.len() - 1);
     DELIVERY_BACKOFF[idx]
+}
+
+pub(super) fn channel_data_dir(
+    storage: &crate::storage::service::StorageService,
+    user_handle: &crate::core::Handle,
+    channel_handle: &crate::core::Handle,
+) -> std::path::PathBuf {
+    storage.channel_data_path(user_handle, channel_handle)
 }
 
 // Lifecycle-only writes must not trigger a restart loop via the watcher.
@@ -82,19 +90,150 @@ pub(super) struct ChannelTask {
 
 pub struct ChannelManager {
     tasks: Arc<Mutex<HashMap<String, ChannelTask>>>,
+    retry_cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
     message_repo: Arc<dyn MessageRepository>,
     chat_service: ChatService,
+    channel_service: Arc<ChannelService>,
 }
 
 impl ChannelManager {
     pub fn new(
         message_repo: Arc<dyn MessageRepository>,
         chat_service: ChatService,
+        channel_service: Arc<ChannelService>,
     ) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            retry_cancels: Arc::new(Mutex::new(HashMap::new())),
             message_repo,
             chat_service,
+            channel_service,
+        }
+    }
+
+    pub async fn report_failure(&self, channel_id: &str, reason: String) {
+        if let Err(e) = self
+            .channel_service
+            .mark_status(channel_id, ChannelStatus::Failed, Some(reason))
+            .await
+        {
+            tracing::warn!(
+                channel_id = %channel_id,
+                error = %e,
+                "report_failure: could not persist Failed status",
+            );
+        }
+    }
+
+    /// Manager does NOT restart the channel; adapter must keep running across the transition.
+    pub async fn report_setup_complete(&self, channel_id: &str) {
+        let pair = {
+            let tasks = self.tasks.lock().await;
+            tasks.get(channel_id).map(|t| (t.adapter.clone(), t.ctx.clone()))
+        };
+        if let Some((adapter, ctx)) = pair
+            && let Err(e) = adapter.on_setup_complete(&ctx).await
+        {
+            tracing::warn!(
+                channel_id = %channel_id,
+                error = %e,
+                "on_setup_complete failed; continuing with state transition",
+            );
+        }
+        if let Err(e) = self
+            .channel_service
+            .complete_setup(channel_id)
+            .await
+        {
+            tracing::warn!(
+                channel_id = %channel_id,
+                error = %e,
+                "report_setup_complete: could not persist Connected status",
+            );
+        }
+    }
+
+    pub fn start_with_retry(self: Arc<Self>, state: AppState, channel_id: String) {
+        let cancel = state.shutdown_token.child_token();
+        let manager = self.clone();
+        let id_for_task = channel_id.clone();
+        let cancel_for_task = cancel.clone();
+        tokio::spawn(async move {
+            let prev = {
+                let mut map = manager.retry_cancels.lock().await;
+                map.insert(id_for_task.clone(), cancel_for_task.clone())
+            };
+            if let Some(p) = prev {
+                p.cancel();
+            }
+            manager
+                .clone()
+                .retry_loop(state, id_for_task.clone(), cancel_for_task)
+                .await;
+            let mut map = manager.retry_cancels.lock().await;
+            map.remove(&id_for_task);
+        });
+    }
+
+    async fn retry_loop(
+        self: Arc<Self>,
+        state: AppState,
+        channel_id: String,
+        cancel: CancellationToken,
+    ) {
+        let mut attempt: u32 = 0;
+        loop {
+            let channel = match self.channel_service.find_by_id(&channel_id).await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            // Excludes Connected so post-restart re-starts pick up zombie rows.
+            if matches!(channel.status, ChannelStatus::Setup | ChannelStatus::Pairing) {
+                return;
+            }
+
+            let retry_cfg = channel
+                .retry
+                .clone()
+                .unwrap_or_else(|| state.config.channel.retry.clone());
+            if attempt > 0 && attempt > retry_cfg.max_retries {
+                tracing::warn!(
+                    channel_id = %channel_id,
+                    attempts = %attempt,
+                    "channel retry exhausted; leaving Failed for operator",
+                );
+                return;
+            }
+
+            match self.start_channel(&state, &channel).await {
+                Ok(()) => return,
+                Err(e) => {
+                    if retry_cfg.max_retries == 0 {
+                        tracing::warn!(
+                            channel_id = %channel_id,
+                            error = %e,
+                            "channel retry disabled; one-shot start failed",
+                        );
+                        return;
+                    }
+                    attempt = attempt.saturating_add(1);
+                    let factor = retry_cfg
+                        .backoff_multiplier
+                        .powi(attempt.saturating_sub(1) as i32);
+                    let delay = (retry_cfg.initial_backoff_ms as f64 * factor)
+                        .min(retry_cfg.max_backoff_ms as f64) as u64;
+                    tracing::info!(
+                        channel_id = %channel_id,
+                        attempt = %attempt,
+                        delay_ms = %delay,
+                        "channel start failed; retrying after backoff",
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {},
+                        _ = cancel.cancelled() => return,
+                    }
+                }
+            }
         }
     }
 
@@ -104,13 +243,7 @@ impl ChannelManager {
         }
         let channels = state.channel_service.find_active().await.unwrap_or_default();
         for channel in channels {
-            let manager = self.clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                if let Err(e) = manager.start_channel(&state, &channel).await {
-                    tracing::warn!(channel_id = %channel.id, error = %e, "ChannelManager: failed to spawn channel at startup");
-                }
-            });
+            self.clone().start_with_retry(state.clone(), channel.id);
         }
         self.clone().spawn_broadcast_watcher(state);
         Ok(())
@@ -121,17 +254,15 @@ impl ChannelManager {
         state: &AppState,
         channel: &Channel,
     ) -> Result<(), AppError> {
-        self.stop_channel(&channel.id).await;
+        self.stop_running_task(&channel.id).await;
 
+        // Don't mark Setup here — the watcher would loop. `Setup` is owned by service.create/update.
         let missing = state.channel_service.missing_required(channel).await?;
         if !missing.is_empty() {
-            let msg = format!("missing required field(s): {}", missing.join(", "));
-            state
-                .channel_service
-                .mark_status(&channel.id, ChannelStatus::Setup, Some(msg.clone()))
-                .await
-                .ok();
-            return Err(AppError::Validation(msg));
+            return Err(AppError::Validation(format!(
+                "missing required field(s): {}",
+                missing.join(", ")
+            )));
         }
 
         let setup = async {
@@ -173,22 +304,35 @@ impl ChannelManager {
 
         let (emit, rx) = mpsc::channel::<ExternalMessage>(INBOUND_BUFFER);
 
-        let webhook_base = state
-            .config
-            .server
-            .external_base_url()
-            .unwrap_or_else(|| format!("http://localhost:{}", state.config.server.port));
-        let bare_id = channel
-            .id
-            .strip_prefix("channel:")
-            .unwrap_or(&channel.id);
+        let webhook_base = state.config.server.external_or_local_base_url();
         let webhook_url = format!(
             "{}{}/{}/{}",
             webhook_base.trim_end_matches('/'),
             super::WEBHOOK_PATH_PREFIX,
             channel.provider,
-            bare_id,
+            channel.id,
         );
+
+        let handle = state
+            .user_service
+            .find_by_id(&channel.user_id)
+            .await?
+            .map(|u| u.handle)
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "channel {:?} references missing user {:?}",
+                    channel.id, channel.user_id,
+                ))
+            })?;
+        let data_dir = channel_data_dir(&state.storage_service, &handle, &channel.handle);
+        if let Err(e) = std::fs::create_dir_all(&data_dir) {
+            return Err(AppError::Internal(format!(
+                "could not create channel data dir {}: {e}",
+                data_dir.display(),
+            )));
+        }
+
+        let cancel = state.shutdown_token.child_token();
 
         let ctx = ChannelCtx {
             space,
@@ -196,18 +340,13 @@ impl ChannelManager {
             emit,
             webhook_url,
             channel_manager: state.channel_manager.clone(),
+            storage_service: state.storage_service.clone(),
+            user_service: state.user_service.clone(),
+            data_dir,
+            cancel: cancel.clone(),
         };
 
-        let cancel = state.shutdown_token.child_token();
-
-        let connect_result = adapter.on_connect(&ctx).await;
-        let connect_error = connect_result.as_ref().err().map(|e| e.to_string());
-        if let Some(err) = &connect_error {
-            tracing::warn!(channel_id = %channel.id, error = %err, "channel.on_connect failed");
-        }
-        let connected = connect_result.is_ok();
-
-        // Must precede the mark_status broadcast or the watcher respawns.
+        // Register before setup/connect: those hooks call back into the manager.
         {
             let mut tasks = self.tasks.lock().await;
             tasks.insert(
@@ -219,6 +358,56 @@ impl ChannelManager {
                 },
             );
         }
+
+        // Pipelines spawn before setup/connect so adapters can emit from those hooks.
+        {
+            let adapter = adapter.clone();
+            let ctx = ctx.clone();
+            let state = state.clone();
+            let cancel = cancel.clone();
+            let channel_id = channel.id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = run_outbound(adapter, ctx, state, cancel).await {
+                    tracing::warn!(channel_id = %channel_id, error = %e, "channel outbound task exited with error");
+                }
+            });
+        }
+        {
+            let ctx = ctx.clone();
+            let state = state.clone();
+            let cancel = cancel.clone();
+            let channel_id = channel.id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = run_inbound_pipeline(ctx, state, rx, cancel).await {
+                    tracing::warn!(channel_id = %channel_id, error = %e, "channel inbound pipeline exited with error");
+                }
+            });
+        }
+
+        match adapter.on_setup_begin(&ctx).await {
+            Ok(Some(setup)) => {
+                state
+                    .channel_service
+                    .begin_setup(&channel.id, setup)
+                    .await?;
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(e) => {
+                state
+                    .channel_service
+                    .mark_status(&channel.id, ChannelStatus::Failed, Some(e.to_string()))
+                    .await?;
+                return Err(e);
+            }
+        }
+
+        let connect_result = adapter.on_connect(&ctx).await;
+        let connect_error = connect_result.as_ref().err().map(|e| e.to_string());
+        if let Some(err) = &connect_error {
+            tracing::warn!(channel_id = %channel.id, error = %err, "channel.on_connect failed");
+        }
+        let connected = connect_result.is_ok();
 
         if connected {
             state
@@ -232,38 +421,23 @@ impl ChannelManager {
                     "delivery resume_deliveries failed at spawn",
                 );
             }
+            if let Err(e) = self.reconcile_message_delivery(channel).await {
+                tracing::warn!(
+                    channel_id = %channel.id,
+                    error = %e,
+                    "outbound: reconcile_message_delivery failed at spawn",
+                );
+            }
+            Ok(())
         } else {
             state
                 .channel_service
                 .mark_status(&channel.id, ChannelStatus::Failed, connect_error)
                 .await?;
+            // Propagate so retry_loop's Err branch applies backoff
+            // (otherwise the Failed broadcast triggers an immediate retry).
+            Err(connect_result.unwrap_err())
         }
-
-        {
-            let adapter = adapter.clone();
-            let ctx = ctx.clone();
-            let state = state.clone();
-            let cancel = cancel.clone();
-            let channel_id = channel.id.clone();
-            tokio::spawn(async move {
-                if let Err(e) = run_outbound(adapter, ctx, state, cancel).await {
-                    tracing::warn!(channel_id = %channel_id, error = %e, "channel outbound task exited with error");
-                }
-            });
-        }
-
-        {
-            let ctx = ctx.clone();
-            let state = state.clone();
-            let cancel = cancel.clone();
-            let channel_id = channel.id.clone();
-            tokio::spawn(async move {
-                if let Err(e) = run_inbound_pipeline(ctx, state, rx, cancel).await {
-                    tracing::warn!(channel_id = %channel_id, error = %e, "channel inbound pipeline exited with error");
-                }
-            });
-        }
-        Ok(())
     }
 
     pub async fn stop(&self) {
@@ -274,6 +448,18 @@ impl ChannelManager {
     }
 
     pub async fn stop_channel(&self, channel_id: &str) {
+        self.stop_running_task(channel_id).await;
+        let retry = {
+            let mut map = self.retry_cancels.lock().await;
+            map.remove(channel_id)
+        };
+        if let Some(c) = retry {
+            c.cancel();
+        }
+    }
+
+    /// Leaves any active retry loop alive (otherwise it would cancel itself).
+    async fn stop_running_task(&self, channel_id: &str) {
         let task = {
             let mut tasks = self.tasks.lock().await;
             tasks.remove(channel_id)
@@ -333,10 +519,7 @@ impl ChannelManager {
                 tokio::spawn(async move {
                     match action {
                         EntityAction::Created => {
-                            if let Ok(channel) = state.channel_service.find_by_id(&record_id).await
-                            {
-                                let _ = manager.start_channel(&state, &channel).await;
-                            }
+                            manager.start_with_retry(state, record_id);
                         }
                         EntityAction::Updated => {
                             let new_channel =
@@ -354,9 +537,19 @@ impl ChannelManager {
                             if let Some(prior) = prior
                                 && !channel_needs_restart(&prior, &new_channel)
                             {
+                                if new_channel.status == ChannelStatus::Failed {
+                                    let already = manager
+                                        .retry_cancels
+                                        .lock()
+                                        .await
+                                        .contains_key(&record_id);
+                                    if !already {
+                                        manager.start_with_retry(state, record_id);
+                                    }
+                                }
                                 return;
                             }
-                            let _ = manager.start_channel(&state, &new_channel).await;
+                            manager.start_with_retry(state, record_id);
                         }
                         EntityAction::Deleted => {
                             manager.stop_channel(&record_id).await;
@@ -384,6 +577,25 @@ impl ChannelManager {
         delivery.tool_index = delivery.tool_index.saturating_add(1);
         delivery.last_error = None;
         delivery.next_attempt_at = Some(now);
+        self.message_repo.update(&message).await?;
+        Ok(())
+    }
+
+    pub async fn ensure_pending_delivery(
+        &self,
+        message_id: &str,
+    ) -> Result<(), AppError> {
+        let mut message = self
+            .message_repo
+            .find_by_id(message_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
+        if message.delivery.is_some() {
+            return Ok(());
+        }
+        message.delivery = Some(crate::chat::message::models::MessageDelivery::pending(
+            Utc::now(),
+        ));
         self.message_repo.update(&message).await?;
         Ok(())
     }
@@ -474,6 +686,42 @@ impl ChannelManager {
             .await
     }
 
+    /// Stamps `Pending` only; does NOT dispatch directly. Defers to the retry
+    /// poller so dispatch stays single-sourced past adapter handshake.
+    pub async fn reconcile_message_delivery(&self, channel: &Channel) -> Result<u64, AppError> {
+        if channel.dispatch_mode != DispatchMode::Message {
+            return Ok(0);
+        }
+        // Signal-mode rows are observability-only — never delivered.
+        let orphans: Vec<_> = self
+            .message_repo
+            .find_undelivered_completed_for_channel(&channel.id)
+            .await?
+            .into_iter()
+            .filter(|m| m.dispatch_mode != Some(DispatchMode::Signal))
+            .collect();
+        let count = orphans.len() as u64;
+        if count == 0 {
+            return Ok(0);
+        }
+        tracing::info!(
+            channel_id = %channel.id,
+            count = %count,
+            "outbound: stamping orphan messages as Pending for retry pickup",
+        );
+        for msg in orphans {
+            if let Err(e) = self.ensure_pending_delivery(&msg.id).await {
+                tracing::warn!(
+                    channel_id = %channel.id,
+                    msg_id = %msg.id,
+                    error = %e,
+                    "outbound recovery: ensure_pending_delivery failed",
+                );
+            }
+        }
+        Ok(count)
+    }
+
     pub async fn retry_due_deliveries(&self) -> Result<u64, AppError> {
         let due = self
             .message_repo
@@ -538,7 +786,23 @@ impl ChannelManager {
         adapter: &dyn ChannelAdapter,
         ctx: &ChannelCtx,
     ) -> Result<SegmentOutcome, AppError> {
-        if msg.status != Some(MessageStatus::Completed) {
+        // Funnel for broadcast + retry-poller: catches Signal-fallback replies
+        // that the broadcast-side gate misses after crash-recovery reconcile.
+        let effective_mode = msg
+            .dispatch_mode
+            .unwrap_or(ctx.channel.dispatch_mode);
+        if effective_mode != DispatchMode::Message {
+            tracing::debug!(
+                channel_id = %ctx.channel.id,
+                msg_id = %msg.id,
+                msg_mode = ?msg.dispatch_mode,
+                channel_mode = ?ctx.channel.dispatch_mode,
+                "attempt_send skip: effective mode is not Message",
+            );
+            return Ok(SegmentOutcome::Done);
+        }
+        // Mirrors `handle_outbound_event`'s status filter.
+        if !matches!(msg.status, Some(MessageStatus::Completed) | None) {
             return Ok(SegmentOutcome::Done);
         }
         let Some(delivery) = msg.delivery.as_ref() else {
@@ -668,26 +932,39 @@ async fn handle_outbound_event(
             && ev_space_id.as_deref() == Some(space_id) =>
         {
             let msg = state.chat_service.get_message(&event.user_id, record_id).await?;
-            if msg.role != MessageRole::Agent {
+            if !matches!(msg.role, MessageRole::Agent | MessageRole::TaskCompletion) {
                 return Ok(());
             }
-            if msg.status != Some(MessageStatus::Completed) {
+            if !matches!(msg.status, Some(MessageStatus::Completed) | None) {
                 tracing::debug!(
                     channel_id = %ctx.channel.id,
                     msg_id = %msg.id,
                     status = ?msg.status,
-                    "outbound skip: message not Completed",
+                    "outbound skip: message status not deliverable",
                 );
                 return Ok(());
             }
             let delivery_state = msg.delivery.as_ref().map(|d| d.state);
-            let needs_send = delivery_state == Some(DeliveryState::Pending);
-            if !needs_send {
+            if matches!(delivery_state, Some(DeliveryState::Sent) | Some(DeliveryState::Failed)) {
                 tracing::debug!(
                     channel_id = %ctx.channel.id,
                     msg_id = %msg.id,
                     delivery_state = ?delivery_state,
-                    "outbound skip: delivery state is not Pending (None = signal-mode/non-channel, Sent/Failed = already attempted)",
+                    "outbound skip: delivery already terminal",
+                );
+                return Ok(());
+            }
+            // Per-message override: Message-mode channel may carry a Signal-mode reply.
+            let effective_mode = msg
+                .dispatch_mode
+                .unwrap_or(ctx.channel.dispatch_mode);
+            if effective_mode != DispatchMode::Message {
+                tracing::debug!(
+                    channel_id = %ctx.channel.id,
+                    msg_id = %msg.id,
+                    msg_mode = ?msg.dispatch_mode,
+                    channel_mode = ?ctx.channel.dispatch_mode,
+                    "outbound skip: effective mode is not Message",
                 );
                 return Ok(());
             }
@@ -701,6 +978,8 @@ async fn handle_outbound_event(
                 );
                 return Ok(());
             }
+            ctx.channel_manager.ensure_pending_delivery(&msg.id).await?;
+            let msg = state.chat_service.get_message(&event.user_id, &msg.id).await?;
             tracing::info!(
                 channel_id = %ctx.channel.id,
                 msg_id = %msg.id,
@@ -794,6 +1073,15 @@ async fn process_inbound(
         return Ok(None);
     }
 
+    if event.content.trim().is_empty() && event.attachments.is_empty() {
+        tracing::debug!(
+            channel_id = %channel.id,
+            sender = %event.sender_address,
+            "inbound dropped: empty content with no attachments",
+        );
+        return Ok(None);
+    }
+
     let agent = state
         .agent_service
         .find_by_id(&channel.agent_id)
@@ -861,8 +1149,15 @@ async fn process_inbound(
         .and_then(|ua| ua.address.clone())
         .map(|a| vec![a])
         .unwrap_or_default();
-    let allowed = check_allowed(state, channel, &agent, &sender_contact, &paired_addresses).await?;
-    if !allowed {
+    let effective = effective_dispatch_mode(
+        state,
+        channel,
+        &agent,
+        &sender_contact,
+        &paired_addresses,
+    )
+    .await?;
+    let Some(effective) = effective else {
         tracing::info!(
             user_id = %channel.user_id,
             agent_id = %channel.agent_id,
@@ -875,45 +1170,70 @@ async fn process_inbound(
             "Inbound discarded — Cedar denied",
         );
         return Ok(None);
+    };
+    if effective != channel.dispatch_mode {
+        tracing::info!(
+            channel_id = %channel.id,
+            sender = %event.sender_address,
+            channel_mode = ?channel.dispatch_mode,
+            effective_mode = ?effective,
+            "Inbound authorized as signal fallback on Message-mode channel",
+        );
     }
 
     let builder = Message::builder(&chat.id, MessageRole::User, event.content.clone())
-        .from_address(event.sender_address.clone());
+        .from_address(event.sender_address.clone())
+        .dispatch_mode(effective);
     let mut msg = builder.build();
     if let Some(c) = &real_contact {
         msg.contact_id = Some(c.id.clone());
     }
+    msg.attachments = event.attachments.clone();
 
     let saved = state.chat_service.persist_inbound_message(&msg).await?;
     Ok(Some(saved))
 }
 
-async fn check_allowed(
+/// Message-mode channels fall back to `ReceiveSignal` when `ReceiveMessage`
+/// denies (covers agents with an open watch). Signal-mode only checks `ReceiveSignal`.
+async fn effective_dispatch_mode(
     state: &AppState,
     channel: &Channel,
     agent: &Agent,
     sender_contact: &PolicyContact,
     paired_addresses: &[String],
-) -> Result<bool, AppError> {
-    let action = match channel.dispatch_mode {
-        DispatchMode::Message => PolicyAction::ReceiveMessage {
-            connector_id: channel.space_id.clone(),
-            channel_id: channel.provider.clone(),
-            sender: sender_contact.clone(),
-            paired_addresses: paired_addresses.to_vec(),
-        },
-        DispatchMode::Signal => PolicyAction::ReceiveSignal {
-            connector_id: channel.space_id.clone(),
-            channel_id: channel.provider.clone(),
-            sender: sender_contact.clone(),
-            paired_addresses: paired_addresses.to_vec(),
-        },
+) -> Result<Option<DispatchMode>, AppError> {
+    let receive_message = || PolicyAction::ReceiveMessage {
+        connector_id: channel.space_id.clone(),
+        channel_handle: channel.handle.clone(),
+        sender: sender_contact.clone(),
+        paired_addresses: paired_addresses.to_vec(),
     };
+    let receive_signal = || PolicyAction::ReceiveSignal {
+        connector_id: channel.space_id.clone(),
+        channel_handle: channel.handle.clone(),
+        sender: sender_contact.clone(),
+        paired_addresses: paired_addresses.to_vec(),
+    };
+
+    if channel.dispatch_mode == DispatchMode::Message {
+        let decision = state
+            .policy_service
+            .authorize(&channel.user_id, agent, receive_message())
+            .await?;
+        if decision.allowed {
+            return Ok(Some(DispatchMode::Message));
+        }
+    }
+
     let decision = state
         .policy_service
-        .authorize(&channel.user_id, agent, action)
+        .authorize(&channel.user_id, agent, receive_signal())
         .await?;
-    Ok(decision.allowed)
+    if decision.allowed {
+        return Ok(Some(DispatchMode::Signal));
+    }
+    Ok(None)
 }
 
 fn synthesize_self_contact(
@@ -1000,7 +1320,8 @@ async fn handle_inbound_message(
         return Ok(());
     };
     let channel = channel_row.provider.clone();
-    let mode = channel_row.dispatch_mode;
+    // Legacy rows pre-dating `msg.dispatch_mode` fall back to the channel's mode.
+    let mode = msg.dispatch_mode.unwrap_or(channel_row.dispatch_mode);
 
     let chat_type = ChatType::from_chat(&chat);
     let sender = msg.from_address.as_deref();
@@ -1009,6 +1330,29 @@ async fn handle_inbound_message(
         Some(svc) => svc.pending_category_hints(user_id).await,
         None => Vec::new(),
     };
+
+    if matches!(mode, DispatchMode::Signal) {
+        // dispatch_mode=Signal causes `attempt_send` to refuse delivery.
+        let Some(signal_service) = state.signal_service() else {
+            tracing::warn!(
+                channel_id = %channel_row.id,
+                "Signal-mode dispatch but signal_service unavailable; skipping",
+            );
+            return Ok(());
+        };
+        signal_service
+            .process_inbound_extract(
+                &state.chat_service,
+                state.chat_service.provider_registry(),
+                &channel_row,
+                &chat,
+                &msg,
+                &awaiting_categories,
+            )
+            .await?;
+        return Ok(());
+    }
+
     let inbound_prompt = compose_inbound_prompt(
         state,
         mode,
@@ -1019,22 +1363,12 @@ async fn handle_inbound_message(
         &awaiting_categories,
     );
 
-    let delivery = match (chat.channel_id.is_some(), mode) {
-        (true, DispatchMode::Message) => Some(
-            crate::chat::message::models::MessageDelivery::pending(chrono::Utc::now()),
-        ),
-        _ => None,
-    };
     let agent_msg = state
         .chat_service
-        .create_executing_agent_message(&chat.id, &chat.agent_id, delivery)
+        .create_executing_agent_message(&chat.id, &chat.agent_id)
         .await?;
 
     let cancel_token = CancellationToken::new();
-    let tool_filter: Option<&[&str]> = match mode {
-        DispatchMode::Message => None,
-        DispatchMode::Signal => Some(SIGNAL_MODE_TOOLS),
-    };
 
     let builder = Box::new(ChannelConversationBuilder {
         user_service: state.user_service.clone(),
@@ -1051,7 +1385,7 @@ async fn handle_inbound_message(
         &agent_msg.id,
         cancel_token,
         builder,
-        tool_filter,
+        &[],
         None,
     )
     .await;

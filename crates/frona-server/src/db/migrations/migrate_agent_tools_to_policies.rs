@@ -72,7 +72,7 @@ async fn migrate_agent_tools_to_policies(db: &Surreal<Db>) -> Result<(), surreal
                 updated_at: $now,
             }"
         )
-        .bind(("id", uuid::Uuid::new_v4().to_string()))
+        .bind(("id", crate::core::repository::new_id()))
         .bind(("user_id", user_id.to_string()))
         .bind(("name", policy_name))
         .bind(("description", format!("Migrated tool permits for {agent_id}")))

@@ -24,7 +24,6 @@ pub trait SearchProvider: Send + Sync {
     async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>, AppError>;
 }
 
-// --- Tavily Provider ---
 
 pub struct TavilyProvider {
     client: reqwest::Client,
@@ -89,7 +88,6 @@ impl SearchProvider for TavilyProvider {
     }
 }
 
-// --- Brave Provider ---
 
 pub struct BraveProvider {
     client: reqwest::Client,
@@ -158,7 +156,6 @@ impl SearchProvider for BraveProvider {
     }
 }
 
-// --- SearXNG Provider ---
 
 pub struct SearxngProvider {
     client: reqwest::Client,
@@ -229,7 +226,6 @@ impl SearchProvider for SearxngProvider {
     }
 }
 
-// --- WebSearchTool ---
 
 pub struct WebSearchTool {
     provider: Option<Arc<dyn SearchProvider>>,
@@ -297,7 +293,6 @@ impl WebSearchTool {
     }
 }
 
-// --- Factory ---
 
 pub fn create_search_provider(
     http: reqwest::Client,
@@ -373,12 +368,13 @@ mod tests {
         let event_sender = broadcast.create_event_sender("u", "c", None);
         InferenceContext::new(
             crate::auth::User {
-                id: "u".into(), username: "u".into(), email: "e".into(), name: "n".into(),
+                id: "u".into(), handle: crate::handle!("uu"), email: "e".into(), name: "n".into(),
                 password_hash: String::new(), timezone: None,
+                groups: Vec::new(), deactivated_at: None,
                 created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
             },
             crate::agent::models::Agent {
-                id: "a".into(), user_id: None, name: "a".into(),
+                id: "a".into(), user_id: "test-user".into(), handle: crate::handle!("aa"), name: "a".into(),
                 description: String::new(), model_group: "p".into(), enabled: true,
                 skills: None, sandbox_limits: None, max_concurrent_tasks: None,
                 avatar: None, identity: Default::default(), prompt: None,

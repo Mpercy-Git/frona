@@ -21,11 +21,15 @@ pub fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
         Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
     let tool_manager = Arc::new(ToolManager::new(false));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
-    PolicyService::new(repo, schema, tool_manager, storage)
+    let user_service = frona::auth::UserService::new(
+        SurrealRepo::new(db.clone()),
+        &frona::core::config::CacheConfig::default(),
+    );
+    PolicyService::new(repo, schema, tool_manager, storage, user_service)
 }
-use rig::completion::request::ToolDefinition as RigToolDefinition;
-use rig::completion::{AssistantContent, Message as RigMessage};
-use rig::completion::message::{ToolCall, ToolFunction};
+use rig_core::completion::request::ToolDefinition as RigToolDefinition;
+use rig_core::completion::{AssistantContent, Message as RigMessage};
+use rig_core::completion::message::{ToolCall, ToolFunction};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -81,12 +85,14 @@ impl ModelProvider for MockModelProvider {
             output_tokens: 5,
             total_tokens: 15,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_tokens: 0,
         };
         match self.next_response() {
             MockResponse::Text(t) => Ok((vec![AssistantContent::text(&t)], usage)),
             MockResponse::TextWithReasoning(text, reasoning) => {
                 let contents = vec![
-                    AssistantContent::Reasoning(rig::completion::message::Reasoning::new(&reasoning)),
+                    AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(&reasoning)),
                     AssistantContent::text(&text),
                 ];
                 Ok((contents, usage))
@@ -124,7 +130,7 @@ impl ModelProvider for MockModelProvider {
                 let _ = token_tx.send(frona::inference::provider::StreamToken::Reasoning(reasoning.clone())).await;
                 let _ = token_tx.send(frona::inference::provider::StreamToken::Text(text.clone())).await;
                 Ok(vec![
-                    AssistantContent::Reasoning(rig::completion::message::Reasoning::new(&reasoning)),
+                    AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(&reasoning)),
                     AssistantContent::text(text),
                 ])
             }
@@ -138,6 +144,30 @@ impl ModelProvider for MockModelProvider {
                 Ok(contents)
             }
             MockResponse::Error(e) => Err(e),
+        }
+    }
+
+    async fn structured_inference(
+        &self,
+        _model_id: &str,
+        _system_prompt: &str,
+        _chat_history: Vec<RigMessage>,
+        _schema: serde_json::Value,
+        _max_tokens: Option<u64>,
+        _temperature: Option<f64>,
+        _additional_params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, InferenceError> {
+        match self.next_response() {
+            MockResponse::ToolCalls(mut calls) => {
+                let (_id, _name, args) = calls
+                    .pop()
+                    .ok_or_else(|| InferenceError::InferenceFailed("mock: empty ToolCalls".into()))?;
+                Ok(args)
+            }
+            MockResponse::Error(e) => Err(e),
+            _ => Err(InferenceError::InferenceFailed(
+                "mock structured_inference: queue head is not a ToolCalls response".into(),
+            )),
         }
     }
 }
@@ -306,17 +336,20 @@ pub fn mock_context() -> InferenceContext {
     InferenceContext::new(
         frona::auth::User {
             id: "test-user".into(),
-            username: "testuser".into(),
+            handle: frona::handle!("testuser"),
             email: "test@test.com".into(),
             name: "Test".into(),
             password_hash: String::new(),
             timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         },
         frona::agent::models::Agent {
             id: "test-agent".into(),
-            user_id: Some("test-user".into()),
+            user_id: "test-user".into(),
+            handle: frona::handle!("test-agent"),
             name: "Test Agent".into(),
             description: String::new(),
             model_group: "primary".into(),
@@ -492,8 +525,7 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
 
     let config = frona::core::config::Config {
         storage: frona::core::config::StorageConfig {
-            workspaces_path: format!("{base}/workspaces"),
-            files_path: format!("{base}/files"),
+            data_dir: base.clone(),
             shared_config_dir: format!("{base}/config"),
             ..Default::default()
         },
@@ -504,20 +536,20 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
     let resource_manager = std::sync::Arc::new(
         frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
+    let user_service = frona::auth::UserService::new(
+        SurrealRepo::new(db.clone()),
+        &config.cache,
+    );
     let agent_service = frona::agent::service::AgentService::new(
         SurrealRepo::new(db.clone()),
         &config.cache,
-        std::path::PathBuf::from(&config.storage.shared_config_dir).join("agents"),
         resource_manager.clone(),
         test_policy_service(&db),
+        user_service.clone(),
     );
     let provider_registry = frona::inference::registry::ModelProviderRegistry::for_testing(
         HashMap::new(),
         HashMap::new(),
-    );
-    let user_service = frona::auth::UserService::new(
-        SurrealRepo::new(db.clone()),
-        &config.cache,
     );
 
     let memory_service = frona::memory::service::MemoryService::new(
@@ -527,6 +559,19 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         std::sync::Arc::new(provider_registry.clone()),
         frona::agent::prompt::PromptLoader::new(&base),
         storage.clone(),
+    );
+
+    let keypair_repo: SurrealRepo<frona::credential::keypair::models::KeyPair> =
+        SurrealRepo::new(db.clone());
+    let keypair_service = frona::credential::keypair::service::KeyPairService::new(
+        &config.auth.encryption_secret,
+        std::sync::Arc::new(keypair_repo),
+    );
+    let presign_service = frona::credential::presign::PresignService::new(
+        keypair_service,
+        user_service.clone(),
+        "http://localhost:0".to_string(),
+        300,
     );
 
     frona::chat::service::ChatService::new(
@@ -540,6 +585,7 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         memory_service,
         frona::agent::prompt::PromptLoader::new(&base),
         frona::chat::broadcast::BroadcastService::new(),
+        presign_service,
     )
 }
 

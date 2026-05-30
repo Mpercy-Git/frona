@@ -20,22 +20,25 @@ import { indexContactsById } from "./types";
 
 type ActiveTab = "chat" | "tasks";
 
-interface NavigationContextValue {
-  spaces: SpaceWithChats[];
-  standaloneChats: ChatResponse[];
-  tasks: TaskResponse[];
-  agents: Agent[];
-  contacts: Record<string, Contact>;
+/// Internal shape. Boot fields are `T | undefined` until `refresh()` lands;
+/// `useNavigation` narrows them and throws if called before AppGate marks
+/// the data ready, so consumers get the [[NavigationContextValue]] view.
+interface NavigationContextRaw {
+  spaces: SpaceWithChats[] | undefined;
+  standaloneChats: ChatResponse[] | undefined;
+  tasks: TaskResponse[] | undefined;
+  agents: Agent[] | undefined;
+  contacts: Record<string, Contact> | undefined;
   archivedChats: ChatResponse[];
   showArchived: boolean;
   setShowArchived: (show: boolean) => void;
   activeTab: ActiveTab;
-  loading: boolean;
   setActiveTab: (tab: ActiveTab) => void;
   mobileNavOpen: boolean;
   setMobileNavOpen: (open: boolean) => void;
   mobileSubNavOpen: boolean;
   setMobileSubNavOpen: (open: boolean) => void;
+  /// Throws on network unavailability — AppGate decides whether to retry.
   refresh: () => Promise<void>;
   addStandaloneChat: (chat: ChatResponse) => void;
   updateChatTitle: (chatId: string, title: string) => void;
@@ -48,7 +51,18 @@ interface NavigationContextValue {
   updateTaskInList: (taskId: string, fields: Partial<TaskResponse>) => void;
 }
 
-const NavigationContext = createContext<NavigationContextValue | null>(null);
+export type NavigationContextValue = Omit<
+  NavigationContextRaw,
+  "spaces" | "standaloneChats" | "tasks" | "agents" | "contacts"
+> & {
+  spaces: SpaceWithChats[];
+  standaloneChats: ChatResponse[];
+  tasks: TaskResponse[];
+  agents: Agent[];
+  contacts: Record<string, Contact>;
+};
+
+const NavigationContext = createContext<NavigationContextRaw | null>(null);
 
 interface NavigationResponse {
   spaces: SpaceWithChats[];
@@ -61,57 +75,53 @@ export function NavigationProvider({
   children: React.ReactNode;
 }) {
   const sortAgents = (list: Agent[]) =>
-    [...list].sort((a, b) => (a.id === "system" ? -1 : b.id === "system" ? 1 : a.name.localeCompare(b.name)));
+    [...list].sort((a, b) =>
+      a.handle === "system" ? -1 : b.handle === "system" ? 1 : a.name.localeCompare(b.name),
+    );
 
-  const [spaces, setSpaces] = useState<SpaceWithChats[]>([]);
-  const [standaloneChats, setStandaloneChats] = useState<ChatResponse[]>([]);
-  const [tasks, setTasks] = useState<TaskResponse[]>([]);
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [contacts, setContacts] = useState<Record<string, Contact>>({});
+  const [spaces, setSpaces] = useState<SpaceWithChats[] | undefined>(undefined);
+  const [standaloneChats, setStandaloneChats] = useState<ChatResponse[] | undefined>(undefined);
+  const [tasks, setTasks] = useState<TaskResponse[] | undefined>(undefined);
+  const [agents, setAgents] = useState<Agent[] | undefined>(undefined);
+  const [contacts, setContacts] = useState<Record<string, Contact> | undefined>(undefined);
   const [archivedChats, setArchivedChats] = useState<ChatResponse[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
-  const [loading, setLoading] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileSubNavOpen, setMobileSubNavOpen] = useState(false);
 
+  /// State is set atomically on success — UI sees the previous snapshot
+  /// until the new one lands.
   const refresh = useCallback(async () => {
-    try {
-      const [nav, tasksData, agentsData, contactsData] = await Promise.all([
-        api.get<NavigationResponse>("/api/navigation"),
-        api.get<TaskResponse[]>("/api/tasks"),
-        api.get<Agent[]>("/api/agents"),
-        getContacts(),
-      ]);
-      setSpaces(nav.spaces);
-      setStandaloneChats(nav.standalone_chats);
-      setTasks(tasksData);
-      setAgents(sortAgents(agentsData));
-      setContacts(indexContactsById(contactsData));
-    } catch {
-      // silently fail - auth guard will redirect if needed
-    } finally {
-      setLoading(false);
-    }
+    const [nav, tasksData, agentsData, contactsData] = await Promise.all([
+      api.get<NavigationResponse>("/api/navigation"),
+      api.get<TaskResponse[]>("/api/tasks"),
+      api.get<Agent[]>("/api/agents"),
+      getContacts(),
+    ]);
+    setSpaces(nav.spaces);
+    setStandaloneChats(nav.standalone_chats);
+    setTasks(tasksData);
+    setAgents(sortAgents(agentsData));
+    setContacts(indexContactsById(contactsData));
   }, []);
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
+  // `prev ? ... : prev` guards exist only to satisfy the type system; the
+  // mutators are only reachable below AppGate, which guarantees boot data.
   const addStandaloneChat = useCallback((chat: ChatResponse) => {
-    setStandaloneChats((prev) => [chat, ...prev]);
+    setStandaloneChats((prev) => (prev ? [chat, ...prev] : prev));
   }, []);
 
   const updateAgent = useCallback((agentId: string, fields: Record<string, unknown>) => {
     setAgents((prev) => {
+      if (!prev) return prev;
       const exists = prev.some((a) => a.id === agentId);
       if (exists) {
         return prev.map((a) => (a.id === agentId ? { ...a, ...fields } : a));
       }
-      // New agent — fetch it from the API and add to state, sorted with system first
       api.get<Agent>(`/api/agents/${agentId}`).then((agent) => {
         setAgents((curr) => {
+          if (!curr) return curr;
           if (curr.some((a) => a.id === agentId)) return curr;
           return sortAgents([...curr, agent]);
         });
@@ -122,14 +132,14 @@ export function NavigationProvider({
 
   const deleteAgentAction = useCallback(async (agentId: string) => {
     await apiDeleteAgent(agentId);
-    setAgents((prev) => prev.filter((a) => a.id !== agentId));
+    setAgents((prev) => prev?.filter((a) => a.id !== agentId));
   }, []);
 
   const archiveChat = useCallback(async (chatId: string) => {
     await apiArchiveChat(chatId);
-    setStandaloneChats((prev) => prev.filter((c) => c.id !== chatId));
+    setStandaloneChats((prev) => prev?.filter((c) => c.id !== chatId));
     setSpaces((prev) =>
-      prev.map((space) => ({
+      prev?.map((space) => ({
         ...space,
         chats: space.chats.filter((c) => c.id !== chatId),
       })),
@@ -146,9 +156,9 @@ export function NavigationProvider({
 
   const deleteChatAction = useCallback(async (chatId: string) => {
     await apiDeleteChat(chatId);
-    setStandaloneChats((prev) => prev.filter((c) => c.id !== chatId));
+    setStandaloneChats((prev) => prev?.filter((c) => c.id !== chatId));
     setSpaces((prev) =>
-      prev.map((space) => ({
+      prev?.map((space) => ({
         ...space,
         chats: space.chats.filter((c) => c.id !== chatId),
       })),
@@ -157,14 +167,14 @@ export function NavigationProvider({
   }, []);
 
   const deleteTaskAction = useCallback(async (taskId: string) => {
-    const task = tasks.find((t) => t.id === taskId);
+    const task = tasks?.find((t) => t.id === taskId);
     await apiDeleteTask(taskId);
-    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    setTasks((prev) => prev?.filter((t) => t.id !== taskId));
     if (task?.chat_id) {
       const chatId = task.chat_id;
-      setStandaloneChats((prev) => prev.filter((c) => c.id !== chatId));
+      setStandaloneChats((prev) => prev?.filter((c) => c.id !== chatId));
       setSpaces((prev) =>
-        prev.map((space) => ({
+        prev?.map((space) => ({
           ...space,
           chats: space.chats.filter((c) => c.id !== chatId),
         })),
@@ -174,6 +184,7 @@ export function NavigationProvider({
 
   const updateTaskInList = useCallback((taskId: string, fields: Partial<TaskResponse>) => {
     setTasks((prev) => {
+      if (!prev) return prev;
       const idx = prev.findIndex((t) => t.id === taskId);
       if (idx !== -1) {
         const updated = [...prev];
@@ -187,6 +198,7 @@ export function NavigationProvider({
       getTask(taskId)
         .then((task) => {
           setTasks((prev) => {
+            if (!prev) return prev;
             if (prev.some((t) => t.id === task.id)) return prev;
             return [task, ...prev];
           });
@@ -203,10 +215,10 @@ export function NavigationProvider({
 
   const updateChatTitle = useCallback((chatId: string, title: string) => {
     setStandaloneChats((prev) =>
-      prev.map((c) => (c.id === chatId ? { ...c, title } : c)),
+      prev?.map((c) => (c.id === chatId ? { ...c, title } : c)),
     );
     setSpaces((prev) =>
-      prev.map((space) => ({
+      prev?.map((space) => ({
         ...space,
         chats: space.chats.map((c) =>
           c.id === chatId ? { ...c, title } : c,
@@ -228,7 +240,6 @@ export function NavigationProvider({
         showArchived,
         setShowArchived,
         activeTab,
-        loading,
         setActiveTab,
         mobileNavOpen,
         setMobileNavOpen,
@@ -254,7 +265,37 @@ export function useNavigation(): NavigationContextValue {
   const ctx = useContext(NavigationContext);
   if (!ctx)
     throw new Error("useNavigation must be used within NavigationProvider");
+  if (
+    ctx.spaces === undefined ||
+    ctx.standaloneChats === undefined ||
+    ctx.tasks === undefined ||
+    ctx.agents === undefined ||
+    ctx.contacts === undefined
+  ) {
+    throw new Error(
+      "useNavigation called before AppGate finished loading. Components below AppGate can rely on boot data being present; if you need the loose shape (e.g. inside AppGate itself), use useNavigationRaw.",
+    );
+  }
+  return ctx as NavigationContextValue;
+}
+
+/// Only AppGate needs this — it gates rendering on whether data has loaded.
+export function useNavigationRaw(): NavigationContextRaw {
+  const ctx = useContext(NavigationContext);
+  if (!ctx)
+    throw new Error("useNavigationRaw must be used within NavigationProvider");
   return ctx;
+}
+
+export function useSystemAgent(): Agent {
+  const { agents } = useNavigation();
+  const found = agents.find((a) => a.handle === "system");
+  if (!found) {
+    throw new Error(
+      "Invariant violated: 'system' agent missing. Every user is supposed to have one cloned at signup.",
+    );
+  }
+  return found;
 }
 
 export function neighborRoute(

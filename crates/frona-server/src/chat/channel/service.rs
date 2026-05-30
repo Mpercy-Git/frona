@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use rand::Rng;
-use uuid::Uuid;
 
 use crate::chat::broadcast::{BroadcastService, EntityAction};
 use crate::core::config::Config;
@@ -65,6 +64,37 @@ impl ChannelService {
             .ok_or_else(|| AppError::NotFound(format!("channel {channel_id} not found")))
     }
 
+    async fn allocate_channel_handle(
+        &self,
+        user_id: &str,
+        provider: &str,
+    ) -> Result<crate::core::Handle, AppError> {
+        let taken: std::collections::HashSet<String> = self
+            .repo
+            .find_by_user(user_id)
+            .await?
+            .into_iter()
+            .map(|c| c.handle.to_string())
+            .collect();
+        let base = crate::core::Handle::try_new(provider).map_err(|e| {
+            AppError::Validation(format!("provider '{provider}' is not a valid handle base: {e}"))
+        })?;
+        if !taken.contains(base.as_str()) {
+            return Ok(base);
+        }
+        for i in 2..100u32 {
+            let candidate = format!("{}-{i}", base.as_str());
+            if !taken.contains(&candidate) {
+                return crate::core::Handle::try_new(candidate).map_err(|e| {
+                    AppError::Internal(format!("generated handle invalid: {e}"))
+                });
+            }
+        }
+        Err(AppError::Validation(format!(
+            "exhausted handle suffixes for provider '{provider}'"
+        )))
+    }
+
     pub async fn find_owned(&self, user_id: &str, channel_id: &str) -> Result<Channel, AppError> {
         let channel = self.find_by_id(channel_id).await?;
         if channel.user_id != user_id {
@@ -101,9 +131,11 @@ impl ChannelService {
         };
 
         let now = Utc::now();
+        let handle = self.allocate_channel_handle(user_id, &req.provider).await?;
         let channel = Channel {
-            id: format!("channel:{}", Uuid::new_v4()),
+            id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
+            handle,
             space_id: req.space_id,
             provider: req.provider,
             agent_id: req.agent_id,
@@ -113,8 +145,11 @@ impl ChannelService {
             error_message: initial_error,
             last_started_at: None,
             user_address: None,
+            setup: None,
+            retry: req.retry,
             created_at: now,
             updated_at: now,
+            webhook_url: None,
         };
         let persisted = self.repo.create(&channel).await?;
 
@@ -157,6 +192,19 @@ impl ChannelService {
             self.write_bindings(user_id, &channel.id, credentials.clone()).await?;
         }
 
+        if let Some(retry) = req.retry {
+            channel.retry = retry;
+        }
+
+        if channel.status == ChannelStatus::Setup {
+            let missing = self.missing_required(&channel).await?;
+            channel.error_message = if missing.is_empty() {
+                None
+            } else {
+                Some(format!("missing required field(s): {}", missing.join(", ")))
+            };
+        }
+
         channel.updated_at = Utc::now();
         let persisted = self.repo.update(&channel).await?;
 
@@ -173,10 +221,33 @@ impl ChannelService {
 
     pub async fn delete(
         &self,
+        state: &crate::core::state::AppState,
         user_id: &str,
         channel_id: &str,
     ) -> Result<(), AppError> {
         let channel = self.find_owned(user_id, channel_id).await?;
+
+        // Fire-and-forget: `run_outbound` runs `on_disconnect` on cancel.
+        state.channel_manager.stop_channel(&channel.id).await;
+
+        if let Some(user) = state.user_service.find_by_id(&channel.user_id).await? {
+            let dir = super::manager::channel_data_dir(
+                &state.storage_service,
+                &user.handle,
+                &channel.handle,
+            );
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!(
+                    channel_id = %channel.id,
+                    dir = %dir.display(),
+                    error = %e,
+                    "failed to remove channel data dir",
+                ),
+            }
+        }
+
         let principal = Principal::channel(&channel.id);
         self.vault.delete_bindings_for_principal(user_id, &principal).await?;
         self.repo.delete(&channel.id).await?;
@@ -201,8 +272,23 @@ impl ChannelService {
         if channel.status == ChannelStatus::Connected {
             return Ok(channel);
         }
+        // Check missing fields before Connecting; start_channel doesn't revert status on Err.
+        let missing = self.missing_required(&channel).await?;
+        if !missing.is_empty() {
+            let msg = format!("missing required field(s): {}", missing.join(", "));
+            if channel.status != ChannelStatus::Setup
+                || channel.error_message.as_deref() != Some(msg.as_str())
+            {
+                self.mark_status(channel_id, ChannelStatus::Setup, Some(msg.clone()))
+                    .await?;
+            }
+            return Err(AppError::Validation(msg));
+        }
         self.mark_status(channel_id, ChannelStatus::Connecting, None).await?;
-        state.channel_manager.start_channel(state, &channel).await?;
+        state
+            .channel_manager
+            .clone()
+            .start_with_retry(state.clone(), channel.id.clone());
         self.find_by_id(channel_id).await
     }
 
@@ -442,6 +528,41 @@ impl ChannelService {
             return Ok(());
         }
         self.revert_pairing(channel).await?;
+        Ok(())
+    }
+
+    pub async fn begin_setup(
+        &self,
+        channel_id: &str,
+        mut setup: super::models::SetupConfig,
+    ) -> Result<(), AppError> {
+        let mut channel = self
+            .repo
+            .find_by_id(channel_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("channel {channel_id} not found")))?;
+        let now = Utc::now();
+        setup.initiated_at = Some(now);
+        channel.setup = Some(setup);
+        channel.status = ChannelStatus::Setup;
+        channel.updated_at = now;
+        self.repo.update(&channel).await?;
+        self.broadcast_update(&channel, EntityAction::Updated);
+        Ok(())
+    }
+
+    pub async fn complete_setup(&self, channel_id: &str) -> Result<(), AppError> {
+        let mut channel = self
+            .repo
+            .find_by_id(channel_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("channel {channel_id} not found")))?;
+        let now = Utc::now();
+        channel.setup = None;
+        channel.status = ChannelStatus::Connected;
+        channel.updated_at = now;
+        self.repo.update(&channel).await?;
+        self.broadcast_update(&channel, EntityAction::Updated);
         Ok(())
     }
 

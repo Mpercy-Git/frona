@@ -6,6 +6,7 @@ use cedar_policy::{
     Entities, Entity, EntityId, EntityTypeName, EntityUid, PolicySet, RestrictedExpression, Schema,
 };
 
+use crate::core::Handle;
 use crate::core::principal::{Principal, PrincipalKind};
 
 pub const NAMESPACE: &str = "Policy";
@@ -33,10 +34,59 @@ pub fn entity_uid(type_name: &str, id: &str) -> EntityUid {
     EntityUid::from_type_name_and_id(entity_type_name(type_name), EntityId::new(id))
 }
 
-pub fn agent_entity_uid(agent_id: &str) -> EntityUid {
-    entity_uid("Agent", agent_id)
+pub fn agent_entity_uid(user_handle: &Handle, agent_handle: &Handle) -> EntityUid {
+    entity_uid("Agent", &format!("{user_handle}/{agent_handle}"))
 }
 
+pub fn app_entity_uid(user_handle: &Handle, app_handle: &Handle) -> EntityUid {
+    entity_uid("App", &format!("{user_handle}/{app_handle}"))
+}
+
+pub fn mcp_entity_uid(user_handle: &Handle, mcp_handle: &Handle) -> EntityUid {
+    entity_uid("Mcp", &format!("{user_handle}/{mcp_handle}"))
+}
+
+pub fn user_entity_uid(user_id: &str) -> EntityUid {
+    entity_uid("User", user_id)
+}
+
+pub fn user_entity_uid_from_handle(handle: &Handle) -> EntityUid {
+    entity_uid("User", handle.as_ref())
+}
+
+pub fn user_group_entity_uid(group: &str) -> EntityUid {
+    entity_uid("UserGroup", group)
+}
+
+/// Cedar requires parent entities to be present in the request's `Entities` set,
+/// not just named as parents on the principal — otherwise `principal in
+/// UserGroup::"x"` evaluates false.
+pub fn build_user_action_entities(
+    principal_id: &str,
+    principal_groups: &[String],
+    target_id: &str,
+) -> Entities {
+    let group_uids: HashSet<EntityUid> = principal_groups
+        .iter()
+        .map(|g| user_group_entity_uid(g))
+        .collect();
+
+    let principal_entity = Entity::new_no_attrs(user_entity_uid(principal_id), group_uids.clone());
+
+    let mut all = vec![principal_entity];
+    if target_id != principal_id {
+        all.push(Entity::new_no_attrs(
+            user_entity_uid(target_id),
+            HashSet::new(),
+        ));
+    }
+    for uid in group_uids {
+        all.push(Entity::new_no_attrs(uid, HashSet::new()));
+    }
+    Entities::from_entities(all, None).unwrap_or_else(|_| Entities::empty())
+}
+
+/// For `Agent`, callers must pre-rewrite `principal.id` to `{user_handle}/{agent_handle}`.
 pub fn principal_entity_uid(principal: &Principal) -> EntityUid {
     let type_name = match principal.kind {
         PrincipalKind::User => "User",
@@ -56,26 +106,76 @@ fn tools_to_set(tools: &[String]) -> RestrictedExpression {
     RestrictedExpression::new_set(elements)
 }
 
-pub fn build_agent_principal_entity(agent_id: &str, tools: &[String]) -> Entity {
+pub fn build_agent_principal_entity(user_handle: &Handle, agent_handle: &Handle, tools: &[String]) -> Entity {
     let attrs = [
         ("enabled".into(), RestrictedExpression::new_bool(true)),
         ("model_group".into(), RestrictedExpression::new_string("primary".into())),
         ("tools".into(), tools_to_set(tools)),
+        ("handle".into(), RestrictedExpression::new_string(agent_handle.to_string())),
     ];
+    let mut parents = HashSet::new();
+    parents.insert(user_entity_uid_from_handle(user_handle));
     Entity::new(
-        agent_entity_uid(agent_id),
+        agent_entity_uid(user_handle, agent_handle),
         attrs.into_iter().collect(),
-        HashSet::new(),
+        parents,
     )
     .expect("valid agent principal entity")
 }
 
-pub fn build_mcp_principal_entity(mcp_id: &str) -> Entity {
-    Entity::new_no_attrs(entity_uid("Mcp", mcp_id), HashSet::new())
+pub fn build_agent_principal_entity_for_id(id: &str, tools: &[String]) -> Entity {
+    let (parents, handle) = match id.split_once('/') {
+        Some((username, handle)) => {
+            let mut p = HashSet::new();
+            p.insert(user_entity_uid(username));
+            (p, handle.to_string())
+        }
+        None => (HashSet::new(), id.to_string()),
+    };
+    let attrs = [
+        ("enabled".into(), RestrictedExpression::new_bool(true)),
+        ("model_group".into(), RestrictedExpression::new_string("primary".into())),
+        ("tools".into(), tools_to_set(tools)),
+        ("handle".into(), RestrictedExpression::new_string(handle)),
+    ];
+    Entity::new(entity_uid("Agent", id), attrs.into_iter().collect(), parents)
+        .expect("valid agent principal entity")
 }
 
-pub fn build_app_principal_entity(app_id: &str) -> Entity {
-    Entity::new_no_attrs(entity_uid("App", app_id), HashSet::new())
+pub fn build_mcp_principal_entity(user_handle: &Handle, mcp_handle: &Handle) -> Entity {
+    let mut parents = HashSet::new();
+    parents.insert(user_entity_uid_from_handle(user_handle));
+    Entity::new_no_attrs(mcp_entity_uid(user_handle, mcp_handle), parents)
+}
+
+pub fn build_mcp_principal_entity_for_id(id: &str) -> Entity {
+    let parents = match id.split_once('/') {
+        Some((user_handle, _)) => {
+            let mut p = HashSet::new();
+            p.insert(user_entity_uid(user_handle));
+            p
+        }
+        None => HashSet::new(),
+    };
+    Entity::new_no_attrs(entity_uid("Mcp", id), parents)
+}
+
+pub fn build_app_principal_entity(user_handle: &Handle, app_handle: &Handle) -> Entity {
+    let mut parents = HashSet::new();
+    parents.insert(user_entity_uid_from_handle(user_handle));
+    Entity::new_no_attrs(app_entity_uid(user_handle, app_handle), parents)
+}
+
+pub fn build_app_principal_entity_for_id(id: &str) -> Entity {
+    let parents = match id.split_once('/') {
+        Some((user_handle, _)) => {
+            let mut p = HashSet::new();
+            p.insert(user_entity_uid(user_handle));
+            p
+        }
+        None => HashSet::new(),
+    };
+    Entity::new_no_attrs(entity_uid("App", id), parents)
 }
 
 pub fn tool_entity_uid(tool_name: &str) -> EntityUid {
@@ -107,28 +207,26 @@ pub fn build_tool_entities(tool_name: &str, tool_group: &str) -> Entities {
         .unwrap_or_else(|_| Entities::empty())
 }
 
+/// Both agents always share an owner — cross-user delegation isn't valid.
 pub fn build_agent_entities(
-    principal_id: &str,
+    user_handle: &Handle,
+    principal_handle: &Handle,
     principal_tools: &[String],
-    target_id: &str,
+    target_handle: &Handle,
     target_tools: &[String],
 ) -> Entities {
-    let principal_entity = build_agent_principal_entity(principal_id, principal_tools);
-    let target_entity = build_agent_principal_entity(target_id, target_tools);
+    let principal_entity = build_agent_principal_entity(user_handle, principal_handle, principal_tools);
+    let target_entity = build_agent_principal_entity(user_handle, target_handle, target_tools);
     Entities::from_entities([principal_entity, target_entity], None)
         .unwrap_or_else(|_| Entities::empty())
 }
 
-pub fn channel_entity_uid(channel_id: &str) -> EntityUid {
-    entity_uid("Channel", channel_id)
+pub fn channel_entity_uid(user_handle: &Handle, channel_handle: &Handle) -> EntityUid {
+    entity_uid("Channel", &format!("{user_handle}/{channel_handle}"))
 }
 
 pub fn contact_entity_uid(contact_id: &str) -> EntityUid {
     entity_uid("Contact", contact_id)
-}
-
-pub fn user_entity_uid(user_id: &str) -> EntityUid {
-    entity_uid("User", user_id)
 }
 
 pub fn message_source_entity_uid(connector_id: &str, address: &str) -> EntityUid {
@@ -137,16 +235,20 @@ pub fn message_source_entity_uid(connector_id: &str, address: &str) -> EntityUid
 }
 
 pub fn build_message_source_entities(
-    agent_id: &str,
+    user_handle: &Handle,
+    agent_handle: &Handle,
     agent_tools: &[String],
     connector_id: &str,
-    channel_id: &str,
+    channel_handle: &Handle,
     sender: &super::models::PolicyContact,
 ) -> Entities {
-    let principal_entity = build_agent_principal_entity(agent_id, agent_tools);
+    let principal_entity = build_agent_principal_entity(user_handle, agent_handle, agent_tools);
 
-    let channel_uid = channel_entity_uid(channel_id);
-    let channel_entity = Entity::new_no_attrs(channel_uid.clone(), HashSet::new());
+    let channel_uid = channel_entity_uid(user_handle, channel_handle);
+    let channel_entity = Entity::new_no_attrs(
+        channel_uid.clone(),
+        HashSet::from([user_entity_uid_from_handle(user_handle)]),
+    );
 
     let user_uid = user_entity_uid(&sender.user_id);
     let user_entity = Entity::new_no_attrs(user_uid.clone(), HashSet::new());
@@ -228,23 +330,25 @@ fn resource_to_cedar_clause(resource: &super::models::PolicyResource) -> String 
 }
 
 pub fn build_tool_policy_text(
-    agent_id: &str,
+    user_handle: &Handle,
+    agent_handle: &Handle,
     resource: &super::models::PolicyResource,
     effect: &str,
     policy_name: &str,
     description: &str,
 ) -> String {
     let resource_cedar = resource_to_cedar_clause(resource);
+    let agent_id = format!("{user_handle}/{agent_handle}");
     format!(
         "@id(\"{policy_name}\")\n@description(\"{description}\")\n{effect}(\n  principal == {NAMESPACE}::Agent::\"{agent_id}\",\n  action == {NAMESPACE}::Action::\"invoke_tool\",\n  {resource_cedar}\n);"
     )
 }
 
-pub fn references_agent(policy_text: &str, agent_id: &str) -> bool {
+pub fn references_agent(policy_text: &str, user_handle: &Handle, agent_handle: &Handle) -> bool {
     let Ok(policy_set) = PolicySet::from_str(policy_text) else {
         return false;
     };
-    let target = agent_entity_uid(agent_id);
+    let target = agent_entity_uid(user_handle, agent_handle);
 
     policy_set.policies().any(|p| {
         matches!(
@@ -285,9 +389,10 @@ mod tests {
 
     #[test]
     fn test_references_agent() {
-        let text = "permit(principal == Policy::Agent::\"my-agent\", action, resource);";
-        assert!(references_agent(text, "my-agent"));
-        assert!(!references_agent(text, "other-agent"));
+        let text = "permit(principal == Policy::Agent::\"alice/dev\", action, resource);";
+        assert!(references_agent(text, &crate::handle!("alice"), &crate::handle!("dev")));
+        assert!(!references_agent(text, &crate::handle!("alice"), &crate::handle!("other")));
+        assert!(!references_agent(text, &crate::handle!("bob"), &crate::handle!("dev")));
     }
 
     #[test]

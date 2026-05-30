@@ -8,7 +8,7 @@ import { useAuth } from "@/lib/auth";
 export default function RegisterPage() {
   const router = useRouter();
   const { register } = useAuth();
-  const [username, setUsername] = useState("");
+  const [handle, setHandle] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -20,7 +20,7 @@ export default function RegisterPage() {
     setError("");
     setSubmitting(true);
     try {
-      await register({ username, name, email, password });
+      await register({ handle, name, email, password });
       router.replace("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
@@ -42,15 +42,15 @@ export default function RegisterPage() {
             </div>
           )}
           <div>
-            <label htmlFor="username" className="block text-sm font-medium text-text-secondary">
+            <label htmlFor="handle" className="block text-sm font-medium text-text-secondary">
               Username
             </label>
             <input
-              id="username"
+              id="handle"
               type="text"
               required
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              value={handle}
+              onChange={(e) => setHandle(e.target.value)}
               className="mt-1 block w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-text-secondary focus:outline-none"
               placeholder="lowercase letters, digits, hyphens"
             />
