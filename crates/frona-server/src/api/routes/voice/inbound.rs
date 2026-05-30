@@ -5,7 +5,6 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Form;
 
-use crate::auth::User;
 use crate::auth::token::models::TokenType;
 use crate::auth::token::service::CreateTokenRequest;
 use crate::call::models::CallDirection;
@@ -268,23 +267,11 @@ pub(super) async fn twilio_inbound_handler(
         }
     };
 
-    // Build a minimal User value — the token service only needs id/username/email.
-    let token_user = User {
-        id: user.id.clone(),
-        username: user.username.clone(),
-        email: user.email.clone(),
-        name: user.name.clone(),
-        password_hash: String::new(),
-        timezone: None,
-        created_at: user.created_at,
-        updated_at: user.updated_at,
-    };
-
     let created = match state
         .token_service
         .create_token(
             &state.keypair_service,
-            &token_user,
+            &user,
             CreateTokenRequest {
                 token_type: TokenType::Access,
                 principal: Principal::agent(&agent_id),
