@@ -2,7 +2,7 @@
 
 import type { VoiceConfig } from "@/lib/config-types";
 import { isSensitiveSet } from "@/lib/config-types";
-import { TextInput, SelectInput, SensitiveInput, SectionHeader, SectionPanel } from "@/components/settings/field";
+import { TextInput, SelectInput, SensitiveInput, Toggle, SectionHeader, SectionPanel } from "@/components/settings/field";
 import { PhoneIcon } from "@heroicons/react/24/outline";
 
 interface VoiceSectionProps {
@@ -18,6 +18,13 @@ function inferProvider(voice: VoiceConfig): string | null {
   if (voice.provider) return voice.provider;
   if (isSensitiveSet(voice.twilio_account_sid)) return "twilio";
   return null;
+}
+
+function parseAllowlist(raw: string): string[] {
+  return raw
+    .split(/[,\n]/)
+    .map((p) => p.trim())
+    .filter(Boolean);
 }
 
 export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
@@ -76,6 +83,53 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
             value={voice.twilio_speech_model}
             onChange={(twilio_speech_model) => onChange({ ...voice, twilio_speech_model })}
             placeholder="phone_call"
+          />
+
+          <TextInput
+            label="Callback Base URL"
+            description="Public URL Twilio should use for voice webhooks (defaults to server.base_url)"
+            value={voice.callback_base_url}
+            onChange={(callback_base_url) => onChange({ ...voice, callback_base_url })}
+            placeholder="https://your-public-domain.com"
+          />
+
+          <Toggle
+            label="Enable Inbound Call Answering"
+            description="Allow Twilio inbound calls at /api/voice/twilio/inbound"
+            value={voice.inbound_enabled}
+            onChange={(inbound_enabled) => onChange({ ...voice, inbound_enabled })}
+          />
+
+          <TextInput
+            label="Inbound Fallback User ID"
+            description="User that owns calls matching the static inbound allowlist"
+            value={voice.inbound_user_id}
+            onChange={(inbound_user_id) => onChange({ ...voice, inbound_user_id })}
+            placeholder="user-id"
+          />
+
+          <TextInput
+            label="Inbound Agent ID"
+            description="Agent that answers inbound calls (defaults to receptionist)"
+            value={voice.inbound_agent_id}
+            onChange={(inbound_agent_id) => onChange({ ...voice, inbound_agent_id })}
+            placeholder="receptionist"
+          />
+
+          <TextInput
+            label="Inbound Welcome Greeting"
+            description="Greeting spoken when an inbound call connects"
+            value={voice.inbound_welcome_greeting}
+            onChange={(inbound_welcome_greeting) => onChange({ ...voice, inbound_welcome_greeting })}
+            placeholder="Hi, thanks for calling..."
+          />
+
+          <TextInput
+            label="Inbound Static Allowlist"
+            description="Comma- or newline-separated E.164 phone numbers allowed for inbound answering"
+            value={voice.inbound_allowlist?.join(", ") ?? ""}
+            onChange={(raw) => onChange({ ...voice, inbound_allowlist: parseAllowlist(raw) })}
+            placeholder="+15551234567, +447700900123"
           />
 
         </>
