@@ -68,12 +68,15 @@
 #   history_truncation_pct: 90
 
 # voice:
-#   provider: twilio
+#   provider: twilio                        # or: plivo
 #   twilio_account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 #   twilio_auth_token: "your-auth-token"
 #   twilio_from_number: "+15551234567"
 #   twilio_voice_id: "your-voice-id"
 #   twilio_speech_model: "your-speech-model"
+#   plivo_auth_id: "MAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+#   plivo_auth_token: "your-plivo-auth-token"
+#   plivo_from_number: "+15551234567"
 #   callback_base_url: "https://your-public-url.com"
 
 # vault:
