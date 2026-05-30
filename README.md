@@ -73,8 +73,7 @@ services:
   browserless:
     image: ghcr.io/browserless/chromium:latest
     environment:
-      - MAX_CONCURRENT_SESSIONS=10
-      - PREBOOT_CHROME=true
+      - CONCURRENT=10
     volumes:
       - ./data/browser_profiles:/profiles
     restart: unless-stopped
@@ -93,6 +92,15 @@ configs:
   searxng-settings:
     content: |
       use_default_settings: true
+      server:
+        limiter: false
+      engines:
+        - name: ahmia
+          disabled: true
+        - name: torch
+          disabled: true
+        - name: radio browser
+          disabled: true
       search:
         formats:
           - html

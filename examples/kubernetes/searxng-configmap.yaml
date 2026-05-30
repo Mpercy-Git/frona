@@ -8,6 +8,15 @@ data:
 
     server:
       secret_key: "change-me-to-something-random"
+      limiter: false
+
+    engines:
+      - name: ahmia
+        disabled: true
+      - name: torch
+        disabled: true
+      - name: radio browser
+        disabled: true
 
     search:
       formats:
