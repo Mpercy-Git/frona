@@ -29,6 +29,7 @@
 }
 
 :root {
+  --font-brand: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --surface: #ffffff;
   --surface-secondary: #f9fafb;
   --surface-tertiary: #f3f4f6;

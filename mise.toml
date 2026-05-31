@@ -1,5 +1,6 @@
 [tools]
 rust = "1.95.0"
+protoc = "3.21.12"
 node = "22"
 rust-analyzer = "latest"
 "cargo:cargo-watch" = "latest"
@@ -55,7 +56,10 @@ depends = ["lint:backend", "lint:frontend"]
 
 [tasks."lint:backend"]
 description = "Run clippy"
-run = "cargo clippy --workspace -- -D warnings"
+run = """
+rustup component add --toolchain "$(rustc -V | awk '{print $2}')" clippy
+cargo clippy --workspace -- -D warnings
+"""
 
 [tasks."lint:frontend"]
 description = "Run Next.js lint"
