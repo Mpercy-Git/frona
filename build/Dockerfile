@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # ============================
 # PROD BUILD STAGES
 # ============================
@@ -6,41 +7,46 @@
 FROM node:22-slim AS frontend-builder
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json* ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY web/ .
-RUN npm run build
+RUN --mount=type=cache,target=/app/web/.next/cache npm run build
 
-# Stage 2: cargo-chef planner
-FROM rust:1.95-bookworm AS planner
+# Stage 1.5: shared Rust tooling
+FROM rust:1.95-bookworm AS rust-tools
 RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo.txt \
+  --mount=type=cache,target=/usr/local/cargo/registry \
+  --mount=type=cache,target=/usr/local/cargo/git \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \
     cargo install "$crate" --version "$version" --locked; \
   done
+
+# Stage 2: cargo-chef planner
+FROM rust-tools AS planner
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 3: backend builder
-FROM rust:1.95-bookworm AS backend-builder
+FROM rust-tools AS backend-builder
 RUN --mount=type=bind,source=build/pkgs/builder-rust-apt.txt,target=/tmp/packages.txt \
   apt-get update && apt-get install -y --no-install-recommends \
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
   && rm -rf /var/lib/apt/lists/*
-RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo.txt \
-  for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
-    crate=${line%%=*}; version=${line#*=}; \
-    cargo install "$crate" --version "$version" --locked; \
-  done
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
-COPY resources/ resources/
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+  --mount=type=cache,target=/usr/local/cargo/git \
+  --mount=type=cache,target=/app/target \
+  cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY resources/ resources/
-RUN cargo build --release -p frona-server -p frona-cli-mcp
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+  --mount=type=cache,target=/usr/local/cargo/git \
+  --mount=type=cache,target=/app/target \
+  cargo build --release -p frona-server -p frona-cli-mcp
 
 # Stage 4: CLI tools (op, bw, syd)
 FROM debian:bookworm-slim AS cli-tools
@@ -79,7 +85,8 @@ RUN --mount=type=bind,source=build/pkgs/builder-python-apt.txt,target=/tmp/packa
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
   && rm -rf /var/lib/apt/lists/*
 COPY build/pkgs/builder-python-pip.txt .
-RUN pip install --no-cache-dir --prefix=/install -r builder-python-pip.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+  pip install --prefix=/install -r builder-python-pip.txt
 
 # ============================
 # DEV TARGET
@@ -95,8 +102,11 @@ RUN --mount=type=bind,source=build/pkgs/dev-apt.txt,target=/tmp/packages.txt \
     $(grep -E '^nodejs($|=)' /tmp/packages.txt | cut -d= -f1) \
   && rm -rf /var/lib/apt/lists/*
 COPY build/pkgs/builder-python-pip.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+  pip install --break-system-packages -r /tmp/requirements.txt
 RUN --mount=type=bind,source=build/pkgs/dev-rust-cargo.txt,target=/tmp/cargo.txt \
+  --mount=type=cache,target=/usr/local/cargo/registry \
+  --mount=type=cache,target=/usr/local/cargo/git \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \
     cargo install "$crate" --version "$version" --locked; \
@@ -112,7 +122,7 @@ ENV PATH="/app/bin:${PATH}"
 USER frona
 WORKDIR /app
 COPY --chown=frona:frona web/package.json web/package-lock.json* web/
-RUN cd web && npm install
+RUN --mount=type=cache,target=/home/frona/.npm cd web && npm install
 CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch --poll -w crates/ -w Cargo.toml -w Cargo.lock --delay 3 -s /app/build/dev-watch.sh & cd web && npm run dev & wait"]
 
 # ============================

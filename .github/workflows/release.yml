@@ -15,18 +15,13 @@ permissions:
   packages: write
 
 jobs:
-  docker:
-    name: Build & Push Docker Image
+  prepare:
+    name: Resolve release metadata
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.name }}
       is-prerelease: ${{ steps.check.outputs.is-prerelease }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
-
       - name: Resolve tag name
         id: tag
         run: |
@@ -52,6 +47,16 @@ jobs:
             echo "is-prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
+  docker-amd64:
+    name: Build & Push Docker Image (amd64)
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -65,14 +70,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
+      - name: Build and push
+        uses: docker/build-push-action@v6
         with:
-          images: ghcr.io/mpercy-git/frona
-          tags: |
-            type=raw,value=${{ steps.tag.outputs.name }}
-            type=raw,value=latest,enable=${{ steps.check.outputs.is-prerelease == 'false' }}
+          context: .
+          file: build/Dockerfile
+          target: prod
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/mpercy-git/frona:${{ needs.prepare.outputs.tag }}-amd64
+          cache-from: type=gha,scope=release-amd64
+          cache-to: type=gha,mode=max,scope=release-amd64
+
+  docker-arm64:
+    name: Build & Push Docker Image (arm64)
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -80,29 +111,59 @@ jobs:
           context: .
           file: build/Dockerfile
           target: prod
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ghcr.io/mpercy-git/frona:${{ needs.prepare.outputs.tag }}-arm64
+          cache-from: type=gha,scope=release-arm64
+          cache-to: type=gha,mode=max,scope=release-arm64
+
+  docker-manifest:
+    name: Publish Docker manifests
+    needs: [prepare, docker-amd64, docker-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish version and latest manifests
+        run: |
+          VERSION_TAG="${{ needs.prepare.outputs.tag }}"
+          BASE_IMAGE="ghcr.io/mpercy-git/frona"
+          SOURCES=("${BASE_IMAGE}:${VERSION_TAG}-amd64" "${BASE_IMAGE}:${VERSION_TAG}-arm64")
+
+          docker buildx imagetools create \
+            -t "${BASE_IMAGE}:${VERSION_TAG}" \
+            "${SOURCES[@]}"
+
+          if [ "${{ needs.prepare.outputs.is-prerelease }}" = "false" ]; then
+            docker buildx imagetools create \
+              -t "${BASE_IMAGE}:latest" \
+              "${SOURCES[@]}"
+          fi
 
   github-release:
     name: Create GitHub Release
-    needs: docker
+    needs: [prepare, docker-manifest]
     runs-on: ubuntu-latest
     steps:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.docker.outputs.tag }}
-          prerelease: ${{ needs.docker.outputs.is-prerelease == 'true' }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          prerelease: ${{ needs.prepare.outputs.is-prerelease == 'true' }}
           generate_release_notes: true
 
   update-examples:
     name: Update Example Files
-    needs: docker
-    if: needs.docker.outputs.is-prerelease == 'false'
+    needs: [prepare, docker-manifest]
+    if: needs.prepare.outputs.is-prerelease == 'false'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -113,13 +174,13 @@ jobs:
 
       - name: Update docker-compose image tag
         run: |
-          TAG="${{ needs.docker.outputs.tag }}"
+          TAG="${{ needs.prepare.outputs.tag }}"
           sed -i "s|image: ghcr.io/mpercy-git/frona:.*|image: ghcr.io/mpercy-git/frona:${TAG}|" \
             examples/docker-compose/docker-compose.yml
 
       - name: Update Kubernetes deployment image tag
         run: |
-          TAG="${{ needs.docker.outputs.tag }}"
+          TAG="${{ needs.prepare.outputs.tag }}"
           sed -i "s|image: ghcr.io/mpercy-git/frona:.*|image: ghcr.io/mpercy-git/frona:${TAG}|" \
             examples/kubernetes/frona-deployment.yaml
 
@@ -132,6 +193,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore: update example image tags to ${{ needs.docker.outputs.tag }}"
+            git commit -m "chore: update example image tags to ${{ needs.prepare.outputs.tag }}"
             git push origin main
           fi
