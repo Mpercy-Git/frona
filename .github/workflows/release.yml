@@ -32,8 +32,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
-            if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-              echo "Error: tag '$TAG' does not match expected version pattern (e.g. v1.2.3)"
+            if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9][A-Za-z0-9.-]*)?$ ]]; then
+              echo "Error: tag '$TAG' does not match expected version pattern (e.g. v2026.5.1 or v2026.5.1-RC1)"
               exit 1
             fi
             echo "name=$TAG" >> "$GITHUB_OUTPUT"
@@ -46,7 +46,7 @@ jobs:
         run: |
           TAG="${{ steps.tag.outputs.name }}"
           # Pre-release tags contain a hyphen (e.g. v0.2.0-ALPHA1, v0.2.0-RC1)
-          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9] ]]; then
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
             echo "is-prerelease=true" >> "$GITHUB_OUTPUT"
           else
             echo "is-prerelease=false" >> "$GITHUB_OUTPUT"

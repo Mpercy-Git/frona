@@ -55,7 +55,10 @@ depends = ["lint:backend", "lint:frontend"]
 
 [tasks."lint:backend"]
 description = "Run clippy"
-run = "cargo clippy --workspace -- -D warnings"
+run = """
+rustup component add --toolchain "$(rustc -V | awk '{print $2}')" clippy
+cargo clippy --workspace -- -D warnings
+"""
 
 [tasks."lint:frontend"]
 description = "Run Next.js lint"
@@ -64,7 +67,23 @@ run = "npm run lint"
 
 [tasks.test]
 description = "Run all tests"
-run = "cargo test --workspace"
+run = """
+if ! command -v protoc >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo apt-get update
+      sudo apt-get install -y --no-install-recommends protobuf-compiler
+    else
+      apt-get update
+      apt-get install -y --no-install-recommends protobuf-compiler
+    fi
+  else
+    echo "protoc is required to run tests; install protobuf-compiler or set PROTOC." >&2
+    exit 1
+  fi
+fi
+cargo test --workspace
+"""
 
 [tasks."test:e2e"]
 description = "Build the fake MCP server and run end-to-end tests"
