@@ -227,16 +227,15 @@ async fn handle_voice_socket(
 
     // For inbound calls, mark the call completed when the WebSocket closes
     // (the caller may hang up without the agent explicitly calling hangup_call).
-    if is_inbound {
-        if let Some(cid) = call_id.as_deref() {
-            if let Err(e) = state.call_service.mark_completed(cid).await {
-                tracing::warn!(
-                    error = %e,
-                    call_id = %cid,
-                    "Failed to mark inbound call completed on WS close"
-                );
-            }
-        }
+    if is_inbound
+        && let Some(cid) = call_id.as_deref()
+        && let Err(e) = state.call_service.mark_completed(cid).await
+    {
+        tracing::warn!(
+            error = %e,
+            call_id = %cid,
+            "Failed to mark inbound call completed on WS close"
+        );
     }
 
     if let Some(executor) = state.task_executor()
@@ -368,4 +367,3 @@ async fn handle_voice_turn(
         }
     }
 }
-

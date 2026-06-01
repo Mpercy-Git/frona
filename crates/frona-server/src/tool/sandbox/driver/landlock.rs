@@ -40,7 +40,7 @@ impl SandboxDriver for LandlockDriver {
                         &additional_read_files,
                         &additional_write_paths,
                     )
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                    .map_err(std::io::Error::other)
                 });
             }
 
@@ -93,7 +93,7 @@ fn apply_landlock(
         .chain(super::linux::PROC_READ_PATHS.iter())
         .copied()
         .collect();
-    let read_write_paths: Vec<&str> = std::iter::once(workspace_dir.as_ref())
+    let read_write_paths: Vec<&str> = std::iter::once(workspace_dir)
         .chain(super::linux::READ_WRITE_DIRS.iter().copied())
         .chain(super::linux::READ_WRITE_DEVICES.iter().copied())
         .collect();

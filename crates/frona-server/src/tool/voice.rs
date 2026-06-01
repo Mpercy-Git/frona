@@ -36,11 +36,11 @@ use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_
 pub fn normalize_phone(phone: &str) -> String {
     let trimmed = phone.trim();
     // Determine whether this is an international number and strip any prefix.
-    let (has_plus, digits_only) = if trimmed.starts_with('+') {
-        (true, &trimmed[1..])
-    } else if trimmed.starts_with("00") {
+    let (has_plus, digits_only) = if let Some(stripped) = trimmed.strip_prefix('+') {
+        (true, stripped)
+    } else if let Some(stripped) = trimmed.strip_prefix("00") {
         // Common European/UK international trunk prefix — treat as '+'.
-        (true, &trimmed[2..])
+        (true, stripped)
     } else {
         (false, trimmed)
     };

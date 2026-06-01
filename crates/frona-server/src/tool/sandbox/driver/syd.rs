@@ -109,6 +109,12 @@ impl SydDriver {
     }
 }
 
+impl Default for SydDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SandboxDriver for SydDriver {
     fn driver_id(&self) -> &'static str {
         "syd"

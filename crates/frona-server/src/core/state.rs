@@ -580,13 +580,12 @@ impl AppState {
         }
 
         // --- 2. Fall back to the static config allowlist ---
-        if let Some(uid) = fallback_user_id {
-            if config_allowlist
+        if let Some(uid) = fallback_user_id
+            && config_allowlist
                 .iter()
                 .any(|p| normalize_phone(p) == normalized)
-            {
-                return Some(uid.to_string());
-            }
+        {
+            return Some(uid.to_string());
         }
 
         None

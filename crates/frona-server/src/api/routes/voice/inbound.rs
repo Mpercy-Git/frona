@@ -65,7 +65,7 @@ fn twiml_reject(reason: Option<&str>) -> Response {
 /// 3. Resolves which platform user "owns" the call by checking:
 ///    a. Every user's per-user DB allowlist
 ///    b. The static `voice.inbound_allowlist` config (falls back to
-///       `voice.inbound_user_id`)
+///    `voice.inbound_user_id`)
 ///    Calls from numbers not on any allowlist receive a `<Reject reason="busy"/>`.
 /// 4. Creates a contact, chat, and call record under the owning user's account.
 /// 5. Issues a short-lived voice-session JWT and returns the
