@@ -1,0 +1,5 @@
+# Shell scripts must use LF line endings for Unix/WSL/macOS
+*.sh text eol=lf
+
+# Force LF for specific files
+mise.toml text eol=lf
