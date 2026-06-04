@@ -4,13 +4,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
-use tokio_util::sync::CancellationToken;
 
-use crate::core::error::AppError;
-use crate::core::state::AppState;
 use crate::credential::vault::models::GrantDuration;
-use crate::inference::request::InferenceContext;
-use crate::inference::tool_call::{ToolCall, ToolStatus};
+use crate::inference::tool_call::ToolStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
@@ -95,146 +91,18 @@ pub enum HitlOutcome {
     Denied(String),
 }
 
-/// `AlreadyResolved` is the idempotent path — callers can render
+/// `should_resume` is true iff the per-message barrier cleared (no more
+/// pending HITLs). `AlreadyResolved` is idempotent — callers can render
 /// "already resolved" UX without raising an error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ResolveOutcome {
-    Resolved,
+    Resolved {
+        should_resume: bool,
+        user_id: String,
+        chat_id: String,
+        message_id: String,
+    },
     AlreadyResolved,
-}
-
-/// Idempotent — returns `AlreadyResolved` if the HITL was already resolved
-/// or denied. On the resolve path: invokes the tool's `on_resume` hook,
-/// persists the outcome, broadcasts `Inference(Resume)`, and spawns
-/// `resume_or_notify` once the per-message barrier clears.
-pub async fn resolve_hitl(
-    state: &AppState,
-    tool_call_id: &str,
-    response: HitlResponse,
-) -> Result<ResolveOutcome, AppError> {
-    let te = state
-        .chat_service
-        .get_tool_call(tool_call_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("tool_call {tool_call_id}")))?;
-
-    let hitl = te
-        .hitl
-        .as_ref()
-        .ok_or_else(|| AppError::Validation(format!("tool_call {tool_call_id} has no HITL")))?;
-
-    if matches!(hitl.status, ToolStatus::Resolved | ToolStatus::Denied) {
-        return Ok(ResolveOutcome::AlreadyResolved);
-    }
-
-    let tool = state
-        .tool_manager
-        .find_tool_for_resume(&te.name)
-        .ok_or_else(|| {
-            AppError::Validation(format!(
-                "no tool registered to handle resume for '{}'",
-                te.name
-            ))
-        })?;
-
-    let ctx = build_inference_context_for_resume(state, &te).await?;
-    let request = hitl.request.clone();
-    let outcome = tool
-        .on_resume(&te.name, &request, response.clone(), &ctx)
-        .await?;
-
-    let resolved_message = match outcome {
-        HitlOutcome::Resolved(text) => {
-            state
-                .chat_service
-                .resolve_tool_call_with_hitl_response(tool_call_id, Some(text), Some(response))
-                .await?
-        }
-        HitlOutcome::Denied(text) => {
-            state
-                .chat_service
-                .deny_tool_call_with_hitl_response(tool_call_id, Some(text), Some(response))
-                .await?
-        }
-    };
-
-    let message_response = match resolved_message {
-        crate::chat::service::ToolResolveResult::Changed(m)
-        | crate::chat::service::ToolResolveResult::AlreadyResolved(m) => m,
-    };
-
-    state.broadcast_service.send(crate::chat::broadcast::BroadcastEvent {
-        user_id: ctx.user.id.clone(),
-        chat_id: Some(te.chat_id.clone()),
-        space_id: ctx.chat.space_id.clone(),
-        kind: crate::chat::broadcast::BroadcastEventKind::Inference(
-            crate::inference::tool_loop::InferenceEventKind::Resume {
-                message: message_response,
-            },
-        ),
-    });
-
-    let message_id = te.message_id.clone();
-    let did_flip = state
-        .chat_service
-        .mark_message_executing(&message_id)
-        .await
-        .unwrap_or(false);
-    if did_flip {
-        let state_clone = state.clone();
-        let user_id = ctx.user.id.clone();
-        let chat_id = te.chat_id.clone();
-        tokio::spawn(async move {
-            crate::agent::task::executor::resume_or_notify(
-                &state_clone,
-                &user_id,
-                &chat_id,
-                &message_id,
-            )
-            .await;
-        });
-    }
-
-    Ok(ResolveOutcome::Resolved)
-}
-
-/// Builds a fresh `InferenceContext` for `on_resume` — never-fired cancel
-/// tokens, no live event stream. `on_resume` MUST be pure side effects and
-/// not depend on the original execute's context (which is gone by now).
-pub async fn build_inference_context_for_resume(
-    state: &AppState,
-    te: &ToolCall,
-) -> Result<InferenceContext, AppError> {
-    let chat = state
-        .chat_service
-        .find_chat(&te.chat_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("chat {}", te.chat_id)))?;
-    let user = state
-        .user_service
-        .find_by_id(&chat.user_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("user {}", chat.user_id)))?;
-    let agent = state
-        .agent_service
-        .find_by_id(&chat.agent_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("agent {}", chat.agent_id)))?;
-
-    let event_tx = state.broadcast_service.create_event_sender(
-        &user.id,
-        &te.chat_id,
-        chat.space_id.clone(),
-    );
-
-    Ok(InferenceContext::new(
-        user,
-        agent,
-        chat,
-        event_tx,
-        state.shutdown_token.clone(),
-        CancellationToken::new(),
-    ))
 }
 
 #[cfg(test)]

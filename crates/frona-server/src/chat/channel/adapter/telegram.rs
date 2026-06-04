@@ -372,11 +372,11 @@ impl TelegramAdapter {
 
         let outcome = ctx
             .channel_manager
-            .resolve_hitl(&ctx.app_state, &tool_call_id, response)
+            .resolve_hitl(&tool_call_id, response)
             .await;
 
         let toast = match &outcome {
-            Ok(crate::inference::hitl::ResolveOutcome::Resolved) => answer_label.clone(),
+            Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) => answer_label.clone(),
             Ok(crate::inference::hitl::ResolveOutcome::AlreadyResolved) => {
                 "Already resolved".to_string()
             }
@@ -450,7 +450,6 @@ async fn parse_callback_data(
                 .parse()
                 .map_err(|_| AppError::Validation(format!("bad choice index: {idx_str}")))?;
             let te = ctx
-                .app_state
                 .chat_service
                 .get_tool_call(tcid)
                 .await?

@@ -129,13 +129,25 @@ async fn resolve_tool_calls(
         // Typed HitlResponse routes through the resolve_hitl dispatcher, which
         // runs the tool's on_resume side-effect and synthesizes the result text.
         if let Some(typed) = resolution.hitl_response.clone() {
-            let _outcome = crate::inference::hitl::resolve_hitl(
-                &state,
-                &resolution.tool_call_id,
-                typed,
-            )
-            .await
-            .map_err(ApiError::from)?;
+            let outcome = state
+                .harness
+                .resolve_and_resume(&resolution.tool_call_id, typed)
+                .await
+                .map_err(ApiError::from)?;
+            if let crate::inference::hitl::ResolveOutcome::Resolved {
+                should_resume: true,
+                user_id,
+                chat_id,
+                message_id,
+            } = outcome
+            {
+                let executor = state.task_executor.clone();
+                tokio::spawn(async move {
+                    executor
+                        .resume_or_notify(&user_id, &chat_id, &message_id)
+                        .await;
+                });
+            }
             if let Ok(Some(msg)) = state
                 .chat_service
                 .find_message(&te.message_id)

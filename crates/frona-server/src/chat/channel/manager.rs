@@ -9,7 +9,6 @@ use chrono::Utc;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::execution;
 use crate::agent::models::Agent;
 use crate::chat::broadcast::{BroadcastEvent, BroadcastEventKind, EntityAction};
 use crate::chat::message::models::{DeliveryState, Message, MessageRole, MessageStatus};
@@ -94,6 +93,8 @@ pub struct ChannelManager {
     message_repo: Arc<dyn MessageRepository>,
     chat_service: ChatService,
     channel_service: Arc<ChannelService>,
+    harness: Arc<crate::agent::harness::Harness>,
+    task_executor: Arc<crate::agent::task::executor::TaskExecutor>,
 }
 
 impl ChannelManager {
@@ -101,6 +102,8 @@ impl ChannelManager {
         message_repo: Arc<dyn MessageRepository>,
         chat_service: ChatService,
         channel_service: Arc<ChannelService>,
+        harness: Arc<crate::agent::harness::Harness>,
+        task_executor: Arc<crate::agent::task::executor::TaskExecutor>,
     ) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -108,6 +111,8 @@ impl ChannelManager {
             message_repo,
             chat_service,
             channel_service,
+            harness,
+            task_executor,
         }
     }
 
@@ -342,8 +347,8 @@ impl ChannelManager {
             channel_manager: state.channel_manager.clone(),
             storage_service: state.storage_service.clone(),
             user_service: state.user_service.clone(),
+            chat_service: state.chat_service.clone(),
             data_dir,
-            app_state: state.clone(),
             cancel: cancel.clone(),
         };
 
@@ -667,12 +672,23 @@ impl ChannelManager {
     /// HITL on the message — if any — gets picked up on the next retry pass.
     pub async fn resolve_hitl(
         &self,
-        state: &crate::core::state::AppState,
         tool_call_id: &str,
         response: crate::inference::hitl::HitlResponse,
     ) -> Result<crate::inference::hitl::ResolveOutcome, AppError> {
-        let outcome =
-            crate::inference::hitl::resolve_hitl(state, tool_call_id, response).await?;
+        let outcome = self
+            .harness
+            .resolve_and_resume(tool_call_id, response)
+            .await?;
+        if let crate::inference::hitl::ResolveOutcome::Resolved {
+            should_resume: true, user_id, chat_id, message_id,
+        } = &outcome
+        {
+            let executor = self.task_executor.clone();
+            let (u, c, m) = (user_id.clone(), chat_id.clone(), message_id.clone());
+            tokio::spawn(async move {
+                executor.resume_or_notify(&u, &c, &m).await;
+            });
+        }
         if let Ok(Some(te)) = self.chat_service.get_tool_call(tool_call_id).await {
             let _ = self.ensure_pending_delivery(&te.message_id).await;
         }
@@ -1550,8 +1566,7 @@ async fn handle_inbound_message(
         inbound_prompt,
     });
 
-    execution::run_agent_turn(
-        state,
+    state.harness.run_turn(
         user_id,
         &chat.id,
         &agent_msg.id,

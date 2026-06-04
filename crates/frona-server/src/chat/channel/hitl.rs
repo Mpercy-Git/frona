@@ -70,7 +70,7 @@ pub async fn try_resolve_from_text(
     if let Some(tc) = chosen {
         let outcome = state
             .channel_manager
-            .resolve_hitl(state, &tc.id, HitlResponse::Choice(text.to_string()))
+            .resolve_hitl(&tc.id, HitlResponse::Choice(text.to_string()))
             .await?;
         return Ok(Some(outcome));
     }
@@ -100,9 +100,9 @@ pub async fn skip_all_pending_for_chat(
             HitlKind::Choice { .. } => HitlResponse::Choice("[skipped]".into()),
             HitlKind::External => continue,
         };
-        if let Ok(crate::inference::hitl::ResolveOutcome::Resolved) = state
+        if let Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) = state
             .channel_manager
-            .resolve_hitl(state, &tc.id, denial)
+            .resolve_hitl(&tc.id, denial)
             .await
         {
             count += 1;

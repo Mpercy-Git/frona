@@ -193,8 +193,8 @@ pub struct ChannelCtx {
     pub webhook_url: String,
     pub storage_service: crate::storage::StorageService,
     pub user_service: crate::auth::UserService,
+    pub chat_service: crate::chat::service::ChatService,
     pub data_dir: std::path::PathBuf,
-    pub app_state: crate::core::state::AppState,
     /// Adapters with long-running tasks MUST observe this — sole `stop_channel` signal.
     pub cancel: tokio_util::sync::CancellationToken,
 }
