@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use crate::agent::execution::{self, AgentLoopOutcome};
 use crate::inference::conversation::DefaultConversationBuilder;
 use crate::agent::models::Agent;
 use crate::agent::task::models::TaskKind;
@@ -214,13 +213,7 @@ impl Scheduler {
             return Ok(());
         }
 
-        let executor = match self.app_state.task_executor() {
-            Some(e) => e,
-            None => {
-                tracing::warn!("Task executor not available, skipping deferred tasks");
-                return Ok(());
-            }
-        };
+        let executor = self.app_state.task_executor.clone();
 
         for task in tasks {
             tracing::info!(
@@ -428,10 +421,8 @@ pub async fn execute_cron(
                 return Ok(());
             }
             CronConcurrency::Replace => {
-                if let Some(executor) = state.task_executor() {
-                    for run in &active {
-                        executor.cancel_task(&run.id).await;
-                    }
+                for run in &active {
+                    state.task_executor.cancel_task(&run.id).await;
                 }
             }
         }
@@ -449,12 +440,8 @@ pub async fn execute_cron(
         .spawn_cron_run(template, Utc::now(), next_sequence)
         .await?;
 
-    if let Some(executor) = state.task_executor() {
-        if let Err(e) = executor.spawn_execution(run).await {
-            tracing::warn!(error = %e, template_id = %template.id, "Failed to spawn CronRun execution");
-        }
-    } else {
-        tracing::warn!(template_id = %template.id, "No task executor available to spawn CronRun");
+    if let Err(e) = state.task_executor.spawn_execution(run).await {
+        tracing::warn!(error = %e, template_id = %template.id, "Failed to spawn CronRun execution");
     }
 
     Ok(())
@@ -524,13 +511,13 @@ async fn execute_background_agent(
         user_service: state.user_service.clone(),
         storage_service: state.storage_service.clone(),
     });
-    let result = execution::run_agent_loop(
-        state, user_id, chat_id, &agent_msg_id, cancel_token, builder, &[],
+    let result = state.harness.run_loop(
+        user_id, chat_id, &agent_msg_id, cancel_token, builder, &[],
     )
     .await;
 
     match result {
-        Ok(AgentLoopOutcome { response }) => match response {
+        Ok(crate::agent::harness::AgentLoopOutcome { response }) => match response {
             InferenceResponse::Completed { text, attachments, reasoning, .. } => {
                 let _ = state.chat_service
                     .complete_agent_message(&agent_msg_id, text, attachments, reasoning)

@@ -5,14 +5,12 @@ use chrono::Utc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::execution;
 use crate::agent::task::models::{SignalMode, Task, TaskKind, TaskStatus};
 use crate::inference::conversation::TaskConversationBuilder;
 use crate::chat::message::models::{MessageEvent, MessageRole};
 use crate::inference::tool_call::TaskEvent;
 use crate::chat::models::CreateChatRequest;
 use crate::core::error::AppError;
-use crate::core::state::AppState;
 use crate::inference::InferenceResponse;
 use crate::storage::Attachment;
 
@@ -162,17 +160,90 @@ fn build_message_event(
     }
 }
 
+/// CronRun's flag lives on the template, not the run — others read directly.
+pub async fn resolve_process_result(
+    task_service: &crate::agent::task::service::TaskService,
+    task: &Task,
+) -> bool {
+    match &task.kind {
+        TaskKind::CronRun { source_cron_id, .. } => {
+            match task_service.find_by_id(source_cron_id).await {
+                Ok(Some(template)) => matches!(
+                    template.kind,
+                    TaskKind::Cron { process_result: true, .. }
+                ),
+                _ => false,
+            }
+        }
+        TaskKind::Delegation { resume_parent, .. }
+        | TaskKind::Signal { resume_parent, .. } => *resume_parent,
+        TaskKind::Direct { .. } | TaskKind::Cron { .. } => false,
+    }
+}
+
+pub async fn deliver_event_to_source(
+    chat_service: &crate::chat::service::ChatService,
+    task_service: &crate::agent::task::service::TaskService,
+    task: &Task,
+    event: TaskLifecycleEvent,
+    attachments: Vec<Attachment>,
+) {
+    let Some(source_chat_id) = source_chat_id_for(task) else {
+        return;
+    };
+
+    let process_result = resolve_process_result(task_service, task).await;
+
+    let Some((content, message_event)) = build_message_event(task, event, process_result) else {
+        tracing::debug!(task_id = %task.id, "schema rendered to silent — skipping source-chat delivery");
+        return;
+    };
+
+    if let Err(e) = chat_service
+        .save_task_lifecycle_message(
+            &task.user_id,
+            task.space_id.as_deref(),
+            source_chat_id,
+            &task.agent_id,
+            content,
+            message_event,
+            attachments,
+        )
+        .await
+    {
+        tracing::warn!(error = %e, task_id = %task.id, "Failed to deliver task result to source chat");
+    }
+}
+
 pub struct TaskExecutor {
-    app_state: AppState,
+    harness: Arc<crate::agent::harness::Harness>,
     active_tasks: Mutex<HashMap<String, CancellationToken>>,
+    task_resolution_notifiers: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
+    max_concurrent_tasks: usize,
 }
 
 impl TaskExecutor {
-    pub fn new(app_state: AppState) -> Self {
+    pub fn new(harness: Arc<crate::agent::harness::Harness>) -> Self {
+        let max = harness.config.server.max_concurrent_tasks;
+        Self::with_max_concurrent_tasks(max, harness)
+    }
+
+    pub fn with_max_concurrent_tasks(
+        max_concurrent_tasks: usize,
+        harness: Arc<crate::agent::harness::Harness>,
+    ) -> Self {
         Self {
-            app_state,
+            harness,
             active_tasks: Mutex::new(HashMap::new()),
+            task_resolution_notifiers: Arc::new(Mutex::new(HashMap::new())),
+            max_concurrent_tasks,
         }
+    }
+
+    pub fn task_resolution_notifiers(
+        &self,
+    ) -> Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>> {
+        self.task_resolution_notifiers.clone()
     }
 
     pub async fn resume_all(self: &Arc<Self>) {
@@ -182,7 +253,7 @@ impl TaskExecutor {
         // `complete_task` out of the agent's registry on the next session build.
         self.resume_in_flight_crons().await;
 
-        let tasks = match self.app_state.task_service.find_resumable().await {
+        let tasks = match self.harness.task_service.find_resumable().await {
             Ok(tasks) => tasks,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to query resumable tasks");
@@ -210,7 +281,7 @@ impl TaskExecutor {
     /// Marks crash-interrupted CronRuns Failed instead of restarting them.
     /// The next scheduled tick fires fresh if the cron's concurrency allows.
     async fn resume_in_flight_crons(self: &Arc<Self>) {
-        let orphans = match self.app_state.task_service.find_orphaned_cron_runs().await {
+        let orphans = match self.harness.task_service.find_orphaned_cron_runs().await {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to query orphaned CronRuns");
@@ -226,7 +297,7 @@ impl TaskExecutor {
 
         for run in orphans {
             if let Err(e) = self
-                .app_state
+                .harness
                 .task_service
                 .mark_failed(&run.id, "Server restarted while CronRun was in flight".to_string())
                 .await
@@ -237,17 +308,17 @@ impl TaskExecutor {
     }
 
     pub async fn spawn_execution(self: &Arc<Self>, task: Task) -> Result<(), AppError> {
-        if self.app_state.is_shutting_down() {
+        if self.harness.shutdown_token.is_cancelled() {
             tracing::info!(task_id = %task.id, "Rejecting task spawn during shutdown");
             return Ok(());
         }
 
         let active = self.active_tasks.lock().await;
-        if active.len() >= self.app_state.max_concurrent_tasks {
+        if active.len() >= self.max_concurrent_tasks {
             tracing::info!(
                 task_id = %task.id,
                 active = active.len(),
-                limit = self.app_state.max_concurrent_tasks,
+                limit = self.max_concurrent_tasks,
                 "Global concurrency limit reached, task stays Pending"
             );
             return Ok(());
@@ -309,10 +380,10 @@ impl TaskExecutor {
 
         // Cron templates aren't in active_tasks themselves; only their CronRun
         // children are. Each cancelled run's tokio::spawn cleans itself up.
-        if let Ok(Some(task)) = self.app_state.task_service.find_by_id(task_id).await
+        if let Ok(Some(task)) = self.harness.task_service.find_by_id(task_id).await
             && matches!(task.kind, TaskKind::Cron { .. })
             && let Ok(active_runs) = self
-                .app_state
+                .harness
                 .task_service
                 .find_active_runs_by_cron(task_id)
                 .await
@@ -343,7 +414,7 @@ impl TaskExecutor {
     }
 
     async fn get_agent_concurrent_limit(&self, agent_id: &str) -> usize {
-        if let Ok(Some(agent)) = self.app_state.agent_service.find_by_id(agent_id).await {
+        if let Ok(Some(agent)) = self.harness.agent_service.find_by_id(agent_id).await {
             return agent.max_concurrent_tasks.unwrap_or(3) as usize;
         }
         3
@@ -357,7 +428,7 @@ impl TaskExecutor {
         let task_id = task.id.clone();
 
         let current_status = self
-            .app_state
+            .harness
             .task_service
             .find_by_id(&task_id)
             .await?
@@ -370,7 +441,7 @@ impl TaskExecutor {
 
         let chat_id = self.ensure_task_chat(&mut task).await?;
 
-        self.app_state
+        self.harness
             .task_service
             .mark_in_progress(&task_id, Some(&chat_id))
             .await?;
@@ -386,33 +457,32 @@ impl TaskExecutor {
             }
 
             let continuation_prompt = if turn > 0 {
-                self.app_state.prompts.read("TASK_CONTINUATION.md")
+                self.harness.prompts.read("TASK_CONTINUATION.md")
             } else {
                 None
             };
 
-            let agent_msg_id = match self.app_state.chat_service
+            let agent_msg_id = match self.harness.chat_service
                 .find_executing_message_for_chat(&chat_id)
                 .await
             {
                 Ok(Some(msg)) => msg.id,
                 _ => {
-                    let msg = self.app_state.chat_service
+                    let msg = self.harness.chat_service
                         .create_executing_agent_message(&chat_id, &task.agent_id)
                         .await?;
                     msg.id
                 }
             };
 
-            let session_token = self.app_state.active_sessions.register(&chat_id).await;
+            let session_token = self.harness.active_sessions.register(&chat_id).await;
             let builder = Box::new(TaskConversationBuilder {
-                user_service: self.app_state.user_service.clone(),
-                storage_service: self.app_state.storage_service.clone(),
+                user_service: self.harness.user_service.clone(),
+                storage_service: self.harness.storage_service.clone(),
                 continuation_prompt: continuation_prompt.clone(),
             });
             let filters = tool_filters_for_task(&task);
-            let result = execution::run_agent_loop(
-                &self.app_state,
+            let result = self.harness.run_loop(
                 &task.user_id,
                 &chat_id,
                 &agent_msg_id,
@@ -422,12 +492,12 @@ impl TaskExecutor {
             )
             .await;
             drop(session_token);
-            self.app_state.active_sessions.remove(&chat_id).await;
+            self.harness.active_sessions.remove(&chat_id).await;
 
             match result {
-                Ok(execution::AgentLoopOutcome { response }) => match response {
+                Ok(crate::agent::harness::AgentLoopOutcome { response }) => match response {
                     InferenceResponse::Completed { text, attachments, lifecycle_event, reasoning, .. } => {
-                        let _ = self.app_state.chat_service
+                        let _ = self.harness.chat_service
                             .complete_agent_message(&agent_msg_id, text, attachments, reasoning)
                             .await;
 
@@ -446,7 +516,7 @@ impl TaskExecutor {
                         continue;
                     }
                     InferenceResponse::ExternalToolPending { tool_calls, .. } => {
-                        let _ = self.app_state.chat_service
+                        let _ = self.harness.chat_service
                             .pause_agent_message(
                                 &agent_msg_id,
                                 crate::inference::tool_loop::PauseReason::Hitl,
@@ -456,14 +526,14 @@ impl TaskExecutor {
                         continue;
                     }
                     InferenceResponse::Cancelled(text) => {
-                        let _ = self.app_state.chat_service
+                        let _ = self.harness.chat_service
                             .cancel_agent_message(&agent_msg_id, text).await;
                         self.handle_cancelled(&task).await?;
                         return Ok(());
                     }
                 },
                 Err(e) => {
-                    let _ = self.app_state.chat_service
+                    let _ = self.harness.chat_service
                         .fail_agent_message(&agent_msg_id, e.to_string()).await;
                     self.handle_error(&task, &e).await?;
                     return Ok(());
@@ -476,11 +546,13 @@ impl TaskExecutor {
             turns = MAX_TASK_RETRIES,
             "Task reached max retries, auto-completing"
         );
-        self.app_state
+        self.harness
             .task_service
             .mark_completed(&task.id, Some("Task auto-completed after max retries".into()))
             .await?;
-        self.deliver_event_to_source(
+        deliver_event_to_source(
+            &self.harness.chat_service,
+            &self.harness.task_service,
             &task,
             TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -495,7 +567,7 @@ impl TaskExecutor {
     }
 
     async fn find_lifecycle_event(&self, chat_id: &str) -> Option<LifecycleAction> {
-        let messages = match self.app_state.chat_service.get_stored_messages(chat_id).await {
+        let messages = match self.harness.chat_service.get_stored_messages(chat_id).await {
             Ok(m) => m,
             Err(e) => {
                 tracing::error!(chat_id, error = %e, "find_lifecycle_event: failed to load stored messages");
@@ -504,7 +576,7 @@ impl TaskExecutor {
         };
 
         let deliverables = {
-            let tool_calls = match self.app_state.chat_service.get_tool_calls(chat_id).await {
+            let tool_calls = match self.harness.chat_service.get_tool_calls(chat_id).await {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!(chat_id, error = %e, "find_lifecycle_event: failed to load tool calls");
@@ -577,11 +649,13 @@ impl TaskExecutor {
                 summary,
                 attachments,
             } => {
-                self.app_state
+                self.harness
                     .task_service
                     .mark_completed(&task.id, summary.clone())
                     .await?;
-                self.deliver_event_to_source(
+                deliver_event_to_source(
+                    &self.harness.chat_service,
+                    &self.harness.task_service,
                     task,
                     TaskLifecycleEvent::Completion {
                         status: TaskStatus::Completed,
@@ -598,11 +672,13 @@ impl TaskExecutor {
                 attachments,
             } => {
                 let error_msg = summary.clone().unwrap_or_default();
-                self.app_state
+                self.harness
                     .task_service
                     .mark_failed(&task.id, error_msg)
                     .await?;
-                self.deliver_event_to_source(
+                deliver_event_to_source(
+                    &self.harness.chat_service,
+                    &self.harness.task_service,
                     task,
                     TaskLifecycleEvent::Completion {
                         status: TaskStatus::Failed,
@@ -619,7 +695,7 @@ impl TaskExecutor {
                 reason,
             } => {
                 let run_at = Utc::now() + chrono::Duration::minutes(delay_minutes as i64);
-                self.app_state
+                self.harness
                     .task_service
                     .mark_deferred(&task.id, run_at, &reason)
                     .await?;
@@ -635,7 +711,7 @@ impl TaskExecutor {
     ) -> Result<(), AppError> {
         let notify = Arc::new(tokio::sync::Notify::new());
         {
-            let mut notifiers = self.app_state.task_resolution_notifiers.lock().await;
+            let mut notifiers = self.task_resolution_notifiers.lock().await;
             notifiers.insert(task_id.to_string(), notify.clone());
         }
 
@@ -645,7 +721,7 @@ impl TaskExecutor {
         }
 
         {
-            let mut notifiers = self.app_state.task_resolution_notifiers.lock().await;
+            let mut notifiers = self.task_resolution_notifiers.lock().await;
             notifiers.remove(task_id);
         }
 
@@ -665,13 +741,13 @@ impl TaskExecutor {
         if was_unset {
             // ensure_task_chat populated chat_id on the local clone; persist
             // it so subsequent calls reuse C₂ instead of creating a new chat.
-            self.app_state
+            self.harness
                 .task_service
                 .save(&task_for_chat)
                 .await?;
         }
 
-        self.app_state
+        self.harness
             .chat_service
             .save_system_message(
                 &task.user_id,
@@ -682,7 +758,7 @@ impl TaskExecutor {
             .await?;
 
         let agent_msg = self
-            .app_state
+            .harness
             .chat_service
             .create_executing_agent_message(&chat_id, &task.agent_id)
             .await?;
@@ -690,13 +766,12 @@ impl TaskExecutor {
         let cancel_token = CancellationToken::new();
 
         let builder = Box::new(TaskConversationBuilder {
-            user_service: self.app_state.user_service.clone(),
-            storage_service: self.app_state.storage_service.clone(),
+            user_service: self.harness.user_service.clone(),
+            storage_service: self.harness.storage_service.clone(),
             continuation_prompt: None,
         });
         let filters = tool_filters_for_task(task);
-        let outcome = execution::run_agent_loop(
-            &self.app_state,
+        let outcome = self.harness.run_loop(
             &task.user_id,
             &chat_id,
             &agent_msg_id,
@@ -709,7 +784,7 @@ impl TaskExecutor {
         // Signal tasks complete via tool call, not System MessageEvent.
         let mut lifecycle_event = None;
         match outcome {
-            Ok(execution::AgentLoopOutcome { response }) => {
+            Ok(crate::agent::harness::AgentLoopOutcome { response }) => {
                 if let InferenceResponse::Completed {
                     text,
                     attachments,
@@ -719,7 +794,7 @@ impl TaskExecutor {
                 } = response
                 {
                     let _ = self
-                        .app_state
+                        .harness
                         .chat_service
                         .complete_agent_message(&agent_msg_id, text, attachments, reasoning)
                         .await;
@@ -728,7 +803,7 @@ impl TaskExecutor {
             }
             Err(e) => {
                 let _ = self
-                    .app_state
+                    .harness
                     .chat_service
                     .fail_agent_message(&agent_msg_id, e.to_string())
                     .await;
@@ -766,7 +841,7 @@ impl TaskExecutor {
         }
 
         let chat = self
-            .app_state
+            .harness
             .chat_service
             .create_chat(
                 &task.user_id,
@@ -788,7 +863,7 @@ impl TaskExecutor {
         task: &Task,
         chat_id: &str,
     ) -> Result<(), AppError> {
-        let stored_messages = self.app_state.chat_service.get_stored_messages(chat_id).await?;
+        let stored_messages = self.harness.chat_service.get_stored_messages(chat_id).await?;
         if !stored_messages.is_empty() {
             return Ok(());
         }
@@ -800,7 +875,7 @@ impl TaskExecutor {
             _ => &task.agent_id,
         };
         self
-            .app_state
+            .harness
             .chat_service
             .save_agent_message(
                 &task.user_id,
@@ -818,7 +893,7 @@ impl TaskExecutor {
         &self,
         task: &Task,
     ) -> Result<(), AppError> {
-        self.app_state
+        self.harness
             .task_service
             .mark_cancelled(&task.id)
             .await?;
@@ -828,11 +903,13 @@ impl TaskExecutor {
     pub async fn handle_error(&self, task: &Task, error: &AppError) -> Result<(), AppError> {
         let error_msg = format!("Task execution error: {}", error);
         tracing::error!(error = %error, task_id = %task.id, "Task execution failed");
-        self.app_state
+        self.harness
             .task_service
             .mark_failed(&task.id, error_msg)
             .await?;
-        self.deliver_event_to_source(
+        deliver_event_to_source(
+            &self.harness.chat_service,
+            &self.harness.task_service,
             task,
             TaskLifecycleEvent::Completion {
                 status: TaskStatus::Failed,
@@ -845,63 +922,10 @@ impl TaskExecutor {
         Ok(())
     }
 
-    /// CronRun's flag lives on the template, not the run — others read directly.
-    async fn resolve_process_result(&self, task: &Task) -> bool {
-        match &task.kind {
-            TaskKind::CronRun { source_cron_id, .. } => {
-                match self.app_state.task_service.find_by_id(source_cron_id).await {
-                    Ok(Some(template)) => matches!(
-                        template.kind,
-                        TaskKind::Cron { process_result: true, .. }
-                    ),
-                    _ => false,
-                }
-            }
-            TaskKind::Delegation { resume_parent, .. }
-            | TaskKind::Signal { resume_parent, .. } => *resume_parent,
-            TaskKind::Direct { .. } | TaskKind::Cron { .. } => false,
-        }
-    }
-
-    pub async fn deliver_event_to_source(
-        &self,
-        task: &Task,
-        event: TaskLifecycleEvent,
-        attachments: Vec<Attachment>,
-    ) {
-        let Some(source_chat_id) = source_chat_id_for(task) else {
-            return;
-        };
-
-        let process_result = self.resolve_process_result(task).await;
-
-        let Some((content, message_event)) = build_message_event(task, event, process_result) else {
-            tracing::debug!(task_id = %task.id, "schema rendered to silent — skipping source-chat delivery");
-            return;
-        };
-
-        if let Err(e) = self
-            .app_state
-            .chat_service
-            .save_task_lifecycle_message(
-                &task.user_id,
-                task.space_id.as_deref(),
-                source_chat_id,
-                &task.agent_id,
-                content,
-                message_event,
-                attachments,
-            )
-            .await
-        {
-            tracing::warn!(error = %e, task_id = %task.id, "Failed to deliver task result to source chat");
-        }
-    }
-
     /// Terminal-only. Match would spawn concurrent loops.
     pub async fn resume_parent_if_requested(&self, task: &Task) {
         if let TaskKind::CronRun { source_cron_id, source_chat_id: Some(chat_id), .. } = &task.kind {
-            let template = match self.app_state.task_service.find_by_id(source_cron_id).await {
+            let template = match self.harness.task_service.find_by_id(source_cron_id).await {
                 Ok(Some(t)) => t,
                 _ => return,
             };
@@ -928,7 +952,7 @@ impl TaskExecutor {
         // chats are both eligible — that's the difference from the prior gate.
 
         let siblings = match self
-            .app_state
+            .harness
             .task_service
             .find_by_source_chat_id(source_chat_id)
             .await
@@ -961,11 +985,12 @@ impl TaskExecutor {
             "All child tasks complete, resuming parent"
         );
 
-        let state = self.app_state.clone();
+        let harness = self.harness.clone();
+        let notifiers = self.task_resolution_notifiers.clone();
         let user_id = user_id.to_string();
         let chat_id = source_chat_id.to_string();
         tokio::spawn(async move {
-            let existing = match state.chat_service
+            let existing = match harness.chat_service
                 .find_executing_message_for_chat(&chat_id)
                 .await
             {
@@ -980,7 +1005,7 @@ impl TaskExecutor {
             } else {
                 // User chats settle their assistant turn before tasks complete;
                 // mint a fresh executing message so the loop has a write target.
-                let agent_id = match state.chat_service.find_chat(&chat_id).await {
+                let agent_id = match harness.chat_service.find_chat(&chat_id).await {
                     Ok(Some(chat)) => chat.agent_id,
                     Ok(None) => {
                         tracing::warn!(chat_id = %chat_id, "Source chat not found; cannot resume");
@@ -991,7 +1016,7 @@ impl TaskExecutor {
                         return;
                     }
                 };
-                match state.chat_service
+                match harness.chat_service
                     .create_executing_agent_message(&chat_id, &agent_id)
                     .await
                 {
@@ -1002,10 +1027,22 @@ impl TaskExecutor {
                     }
                 }
             };
-            resume_or_notify(&state, &user_id, &chat_id, &message_id).await;
+            resume_or_notify(&notifiers, &harness, &user_id, &chat_id, &message_id).await;
         });
     }
 
+    /// Notify a blocked task executor (for task chats) or fall through to
+    /// `harness.resume(...)` (for everything else).
+    pub async fn resume_or_notify(&self, user_id: &str, chat_id: &str, message_id: &str) {
+        resume_or_notify(
+            &self.task_resolution_notifiers,
+            &self.harness,
+            user_id,
+            chat_id,
+            message_id,
+        )
+        .await;
+    }
 }
 
 enum LifecycleAction {
@@ -1021,19 +1058,25 @@ enum LifecycleAction {
 }
 
 /// Check if a task executor is waiting for resolution on this chat's task.
-/// If so, notify it. Otherwise, fall back to `resume_agent_loop`.
-pub async fn resume_or_notify(state: &AppState, user_id: &str, chat_id: &str, message_id: &str) {
-    if let Ok(Some(chat)) = state.chat_service.find_chat(chat_id).await
+/// If so, notify it. Otherwise, fall back to `harness.resume(...)`.
+pub async fn resume_or_notify(
+    notifiers: &Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
+    harness: &Arc<crate::agent::harness::Harness>,
+    user_id: &str,
+    chat_id: &str,
+    message_id: &str,
+) {
+    if let Ok(Some(chat)) = harness.chat_service.find_chat(chat_id).await
         && let Some(ref task_id) = chat.task_id
     {
-        let notifiers = state.task_resolution_notifiers.lock().await;
+        let notifiers = notifiers.lock().await;
         if let Some(notify) = notifiers.get(task_id) {
             notify.notify_one();
             return;
         }
     }
 
-    if let Err(e) = crate::agent::execution::resume_agent_loop(state, user_id, chat_id, message_id).await {
+    if let Err(e) = harness.resume(user_id, chat_id, message_id).await {
         tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume chat");
     }
 }

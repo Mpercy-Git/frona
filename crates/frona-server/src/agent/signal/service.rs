@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
@@ -24,7 +24,7 @@ pub struct SignalService {
     watches: RwLock<WatchIndex>,
     matchers: Vec<Arc<dyn Matcher>>,
     task_service: TaskService,
-    task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
+    task_executor: Arc<TaskExecutor>,
     agent_service: AgentService,
     contact_service: ContactService,
     #[allow(dead_code)]
@@ -37,7 +37,7 @@ impl SignalService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_service: TaskService,
-        task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
+        task_executor: Arc<TaskExecutor>,
         agent_service: AgentService,
         contact_service: ContactService,
         user_service: UserService,
@@ -64,7 +64,7 @@ impl SignalService {
     #[allow(clippy::too_many_arguments)]
     pub fn with_matchers(
         task_service: TaskService,
-        task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
+        task_executor: Arc<TaskExecutor>,
         agent_service: AgentService,
         contact_service: ContactService,
         user_service: UserService,
@@ -253,11 +253,8 @@ impl SignalService {
         }
         self.task_service.save(&task).await?;
 
-        let Some(executor) = self.task_executor.get().cloned() else {
-            return Err(AppError::Internal("TaskExecutor not initialized".into()));
-        };
         let injected_message = self.build_candidate_block(candidate, watch.mode);
-        executor
+        self.task_executor
             .run_with_injected_message(&task, injected_message)
             .await?;
         Ok(true)

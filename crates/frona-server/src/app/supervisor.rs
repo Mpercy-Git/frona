@@ -234,10 +234,10 @@ impl Supervisor for AppSupervisor {
                     return;
                 }
             };
-            crate::agent::task::executor::resume_or_notify(
-                &state, &user_id, &chat_id, &message_id,
-            )
-            .await;
+            state
+                .task_executor
+                .resume_or_notify(&user_id, &chat_id, &message_id)
+                .await;
         });
         true
     }
