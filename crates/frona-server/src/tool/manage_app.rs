@@ -4,29 +4,33 @@ use crate::agent::prompt::PromptLoader;
 use crate::app::models::{App, AppManifest, AppResponse};
 use crate::app::service::AppService;
 use crate::chat::broadcast::BroadcastService;
-use crate::inference::tool_call::{MessageTool, ToolStatus};
+use crate::inference::hitl::{Hitl, HitlOutcome, HitlRequest, HitlResponse};
+use crate::inference::tool_call::ToolStatus;
 use crate::core::error::AppError;
 use crate::notification::models::{NotificationData, NotificationLevel};
 use crate::notification::service::NotificationService;
+use crate::storage::StorageService;
 
 use frona_derive::agent_tool;
 
 use super::{InferenceContext, ToolOutput};
 
-pub struct ManageServiceTool {
+pub struct ManageAppTool {
     app_service: AppService,
     prompts: PromptLoader,
     notification_service: NotificationService,
     broadcast_service: BroadcastService,
+    storage_service: StorageService,
     public_base_url: String,
 }
 
-impl ManageServiceTool {
+impl ManageAppTool {
     pub fn new(
         app_service: AppService,
         prompts: PromptLoader,
         notification_service: NotificationService,
         broadcast_service: BroadcastService,
+        storage_service: StorageService,
         public_base_url: String,
     ) -> Self {
         Self {
@@ -34,13 +38,14 @@ impl ManageServiceTool {
             prompts,
             notification_service,
             broadcast_service,
+            storage_service,
             public_base_url,
         }
     }
 }
 
 #[agent_tool]
-impl ManageServiceTool {
+impl ManageAppTool {
     async fn execute(
         &self,
         _tool_name: &str,
@@ -67,9 +72,65 @@ impl ManageServiceTool {
             ))),
         }
     }
+
+    async fn on_resume(
+        &self,
+        _tool_name: &str,
+        request: &HitlRequest,
+        response: HitlResponse,
+        ctx: &InferenceContext,
+    ) -> Result<HitlOutcome, AppError> {
+        let HitlRequest::App { action, manifest, .. } = request else {
+            return Err(AppError::Validation(
+                "manage_app on_resume: expected App request".into(),
+            ));
+        };
+        match response {
+            HitlResponse::Approval(true) => {
+                let manifest_parsed: AppManifest =
+                    serde_json::from_value(manifest.clone()).map_err(|e| {
+                        AppError::Validation(format!("Invalid persisted manifest: {e}"))
+                    })?;
+                let existing = self
+                    .app_service
+                    .find_by_user_handle(&ctx.user.id, &manifest_parsed.handle)
+                    .await?;
+                let app = if let Some(existing) = existing {
+                    self.app_service
+                        .restart(&ctx.agent.id, &existing.id, &ctx.chat.id)
+                        .await?
+                } else {
+                    self.app_service
+                        .deploy_and_await(
+                            &ctx.agent.id,
+                            &ctx.user.id,
+                            &ctx.chat.id,
+                            &manifest_parsed,
+                            Vec::new(),
+                        )
+                        .await?
+                };
+                Ok(HitlOutcome::Resolved(
+                    self.format_running_result(&format!("{action} completed"), &app),
+                ))
+            }
+            HitlResponse::Approval(false) => {
+                let handle = manifest
+                    .get("handle")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<unknown>");
+                Ok(HitlOutcome::Denied(format!(
+                    "User denied {action} of '{handle}'."
+                )))
+            }
+            _ => Err(AppError::Validation(
+                "manage_app on_resume: expected Approval response".into(),
+            )),
+        }
+    }
 }
 
-impl ManageServiceTool {
+impl ManageAppTool {
     async fn handle_status(
         &self,
         ctx: &InferenceContext,
@@ -108,26 +169,41 @@ impl ManageServiceTool {
         let manifest: AppManifest = serde_json::from_value(manifest_value.clone())
             .map_err(|e| AppError::Validation(format!("Invalid manifest: {e}. Tip: `handle` is required — a short URL-safe identifier (e.g. \"notes\", \"my-dashboard\"). Apps are served at /apps/{{handle}}/.")))?;
 
+        // Pre-flight validation for static apps — catches manifest mistakes
+        // (bad `static_dir`, missing files) BEFORE the human-approval HITL,
+        // so the LLM gets immediate feedback to fix and retry.
+        if manifest.effective_kind() == "static" {
+            validate_static_dir(
+                &self.storage_service,
+                &ctx.user.handle,
+                &ctx.agent.handle,
+                &manifest,
+            )?;
+        }
+
         let existing = self.app_service.find_by_user_handle(&ctx.user.id, &manifest.handle).await?;
 
         let needs_approval = check_needs_approval(&existing, &manifest_value);
 
         if needs_approval {
             let previous = existing.map(|a| a.manifest);
+            let prompt = format!(
+                "Deploy `{}`?\n\nReview the proposed manifest in the chat.",
+                manifest.handle,
+            );
 
-            return Ok(ToolOutput::text(serde_json::json!({
-                "tool_type": "ServiceApproval",
-                "action": "deploy",
-                "manifest": manifest_value,
-            }).to_string())
-            .with_tool_data(MessageTool::ServiceApproval {
-                action: "deploy".to_string(),
-                manifest: manifest_value,
-                previous_manifest: previous,
+            return Ok(ToolOutput::text("").with_hitl(Hitl {
+                prompt,
+                url: format!("/chats/{}", ctx.chat.id),
+                request: HitlRequest::App {
+                    action: "deploy".to_string(),
+                    manifest: manifest_value,
+                    previous_manifest: previous,
+                },
                 status: ToolStatus::Pending,
                 response: None,
-            })
-            .as_pending_external());
+                delivery: None,
+            }));
         }
 
         let app = if let Some(ref existing) = existing {
@@ -303,6 +379,113 @@ fn check_needs_approval(existing: &Option<App>, manifest_value: &Value) -> bool 
         || old.credentials != new.credentials
 }
 
+/// Validates a static-kind app's `static_dir` against the agent's workspace.
+///
+/// Catches the common LLM mistakes that surface as 404s at request time:
+/// - `static_dir` empty, `.`, `..`, absolute, or containing `..` traversal
+/// - `static_dir` resolves outside the agent's workspace
+/// - resolved directory doesn't exist
+/// - resolved directory contains no `.html` file (proxy serves `index.html`)
+///
+/// Returns a `Validation` error with a message aimed at the LLM so it can
+/// fix the manifest and retry without going through human approval.
+fn validate_static_dir(
+    storage: &crate::storage::StorageService,
+    user_handle: &crate::core::Handle,
+    agent_handle: &crate::core::Handle,
+    manifest: &AppManifest,
+) -> Result<(), AppError> {
+    let static_dir = manifest.static_dir.as_deref().ok_or_else(|| {
+        AppError::Validation(format!(
+            "static_dir is required for static apps. Convention: write your files to `apps/{0}/` and set \"static_dir\": \"apps/{0}\".",
+            manifest.handle.as_str(),
+        ))
+    })?;
+
+    let trimmed = static_dir.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation(format!(
+            "static_dir is empty. Set it to the subdirectory containing your built files (e.g. \"apps/{}\").",
+            manifest.handle.as_str(),
+        )));
+    }
+
+    let rel = std::path::Path::new(trimmed);
+
+    if rel.is_absolute() {
+        return Err(AppError::Validation(format!(
+            "static_dir must be a relative path inside the workspace — got absolute path '{static_dir}'."
+        )));
+    }
+
+    for comp in rel.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                return Err(AppError::Validation(format!(
+                    "static_dir cannot contain '..' (path traversal) — got '{static_dir}'."
+                )));
+            }
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                return Err(AppError::Validation(format!(
+                    "static_dir must be a relative path inside the workspace — got '{static_dir}'."
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    // Reject pure "." (resolves to workspace root, which is almost never what
+    // the LLM intended for a static app).
+    let normalized: std::path::PathBuf = rel
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+    if normalized.as_os_str().is_empty() {
+        return Err(AppError::Validation(format!(
+            "static_dir resolves to the workspace root — that's almost never what you want. Did you mean \"apps/{}\"?",
+            manifest.handle.as_str(),
+        )));
+    }
+
+    let workspace = storage.agent_workspace_path(user_handle, agent_handle);
+    let resolved = workspace.join(&normalized);
+
+    if !resolved.exists() {
+        return Err(AppError::Validation(format!(
+            "static_dir '{static_dir}' resolves to {} but no such directory exists. Create the directory and write your files (especially an `index.html`) there first.",
+            resolved.display(),
+        )));
+    }
+    if !resolved.is_dir() {
+        return Err(AppError::Validation(format!(
+            "static_dir '{static_dir}' resolves to {} but that's a file, not a directory.",
+            resolved.display(),
+        )));
+    }
+
+    let has_html = std::fs::read_dir(&resolved)
+        .ok()
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .any(|e| {
+                    e.path()
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+                })
+        })
+        .unwrap_or(false);
+    if !has_html {
+        return Err(AppError::Validation(format!(
+            "static_dir '{static_dir}' resolves to {} but contains no .html files. The proxy serves `index.html` — write your entry HTML file there first.",
+            resolved.display(),
+        )));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,5 +598,152 @@ mod tests {
         let new = serde_json::json!({"id": "test", "handle": "test", "name": "Test", "command": "python app.py"});
         let app = make_app(old);
         assert!(check_needs_approval(&Some(app), &new));
+    }
+
+    // ── validate_static_dir ──────────────────────────────────────────────
+
+    fn make_static_manifest(static_dir: Option<&str>) -> AppManifest {
+        AppManifest {
+            handle: crate::handle!("countdown"),
+            name: "Countdown".to_string(),
+            description: None,
+            icon: None,
+            kind: Some("static".to_string()),
+            command: None,
+            restart_policy: None,
+            health_check: None,
+            resources: None,
+            static_dir: static_dir.map(String::from),
+            expose: None,
+            sandbox_policy: None,
+            credentials: None,
+            hibernate: None,
+        }
+    }
+
+    fn test_storage(base: &std::path::Path) -> crate::storage::StorageService {
+        let config = crate::core::config::Config {
+            storage: crate::core::config::StorageConfig {
+                data_dir: base.to_string_lossy().into_owned(),
+                shared_config_dir: format!("{}/config", base.display()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        crate::storage::StorageService::new(&config)
+    }
+
+    #[test]
+    fn rejects_missing_static_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = test_storage(tmp.path());
+        let err = validate_static_dir(
+            &storage,
+            &crate::handle!("mina"),
+            &crate::handle!("system"),
+            &make_static_manifest(None),
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn rejects_dot_static_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = test_storage(tmp.path());
+        let err = validate_static_dir(
+            &storage,
+            &crate::handle!("mina"),
+            &crate::handle!("system"),
+            &make_static_manifest(Some(".")),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("workspace root"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn rejects_path_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = test_storage(tmp.path());
+        let err = validate_static_dir(
+            &storage,
+            &crate::handle!("mina"),
+            &crate::handle!("system"),
+            &make_static_manifest(Some("../escape")),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains(".."), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn rejects_absolute_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = test_storage(tmp.path());
+        let err = validate_static_dir(
+            &storage,
+            &crate::handle!("mina"),
+            &crate::handle!("system"),
+            &make_static_manifest(Some("/etc/passwd")),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("absolute") || msg.contains("relative"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn rejects_nonexistent_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = test_storage(tmp.path());
+        let err = validate_static_dir(
+            &storage,
+            &crate::handle!("mina"),
+            &crate::handle!("system"),
+            &make_static_manifest(Some("apps/countdown")),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("no such directory"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn rejects_dir_with_no_html() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join("users/mina/agents/system/apps/countdown");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("README.md"), "hi").unwrap();
+
+        let storage = test_storage(tmp.path());
+        let err = validate_static_dir(
+            &storage,
+            &crate::handle!("mina"),
+            &crate::handle!("system"),
+            &make_static_manifest(Some("apps/countdown")),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains(".html"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn accepts_valid_directory_with_html() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join("users/mina/agents/system/apps/countdown");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<html></html>").unwrap();
+
+        let storage = test_storage(tmp.path());
+        validate_static_dir(
+            &storage,
+            &crate::handle!("mina"),
+            &crate::handle!("system"),
+            &make_static_manifest(Some("apps/countdown")),
+        )
+        .expect("should pass");
     }
 }

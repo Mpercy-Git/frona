@@ -243,6 +243,21 @@ impl ToolManager {
             temp.definitions().into_iter().map(|(_, def)| def).collect()
         }
     }
+
+    /// Find a builtin tool by its sub-tool name (e.g. "ask_user_question",
+    /// "manage_app") for the resolve dispatcher. Bypasses per-user and
+    /// per-agent filtering — the agent already had policy permission to emit
+    /// the HITL at execute time, so resolution should always succeed.
+    pub fn find_tool_for_resume(&self, tool_name: &str) -> Option<Arc<dyn AgentTool>> {
+        for tool in self.builtins() {
+            for def in tool.definitions() {
+                if def.id == tool_name {
+                    return Some(tool.clone());
+                }
+            }
+        }
+        None
+    }
 }
 
 fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
@@ -282,9 +297,10 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         Arc::new(WebSearchTool::new(state.search_provider.clone(), prompts.clone())),
         Arc::new(HeartbeatTool::new(state.agent_service.clone(), state.storage_service.clone(), prompts.clone(), state.config.server.timezone.clone())),
         Arc::new(RequestCredentialsTool::new(state.vault_service.clone(), prompts.clone())),
-        Arc::new(super::manage_service::ManageServiceTool::new(
+        Arc::new(super::manage_app::ManageAppTool::new(
             state.app_service.clone(), prompts.clone(),
             state.notification_service.clone(), state.broadcast_service.clone(),
+            state.storage_service.clone(),
             state.config.server.external_or_local_base_url(),
         )),
         Arc::new(super::create_agent::CreateAgentTool::new(

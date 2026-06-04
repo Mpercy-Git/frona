@@ -1,5 +1,5 @@
 ---
-id: manage_service
+id: manage_app
 provider: app
 parameters:
   action:
@@ -14,17 +14,17 @@ parameters:
       - status
   manifest:
     type: object
-    description: "Full service manifest. Required for deploy/start. For stop/restart/destroy/status, only `handle` is needed."
+    description: "Full app manifest. Required for deploy/start. For stop/restart/destroy/status, only `handle` is needed."
 required:
   - action
 ---
-Manage web services deployed from your workspace. You can build a web app (any language/runtime), then deploy it as a live service accessible via URL.
+Manage web apps deployed from your workspace. You can build a web app (any language/runtime), then deploy it as a live app accessible via URL.
 
 ## Workflow
 
 1. Choose a URL-safe `handle` (e.g. `notes`, `my-dashboard`)
 2. Create the directory `apps/{handle}/` and write your source code there
-3. Deploy with `manage_service` — commands run from `apps/{handle}/` automatically. The app is served at `/apps/{handle}/`.
+3. Deploy with `manage_app` — commands run from `apps/{handle}/` automatically. The app is served at `/apps/{handle}/`.
 
 ## Actions
 

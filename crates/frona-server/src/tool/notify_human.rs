@@ -4,7 +4,8 @@ use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::credential::vault::service::VaultService;
 
-use crate::inference::tool_call::{MessageTool, ToolStatus};
+use crate::inference::hitl::{Hitl, HitlOutcome, HitlRequest, HitlResponse};
+use crate::inference::tool_call::ToolStatus;
 use frona_derive::agent_tool;
 
 use super::{InferenceContext, ToolOutput};
@@ -17,6 +18,10 @@ pub struct NotifyHumanTool {
 impl NotifyHumanTool {
     pub fn new(vault_service: VaultService, prompts: PromptLoader) -> Self {
         Self { vault_service, prompts }
+    }
+
+    fn url_for_chat(ctx: &InferenceContext) -> String {
+        format!("/chats/{}", ctx.chat.id)
     }
 }
 
@@ -39,20 +44,18 @@ impl NotifyHumanTool {
                     .map(|c| format!("/api/browser/debugger/{}", c.id))
                     .unwrap_or_default();
 
-                let json = serde_json::json!({
-                    "tool_type": "HumanInTheLoop",
-                    "reason": reason,
-                    "debugger_url": debugger_url,
-                });
-
-                Ok(ToolOutput::text(json.to_string())
-                    .with_tool_data(MessageTool::HumanInTheLoop {
-                        reason,
-                        debugger_url,
-                        status: ToolStatus::Pending,
-                        response: None,
-                    })
-                    .as_pending_external())
+                Ok(ToolOutput::text("").with_hitl(Hitl {
+                    prompt: if debugger_url.is_empty() {
+                        reason.clone()
+                    } else {
+                        format!("{reason}\n\nTake over: {debugger_url}")
+                    },
+                    url: Self::url_for_chat(ctx),
+                    request: HitlRequest::Takeover { reason, debugger_url },
+                    status: ToolStatus::Pending,
+                    response: None,
+                    delivery: None,
+                }))
             }
             "ask_user_question" => {
                 let question = arguments
@@ -65,20 +68,42 @@ impl NotifyHumanTool {
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
                     .unwrap_or_default();
 
-                let json = serde_json::json!({
-                    "tool_type": "Question",
-                    "question": question,
-                    "options": options,
-                });
+                Ok(ToolOutput::text("").with_hitl(Hitl {
+                    prompt: question,
+                    url: Self::url_for_chat(ctx),
+                    request: HitlRequest::Question { options },
+                    status: ToolStatus::Pending,
+                    response: None,
+                    delivery: None,
+                }))
+            }
+            _ => Err(AppError::Tool(format!(
+                "Unknown notify_human sub-tool: {tool_name}"
+            ))),
+        }
+    }
 
-                Ok(ToolOutput::text(json.to_string())
-                    .with_tool_data(MessageTool::Question {
-                        question,
-                        options,
-                        status: ToolStatus::Pending,
-                        response: None,
-                    })
-                    .as_pending_external())
+    async fn on_resume(
+        &self,
+        tool_name: &str,
+        _request: &HitlRequest,
+        response: HitlResponse,
+        _ctx: &InferenceContext,
+    ) -> Result<HitlOutcome, AppError> {
+        let HitlResponse::Choice(text) = response else {
+            return Err(AppError::Validation(format!(
+                "notify_human::{tool_name} expected HitlResponse::Choice"
+            )));
+        };
+        match tool_name {
+            "ask_user_question" => Ok(HitlOutcome::Resolved(text)),
+            "request_user_takeover" => {
+                let resolved = if text.is_empty() {
+                    "Human completed the takeover.".to_string()
+                } else {
+                    text
+                };
+                Ok(HitlOutcome::Resolved(resolved))
             }
             _ => Err(AppError::Tool(format!(
                 "Unknown notify_human sub-tool: {tool_name}"
