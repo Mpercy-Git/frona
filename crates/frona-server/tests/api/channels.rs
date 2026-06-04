@@ -1929,7 +1929,6 @@ async fn channel_button_resolution_resumes_inference() {
         .state
         .channel_manager
         .resolve_hitl(
-            &setup.state,
             &tc.id,
             frona::inference::hitl::HitlResponse::Choice("yes".to_string()),
         )
@@ -1937,7 +1936,7 @@ async fn channel_button_resolution_resumes_inference() {
         .expect("resolve_hitl should succeed");
     assert!(matches!(
         outcome,
-        frona::inference::hitl::ResolveOutcome::Resolved
+        frona::inference::hitl::ResolveOutcome::Resolved { .. }
     ));
 
     // 3. Tool call's HITL status must flip to Resolved, with the response

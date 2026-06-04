@@ -91,11 +91,29 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.memory_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
-        state.presign_service.clone(),
+            state.presign_service.clone(),
     );
-    state.chat_service = chat_service;
+    state.chat_service = chat_service.clone();
+    state.harness = Arc::new(frona::agent::harness::Harness::new(
+        chat_service,
+        state.user_service.clone(),
+        state.storage_service.clone(),
+        state.agent_service.clone(),
+        state.memory_service.clone(),
+        state.skill_service.clone(),
+        state.task_service.clone(),
+        state.vault_service.clone(),
+        state.mcp_service.clone(),
+        state.tool_manager.clone(),
+        state.policy_service.clone(),
+        state.broadcast_service.clone(),
+        state.active_sessions.clone(),
+        state.shutdown_token.clone(),
+        state.prompts.clone(),
+        state.config.clone(),
+    ));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
 
-    state.init_task_executor();
     let signal_svc = state.init_signal_service();
     state.policy_service.sync_base_policies().await.unwrap();
     signal_svc.start().await.unwrap();
@@ -388,11 +406,29 @@ async fn build_state_with_dyn(
         state.memory_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
-        state.presign_service.clone(),
+            state.presign_service.clone(),
     );
-    state.chat_service = chat_service;
+    state.chat_service = chat_service.clone();
+    state.harness = Arc::new(frona::agent::harness::Harness::new(
+        chat_service,
+        state.user_service.clone(),
+        state.storage_service.clone(),
+        state.agent_service.clone(),
+        state.memory_service.clone(),
+        state.skill_service.clone(),
+        state.task_service.clone(),
+        state.vault_service.clone(),
+        state.mcp_service.clone(),
+        state.tool_manager.clone(),
+        state.policy_service.clone(),
+        state.broadcast_service.clone(),
+        state.active_sessions.clone(),
+        state.shutdown_token.clone(),
+        state.prompts.clone(),
+        state.config.clone(),
+    ));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
 
-    state.init_task_executor();
     let signal_svc = state.init_signal_service();
     state.policy_service.sync_base_policies().await.unwrap();
     signal_svc.start().await.unwrap();

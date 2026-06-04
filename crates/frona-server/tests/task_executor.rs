@@ -116,7 +116,7 @@ async fn seed_user_and_agent(state: &AppState) {
 }
 
 fn make_executor(state: &AppState) -> Arc<TaskExecutor> {
-    Arc::new(TaskExecutor::new(state.clone()))
+    Arc::new(TaskExecutor::new(state.harness.clone()))
 }
 
 fn make_task(kind: TaskKind) -> Task {
@@ -394,8 +394,9 @@ async fn deliver_to_source_skips_direct_tasks() {
     let executor = make_executor(&state);
     let task = make_task(TaskKind::Direct { source_chat_id: None });
 
-    executor
-        .deliver_event_to_source(
+    frona::agent::task::executor::deliver_event_to_source(
+        &state.chat_service,
+        &state.task_service,
             &task,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -433,8 +434,9 @@ async fn deliver_to_source_sends_to_delegation() {
     });
     task.chat_id = Some("task-chat".to_string());
 
-    executor
-        .deliver_event_to_source(
+    frona::agent::task::executor::deliver_event_to_source(
+        &state.chat_service,
+        &state.task_service,
             &task,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -477,8 +479,9 @@ async fn deliver_to_source_sends_to_direct_with_source_chat() {
     });
     task.chat_id = Some("self-task-chat".to_string());
 
-    executor
-        .deliver_event_to_source(
+    frona::agent::task::executor::deliver_event_to_source(
+        &state.chat_service,
+        &state.task_service,
             &task,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -530,9 +533,8 @@ async fn task_service_mark_completed_emits_broadcast() {
 
 #[tokio::test]
 async fn concurrency_global_limit() {
-    let (mut state, _tmp) = test_app_state().await;
-    state.max_concurrent_tasks = 1;
-    let executor = make_executor(&state);
+    let (state, _tmp) = test_app_state().await;
+    let executor = Arc::new(TaskExecutor::with_max_concurrent_tasks(1, state.harness.clone()));
 
     let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
 
@@ -581,8 +583,9 @@ async fn deliver_to_source_signal_only_sends_empty_content() {
     task.chat_id = Some("task-chat".to_string());
 
     // Signal-only completion: no result text, no deliverables
-    executor
-        .deliver_event_to_source(
+    frona::agent::task::executor::deliver_event_to_source(
+        &state.chat_service,
+        &state.task_service,
             &task,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -632,8 +635,9 @@ async fn deliver_to_source_saves_message_to_user_chat() {
     let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
     repo.create(&task).await.unwrap();
 
-    executor
-        .deliver_event_to_source(
+    frona::agent::task::executor::deliver_event_to_source(
+        &state.chat_service,
+        &state.task_service,
             &task,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -767,8 +771,9 @@ async fn deliver_to_source_cron_run_posts_regardless_of_process_result() {
         .await
         .unwrap();
 
-    executor
-        .deliver_event_to_source(
+    frona::agent::task::executor::deliver_event_to_source(
+        &state.chat_service,
+        &state.task_service,
             &run,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -814,8 +819,9 @@ async fn deliver_to_source_cron_run_posts_when_process_result_true() {
         .await
         .unwrap();
 
-    executor
-        .deliver_event_to_source(
+    frona::agent::task::executor::deliver_event_to_source(
+        &state.chat_service,
+        &state.task_service,
             &run,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -849,8 +855,9 @@ async fn deliver_to_source_cron_run_skips_when_no_source_chat() {
         .await
         .unwrap();
 
-    executor
-        .deliver_event_to_source(
+    frona::agent::task::executor::deliver_event_to_source(
+        &state.chat_service,
+        &state.task_service,
             &run,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,

@@ -98,7 +98,6 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
             state.config.auth.ephemeral_token_expiry_secs,
         ));
     }
-    state.init_task_executor();
     state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await.unwrap();
     (state, tmp)

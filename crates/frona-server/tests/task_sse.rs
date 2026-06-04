@@ -135,10 +135,29 @@ async fn test_app_state_with_mock(
         state.presign_service.clone(),
     );
     // Replace the chat_service with our version that has the mock provider.
-    state.chat_service = chat_service;
+    state.chat_service = chat_service.clone();
     // Replace the agent_service so chat_service in state shares the same
     // underlying repo as the one above.
-    state.agent_service = agent_service;
+    state.agent_service = agent_service.clone();
+    state.harness = Arc::new(frona::agent::harness::Harness::new(
+        chat_service,
+        state.user_service.clone(),
+        state.storage_service.clone(),
+        agent_service,
+        state.memory_service.clone(),
+        state.skill_service.clone(),
+        state.task_service.clone(),
+        state.vault_service.clone(),
+        state.mcp_service.clone(),
+        state.tool_manager.clone(),
+        state.policy_service.clone(),
+        state.broadcast_service.clone(),
+        state.active_sessions.clone(),
+        state.shutdown_token.clone(),
+        state.prompts.clone(),
+        state.config.clone(),
+    ));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
 
     (state, tmp)
 }
@@ -234,7 +253,7 @@ async fn task_execution_emits_expected_sse_events() {
 
     // Execute the task (spawns a background tokio task).
     let task_id = task.id.clone();
-    let executor = Arc::new(TaskExecutor::new(state.clone()));
+    let executor = Arc::new(TaskExecutor::new(state.harness.clone()));
     executor.spawn_execution(task).await.unwrap();
 
     for _ in 0..50 {
@@ -380,7 +399,7 @@ async fn delegation_delivers_task_result_to_parent_chat() {
     task_repo.create(&task).await.unwrap();
 
     let task_id = task.id.clone();
-    let executor = Arc::new(TaskExecutor::new(state.clone()));
+    let executor = Arc::new(TaskExecutor::new(state.harness.clone()));
     executor.spawn_execution(task).await.unwrap();
 
     for _ in 0..50 {
