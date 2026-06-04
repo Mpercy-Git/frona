@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use metrics_exporter_prometheus::PrometheusHandle;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::signal::SignalService;
@@ -108,9 +108,8 @@ pub struct AppState {
     pub search_provider: Option<Arc<dyn SearchProvider>>,
     pub voice_provider: Option<Arc<dyn VoiceProvider>>,
     pub skill_service: SkillService,
-    pub task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
+    pub task_executor: Arc<TaskExecutor>,
     pub signal_service: Arc<OnceLock<Arc<SignalService>>>,
-    pub max_concurrent_tasks: usize,
     pub config: Arc<Config>,
     pub storage_service: StorageService,
     pub prompts: PromptLoader,
@@ -125,12 +124,12 @@ pub struct AppState {
     pub oauth_service: Option<OAuthService>,
     pub login_tracker: LoginAttemptTracker,
     pub metrics_handle: PrometheusHandle,
-    pub task_resolution_notifiers: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
     pub shutdown_token: CancellationToken,
     pub channel_registry: Arc<crate::chat::channel::ChannelRegistry>,
     pub channel_manager: Arc<crate::chat::channel::ChannelManager>,
     pub channel_service: Arc<crate::chat::channel::ChannelService>,
     pub http_client: reqwest::Client,
+    pub harness: Arc<crate::agent::harness::Harness>,
 }
 
 impl AppState {
@@ -387,12 +386,37 @@ impl AppState {
             broadcast_service.clone(),
             presign_service.clone(),
         );
+        let shutdown_token = CancellationToken::new();
+        let active_sessions = ActiveSessions::default();
+        let harness = Arc::new(crate::agent::harness::Harness::new(
+            chat_service.clone(),
+            user_service.clone(),
+            storage.clone(),
+            agent_service.clone(),
+            memory_service.clone(),
+            skill_service.clone(),
+            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            vault_service.clone(),
+            mcp_service.clone(),
+            tool_manager.clone(),
+            policy_service.clone(),
+            broadcast_service.clone(),
+            active_sessions.clone(),
+            shutdown_token.clone(),
+            prompt_loader.clone(),
+            config_arc.clone(),
+        ));
+        let task_executor = Arc::new(crate::agent::task::executor::TaskExecutor::new(
+            harness.clone(),
+        ));
         let message_repo_for_channel: Arc<dyn crate::chat::message::repository::MessageRepository> =
             Arc::new(SurrealRepo::<crate::chat::message::models::Message>::new(db.clone()));
         let channel_manager = Arc::new(crate::chat::channel::ChannelManager::new(
             message_repo_for_channel,
             chat_service.clone(),
             channel_service.clone(),
+            harness.clone(),
+            task_executor.clone(),
         ));
         Self {
             db: db.clone(),
@@ -408,7 +432,7 @@ impl AppState {
             task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
-            active_sessions: ActiveSessions::default(),
+            active_sessions,
             memory_service,
             notification_service: NotificationService::new(SurrealRepo::new(db.clone())),
             policy_service: policy_service.clone(),
@@ -418,9 +442,8 @@ impl AppState {
             search_provider,
             voice_provider,
             skill_service,
-            task_executor: Arc::new(OnceLock::new()),
+            task_executor,
             signal_service: Arc::new(OnceLock::new()),
-            max_concurrent_tasks: config.server.max_concurrent_tasks,
             config: config_arc,
             storage_service: storage,
             prompts: prompt_loader,
@@ -433,12 +456,12 @@ impl AppState {
             oauth_service,
             login_tracker: LoginAttemptTracker::new(5, 15),
             metrics_handle,
-            task_resolution_notifiers: Arc::new(Mutex::new(HashMap::new())),
-            shutdown_token: CancellationToken::new(),
+            shutdown_token,
             channel_registry: channel_registry.clone(),
             channel_manager,
             channel_service,
             http_client,
+            harness,
         }
     }
 
@@ -475,11 +498,6 @@ impl AppState {
             .is_some_and(|v| v == "true")
     }
 
-    pub fn init_task_executor(&self) {
-        let executor = TaskExecutor::new(self.clone());
-        let _ = self.task_executor.set(Arc::new(executor));
-    }
-
     pub fn init_signal_service(&self) -> Arc<SignalService> {
         let svc = Arc::new(SignalService::new(
             self.task_service.clone(),
@@ -496,10 +514,6 @@ impl AppState {
 
     pub fn signal_service(&self) -> Option<Arc<SignalService>> {
         self.signal_service.get().cloned()
-    }
-
-    pub fn task_executor(&self) -> Option<Arc<TaskExecutor>> {
-        self.task_executor.get().cloned()
     }
 
     pub fn is_shutting_down(&self) -> bool {

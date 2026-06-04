@@ -5,7 +5,7 @@ use crate::chat::broadcast::EventSender;
 use crate::chat::models::Chat;
 use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
-use crate::core::state::AppState;
+use crate::agent::harness::Harness;
 use crate::inference::config::ModelGroup;
 use crate::inference::conversation::{ConversationBuilder, ConversationContext, resolve_attachment_path};
 use crate::inference::ModelProviderRegistry;
@@ -26,40 +26,66 @@ pub struct ChatSessionContext {
 
 impl ChatSessionContext {
     pub async fn build(
-        state: &AppState,
+        harness: &Harness,
         user_id: &str,
         chat: Chat,
         cancel_token: CancellationToken,
         builder: Box<dyn ConversationBuilder>,
     ) -> Result<Self, AppError> {
-        let event_sender: EventSender = state
+        let event_sender: EventSender = harness
             .broadcast_service
             .create_event_sender(user_id, &chat.id, chat.space_id.clone());
-        let agent_config = state
+        let agent_config = harness
             .chat_service
             .resolve_agent_config(&chat.agent_id)
             .await?;
 
-        let agent = state
+        let agent = harness
             .agent_service
             .find_by_id(&chat.agent_id)
             .await?
             .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
 
-        let user = state
+        let user = harness
             .user_service
             .find_by_id(user_id)
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
-        let skills = state
+        let skills = harness
             .skill_service
             .list(&user.handle, &agent.handle, agent_config.skills.as_deref())
             .await;
 
-        let mut tool_registry = state
+        // Load task early so `build_agent_registry` can register
+        // task-domain tools in the same pass.
+        let task = if let Some(ref task_id) = chat.task_id {
+            harness.task_service.find_by_id(task_id).await.ok().flatten()
+        } else {
+            None
+        };
+        let task_in_progress = task.as_ref().is_some_and(|t|
+            !matches!(t.kind, crate::agent::task::models::TaskKind::Cron { .. })
+            && matches!(t.status,
+                crate::agent::task::models::TaskStatus::Pending
+                | crate::agent::task::models::TaskStatus::InProgress
+            )
+        );
+        let task_ctx = if task_in_progress {
+            task.clone().map(|t| crate::tool::manager::TaskToolContext {
+                task: t,
+                storage_service: harness.storage_service.clone(),
+                prompts: harness.prompts.clone(),
+                chat_service: harness.chat_service.clone(),
+                task_service: harness.task_service.clone(),
+            })
+        } else {
+            None
+        };
+
+        let mut tool_registry = harness
             .tool_manager
-            .build_agent_registry(user_id, &agent, &state.policy_service)
+            .build_agent_registry(user_id, &agent, &harness.policy_service, task_ctx)
             .await;
 
         // `send_message` initiates a new user-facing message; it only makes sense
@@ -78,14 +104,14 @@ impl ChatSessionContext {
 
         let agent_summaries =
             crate::tool::registry::build_agent_summaries(
-                state,
+                harness,
                 user_id,
                 &chat.agent_id,
             )
             .await;
 
-        let mcp_servers: Vec<(String, String)> = if state.config.mcp.bridge_mode {
-            let servers = state.mcp_service.list_for_user(user_id).await.unwrap_or_default();
+        let mcp_servers: Vec<(String, String)> = if harness.config.mcp.bridge_mode {
+            let servers = harness.mcp_service.list_for_user(user_id).await.unwrap_or_default();
             let allowed_handles: std::collections::HashSet<String> = allowed_tool_groups
                 .iter()
                 .filter_map(|id| {
@@ -106,9 +132,9 @@ impl ChatSessionContext {
             Vec::new()
         };
 
-        let resolved_tz = user.resolved_timezone(&state.config.server.timezone);
+        let resolved_tz = user.resolved_timezone(&harness.config.server.timezone);
 
-        let mut system_prompt = match state
+        let mut system_prompt = match harness
             .memory_service
             .build_augmented_system_prompt(
                 &agent_config.system_prompt,
@@ -132,35 +158,21 @@ impl ChatSessionContext {
             }
         };
 
-        let model_group = state
+        let model_group = harness
             .chat_service
             .provider_registry()
             .resolve_model_group(&agent_config.model_group)?;
 
-        let stored_messages = state.chat_service.get_stored_messages(&chat.id).await?;
-        let tool_calls = state.chat_service
+        let stored_messages = harness.chat_service.get_stored_messages(&chat.id).await?;
+        let tool_calls = harness.chat_service
             .get_tool_calls(&chat.id)
             .await
             .unwrap_or_default();
 
-        let task = if let Some(ref task_id) = chat.task_id {
-            state.task_service.find_by_id(task_id).await.ok().flatten()
-        } else {
-            None
-        };
-
-        // Cron must be excluded: TASK.md would prompt complete_task → status=Completed
-        // → cron stops firing forever.
-        let task_in_progress = task.as_ref().is_some_and(|t|
-            !matches!(t.kind, crate::agent::task::models::TaskKind::Cron { .. })
-            && matches!(t.status,
-                crate::agent::task::models::TaskStatus::Pending
-                | crate::agent::task::models::TaskStatus::InProgress
-            )
-        );
-
+        // Cron is already filtered from `task_in_progress`: TASK.md would prompt
+        // complete_task → status=Completed → cron stops firing forever.
         if task_in_progress
-            && let Some(task_prompt) = state.prompts.read("TASK.md")
+            && let Some(task_prompt) = harness.prompts.read("TASK.md")
         {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&task_prompt);
@@ -208,59 +220,23 @@ impl ChatSessionContext {
 
         let rig_history = builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
 
-        let registry = state.chat_service.provider_registry().clone();
+        let registry = harness.chat_service.provider_registry().clone();
 
-        if task_in_progress {
-            let result_schema = task
-                .as_ref()
-                .and_then(|t| t.result_schema.clone())
-                .and_then(|v| match crate::agent::task::schema::ResultSpec::new(v) {
-                    Ok(spec) => Some(std::sync::Arc::new(spec)),
-                    Err(e) => {
-                        tracing::warn!("failed to compile task.result_schema: {e}");
-                        None
-                    }
-                });
-            tool_registry.register(std::sync::Arc::new(
-                crate::tool::task_control::TaskControlTool::new(
-                    state.storage_service.clone(),
-                    state.prompts.clone(),
-                    result_schema.clone(),
-                ),
-            ));
-
-            let is_continuous_signal = matches!(
-                task.as_ref().map(|t| &t.kind),
-                Some(crate::agent::task::models::TaskKind::Signal {
-                    mode: crate::agent::task::models::SignalMode::Continuous,
-                    ..
-                })
-            );
-            if is_continuous_signal && let Some(executor) = state.task_executor() {
-                tool_registry.register(std::sync::Arc::new(
-                    crate::tool::report_signal::ReportSignalTool::new(
-                        executor,
-                        state.prompts.clone(),
-                        result_schema,
-                    ),
-                ));
-            }
-        }
         let mut file_paths = Vec::new();
         for msg in &stored_messages {
             for att in &msg.attachments {
-                let resolved = resolve_attachment_path(att, &state.user_service, &state.storage_service).await;
+                let resolved = resolve_attachment_path(att, &harness.user_service, &harness.storage_service).await;
                 if !file_paths.contains(&resolved) {
                     file_paths.push(resolved);
                 }
             }
         }
 
-        let mut tool_ctx = InferenceContext::new(user, agent, chat.clone(), event_sender, state.shutdown_token.clone(), cancel_token.clone());
+        let mut tool_ctx = InferenceContext::new(user, agent, chat.clone(), event_sender, harness.shutdown_token.clone(), cancel_token.clone());
         tool_ctx.file_paths = file_paths;
         tool_ctx.task = task;
 
-        let vault_env = state
+        let vault_env = harness
             .vault_service
             .hydrate_chat_env_vars(user_id, &chat.id, &chat.agent_id)
             .await

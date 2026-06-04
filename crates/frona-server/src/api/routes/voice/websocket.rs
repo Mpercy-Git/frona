@@ -6,7 +6,6 @@ use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::execution::run_agent_loop;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::inference::InferenceResponse;
@@ -169,24 +168,24 @@ async fn handle_voice_socket(
     tracing::info!(chat_id = %chat_id, "Voice WS session ended");
     state.active_sessions.remove(&chat_id).await;
 
-    if let Some(executor) = state.task_executor()
-        && let Ok(Some(task)) = state.task_service.find_by_chat_id(&chat_id).await
+    if let Ok(Some(task)) = state.task_service.find_by_chat_id(&chat_id).await
         && matches!(task.status, crate::agent::task::models::TaskStatus::InProgress)
     {
         let summary = last_response;
 
         if let Ok(task) = state.task_service.mark_completed(&task.id, Some(summary.clone())).await {
-            executor
-                .deliver_event_to_source(
-                    &task,
-                    crate::agent::task::executor::TaskLifecycleEvent::Completion {
-                        status: crate::agent::task::models::TaskStatus::Completed,
-                        summary: Some(summary),
-                    },
-                    vec![],
-                )
-                .await;
-            executor.resume_parent_if_requested(&task).await;
+            crate::agent::task::executor::deliver_event_to_source(
+                &state.chat_service,
+                &state.task_service,
+                &task,
+                crate::agent::task::executor::TaskLifecycleEvent::Completion {
+                    status: crate::agent::task::models::TaskStatus::Completed,
+                    summary: Some(summary),
+                },
+                vec![],
+            )
+            .await;
+            state.task_executor.resume_parent_if_requested(&task).await;
         }
     }
 }
@@ -229,7 +228,7 @@ async fn handle_voice_turn(
             user_service: state.user_service.clone(),
             storage_service: state.storage_service.clone(),
         });
-        let outcome = run_agent_loop(state, user_id, chat_id, &agent_msg_id, cancel_token.clone(), builder, &[]).await?;
+        let outcome = state.harness.run_loop(user_id, chat_id, &agent_msg_id, cancel_token.clone(), builder, &[]).await?;
 
         match outcome.response {
             InferenceResponse::ExternalToolPending {
