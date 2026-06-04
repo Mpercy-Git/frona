@@ -197,7 +197,7 @@ impl ChannelAdapter for SignalAdapter {
         self.dispatch_text(chat, &msg.content, &msg.id, ctx).await
     }
 
-    async fn on_inference_active(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), AppError> {
+    async fn on_inference_start(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), AppError> {
         self.dispatch_typing(chat, ctx, TypingAction::Started).await
     }
 

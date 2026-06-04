@@ -117,6 +117,47 @@ impl ChannelAdapter for SmsAdapter {
         Ok(())
     }
 
+    async fn on_pending_hitl(
+        &self,
+        batch: &[crate::inference::tool_call::ToolCall],
+        _msg: &Message,
+        chat: &Chat,
+        ctx: &ChannelCtx,
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+        // SMS is text-only → sequential cadence: render only the first pending
+        // HITL with `render_default_text` (prompt + URL). The delivery cursor
+        // advances by 1; the next pending HITL renders after this one resolves.
+        let Some(tc) = batch.first() else { return Ok(Vec::new()) };
+        let Some(h) = tc.hitl.as_ref() else { return Ok(Vec::new()) };
+
+        let body = crate::chat::channel::hitl::render_default_text(h);
+        let to_number = parse_external_id(external_chat_id(chat)?)?;
+        let status_callback = status_callback_url(&ctx.webhook_url, &tc.id);
+
+        let sid = match self
+            .twilio()
+            .send_message(&self.from_number, &to_number, &body, &status_callback)
+            .await
+        {
+            Ok(sid) => sid,
+            Err(e) => {
+                tracing::warn!(
+                    channel_id = %ctx.channel.id,
+                    tool_call_id = %tc.id,
+                    error = %e,
+                    "SMS on_pending_hitl: send failed",
+                );
+                return Ok(Vec::new());
+            }
+        };
+
+        Ok(vec![crate::inference::hitl::HitlDelivery {
+            channel_id: ctx.channel.id.clone(),
+            external_message_id: sid,
+            delivered_at: chrono::Utc::now(),
+        }])
+    }
+
     async fn on_webhook(
         &self,
         ctx: &ChannelCtx,
@@ -777,10 +818,12 @@ mod tests {
             result: String::new(),
             success: true,
             duration_ms: 0,
-            tool_data: None,
+            hitl: None,
+            task_event: None,
             system_prompt: None,
             description: None,
             turn_text: text.map(String::from),
+            turn_reasoning: None,
             created_at: chrono::Utc::now(),
         }
     }

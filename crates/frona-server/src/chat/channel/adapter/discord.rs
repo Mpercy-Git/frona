@@ -145,7 +145,7 @@ impl ChannelAdapter for DiscordAdapter {
         self.post_message(chat, &msg.content).await
     }
 
-    async fn on_inference_active(
+    async fn on_inference_start(
         &self,
         chat: &Chat,
         _ctx: &ChannelCtx,

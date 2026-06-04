@@ -102,7 +102,7 @@ impl ChannelAdapter for WhatsAppUserAdapter {
         Ok(())
     }
 
-    async fn on_inference_active(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), AppError> {
+    async fn on_inference_start(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), AppError> {
         let Some(client) = self.client.lock().await.clone() else { return Ok(()) };
         let Ok(external) = external_chat_id(chat) else { return Ok(()) };
         let Ok(to_raw) = parse_external_id(external) else { return Ok(()) };
