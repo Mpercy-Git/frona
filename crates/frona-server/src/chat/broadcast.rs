@@ -7,7 +7,6 @@ use axum::response::sse::Event;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc};
 
-use crate::inference::tool_call::ToolCallResponse;
 use crate::inference::tool_loop::InferenceEventKind;
 use crate::notification::models::Notification;
 
@@ -25,18 +24,8 @@ pub enum EntityAction {
 #[allow(clippy::large_enum_variant)]
 pub enum BroadcastEventKind {
     Inference(InferenceEventKind),
-
-    InferenceDone { message: MessageResponse },
-    InferenceCancelled { reason: String },
-    InferenceError { error: String },
-    ToolMessage { message: MessageResponse },
-    ToolResolved { message: MessageResponse },
-    ToolCallCreated { tool_call: ToolCallResponse },
-    ToolCallResolved { tool_call: ToolCallResponse },
     Title { title: String },
-
     NewNotification { notification: Notification },
-
     ChatMessage { message: MessageResponse },
     TaskUpdate {
         task_id: String,
@@ -47,7 +36,6 @@ pub enum BroadcastEventKind {
         result_summary: Option<String>,
     },
     InferenceCount { count: usize },
-
     EntityUpdated {
         table: String,
         record_id: String,
@@ -89,12 +77,6 @@ pub struct EventSender {
 
 impl EventSender {
     pub fn send(&self, event: crate::inference::tool_loop::InferenceEvent) {
-        if matches!(
-            event.kind,
-            InferenceEventKind::Done(_) | InferenceEventKind::Cancelled(_)
-        ) {
-            return;
-        }
         let broadcast = BroadcastEvent {
             user_id: self.user_id.clone(),
             chat_id: Some(self.chat_id.clone()),
@@ -203,61 +185,35 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                         "reason": reason,
                     }),
                 )),
-                InferenceEventKind::Error(err) => Some(sse_event(
-                    "inference_error",
-                    serde_json::json!({ "chat_id": chat_id, "error": err }),
+                InferenceEventKind::Start => Some(sse_event(
+                    "inference_start",
+                    serde_json::json!({ "chat_id": chat_id }),
                 )),
-                InferenceEventKind::Done(_) | InferenceEventKind::Cancelled(_) => None,
+                InferenceEventKind::Done { message } => Some(sse_event(
+                    "inference_done",
+                    serde_json::json!({ "chat_id": chat_id, "message": message }),
+                )),
+                InferenceEventKind::Cancelled { reason } => Some(sse_event(
+                    "inference_cancelled",
+                    serde_json::json!({ "chat_id": chat_id, "reason": reason }),
+                )),
+                InferenceEventKind::Failed { error } => Some(sse_event(
+                    "inference_error",
+                    serde_json::json!({ "chat_id": chat_id, "error": error }),
+                )),
+                InferenceEventKind::Paused { reason, message } => Some(sse_event(
+                    "inference_paused",
+                    serde_json::json!({
+                        "chat_id": chat_id,
+                        "reason": reason,
+                        "message": message,
+                    }),
+                )),
+                InferenceEventKind::Resume { message } => Some(sse_event(
+                    "inference_resume",
+                    serde_json::json!({ "chat_id": chat_id, "message": message }),
+                )),
             }
-        }
-        BroadcastEventKind::InferenceDone { message } => {
-            let chat_id = event.chat_id.as_deref().unwrap_or("");
-            Some(sse_event(
-                "inference_done",
-                serde_json::json!({ "chat_id": chat_id, "message": message }),
-            ))
-        }
-        BroadcastEventKind::InferenceCancelled { reason } => {
-            let chat_id = event.chat_id.as_deref().unwrap_or("");
-            Some(sse_event(
-                "inference_cancelled",
-                serde_json::json!({ "chat_id": chat_id, "reason": reason }),
-            ))
-        }
-        BroadcastEventKind::InferenceError { error } => {
-            let chat_id = event.chat_id.as_deref().unwrap_or("");
-            Some(sse_event(
-                "inference_error",
-                serde_json::json!({ "chat_id": chat_id, "error": error }),
-            ))
-        }
-        BroadcastEventKind::ToolMessage { message } => {
-            let chat_id = event.chat_id.as_deref().unwrap_or("");
-            Some(sse_event(
-                "tool_message",
-                serde_json::json!({ "chat_id": chat_id, "message": message }),
-            ))
-        }
-        BroadcastEventKind::ToolResolved { message } => {
-            let chat_id = event.chat_id.as_deref().unwrap_or("");
-            Some(sse_event(
-                "tool_resolved",
-                serde_json::json!({ "chat_id": chat_id, "message": message }),
-            ))
-        }
-        BroadcastEventKind::ToolCallCreated { tool_call } => {
-            let chat_id = event.chat_id.as_deref().unwrap_or("");
-            Some(sse_event(
-                "tool_message",
-                serde_json::json!({ "chat_id": chat_id, "tool_call": tool_call }),
-            ))
-        }
-        BroadcastEventKind::ToolCallResolved { tool_call } => {
-            let chat_id = event.chat_id.as_deref().unwrap_or("");
-            Some(sse_event(
-                "tool_resolved",
-                serde_json::json!({ "chat_id": chat_id, "tool_call": tool_call }),
-            ))
         }
         BroadcastEventKind::Title { title } => {
             let chat_id = event.chat_id.as_deref().unwrap_or("");
@@ -457,51 +413,6 @@ impl BroadcastService {
             chat_id: Some(chat_id.to_string()),
             space_id,
             kind: BroadcastEventKind::ChatMessage { message },
-        });
-    }
-
-    pub fn broadcast_inference_done(
-        &self,
-        user_id: &str,
-        chat_id: &str,
-        space_id: Option<String>,
-        message: MessageResponse,
-    ) {
-        self.dispatch(BroadcastEvent {
-            user_id: user_id.to_string(),
-            chat_id: Some(chat_id.to_string()),
-            space_id,
-            kind: BroadcastEventKind::InferenceDone { message },
-        });
-    }
-
-    pub fn broadcast_inference_cancelled(
-        &self,
-        user_id: &str,
-        chat_id: &str,
-        space_id: Option<String>,
-        reason: String,
-    ) {
-        self.dispatch(BroadcastEvent {
-            user_id: user_id.to_string(),
-            chat_id: Some(chat_id.to_string()),
-            space_id,
-            kind: BroadcastEventKind::InferenceCancelled { reason },
-        });
-    }
-
-    pub fn broadcast_inference_error(
-        &self,
-        user_id: &str,
-        chat_id: &str,
-        space_id: Option<String>,
-        error: String,
-    ) {
-        self.dispatch(BroadcastEvent {
-            user_id: user_id.to_string(),
-            chat_id: Some(chat_id.to_string()),
-            space_id,
-            kind: BroadcastEventKind::InferenceError { error },
         });
     }
 

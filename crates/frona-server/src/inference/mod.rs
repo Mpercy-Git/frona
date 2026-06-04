@@ -1,3 +1,4 @@
+pub mod hitl;
 pub mod hooks;
 pub mod config;
 pub mod context;
@@ -11,6 +12,9 @@ pub mod tool_call;
 pub mod tool_loop;
 
 pub use error::InferenceError;
+pub use hitl::{
+    Hitl, HitlDelivery, HitlOutcome, HitlRequest, HitlResponse, ResolveOutcome, VaultGrant,
+};
 pub use provider::ModelRef;
 pub use registry::ModelProviderRegistry;
 pub use request::{InferenceRequest, InferenceResponse, InferenceContext};
@@ -32,6 +36,13 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
         agent_id: request.ctx.agent.id.clone(),
         model_group: request.model_group.name.clone(),
     };
+
+    // Single source of truth: every inference turn (initial, resume, task
+    // executor's inner runs) flows through this function, so emitting
+    // `Start` here covers all entry points exactly once per turn.
+    request.ctx.event_tx.send(tool_loop::InferenceEvent {
+        kind: tool_loop::InferenceEventKind::Start,
+    });
 
     if request.tool_registry.is_empty() {
         use tool_loop::extract_reasoning;
@@ -66,9 +77,6 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
         {
             retry::StreamResult::Contents(contents) => {
                 let reasoning = extract_reasoning(&contents);
-                event_tx.send(InferenceEvent {
-                    kind: InferenceEventKind::Done(String::new()),
-                });
                 Ok(InferenceResponse::Completed {
                     text: response_text,
                     attachments: vec![],
@@ -77,9 +85,6 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
                 })
             }
             retry::StreamResult::Cancelled => {
-                event_tx.send(InferenceEvent {
-                    kind: InferenceEventKind::Cancelled(String::new()),
-                });
                 Ok(InferenceResponse::Cancelled(response_text))
             }
         }
