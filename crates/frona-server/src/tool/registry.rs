@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::agent::harness::Harness;
 use crate::core::error::AppError;
-use crate::core::state::AppState;
 
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 
@@ -135,16 +135,16 @@ impl AgentToolRegistry {
 }
 
 pub async fn build_agent_summaries(
-    state: &AppState,
+    harness: &Harness,
     user_id: &str,
     current_agent_id: &str,
 ) -> Vec<(String, String)> {
-    let current_agent = match state.agent_service.find_by_id(current_agent_id).await {
+    let current_agent = match harness.agent_service.find_by_id(current_agent_id).await {
         Ok(Some(agent)) => agent,
         _ => return Vec::new(),
     };
 
-    let agents = match state.agent_service.list(user_id).await {
+    let agents = match harness.agent_service.list(user_id).await {
         Ok(agents) => agents,
         Err(_) => return Vec::new(),
     };
@@ -154,7 +154,7 @@ pub async fn build_agent_summaries(
         if target.id == current_agent_id || !target.enabled {
             continue;
         }
-        let decision = state
+        let decision = harness
             .policy_service
             .authorize(
                 user_id,

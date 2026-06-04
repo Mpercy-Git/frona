@@ -1,5 +1,5 @@
 pub mod config;
-pub mod execution;
+pub mod harness;
 pub mod models;
 pub mod prompt;
 pub mod repository;
