@@ -1,6 +1,6 @@
 use chrono::Utc;
 use frona::auth::UserService;
-use frona::chat::message::models::{Message, MessageRole, MessageStatus};
+use frona::chat::message::models::{Message, MessageRole, MessageStatus, Reasoning};
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::{
@@ -73,10 +73,12 @@ fn tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> ToolCall
         result: "tool output".to_string(),
         success: true,
         duration_ms: 100,
-        tool_data: None,
+        hitl: None,
+        task_event: None,
         system_prompt: None,
         description: None,
         turn_text: None,
+        turn_reasoning: None,
         created_at: Utc::now(),
     }
 }
@@ -254,5 +256,121 @@ async fn turn_text_empty_string_omitted() {
         assert!(matches!(items[0], AssistantContent::ToolCall(_)));
     } else {
         panic!("Expected assistant message with tool call only");
+    }
+}
+
+/// Per-turn reasoning stamped on the first tool_call of a turn must surface
+/// as `AssistantContent::Reasoning` in that turn's Assistant block — load-
+/// bearing for thinking-mode providers (DeepSeek, Anthropic) which reject
+/// chat requests if previously-emitted reasoning_content isn't replayed.
+#[tokio::test]
+async fn agent_with_tool_calls_includes_per_turn_reasoning() {
+    let db = test_db().await;
+    let builder = test_builder(&db);
+    let ctx = test_ctx();
+
+    // Executing (paused) message — no final completion block.
+    let agent_msg = agent_message("chat-1", "", Some(MessageStatus::Executing));
+    let agent_msg_id = agent_msg.id.clone();
+
+    let messages = vec![user_message("chat-1", "ask me"), agent_msg];
+
+    let mut te = tool_call("chat-1", &agent_msg_id, 0, "ask_user_question");
+    te.turn_text = Some("Let me ask you something.".into());
+    te.turn_reasoning = Some(Reasoning {
+        id: Some("r-0".into()),
+        content: "I should engage with a question.".into(),
+        signature: Some("sig-0".into()),
+    });
+
+    let result = builder.build(&messages, &[te], &ctx).await;
+
+    // user msg, assistant(reasoning + text + tool_call), user(tool_result)
+    // No final completion block (status = Executing).
+    assert_eq!(result.len(), 3);
+
+    if let RigMessage::Assistant { content, .. } = &result[1] {
+        let items: Vec<_> = content.iter().collect();
+        assert_eq!(items.len(), 3, "expected reasoning + text + tool_call");
+        let AssistantContent::Reasoning(r) = items[0] else {
+            panic!("first item must be Reasoning, got {:?}", items[0]);
+        };
+        assert_eq!(r.display_text(), "I should engage with a question.");
+        assert!(matches!(items[1], AssistantContent::Text(t) if t.text == "Let me ask you something."));
+        assert!(matches!(items[2], AssistantContent::ToolCall(_)));
+    } else {
+        panic!("Expected assistant message at index 1");
+    }
+}
+
+#[tokio::test]
+async fn agent_with_tool_calls_omits_reasoning_when_absent() {
+    let db = test_db().await;
+    let builder = test_builder(&db);
+    let ctx = test_ctx();
+
+    let agent_msg = agent_message("chat-1", "done", Some(MessageStatus::Completed));
+    let agent_msg_id = agent_msg.id.clone();
+
+    let messages = vec![user_message("chat-1", "go"), agent_msg];
+
+    let mut te = tool_call("chat-1", &agent_msg_id, 0, "search_web");
+    te.turn_text = Some("looking".into());
+    // turn_reasoning intentionally None — non-thinking providers
+    let tool_calls = vec![te];
+
+    let result = builder.build(&messages, &tool_calls, &ctx).await;
+
+    if let RigMessage::Assistant { content, .. } = &result[1] {
+        let items: Vec<_> = content.iter().collect();
+        assert_eq!(items.len(), 2, "expected text + tool_call only");
+        assert!(matches!(items[0], AssistantContent::Text(_)));
+        assert!(matches!(items[1], AssistantContent::ToolCall(_)));
+    } else {
+        panic!("Expected assistant message at index 1");
+    }
+}
+
+#[tokio::test]
+async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
+    let db = test_db().await;
+    let builder = test_builder(&db);
+    let ctx = test_ctx();
+
+    // Multi-turn paused message — each turn has its OWN reasoning that must
+    // surface in its OWN Assistant block (DeepSeek requires per-turn replay).
+    let agent_msg = agent_message("chat-1", "", Some(MessageStatus::Executing));
+    let agent_msg_id = agent_msg.id.clone();
+
+    let messages = vec![user_message("chat-1", "go"), agent_msg];
+
+    let mut te0 = tool_call("chat-1", &agent_msg_id, 0, "tool_a");
+    te0.turn_reasoning = Some(Reasoning {
+        id: None,
+        content: "thinking for turn 0".into(),
+        signature: None,
+    });
+
+    let mut te1 = tool_call("chat-1", &agent_msg_id, 1, "tool_b");
+    te1.turn_reasoning = Some(Reasoning {
+        id: None,
+        content: "thinking for turn 1".into(),
+        signature: None,
+    });
+
+    let result = builder.build(&messages, &[te0, te1], &ctx).await;
+
+    // user, assistant(turn0: reasoning+tool), user(result0), assistant(turn1: reasoning+tool), user(result1)
+    assert_eq!(result.len(), 5);
+
+    for (idx, expected) in [(1usize, "thinking for turn 0"), (3, "thinking for turn 1")] {
+        let RigMessage::Assistant { content, .. } = &result[idx] else {
+            panic!("expected assistant at {idx}");
+        };
+        let items: Vec<_> = content.iter().collect();
+        let AssistantContent::Reasoning(r) = items[0] else {
+            panic!("first item at {idx} must be Reasoning");
+        };
+        assert_eq!(r.display_text(), expected);
     }
 }

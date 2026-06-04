@@ -219,8 +219,8 @@ async fn complete_task_accepts_numeric_result_against_number_schema() {
         .await
         .expect("numeric result against number schema must validate");
 
-    match out.tool_data() {
-        Some(frona::inference::tool_call::MessageTool::TaskCompletion { summary, .. }) => {
+    match out.task_event() {
+        Some(frona::inference::tool_call::TaskEvent::Completion { summary, .. }) => {
             assert_eq!(summary.as_deref(), Some("554669"));
         }
         other => panic!("expected TaskCompletion tool_data, got {other:?}"),
@@ -237,8 +237,8 @@ async fn complete_task_accepts_boolean_result_against_boolean_schema() {
         .execute("complete_task", json!({"result": true}), &ctx)
         .await
         .expect("boolean result must validate");
-    match out.tool_data() {
-        Some(frona::inference::tool_call::MessageTool::TaskCompletion { summary, .. }) => {
+    match out.task_event() {
+        Some(frona::inference::tool_call::TaskEvent::Completion { summary, .. }) => {
             assert_eq!(summary.as_deref(), Some("true"));
         }
         _ => panic!("expected TaskCompletion"),
@@ -266,8 +266,8 @@ async fn complete_task_accepts_object_result_as_actual_object() {
         )
         .await
         .expect("object result must validate");
-    match out.tool_data() {
-        Some(frona::inference::tool_call::MessageTool::TaskCompletion { summary, .. }) => {
+    match out.task_event() {
+        Some(frona::inference::tool_call::TaskEvent::Completion { summary, .. }) => {
             // Stored as JSON-encoded so ResultSpec::parse can roundtrip it.
             let s = summary.as_deref().expect("summary should be set");
             let parsed: serde_json::Value = serde_json::from_str(s).unwrap();
@@ -302,8 +302,8 @@ async fn complete_task_accepts_null_against_nullable_schema() {
         .execute("complete_task", json!({"result": null}), &ctx)
         .await
         .expect("null against nullable schema must validate");
-    match out.tool_data() {
-        Some(frona::inference::tool_call::MessageTool::TaskCompletion { summary, .. }) => {
+    match out.task_event() {
+        Some(frona::inference::tool_call::TaskEvent::Completion { summary, .. }) => {
             assert_eq!(summary.as_deref(), Some("null"));
         }
         _ => panic!("expected TaskCompletion"),
@@ -323,8 +323,8 @@ async fn complete_task_accepts_missing_against_nullable_schema_as_silent() {
         .execute("complete_task", json!({}), &ctx)
         .await
         .expect("missing result against nullable schema must validate");
-    match out.tool_data() {
-        Some(frona::inference::tool_call::MessageTool::TaskCompletion { summary, .. }) => {
+    match out.task_event() {
+        Some(frona::inference::tool_call::TaskEvent::Completion { summary, .. }) => {
             assert_eq!(summary.as_deref(), None);
         }
         _ => panic!("expected TaskCompletion"),

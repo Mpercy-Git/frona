@@ -279,17 +279,19 @@ async fn task_execution_emits_expected_sse_events() {
 
     assert_eq!(event_names[1], "chat_message", "Second event should be chat_message");
 
-    assert_eq!(event_names[2], "token", "Third event should be token");
+    assert_eq!(event_names[2], "inference_start", "Third event should be inference_start");
+
+    assert_eq!(event_names[3], "token", "Fourth event should be token");
     assert_eq!(
-        frames[2].data["content"].as_str().unwrap(),
+        frames[3].data["content"].as_str().unwrap(),
         "Hello from the task!",
         "Token should carry the response text"
     );
 
     // `complete_agent_message` no longer fires `chat_message` for streaming
     // completions - `inference_done` is the canonical signal.
-    assert_eq!(event_names[3], "inference_done", "Fourth event should be inference_done");
-    let message = &frames[3].data["message"];
+    assert_eq!(event_names[4], "inference_done", "Fifth event should be inference_done");
+    let message = &frames[4].data["message"];
     assert!(message.is_object(), "inference_done should carry a message object");
     assert_eq!(
         message["content"].as_str().unwrap(),

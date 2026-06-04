@@ -66,21 +66,3 @@ async fn delete_app_not_found() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn approve_without_auth_returns_401() {
-    let (state, _tmp) = test_app_state().await;
-
-    let app = build_app(state);
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/apps/approve")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"chat_id":"fake"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
