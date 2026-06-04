@@ -147,13 +147,17 @@ describe("convertMessage: status mapping", () => {
     expect(result!.status).toEqual({ type: "complete", reason: "stop" });
   });
 
-  it("maps pending tool_data to requires-action", () => {
+  it("maps pending hitl to requires-action", () => {
     const msg = makeAgentMessage({
       tool_calls: [
         makeToolCall({
-          tool_data: {
-            type: "Question",
-            data: { question: "?", options: ["A"], status: "pending", response: null },
+          hitl: {
+            prompt: "?",
+            url: "/chats/c1",
+            request: { type: "Question", data: { options: ["A"] } },
+            status: "pending",
+            response: null,
+            delivery: null,
           },
         }),
       ],
@@ -163,13 +167,17 @@ describe("convertMessage: status mapping", () => {
     expect(result!.status).toEqual({ type: "requires-action", reason: "tool-calls" });
   });
 
-  it("maps resolved tool_data to complete", () => {
+  it("maps resolved hitl to complete", () => {
     const msg = makeAgentMessage({
       tool_calls: [
         makeToolCall({
-          tool_data: {
-            type: "Question",
-            data: { question: "?", options: ["A"], status: "resolved", response: "A" },
+          hitl: {
+            prompt: "?",
+            url: "/chats/c1",
+            request: { type: "Question", data: { options: ["A"] } },
+            status: "resolved",
+            response: { type: "Choice", data: "A" },
+            delivery: null,
           },
         }),
       ],
@@ -207,14 +215,18 @@ describe("convertMessage: tool executions", () => {
     expect(toolPart.result).toBe("Found it");
   });
 
-  it("converts tool_data executions using the tool_data type as toolName", () => {
+  it("converts hitl executions using the request type as toolName", () => {
     const msg = makeAgentMessage({
       tool_calls: [
         makeToolCall({
           id: "te-q1",
-          tool_data: {
-            type: "Question",
-            data: { question: "Pick one", options: ["A", "B"], status: "resolved", response: "A" },
+          hitl: {
+            prompt: "Pick one",
+            url: "/chats/c1",
+            request: { type: "Question", data: { options: ["A", "B"] } },
+            status: "resolved",
+            response: { type: "Choice", data: "A" },
+            delivery: null,
           },
         }),
       ],
@@ -227,13 +239,17 @@ describe("convertMessage: tool executions", () => {
     expect(toolPart.result).toBe("A");
   });
 
-  it("tool_data with pending status has no result", () => {
+  it("hitl with pending status has no result", () => {
     const msg = makeAgentMessage({
       tool_calls: [
         makeToolCall({
-          tool_data: {
-            type: "HumanInTheLoop",
-            data: { reason: "Check this", debugger_url: "http://...", status: "pending", response: null },
+          hitl: {
+            prompt: "Check this",
+            url: "/chats/c1",
+            request: { type: "Takeover", data: { reason: "Check this", debugger_url: "http://..." } },
+            status: "pending",
+            response: null,
+            delivery: null,
           },
         }),
       ],
@@ -244,13 +260,17 @@ describe("convertMessage: tool executions", () => {
     expect(toolPart.result).toBeUndefined();
   });
 
-  it("tool_data with denied status uses 'denied' as result", () => {
+  it("hitl with denied status uses 'denied' as result", () => {
     const msg = makeAgentMessage({
       tool_calls: [
         makeToolCall({
-          tool_data: {
-            type: "VaultApproval",
-            data: { query: "creds", reason: "need auth", env_var_prefix: null, status: "denied", response: null },
+          hitl: {
+            prompt: "Allow access?",
+            url: "/chats/c1",
+            request: { type: "Credential", data: { query: "creds", reason: "need auth" } },
+            status: "denied",
+            response: null,
+            delivery: null,
           },
         }),
       ],

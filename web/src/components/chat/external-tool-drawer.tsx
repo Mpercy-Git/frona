@@ -12,19 +12,33 @@ import {
   ChevronUpIcon,
   ChevronDownIcon,
 } from "@heroicons/react/24/outline";
-import type { ToolCall } from "@/lib/types";
+import type { HitlResponse, ToolCall } from "@/lib/types";
 import { usePendingTools } from "@/lib/pending-tools-context";
 import { api } from "@/lib/api-client";
 import { ChatContext } from "@/lib/chat-context";
 import { ToolContentDispatch } from "./tool-uis/tool-content";
 
+/** Produce a "skipped" HitlResponse appropriate for this tool's request kind. */
+function skipResponse(te: ToolCall): HitlResponse {
+  switch (te.hitl?.request.type) {
+    case "App":
+      return { type: "Approval", data: false };
+    case "Credential":
+      return { type: "Vault", data: { type: "Denied" } };
+    case "Question":
+    case "Takeover":
+    default:
+      return { type: "Choice", data: "User declined to answer" };
+  }
+}
+
 function toolIcon(te: ToolCall) {
-  switch (te.tool_data?.type) {
+  switch (te.hitl?.request.type) {
     case "Question":
       return <QuestionMarkCircleIcon className="h-5 w-5 text-accent" />;
-    case "VaultApproval":
+    case "Credential":
       return <KeyIcon className="h-5 w-5 text-warning" />;
-    case "ServiceApproval":
+    case "App":
       return <ServerIcon className="h-5 w-5 text-success" />;
     default:
       return <WrenchScrewdriverIcon className="h-5 w-5 text-text-secondary" />;
@@ -32,14 +46,14 @@ function toolIcon(te: ToolCall) {
 }
 
 function toolTitle(te: ToolCall): string {
-  switch (te.tool_data?.type) {
+  switch (te.hitl?.request.type) {
     case "Question":
       return "Question";
-    case "VaultApproval":
+    case "Credential":
       return "Credential Request";
-    case "ServiceApproval":
-      return "Service Deployment";
-    case "HumanInTheLoop":
+    case "App":
+      return "App Deployment";
+    case "Takeover":
       return "Manual Action Required";
     default:
       return "Approval Required";
@@ -49,10 +63,10 @@ function toolTitle(te: ToolCall): string {
 
 
 export interface WizardAnswer {
-  response: string;
-  action: "success" | "fail";
-  /** Async callback the wizard runs after hiding — for tools that need their own API call (e.g. vault/service). */
-  callback?: () => Promise<void>;
+  /** Typed HITL response, sent to the backend dispatcher. */
+  hitlResponse: HitlResponse;
+  /** Human-readable display text for the wizard chip "selected answer" highlight. */
+  displayText: string;
 }
 
 /** Stores the wizard's local state — answers + current index + submitted flag + collapsed. */
@@ -95,32 +109,23 @@ export function ExternalToolDrawer({ wizard }: { wizard: ToolWizardState }) {
     if (!chatId || total === 0) return;
     setSubmitted(true);
 
-    // Run tool-specific callbacks (vault/service approvals)
-    const callbacks = pendingTools
-      .map((te) => finalAnswers.get(te.id)?.callback)
-      .filter((cb): cb is () => Promise<void> => !!cb);
-    await Promise.all(callbacks.map((cb) => cb()));
-
-    const resolutions = pendingTools
-      .filter((te) => !finalAnswers.get(te.id)?.callback)
-      .map((te) => {
-        const answer = finalAnswers.get(te.id);
-        return {
-          tool_call_id: te.id,
-          response: answer?.response ?? "User declined to answer",
-          action: answer?.action ?? "fail",
-        };
-      });
+    const resolutions = pendingTools.map((te) => {
+      const answer = finalAnswers.get(te.id);
+      return {
+        tool_call_id: te.id,
+        hitl_response: answer?.hitlResponse ?? skipResponse(te),
+      };
+    });
     if (resolutions.length > 0) {
       api.post(`/api/chats/${chatId}/tool-calls/resolve`, { resolutions });
     }
   }, [chatId, pendingTools, total, setSubmitted]);
 
   const handleAnswer = useCallback(
-    (response: string, action: "success" | "fail" = "success", callback?: () => Promise<void>) => {
+    (hitlResponse: HitlResponse, displayText: string) => {
       if (!currentTool) return;
       const nextAnswers = new Map(answers);
-      nextAnswers.set(currentTool.id, { response, action, callback });
+      nextAnswers.set(currentTool.id, { hitlResponse, displayText });
       setAnswers(nextAnswers);
 
       const allNowAnswered = pendingTools.every((te) => nextAnswers.has(te.id));
@@ -139,8 +144,7 @@ export function ExternalToolDrawer({ wizard }: { wizard: ToolWizardState }) {
     api.post(`/api/chats/${chatId}/tool-calls/resolve`, {
       resolutions: pendingTools.map((te) => ({
         tool_call_id: te.id,
-        response: "User declined to answer",
-        action: "fail",
+        hitl_response: skipResponse(te),
       })),
     });
   }, [chatId, pendingTools, total, setSubmitted]);
@@ -215,9 +219,8 @@ export function ExternalToolDrawer({ wizard }: { wizard: ToolWizardState }) {
         <ToolContentDispatch
           te={currentTool}
           chatId={chatId ?? ""}
-          onSuccess={(response, callback) => handleAnswer(response, "success", callback)}
-          onFailure={(response, callback) => handleAnswer(response, "fail", callback)}
-          selectedAnswer={currentAnswer?.response}
+          onResolve={handleAnswer}
+          selectedAnswer={currentAnswer?.displayText}
         />
 
       </div>

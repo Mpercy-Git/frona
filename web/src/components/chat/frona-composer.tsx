@@ -58,32 +58,36 @@ export function FronaComposer({
     if (!text) return;
     composerRuntime.setText("");
 
-    // Question: typed text is a valid freeform answer (success)
-    // Other tools: typed text is a reason for declining (fail)
-    const isQuestion = currentPendingTool.tool_data?.type === "Question";
-    const action: "success" | "fail" = isQuestion ? "success" : "fail";
+    // For a Choice-kind HITL (Question / Takeover), typed text becomes the
+    // user's freeform answer. For App / Credential, typed text is a denial
+    // reason.
+    const kind = currentPendingTool.hitl?.request.type;
+    const isChoiceKind = kind === "Question" || kind === "Takeover";
+    let hitlResponse: import("@/lib/types").HitlResponse;
+    if (isChoiceKind) {
+      hitlResponse = { type: "Choice", data: text };
+    } else if (kind === "App") {
+      hitlResponse = { type: "Approval", data: false };
+    } else if (kind === "Credential") {
+      hitlResponse = { type: "Vault", data: { type: "Denied" } };
+    } else {
+      hitlResponse = { type: "Choice", data: text };
+    }
 
     const nextAnswers = new Map(wizard.answers);
-    nextAnswers.set(currentPendingTool.id, { response: text, action });
+    nextAnswers.set(currentPendingTool.id, { hitlResponse, displayText: text });
     wizard.setAnswers(nextAnswers);
 
     // If all tools now have answers, auto-submit
     const allNowAnswered = pendingTools.every((te) => nextAnswers.has(te.id));
     if (allNowAnswered && chatCtx?.chatId) {
-      const callbacks = pendingTools
-        .map((te) => nextAnswers.get(te.id)?.callback)
-        .filter((cb): cb is () => Promise<void> => !!cb);
-      Promise.all(callbacks.map((cb) => cb()));
-      const resolutions = pendingTools
-        .filter((te) => !nextAnswers.get(te.id)?.callback)
-        .map((te) => {
-          const ans = nextAnswers.get(te.id);
-          return {
-            tool_call_id: te.id,
-            response: ans?.response ?? "User declined to answer",
-            action: ans?.action ?? "fail",
-          };
-        });
+      const resolutions = pendingTools.map((te) => {
+        const ans = nextAnswers.get(te.id);
+        return {
+          tool_call_id: te.id,
+          hitl_response: ans?.hitlResponse ?? ({ type: "Choice", data: "User declined to answer" } as const),
+        };
+      });
       wizard.setSubmitted(true);
       if (resolutions.length > 0) {
         api.post(`/api/chats/${chatCtx.chatId}/tool-calls/resolve`, { resolutions });

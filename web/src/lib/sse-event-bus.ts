@@ -1,5 +1,5 @@
 import { ensureAccessToken, API_URL } from "./api-client";
-import type { MessageResponse, Notification, ToolCall } from "./types";
+import type { MessageResponse, Notification, PauseReason } from "./types";
 
 
 export type ChatSSEEvent =
@@ -7,13 +7,14 @@ export type ChatSSEEvent =
   | { type: "reasoning"; content: string }
   | { type: "tool_call"; id: string; provider_call_id: string; name: string; arguments: unknown; description?: string }
   | { type: "tool_result"; name: string; success: boolean; summary?: string }
-  | { type: "tool_message"; tool_call?: ToolCall }
-  | { type: "tool_resolved"; message?: MessageResponse; tool_call?: ToolCall }
   | { type: "chat_message"; message: MessageResponse }
   | { type: "retry"; retryAfterSecs: number; reason: string }
+  | { type: "inference_start" }
   | { type: "inference_done"; message: MessageResponse }
   | { type: "inference_cancelled"; reason: string }
-  | { type: "inference_error"; error: string };
+  | { type: "inference_error"; error: string }
+  | { type: "inference_paused"; reason: PauseReason; message: MessageResponse }
+  | { type: "inference_resume"; message: MessageResponse };
 
 
 export type GlobalSSEEvent =
@@ -279,19 +280,6 @@ export class SSEEventBus {
           summary: parsed.summary as string | undefined,
         });
         break;
-      case "tool_message":
-        this.dispatchChat(chatId, {
-          type: "tool_message",
-          tool_call: parsed.tool_call as ToolCall | undefined,
-        });
-        break;
-      case "tool_resolved":
-        this.dispatchChat(chatId, {
-          type: "tool_resolved",
-          message: parsed.message as MessageResponse | undefined,
-          tool_call: parsed.tool_call as ToolCall | undefined,
-        });
-        break;
       case "chat_message":
         this.dispatchChat(chatId, { type: "chat_message", message: parsed.message as MessageResponse });
         break;
@@ -302,6 +290,9 @@ export class SSEEventBus {
           reason: parsed.reason as string,
         });
         break;
+      case "inference_start":
+        this.dispatchChat(chatId, { type: "inference_start" });
+        break;
       case "inference_done":
         this.dispatchChat(chatId, { type: "inference_done", message: parsed.message as MessageResponse });
         break;
@@ -310,6 +301,16 @@ export class SSEEventBus {
         break;
       case "inference_error":
         this.dispatchChat(chatId, { type: "inference_error", error: parsed.error as string });
+        break;
+      case "inference_paused":
+        this.dispatchChat(chatId, {
+          type: "inference_paused",
+          reason: parsed.reason as PauseReason,
+          message: parsed.message as MessageResponse,
+        });
+        break;
+      case "inference_resume":
+        this.dispatchChat(chatId, { type: "inference_resume", message: parsed.message as MessageResponse });
         break;
       case "title":
         this.dispatchGlobal({ type: "title", chatId, title: parsed.title as string });

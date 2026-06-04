@@ -1,6 +1,18 @@
 import type { ChatSSEEvent } from "./sse-event-bus";
-import type { MessageResponse, Attachment, ToolCall } from "./types";
+import type { MessageResponse, MessageStatus, Attachment, ToolCall } from "./types";
 import { api } from "./api-client";
+
+// The "executing → completed" branch handles legacy rows where Executing
+// was used as an implicit paused indicator (server now sets Paused).
+function optimisticStatusAfterResolve(
+  current: MessageStatus | undefined,
+  allResolved: boolean,
+): MessageStatus | undefined {
+  if (!allResolved) return current;
+  if (current === "paused") return "executing";
+  if (current === "executing") return "completed";
+  return current;
+}
 
 interface ToolCallPart {
   type: "tool-call";
@@ -92,7 +104,7 @@ export class ChatStore {
 
   getPendingExternalTools(): ToolCall[] {
     return [...this.pendingExternalTools.values()].filter(
-      (te) => te.tool_data?.data.status === "pending",
+      (te) => te.hitl?.status === "pending",
     );
   }
 
@@ -163,7 +175,7 @@ export class ChatStore {
     for (const msg of this.messages) {
       if (!msg.tool_calls) continue;
       for (const te of msg.tool_calls) {
-        if (te.tool_data && te.tool_data.data.status === "pending") {
+        if (te.hitl && te.hitl.status === "pending") {
           this.pendingExternalTools.set(te.id, te);
         }
       }
@@ -221,28 +233,64 @@ export class ChatStore {
         break;
       }
 
-      case "tool_message": {
-        if (event.tool_call) {
-          this.pendingExternalTools.set(event.tool_call.id, event.tool_call);
+      case "inference_start": {
+        // Channel adapters use this to start typing/thinking affordance.
+        // FE already sets isRunning=true on optimistic user message; this
+        // is just a no-op confirmation. Streaming events that follow keep
+        // isRunning=true via their existing handlers.
+        this.isRunning = true;
+        break;
+      }
+
+      case "inference_paused": {
+        // Loop parked waiting for something external. Universal lifecycle:
+        // replace message, drop spinner. Reason-specific UI is dispatched
+        // off `event.reason.type` — adding a new pause cause is a new
+        // branch here.
+        const msg = event.message;
+        const existingIdx = this.messages.findIndex((m) => m.id === msg.id);
+        if (existingIdx >= 0) {
+          this.messages[existingIdx] = msg;
+        } else {
+          this.messages.push(msg);
+        }
+        this.clearStreaming();
+
+        switch (event.reason.type) {
+          case "Hitl":
+            // Hydrate pending HITLs from msg.tool_calls so the wizard renders.
+            if (msg.tool_calls?.length) {
+              for (const te of msg.tool_calls) {
+                if (te.hitl && te.hitl.status === "pending") {
+                  this.pendingExternalTools.set(te.id, te);
+                }
+              }
+            }
+            break;
         }
         break;
       }
 
-      case "tool_resolved": {
-        if (event.tool_call && this.pendingExternalTools.has(event.tool_call.id)) {
-          this.pendingExternalTools.set(event.tool_call.id, event.tool_call);
-        } else if (event.message) {
-          const msg = event.message;
-          const idx = this.messages.findIndex((m) => m.id === msg.id);
-          if (idx >= 0) {
-            // Preserve tool_calls — backend MessageResponse always has them empty
-            if ((!msg.tool_calls || msg.tool_calls.length === 0) && this.messages[idx].tool_calls?.length) {
-              msg.tool_calls = this.messages[idx].tool_calls;
-            }
-            this.messages[idx] = msg;
+      case "inference_resume": {
+        // Human just resolved a HITL — message reflects the post-resolution
+        // state. Replace message and update pendingExternalTools for the
+        // resolved tool_call so its `hitl.status` flips to resolved/denied
+        // in the wizard view.
+        const msg = event.message;
+        const idx = this.messages.findIndex((m) => m.id === msg.id);
+        if (idx >= 0) {
+          // Preserve tool_calls — backend MessageResponse always has them empty for this path.
+          if ((!msg.tool_calls || msg.tool_calls.length === 0) && this.messages[idx].tool_calls?.length) {
+            msg.tool_calls = this.messages[idx].tool_calls;
           }
-        } else if (event.tool_call) {
-          this.updateToolCall(event.tool_call);
+          this.messages[idx] = msg;
+        }
+        if (msg.tool_calls?.length) {
+          for (const te of msg.tool_calls) {
+            if (this.pendingExternalTools.has(te.id)) {
+              this.pendingExternalTools.set(te.id, te);
+            }
+          }
         }
         break;
       }
@@ -387,11 +435,11 @@ export class ChatStore {
   resolveToolCall(toolCallId: string, result: string) {
     // Check pending external tools (streaming state) — optimistic update
     const pending = this.pendingExternalTools.get(toolCallId);
-    if (pending?.tool_data) {
+    if (pending?.hitl) {
       this.pendingExternalTools.set(toolCallId, {
         ...pending,
         result,
-        tool_data: { ...pending.tool_data, data: { ...pending.tool_data.data, status: "resolved", response: result } } as typeof pending.tool_data,
+        hitl: { ...pending.hitl, status: "resolved" },
       });
       this.notify();
       return;
@@ -406,18 +454,18 @@ export class ChatStore {
       );
       if (teIdx < 0) continue;
       const te = msg.tool_calls[teIdx];
-      const updatedTe = te.tool_data
-        ? { ...te, result, tool_data: { ...te.tool_data, data: { ...te.tool_data.data, status: "resolved", response: result } } as typeof te.tool_data }
+      const updatedTe = te.hitl
+        ? { ...te, result, hitl: { ...te.hitl, status: "resolved" as const } }
         : { ...te, result };
       const updatedCalls = [...msg.tool_calls];
       updatedCalls[teIdx] = updatedTe;
       const allResolved = updatedCalls.every(
-        (t) => !t.tool_data || t.tool_data.data.status !== "pending",
+        (t) => !t.hitl || t.hitl.status !== "pending",
       );
       this.messages[i] = {
         ...msg,
         tool_calls: updatedCalls,
-        status: allResolved && msg.status === "executing" ? "completed" : msg.status,
+        status: optimisticStatusAfterResolve(msg.status, allResolved),
       };
       this.notify();
       return;
@@ -433,12 +481,12 @@ export class ChatStore {
         const updatedCalls = [...msg.tool_calls];
         updatedCalls[teIdx] = te;
         const allResolved = updatedCalls.every(
-          (t) => !t.tool_data || t.tool_data.data.status !== "pending",
+          (t) => !t.hitl || t.hitl.status !== "pending",
         );
         this.messages[i] = {
           ...msg,
           tool_calls: updatedCalls,
-          status: allResolved && msg.status === "executing" ? "completed" : msg.status,
+          status: optimisticStatusAfterResolve(msg.status, allResolved),
         };
         break;
       }

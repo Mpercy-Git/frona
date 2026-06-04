@@ -327,6 +327,49 @@ describe("ChatStore", () => {
       expect(store.messages).toHaveLength(1);
       expect(store.messages[0].content).toBe("new");
     });
+
+    // Reproduces a bug where after the agent loop pauses and re-pauses on a
+    // NEW set of HITLs, `clearStreaming()` wiped `pendingExternalTools` and
+    // the new pending tool calls — which arrive on `msg.tool_calls` — were
+    // never re-seeded into the map. The wizard then saw an empty set and
+    // never showed the new questions.
+    it("re-seeds pendingExternalTools from msg.tool_calls on pause inference_done", () => {
+      const pausedMsg = makeAgentMessage({
+        id: "msg-1",
+        status: "executing",
+        tool_calls: [
+          makeToolCall({
+            id: "new-te-1",
+            name: "ask_user_question",
+            hitl: {
+              prompt: "Q?",
+              url: "/chats/c1",
+              request: { type: "Question", data: { options: ["a", "b"] } },
+              status: "pending",
+              response: null,
+              delivery: null,
+            },
+          }),
+          makeToolCall({
+            id: "new-te-2",
+            name: "ask_user_question",
+            hitl: {
+              prompt: "Q2?",
+              url: "/chats/c1",
+              request: { type: "Question", data: { options: ["x"] } },
+              status: "pending",
+              response: null,
+              delivery: null,
+            },
+          }),
+        ],
+      });
+
+      store.handleEvent({ type: "inference_done", message: pausedMsg });
+
+      const pending = store.getPendingExternalTools();
+      expect(pending.map((t) => t.id).sort()).toEqual(["new-te-1", "new-te-2"]);
+    });
   });
 
   describe("chat_message event", () => {
@@ -357,50 +400,42 @@ describe("ChatStore", () => {
     });
   });
 
-  describe("tool_message event (external tools)", () => {
-    it("stores external tool in pendingExternalTools and includes it in display messages", () => {
-      store.handleEvent({ type: "token", content: "Let me check" });
-      store.handleEvent({
-        type: "tool_call",
-        id: "te-ext",
-        provider_call_id: "tc-ext",
-        name: "ask_user_question",
-        arguments: '{"question":"Continue?"}',
-      });
-
+  describe("inference_paused event", () => {
+    it("stores external tools from msg.tool_calls into pendingExternalTools", () => {
       const te = makeToolCall({
         id: "te-ext",
         provider_call_id: "tc-ext",
         name: "ask_user_question",
         message_id: "msg-ext",
-        tool_data: {
-          type: "Question",
-          data: { question: "Continue?", options: ["Yes", "No"], status: "pending", response: null },
+        hitl: {
+          prompt: "Continue?",
+          url: "/chats/c1",
+          request: { type: "Question", data: { options: ["Yes", "No"] } },
+          status: "pending",
+          response: null,
+          delivery: null,
         },
       });
 
-      store.handleEvent({ type: "tool_message", tool_call: te });
+      store.handleEvent({
+        type: "inference_paused",
+        reason: { type: "Hitl" },
+        message: makeAgentMessage({ id: "msg-ext", status: "executing", tool_calls: [te] }),
+      });
 
-      // External tool should be stored in pendingExternalTools by DB id
       expect(store.getPendingExternalTools()).toHaveLength(1);
       expect(store.getPendingExternalTools()[0].id).toBe("te-ext");
-
-      // Display messages should include the external tool via buildToolCalls
-      const display = store.getDisplayMessages();
-      expect(display.length).toBeGreaterThan(0);
-      const toolExecs = display[0].tool_calls;
-      expect(toolExecs).toBeDefined();
-      expect(toolExecs!.some((t) => t.id === "te-ext")).toBe(true);
+      expect(store.isRunning).toBe(false);
     });
   });
 
-  describe("tool_resolved event", () => {
+  describe("inference_resume event", () => {
     it("updates message when full message is provided", () => {
       const original = makeAgentMessage({ id: "msg-1", content: "old", status: "executing" });
       store.messages.push(original);
 
       const updated = makeAgentMessage({ id: "msg-1", content: "resolved", status: "completed" });
-      store.handleEvent({ type: "tool_resolved", message: updated });
+      store.handleEvent({ type: "inference_resume", message: updated });
 
       expect(store.messages[0].content).toBe("resolved");
       expect(store.messages[0].status).toBe("completed");
@@ -411,19 +446,9 @@ describe("ChatStore", () => {
       store.messages.push(makeAgentMessage({ id: "msg-1", tool_calls: [te], status: "executing" }));
 
       const updatedMsg = makeAgentMessage({ id: "msg-1", tool_calls: [], status: "completed" });
-      store.handleEvent({ type: "tool_resolved", message: updatedMsg });
+      store.handleEvent({ type: "inference_resume", message: updatedMsg });
 
       expect(store.messages[0].tool_calls).toHaveLength(1);
-    });
-
-    it("updates individual tool call when tool_call is provided", () => {
-      const te = makeToolCall({ id: "te-1", result: "old" });
-      store.messages.push(makeAgentMessage({ id: "msg-1", tool_calls: [te] }));
-
-      const updatedTe = makeToolCall({ id: "te-1", result: "new result" });
-      store.handleEvent({ type: "tool_resolved", tool_call: updatedTe });
-
-      expect(store.messages[0].tool_calls![0].result).toBe("new result");
     });
   });
 
@@ -540,9 +565,13 @@ describe("ChatStore", () => {
       const te = makeToolCall({
         id: "te-1",
         provider_call_id: "tc-1",
-        tool_data: {
-          type: "Question",
-          data: { question: "?", options: ["A"], status: "pending", response: null },
+        hitl: {
+          prompt: "?",
+          url: "/chats/c1",
+          request: { type: "Question", data: { options: ["A"] } },
+          status: "pending",
+          response: null,
+          delivery: null,
         },
       });
       store.messages.push(makeAgentMessage({ id: "msg-1", tool_calls: [te], status: "executing" }));
@@ -551,8 +580,7 @@ describe("ChatStore", () => {
 
       const updated = store.messages[0].tool_calls![0];
       expect(updated.result).toBe("A");
-      expect(updated.tool_data!.data.status).toBe("resolved");
-      expect((updated.tool_data!.data as Record<string, unknown>).response).toBe("A");
+      expect(updated.hitl!.status).toBe("resolved");
       // All tools resolved → status should flip to completed
       expect(store.messages[0].status).toBe("completed");
     });

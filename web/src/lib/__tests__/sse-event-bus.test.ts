@@ -197,28 +197,29 @@ describe("SSEEventBus: chat event routing", () => {
     controller.abort();
   });
 
-  it("routes tool_message events correctly", async () => {
+  it("routes inference_paused events correctly", async () => {
     const controller = new AbortController();
     const iter = bus.subscribe("chat-1", controller.signal)[Symbol.asyncIterator]();
 
-    const te = { id: "te-1", name: "cli" };
-    bus.routeEvent("tool_message", "chat-1", { tool_call: te });
+    const message = { id: "msg-1", role: "agent", content: "", status: "executing" };
+    const reason = { type: "Hitl" };
+    bus.routeEvent("inference_paused", "chat-1", { reason, message });
 
     const r = await iter.next();
-    expect(r.value).toEqual({ type: "tool_message", tool_call: te });
+    expect(r.value).toEqual({ type: "inference_paused", reason, message });
 
     controller.abort();
   });
 
-  it("routes tool_resolved events correctly", async () => {
+  it("routes inference_resume events correctly", async () => {
     const controller = new AbortController();
     const iter = bus.subscribe("chat-1", controller.signal)[Symbol.asyncIterator]();
 
-    const te = { id: "te-1", name: "cli", result: "done" };
-    bus.routeEvent("tool_resolved", "chat-1", { tool_call: te });
+    const message = { id: "msg-1", role: "agent", content: "", status: "executing" };
+    bus.routeEvent("inference_resume", "chat-1", { message });
 
     const r = await iter.next();
-    expect(r.value).toEqual({ type: "tool_resolved", message: undefined, tool_call: te });
+    expect(r.value).toEqual({ type: "inference_resume", message });
 
     controller.abort();
   });
