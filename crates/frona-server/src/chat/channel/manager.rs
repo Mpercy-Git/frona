@@ -666,10 +666,9 @@ impl ChannelManager {
         Ok(())
     }
 
-    /// Channel-side entry point for resolving a HITL prompt. Wraps the core
-    /// `inference::hitl::resolve_hitl` dispatcher and additionally nudges the
-    /// delivery cursor (via `ensure_pending_delivery`) so the next pending
-    /// HITL on the message — if any — gets picked up on the next retry pass.
+    /// Channel-side entry point for resolving a HITL prompt. Wraps
+    /// `Harness::resolve_and_resume` and spawns the agent resume (run_task
+    /// or harness.resume) when the per-message barrier has cleared.
     pub async fn resolve_hitl(
         &self,
         tool_call_id: &str,
@@ -701,6 +700,15 @@ impl ChannelManager {
         }
         if let Ok(Some(te)) = self.chat_service.get_tool_call(tool_call_id).await {
             let _ = self.ensure_pending_delivery(&te.message_id).await;
+            // Resume delivery for any remaining undelivered HITL.
+            if let Ok(Some(chat)) = self.chat_service.find_chat(&te.chat_id).await
+                && let Some(channel_id) = chat.channel_id.as_deref()
+                && let Some((adapter, ctx)) = self.running_adapter(channel_id).await
+            {
+                let _ = self
+                    .deliver_pending_hitls(&chat, &te.message_id, adapter.as_ref(), &ctx)
+                    .await;
+            }
         }
         Ok(outcome)
     }
