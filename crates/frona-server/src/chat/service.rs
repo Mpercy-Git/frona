@@ -1315,6 +1315,16 @@ impl ChatService {
         self.chat_repo.find_by_id(chat_id).await
     }
 
+    pub async fn find_chat_by_channel_external_id(
+        &self,
+        channel_id: &str,
+        channel_external_id: &str,
+    ) -> Result<Option<Chat>, AppError> {
+        self.chat_repo
+            .find_by_channel_thread(channel_id, channel_external_id)
+            .await
+    }
+
     pub async fn resolve_agent_config(&self, agent_id: &str) -> Result<AgentConfig, AppError> {
         let agent = self
             .agent_service

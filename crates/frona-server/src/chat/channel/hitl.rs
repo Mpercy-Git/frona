@@ -30,85 +30,95 @@ pub fn render_default_text(hitl: &Hitl) -> String {
     format!("{}\n\n{}", hitl.prompt, hitl.url)
 }
 
-/// Returns:
-/// - `None` — no pending HITLs; adapter proceeds with normal inbound handling.
-/// - `Some(Resolved)` — oldest Choice-kind HITL was resolved with `text`.
-/// - `Some(AlreadyResolved)` — only Approval/External pending; adapter should
-///   hint the user to use the URL rather than treat this as a user message.
-pub async fn try_resolve_from_text(
-    state: &crate::core::state::AppState,
+/// Reply-based HITL resolution for text-only channel adapters (WhatsApp,
+/// Signal, SMS reply).
+///
+/// - `quoted_external_message_id`: when the inbound message is a quote-reply,
+///   the provider's identifier for the quoted message (Slack `ts`, WhatsApp
+///   `stanza_id`, etc.). The helper matches it against `hitl.delivery
+///   .external_message_id` to pick the specific HITL the user is answering.
+/// - Without a quote, the helper resolves only if exactly one HITL is pending
+///   AND delivered (sequential cadence keeps this to one in practice).
+///
+/// Per-kind dispatch:
+/// - `Choice` — text becomes `HitlResponse::Choice(text)`.
+/// - `Approval` — text parsed via `parse_yes_no`. Ambiguous text returns
+///   `Ok(None)` so the caller falls through to a normal user turn.
+/// - `External` — returns `Ok(None)` (URL-only resolve path).
+pub async fn try_resolve_inbound(
+    chat_service: &crate::chat::service::ChatService,
+    channel_manager: &crate::chat::channel::ChannelManager,
     chat_id: &str,
+    quoted_external_message_id: Option<&str>,
     text: &str,
 ) -> Result<Option<ResolveOutcome>, crate::core::error::AppError> {
-    let paused_msg = state
-        .chat_service
-        .find_paused_message_for_chat(chat_id)
-        .await?;
-    let Some(msg) = paused_msg else { return Ok(None) };
+    let Some(msg) = chat_service.find_paused_message_for_chat(chat_id).await? else {
+        return Ok(None);
+    };
+    let tool_calls = chat_service.get_tool_calls_by_message(&msg.id).await?;
 
-    let tool_calls = state.chat_service.get_tool_calls_by_message(&msg.id).await?;
-
-    let pending: Vec<_> = tool_calls
+    let candidates: Vec<_> = tool_calls
         .iter()
         .filter(|tc| {
-            tc.hitl
-                .as_ref()
-                .is_some_and(|h| h.status == crate::inference::tool_call::ToolStatus::Pending)
+            tc.hitl.as_ref().is_some_and(|h| {
+                h.status == crate::inference::tool_call::ToolStatus::Pending
+                    && h.delivery.is_some()
+            })
         })
         .collect();
 
-    if pending.is_empty() {
-        return Ok(None);
-    }
+    let target = match quoted_external_message_id {
+        Some(qid) => candidates.into_iter().find(|tc| {
+            tc.hitl
+                .as_ref()
+                .and_then(|h| h.delivery.as_ref())
+                .is_some_and(|d| d.external_message_id == qid)
+        }),
+        None => {
+            if candidates.len() == 1 {
+                Some(candidates[0])
+            } else {
+                None
+            }
+        }
+    };
 
-    let chosen = pending.iter().find(|tc| {
-        tc.hitl.as_ref().is_some_and(|h| {
-            matches!(kind_for(&h.request), HitlKind::Choice { .. })
-        })
-    });
+    let Some(tc) = target else { return Ok(None) };
+    let hitl = tc.hitl.as_ref().expect("filtered to Some hitl");
+    let response = match kind_for(&hitl.request) {
+        HitlKind::Choice { .. } => HitlResponse::Choice(text.to_string()),
+        HitlKind::Approval => match parse_yes_no(text) {
+            Some(b) => HitlResponse::Approval(b),
+            None => return Ok(None),
+        },
+        HitlKind::External => return Ok(None),
+    };
 
-    if let Some(tc) = chosen {
-        let outcome = state
-            .channel_manager
-            .resolve_hitl(&tc.id, HitlResponse::Choice(text.to_string()))
-            .await?;
-        return Ok(Some(outcome));
-    }
-
-    Ok(Some(ResolveOutcome::AlreadyResolved))
+    let outcome = channel_manager.resolve_hitl(&tc.id, response).await?;
+    Ok(Some(outcome))
 }
 
-pub async fn skip_all_pending_for_chat(
-    state: &crate::core::state::AppState,
-    chat_id: &str,
-) -> Result<usize, crate::core::error::AppError> {
-    let paused_msg = state
-        .chat_service
-        .find_paused_message_for_chat(chat_id)
-        .await?;
-    let Some(msg) = paused_msg else { return Ok(0) };
-
-    let tool_calls = state.chat_service.get_tool_calls_by_message(&msg.id).await?;
-    let mut count = 0;
-    for tc in tool_calls {
-        let Some(h) = tc.hitl.as_ref() else { continue };
-        if h.status != crate::inference::tool_call::ToolStatus::Pending {
-            continue;
-        }
-        let denial = match kind_for(&h.request) {
-            HitlKind::Approval => HitlResponse::Approval(false),
-            HitlKind::Choice { .. } => HitlResponse::Choice("[skipped]".into()),
-            HitlKind::External => continue,
-        };
-        if let Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) = state
-            .channel_manager
-            .resolve_hitl(&tc.id, denial)
-            .await
-        {
-            count += 1;
-        }
+/// Parse a free-text reply as yes/no. Exact match (lowercase, trimmed)
+/// against the wordlist — substring would over-match phrases like "no
+/// problem" containing "no". Anything not on the list returns `None` so the
+/// caller can treat the reply as a regular user turn.
+pub fn parse_yes_no(text: &str) -> Option<bool> {
+    let t = text.trim().to_lowercase();
+    const YES: &[&str] = &[
+        "yes", "y", "yeah", "yep", "ok", "okay", "sure", "approve", "approved",
+        "👍", "✅", "✔",
+    ];
+    const NO: &[&str] = &[
+        "no", "n", "nope", "nah", "cancel", "decline", "declined", "reject",
+        "rejected", "👎", "❌", "✖",
+    ];
+    if YES.iter().any(|w| *w == t) {
+        Some(true)
+    } else if NO.iter().any(|w| *w == t) {
+        Some(false)
+    } else {
+        None
     }
-    Ok(count)
 }
 
 /// Shared callback-data parser used by every channel adapter that renders
@@ -266,5 +276,26 @@ mod tests {
     fn response_display_choice_returns_chosen_text() {
         let r = HitlResponse::Choice("eu".into());
         assert_eq!(response_display(&r), "eu");
+    }
+
+    #[test]
+    fn parse_yes_no_recognises_yes_variants() {
+        for s in ["yes", "Y", " yeah ", "OK", "👍", "approved"] {
+            assert_eq!(parse_yes_no(s), Some(true), "expected Some(true) for {s:?}");
+        }
+    }
+
+    #[test]
+    fn parse_yes_no_recognises_no_variants() {
+        for s in ["no", "N", " nope ", "Cancel", "👎", "rejected"] {
+            assert_eq!(parse_yes_no(s), Some(false), "expected Some(false) for {s:?}");
+        }
+    }
+
+    #[test]
+    fn parse_yes_no_returns_none_for_ambiguous_text() {
+        for s in ["maybe", "yes please", "no problem", "i guess", ""] {
+            assert_eq!(parse_yes_no(s), None, "expected None for {s:?}");
+        }
     }
 }
