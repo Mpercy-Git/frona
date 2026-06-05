@@ -1,4 +1,5 @@
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -17,12 +18,17 @@ use crate::core::error::AppError;
 use super::super::models::{
     ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
 };
+use super::super::typing::TypingIndicator;
 #[cfg(test)]
 use super::super::models::ChannelFactory;
 
 // Discord API cap. https://discord.com/developers/docs/resources/message
 const DISCORD_MAX_MESSAGE_LEN: usize = 2000;
 const DISCORD_CHUNK_TARGET: usize = 1900;
+
+/// Discord's typing indicator auto-fades in ~10s. Refresh a bit early so a
+/// long inference keeps showing "typing…" continuously.
+const TYPING_REFRESH_INTERVAL: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DiscordConfig {
@@ -35,6 +41,7 @@ pub struct DiscordAdapter {
     bot_token: String,
     http: Arc<Http>,
     self_id: Arc<OnceLock<UserId>>,
+    typing: TypingIndicator,
 }
 
 impl From<DiscordConfig> for DiscordAdapter {
@@ -44,6 +51,7 @@ impl From<DiscordConfig> for DiscordAdapter {
             bot_token: cfg.bot_token,
             http,
             self_id: Arc::new(OnceLock::new()),
+            typing: TypingIndicator::new(),
         }
     }
 }
@@ -153,14 +161,31 @@ impl ChannelAdapter for DiscordAdapter {
         chat: &Chat,
         _ctx: &ChannelCtx,
     ) -> Result<(), AppError> {
-        let channel_id = parse_external_id(external_chat_id(chat)?)?;
-        if let Err(e) = channel_id.broadcast_typing(&*self.http).await {
-            tracing::debug!(
-                channel_id = %channel_id,
-                error = %e,
-                "Discord broadcast_typing failed (non-fatal)",
-            );
-        }
+        let Ok(external_id) = external_chat_id(chat) else { return Ok(()) };
+        let Ok(discord_channel_id) = parse_external_id(external_id) else { return Ok(()) };
+
+        let http = self.http.clone();
+        self.typing.start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
+            let http = http.clone();
+            async move {
+                if let Err(e) = discord_channel_id.broadcast_typing(&*http).await {
+                    tracing::debug!(
+                        channel_id = %discord_channel_id,
+                        error = %e,
+                        "Discord broadcast_typing failed (best-effort)",
+                    );
+                }
+            }
+        }).await;
+        Ok(())
+    }
+
+    async fn on_inference_done(
+        &self,
+        chat: &Chat,
+        _ctx: &ChannelCtx,
+    ) -> Result<(), AppError> {
+        self.typing.stop(&chat.id).await;
         Ok(())
     }
 
