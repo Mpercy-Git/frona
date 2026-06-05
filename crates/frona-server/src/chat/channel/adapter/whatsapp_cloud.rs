@@ -193,6 +193,44 @@ impl ChannelAdapter for WhatsAppCloudAdapter {
         self.emit_inbound(ctx, raw).await?;
         Ok(StatusCode::OK.into_response())
     }
+
+    async fn on_pending_hitl(
+        &self,
+        batch: &[crate::inference::tool_call::ToolCall],
+        _msg: &Message,
+        chat: &Chat,
+        ctx: &ChannelCtx,
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+        let to = parse_external_id(external_chat_id(chat)?)?;
+        let mut out = Vec::with_capacity(batch.len());
+        for tc in batch {
+            let Some(h) = tc.hitl.as_ref() else { continue };
+            let kind = crate::chat::channel::hitl::kind_for(&h.request);
+            let payload = build_interactive_payload(&to, &tc.id, &h.prompt, &kind, &h.url);
+            match self.send_message_capturing_id(payload).await {
+                Ok(wamid) => out.push(crate::inference::hitl::HitlDelivery {
+                    channel_id: ctx.channel.id.clone(),
+                    external_message_id: wamid,
+                    delivered_at: chrono::Utc::now(),
+                }),
+                Err(e) => {
+                    let retryable = is_whatsapp_cloud_retryable_error(&e);
+                    tracing::warn!(
+                        channel_id = %ctx.channel.id,
+                        tool_call_id = %tc.id,
+                        retryable = retryable,
+                        error = %e,
+                        "WhatsApp Cloud on_pending_hitl: send failed",
+                    );
+                    if retryable && out.is_empty() {
+                        return Err(e);
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 impl WhatsAppCloudAdapter {
@@ -299,6 +337,17 @@ impl WhatsAppCloudAdapter {
     }
 
     async fn send_message(&self, payload: serde_json::Value) -> Result<(), AppError> {
+        let _ = self.send_message_capturing_id(payload).await?;
+        Ok(())
+    }
+
+    /// Same wire call as `send_message`, but returns the provider message id
+    /// (`messages[0].id`, aka `wamid`) so HITL deliveries can stamp
+    /// `HitlDelivery.external_message_id`.
+    async fn send_message_capturing_id(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String, AppError> {
         let url = format!("{CLOUD_API_BASE}/{}/messages", self.config.phone_number_id);
         let resp = self
             .http
@@ -313,7 +362,19 @@ impl WhatsAppCloudAdapter {
             let body = resp.text().await.unwrap_or_default();
             return Err(AppError::Internal(format!("WA send {status}: {body}")));
         }
-        Ok(())
+        #[derive(Deserialize)]
+        struct SendResp {
+            #[serde(default)]
+            messages: Vec<SentMessage>,
+        }
+        #[derive(Deserialize)]
+        struct SentMessage {
+            id: String,
+        }
+        let parsed: SendResp = resp.json().await.map_err(|e| {
+            AppError::Internal(format!("WA send response parse failed: {e}"))
+        })?;
+        Ok(parsed.messages.into_iter().next().map(|m| m.id).unwrap_or_default())
     }
 
     async fn emit_inbound(
@@ -332,6 +393,11 @@ impl WhatsAppCloudAdapter {
                 let value = change.value;
                 let contacts = value.contacts.unwrap_or_default();
                 for message in value.messages.unwrap_or_default() {
+                    if message.kind == "interactive"
+                        && self.try_resolve_interactive(ctx, &message).await
+                    {
+                        continue;
+                    }
                     let display_name = contacts
                         .iter()
                         .find(|c| c.wa_id == message.from)
@@ -478,6 +544,92 @@ impl WhatsAppCloudAdapter {
         )
         .await
     }
+
+    /// Returns true when the inbound was consumed as a HITL resolution and
+    /// should NOT be forwarded into the inbound pipeline. Returns false when
+    /// the tap was unparseable / unknown / errored — the caller decides
+    /// whether to fall through.
+    async fn try_resolve_interactive(
+        &self,
+        ctx: &ChannelCtx,
+        message: &InboundMessage,
+    ) -> bool {
+        let Some(interactive) = message.interactive.as_ref() else {
+            tracing::warn!(
+                channel_id = %ctx.channel.id,
+                msg_id = %message.id,
+                "WhatsApp Cloud interactive message missing inner interactive payload",
+            );
+            return false;
+        };
+        let reply_id = match interactive.kind.as_str() {
+            "button_reply" => interactive.button_reply.as_ref().map(|r| r.id.as_str()),
+            "list_reply" => interactive.list_reply.as_ref().map(|r| r.id.as_str()),
+            other => {
+                tracing::debug!(
+                    channel_id = %ctx.channel.id,
+                    msg_id = %message.id,
+                    kind = %other,
+                    "WhatsApp Cloud interactive reply kind ignored",
+                );
+                return false;
+            }
+        };
+        let Some(reply_id) = reply_id else {
+            tracing::warn!(
+                channel_id = %ctx.channel.id,
+                msg_id = %message.id,
+                kind = %interactive.kind,
+                "WhatsApp Cloud interactive reply missing inner id",
+            );
+            return false;
+        };
+
+        let parsed = crate::chat::channel::hitl::parse_resolve_callback_data(
+            reply_id,
+            &ctx.chat_service,
+        )
+        .await;
+        let (tool_call_id, response) = match parsed {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    channel_id = %ctx.channel.id,
+                    reply_id = %reply_id,
+                    error = %e,
+                    "WhatsApp Cloud interactive reply id parse failed",
+                );
+                return false;
+            }
+        };
+        let answer_label = crate::chat::channel::hitl::response_display(&response);
+        match ctx.channel_manager.resolve_hitl(&tool_call_id, response).await {
+            Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) => {
+                tracing::info!(
+                    channel_id = %ctx.channel.id,
+                    tool_call_id = %tool_call_id,
+                    answer = %answer_label,
+                    "WhatsApp Cloud interactive reply resolved HITL",
+                );
+            }
+            Ok(crate::inference::hitl::ResolveOutcome::AlreadyResolved) => {
+                tracing::info!(
+                    channel_id = %ctx.channel.id,
+                    tool_call_id = %tool_call_id,
+                    "WhatsApp Cloud interactive reply hit an already-resolved HITL",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    channel_id = %ctx.channel.id,
+                    tool_call_id = %tool_call_id,
+                    error = %e,
+                    "WhatsApp Cloud resolve_hitl failed",
+                );
+            }
+        }
+        true
+    }
 }
 
 fn read_attachment_bytes(ctx: &ChannelCtx, att: &Attachment) -> Result<Vec<u8>, AppError> {
@@ -554,6 +706,230 @@ fn verify_signature(app_secret: &str, body: &[u8], header: &str) -> bool {
     mac.verify_slice(&provided).is_ok()
 }
 
+// Meta interactive-message field limits, per Cloud API docs:
+//   developers.facebook.com/docs/whatsapp/cloud-api/messages/interactive-{reply-buttons,list,cta-url}-messages
+const WA_REPLY_BUTTON_TITLE_MAX: usize = 20;
+const WA_LIST_ROW_TITLE_MAX: usize = 24;
+const WA_BODY_TEXT_MAX: usize = 1024;
+const WA_LIST_ROWS_MAX: usize = 10;
+const WA_REPLY_BUTTONS_MAX: usize = 3;
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max - 1).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn is_http_url(s: &str) -> bool {
+    s.starts_with("https://") || s.starts_with("http://")
+}
+
+/// Build the JSON payload for a single HITL prompt. Per-kind dispatch:
+/// - Approval → reply-button (Yes/No). URL goes in the body since Meta rejects
+///   mixing reply buttons with a URL button in the same `interactive` payload.
+/// - Choice (≤3 opts) → reply-button. Choice (4–10) → list. Choice (>10) →
+///   list truncated to the first 10 rows with a notice in the body.
+/// - Choice with empty options → plain `text` message (Cloud rejects empty
+///   `buttons`/`rows`).
+/// - External → `cta_url` (URL button). Falls back to plain text if the URL
+///   isn't absolute http(s) (Cloud rejects non-http(s) URLs).
+fn build_interactive_payload(
+    to: &str,
+    tcid: &str,
+    prompt: &str,
+    kind: &crate::chat::channel::hitl::HitlKind,
+    url: &str,
+) -> serde_json::Value {
+    use crate::chat::channel::hitl::HitlKind;
+    match kind {
+        HitlKind::Approval => {
+            let body_text = if is_http_url(url) {
+                truncate_chars(&format!("{prompt}\n\n{url}"), WA_BODY_TEXT_MAX)
+            } else {
+                truncate_chars(prompt, WA_BODY_TEXT_MAX)
+            };
+            build_button_payload(
+                to,
+                &body_text,
+                &[
+                    (format!("r:{tcid}:y"), "Yes".to_string()),
+                    (format!("r:{tcid}:n"), "No".to_string()),
+                ],
+            )
+        }
+        HitlKind::Choice { options } if options.is_empty() => build_text_payload(
+            to,
+            &truncate_chars(prompt, WA_BODY_TEXT_MAX),
+        ),
+        HitlKind::Choice { options } if options.len() <= WA_REPLY_BUTTONS_MAX => {
+            let buttons: Vec<(String, String)> = options
+                .iter()
+                .enumerate()
+                .map(|(i, opt)| {
+                    (
+                        format!("r:{tcid}:c:{i}"),
+                        truncate_chars(opt, WA_REPLY_BUTTON_TITLE_MAX),
+                    )
+                })
+                .collect();
+            build_button_payload(to, &truncate_chars(prompt, WA_BODY_TEXT_MAX), &buttons)
+        }
+        HitlKind::Choice { options } => {
+            let truncated = options.len() > WA_LIST_ROWS_MAX;
+            let body_text = if truncated {
+                let extra = options.len() - WA_LIST_ROWS_MAX;
+                truncate_chars(
+                    &format!("{prompt}\n\n(+{extra} more options, please pick from the list)"),
+                    WA_BODY_TEXT_MAX,
+                )
+            } else {
+                truncate_chars(prompt, WA_BODY_TEXT_MAX)
+            };
+            let rows: Vec<(String, String)> = options
+                .iter()
+                .take(WA_LIST_ROWS_MAX)
+                .enumerate()
+                .map(|(i, opt)| {
+                    (
+                        format!("r:{tcid}:c:{i}"),
+                        truncate_chars(opt, WA_LIST_ROW_TITLE_MAX),
+                    )
+                })
+                .collect();
+            build_list_payload(to, &body_text, "Options", "Choose", &rows)
+        }
+        HitlKind::External => {
+            if is_http_url(url) {
+                build_cta_url_payload(
+                    to,
+                    &truncate_chars(prompt, WA_BODY_TEXT_MAX),
+                    "Open on web",
+                    url,
+                )
+            } else {
+                build_text_payload(
+                    to,
+                    &truncate_chars(&format!("{prompt}\n\n{url}"), WA_BODY_TEXT_MAX),
+                )
+            }
+        }
+    }
+}
+
+fn build_text_payload(to: &str, body: &str) -> serde_json::Value {
+    serde_json::json!({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "text",
+        "text": { "body": body },
+    })
+}
+
+fn build_button_payload(
+    to: &str,
+    body_text: &str,
+    buttons: &[(String, String)],
+) -> serde_json::Value {
+    let buttons_json: Vec<serde_json::Value> = buttons
+        .iter()
+        .map(|(id, title)| {
+            serde_json::json!({
+                "type": "reply",
+                "reply": { "id": id, "title": title },
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": { "text": body_text },
+            "action": { "buttons": buttons_json },
+        },
+    })
+}
+
+fn build_list_payload(
+    to: &str,
+    body_text: &str,
+    section_title: &str,
+    action_button: &str,
+    rows: &[(String, String)],
+) -> serde_json::Value {
+    let rows_json: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(id, title)| {
+            serde_json::json!({ "id": id, "title": title })
+        })
+        .collect();
+    serde_json::json!({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": { "text": body_text },
+            "action": {
+                "button": action_button,
+                "sections": [ { "title": section_title, "rows": rows_json } ],
+            },
+        },
+    })
+}
+
+fn build_cta_url_payload(
+    to: &str,
+    body_text: &str,
+    display_text: &str,
+    url: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "cta_url",
+            "body": { "text": body_text },
+            "action": {
+                "name": "cta_url",
+                "parameters": { "display_text": display_text, "url": url },
+            },
+        },
+    })
+}
+
+/// 5xx, 429, and non-HTTP errors (network / DNS / TLS) are transient → caller
+/// returns `Err` so `record_segment_failure` schedules backoff retry. 4xx
+/// (except 429) is permanent (bad token, missing perms, malformed payload) —
+/// caller breaks instead of burning the retry budget.
+///
+/// `send_message_capturing_id` collapses every transport error into
+/// `AppError::Internal`. Status-bearing errors are formatted as
+/// `"WA send {status}: <body>"` so we recognise them by prefix; everything
+/// else (`"WA send failed: …"`, `"WA send response parse failed: …"`) is
+/// treated as transient.
+fn is_whatsapp_cloud_retryable_error(err: &AppError) -> bool {
+    let AppError::Internal(s) = err else { return false };
+    let Some(rest) = s.strip_prefix("WA send ") else {
+        return true;
+    };
+    let status_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    match status_str.parse::<u16>() {
+        Ok(code) => code == 429 || (500..=599).contains(&code),
+        Err(_) => true,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct WebhookPayload {
     #[serde(default)]
@@ -610,6 +986,8 @@ struct InboundMessage {
     video: Option<MediaPayload>,
     #[serde(default)]
     sticker: Option<MediaPayload>,
+    #[serde(default)]
+    interactive: Option<InteractivePayload>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -626,6 +1004,23 @@ struct MediaPayload {
     filename: Option<String>,
     #[serde(default)]
     caption: Option<String>,
+}
+
+/// Wraps a tap on an interactive `button` / `list` message. Only one of
+/// `button_reply` / `list_reply` is populated depending on `kind`.
+#[derive(Debug, Deserialize)]
+struct InteractivePayload {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    button_reply: Option<InteractiveReply>,
+    #[serde(default)]
+    list_reply: Option<InteractiveReply>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InteractiveReply {
+    id: String,
 }
 
 #[cfg(test)]
@@ -758,5 +1153,220 @@ mod tests {
         let img = messages[1].image.as_ref().unwrap();
         assert_eq!(img.id, "media1");
         assert_eq!(img.caption.as_deref(), Some("look"));
+    }
+
+    use crate::chat::channel::hitl::HitlKind;
+
+    #[test]
+    fn approval_renders_yes_no_buttons_with_url_in_body() {
+        let v = build_interactive_payload(
+            "15551234567",
+            "tc-1",
+            "Deploy app foo?",
+            &HitlKind::Approval,
+            "https://app.example/chats/abc",
+        );
+        assert_eq!(v["type"], "interactive");
+        assert_eq!(v["interactive"]["type"], "button");
+        let body = v["interactive"]["body"]["text"].as_str().unwrap();
+        assert!(body.contains("Deploy app foo?"));
+        assert!(body.contains("https://app.example/chats/abc"));
+        let buttons = v["interactive"]["action"]["buttons"].as_array().unwrap();
+        assert_eq!(buttons.len(), 2);
+        assert_eq!(buttons[0]["reply"]["id"], "r:tc-1:y");
+        assert_eq!(buttons[0]["reply"]["title"], "Yes");
+        assert_eq!(buttons[1]["reply"]["id"], "r:tc-1:n");
+        assert_eq!(buttons[1]["reply"]["title"], "No");
+    }
+
+    #[test]
+    fn choice_le_three_renders_reply_buttons() {
+        let kind = HitlKind::Choice {
+            options: vec!["EU".into(), "US".into(), "APAC".into()],
+        };
+        let v = build_interactive_payload("15550000000", "tc-2", "Region?", &kind, "");
+        assert_eq!(v["interactive"]["type"], "button");
+        let buttons = v["interactive"]["action"]["buttons"].as_array().unwrap();
+        assert_eq!(buttons.len(), 3);
+        assert_eq!(buttons[0]["reply"]["id"], "r:tc-2:c:0");
+        assert_eq!(buttons[0]["reply"]["title"], "EU");
+        assert_eq!(buttons[2]["reply"]["id"], "r:tc-2:c:2");
+    }
+
+    #[test]
+    fn choice_four_to_ten_renders_list() {
+        let opts: Vec<String> = (0..6).map(|i| format!("opt-{i}")).collect();
+        let kind = HitlKind::Choice { options: opts };
+        let v = build_interactive_payload("15550000000", "tc-3", "Pick one", &kind, "");
+        assert_eq!(v["interactive"]["type"], "list");
+        let sections = v["interactive"]["action"]["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 1);
+        let rows = sections[0]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[0]["id"], "r:tc-3:c:0");
+        assert_eq!(rows[5]["id"], "r:tc-3:c:5");
+        assert_eq!(v["interactive"]["action"]["button"], "Choose");
+    }
+
+    #[test]
+    fn choice_over_ten_truncates_to_ten_rows() {
+        let opts: Vec<String> = (0..15).map(|i| format!("opt-{i}")).collect();
+        let kind = HitlKind::Choice { options: opts };
+        let v = build_interactive_payload("15550000000", "tc-4", "Pick", &kind, "");
+        assert_eq!(v["interactive"]["type"], "list");
+        let rows = v["interactive"]["action"]["sections"][0]["rows"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+        let body = v["interactive"]["body"]["text"].as_str().unwrap();
+        assert!(body.contains("+5 more"));
+    }
+
+    #[test]
+    fn choice_empty_options_falls_back_to_text() {
+        let kind = HitlKind::Choice { options: vec![] };
+        let v = build_interactive_payload("15550000000", "tc-5", "Anything?", &kind, "");
+        assert_eq!(v["type"], "text");
+        assert_eq!(v["text"]["body"], "Anything?");
+        assert!(v.get("interactive").is_none());
+    }
+
+    #[test]
+    fn external_with_http_url_renders_cta_url() {
+        let v = build_interactive_payload(
+            "15550000000",
+            "tc-6",
+            "Pick a credential",
+            &HitlKind::External,
+            "https://app.example/vault/pick?q=postgres",
+        );
+        assert_eq!(v["interactive"]["type"], "cta_url");
+        assert_eq!(v["interactive"]["action"]["name"], "cta_url");
+        assert_eq!(
+            v["interactive"]["action"]["parameters"]["display_text"],
+            "Open on web",
+        );
+        assert_eq!(
+            v["interactive"]["action"]["parameters"]["url"],
+            "https://app.example/vault/pick?q=postgres",
+        );
+    }
+
+    #[test]
+    fn external_with_non_http_url_falls_back_to_text() {
+        let v = build_interactive_payload(
+            "15550000000",
+            "tc-7",
+            "Pick a credential",
+            &HitlKind::External,
+            "vault://pick",
+        );
+        assert_eq!(v["type"], "text");
+        let body = v["text"]["body"].as_str().unwrap();
+        assert!(body.contains("Pick a credential"));
+        assert!(body.contains("vault://pick"));
+    }
+
+    #[test]
+    fn long_option_titles_truncate_to_meta_limits() {
+        let long = "x".repeat(50);
+        let kind = HitlKind::Choice {
+            options: vec![long.clone()],
+        };
+        let v = build_interactive_payload("15550000000", "tc-8", "Pick", &kind, "");
+        let title = v["interactive"]["action"]["buttons"][0]["reply"]["title"]
+            .as_str()
+            .unwrap();
+        assert!(title.chars().count() <= 20, "got len {}", title.chars().count());
+        assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn interactive_button_reply_payload_parses() {
+        let body = json!({
+            "entry": [{
+                "changes": [{
+                    "field": "messages",
+                    "value": {
+                        "messages": [{
+                            "id": "wamid.1", "from": "15551234567",
+                            "type": "interactive",
+                            "interactive": {
+                                "type": "button_reply",
+                                "button_reply": {"id": "r:tc-1:y", "title": "Yes"}
+                            }
+                        }]
+                    }
+                }]
+            }]
+        });
+        let parsed: WebhookPayload = serde_json::from_value(body).unwrap();
+        let msg = &parsed.entry[0].changes[0].value.messages.as_ref().unwrap()[0];
+        assert_eq!(msg.kind, "interactive");
+        let i = msg.interactive.as_ref().unwrap();
+        assert_eq!(i.kind, "button_reply");
+        assert_eq!(i.button_reply.as_ref().unwrap().id, "r:tc-1:y");
+        assert!(i.list_reply.is_none());
+    }
+
+    #[test]
+    fn interactive_list_reply_payload_parses() {
+        let body = json!({
+            "entry": [{
+                "changes": [{
+                    "field": "messages",
+                    "value": {
+                        "messages": [{
+                            "id": "wamid.2", "from": "15551234567",
+                            "type": "interactive",
+                            "interactive": {
+                                "type": "list_reply",
+                                "list_reply": {"id": "r:tc-2:c:3", "title": "opt-3"}
+                            }
+                        }]
+                    }
+                }]
+            }]
+        });
+        let parsed: WebhookPayload = serde_json::from_value(body).unwrap();
+        let msg = &parsed.entry[0].changes[0].value.messages.as_ref().unwrap()[0];
+        let i = msg.interactive.as_ref().unwrap();
+        assert_eq!(i.kind, "list_reply");
+        assert_eq!(i.list_reply.as_ref().unwrap().id, "r:tc-2:c:3");
+        assert!(i.button_reply.is_none());
+    }
+
+    #[test]
+    fn retry_classifier_5xx_is_retryable() {
+        let e = AppError::Internal("WA send 503: gateway".into());
+        assert!(is_whatsapp_cloud_retryable_error(&e));
+    }
+
+    #[test]
+    fn retry_classifier_429_is_retryable() {
+        let e = AppError::Internal("WA send 429: rate limited".into());
+        assert!(is_whatsapp_cloud_retryable_error(&e));
+    }
+
+    #[test]
+    fn retry_classifier_4xx_is_permanent() {
+        for code in [400, 401, 403, 404, 422] {
+            let e = AppError::Internal(format!("WA send {code}: bad request"));
+            assert!(!is_whatsapp_cloud_retryable_error(&e), "code {code}");
+        }
+    }
+
+    #[test]
+    fn retry_classifier_network_error_is_retryable() {
+        let e = AppError::Internal("WA send failed: tcp connect".into());
+        assert!(is_whatsapp_cloud_retryable_error(&e));
+    }
+
+    #[test]
+    fn truncate_chars_uses_ellipsis() {
+        assert_eq!(truncate_chars("short", 10), "short");
+        let out = truncate_chars(&"abc".repeat(50), 20);
+        assert_eq!(out.chars().count(), 20);
+        assert!(out.ends_with('…'));
     }
 }
