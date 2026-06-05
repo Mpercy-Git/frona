@@ -111,6 +111,69 @@ pub async fn skip_all_pending_for_chat(
     Ok(count)
 }
 
+/// Shared callback-data parser used by every channel adapter that renders
+/// HITLs as buttons. Format:
+///
+///   r:{tool_call_id}:y       → HitlResponse::Approval(true)
+///   r:{tool_call_id}:n       → HitlResponse::Approval(false)
+///   r:{tool_call_id}:c:{idx} → HitlResponse::Choice(options[idx]) — requires
+///                              a lookup against the ToolCall's HitlRequest to
+///                              find the option string at that index.
+pub async fn parse_resolve_callback_data(
+    data: &str,
+    chat_service: &crate::chat::service::ChatService,
+) -> Result<(String, HitlResponse), crate::core::error::AppError> {
+    let parts: Vec<&str> = data.splitn(4, ':').collect();
+    match parts.as_slice() {
+        ["r", tcid, "y"] => Ok((tcid.to_string(), HitlResponse::Approval(true))),
+        ["r", tcid, "n"] => Ok((tcid.to_string(), HitlResponse::Approval(false))),
+        ["r", tcid, "c", idx_str] => {
+            let idx: usize = idx_str.parse().map_err(|_| {
+                crate::core::error::AppError::Validation(format!("bad choice index: {idx_str}"))
+            })?;
+            let te = chat_service
+                .get_tool_call(tcid)
+                .await?
+                .ok_or_else(|| {
+                    crate::core::error::AppError::NotFound(format!("tool_call {tcid}"))
+                })?;
+            let hitl = te.hitl.as_ref().ok_or_else(|| {
+                crate::core::error::AppError::Validation(format!("tool_call {tcid} has no HITL"))
+            })?;
+            let chosen = match &hitl.request {
+                HitlRequest::Question { options } => options.get(idx).cloned().ok_or_else(|| {
+                    crate::core::error::AppError::Validation(format!(
+                        "option index {idx} out of range"
+                    ))
+                })?,
+                HitlRequest::Takeover { .. } => "Done".to_string(),
+                _ => {
+                    return Err(crate::core::error::AppError::Validation(
+                        "Choice callback on non-Choice HITL".into(),
+                    ));
+                }
+            };
+            Ok((tcid.to_string(), HitlResponse::Choice(chosen)))
+        }
+        _ => Err(crate::core::error::AppError::Validation(format!(
+            "malformed callback_data: {data}"
+        ))),
+    }
+}
+
+/// User-facing label for a `HitlResponse`. Shared across adapters so the
+/// post-resolve message edit reflects what was picked, not a generic
+/// "Resolved" placeholder.
+pub fn response_display(response: &HitlResponse) -> String {
+    match response {
+        HitlResponse::Approval(true) => "✅ Yes".to_string(),
+        HitlResponse::Approval(false) => "❌ No".to_string(),
+        HitlResponse::Choice(text) => text.clone(),
+        HitlResponse::Vault(VaultGrant::Granted { .. }) => "🔑 Granted".to_string(),
+        HitlResponse::Vault(VaultGrant::Denied) => "🚫 Denied".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +250,21 @@ mod tests {
         let text = render_default_text(&h);
         assert!(text.contains("Deploy notes?"));
         assert!(text.contains("https://app.example/chats/abc"));
+    }
+
+    #[test]
+    fn response_display_approval_yes() {
+        assert_eq!(response_display(&HitlResponse::Approval(true)), "✅ Yes");
+    }
+
+    #[test]
+    fn response_display_approval_no() {
+        assert_eq!(response_display(&HitlResponse::Approval(false)), "❌ No");
+    }
+
+    #[test]
+    fn response_display_choice_returns_chosen_text() {
+        let r = HitlResponse::Choice("eu".into());
+        assert_eq!(response_display(&r), "eu");
     }
 }

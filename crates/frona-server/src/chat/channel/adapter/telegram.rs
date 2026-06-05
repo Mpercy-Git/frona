@@ -352,7 +352,12 @@ impl TelegramAdapter {
         let data = cq.get("data").and_then(|v| v.as_str()).unwrap_or("");
         let message_obj = cq.get("message");
 
-        let (tool_call_id, response) = match parse_callback_data(data, ctx).await {
+        let (tool_call_id, response) = match crate::chat::channel::hitl::parse_resolve_callback_data(
+            data,
+            &ctx.chat_service,
+        )
+        .await
+        {
             Ok(parsed) => parsed,
             Err(e) => {
                 tracing::warn!(data = %data, error = %e, "telegram callback_data parse failed");
@@ -368,7 +373,7 @@ impl TelegramAdapter {
         // Capture the user-facing label BEFORE we move `response` into
         // resolve_hitl. The toast/message-edit reflects what the user
         // actually picked, not a generic "Resolved" placeholder.
-        let answer_label = response_display(&response);
+        let answer_label = crate::chat::channel::hitl::response_display(&response);
 
         let outcome = ctx
             .channel_manager
@@ -412,69 +417,6 @@ impl TelegramAdapter {
                 .await;
         }
         Ok(())
-    }
-}
-
-/// Parse `callback_data` payloads emitted by `build_inline_keyboard`.
-/// Formats:
-/// User-facing label for a `HitlResponse`. Used in the callback-query toast
-/// and the message edit so the resolved bubble shows WHAT was picked, not
-/// a generic "Resolved" placeholder.
-fn response_display(response: &crate::inference::hitl::HitlResponse) -> String {
-    use crate::inference::hitl::{HitlResponse, VaultGrant};
-    match response {
-        HitlResponse::Approval(true) => "✅ Yes".to_string(),
-        HitlResponse::Approval(false) => "❌ No".to_string(),
-        HitlResponse::Choice(text) => text.clone(),
-        HitlResponse::Vault(VaultGrant::Granted { .. }) => "🔑 Granted".to_string(),
-        HitlResponse::Vault(VaultGrant::Denied) => "🚫 Denied".to_string(),
-    }
-}
-
-///   r:{tool_call_id}:y       → HitlResponse::Approval(true)
-///   r:{tool_call_id}:n       → HitlResponse::Approval(false)
-///   r:{tool_call_id}:c:{idx} → HitlResponse::Choice(options[idx]) — requires
-///                              a lookup against the ToolCall's HitlRequest to
-///                              find the option string at that index.
-async fn parse_callback_data(
-    data: &str,
-    ctx: &ChannelCtx,
-) -> Result<(String, crate::inference::hitl::HitlResponse), AppError> {
-    use crate::inference::hitl::HitlResponse;
-    let parts: Vec<&str> = data.splitn(4, ':').collect();
-    match parts.as_slice() {
-        ["r", tcid, "y"] => Ok((tcid.to_string(), HitlResponse::Approval(true))),
-        ["r", tcid, "n"] => Ok((tcid.to_string(), HitlResponse::Approval(false))),
-        ["r", tcid, "c", idx_str] => {
-            let idx: usize = idx_str
-                .parse()
-                .map_err(|_| AppError::Validation(format!("bad choice index: {idx_str}")))?;
-            let te = ctx
-                .chat_service
-                .get_tool_call(tcid)
-                .await?
-                .ok_or_else(|| AppError::NotFound(format!("tool_call {tcid}")))?;
-            let hitl = te
-                .hitl
-                .as_ref()
-                .ok_or_else(|| AppError::Validation(format!("tool_call {tcid} has no HITL")))?;
-            let chosen = match &hitl.request {
-                crate::inference::hitl::HitlRequest::Question { options } => options
-                    .get(idx)
-                    .cloned()
-                    .ok_or_else(|| AppError::Validation(format!("option index {idx} out of range")))?,
-                crate::inference::hitl::HitlRequest::Takeover { .. } => "Done".to_string(),
-                _ => {
-                    return Err(AppError::Validation(
-                        "Choice callback on non-Choice HITL".into(),
-                    ));
-                }
-            };
-            Ok((tcid.to_string(), HitlResponse::Choice(chosen)))
-        }
-        _ => Err(AppError::Validation(format!(
-            "malformed callback_data: {data}"
-        ))),
     }
 }
 
