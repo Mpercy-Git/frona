@@ -42,15 +42,10 @@ pub struct DiscoveredSkill {
 #[derive(Debug, Deserialize)]
 struct SkillsShResponse {
     skills: Vec<SkillsShEntry>,
-    #[allow(dead_code)]
-    count: u64,
 }
 
 #[derive(Debug, Deserialize)]
 struct SkillsShEntry {
-    #[serde(rename = "skillId")]
-    #[allow(dead_code)]
-    skill_id: String,
     name: String,
     source: String,
     installs: u64,

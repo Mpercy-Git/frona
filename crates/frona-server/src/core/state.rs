@@ -504,7 +504,6 @@ impl AppState {
             self.task_executor.clone(),
             self.agent_service.clone(),
             self.contact_service.clone(),
-            self.user_service.clone(),
             self.policy_service.clone(),
             self.prompts.clone(),
         ));

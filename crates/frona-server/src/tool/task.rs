@@ -409,15 +409,13 @@ impl TaskTool {
         let task_id = task_response.id.clone();
 
         if run_at.is_none() {
-            let task = self
-                .task_service
-                .find_by_id(&task_id)
-                .await?
-                .ok_or_else(|| AppError::Internal("Task just created but not found".into()))?;
-
-            if let Err(e) = self.task_executor.spawn_execution(task).await {
-                tracing::warn!(error = %e, task_id = %task_id, "Failed to spawn task execution immediately");
-            }
+            let exec = self.task_executor.clone();
+            let tid = task_id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = exec.run_task_by_id(&tid).await {
+                    tracing::warn!(error = %e, task_id = %tid, "Failed to run task execution immediately");
+                }
+            });
         }
 
         let tz: chrono_tz::Tz = timezone.parse().expect("timezone was validated earlier");

@@ -217,9 +217,26 @@ pub async fn deliver_event_to_source(
 
 pub struct TaskExecutor {
     harness: Arc<crate::agent::harness::Harness>,
-    active_tasks: Mutex<HashMap<String, CancellationToken>>,
-    task_resolution_notifiers: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
+    active_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
     max_concurrent_tasks: usize,
+}
+
+/// Removes the `active_tasks` entry on drop so a panic in `execute_task`
+/// doesn't leak the slot. The actual `remove` runs in a `tokio::spawn` because
+/// `Mutex` is async.
+struct ActiveGuard {
+    map: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    key: String,
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        let map = self.map.clone();
+        let key = std::mem::take(&mut self.key);
+        tokio::spawn(async move {
+            map.lock().await.remove(&key);
+        });
+    }
 }
 
 impl TaskExecutor {
@@ -234,16 +251,9 @@ impl TaskExecutor {
     ) -> Self {
         Self {
             harness,
-            active_tasks: Mutex::new(HashMap::new()),
-            task_resolution_notifiers: Arc::new(Mutex::new(HashMap::new())),
+            active_tasks: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent_tasks,
         }
-    }
-
-    pub fn task_resolution_notifiers(
-        &self,
-    ) -> Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>> {
-        self.task_resolution_notifiers.clone()
     }
 
     pub async fn resume_all(self: &Arc<Self>) {
@@ -272,15 +282,18 @@ impl TaskExecutor {
                 continue;
             }
 
-            if let Err(e) = self.spawn_execution(task).await {
-                tracing::warn!(error = %e, "Failed to spawn task during resume");
-            }
+            let executor = Arc::clone(self);
+            tokio::spawn(async move {
+                if let Err(e) = executor.run_task(task).await {
+                    tracing::warn!(error = %e, "Task failed during resume");
+                }
+            });
         }
     }
 
     /// Marks crash-interrupted CronRuns Failed instead of restarting them.
     /// The next scheduled tick fires fresh if the cron's concurrency allows.
-    async fn resume_in_flight_crons(self: &Arc<Self>) {
+    async fn resume_in_flight_crons(&self) {
         let orphans = match self.harness.task_service.find_orphaned_cron_runs().await {
             Ok(t) => t,
             Err(e) => {
@@ -307,64 +320,78 @@ impl TaskExecutor {
         }
     }
 
-    pub async fn spawn_execution(self: &Arc<Self>, task: Task) -> Result<(), AppError> {
-        if self.harness.shutdown_token.is_cancelled() {
-            tracing::info!(task_id = %task.id, "Rejecting task spawn during shutdown");
-            return Ok(());
-        }
+    pub async fn run_task_by_id(&self, task_id: &str) -> Result<(), AppError> {
+        let task = self
+            .harness
+            .task_service
+            .find_by_id(task_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
+        self.run_task(task).await
+    }
 
-        let active = self.active_tasks.lock().await;
-        if active.len() >= self.max_concurrent_tasks {
-            tracing::info!(
-                task_id = %task.id,
-                active = active.len(),
-                limit = self.max_concurrent_tasks,
-                "Global concurrency limit reached, task stays Pending"
-            );
+    pub async fn run_task(&self, task: Task) -> Result<(), AppError> {
+        if self.harness.shutdown_token.is_cancelled() {
+            tracing::info!(task_id = %task.id, "Rejecting task during shutdown");
             return Ok(());
         }
 
         let agent_max = self.get_agent_concurrent_limit(&task.agent_id).await;
-        let agent_active_count = active
-            .keys()
-            .filter(|k| k.starts_with(&format!("{}:", task.agent_id)))
-            .count();
-
-        if agent_active_count >= agent_max {
-            tracing::info!(
-                task_id = %task.id,
-                agent_id = %task.agent_id,
-                active = agent_active_count,
-                limit = agent_max,
-                "Per-agent concurrency limit reached, task stays Pending"
-            );
-            return Ok(());
-        }
-        drop(active);
-
-        let cancel_token = CancellationToken::new();
         let key = format!("{}:{}", task.agent_id, task.id);
-        self.active_tasks
-            .lock()
-            .await
-            .insert(key.clone(), cancel_token.clone());
+        let cancel_token = CancellationToken::new();
 
-        let executor = Arc::clone(self);
-        let task_id = task.id.clone();
+        {
+            let mut active = self.active_tasks.lock().await;
 
-        tokio::spawn(async move {
-            let result = executor.execute_task(task, cancel_token).await;
-            executor.active_tasks.lock().await.remove(&key);
-
-            if let Err(e) = result {
-                tracing::error!(error = %e, task_id = %task_id, "Task execution failed");
+            if active.contains_key(&key) {
+                tracing::info!(task_id = %task.id, "Task already running; skipping duplicate run");
+                return Ok(());
             }
-        });
 
-        Ok(())
+            if active.len() >= self.max_concurrent_tasks {
+                tracing::info!(
+                    task_id = %task.id,
+                    active = active.len(),
+                    limit = self.max_concurrent_tasks,
+                    "Global concurrency limit reached, task stays Pending"
+                );
+                return Ok(());
+            }
+
+            let agent_active_count = active
+                .keys()
+                .filter(|k| k.starts_with(&format!("{}:", task.agent_id)))
+                .count();
+
+            if agent_active_count >= agent_max {
+                tracing::info!(
+                    task_id = %task.id,
+                    agent_id = %task.agent_id,
+                    active = agent_active_count,
+                    limit = agent_max,
+                    "Per-agent concurrency limit reached, task stays Pending"
+                );
+                return Ok(());
+            }
+
+            active.insert(key.clone(), cancel_token.clone());
+        }
+
+        let _guard = ActiveGuard {
+            map: self.active_tasks.clone(),
+            key,
+        };
+        self.execute_task(task, cancel_token).await
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> bool {
+        // Always persist Cancelled so paused tasks (which have no entry in
+        // `active_tasks`) still get cancelled. For live tasks `handle_cancelled`
+        // will write the same status again — idempotent.
+        if let Err(e) = self.harness.task_service.mark_cancelled(task_id).await {
+            tracing::warn!(error = %e, task_id = %task_id, "Failed to persist task cancellation");
+        }
+
         let direct = {
             let active = self.active_tasks.lock().await;
             let mut hit = false;
@@ -421,7 +448,7 @@ impl TaskExecutor {
     }
 
     async fn execute_task(
-        self: &Arc<Self>,
+        &self,
         mut task: Task,
         cancel_token: CancellationToken,
     ) -> Result<(), AppError> {
@@ -522,8 +549,9 @@ impl TaskExecutor {
                                 crate::inference::tool_loop::PauseReason::Hitl,
                                 tool_calls,
                             ).await;
-                        self.wait_for_resolution(&task.id, &cancel_token).await?;
-                        continue;
+                        // Exit cleanly. The HITL-resolve handler will respawn
+                        // this task via `run_task` once the human resolves.
+                        return Ok(());
                     }
                     InferenceResponse::Cancelled(text) => {
                         let _ = self.harness.chat_service
@@ -704,34 +732,10 @@ impl TaskExecutor {
         Ok(())
     }
 
-    async fn wait_for_resolution(
-        &self,
-        task_id: &str,
-        cancel_token: &CancellationToken,
-    ) -> Result<(), AppError> {
-        let notify = Arc::new(tokio::sync::Notify::new());
-        {
-            let mut notifiers = self.task_resolution_notifiers.lock().await;
-            notifiers.insert(task_id.to_string(), notify.clone());
-        }
-
-        tokio::select! {
-            () = notify.notified() => {}
-            () = cancel_token.cancelled() => {}
-        }
-
-        {
-            let mut notifiers = self.task_resolution_notifiers.lock().await;
-            notifiers.remove(task_id);
-        }
-
-        Ok(())
-    }
-
     /// Lifecycle events emitted by the turn (`complete_task` / `fail_task`)
     /// resume the parent via `deliver_to_source`.
     pub async fn run_with_injected_message(
-        self: &Arc<Self>,
+        &self,
         task: &Task,
         system_message: String,
     ) -> Result<(), AppError> {
@@ -985,64 +989,58 @@ impl TaskExecutor {
             "All child tasks complete, resuming parent"
         );
 
-        let harness = self.harness.clone();
-        let notifiers = self.task_resolution_notifiers.clone();
-        let user_id = user_id.to_string();
-        let chat_id = source_chat_id.to_string();
-        tokio::spawn(async move {
-            let existing = match harness.chat_service
-                .find_executing_message_for_chat(&chat_id)
+        let chat = match self.harness.chat_service.find_chat(source_chat_id).await {
+            Ok(Some(chat)) => chat,
+            Ok(None) => {
+                tracing::warn!(chat_id = %source_chat_id, "Source chat not found; cannot resume");
+                return;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, chat_id = %source_chat_id, "Failed to lookup source chat");
+                return;
+            }
+        };
+
+        if let Some(parent_task_id) = chat.task_id.as_ref() {
+            // Box::pin breaks the async recursion cycle (run_task_by_id →
+            // execute_task → handle_lifecycle_action → ... → run_task_by_id).
+            if let Err(e) = Box::pin(self.run_task_by_id(parent_task_id)).await {
+                tracing::error!(error = %e, chat_id = %source_chat_id, "Failed to run parent task for resume");
+            }
+            return;
+        }
+
+        let existing = match self.harness.chat_service
+            .find_executing_message_for_chat(source_chat_id)
+            .await
+        {
+            Ok(msg) => msg,
+            Err(e) => {
+                tracing::error!(error = %e, chat_id = %source_chat_id, "Failed to find executing message");
+                return;
+            }
+        };
+        let message_id = if let Some(msg) = existing {
+            msg.id
+        } else {
+            // User chats settle their assistant turn before tasks complete;
+            // mint a fresh executing message so the loop has a write target.
+            match self.harness.chat_service
+                .create_executing_agent_message(source_chat_id, &chat.agent_id)
                 .await
             {
-                Ok(msg) => msg,
+                Ok(msg) => msg.id,
                 Err(e) => {
-                    tracing::error!(error = %e, chat_id = %chat_id, "Failed to find executing message");
+                    tracing::error!(error = %e, chat_id = %source_chat_id, "Failed to create executing message for resume");
                     return;
                 }
-            };
-            let message_id = if let Some(msg) = existing {
-                msg.id
-            } else {
-                // User chats settle their assistant turn before tasks complete;
-                // mint a fresh executing message so the loop has a write target.
-                let agent_id = match harness.chat_service.find_chat(&chat_id).await {
-                    Ok(Some(chat)) => chat.agent_id,
-                    Ok(None) => {
-                        tracing::warn!(chat_id = %chat_id, "Source chat not found; cannot resume");
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, chat_id = %chat_id, "Failed to lookup source chat");
-                        return;
-                    }
-                };
-                match harness.chat_service
-                    .create_executing_agent_message(&chat_id, &agent_id)
-                    .await
-                {
-                    Ok(msg) => msg.id,
-                    Err(e) => {
-                        tracing::error!(error = %e, chat_id = %chat_id, "Failed to create executing message for resume");
-                        return;
-                    }
-                }
-            };
-            resume_or_notify(&notifiers, &harness, &user_id, &chat_id, &message_id).await;
-        });
+            }
+        };
+        if let Err(e) = self.harness.resume(user_id, source_chat_id, &message_id).await {
+            tracing::error!(error = %e, chat_id = %source_chat_id, "Failed to resume user chat");
+        }
     }
 
-    /// Notify a blocked task executor (for task chats) or fall through to
-    /// `harness.resume(...)` (for everything else).
-    pub async fn resume_or_notify(&self, user_id: &str, chat_id: &str, message_id: &str) {
-        resume_or_notify(
-            &self.task_resolution_notifiers,
-            &self.harness,
-            user_id,
-            chat_id,
-            message_id,
-        )
-        .await;
-    }
 }
 
 enum LifecycleAction {
@@ -1057,29 +1055,6 @@ enum LifecycleAction {
     },
 }
 
-/// Check if a task executor is waiting for resolution on this chat's task.
-/// If so, notify it. Otherwise, fall back to `harness.resume(...)`.
-pub async fn resume_or_notify(
-    notifiers: &Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
-    harness: &Arc<crate::agent::harness::Harness>,
-    user_id: &str,
-    chat_id: &str,
-    message_id: &str,
-) {
-    if let Ok(Some(chat)) = harness.chat_service.find_chat(chat_id).await
-        && let Some(ref task_id) = chat.task_id
-    {
-        let notifiers = notifiers.lock().await;
-        if let Some(notify) = notifiers.get(task_id) {
-            notify.notify_one();
-            return;
-        }
-    }
-
-    if let Err(e) = harness.resume(user_id, chat_id, message_id).await {
-        tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume chat");
-    }
-}
 
 #[cfg(test)]
 mod tests {

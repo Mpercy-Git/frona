@@ -222,9 +222,12 @@ impl Scheduler {
                 "Firing deferred task"
             );
 
-            if let Err(e) = executor.spawn_execution(task).await {
-                tracing::warn!(error = %e, "Failed to spawn deferred task");
-            }
+            let exec = executor.clone();
+            tokio::spawn(async move {
+                if let Err(e) = exec.run_task(task).await {
+                    tracing::warn!(error = %e, "Failed to run deferred task");
+                }
+            });
         }
 
         Ok(())
@@ -440,9 +443,13 @@ pub async fn execute_cron(
         .spawn_cron_run(template, Utc::now(), next_sequence)
         .await?;
 
-    if let Err(e) = state.task_executor.spawn_execution(run).await {
-        tracing::warn!(error = %e, template_id = %template.id, "Failed to spawn CronRun execution");
-    }
+    let exec = state.task_executor.clone();
+    let template_id = template.id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = exec.run_task(run).await {
+            tracing::warn!(error = %e, template_id = %template_id, "Failed to run CronRun execution");
+        }
+    });
 
     Ok(())
 }

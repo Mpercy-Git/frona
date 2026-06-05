@@ -284,6 +284,7 @@ impl Harness {
             user_id: user.id.clone(),
             chat_id: te.chat_id.clone(),
             message_id: te.message_id.clone(),
+            task_id: chat.task_id.clone(),
         })
     }
 

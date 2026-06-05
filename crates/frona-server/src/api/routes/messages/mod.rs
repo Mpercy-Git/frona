@@ -139,13 +139,17 @@ async fn resolve_tool_calls(
                 user_id,
                 chat_id,
                 message_id,
+                task_id,
             } = outcome
             {
-                let executor = state.task_executor.clone();
+                let h = state.harness.clone();
+                let exec = state.task_executor.clone();
                 tokio::spawn(async move {
-                    executor
-                        .resume_or_notify(&user_id, &chat_id, &message_id)
-                        .await;
+                    if let Some(tid) = task_id {
+                        let _ = exec.run_task_by_id(&tid).await;
+                    } else if let Err(e) = h.resume(&user_id, &chat_id, &message_id).await {
+                        tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume chat after HITL resolve");
+                    }
                 });
             }
             if let Ok(Some(msg)) = state

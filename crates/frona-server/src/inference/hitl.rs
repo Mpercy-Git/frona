@@ -92,7 +92,9 @@ pub enum HitlOutcome {
 }
 
 /// `should_resume` is true iff the per-message barrier cleared (no more
-/// pending HITLs). `AlreadyResolved` is idempotent — callers can render
+/// pending HITLs). `task_id` is `Some` when the chat is a task chat — the
+/// dispatcher uses it to choose `task_executor.run_task` over
+/// `harness.resume`. `AlreadyResolved` is idempotent — callers can render
 /// "already resolved" UX without raising an error.
 #[derive(Debug, Clone)]
 pub enum ResolveOutcome {
@@ -101,6 +103,7 @@ pub enum ResolveOutcome {
         user_id: String,
         chat_id: String,
         message_id: String,
+        task_id: Option<String>,
     },
     AlreadyResolved,
 }

@@ -240,11 +240,12 @@ async fn resolve_tool_call_other_user_returns_error() {
 /// three `ask_user_question` HITL tool calls all in `Pending` status. The FE
 /// submits all three resolutions in one body. The test asserts that after
 /// resolution, every HITL is in `Resolved` status AND the message leaves
-/// `Executing` (proving `resume_or_notify` actually fired and ran inference
-/// to completion or failure).
+/// `Executing` (proving the resolve handler's `tokio::spawn` dispatch — either
+/// `task_executor.run_task_by_id` or `harness.resume` — actually fired and ran
+/// inference to completion or failure).
 ///
-/// If `resume_or_notify` never fires (or both spawn paths cancel each other
-/// via `active_sessions.register`), the message stays in `Executing` forever —
+/// If the dispatch never fires (or both spawn paths cancel each other via
+/// `active_sessions.register`), the message stays in `Executing` forever —
 /// matching the user's observation that nothing happens after answering.
 #[tokio::test]
 async fn batched_resolve_resumes_agent_loop() {
@@ -354,11 +355,10 @@ async fn batched_resolve_resumes_agent_loop() {
         "all HITLs should be resolved synchronously"
     );
 
-    // The async part: resume_or_notify is `tokio::spawn`-ed; give it room to
-    // run. With no model providers registered, inference will fail fast and
-    // `fail_agent_message` will flip status to Failed. Either way the message
-    // MUST leave Executing. If it stays Executing, resume never fired (or both
-    // spawn paths cancelled each other).
+    // The async part: the dispatch (`harness.resume` or `run_task_by_id`) is
+    // `tokio::spawn`-ed; give it room to run. With no model providers
+    // registered, inference will fail fast and `fail_agent_message` will flip
+    // status to Failed. Either way the message MUST leave Executing.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     let final_status = loop {
         let msg = state

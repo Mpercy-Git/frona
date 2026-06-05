@@ -251,10 +251,11 @@ async fn task_execution_emits_expected_sse_events() {
     let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
     repo.create(&task).await.unwrap();
 
-    // Execute the task (spawns a background tokio task).
+    // Execute the task in the background while we poll for status.
     let task_id = task.id.clone();
     let executor = Arc::new(TaskExecutor::new(state.harness.clone()));
-    executor.spawn_execution(task).await.unwrap();
+    let exec_for_spawn = executor.clone();
+    tokio::spawn(async move { let _ = exec_for_spawn.run_task(task).await; });
 
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -400,7 +401,8 @@ async fn delegation_delivers_task_result_to_parent_chat() {
 
     let task_id = task.id.clone();
     let executor = Arc::new(TaskExecutor::new(state.harness.clone()));
-    executor.spawn_execution(task).await.unwrap();
+    let exec_for_spawn = executor.clone();
+    tokio::spawn(async move { let _ = exec_for_spawn.run_task(task).await; });
 
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

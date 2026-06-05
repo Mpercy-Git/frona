@@ -1854,7 +1854,8 @@ async fn channel_hitl_pause_renders_pending_hitls() {
 /// `callback_query` from a button tap), the inference loop must:
 /// 1. Mark the tool_call's `hitl.status` as `Resolved`
 /// 2. Populate `tool_call.result` with the synthesized response text
-/// 3. Spawn `resume_or_notify` → resume_agent_loop → trigger a fresh
+/// 3. Spawn the resume dispatch (`harness.resume` for user chats,
+///    `task_executor.run_task_by_id` for task chats) → trigger a fresh
 ///    inference turn (observable via `on_inference_start` on the adapter)
 ///
 /// Exercises the same `ChannelManager::resolve_hitl` entry point that the
@@ -1962,11 +1963,12 @@ async fn channel_button_resolution_resumes_inference() {
     let reloaded = setup.state.chat_service.get_tool_call(&tc.id).await.unwrap().unwrap();
     assert_eq!(reloaded.result, "yes", "tool result carries the user's choice");
 
-    // 4. Resume kicked off — `resume_or_notify` spawned `resume_agent_loop`,
-    //    which triggered `inference()`, which emits `Inference(Start)`.
-    //    The dispatcher routes Start to `adapter.on_inference_start`.
-    //    (Inference will fail because the test app has no model providers,
-    //    but the START signal is enough to prove the resume kicked off.)
+    // 4. Resume kicked off — the channel-resolve handler `tokio::spawn`ed
+    //    `harness.resume(...)`, which triggered `inference()`, which emits
+    //    `Inference(Start)`. The dispatcher routes Start to
+    //    `adapter.on_inference_start`. (Inference will fail because the test
+    //    app has no model providers, but the START signal is enough to prove
+    //    the resume kicked off.)
     let counter = setup.inference_start_count.clone();
     poll_until("adapter on_inference_start fired (resume kicked off)", || {
         let counter = counter.clone();

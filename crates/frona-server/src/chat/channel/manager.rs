@@ -680,13 +680,23 @@ impl ChannelManager {
             .resolve_and_resume(tool_call_id, response)
             .await?;
         if let crate::inference::hitl::ResolveOutcome::Resolved {
-            should_resume: true, user_id, chat_id, message_id,
+            should_resume: true, user_id, chat_id, message_id, task_id,
         } = &outcome
         {
-            let executor = self.task_executor.clone();
-            let (u, c, m) = (user_id.clone(), chat_id.clone(), message_id.clone());
+            let h = self.harness.clone();
+            let exec = self.task_executor.clone();
+            let (u, c, m, tid) = (
+                user_id.clone(),
+                chat_id.clone(),
+                message_id.clone(),
+                task_id.clone(),
+            );
             tokio::spawn(async move {
-                executor.resume_or_notify(&u, &c, &m).await;
+                if let Some(tid) = tid {
+                    let _ = exec.run_task_by_id(&tid).await;
+                } else if let Err(e) = h.resume(&u, &c, &m).await {
+                    tracing::error!(error = %e, chat_id = %c, "Failed to resume chat after HITL resolve");
+                }
             });
         }
         if let Ok(Some(te)) = self.chat_service.get_tool_call(tool_call_id).await {

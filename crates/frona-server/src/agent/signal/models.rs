@@ -101,7 +101,6 @@ impl Watch {
 
 #[derive(Debug, Clone)]
 pub struct CandidateEvent {
-    pub user: crate::auth::User,
     pub channel: Option<crate::chat::channel::Channel>,
     pub chat: Option<crate::chat::models::Chat>,
     pub message: Option<crate::chat::message::models::Message>,
@@ -131,22 +130,6 @@ impl CandidateEvent {
 pub mod test_fixtures {
     use super::CandidateEvent;
     use chrono::Utc;
-
-    pub fn user() -> crate::auth::User {
-        let now = Utc::now();
-        crate::auth::User {
-            id: "u".into(),
-            handle: crate::handle!("test-user"),
-            email: "u@x".into(),
-            name: "u".into(),
-            password_hash: String::new(),
-            timezone: None,
-            groups: Vec::new(),
-            deactivated_at: None,
-            created_at: now,
-            updated_at: now,
-        }
-    }
 
     pub fn channel(provider: &str) -> crate::chat::channel::Channel {
         let now = Utc::now();
@@ -194,7 +177,6 @@ pub mod test_fixtures {
 
     pub fn candidate() -> CandidateEvent {
         CandidateEvent {
-            user: user(),
             channel: None,
             chat: None,
             message: None,

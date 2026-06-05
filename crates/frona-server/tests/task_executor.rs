@@ -542,14 +542,16 @@ async fn concurrency_global_limit() {
     task1.id = "task-1".to_string();
     task1.status = TaskStatus::InProgress;
     repo.create(&task1).await.unwrap();
-    executor.spawn_execution(task1).await.unwrap();
+    let exec1 = executor.clone();
+    tokio::spawn(async move { let _ = exec1.run_task(task1).await; });
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let mut task2 = make_task(TaskKind::Direct { source_chat_id: None });
     task2.id = "task-2".to_string();
     repo.create(&task2).await.unwrap();
-    executor.spawn_execution(task2).await.unwrap();
+    let exec2 = executor.clone();
+    tokio::spawn(async move { let _ = exec2.run_task(task2).await; });
 
     let t2 = repo.find_by_id("task-2").await.unwrap().unwrap();
     assert_eq!(t2.status, TaskStatus::Pending, "Second task should stay pending when limit reached");
@@ -929,7 +931,7 @@ async fn resume_parent_cron_run_respects_template_process_result() {
     executor.resume_parent_if_requested(&completed_on).await;
 }
 
-/// `max_concurrent_tasks=0` short-circuits `spawn_execution` so the test
+/// `max_concurrent_tasks=0` short-circuits `run_task` so the test
 /// observes pure resume-orchestration DB state without an inference model.
 async fn test_app_state_no_spawning() -> (AppState, tempfile::TempDir) {
     let db = test_db().await;

@@ -92,6 +92,6 @@ async fn test_task_spawn_rejected_during_shutdown() {
         updated_at: chrono::Utc::now(),
     };
 
-    let result = executor.spawn_execution(task).await;
-    assert!(result.is_ok(), "spawn_execution should return Ok even during shutdown");
+    let result = executor.run_task(task).await;
+    assert!(result.is_ok(), "run_task should return Ok even during shutdown");
 }

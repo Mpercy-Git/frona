@@ -234,18 +234,6 @@ fn make_candidate(
 ) -> CandidateEvent {
     use frona::agent::signal::Annotation;
     let now = chrono::Utc::now();
-    let user = frona::auth::User {
-        id: user_id.into(),
-        handle: frona::handle!("test-user"),
-        email: "u@x".into(),
-        name: "u".into(),
-        password_hash: String::new(),
-        timezone: None,
-        groups: Vec::new(),
-        deactivated_at: None,
-        created_at: now,
-        updated_at: now,
-    };
     let channel = channel.map(|p| frona::chat::channel::Channel {
         id: "ch".into(),
         user_id: user_id.into(),
@@ -266,7 +254,6 @@ fn make_candidate(
         webhook_url: None,
     });
     CandidateEvent {
-        user,
         channel,
         chat: None,
         message: None,
@@ -596,7 +583,6 @@ async fn rebuild_from_db_hydrates_pending_signal_tasks() {
         state.task_executor.clone(),
         state.agent_service.clone(),
         state.contact_service.clone(),
-        state.user_service.clone(),
         state.policy_service.clone(),
         state.prompts.clone(),
     ));
@@ -776,6 +762,13 @@ async fn evaluate_with_default_policy_fires_and_runs_agent() {
     );
     let fired = svc.evaluate("user-1", cand).await.unwrap();
     assert_eq!(fired, vec![task.id.clone()]);
+
+    // The signal task runs in a background tokio::spawn; poll for the provider
+    // call to land.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while provider.calls() == 0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert!(provider.calls() >= 1, "agent inference should have run");
 
     // Task gets a chat assigned during ensure_task_chat.
