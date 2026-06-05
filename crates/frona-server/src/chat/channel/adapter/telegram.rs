@@ -282,8 +282,17 @@ impl ChannelAdapter for TelegramAdapter {
                     tracing::warn!(
                         tool_call_id = %tc.id,
                         error = %e,
-                        "Telegram on_pending_hitl: send failed, stopping batch",
+                        "Telegram on_pending_hitl: send failed",
                     );
+                    if out.is_empty() {
+                        // Propagate so `record_segment_failure` either schedules
+                        // backoff retry (transient) or marks terminal (permanent
+                        // — `is_permanent_error` matches Telegram phrases like
+                        // "bot was blocked", "chat not found", "forbidden").
+                        return Err(AppError::Internal(format!(
+                            "Telegram send failed: {e}"
+                        )));
+                    }
                     break;
                 }
             }
@@ -292,8 +301,10 @@ impl ChannelAdapter for TelegramAdapter {
     }
 }
 
-/// Build the inline keyboard for a HITL prompt. Approval → Yes/No; Choice →
-/// one button per option + a "Open on web →" URL fallback; External → URL only.
+/// Build the inline keyboard for a HITL prompt. Approval → Yes/No + URL
+/// fallback (the only Approval today is App-deploy, where the user needs the
+/// link to inspect the manifest). Choice → one button per option (no URL —
+/// per-option buttons ARE the resolve action). External → URL only.
 fn build_inline_keyboard(
     tcid: &str,
     kind: &crate::chat::channel::hitl::HitlKind,
@@ -310,12 +321,18 @@ fn build_inline_keyboard(
     };
 
     match kind {
-        HitlKind::Approval => InlineKeyboardMarkup::new(vec![vec![
-            InlineKeyboardButton::callback("Yes".to_string(), format!("r:{tcid}:y")),
-            InlineKeyboardButton::callback("No".to_string(), format!("r:{tcid}:n")),
-        ]]),
-        HitlKind::Choice { options } => {
-            let mut rows: Vec<Vec<InlineKeyboardButton>> = options
+        HitlKind::Approval => {
+            let mut rows = vec![vec![
+                InlineKeyboardButton::callback("Yes".to_string(), format!("r:{tcid}:y")),
+                InlineKeyboardButton::callback("No".to_string(), format!("r:{tcid}:n")),
+            ]];
+            if let Some(row) = url_button() {
+                rows.push(row);
+            }
+            InlineKeyboardMarkup::new(rows)
+        }
+        HitlKind::Choice { options } => InlineKeyboardMarkup::new(
+            options
                 .iter()
                 .enumerate()
                 .map(|(i, opt)| {
@@ -324,12 +341,8 @@ fn build_inline_keyboard(
                         format!("r:{tcid}:c:{i}"),
                     )]
                 })
-                .collect();
-            if let Some(row) = url_button() {
-                rows.push(row);
-            }
-            InlineKeyboardMarkup::new(rows)
-        }
+                .collect::<Vec<_>>(),
+        ),
         HitlKind::External => InlineKeyboardMarkup::new(
             url_button()
                 .map(|row| vec![row])
@@ -603,22 +616,22 @@ mod tests {
     }
 
     #[test]
-    fn build_inline_keyboard_approval_has_two_buttons() {
+    fn build_inline_keyboard_approval_has_yes_no_and_url_row() {
         use crate::chat::channel::hitl::HitlKind;
         let kb = build_inline_keyboard("tc-1", &HitlKind::Approval, "https://x/chats/abc");
-        assert_eq!(kb.inline_keyboard.len(), 1);
+        assert_eq!(kb.inline_keyboard.len(), 2);
         assert_eq!(kb.inline_keyboard[0].len(), 2);
-        // Buttons should encode the tool_call_id in callback_data.
         let labels: Vec<&str> = kb.inline_keyboard[0]
             .iter()
             .map(|b| b.text.as_str())
             .collect();
         assert!(labels.contains(&"Yes"));
         assert!(labels.contains(&"No"));
+        assert_eq!(kb.inline_keyboard[1][0].text, "Open on web →");
     }
 
     #[test]
-    fn build_inline_keyboard_choice_has_option_row_and_url_row() {
+    fn build_inline_keyboard_choice_has_only_option_rows() {
         use crate::chat::channel::hitl::HitlKind;
         let kb = build_inline_keyboard(
             "tc-1",
@@ -627,11 +640,9 @@ mod tests {
             },
             "https://x/chats/abc",
         );
-        // 2 option rows + 1 URL row
-        assert_eq!(kb.inline_keyboard.len(), 3);
+        assert_eq!(kb.inline_keyboard.len(), 2);
         assert_eq!(kb.inline_keyboard[0][0].text, "us");
         assert_eq!(kb.inline_keyboard[1][0].text, "eu");
-        assert_eq!(kb.inline_keyboard[2][0].text, "Open on web →");
     }
 
     #[test]
