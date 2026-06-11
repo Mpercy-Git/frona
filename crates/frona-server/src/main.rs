@@ -309,15 +309,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let shutdown_token = state.shutdown_token.clone();
     let shutdown_signal = async move {
-        let ctrl_c = tokio::signal::ctrl_c();
-        let mut sigterm = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )
-        .expect("Failed to install SIGTERM handler");
+        #[cfg(unix)]
+        {
+            let ctrl_c = tokio::signal::ctrl_c();
+            let mut sigterm = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            )
+            .expect("Failed to install SIGTERM handler");
 
-        tokio::select! {
-            _ = ctrl_c => { info!("Received SIGINT"); }
-            _ = sigterm.recv() => { info!("Received SIGTERM"); }
+            tokio::select! {
+                _ = ctrl_c => { info!("Received SIGINT"); }
+                _ = sigterm.recv() => { info!("Received SIGTERM"); }
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+            info!("Received Ctrl+C");
         }
 
         info!("Initiating graceful shutdown...");

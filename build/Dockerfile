@@ -73,7 +73,7 @@ RUN SURREAL_VER=$(grep -A1 'name = "surrealdb"' /tmp/Cargo.lock | grep version |
   && chmod +x /usr/local/bin/surreal
 
 # Stage 5: python packages
-FROM python:3.12-slim-bookworm AS python-builder
+FROM python:3.12-bookworm AS python-builder
 RUN --mount=type=bind,source=build/pkgs/builder-python-apt.txt,target=/tmp/packages.txt \
   apt-get update && apt-get install -y --no-install-recommends \
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \

@@ -76,11 +76,21 @@ async fn restart_handler(
 }
 
 fn re_exec_self() -> ! {
-    use std::os::unix::process::CommandExt;
-
     let exe = std::env::current_exe().expect("failed to get current executable path");
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let err = std::process::Command::new(&exe).args(&args).exec();
-    panic!("exec failed: {err}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&exe).args(&args).exec();
+        panic!("exec failed: {err}");
+    }
+
+    #[cfg(not(unix))]
+    {
+        match std::process::Command::new(&exe).args(&args).spawn() {
+            Ok(_) => std::process::exit(0),
+            Err(err) => panic!("failed to restart: {err}"),
+        }
+    }
 }
