@@ -83,6 +83,7 @@ pub async fn spawn(
     let cancel = ctx.cancel.clone();
     let channel_id = ctx.channel.id.clone();
     let channel_manager = ctx.channel_manager.clone();
+    let chat_service = ctx.chat_service.clone();
     let cmd_tx_inner = cmd_tx.clone();
 
     let thread = std::thread::Builder::new()
@@ -114,6 +115,7 @@ pub async fn spawn(
                 cancel,
                 channel_id,
                 channel_manager,
+                chat_service,
             ));
         })
         .map_err(|e| AppError::Internal(format!("Signal worker thread spawn: {e}")))?;
@@ -155,6 +157,7 @@ async fn run(
     cancel: CancellationToken,
     channel_id: String,
     cm: Arc<ChannelManager>,
+    chat_service: crate::chat::service::ChatService,
 ) {
     let db_str = match db_path.to_str() {
         Some(s) => s.to_string(),
@@ -278,7 +281,16 @@ async fn run(
                         tracing::info!(channel_id = %channel_id, "Signal contacts sync received");
                     }
                     Some(Received::Content(content)) => {
-                        convert::handle(&mut manager, &emit, &cmd_tx, *content, &channel_id).await;
+                        convert::handle(
+                            &mut manager,
+                            &emit,
+                            &cmd_tx,
+                            *content,
+                            &channel_id,
+                            &chat_service,
+                            &cm,
+                        )
+                        .await;
                     }
                 }
             }

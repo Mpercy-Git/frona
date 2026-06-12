@@ -142,7 +142,6 @@ impl AnnotateTool {
         };
 
         Ok(CandidateEvent {
-            user: ctx.user.clone(),
             channel,
             chat: Some(ctx.chat.clone()),
             message,

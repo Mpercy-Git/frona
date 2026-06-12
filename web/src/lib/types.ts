@@ -175,11 +175,93 @@ export type MessageTool =
   | { type: "VaultApproval"; data: { query: string; reason: string; env_var_prefix: string | null; status: MessageToolStatus; response: string | null } }
   | { type: "ServiceApproval"; data: { action: string; manifest: Record<string, unknown>; previous_manifest: Record<string, unknown> | null; status: MessageToolStatus; response: string | null } };
 
+// Typed HITL model — mirrors Rust `inference::hitl::*`. UI components read
+// from `tc.hitl` for pending HITL prompts and submit typed `HitlResponse`
+// payloads via `/api/chats/{id}/tool-calls/resolve`. The legacy `tool_data`
+// + `MessageTool` types above remain as a transitional type declaration but
+// the FE no longer reads them; backend will stop emitting them once all
+// historical rows are migrated.
+
+/// Why the inference loop paused — discriminated by `type`. New pause
+/// causes (background tasks, webhooks) add variants here and on the Rust
+/// side. UI handlers switch on `type`.
+export type PauseReason =
+  | { type: "Hitl" };
+
+export type HitlRequest =
+  | { type: "Question"; data: { options: string[] } }
+  | { type: "Takeover"; data: { reason: string; debugger_url: string } }
+  | { type: "App"; data: { action: string; manifest: Record<string, unknown>; previous_manifest: Record<string, unknown> | null } }
+  | { type: "Credential"; data: { query: string; reason: string } };
+
+export type VaultField =
+  | "Password"
+  | "Username"
+  | { Custom: { name: string } };
+
+export type CredentialTarget =
+  | { Prefix: { env_var_prefix: string } }
+  | { Single: { env_var: string; field: VaultField } };
+
+export type GrantDuration =
+  | "once"
+  | "permanent"
+  | { hours: number }
+  | { days: number };
+
+export type VaultGrant =
+  | { type: "Granted"; data: { connection_id: string; vault_item_id: string; grant_duration: GrantDuration; target: CredentialTarget } }
+  | { type: "Denied" };
+
+export type HitlResponse =
+  | { type: "Approval"; data: boolean }
+  | { type: "Choice"; data: string }
+  | { type: "Vault"; data: VaultGrant };
+
+export interface HitlDelivery {
+  channel_id: string;
+  external_message_id: string;
+  delivered_at: string;
+}
+
+export interface Hitl {
+  prompt: string;
+  url: string;
+  request: HitlRequest;
+  status: MessageToolStatus;
+  response: HitlResponse | null;
+  delivery: HitlDelivery | null;
+}
+
+export type TaskEvent =
+  | { type: "Completion"; data: { task_id: string; chat_id: string | null; status: string; summary: string | null; deliverables: unknown[] } }
+  | { type: "Deferred"; data: { task_id: string; delay_minutes: number; reason: string } };
+
+// ─── HITL accessor helpers ──────────────────────────────────────────────────
+
+/** True when the tool_call is a HITL pending human resolution. */
+export function isPendingHitl(te: { hitl?: Hitl | null }): boolean {
+  return te.hitl?.status === "pending";
+}
+
+/** Extract the human-readable response text from a resolved HITL. */
+export function hitlResponseText(hitl: Hitl): string | null {
+  if (!hitl.response) return null;
+  switch (hitl.response.type) {
+    case "Approval":
+      return hitl.response.data ? "Approved" : "Denied";
+    case "Choice":
+      return hitl.response.data;
+    case "Vault":
+      return hitl.response.data.type === "Granted" ? "Granted" : "Denied";
+  }
+}
+
 export type MessageEvent =
   | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string; summary?: string } }
   | { type: "TaskDeferred"; data: { task_id: string; delay_minutes: number; reason: string } };
 
-export type MessageStatus = "executing" | "completed" | "failed" | "cancelled";
+export type MessageStatus = "executing" | "paused" | "completed" | "failed" | "cancelled";
 
 export interface ToolCall {
   id: string;
@@ -192,10 +274,16 @@ export interface ToolCall {
   result: string;
   success: boolean;
   duration_ms: number;
+  /** New typed HITL pause marker. UI prefers this when present. */
+  hitl?: Hitl | null;
+  /** New typed task-control terminal signal. */
+  task_event?: TaskEvent | null;
   tool_data?: MessageTool;
   system_prompt?: string;
   description?: string;
   turn_text?: string;
+  /** Reasoning emitted by the model right before this tool call (first of turn). */
+  turn_reasoning?: { id?: string | null; content: string; signature?: string | null } | null;
   created_at: string;
 }
 

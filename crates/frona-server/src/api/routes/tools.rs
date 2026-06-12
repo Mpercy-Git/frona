@@ -158,7 +158,7 @@ async fn agent_tools(
 ) -> Result<Json<Vec<ToolInfo>>, ApiError> {
     let agent = state.agent_service.get(&auth.user_id, &id).await
         .map_err(ApiError)?;
-    let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service).await;
+    let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service, None).await;
     let infos: Vec<ToolInfo> = registry
         .definitions()
         .iter()

@@ -772,7 +772,7 @@ fn move_dir_contents(from: &std::path::Path, to: &std::path::Path) {
 
 /// Strips the legacy `manifest.id` (now redundant with `handle`) and renames
 /// `apps/{id}/` → `apps/{handle}/`. Leaving `manifest.id` would trigger
-/// spurious re-approval prompts in `manage_service` diff comparison.
+/// spurious re-approval prompts in `manage_app` diff comparison.
 async fn drop_app_manifest_id(
     db: &Surreal<Db>,
     user_handle_by_id: &HashMap<String, String>,

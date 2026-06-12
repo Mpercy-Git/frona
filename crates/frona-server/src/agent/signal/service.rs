@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
@@ -8,7 +8,6 @@ use crate::agent::service::AgentService;
 use crate::agent::task::executor::TaskExecutor;
 use crate::agent::task::models::{Task, TaskKind, TaskStatus};
 use crate::agent::task::service::TaskService;
-use crate::auth::user_service::UserService;
 use crate::contact::service::ContactService;
 use crate::core::error::AppError;
 use crate::policy::models::{PolicyAction, PolicyContact};
@@ -24,11 +23,9 @@ pub struct SignalService {
     watches: RwLock<WatchIndex>,
     matchers: Vec<Arc<dyn Matcher>>,
     task_service: TaskService,
-    task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
+    task_executor: Arc<TaskExecutor>,
     agent_service: AgentService,
     contact_service: ContactService,
-    #[allow(dead_code)]
-    user_service: UserService,
     policy_service: PolicyService,
     prompts: PromptLoader,
 }
@@ -37,10 +34,9 @@ impl SignalService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_service: TaskService,
-        task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
+        task_executor: Arc<TaskExecutor>,
         agent_service: AgentService,
         contact_service: ContactService,
-        user_service: UserService,
         policy_service: PolicyService,
         prompts: PromptLoader,
     ) -> Self {
@@ -54,7 +50,6 @@ impl SignalService {
             task_executor,
             agent_service,
             contact_service,
-            user_service,
             policy_service,
             prompts,
             matchers,
@@ -64,10 +59,9 @@ impl SignalService {
     #[allow(clippy::too_many_arguments)]
     pub fn with_matchers(
         task_service: TaskService,
-        task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
+        task_executor: Arc<TaskExecutor>,
         agent_service: AgentService,
         contact_service: ContactService,
-        user_service: UserService,
         policy_service: PolicyService,
         prompts: PromptLoader,
         matchers: Vec<Arc<dyn Matcher>>,
@@ -79,7 +73,6 @@ impl SignalService {
             task_executor,
             agent_service,
             contact_service,
-            user_service,
             policy_service,
             prompts,
         }
@@ -253,13 +246,13 @@ impl SignalService {
         }
         self.task_service.save(&task).await?;
 
-        let Some(executor) = self.task_executor.get().cloned() else {
-            return Err(AppError::Internal("TaskExecutor not initialized".into()));
-        };
         let injected_message = self.build_candidate_block(candidate, watch.mode);
-        executor
-            .run_with_injected_message(&task, injected_message)
-            .await?;
+        let exec = self.task_executor.clone();
+        tokio::spawn(async move {
+            if let Err(e) = exec.run_with_injected_message(&task, injected_message).await {
+                tracing::error!(error = %e, "Signal task execution failed");
+            }
+        });
         Ok(true)
     }
 
@@ -362,18 +355,12 @@ impl SignalService {
         let fired = if annotations.is_empty() {
             Vec::new()
         } else {
-            let user = self
-                .user_service
-                .find_by_id(&channel.user_id)
-                .await?
-                .ok_or_else(|| AppError::NotFound(format!("user {}", channel.user_id)))?;
             let contact = if let Some(ref contact_id) = msg.contact_id {
                 self.contact_service.get(&channel.user_id, contact_id).await.ok()
             } else {
                 None
             };
             let candidate = CandidateEvent {
-                user,
                 channel: Some(channel.clone()),
                 chat: Some(chat.clone()),
                 message: Some(msg.clone()),

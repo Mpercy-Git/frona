@@ -51,6 +51,8 @@
 //! "Known issue" callout in the user guide, and the test-from-an-unsaved-
 //! contact failure mode all become obsolete.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
@@ -61,6 +63,7 @@ use crate::chat::channel::models::{
 };
 #[cfg(test)]
 use crate::chat::channel::models::ChannelFactory;
+use crate::chat::channel::typing::TypingIndicator;
 use crate::chat::message::models::Message;
 use crate::chat::models::Chat;
 use crate::core::error::AppError;
@@ -75,6 +78,10 @@ use command::{SignalCommand, TypingAction};
 use external_id::SignalTarget;
 use worker::SignalHandle;
 
+/// Signal's typing indicator auto-fades around 15s. Refresh just under so a
+/// long inference keeps showing "typing…" continuously.
+const TYPING_REFRESH_INTERVAL: Duration = Duration::from_secs(12);
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SignalConfig {}
 
@@ -82,12 +89,14 @@ pub struct SignalConfig {}
 #[channel(id = "signal", from = SignalConfig)]
 pub struct SignalAdapter {
     handle: Mutex<Option<SignalHandle>>,
+    typing: TypingIndicator,
 }
 
 impl From<SignalConfig> for SignalAdapter {
     fn from(_: SignalConfig) -> Self {
         Self {
             handle: Mutex::new(None),
+            typing: TypingIndicator::new(),
         }
     }
 }
@@ -181,7 +190,7 @@ impl ChannelAdapter for SignalAdapter {
         if text.trim().is_empty() {
             return Ok(());
         }
-        self.dispatch_text(chat, text, &msg.id, ctx).await
+        self.dispatch_text(chat, text, &msg.id, ctx).await.map(|_| ())
     }
 
     async fn on_send(
@@ -194,15 +203,74 @@ impl ChannelAdapter for SignalAdapter {
         if msg.content.trim().is_empty() {
             return Ok(());
         }
-        self.dispatch_text(chat, &msg.content, &msg.id, ctx).await
+        self.dispatch_text(chat, &msg.content, &msg.id, ctx).await.map(|_| ())
     }
 
-    async fn on_inference_active(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), AppError> {
-        self.dispatch_typing(chat, ctx, TypingAction::Started).await
+    async fn on_inference_start(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), AppError> {
+        let Ok(target) = SignalTarget::parse(match external_chat_id(chat) {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        }) else {
+            return Ok(());
+        };
+        let Ok(cmd_tx) = self.cmd_tx(&ctx.channel.id).await else {
+            return Ok(());
+        };
+        self.typing.start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
+            let cmd_tx = cmd_tx.clone();
+            let target = target.clone();
+            async move {
+                let _ = cmd_tx
+                    .send(SignalCommand::SendTyping {
+                        target,
+                        action: TypingAction::Started,
+                    })
+                    .await;
+            }
+        }).await;
+        Ok(())
     }
 
     async fn on_inference_done(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), AppError> {
+        self.typing.stop(&chat.id).await;
         self.dispatch_typing(chat, ctx, TypingAction::Stopped).await
+    }
+
+    async fn on_pending_hitl(
+        &self,
+        batch: &[ToolCall],
+        _msg: &Message,
+        chat: &Chat,
+        ctx: &ChannelCtx,
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+        // Sequential cadence: render only the first pending HITL. The cursor
+        // advances by 1; the next pending HITL renders after this one resolves
+        // (via text reply or web URL).
+        let Some(tc) = batch.first() else { return Ok(Vec::new()) };
+        let Some(h) = tc.hitl.as_ref() else { return Ok(Vec::new()) };
+
+        // Body policy mirrors WhatsApp/Discord/Slack: Choice/Approval → prompt
+        // only (text reply IS the resolve action); External (creds) → prompt +
+        // URL (URL is the only resolve path for vault picks).
+        let kind = crate::chat::channel::hitl::kind_for(&h.request);
+        let body = match kind {
+            crate::chat::channel::hitl::HitlKind::External => {
+                crate::chat::channel::hitl::render_default_text(h)
+            }
+            _ => h.prompt.clone(),
+        };
+        let ts = self.dispatch_text(chat, &body, &tc.id, ctx).await?;
+        tracing::info!(
+            channel_id = %ctx.channel.id,
+            tool_call_id = %tc.id,
+            signal_ts = ts,
+            "Signal HITL prompt sent",
+        );
+        Ok(vec![crate::inference::hitl::HitlDelivery {
+            channel_id: ctx.channel.id.clone(),
+            external_message_id: ts.to_string(),
+            delivered_at: Utc::now(),
+        }])
     }
 }
 
@@ -229,7 +297,7 @@ impl SignalAdapter {
         text: &str,
         msg_id: &str,
         ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
+    ) -> Result<u64, AppError> {
         let target = SignalTarget::parse(external_chat_id(chat)?)?;
         let cmd_tx = self.cmd_tx(&ctx.channel.id).await?;
         let (reply, rx) = oneshot::channel();

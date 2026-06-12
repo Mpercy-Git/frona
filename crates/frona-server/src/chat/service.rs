@@ -32,7 +32,7 @@ use super::message::repository::MessageRepository;
 use super::models::Chat;
 use super::repository::ChatRepository;
 use crate::db::repo::tool_calls::ToolCallRepository;
-use crate::inference::tool_call::{MessageTool, ToolCall, ToolCallResponse, ToolStatus};
+use crate::inference::tool_call::{ToolCall, ToolCallResponse, ToolStatus};
 pub enum ToolResolveResult {
     Changed(MessageResponse),
     AlreadyResolved(MessageResponse),
@@ -102,7 +102,6 @@ impl ChatService {
         );
     }
 
-    /// Fires `chat_message` (frontend) AND `entity_updated` (channel watcher).
     fn broadcast_message_persisted(
         &self,
         msg: &Message,
@@ -620,15 +619,15 @@ impl ChatService {
         .await
     }
 
-    /// No-broadcast persist. Broadcasting an empty Executing row renders
-    /// a phantom message while tokens stream.
+    /// Skips broadcasting — an empty Executing row would render as a phantom
+    /// message in the UI while tokens stream.
     async fn save_message(&self, message: Message) -> Result<MessageResponse, AppError> {
         let saved = self.message_repo.create(&message).await?;
         Ok(saved.into())
     }
 
-    /// Presigns attachments before broadcasting so live SSE matches the
-    /// GET response — without this the file widget renders broken until refresh.
+    /// Presigns attachments before broadcasting; without it the file widget
+    /// renders broken until refresh because live SSE wouldn't match the GET.
     async fn save_message_and_broadcast(
         &self,
         message: Message,
@@ -774,8 +773,6 @@ impl ChatService {
         self.save_message(msg).await
     }
 
-    /// Fires `entity_updated` + `inference_done` (NOT `chat_message`) —
-    /// `inference_done` doubles as the row payload and clears streaming buffers.
     pub async fn complete_agent_message(
         &self,
         message_id: &str,
@@ -819,12 +816,16 @@ impl ChatService {
                 chat.space_id.clone(),
                 None,
             );
-            self.broadcast.broadcast_inference_done(
-                &chat.user_id,
-                &chat.id,
-                chat.space_id.clone(),
-                response.clone(),
-            );
+            self.broadcast.send(crate::chat::broadcast::BroadcastEvent {
+                user_id: chat.user_id.clone(),
+                chat_id: Some(chat.id.clone()),
+                space_id: chat.space_id.clone(),
+                kind: crate::chat::broadcast::BroadcastEventKind::Inference(
+                    crate::inference::tool_loop::InferenceEventKind::Done {
+                        message: response.clone(),
+                    },
+                ),
+            });
         }
         Ok(response)
     }
@@ -853,17 +854,25 @@ impl ChatService {
                 chat.space_id.clone(),
                 None,
             );
-            self.broadcast.broadcast_inference_cancelled(
-                &chat.user_id,
-                &chat.id,
-                chat.space_id.clone(),
-                "Cancelled".to_string(),
-            );
+            self.broadcast.send(crate::chat::broadcast::BroadcastEvent {
+                user_id: chat.user_id.clone(),
+                chat_id: Some(chat.id.clone()),
+                space_id: chat.space_id.clone(),
+                kind: crate::chat::broadcast::BroadcastEventKind::Inference(
+                    crate::inference::tool_loop::InferenceEventKind::Cancelled {
+                        reason: "Cancelled".to_string(),
+                    },
+                ),
+            });
         }
         Ok(updated.into())
     }
 
-    pub async fn fail_agent_message(&self, message_id: &str) -> Result<MessageResponse, AppError> {
+    pub async fn fail_agent_message(
+        &self,
+        message_id: &str,
+        error: String,
+    ) -> Result<MessageResponse, AppError> {
         let mut message = self
             .message_repo
             .find_by_id(message_id)
@@ -881,16 +890,83 @@ impl ChatService {
                 chat.space_id.clone(),
                 None,
             );
-            self.broadcast.broadcast_inference_error(
-                &chat.user_id,
-                &chat.id,
-                chat.space_id.clone(),
-                "Inference failed".to_string(),
-            );
+            self.broadcast.send(crate::chat::broadcast::BroadcastEvent {
+                user_id: chat.user_id.clone(),
+                chat_id: Some(chat.id.clone()),
+                space_id: chat.space_id.clone(),
+                kind: crate::chat::broadcast::BroadcastEventKind::Inference(
+                    crate::inference::tool_loop::InferenceEventKind::Failed { error },
+                ),
+            });
         }
         Ok(updated.into())
     }
 
+    pub async fn pause_agent_message(
+        &self,
+        message_id: &str,
+        reason: crate::inference::tool_loop::PauseReason,
+        tool_calls: Vec<crate::inference::tool_call::ToolCallResponse>,
+    ) -> Result<(), AppError> {
+        let mut msg = match self.message_repo.find_by_id(message_id).await? {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+        if !matches!(msg.status, Some(MessageStatus::Paused)) {
+            msg.status = Some(MessageStatus::Paused);
+            msg = self.message_repo.update(&msg).await?;
+        }
+        let chat = match self.chat_repo.find_by_id(&msg.chat_id).await? {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+        let mut response: MessageResponse = msg.into();
+        response.tool_calls = tool_calls;
+        self.broadcast.send(crate::chat::broadcast::BroadcastEvent {
+            user_id: chat.user_id.clone(),
+            chat_id: Some(chat.id.clone()),
+            space_id: chat.space_id.clone(),
+            kind: crate::chat::broadcast::BroadcastEventKind::Inference(
+                crate::inference::tool_loop::InferenceEventKind::Paused {
+                    reason,
+                    message: response,
+                },
+            ),
+        });
+        Ok(())
+    }
+
+    /// Returns `true` iff this call performed the flip. Callers racing on the
+    /// last HITL of a message must use this as the dedup signal — the loser
+    /// sees `false` and must skip the resume spawn.
+    pub async fn mark_message_executing(&self, message_id: &str) -> Result<bool, AppError> {
+        let query = "UPDATE message
+            SET status = $new_status
+            WHERE meta::id(id) = $msg_id
+              AND status = $old_status
+              AND array::len(
+                    (SELECT VALUE id FROM tool_call
+                     WHERE message_id = $msg_id
+                       AND hitl.status = $pending)
+                  ) = 0
+            RETURN meta::id(id) AS id";
+        let mut result = self
+            .message_repo
+            .db()
+            .query(query)
+            .bind(("msg_id", message_id.to_string()))
+            .bind(("new_status", MessageStatus::Executing))
+            .bind(("old_status", MessageStatus::Paused))
+            .bind(("pending", crate::inference::tool_call::ToolStatus::Pending))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows: Vec<serde_json::Value> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(!rows.is_empty())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub async fn begin_tool_call(
         &self,
@@ -903,6 +979,7 @@ impl ChatService {
         arguments: &serde_json::Value,
         description: Option<String>,
         turn_text: Option<String>,
+        turn_reasoning: Option<Reasoning>,
     ) -> Result<ToolCall, AppError> {
         let te = ToolCall {
             id: id.to_string(),
@@ -915,10 +992,12 @@ impl ChatService {
             result: String::new(),
             success: false,
             duration_ms: 0,
-            tool_data: None,
+            hitl: None,
+            task_event: None,
             system_prompt: None,
             description,
             turn_text,
+            turn_reasoning,
             created_at: chrono::Utc::now(),
         };
         self.tool_call_repo.create(&te).await?;
@@ -931,7 +1010,6 @@ impl ChatService {
         result: String,
         success: bool,
         duration_ms: u64,
-        tool_data: Option<MessageTool>,
         system_prompt: Option<String>,
     ) -> Result<(), AppError> {
         let mut te = self
@@ -942,9 +1020,55 @@ impl ChatService {
         te.result = result;
         te.success = success;
         te.duration_ms = duration_ms;
-        te.tool_data = tool_data;
         te.system_prompt = system_prompt;
         self.tool_call_repo.update(&te).await?;
+        Ok(())
+    }
+
+    pub async fn set_hitl(
+        &self,
+        tool_call_id: &str,
+        hitl: crate::inference::hitl::Hitl,
+    ) -> Result<(), AppError> {
+        let mut te = self
+            .tool_call_repo
+            .find_by_id(tool_call_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Tool call not found".into()))?;
+        te.hitl = Some(hitl);
+        self.tool_call_repo.update(&te).await?;
+        Ok(())
+    }
+
+    pub async fn set_task_event(
+        &self,
+        tool_call_id: &str,
+        event: crate::inference::tool_call::TaskEvent,
+    ) -> Result<(), AppError> {
+        let mut te = self
+            .tool_call_repo
+            .find_by_id(tool_call_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Tool call not found".into()))?;
+        te.task_event = Some(event);
+        self.tool_call_repo.update(&te).await?;
+        Ok(())
+    }
+
+    pub async fn set_hitl_delivery(
+        &self,
+        tool_call_id: &str,
+        delivery: crate::inference::hitl::HitlDelivery,
+    ) -> Result<(), AppError> {
+        let mut te = self
+            .tool_call_repo
+            .find_by_id(tool_call_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Tool call not found".into()))?;
+        if let Some(ref mut h) = te.hitl {
+            h.delivery = Some(delivery);
+            self.tool_call_repo.update(&te).await?;
+        }
         Ok(())
     }
 
@@ -953,64 +1077,74 @@ impl ChatService {
         tool_call_id: &str,
         response: Option<String>,
     ) -> Result<ToolResolveResult, AppError> {
+        self.resolve_tool_call_with_hitl_response(tool_call_id, response, None)
+            .await
+    }
+
+    pub async fn resolve_tool_call_with_hitl_response(
+        &self,
+        tool_call_id: &str,
+        response: Option<String>,
+        hitl_response: Option<crate::inference::hitl::HitlResponse>,
+    ) -> Result<ToolResolveResult, AppError> {
         let mut te = self
             .tool_call_repo
             .find_by_id(tool_call_id)
             .await?
             .ok_or_else(|| AppError::NotFound("Tool call not found".into()))?;
 
-        let tool = te.tool_data.as_ref()
-            .ok_or_else(|| AppError::Validation("Tool call has no resolvable tool".into()))?;
+        let current_status = te.hitl.as_ref().map(|h| h.status.clone());
 
-        if let Some(current_status) = tool.tool_status() {
-            match current_status {
-                ToolStatus::Resolved => {
-                    let existing = tool.tool_response().unwrap_or_default();
-                    let incoming = response.as_deref()
-                        .unwrap_or("Human resolved the request.");
-                    if existing == incoming {
-                        return Ok(ToolResolveResult::AlreadyResolved(
-                            MessageResponse::from(
-                                self.message_repo.find_by_id(&te.message_id).await?
-                                    .ok_or_else(|| AppError::NotFound("Message not found".into()))?
-                            ),
-                        ));
-                    }
-                    return Err(AppError::Http {
-                        status: 409,
-                        message: "Tool call is already resolved with a different response".into(),
-                    });
+        match current_status {
+            Some(ToolStatus::Resolved) => {
+                let existing = te.result.as_str();
+                let incoming = response
+                    .as_deref()
+                    .unwrap_or("Human resolved the request.");
+                if existing == incoming {
+                    return Ok(ToolResolveResult::AlreadyResolved(
+                        MessageResponse::from(
+                            self.message_repo
+                                .find_by_id(&te.message_id)
+                                .await?
+                                .ok_or_else(|| AppError::NotFound("Message not found".into()))?,
+                        ),
+                    ));
                 }
-                ToolStatus::Denied => {
-                    return Err(AppError::Http {
-                        status: 409,
-                        message: "Tool call has already been denied".into(),
-                    });
-                }
-                ToolStatus::Pending => {}
+                return Err(AppError::Http {
+                    status: 409,
+                    message: "Tool call is already resolved with a different response".into(),
+                });
             }
-        } else {
-            return Err(AppError::Validation("Tool call has no resolvable tool".into()));
+            Some(ToolStatus::Denied) => {
+                return Err(AppError::Http {
+                    status: 409,
+                    message: "Tool call has already been denied".into(),
+                });
+            }
+            Some(ToolStatus::Pending) => {}
+            None => {
+                return Err(AppError::Validation(
+                    "Tool call has no resolvable HITL".into(),
+                ));
+            }
         }
 
         let response_text = response
             .unwrap_or_else(|| "Human resolved the request.".to_string());
 
-        match &mut te.tool_data {
-            Some(MessageTool::HumanInTheLoop { status, response: resp, .. })
-            | Some(MessageTool::Question { status, response: resp, .. })
-            | Some(MessageTool::VaultApproval { status, response: resp, .. })
-            | Some(MessageTool::ServiceApproval { status, response: resp, .. }) => {
-                *status = ToolStatus::Resolved;
-                *resp = Some(response_text.clone());
-            }
-            _ => unreachable!(),
+        if let Some(ref mut h) = te.hitl {
+            h.status = ToolStatus::Resolved;
+            h.response = hitl_response.clone();
         }
 
         te.result = response_text;
         self.tool_call_repo.update(&te).await?;
 
-        let message = self.message_repo.find_by_id(&te.message_id).await?
+        let message = self
+            .message_repo
+            .find_by_id(&te.message_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
         Ok(ToolResolveResult::Changed(message.into()))
     }
@@ -1020,52 +1154,62 @@ impl ChatService {
         tool_call_id: &str,
         response: Option<String>,
     ) -> Result<ToolResolveResult, AppError> {
+        self.deny_tool_call_with_hitl_response(tool_call_id, response, None)
+            .await
+    }
+
+    pub async fn deny_tool_call_with_hitl_response(
+        &self,
+        tool_call_id: &str,
+        response: Option<String>,
+        hitl_response: Option<crate::inference::hitl::HitlResponse>,
+    ) -> Result<ToolResolveResult, AppError> {
         let mut te = self
             .tool_call_repo
             .find_by_id(tool_call_id)
             .await?
             .ok_or_else(|| AppError::NotFound("Tool call not found".into()))?;
 
-        let tool = te.tool_data.as_ref()
-            .ok_or_else(|| AppError::Validation("Tool call has no deniable tool".into()))?;
+        let current_status = te.hitl.as_ref().map(|h| h.status.clone());
 
-        if let Some(current_status) = tool.tool_status() {
-            match current_status {
-                ToolStatus::Denied => {
-                    let message = self.message_repo.find_by_id(&te.message_id).await?
-                        .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
-                    return Ok(ToolResolveResult::AlreadyResolved(message.into()));
-                }
-                ToolStatus::Resolved => {
-                    return Err(AppError::Http {
-                        status: 409,
-                        message: "Tool call has already been resolved".into(),
-                    });
-                }
-                ToolStatus::Pending => {}
+        match current_status {
+            Some(ToolStatus::Denied) => {
+                let message = self
+                    .message_repo
+                    .find_by_id(&te.message_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
+                return Ok(ToolResolveResult::AlreadyResolved(message.into()));
             }
-        } else {
-            return Err(AppError::Validation("Tool call has no deniable tool".into()));
+            Some(ToolStatus::Resolved) => {
+                return Err(AppError::Http {
+                    status: 409,
+                    message: "Tool call has already been resolved".into(),
+                });
+            }
+            Some(ToolStatus::Pending) => {}
+            None => {
+                return Err(AppError::Validation(
+                    "Tool call has no deniable HITL".into(),
+                ));
+            }
         }
 
         let response_text = response
             .unwrap_or_else(|| "User denied the request.".to_string());
 
-        match &mut te.tool_data {
-            Some(MessageTool::VaultApproval { status, response: resp, .. })
-            | Some(MessageTool::ServiceApproval { status, response: resp, .. })
-            | Some(MessageTool::Question { status, response: resp, .. })
-            | Some(MessageTool::HumanInTheLoop { status, response: resp, .. }) => {
-                *status = ToolStatus::Denied;
-                *resp = Some(response_text.clone());
-            }
-            _ => unreachable!(),
+        if let Some(ref mut h) = te.hitl {
+            h.status = ToolStatus::Denied;
+            h.response = hitl_response.clone();
         }
 
         te.result = response_text;
         self.tool_call_repo.update(&te).await?;
 
-        let message = self.message_repo.find_by_id(&te.message_id).await?
+        let message = self
+            .message_repo
+            .find_by_id(&te.message_id)
+            .await?
             .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
         Ok(ToolResolveResult::Changed(message.into()))
     }
@@ -1098,19 +1242,6 @@ impl ChatService {
         self.tool_call_repo.find_by_message_id(message_id).await
     }
 
-    pub async fn has_pending_tools_for_message(
-        &self,
-        message_id: &str,
-    ) -> Result<bool, AppError> {
-        let tes = self.get_tool_calls_by_message(message_id).await?;
-        Ok(tes.iter().any(|te| {
-            te.tool_data
-                .as_ref()
-                .and_then(|td| td.tool_status())
-                .is_some_and(|s| *s == ToolStatus::Pending)
-        }))
-    }
-
     pub async fn find_executing_message_for_chat(
         &self,
         chat_id: &str,
@@ -1132,6 +1263,29 @@ impl ChatService {
         Ok(message)
     }
 
+    pub async fn find_paused_message_for_chat(
+        &self,
+        chat_id: &str,
+    ) -> Result<Option<Message>, AppError> {
+        let query = "SELECT *, meta::id(id) as id FROM message WHERE chat_id = $chat_id AND status = $status LIMIT 1";
+        let mut result = self
+            .message_repo
+            .db()
+            .query(query)
+            .bind(("chat_id", chat_id.to_string()))
+            .bind(("status", MessageStatus::Paused))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let message: Option<Message> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(message)
+    }
+
+    /// Strictly Executing — Paused messages are waiting on a human and MUST
+    /// NOT be auto-resumed (doing so would feed the loop empty HITL answers).
     pub async fn find_executing_chat_messages(&self) -> Vec<Message> {
         let query = "SELECT *, meta::id(id) as id FROM message WHERE status = $status AND chat_id IN (SELECT VALUE meta::id(id) FROM chat WHERE task_id IS NONE)";
         let result = self
@@ -1159,6 +1313,16 @@ impl ChatService {
 
     pub async fn find_chat(&self, chat_id: &str) -> Result<Option<Chat>, AppError> {
         self.chat_repo.find_by_id(chat_id).await
+    }
+
+    pub async fn find_chat_by_channel_external_id(
+        &self,
+        channel_id: &str,
+        channel_external_id: &str,
+    ) -> Result<Option<Chat>, AppError> {
+        self.chat_repo
+            .find_by_channel_thread(channel_id, channel_external_id)
+            .await
     }
 
     pub async fn resolve_agent_config(&self, agent_id: &str) -> Result<AgentConfig, AppError> {

@@ -362,7 +362,7 @@ async fn bridge_list_servers(
 
     let slug_filter = if let Some(agent_id) = auth.agent_id() {
         let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
-        let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service).await;
+        let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service, None).await;
         Some(allowed_mcp_tools(registry.definitions()))
     } else {
         None
@@ -404,7 +404,7 @@ async fn bridge_server_tools(
 
     let allowed_tools = if let Some(agent_id) = auth.agent_id() {
         let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
-        let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service).await;
+        let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service, None).await;
         let map = allowed_mcp_tools(registry.definitions());
         map.get(&handle).cloned()
     } else {
@@ -442,7 +442,7 @@ async fn bridge_call_tool(
 ) -> Result<Json<frona_api_types::mcp::BridgeCallResponse>, ApiError> {
     if let Some(agent_id) = auth.agent_id() {
         let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
-        let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service).await;
+        let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service, None).await;
         let expected = format!("mcp__{handle}__{tool_name}");
         if !registry.definitions().iter().any(|d| d.id == expected) {
             return Err(ApiError::from(crate::core::error::AppError::Forbidden(

@@ -9,7 +9,6 @@ use chrono::Utc;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::execution;
 use crate::agent::models::Agent;
 use crate::chat::broadcast::{BroadcastEvent, BroadcastEventKind, EntityAction};
 use crate::chat::message::models::{DeliveryState, Message, MessageRole, MessageStatus};
@@ -94,6 +93,8 @@ pub struct ChannelManager {
     message_repo: Arc<dyn MessageRepository>,
     chat_service: ChatService,
     channel_service: Arc<ChannelService>,
+    harness: Arc<crate::agent::harness::Harness>,
+    task_executor: Arc<crate::agent::task::executor::TaskExecutor>,
 }
 
 impl ChannelManager {
@@ -101,6 +102,8 @@ impl ChannelManager {
         message_repo: Arc<dyn MessageRepository>,
         chat_service: ChatService,
         channel_service: Arc<ChannelService>,
+        harness: Arc<crate::agent::harness::Harness>,
+        task_executor: Arc<crate::agent::task::executor::TaskExecutor>,
     ) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -108,6 +111,8 @@ impl ChannelManager {
             message_repo,
             chat_service,
             channel_service,
+            harness,
+            task_executor,
         }
     }
 
@@ -342,6 +347,7 @@ impl ChannelManager {
             channel_manager: state.channel_manager.clone(),
             storage_service: state.storage_service.clone(),
             user_service: state.user_service.clone(),
+            chat_service: state.chat_service.clone(),
             data_dir,
             cancel: cancel.clone(),
         };
@@ -581,6 +587,66 @@ impl ChannelManager {
         Ok(())
     }
 
+    /// Deliver the pending-HITL prompts on `message` to the channel adapter
+    /// and persist a `HitlDelivery` per successfully-rendered call.
+    ///
+    /// Idempotent: tool_calls whose `hitl.delivery` is already populated are
+    /// skipped, so safe to call again on partial failure, crash recovery,
+    /// or a duplicate `Paused` broadcast.
+    ///
+    /// The returned report tells the caller how many HITLs were offered to
+    /// the adapter (`attempted`) vs how many were confirmed rendered
+    /// (`delivered`). A partial render means the adapter chose to stop
+    /// mid-batch (e.g. sequential-cadence SMS); the undelivered ones stay
+    /// `Pending` and get retried on the next call.
+    pub async fn deliver_pending_hitls(
+        &self,
+        chat: &crate::chat::models::Chat,
+        message_id: &str,
+        adapter: &dyn ChannelAdapter,
+        ctx: &ChannelCtx,
+    ) -> Result<DeliverHitlReport, AppError> {
+        let tool_calls = self
+            .chat_service
+            .get_tool_calls_by_message(message_id)
+            .await?;
+        let batch: Vec<crate::inference::tool_call::ToolCall> = tool_calls
+            .into_iter()
+            .filter(|tc| {
+                tc.hitl.as_ref().is_some_and(|h| {
+                    h.status == crate::inference::tool_call::ToolStatus::Pending
+                        && h.delivery.is_none()
+                })
+            })
+            .collect();
+        if batch.is_empty() {
+            return Ok(DeliverHitlReport { attempted: 0, delivered: 0 });
+        }
+
+        let msg = self
+            .chat_service
+            .find_message(message_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("message".into()))?;
+        let deliveries = adapter.on_pending_hitl(&batch, &msg, chat, ctx).await?;
+        let delivered = deliveries.len();
+
+        for (tc, delivery) in batch.iter().zip(deliveries) {
+            if let Err(e) = self
+                .chat_service
+                .set_hitl_delivery(&tc.id, delivery)
+                .await
+            {
+                tracing::warn!(
+                    tool_call_id = %tc.id,
+                    error = %e,
+                    "failed to persist HitlDelivery",
+                );
+            }
+        }
+        Ok(DeliverHitlReport { attempted: batch.len(), delivered })
+    }
+
     pub async fn ensure_pending_delivery(
         &self,
         message_id: &str,
@@ -598,6 +664,53 @@ impl ChannelManager {
         ));
         self.message_repo.update(&message).await?;
         Ok(())
+    }
+
+    /// Channel-side entry point for resolving a HITL prompt. Wraps
+    /// `Harness::resolve_and_resume` and spawns the agent resume (run_task
+    /// or harness.resume) when the per-message barrier has cleared.
+    pub async fn resolve_hitl(
+        &self,
+        tool_call_id: &str,
+        response: crate::inference::hitl::HitlResponse,
+    ) -> Result<crate::inference::hitl::ResolveOutcome, AppError> {
+        let outcome = self
+            .harness
+            .resolve_and_resume(tool_call_id, response)
+            .await?;
+        if let crate::inference::hitl::ResolveOutcome::Resolved {
+            should_resume: true, user_id, chat_id, message_id, task_id,
+        } = &outcome
+        {
+            let h = self.harness.clone();
+            let exec = self.task_executor.clone();
+            let (u, c, m, tid) = (
+                user_id.clone(),
+                chat_id.clone(),
+                message_id.clone(),
+                task_id.clone(),
+            );
+            tokio::spawn(async move {
+                if let Some(tid) = tid {
+                    let _ = exec.run_task_by_id(&tid).await;
+                } else if let Err(e) = h.resume(&u, &c, &m).await {
+                    tracing::error!(error = %e, chat_id = %c, "Failed to resume chat after HITL resolve");
+                }
+            });
+        }
+        if let Ok(Some(te)) = self.chat_service.get_tool_call(tool_call_id).await {
+            let _ = self.ensure_pending_delivery(&te.message_id).await;
+            // Resume delivery for any remaining undelivered HITL.
+            if let Ok(Some(chat)) = self.chat_service.find_chat(&te.chat_id).await
+                && let Some(channel_id) = chat.channel_id.as_deref()
+                && let Some((adapter, ctx)) = self.running_adapter(channel_id).await
+            {
+                let _ = self
+                    .deliver_pending_hitls(&chat, &te.message_id, adapter.as_ref(), &ctx)
+                    .await;
+            }
+        }
+        Ok(outcome)
     }
 
     pub async fn record_segment_complete(
@@ -818,6 +931,62 @@ impl ChannelManager {
             .await?;
         let final_index = tool_calls.len() as u32;
 
+        // HITL prefix handling — delegated to `deliver_pending_hitls`.
+        // Filter + adapter call + `HitlDelivery` persist live in one place;
+        // attempt_send only owns the cursor advance + Halt-vs-Continue
+        // decision based on the report.
+        let cursor = delivery.tool_index as usize;
+        let cursor_is_pending_hitl = tool_calls
+            .get(cursor)
+            .and_then(|tc| tc.hitl.as_ref())
+            .is_some_and(|h| h.status == crate::inference::tool_call::ToolStatus::Pending);
+        if cursor_is_pending_hitl {
+            let report = match self
+                .deliver_pending_hitls(chat, &msg.id, adapter, ctx)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    self.record_segment_failure(&msg.id, e.to_string()).await?;
+                    return Ok(SegmentOutcome::Halted);
+                }
+            };
+            for _ in 0..report.delivered {
+                self.record_segment_progress(&msg.id).await?;
+            }
+            if report.delivered < report.attempted {
+                // Adapter rendered a partial batch — park until next trigger.
+                return Ok(SegmentOutcome::Halted);
+            }
+            if report.attempted > 0 {
+                return Ok(SegmentOutcome::Continue);
+            }
+        }
+
+        // If the cursor is sitting on a HITL that's STILL pending but already
+        // rendered (delivery is Some), park — we wait for resolution to
+        // advance the cursor.
+        if let Some(tc) = tool_calls.get(cursor)
+            && let Some(h) = tc.hitl.as_ref()
+            && h.status == crate::inference::tool_call::ToolStatus::Pending
+            && h.delivery.is_some()
+        {
+            return Ok(SegmentOutcome::Halted);
+        }
+
+        // Resolved/Denied HITLs at the cursor: advance past them.
+        if let Some(tc) = tool_calls.get(cursor)
+            && let Some(h) = tc.hitl.as_ref()
+            && matches!(
+                h.status,
+                crate::inference::tool_call::ToolStatus::Resolved
+                    | crate::inference::tool_call::ToolStatus::Denied
+            )
+        {
+            self.record_segment_progress(&msg.id).await?;
+            return Ok(SegmentOutcome::Continue);
+        }
+
         if delivery.tool_index < final_index {
             let tc = &tool_calls[delivery.tool_index as usize];
             let has_text = tc
@@ -871,6 +1040,14 @@ pub(super) enum SegmentOutcome {
     Continue,
     Done,
     Halted,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DeliverHitlReport {
+    /// HITLs handed to the adapter in the batch.
+    pub attempted: usize,
+    /// HITLs the adapter confirmed it rendered (≤ `attempted`).
+    pub delivered: usize,
 }
 
 const MAX_SEGMENTS_PER_DISPATCH: usize = 256;
@@ -1008,18 +1185,41 @@ async fn handle_outbound_event(
                 return Ok(());
             }
             match kind {
-                InferenceEventKind::Text(_)
-                | InferenceEventKind::Reasoning(_)
-                | InferenceEventKind::ToolCall { .. }
-                | InferenceEventKind::ToolResult { .. } => {
-                    adapter.on_inference_active(&chat, ctx).await?;
+                InferenceEventKind::Start | InferenceEventKind::Resume { .. } => {
+                    adapter.on_inference_start(&chat, ctx).await?;
                 }
-                InferenceEventKind::Done(_)
-                | InferenceEventKind::Cancelled(_)
-                | InferenceEventKind::Error(_) => {
+                InferenceEventKind::Text(text) => {
+                    adapter.on_text(&chat, text, ctx).await?;
+                }
+                InferenceEventKind::Reasoning(text) => {
+                    adapter.on_reasoning(&chat, text, ctx).await?;
+                }
+                InferenceEventKind::ToolCall { name, arguments, .. } => {
+                    adapter.on_tool_call(&chat, name, arguments, ctx).await?;
+                }
+                InferenceEventKind::ToolResult { name, success, result } => {
+                    adapter.on_tool_result(&chat, name, *success, result, ctx).await?;
+                }
+                InferenceEventKind::Done { .. }
+                | InferenceEventKind::Cancelled { .. }
+                | InferenceEventKind::Failed { .. } => {
                     adapter.on_inference_done(&chat, ctx).await?;
                 }
-                _ => {}
+                InferenceEventKind::Paused { reason, message } => {
+                    // Universal lifecycle: stop typing.
+                    adapter.on_inference_done(&chat, ctx).await?;
+                    // Reason-specific render.
+                    match reason {
+                        crate::inference::tool_loop::PauseReason::Hitl => {
+                            state
+                                .channel_manager
+                                .deliver_pending_hitls(&chat, &message.id, adapter.as_ref(), ctx)
+                                .await?;
+                        }
+                    }
+                }
+                // No adapter hook for infra-level events.
+                InferenceEventKind::EntityUpdated { .. } | InferenceEventKind::Retry { .. } => {}
             }
             Ok(())
         }
@@ -1296,6 +1496,12 @@ async fn handle_inbound_message(
     if !matches!(msg.role, MessageRole::User) {
         return Ok(());
     }
+    // `from_address` distinguishes channel-inbound from web-submitted; the
+    // web route already triggers its own inference, fanning out here would
+    // run two loops on the same turn.
+    if msg.from_address.is_none() {
+        return Ok(());
+    }
 
     let Some(chat) = state.chat_service.find_chat(&msg.chat_id).await? else {
         return Ok(());
@@ -1378,15 +1584,13 @@ async fn handle_inbound_message(
         inbound_prompt,
     });
 
-    execution::run_agent_turn(
-        state,
+    state.harness.run_turn(
         user_id,
         &chat.id,
         &agent_msg.id,
         cancel_token,
         builder,
         &[],
-        None,
     )
     .await;
     Ok(())

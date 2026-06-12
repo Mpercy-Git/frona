@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { api } from "@/lib/api-client";
-import type { ToolCall } from "@/lib/types";
+import type { CredentialTarget, GrantDuration, HitlResponse, ToolCall, VaultField } from "@/lib/types";
 import { ApprovalButtons } from "./approval-parts";
 
 function Label({ children }: { children: React.ReactNode }) {
@@ -12,15 +12,19 @@ function Label({ children }: { children: React.ReactNode }) {
 export interface ToolContentProps {
   te: ToolCall;
   chatId: string;
-  onSuccess: (response: string, callback?: () => Promise<void>) => void;
-  onFailure: (response: string, callback?: () => Promise<void>) => void;
+  /**
+   * Called when the user produces a response. The wizard submits all
+   * collected responses in a single batch via the unified resolve endpoint.
+   * `displayText` is what we show in the wizard chip for "selected answer".
+   */
+  onResolve: (response: HitlResponse, displayText: string) => void;
 }
 
-export function QuestionContent({ te, onSuccess, selectedAnswer }: ToolContentProps & { selectedAnswer?: string }) {
-  const data = te.tool_data?.data as Record<string, unknown> | undefined;
-  if (!data) return null;
-  const question = data.question as string;
-  const options = (data.options as string[]) ?? [];
+export function QuestionContent({ te, onResolve, selectedAnswer }: ToolContentProps & { selectedAnswer?: string }) {
+  const hitl = te.hitl;
+  if (!hitl || hitl.request.type !== "Question") return null;
+  const question = hitl.prompt;
+  const options = hitl.request.data.options;
 
   return (
     <div className="space-y-2">
@@ -30,7 +34,7 @@ export function QuestionContent({ te, onSuccess, selectedAnswer }: ToolContentPr
           {options.map((option) => (
             <button
               key={option}
-              onClick={() => onSuccess(option)}
+              onClick={() => onResolve({ type: "Choice", data: option }, option)}
               className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
                 selectedAnswer === option
                   ? "border-accent bg-accent/10 text-accent"
@@ -46,19 +50,18 @@ export function QuestionContent({ te, onSuccess, selectedAnswer }: ToolContentPr
   );
 }
 
-export function HumanInTheLoopContent({ te, onSuccess }: ToolContentProps) {
-  const data = te.tool_data?.data as Record<string, unknown> | undefined;
-  if (!data) return null;
-  const reason = data.reason as string;
-  const debuggerUrl = data.debugger_url as string | undefined;
+export function TakeoverContent({ te, onResolve }: ToolContentProps) {
+  const hitl = te.hitl;
+  if (!hitl || hitl.request.type !== "Takeover") return null;
+  const { reason, debugger_url } = hitl.request.data;
 
   return (
     <div className="space-y-2">
       <p className="text-sm text-text-primary">{reason}</p>
       <div className="flex flex-wrap gap-1.5">
-        {debuggerUrl && (
+        {debugger_url && (
           <a
-            href={debuggerUrl}
+            href={debugger_url}
             target="_blank"
             rel="noopener noreferrer"
             className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-text-secondary hover:border-accent hover:text-accent transition"
@@ -67,7 +70,7 @@ export function HumanInTheLoopContent({ te, onSuccess }: ToolContentProps) {
           </a>
         )}
         <button
-          onClick={() => onSuccess("resumed")}
+          onClick={() => onResolve({ type: "Choice", data: "Done" }, "Done")}
           className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-text-secondary hover:border-accent hover:text-accent transition"
         >
           Resume Agent
@@ -90,21 +93,27 @@ interface VaultConnection {
   enabled: boolean;
 }
 
-type GrantDuration = "once" | { hours: number } | { days: number } | "permanent";
+function defaultPrefix(query: string): string {
+  return query.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
 
-export function VaultApprovalContent({ te, chatId, onSuccess, onFailure }: ToolContentProps) {
-  const data = te.tool_data?.data as Record<string, unknown> | undefined;
-  const query = (data?.query as string) ?? "";
-  const reason = data?.reason as string;
-  const envVarPrefix = data?.env_var_prefix as string | null;
+export function CredentialContent({ te, onResolve }: ToolContentProps) {
+  const hitl = te.hitl;
+  const queryStr = hitl?.request.type === "Credential" ? hitl.request.data.query : "";
+  const reasonStr = hitl?.request.type === "Credential" ? hitl.request.data.reason : "";
 
   const [connections, setConnections] = useState<VaultConnection[]>([]);
   const [selectedConnection, setSelectedConnection] = useState("");
   const [items, setItems] = useState<VaultItem[]>([]);
   const [selectedItem, setSelectedItem] = useState("");
   const [duration, setDuration] = useState<GrantDuration>("once");
-  const [searchQuery, setSearchQuery] = useState(query);
+  const [searchQuery, setSearchQuery] = useState(queryStr);
   const [searching, setSearching] = useState(false);
+  const [bindingMode, setBindingMode] = useState<"prefix" | "single">("prefix");
+  const [envVarPrefix, setEnvVarPrefix] = useState(defaultPrefix(queryStr));
+  const [envVar, setEnvVar] = useState("");
+  const [fieldKind, setFieldKind] = useState<"Password" | "Username" | "Custom">("Password");
+  const [customFieldName, setCustomFieldName] = useState("");
 
   useEffect(() => {
     api.get<VaultConnection[]>("/api/vaults").then((conns) => {
@@ -126,30 +135,57 @@ export function VaultApprovalContent({ te, chatId, onSuccess, onFailure }: ToolC
       .finally(() => setSearching(false));
   }, [selectedConnection, searchQuery]);
 
-  if (!data) return null;
+  if (!hitl || hitl.request.type !== "Credential") return null;
+
+  const buildTarget = (): CredentialTarget | null => {
+    if (bindingMode === "prefix") {
+      const prefix = envVarPrefix.trim();
+      if (!prefix) return null;
+      return { Prefix: { env_var_prefix: prefix } };
+    }
+    const name = envVar.trim();
+    if (!name) return null;
+    let field: VaultField;
+    if (fieldKind === "Custom") {
+      const cn = customFieldName.trim();
+      if (!cn) return null;
+      field = { Custom: { name: cn } };
+    } else {
+      field = fieldKind;
+    }
+    return { Single: { env_var: name, field } };
+  };
+
+  const target = buildTarget();
 
   const handleApprove = () => {
-    if (!selectedItem) return;
-    onSuccess("approved", () =>
-      api.post("/api/vaults/approve", {
-        chat_id: chatId,
-        connection_id: selectedConnection,
-        vault_item_id: selectedItem,
-        grant_duration: duration,
-        env_var_prefix: envVarPrefix,
-      }),
+    if (!selectedItem || !target) return;
+    onResolve(
+      {
+        type: "Vault",
+        data: {
+          type: "Granted",
+          data: {
+            connection_id: selectedConnection,
+            vault_item_id: selectedItem,
+            grant_duration: duration,
+            target,
+          },
+        },
+      },
+      "Approved",
     );
   };
 
   const handleDeny = () => {
-    onFailure("denied", () => api.post("/api/vaults/deny", { chat_id: chatId }));
+    onResolve({ type: "Vault", data: { type: "Denied" } }, "Denied");
   };
 
   const durationValue = typeof duration === "string" ? duration : "hours" in duration ? "hours" : "days";
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-text-tertiary">{reason}</p>
+      <p className="text-sm text-text-tertiary">{reasonStr}</p>
 
       <div>
         <Label>Vault</Label>
@@ -203,6 +239,66 @@ export function VaultApprovalContent({ te, chatId, onSuccess, onFailure }: ToolC
       </div>
 
       <div>
+        <Label>Expose as</Label>
+        <div className="flex gap-1.5 mb-2">
+          <button
+            onClick={() => setBindingMode("prefix")}
+            className={`flex-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+              bindingMode === "prefix"
+                ? "border-accent bg-accent/10 text-accent"
+                : "border-border text-text-secondary hover:border-accent"
+            }`}
+          >
+            All fields under prefix
+          </button>
+          <button
+            onClick={() => setBindingMode("single")}
+            className={`flex-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+              bindingMode === "single"
+                ? "border-accent bg-accent/10 text-accent"
+                : "border-border text-text-secondary hover:border-accent"
+            }`}
+          >
+            One field
+          </button>
+        </div>
+        {bindingMode === "prefix" ? (
+          <input
+            value={envVarPrefix}
+            onChange={(e) => setEnvVarPrefix(e.target.value)}
+            placeholder="DB"
+            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary"
+          />
+        ) : (
+          <div className="space-y-2">
+            <input
+              value={envVar}
+              onChange={(e) => setEnvVar(e.target.value)}
+              placeholder="DB_PASSWORD"
+              className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary"
+            />
+            <select
+              value={fieldKind}
+              onChange={(e) => setFieldKind(e.target.value as "Password" | "Username" | "Custom")}
+              className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
+            >
+              <option value="Password">Password</option>
+              <option value="Username">Username</option>
+              <option value="Custom">Custom field…</option>
+            </select>
+            {fieldKind === "Custom" && (
+              <input
+                value={customFieldName}
+                onChange={(e) => setCustomFieldName(e.target.value)}
+                placeholder="api_key"
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary"
+              />
+            )}
+          </div>
+        )}
+      </div>
+
+      <div>
         <Label>Duration</Label>
         <select
           value={durationValue}
@@ -222,57 +318,56 @@ export function VaultApprovalContent({ te, chatId, onSuccess, onFailure }: ToolC
         </select>
       </div>
 
-      <ApprovalButtons loading={false} onApprove={handleApprove} onDeny={handleDeny} approveDisabled={!selectedItem} />
+      <ApprovalButtons loading={false} onApprove={handleApprove} onDeny={handleDeny} approveDisabled={!selectedItem || !target} />
     </div>
   );
 }
 
-export function ServiceApprovalContent({ te, chatId, onSuccess, onFailure }: ToolContentProps) {
-  const data = te.tool_data?.data as Record<string, unknown> | undefined;
-  if (!data) return null;
-  const action = data.action as string;
-  const manifest = data.manifest as Record<string, unknown> | undefined;
+export function AppContent({ te, onResolve }: ToolContentProps) {
+  const hitl = te.hitl;
+  if (!hitl || hitl.request.type !== "App") return null;
+  const { action, manifest } = hitl.request.data;
   const name = String(manifest?.name || manifest?.id || "Unknown service");
   const description = manifest?.description ? String(manifest.description) : null;
   const command = manifest?.command ? String(manifest.command) : null;
 
   const handleApprove = () => {
-    onSuccess("approved", () => api.post("/api/apps/approve", { chat_id: chatId }));
+    onResolve({ type: "Approval", data: true }, "Approved");
   };
 
   const handleDeny = () => {
-    onFailure("denied", () => api.post("/api/apps/deny", { chat_id: chatId }));
+    onResolve({ type: "Approval", data: false }, "Denied");
   };
 
   return (
     <div className="space-y-3">
       <div>
-        <p className="text-sm font-medium text-text-primary">{name}</p>
-        {description && <p className="text-xs text-text-tertiary mt-0.5">{description}</p>}
+        <p className="text-sm font-medium text-text-primary capitalize">{action} service: {name}</p>
+        {description && <p className="text-xs text-text-tertiary mt-1">{description}</p>}
       </div>
-
       {command && (
         <div>
           <Label>Command</Label>
-          <code className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary block">{command}</code>
+          <code className="block rounded-lg border border-border bg-surface-secondary px-3 py-2 text-xs font-mono text-text-secondary overflow-x-auto">
+            {command}
+          </code>
         </div>
       )}
-
       <ApprovalButtons loading={false} onApprove={handleApprove} onDeny={handleDeny} />
     </div>
   );
 }
 
 export function ToolContentDispatch(props: ToolContentProps & { selectedAnswer?: string }) {
-  switch (props.te.tool_data?.type) {
+  switch (props.te.hitl?.request.type) {
     case "Question":
       return <QuestionContent {...props} />;
-    case "HumanInTheLoop":
-      return <HumanInTheLoopContent {...props} />;
-    case "VaultApproval":
-      return <VaultApprovalContent {...props} />;
-    case "ServiceApproval":
-      return <ServiceApprovalContent {...props} />;
+    case "Takeover":
+      return <TakeoverContent {...props} />;
+    case "Credential":
+      return <CredentialContent {...props} />;
+    case "App":
+      return <AppContent {...props} />;
     default:
       return null;
   }

@@ -147,26 +147,47 @@ export function convertMessage(msg: MessageResponse) {
       content.push({ type: "reasoning", text: msg.reasoning });
     }
 
-    // User-facing external tools (questions, approvals) render BEFORE text
-    const BEFORE_TEXT_TOOLS = new Set(["Question", "HumanInTheLoop", "VaultApproval", "ServiceApproval"]);
+    // User-facing external tools (HITL prompts) render BEFORE text.
     if (msg.tool_calls?.length) {
       for (const te of msg.tool_calls) {
-        if (te.tool_data && BEFORE_TEXT_TOOLS.has(te.tool_data.type)) {
-          const toolName = te.tool_data.type;
-          const status = te.tool_data.data.status;
+        if (te.hitl) {
+          const toolName = te.hitl.request.type;
+          const status = te.hitl.status;
           const resolved = status === "resolved" || status === "denied";
-          const toolData = te.tool_data.data as Record<string, string | number | boolean | null>;
-          const response = "response" in te.tool_data.data
-            ? (te.tool_data.data as { response?: string | null }).response
-            : null;
+          // Project request data + hitl-level fields into a flat args object
+          // for assistant-ui consumption.
+          const args: Record<string, string | number | boolean | null> = {
+            prompt: te.hitl.prompt,
+            url: te.hitl.url,
+            status,
+          };
+          for (const [k, v] of Object.entries(te.hitl.request.data)) {
+            if (v == null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+              args[k] = v as string | number | boolean | null;
+            } else {
+              args[k] = JSON.stringify(v);
+            }
+          }
+          const responseText =
+            te.hitl.response == null
+              ? null
+              : te.hitl.response.type === "Approval"
+                ? te.hitl.response.data
+                  ? "Approved"
+                  : "Denied"
+                : te.hitl.response.type === "Choice"
+                  ? te.hitl.response.data
+                  : te.hitl.response.data.type === "Granted"
+                    ? "Granted"
+                    : "Denied";
           content.push({
             type: "tool-call",
             toolCallId: te.id,
             toolName,
-            args: toolData,
-            argsText: JSON.stringify(toolData),
-            ...(resolved && response != null ? { result: response } : {}),
-            ...(resolved && response == null ? { result: String(status) } : {}),
+            args,
+            argsText: JSON.stringify(args),
+            ...(resolved && responseText != null ? { result: responseText } : {}),
+            ...(resolved && responseText == null ? { result: String(status) } : {}),
           });
         }
       }
@@ -191,34 +212,37 @@ export function convertMessage(msg: MessageResponse) {
       });
     }
 
-    // Lifecycle tool_data tools (TaskCompletion etc.) — after attachments, before regular tools
+    // Task lifecycle events (TaskCompletion / TaskDeferred) — after
+    // attachments, before regular tools.
     if (msg.tool_calls?.length) {
       for (const te of msg.tool_calls) {
-        if (te.tool_data && !BEFORE_TEXT_TOOLS.has(te.tool_data.type)) {
-          const toolName = te.tool_data.type;
-          const status = te.tool_data.data.status;
-          const resolved = status === "resolved" || status === "denied";
-          const toolData = te.tool_data.data as Record<string, string | number | boolean | null>;
-          const response = "response" in te.tool_data.data
-            ? (te.tool_data.data as { response?: string | null }).response
-            : null;
+        if (te.task_event) {
+          const toolName = te.task_event.type;
+          const data = te.task_event.data as Record<string, unknown>;
+          const args: Record<string, string | number | boolean | null> = {};
+          for (const [k, v] of Object.entries(data)) {
+            if (v == null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+              args[k] = v as string | number | boolean | null;
+            } else {
+              args[k] = JSON.stringify(v);
+            }
+          }
           content.push({
             type: "tool-call",
             toolCallId: te.id,
             toolName,
-            args: toolData,
-            argsText: JSON.stringify(toolData),
-            ...(resolved && response != null ? { result: response } : {}),
-            ...(resolved && response == null ? { result: String(status) } : {}),
+            args,
+            argsText: JSON.stringify(args),
+            result: String(data.status ?? "done"),
           });
         }
       }
     }
 
-    // Regular tools (no tool_data) — last
+    // Regular tools (neither hitl nor task_event) — last
     if (msg.tool_calls?.length) {
       for (const te of msg.tool_calls) {
-        if (!te.tool_data) {
+        if (!te.hitl && !te.task_event) {
           content.push({
             type: "tool-call",
             toolCallId: te.id,
@@ -236,18 +260,19 @@ export function convertMessage(msg: MessageResponse) {
       }
     }
 
-    // Only promote turn text on completed messages. During streaming,
-    // keep turnText in tool-call args so they render as bubbles between tools.
-    const finalContent = msg.status === "executing" ? content : promoteTurnText(content);
+    // Mid-flight, keep turnText in tool-call args so they render as bubbles
+    // between tools; only promote it when the message is fully done.
+    const inFlight = msg.status === "executing" || msg.status === "paused";
+    const finalContent = inFlight ? content : promoteTurnText(content);
 
     return {
       id: msg.id,
       role: "assistant" as const,
       content: finalContent,
       createdAt: new Date(msg.created_at),
-      status: msg.tool_calls?.some(te => te.tool_data && te.tool_data.data.status === "pending")
+      status: msg.tool_calls?.some(te => te.hitl?.status === "pending")
         ? { type: "requires-action" as const, reason: "tool-calls" as const }
-        : msg.status === "executing"
+        : inFlight
           ? { type: "running" as const }
           : { type: "complete" as const, reason: "stop" as const },
       metadata: {

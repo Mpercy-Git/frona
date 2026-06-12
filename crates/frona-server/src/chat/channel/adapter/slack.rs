@@ -33,6 +33,9 @@ struct SlackSelfIdentity {
 struct SlackChannelState {
     emit: tokio::sync::mpsc::Sender<ExternalMessage>,
     identity: SlackSelfIdentity,
+    channel_manager: Arc<super::super::ChannelManager>,
+    chat_service: crate::chat::service::ChatService,
+    bot_token: SlackApiToken,
 }
 
 #[derive(crate::ChannelFactory)]
@@ -87,11 +90,15 @@ impl ChannelAdapter for SlackAdapter {
                 .with_user_state(SlackChannelState {
                     emit: ctx.emit.clone(),
                     identity,
+                    channel_manager: ctx.channel_manager.clone(),
+                    chat_service: ctx.chat_service.clone(),
+                    bot_token: self.bot_token.clone(),
                 })
                 .with_error_handler(socket_mode_error_handler),
         );
-        let callbacks =
-            SlackSocketModeListenerCallbacks::new().with_push_events(handle_push_event);
+        let callbacks = SlackSocketModeListenerCallbacks::new()
+            .with_push_events(handle_push_event)
+            .with_interaction_events(handle_interaction_event);
         let listener = SlackClientSocketModeListener::new(
             &SlackClientSocketModeConfig::new(),
             env,
@@ -163,6 +170,55 @@ impl ChannelAdapter for SlackAdapter {
         }
         self.post_message(chat, &msg.content).await
     }
+
+    async fn on_pending_hitl(
+        &self,
+        batch: &[crate::inference::tool_call::ToolCall],
+        _msg: &Message,
+        chat: &Chat,
+        ctx: &ChannelCtx,
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+        let (channel_id, thread_ts) = parse_external_id(external_chat_id(chat)?)?;
+        let session = self.client.open_session(&self.bot_token);
+        let mut out = Vec::with_capacity(batch.len());
+
+        for tc in batch {
+            let Some(h) = tc.hitl.as_ref() else { continue };
+            let kind = crate::chat::channel::hitl::kind_for(&h.request);
+            let blocks = build_slack_blocks(&tc.id, &h.prompt, &kind, &h.url);
+            let content = SlackMessageContent::new()
+                .with_text(h.prompt.clone())
+                .with_blocks(blocks);
+            let mut req = SlackApiChatPostMessageRequest::new(channel_id.clone(), content);
+            if let Some(ts) = thread_ts.clone() {
+                req = req.with_thread_ts(ts);
+            }
+            match session.chat_post_message(&req).await {
+                Ok(resp) => out.push(crate::inference::hitl::HitlDelivery {
+                    channel_id: ctx.channel.id.clone(),
+                    external_message_id: resp.ts.0.clone(),
+                    delivered_at: chrono::Utc::now(),
+                }),
+                Err(e) => {
+                    let retryable = is_slack_retryable_error(&e);
+                    tracing::warn!(
+                        channel_id = %ctx.channel.id,
+                        tool_call_id = %tc.id,
+                        retryable = retryable,
+                        error = %e,
+                        "Slack on_pending_hitl: send failed",
+                    );
+                    if retryable && out.is_empty() {
+                        return Err(AppError::Internal(format!(
+                            "Slack chat.postMessage failed: {e}"
+                        )));
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 impl SlackAdapter {
@@ -219,6 +275,182 @@ async fn handle_push_event(
         tracing::warn!(error = %e, "Slack inbound emit channel closed");
     }
     Ok(())
+}
+
+async fn handle_interaction_event(
+    event: SlackInteractionEvent,
+    client: Arc<SlackHyperClient>,
+    states: SlackClientEventsUserState,
+) -> UserCallbackResult<()> {
+    let SlackInteractionEvent::BlockActions(ba) = event else {
+        return Ok(());
+    };
+
+    let (channel_manager, chat_service, bot_token) = {
+        let guard = states.read().await;
+        match guard.get_user_state::<SlackChannelState>() {
+            Some(state) => (
+                state.channel_manager.clone(),
+                state.chat_service.clone(),
+                state.bot_token.clone(),
+            ),
+            None => return Ok(()),
+        }
+    };
+
+    let action_id = ba
+        .actions
+        .as_ref()
+        .and_then(|acts| acts.first())
+        .map(|a| a.action_id.0.clone())
+        .unwrap_or_default();
+
+    let parsed = crate::chat::channel::hitl::parse_resolve_callback_data(
+        &action_id,
+        &chat_service,
+    )
+    .await;
+
+    let (tool_call_id, response) = match parsed {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(action_id = %action_id, error = %e, "Slack action_id parse failed");
+            return Ok(());
+        }
+    };
+
+    let answer_label = crate::chat::channel::hitl::response_display(&response);
+    let outcome = channel_manager.resolve_hitl(&tool_call_id, response).await;
+
+    let summary = match &outcome {
+        Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) => answer_label,
+        Ok(crate::inference::hitl::ResolveOutcome::AlreadyResolved) => {
+            "Already resolved".to_string()
+        }
+        Err(e) => format!("Failed: {e}"),
+    };
+
+    let (Some(channel), Some(message)) = (ba.channel.as_ref(), ba.message.as_ref()) else {
+        return Ok(());
+    };
+    let original = message.content.text.clone().unwrap_or_default();
+    let new_text = format!("{original}\n\n→ {summary}");
+    let updated_content = SlackMessageContent::new()
+        .with_text(new_text.clone())
+        .with_blocks(vec![
+            SlackSectionBlock::new()
+                .with_text(SlackBlockText::MarkDown(SlackBlockMarkDownText::new(new_text)))
+                .into(),
+        ]);
+    let req = SlackApiChatUpdateRequest::new(
+        channel.id.clone(),
+        updated_content,
+        message.origin.ts.clone(),
+    );
+    let session = client.open_session(&bot_token);
+    if let Err(e) = session.chat_update(&req).await {
+        tracing::warn!(error = %e, "Slack chat.update failed");
+    }
+    Ok(())
+}
+
+fn truncate_label(s: &str) -> String {
+    const MAX: usize = 75;
+    if s.chars().count() <= MAX {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(MAX - 1).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Mirror of `discord::build_discord_components`/`telegram::build_inline_keyboard`.
+/// Approval → Yes/No + URL fallback (App-deploy needs the manifest link).
+/// Choice → per-option buttons only — they ARE the answer. External → URL only.
+/// Slack rejects non-http(s) URL buttons, so URL rows silently drop if invalid.
+fn build_slack_blocks(
+    tcid: &str,
+    prompt: &str,
+    kind: &crate::chat::channel::hitl::HitlKind,
+    url: &str,
+) -> Vec<SlackBlock> {
+    use crate::chat::channel::hitl::HitlKind;
+
+    let url_button = || -> Option<SlackBlockButtonElement> {
+        url::Url::parse(url).ok().map(|u| {
+            SlackBlockButtonElement::new(
+                SlackActionId(format!("u:{tcid}")),
+                pt("Open on web →"),
+            )
+            .with_url(u)
+        })
+    };
+
+    let prompt_block: SlackBlock = SlackSectionBlock::new()
+        .with_text(SlackBlockText::MarkDown(SlackBlockMarkDownText::new(
+            prompt.to_string(),
+        )))
+        .into();
+
+    match kind {
+        HitlKind::Approval => {
+            let yes = SlackBlockButtonElement::new(
+                SlackActionId(format!("r:{tcid}:y")),
+                pt("Yes"),
+            )
+            .with_style("primary".into());
+            let no = SlackBlockButtonElement::new(
+                SlackActionId(format!("r:{tcid}:n")),
+                pt("No"),
+            )
+            .with_style("danger".into());
+            let mut elements: Vec<SlackActionBlockElement> = vec![yes.into(), no.into()];
+            if let Some(b) = url_button() {
+                elements.push(b.into());
+            }
+            vec![prompt_block, SlackActionsBlock::new(elements).into()]
+        }
+        HitlKind::Choice { options } => {
+            // Empty options → no buttons. Slack rejects an actions block with
+            // zero elements (`invalid_blocks`). Render prompt only; the
+            // resolution mechanism (text reply, web URL) lives outside the
+            // message body.
+            if options.is_empty() {
+                return vec![prompt_block];
+            }
+            let elements: Vec<SlackActionBlockElement> = options
+                .iter()
+                .enumerate()
+                .map(|(i, opt)| {
+                    SlackBlockButtonElement::new(
+                        SlackActionId(format!("r:{tcid}:c:{i}")),
+                        pt(&truncate_label(opt)),
+                    )
+                    .into()
+                })
+                .collect();
+            vec![prompt_block, SlackActionsBlock::new(elements).into()]
+        }
+        HitlKind::External => match url_button() {
+            Some(b) => vec![
+                prompt_block,
+                SlackActionsBlock::new(vec![b.into()]).into(),
+            ],
+            None => vec![prompt_block],
+        },
+    }
+}
+
+fn pt(s: &str) -> SlackBlockPlainTextOnly {
+    SlackBlockPlainTextOnly::from(s.to_string())
+}
+
+fn is_slack_retryable_error(err: &SlackClientError) -> bool {
+    match err {
+        SlackClientError::ApiError(api) => matches!(api.code.as_str(), "ratelimited"),
+        _ => true,
+    }
 }
 
 fn socket_mode_error_handler(

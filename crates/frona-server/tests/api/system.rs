@@ -69,10 +69,9 @@ async fn test_api_works_before_shutdown() {
 #[tokio::test]
 async fn test_task_spawn_rejected_during_shutdown() {
     let (state, _tmp) = test_app_state().await;
-    state.init_task_executor();
     state.shutdown_token.cancel();
 
-    let executor = state.task_executor().expect("executor should be initialized");
+    let executor = state.task_executor.clone();
 
     let task = frona::agent::task::models::Task {
         id: "test-task-1".into(),
@@ -93,6 +92,6 @@ async fn test_task_spawn_rejected_during_shutdown() {
         updated_at: chrono::Utc::now(),
     };
 
-    let result = executor.spawn_execution(task).await;
-    assert!(result.is_ok(), "spawn_execution should return Ok even during shutdown");
+    let result = executor.run_task(task).await;
+    assert!(result.is_ok(), "run_task should return Ok even during shutdown");
 }

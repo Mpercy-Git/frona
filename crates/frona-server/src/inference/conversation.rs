@@ -348,6 +348,20 @@ fn convert_agent_with_tool_calls(
 
     for tes in turns.values() {
         let mut assistant_items: Vec<AssistantContent> = Vec::new();
+        // Per-turn reasoning — stamped on the first tool_call of the turn at
+        // begin time. Replayed here so thinking-mode providers (DeepSeek,
+        // Anthropic extended thinking) see the `reasoning_content` they
+        // originally emitted; without it they reject the request with
+        // `invalid_request_error` on resume after a HITL pause.
+        if let Some(r) = tes.iter().find_map(|te| te.turn_reasoning.as_ref()) {
+            assistant_items.push(AssistantContent::Reasoning(
+                rig_core::completion::message::Reasoning::new_with_signature(
+                    &r.content,
+                    r.signature.clone(),
+                )
+                .optional_id(r.id.clone()),
+            ));
+        }
         if let Some(text) = tes.iter().find_map(|te| te.turn_text.as_deref())
             && !text.is_empty()
         {
@@ -408,7 +422,10 @@ pub fn is_embeddable_image(attachment: &Attachment) -> bool {
 }
 
 pub fn convert_agent_message(msg: &Message, agent_id: &str) -> Option<RigMessage> {
-    if msg.status.as_ref() == Some(&MessageStatus::Executing) {
+    if matches!(
+        msg.status.as_ref(),
+        Some(MessageStatus::Executing) | Some(MessageStatus::Paused)
+    ) {
         return None;
     }
     let is_self = msg.agent_id.as_deref() == Some(agent_id);

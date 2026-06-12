@@ -1,12 +1,18 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use axum::body::Bytes;
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use teloxide::Bot;
-use teloxide::payloads::{DeleteWebhookSetters, SendMessageSetters};
+use teloxide::payloads::{
+    AnswerCallbackQuerySetters, DeleteWebhookSetters, EditMessageTextSetters, SendMessageSetters,
+};
 use teloxide::prelude::Requester;
-use teloxide::types::{ChatAction, ChatId, ParseMode, Recipient, ThreadId};
+use teloxide::types::{
+    ChatAction, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, Recipient, ThreadId,
+};
 use url::Url;
 
 use crate::chat::message::models::Message;
@@ -16,8 +22,13 @@ use crate::core::error::AppError;
 use super::super::models::{
     ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
 };
+use super::super::typing::TypingIndicator;
 #[cfg(test)]
 use super::super::models::ChannelFactory;
+
+/// Telegram's typing indicator auto-fades in ~5s. Refresh just before that
+/// so long inferences keep showing "typing…" without bombarding the API.
+const TYPING_REFRESH_INTERVAL: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelegramConfig {
@@ -28,12 +39,14 @@ pub struct TelegramConfig {
 #[channel(id = "telegram", from = TelegramConfig)]
 pub struct TelegramAdapter {
     bot: Bot,
+    typing: TypingIndicator,
 }
 
 impl From<TelegramConfig> for TelegramAdapter {
     fn from(cfg: TelegramConfig) -> Self {
         Self {
             bot: Bot::new(cfg.bot_token),
+            typing: TypingIndicator::new(),
         }
     }
 }
@@ -167,22 +180,37 @@ impl ChannelAdapter for TelegramAdapter {
         Ok(())
     }
 
-    async fn on_inference_active(
+    async fn on_inference_start(
         &self,
         chat: &Chat,
         _ctx: &ChannelCtx,
     ) -> Result<(), AppError> {
         let Ok(external_id) = external_chat_id(chat) else { return Ok(()) };
-        let Ok((chat_id, _thread)) = parse_external_id(external_id) else {
+        let Ok((tg_chat_id, _thread)) = parse_external_id(external_id) else {
             return Ok(());
         };
-        if let Err(e) = self
-            .bot
-            .send_chat_action(Recipient::Id(chat_id), ChatAction::Typing)
-            .await
-        {
-            tracing::debug!(error = %e, "Telegram sendChatAction failed (best-effort)");
-        }
+
+        let bot = self.bot.clone();
+        self.typing.start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
+            let bot = bot.clone();
+            async move {
+                if let Err(e) = bot
+                    .send_chat_action(Recipient::Id(tg_chat_id), ChatAction::Typing)
+                    .await
+                {
+                    tracing::debug!(error = %e, "Telegram sendChatAction failed (best-effort)");
+                }
+            }
+        }).await;
+        Ok(())
+    }
+
+    async fn on_inference_done(
+        &self,
+        chat: &Chat,
+        _ctx: &ChannelCtx,
+    ) -> Result<(), AppError> {
+        self.typing.stop(&chat.id).await;
         Ok(())
     }
 
@@ -193,8 +221,215 @@ impl ChannelAdapter for TelegramAdapter {
     ) -> Result<Response, AppError> {
         let body: serde_json::Value = serde_json::from_slice(request.body())
             .map_err(|e| AppError::Validation(format!("invalid Telegram webhook body: {e}")))?;
+
+        // Route callback_query (button taps) to the HITL resolve dispatcher
+        // BEFORE delegating to the standard inbound-message emitter.
+        if let Some(cq) = body.get("callback_query") {
+            if let Err(e) = self.handle_callback_query(ctx, cq.clone()).await {
+                tracing::warn!(error = %e, "Telegram callback_query handling failed");
+            }
+            return Ok(StatusCode::OK.into_response());
+        }
+
         emit_inbound_update(ctx, body).await?;
         Ok(StatusCode::OK.into_response())
+    }
+
+    async fn on_pending_hitl(
+        &self,
+        batch: &[crate::inference::tool_call::ToolCall],
+        _msg: &Message,
+        chat: &Chat,
+        ctx: &ChannelCtx,
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+        let mut out = Vec::new();
+        for tc in batch {
+            let Some(h) = tc.hitl.as_ref() else { continue };
+            let kind = crate::chat::channel::hitl::kind_for(&h.request);
+            let keyboard = build_inline_keyboard(&tc.id, &kind, &h.url);
+
+            let (chat_id, thread_id) = match parse_external_id(external_chat_id(chat)?) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Telegram on_pending_hitl: parse_external_id");
+                    break;
+                }
+            };
+
+            let (rendered, parse_mode) = match telegram_markdown_v2::convert(&h.prompt) {
+                Ok(v2) => (v2, Some(ParseMode::MarkdownV2)),
+                Err(_) => (super::markdown::to_plain(&h.prompt), None),
+            };
+
+            let mut send = self
+                .bot
+                .send_message(Recipient::Id(chat_id), rendered)
+                .reply_markup(keyboard);
+            if let Some(mode) = parse_mode {
+                send = send.parse_mode(mode);
+            }
+            if let Some(t) = thread_id {
+                send = send.message_thread_id(t);
+            }
+
+            match send.await {
+                Ok(sent) => out.push(crate::inference::hitl::HitlDelivery {
+                    channel_id: ctx.channel.id.clone(),
+                    external_message_id: sent.id.0.to_string(),
+                    delivered_at: chrono::Utc::now(),
+                }),
+                Err(e) => {
+                    tracing::warn!(
+                        tool_call_id = %tc.id,
+                        error = %e,
+                        "Telegram on_pending_hitl: send failed",
+                    );
+                    if out.is_empty() {
+                        // Propagate so `record_segment_failure` either schedules
+                        // backoff retry (transient) or marks terminal (permanent
+                        // — `is_permanent_error` matches Telegram phrases like
+                        // "bot was blocked", "chat not found", "forbidden").
+                        return Err(AppError::Internal(format!(
+                            "Telegram send failed: {e}"
+                        )));
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Build the inline keyboard for a HITL prompt. Approval → Yes/No + URL
+/// fallback (the only Approval today is App-deploy, where the user needs the
+/// link to inspect the manifest). Choice → one button per option (no URL —
+/// per-option buttons ARE the resolve action). External → URL only.
+fn build_inline_keyboard(
+    tcid: &str,
+    kind: &crate::chat::channel::hitl::HitlKind,
+    url: &str,
+) -> InlineKeyboardMarkup {
+    use crate::chat::channel::hitl::HitlKind;
+    let url_button = || {
+        Url::parse(url).ok().map(|u| {
+            vec![InlineKeyboardButton::url(
+                "Open on web →".to_string(),
+                u,
+            )]
+        })
+    };
+
+    match kind {
+        HitlKind::Approval => {
+            let mut rows = vec![vec![
+                InlineKeyboardButton::callback("Yes".to_string(), format!("r:{tcid}:y")),
+                InlineKeyboardButton::callback("No".to_string(), format!("r:{tcid}:n")),
+            ]];
+            if let Some(row) = url_button() {
+                rows.push(row);
+            }
+            InlineKeyboardMarkup::new(rows)
+        }
+        HitlKind::Choice { options } => InlineKeyboardMarkup::new(
+            options
+                .iter()
+                .enumerate()
+                .map(|(i, opt)| {
+                    vec![InlineKeyboardButton::callback(
+                        opt.clone(),
+                        format!("r:{tcid}:c:{i}"),
+                    )]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        HitlKind::External => InlineKeyboardMarkup::new(
+            url_button()
+                .map(|row| vec![row])
+                .unwrap_or_default(),
+        ),
+    }
+}
+
+impl TelegramAdapter {
+    async fn handle_callback_query(
+        &self,
+        ctx: &ChannelCtx,
+        cq: serde_json::Value,
+    ) -> Result<(), AppError> {
+        let cq_id = cq
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Validation("callback_query missing id".into()))?
+            .to_string();
+        let data = cq.get("data").and_then(|v| v.as_str()).unwrap_or("");
+        let message_obj = cq.get("message");
+
+        let (tool_call_id, response) = match crate::chat::channel::hitl::parse_resolve_callback_data(
+            data,
+            &ctx.chat_service,
+        )
+        .await
+        {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                tracing::warn!(data = %data, error = %e, "telegram callback_data parse failed");
+                let _ = self
+                    .bot
+                    .answer_callback_query(teloxide::types::CallbackQueryId(cq_id.clone()))
+                    .text("Could not interpret that action.".to_string())
+                    .await;
+                return Ok(());
+            }
+        };
+
+        // Capture the user-facing label BEFORE we move `response` into
+        // resolve_hitl. The toast/message-edit reflects what the user
+        // actually picked, not a generic "Resolved" placeholder.
+        let answer_label = crate::chat::channel::hitl::response_display(&response);
+
+        let outcome = ctx
+            .channel_manager
+            .resolve_hitl(&tool_call_id, response)
+            .await;
+
+        let toast = match &outcome {
+            Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) => answer_label.clone(),
+            Ok(crate::inference::hitl::ResolveOutcome::AlreadyResolved) => {
+                "Already resolved".to_string()
+            }
+            Err(e) => format!("Failed: {e}"),
+        };
+        let _ = self
+            .bot
+            .answer_callback_query(teloxide::types::CallbackQueryId(cq_id.clone()))
+            .text(toast.clone())
+            .await;
+
+        // Edit the original message to remove buttons + reflect outcome.
+        if let Some(msg_obj) = message_obj
+            && let (Some(chat_id), Some(msg_id)) = (
+                msg_obj
+                    .get("chat")
+                    .and_then(|c| c.get("id"))
+                    .and_then(|v| v.as_i64()),
+                msg_obj.get("message_id").and_then(|v| v.as_i64()),
+            )
+        {
+            let chat_id = ChatId(chat_id);
+            let msg_id = teloxide::types::MessageId(msg_id as i32);
+            let original_text = msg_obj
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let new_text = format!("{original_text}\n\n→ {toast}");
+            let _ = self
+                .bot
+                .edit_message_text(Recipient::Id(chat_id), msg_id, new_text)
+                .reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new()))
+                .await;
+        }
+        Ok(())
     }
 }
 
@@ -378,5 +613,43 @@ mod tests {
         assert!(parse_external_id("nonsense").is_err());
         assert!(parse_external_id("dm:notanumber").is_err());
         assert!(parse_external_id("group:1:topic:notanumber").is_err());
+    }
+
+    #[test]
+    fn build_inline_keyboard_approval_has_yes_no_and_url_row() {
+        use crate::chat::channel::hitl::HitlKind;
+        let kb = build_inline_keyboard("tc-1", &HitlKind::Approval, "https://x/chats/abc");
+        assert_eq!(kb.inline_keyboard.len(), 2);
+        assert_eq!(kb.inline_keyboard[0].len(), 2);
+        let labels: Vec<&str> = kb.inline_keyboard[0]
+            .iter()
+            .map(|b| b.text.as_str())
+            .collect();
+        assert!(labels.contains(&"Yes"));
+        assert!(labels.contains(&"No"));
+        assert_eq!(kb.inline_keyboard[1][0].text, "Open on web →");
+    }
+
+    #[test]
+    fn build_inline_keyboard_choice_has_only_option_rows() {
+        use crate::chat::channel::hitl::HitlKind;
+        let kb = build_inline_keyboard(
+            "tc-1",
+            &HitlKind::Choice {
+                options: vec!["us".to_string(), "eu".to_string()],
+            },
+            "https://x/chats/abc",
+        );
+        assert_eq!(kb.inline_keyboard.len(), 2);
+        assert_eq!(kb.inline_keyboard[0][0].text, "us");
+        assert_eq!(kb.inline_keyboard[1][0].text, "eu");
+    }
+
+    #[test]
+    fn build_inline_keyboard_external_has_only_url_button() {
+        use crate::chat::channel::hitl::HitlKind;
+        let kb = build_inline_keyboard("tc-1", &HitlKind::External, "https://x/chats/abc");
+        assert_eq!(kb.inline_keyboard.len(), 1);
+        assert_eq!(kb.inline_keyboard[0][0].text, "Open on web →");
     }
 }

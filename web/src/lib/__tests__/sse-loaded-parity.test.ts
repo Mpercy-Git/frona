@@ -216,19 +216,18 @@ describe("SSE-vs-Loaded parity: multiple tool calls", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Parity: external tool (tool_message)
+// Parity: external tool (inference_paused)
 // ---------------------------------------------------------------------------
 
 describe("SSE-vs-Loaded parity: external tool (Question)", () => {
   it("produces identical output for a pending external tool", () => {
-    const toolData = {
-      type: "Question" as const,
-      data: {
-        question: "Which option?",
-        options: ["A", "B"],
-        status: "pending" as const,
-        response: null,
-      },
+    const hitl = {
+      prompt: "Which option?",
+      url: "/chats/c1",
+      request: { type: "Question" as const, data: { options: ["A", "B"] } },
+      status: "pending" as const,
+      response: null,
+      delivery: null,
     };
 
     const externalTe = makeToolCall({
@@ -236,7 +235,7 @@ describe("SSE-vs-Loaded parity: external tool (Question)", () => {
       provider_call_id: "tc-ext",
       name: "ask_user_question",
       message_id: "msg-ext",
-      tool_data: toolData,
+      hitl,
     });
 
     // The message as it would be stored/loaded from the API
@@ -261,7 +260,7 @@ describe("SSE-vs-Loaded parity: external tool (Question)", () => {
       name: "ask_user_question",
       arguments: '{"question":"Which option?"}',
     });
-    sseStore.handleEvent({ type: "tool_message", tool_call: externalTe });
+    sseStore.handleEvent({ type: "inference_paused", reason: { type: "Hitl" }, message: storedMsg });
 
     const sseMessages = sseStore.getDisplayMessages();
 
@@ -272,10 +271,10 @@ describe("SSE-vs-Loaded parity: external tool (Question)", () => {
 
     const loadedMessages = loadedStore.getDisplayMessages();
 
-    // Both should have the same tool_data on the external tool execution
+    // Both should have the same hitl on the external tool execution
     const sseTool = sseMessages[0]?.tool_calls?.find((t) => t.id === "te-ext");
     const loadedTool = loadedMessages[0]?.tool_calls?.find((t) => t.id === "te-ext");
-    expect(sseTool?.tool_data).toEqual(loadedTool?.tool_data);
+    expect(sseTool?.hitl).toEqual(loadedTool?.hitl);
 
     // Status should match
     expect(sseMessages[0]?.status).toBe(loadedMessages[0]?.status);
@@ -287,7 +286,7 @@ describe("SSE-vs-Loaded parity: external tool (Question)", () => {
 // ---------------------------------------------------------------------------
 
 describe("SSE-vs-Loaded parity: resolved external tool", () => {
-  it("produces identical output after tool_resolved", () => {
+  it("produces identical output after inference_resume", () => {
     const resolvedToolData = {
       type: "Question" as const,
       data: {
@@ -340,8 +339,8 @@ describe("SSE-vs-Loaded parity: resolved external tool", () => {
       created_at: "2026-01-01T00:00:01Z",
     });
 
-    // Resolve via tool_resolved
-    sseStore.handleEvent({ type: "tool_resolved", message: resolvedMsg });
+    // Resolve via inference_resume
+    sseStore.handleEvent({ type: "inference_resume", message: resolvedMsg });
 
     const sseConverted = sseStore.getDisplayMessages().map((m) => normalize(convertMessage(m)));
 

@@ -21,6 +21,7 @@ pub struct Reasoning {
 #[surreal(crate = "surrealdb::types", lowercase)]
 pub enum MessageStatus {
     Executing,
+    Paused,
     Completed,
     Failed,
     Cancelled,
@@ -298,6 +299,10 @@ pub struct ToolResolution {
     pub response: Option<String>,
     #[serde(default)]
     pub action: ToolResolutionAction,
+    /// When set, the dispatcher invokes the tool's `on_resume` hook with the
+    /// typed payload. When `None`, `response` + `action` drive the legacy path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hitl_response: Option<crate::inference::hitl::HitlResponse>,
 }
 
 #[derive(Debug, Deserialize)]

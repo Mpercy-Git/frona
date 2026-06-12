@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
 use crate::Entity;
+use crate::inference::hitl::Hitl;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[serde(rename_all = "lowercase")]
@@ -13,24 +14,16 @@ pub enum ToolStatus {
     Denied,
 }
 
+/// Terminal signals emitted by task-control tools (`complete_task`,
+/// `fail_task`, `defer_task`). Distinct from `Hitl` (which pauses awaiting
+/// human input); `TaskEvent` terminates the tool loop with a task outcome.
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[serde(tag = "type", content = "data")]
 #[surreal(crate = "surrealdb::types", tag = "type", content = "data")]
-pub enum MessageTool {
-    HumanInTheLoop {
-        reason: String,
-        debugger_url: String,
-        status: ToolStatus,
-        response: Option<String>,
-    },
-    Question {
-        question: String,
-        options: Vec<String>,
-        status: ToolStatus,
-        response: Option<String>,
-    },
-    TaskCompletion {
+pub enum TaskEvent {
+    Completion {
         task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         chat_id: Option<String>,
         status: crate::agent::task::models::TaskStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -38,47 +31,11 @@ pub enum MessageTool {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         deliverables: Vec<crate::storage::Attachment>,
     },
-    TaskDeferred {
+    Deferred {
         task_id: String,
         delay_minutes: u32,
         reason: String,
     },
-    VaultApproval {
-        query: String,
-        reason: String,
-        env_var_prefix: Option<String>,
-        status: ToolStatus,
-        response: Option<String>,
-    },
-    ServiceApproval {
-        action: String,
-        manifest: serde_json::Value,
-        previous_manifest: Option<serde_json::Value>,
-        status: ToolStatus,
-        response: Option<String>,
-    },
-}
-
-impl MessageTool {
-    pub fn tool_status(&self) -> Option<&ToolStatus> {
-        match self {
-            Self::HumanInTheLoop { status, .. }
-            | Self::Question { status, .. }
-            | Self::VaultApproval { status, .. }
-            | Self::ServiceApproval { status, .. } => Some(status),
-            Self::TaskCompletion { .. } | Self::TaskDeferred { .. } => None,
-        }
-    }
-
-    pub fn tool_response(&self) -> Option<&str> {
-        match self {
-            Self::HumanInTheLoop { response, .. }
-            | Self::Question { response, .. }
-            | Self::VaultApproval { response, .. }
-            | Self::ServiceApproval { response, .. } => response.as_deref(),
-            Self::TaskCompletion { .. } | Self::TaskDeferred { .. } => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
@@ -95,14 +52,27 @@ pub struct ToolCall {
     pub result: String,
     pub success: bool,
     pub duration_ms: u64,
+    /// Pause marker for HITL prompts. `Some` when the tool emitted a Hitl;
+    /// status starts as `Pending`, flips to `Resolved`/`Denied` on resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_data: Option<MessageTool>,
+    pub hitl: Option<Hitl>,
+    /// Terminal signal from task-control tools. Mutually exclusive with `hitl`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_event: Option<TaskEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_text: Option<String>,
+    /// Per-turn reasoning emitted by the model right before this tool call.
+    /// Set only on the FIRST tool_call of each turn (paired with `turn_text`).
+    /// Required for thinking-mode providers (DeepSeek, Anthropic extended
+    /// thinking) which mandate `reasoning_content` be replayed in subsequent
+    /// chat-completion requests — without it, resume after a HITL pause errors
+    /// with `invalid_request_error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_reasoning: Option<crate::chat::message::models::Reasoning>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -119,13 +89,17 @@ pub struct ToolCallResponse {
     pub success: bool,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_data: Option<MessageTool>,
+    pub hitl: Option<Hitl>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_event: Option<TaskEvent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_reasoning: Option<crate::chat::message::models::Reasoning>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -142,10 +116,12 @@ impl From<ToolCall> for ToolCallResponse {
             result: te.result,
             success: te.success,
             duration_ms: te.duration_ms,
-            tool_data: te.tool_data,
+            hitl: te.hitl,
+            task_event: te.task_event,
             system_prompt: te.system_prompt,
             description: te.description,
             turn_text: te.turn_text,
+            turn_reasoning: te.turn_reasoning,
             created_at: te.created_at,
         }
     }

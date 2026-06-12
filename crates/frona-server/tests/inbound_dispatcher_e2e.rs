@@ -92,11 +92,29 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.memory_service.clone(),
         prompts,
         state.broadcast_service.clone(),
-        state.presign_service.clone(),
+            state.presign_service.clone(),
     );
-    state.chat_service = chat_service;
+    state.chat_service = chat_service.clone();
+    state.harness = Arc::new(frona::agent::harness::Harness::new(
+        chat_service,
+        state.user_service.clone(),
+        state.storage_service.clone(),
+        state.agent_service.clone(),
+        state.memory_service.clone(),
+        state.skill_service.clone(),
+        state.task_service.clone(),
+        state.vault_service.clone(),
+        state.mcp_service.clone(),
+        state.tool_manager.clone(),
+        state.policy_service.clone(),
+        state.broadcast_service.clone(),
+        state.active_sessions.clone(),
+        state.shutdown_token.clone(),
+        state.prompts.clone(),
+        state.config.clone(),
+    ));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
 
-    state.init_task_executor();
     state.init_signal_service();
     state.policy_service.sync_base_policies().await.unwrap();
 
@@ -227,7 +245,11 @@ async fn seed_space_and_chat(
 async fn post_inbound(state: &AppState, chat_id: &str, content: &str, sender: &str) {
     let mut md = BTreeMap::new();
     md.insert("channel:from_address".into(), json!(sender));
+    // `from_address` is the channel-inbound discriminator: the dispatcher
+    // uses it to distinguish channel-inbound messages from web-submitted
+    // ones (which already have inference fired from `/messages/stream`).
     let msg = Message::builder(chat_id, MessageRole::User, content.into())
+        .from_address(sender)
         .metadata(md)
         .build();
     state
@@ -299,6 +321,37 @@ async fn dispatcher_skips_messages_in_chats_without_channel_provider() {
         provider.calls(),
         0,
         "non-channel chats must not trigger the dispatcher"
+    );
+}
+
+/// **Regression**: a web-submitted user message (created via `/messages/stream`,
+/// which has no `from_address`) MUST NOT trigger the channel inbound
+/// dispatcher. Otherwise both the stream route handler AND the dispatcher
+/// fire inference on the same user turn, producing two parallel agent runs
+/// (observed in prod as "ask me 3 questions" returning 6 questions).
+#[tokio::test]
+async fn dispatcher_skips_web_submitted_messages_in_channel_chats() {
+    let provider = Arc::new(MockModelProvider::new(vec![]));
+    let (state, _tmp) = build_state(provider.clone()).await;
+    seed_user_and_agent(&state, "user-1", "agent-1").await;
+    let (_space, chat) =
+        seed_space_and_chat(&state, "user-1", "agent-1", "dm:8888").await;
+
+    frona::chat::channel::spawn_inference_dispatcher(state.clone());
+
+    // Simulates `/messages/stream` — `from_address` is None for web submissions.
+    state
+        .chat_service
+        .create_stream_user_message("user-1", &chat.id, "hi", vec![])
+        .await
+        .unwrap();
+
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        provider.calls(),
+        0,
+        "web-submitted messages (from_address = None) must not fan out to \
+         the dispatcher — the stream route already triggers inference"
     );
 }
 

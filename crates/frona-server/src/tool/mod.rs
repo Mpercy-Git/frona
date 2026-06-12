@@ -5,7 +5,7 @@ pub mod cli;
 pub mod create_agent;
 pub mod manage_policy;
 pub mod heartbeat;
-pub mod manage_service;
+pub mod manage_app;
 pub mod notify_human;
 pub mod produce_file;
 pub mod registry;
@@ -144,8 +144,18 @@ pub struct ToolOutput {
     text: String,
     images: Vec<ImageData>,
     attachments: Vec<crate::storage::Attachment>,
-    tool_data: Option<crate::inference::tool_call::MessageTool>,
+    /// Pause marker — when `Some(_)` with `status == Pending`, the tool loop
+    /// exits with `ExternalToolPending`. Mutually exclusive with `task_event`.
+    hitl: Option<crate::inference::hitl::Hitl>,
+    /// Terminal signal — when `Some(_)`, the tool loop exits as Completed
+    /// with this as the lifecycle event. Mutually exclusive with `hitl`.
+    task_event: Option<crate::inference::tool_call::TaskEvent>,
     system_prompt: Option<String>,
+    /// Non-HITL pause flag for tools whose work resolves via an external
+    /// system callback (Twilio webhook for voice tools, etc.) rather than
+    /// user input. The tool loop exits with `ExternalToolPending` and the
+    /// external system later calls `resolve_tool_call` directly. Distinct
+    /// from `hitl` which carries the typed user-prompt payload.
     pending_external: bool,
     success: bool,
 }
@@ -156,7 +166,8 @@ impl ToolOutput {
             text: s.into(),
             images: Vec::new(),
             attachments: Vec::new(),
-            tool_data: None,
+            hitl: None,
+            task_event: None,
             system_prompt: None,
             pending_external: false,
             success: true,
@@ -168,7 +179,8 @@ impl ToolOutput {
             text: s.into(),
             images: Vec::new(),
             attachments: Vec::new(),
-            tool_data: None,
+            hitl: None,
+            task_event: None,
             system_prompt: None,
             pending_external: false,
             success: false,
@@ -180,7 +192,8 @@ impl ToolOutput {
             text: text.into(),
             images,
             attachments: Vec::new(),
-            tool_data: None,
+            hitl: None,
+            task_event: None,
             system_prompt: None,
             pending_external: false,
             success: true,
@@ -192,8 +205,29 @@ impl ToolOutput {
         self
     }
 
-    pub fn with_tool_data(mut self, td: crate::inference::tool_call::MessageTool) -> Self {
-        self.tool_data = Some(td);
+    /// Attach a HITL pause marker. The tool loop detects this and exits with
+    /// `ExternalToolPending`. The agent message stays in `Executing` until
+    /// the human resolves and the per-message barrier clears.
+    ///
+    /// Mutually exclusive with `with_task_event` — the last builder called
+    /// wins, but `debug_assert` catches the contradiction in debug builds.
+    pub fn with_hitl(mut self, h: crate::inference::hitl::Hitl) -> Self {
+        debug_assert!(
+            self.task_event.is_none(),
+            "ToolOutput::with_hitl called after with_task_event — these are mutually exclusive"
+        );
+        self.hitl = Some(h);
+        self
+    }
+
+    /// Attach a terminal task-control signal. The tool loop detects this and
+    /// exits as `Completed` with the event passed up as `lifecycle_event`.
+    pub fn with_task_event(mut self, e: crate::inference::tool_call::TaskEvent) -> Self {
+        debug_assert!(
+            self.hitl.is_none(),
+            "ToolOutput::with_task_event called after with_hitl — these are mutually exclusive"
+        );
+        self.task_event = Some(e);
         self
     }
 
@@ -214,8 +248,20 @@ impl ToolOutput {
         &self.attachments
     }
 
-    pub fn tool_data(&self) -> Option<&crate::inference::tool_call::MessageTool> {
-        self.tool_data.as_ref()
+    pub fn hitl(&self) -> Option<&crate::inference::hitl::Hitl> {
+        self.hitl.as_ref()
+    }
+
+    pub fn take_hitl(&mut self) -> Option<crate::inference::hitl::Hitl> {
+        self.hitl.take()
+    }
+
+    pub fn task_event(&self) -> Option<&crate::inference::tool_call::TaskEvent> {
+        self.task_event.as_ref()
+    }
+
+    pub fn take_task_event(&mut self) -> Option<crate::inference::tool_call::TaskEvent> {
+        self.task_event.take()
     }
 
     pub fn as_pending_external(mut self) -> Self {
@@ -244,6 +290,25 @@ pub trait AgentTool: Send + Sync {
         vec![]
     }
     async fn execute(&self, tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError>;
+    /// Called after a human resolves a HITL prompt this tool emitted from
+    /// `execute`. The tool reads its original `request` payload, validates the
+    /// `response` shape, performs any side effect (deploy, bind credential,
+    /// etc.), and returns the result text that gets persisted as
+    /// `te.result` — what the LLM reads in conversation history on resume.
+    ///
+    /// Default returns an error. Tools that emit HITLs must override.
+    async fn on_resume(
+        &self,
+        tool_name: &str,
+        request: &crate::inference::hitl::HitlRequest,
+        response: crate::inference::hitl::HitlResponse,
+        ctx: &InferenceContext,
+    ) -> Result<crate::inference::hitl::HitlOutcome, AppError> {
+        let _ = (request, response, ctx);
+        Err(AppError::Validation(format!(
+            "tool '{tool_name}' does not implement on_resume — cannot resolve HITL"
+        )))
+    }
     async fn cleanup(&self) -> Result<(), AppError> {
         Ok(())
     }

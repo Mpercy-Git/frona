@@ -351,8 +351,9 @@ pub struct DenyVaultRequest {
     pub chat_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
 #[serde(rename_all = "snake_case")]
+#[surreal(crate = "surrealdb::types")]
 pub enum GrantDuration {
     Once,
     Hours(u64),

@@ -36,11 +36,21 @@ use surrealdb::engine::local::Mem;
 use surrealdb::Surreal;
 use tower::ServiceExt;
 
+fn workspace_resources() -> std::path::PathBuf {
+    std::env::current_dir()
+        .expect("cwd")
+        .ancestors()
+        .find(|p| p.join("resources/prompts").exists())
+        .expect("workspace resources/ not found from cwd")
+        .join("resources")
+}
+
 async fn test_app_state() -> (AppState, tempfile::TempDir) {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     db::setup_schema(&db).await.unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_string_lossy().to_string();
+    let resources = workspace_resources();
     let config = Config {
         auth: frona::core::config::AuthConfig {
             encryption_secret: "test-secret".to_string(),
@@ -48,7 +58,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
         },
         storage: frona::core::config::StorageConfig {
             data_dir: base.clone(),
-            shared_config_dir: format!("{base}/config"),
+            shared_config_dir: resources.to_string_lossy().into_owned(),
             ..Default::default()
         },
         ..Default::default()
@@ -88,7 +98,6 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
             state.config.auth.ephemeral_token_expiry_secs,
         ));
     }
-    state.init_task_executor();
     state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await.unwrap();
     (state, tmp)

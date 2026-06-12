@@ -1,9 +1,12 @@
 use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
-use crate::inference::tool_call::{MessageTool, ToolStatus};
+use crate::core::Principal;
 use crate::core::error::AppError;
+use crate::credential::vault::models::{BindingScope, GrantDuration};
 use crate::credential::vault::service::VaultService;
+use crate::inference::hitl::{Hitl, HitlOutcome, HitlRequest, HitlResponse, VaultGrant};
+use crate::inference::tool_call::ToolStatus;
 
 use frona_derive::agent_tool;
 
@@ -12,13 +15,26 @@ use super::{InferenceContext, ToolOutput};
 pub struct RequestCredentialsTool {
     vault_service: VaultService,
     prompts: PromptLoader,
+    public_base_url: String,
 }
 
 impl RequestCredentialsTool {
-    pub fn new(vault_service: VaultService, prompts: PromptLoader) -> Self {
-        Self {
-            vault_service,
-            prompts,
+    pub fn new(vault_service: VaultService, prompts: PromptLoader, public_base_url: String) -> Self {
+        Self { vault_service, prompts, public_base_url }
+    }
+
+    fn scope_for(grant_duration: &GrantDuration, chat_id: &str) -> (BindingScope, Option<chrono::DateTime<chrono::Utc>>) {
+        match grant_duration {
+            GrantDuration::Once => (BindingScope::Chat { chat_id: chat_id.to_string() }, None),
+            GrantDuration::Hours(h) => (
+                BindingScope::Durable,
+                Some(chrono::Utc::now() + chrono::Duration::hours(*h as i64)),
+            ),
+            GrantDuration::Days(d) => (
+                BindingScope::Durable,
+                Some(chrono::Utc::now() + chrono::Duration::days(*d as i64)),
+            ),
+            GrantDuration::Permanent => (BindingScope::Durable, None),
         }
     }
 }
@@ -43,20 +59,12 @@ impl RequestCredentialsTool {
             .unwrap_or("Credential access requested")
             .to_string();
 
-        let env_var_prefix = arguments
-            .get("env_var_prefix")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                AppError::Validation("Missing required parameter: env_var_prefix".into())
-            })?
-            .to_string();
-
         let force = arguments
             .get("force")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let principal = crate::core::Principal::agent(ctx.agent.id.clone());
+        let principal = Principal::agent(ctx.agent.id.clone());
         if !force
             && let Some(binding) = self
                 .vault_service
@@ -75,7 +83,7 @@ impl RequestCredentialsTool {
                     &ctx.chat.id,
                     &binding.connection_id,
                     &binding.vault_item_id,
-                    Some(&env_var_prefix),
+                    None,
                     &query,
                     &reason,
                 )
@@ -94,21 +102,102 @@ impl RequestCredentialsTool {
             )));
         }
 
-        let json = serde_json::json!({
-            "tool_type": "VaultApproval",
-            "query": query,
-            "reason": reason,
-            "env_var_prefix": env_var_prefix,
-        });
+        Ok(ToolOutput::text("").with_hitl(Hitl {
+            prompt: format!("Allow access to credential matching '{query}'?\n\n{reason}"),
+            url: format!("{}/chat?id={}", self.public_base_url, ctx.chat.id),
+            request: HitlRequest::Credential { query, reason },
+            status: ToolStatus::Pending,
+            response: None,
+            delivery: None,
+        }))
+    }
 
-        Ok(ToolOutput::text(json.to_string())
-            .with_tool_data(MessageTool::VaultApproval {
-                query,
-                reason,
-                env_var_prefix: Some(env_var_prefix),
-                status: ToolStatus::Pending,
-                response: None,
-            })
-            .as_pending_external())
+    async fn on_resume(
+        &self,
+        _tool_name: &str,
+        request: &HitlRequest,
+        response: HitlResponse,
+        ctx: &InferenceContext,
+    ) -> Result<HitlOutcome, AppError> {
+        let HitlRequest::Credential { query, reason } = request else {
+            return Err(AppError::Validation(
+                "request_credentials on_resume: expected Credential request".into(),
+            ));
+        };
+
+        match response {
+            HitlResponse::Vault(VaultGrant::Granted {
+                connection_id,
+                vault_item_id,
+                grant_duration,
+                target,
+            }) => {
+                let principal = Principal::agent(ctx.agent.id.clone());
+
+                let secret = self
+                    .vault_service
+                    .get_secret(&ctx.user.id, &connection_id, &vault_item_id)
+                    .await?;
+
+                if !matches!(grant_duration, GrantDuration::Once) {
+                    self.vault_service
+                        .create_grant(
+                            &ctx.user.id,
+                            principal.clone(),
+                            &connection_id,
+                            &vault_item_id,
+                            query,
+                            &grant_duration,
+                        )
+                        .await?;
+                }
+
+                let (scope, expires_at) = Self::scope_for(&grant_duration, &ctx.chat.id);
+
+                self.vault_service
+                    .create_binding(
+                        &ctx.user.id,
+                        principal.clone(),
+                        query,
+                        &connection_id,
+                        &vault_item_id,
+                        target.clone(),
+                        scope,
+                        expires_at,
+                    )
+                    .await?;
+
+                self.vault_service
+                    .log_access(
+                        &ctx.user.id,
+                        principal,
+                        &ctx.chat.id,
+                        &connection_id,
+                        &vault_item_id,
+                        None,
+                        query,
+                        reason,
+                    )
+                    .await?;
+
+                let env_vars =
+                    crate::credential::vault::service::project_target(&secret, &target);
+                let var_names: Vec<String> =
+                    env_vars.iter().map(|(k, _)| k.clone()).collect();
+                let mut vault_vars = ctx.vault_env_vars.write().await;
+                vault_vars.extend(env_vars);
+
+                Ok(HitlOutcome::Resolved(format!(
+                    "Credentials loaded into environment variables: {}. Use these in CLI commands.",
+                    var_names.join(", "),
+                )))
+            }
+            HitlResponse::Vault(VaultGrant::Denied) => Ok(HitlOutcome::Denied(format!(
+                "User denied access to credentials for: {query}.",
+            ))),
+            _ => Err(AppError::Validation(
+                "request_credentials on_resume: expected Vault response".into(),
+            )),
+        }
     }
 }

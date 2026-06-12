@@ -608,6 +608,13 @@ struct CapturedToolCall {
     turn_text: Option<String>,
 }
 
+#[derive(Default, Clone)]
+#[allow(dead_code)]
+struct CapturedPendingHitlBatch {
+    msg_id: String,
+    tool_call_ids: Vec<String>,
+}
+
 #[derive(Default)]
 struct StubConfig {
     render_tool_segments: bool,
@@ -618,6 +625,8 @@ struct StubConfig {
 struct StubAdapter {
     captured: std::sync::Arc<StdMutex<Vec<CapturedSend>>>,
     tool_calls: std::sync::Arc<StdMutex<Vec<CapturedToolCall>>>,
+    pending_hitls: std::sync::Arc<StdMutex<Vec<CapturedPendingHitlBatch>>>,
+    inference_start_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     config: std::sync::Arc<StdMutex<StubConfig>>,
     disconnect_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -692,6 +701,42 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
         });
         Ok(())
     }
+    async fn on_inference_start(
+        &self,
+        _chat: &frona::chat::models::Chat,
+        _ctx: &frona::chat::channel::ChannelCtx,
+    ) -> Result<(), frona::core::error::AppError> {
+        self.inference_start_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    async fn on_pending_hitl(
+        &self,
+        batch: &[frona::inference::tool_call::ToolCall],
+        msg: &frona::chat::message::models::Message,
+        _chat: &frona::chat::models::Chat,
+        ctx: &frona::chat::channel::ChannelCtx,
+    ) -> Result<Vec<frona::inference::hitl::HitlDelivery>, frona::core::error::AppError> {
+        self.pending_hitls
+            .lock()
+            .unwrap()
+            .push(CapturedPendingHitlBatch {
+                msg_id: msg.id.clone(),
+                tool_call_ids: batch.iter().map(|tc| tc.id.clone()).collect(),
+            });
+        // Return a successful delivery for each — simulates the adapter
+        // rendering all prompts and reporting back.
+        let now = chrono::Utc::now();
+        Ok(batch
+            .iter()
+            .enumerate()
+            .map(|(i, _)| frona::inference::hitl::HitlDelivery {
+                channel_id: ctx.channel.id.clone(),
+                external_message_id: format!("stub-msg-{i}"),
+                delivered_at: now,
+            })
+            .collect())
+    }
     async fn on_webhook(
         &self,
         ctx: &frona::chat::channel::ChannelCtx,
@@ -723,6 +768,8 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
 struct StubFactory {
     captured: std::sync::Arc<StdMutex<Vec<CapturedSend>>>,
     tool_calls: std::sync::Arc<StdMutex<Vec<CapturedToolCall>>>,
+    pending_hitls: std::sync::Arc<StdMutex<Vec<CapturedPendingHitlBatch>>>,
+    inference_start_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     config: std::sync::Arc<StdMutex<StubConfig>>,
     disconnect_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -732,6 +779,8 @@ impl StubFactory {
         Self {
             captured,
             tool_calls: std::sync::Arc::new(StdMutex::new(Vec::new())),
+            pending_hitls: std::sync::Arc::new(StdMutex::new(Vec::new())),
+            inference_start_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             config: std::sync::Arc::new(StdMutex::new(StubConfig::default())),
             disconnect_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
@@ -761,6 +810,8 @@ impl frona::chat::channel::ChannelFactory for StubFactory {
         Ok(Box::new(StubAdapter {
             captured: self.captured.clone(),
             tool_calls: self.tool_calls.clone(),
+            pending_hitls: self.pending_hitls.clone(),
+            inference_start_count: self.inference_start_count.clone(),
             config: self.config.clone(),
             disconnect_count: self.disconnect_count.clone(),
         }))
@@ -1312,6 +1363,8 @@ struct SegmentTestSetup {
     agent_id: String,
     captured: std::sync::Arc<StdMutex<Vec<CapturedSend>>>,
     tool_calls_recorder: std::sync::Arc<StdMutex<Vec<CapturedToolCall>>>,
+    pending_hitls_recorder: std::sync::Arc<StdMutex<Vec<CapturedPendingHitlBatch>>>,
+    inference_start_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     config: std::sync::Arc<StdMutex<StubConfig>>,
     _tmp: tempfile::TempDir,
 }
@@ -1333,6 +1386,8 @@ async fn setup_segment_test(prefix: &str) -> SegmentTestSetup {
     let captured = std::sync::Arc::new(StdMutex::new(Vec::<CapturedSend>::new()));
     let factory = std::sync::Arc::new(StubFactory::new(captured.clone()));
     let tool_calls_recorder = factory.tool_calls.clone();
+    let pending_hitls_recorder = factory.pending_hitls.clone();
+    let inference_start_count = factory.inference_start_count.clone();
     let config = factory.config.clone();
     state.channel_registry.register_factory(factory);
 
@@ -1397,6 +1452,8 @@ async fn setup_segment_test(prefix: &str) -> SegmentTestSetup {
         agent_id,
         captured,
         tool_calls_recorder,
+        pending_hitls_recorder,
+        inference_start_count,
         config,
         _tmp,
     }
@@ -1447,6 +1504,7 @@ async fn insert_tool_call(
             &serde_json::json!({}),
             None,
             turn_text.map(String::from),
+            None,
         )
         .await
         .unwrap()
@@ -1682,6 +1740,262 @@ async fn segments_executing_excluded_from_retry_then_completed_walks_full_list()
     assert_eq!(seen[0].tool_call_id, tc0.id);
     drop(seen);
     assert_eq!(setup.captured.lock().unwrap().len(), 1);
+}
+
+/// **Regression**: when the agent pauses mid-turn on a HITL while running in
+/// a channel-bound chat, the channel adapter MUST be invoked via
+/// `on_pending_hitl` with the pending tool_calls so the user sees the prompt
+/// in their channel (e.g. Telegram inline keyboard, SMS prompt, etc.).
+///
+/// Today this test fails — the broadcast dispatcher routes `Inference(Paused)`
+/// to `on_inference_done` (stops typing) but never reaches `on_pending_hitl`.
+/// The HITL infrastructure exists (`on_pending_hitl`, `HitlDelivery`, the
+/// segment state machine) but the wiring from the typed Paused event to the
+/// rendering is missing.
+#[tokio::test]
+async fn channel_hitl_pause_renders_pending_hitls() {
+    let setup = setup_segment_test("hitl_pause").await;
+
+    // 1. Executing agent message — what the loop is producing into.
+    let msg = create_executing_msg(&setup.state, &setup.chat.id, &setup.agent_id).await;
+
+    // 2. A tool call whose execution emitted a pending HITL. Mirrors what
+    //    `notify_human::ask_user_question` would persist mid-turn.
+    let tc = insert_tool_call(&setup.state, &setup.chat.id, &msg.id, 0, Some("ask user")).await;
+    let hitl = frona::inference::hitl::Hitl {
+        prompt: "Which one?".into(),
+        url: format!("/chats/{}", setup.chat.id),
+        request: frona::inference::hitl::HitlRequest::Question {
+            options: vec!["yes".into(), "no".into()],
+        },
+        status: frona::inference::tool_call::ToolStatus::Pending,
+        response: None,
+        delivery: None,
+    };
+    setup.state.chat_service.set_hitl(&tc.id, hitl).await.unwrap();
+
+    // 3. Trigger the pause broadcast — same call the agent loop makes when
+    //    it returns ExternalToolPending.
+    let tcs: Vec<frona::inference::tool_call::ToolCallResponse> = setup
+        .state
+        .chat_service
+        .get_tool_calls_by_message(&msg.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    setup
+        .state
+        .chat_service
+        .pause_agent_message(&msg.id, frona::inference::tool_loop::PauseReason::Hitl, tcs)
+        .await
+        .unwrap();
+
+    // 4. Adapter must see the pending HITL.
+    let pending_hitls_recorder = setup.pending_hitls_recorder.clone();
+    let expected_tool_call_id = tc.id.clone();
+    poll_until("adapter on_pending_hitl called with the pending HITL", || {
+        let rec = pending_hitls_recorder.clone();
+        let expected = expected_tool_call_id.clone();
+        async move {
+            rec.lock()
+                .unwrap()
+                .iter()
+                .any(|b| b.tool_call_ids.iter().any(|id| id == &expected))
+        }
+    })
+    .await;
+
+    let captured = setup.pending_hitls_recorder.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1, "exactly one HITL render batch");
+    assert_eq!(captured[0].msg_id, msg.id);
+    assert_eq!(captured[0].tool_call_ids, vec![tc.id.clone()]);
+
+    // Pause flips the persisted message status from Executing → Paused so the
+    // startup-resume sweep can safely skip un-resolved HITLs across restarts.
+    let reloaded = setup.state.chat_service.find_message(&msg.id).await.unwrap().unwrap();
+    assert_eq!(
+        reloaded.status,
+        Some(frona::chat::message::models::MessageStatus::Paused),
+        "pause_agent_message must flip status to Paused"
+    );
+
+    // The Paused message is discoverable via the paused-specific lookup but
+    // NOT via the strict executing lookup.
+    let paused_found = setup
+        .state
+        .chat_service
+        .find_paused_message_for_chat(&setup.chat.id)
+        .await
+        .unwrap();
+    assert!(paused_found.is_some(), "find_paused_message_for_chat finds it");
+    let executing_found = setup
+        .state
+        .chat_service
+        .find_executing_message_for_chat(&setup.chat.id)
+        .await
+        .unwrap();
+    assert!(
+        executing_found.is_none(),
+        "find_executing_message_for_chat must NOT find paused message"
+    );
+
+    // Startup sweep must skip Paused messages — otherwise the loop would
+    // resume with empty HITL answers.
+    let sweep = setup.state.chat_service.find_executing_chat_messages().await;
+    assert!(
+        sweep.iter().all(|m| m.id != msg.id),
+        "find_executing_chat_messages must skip Paused messages"
+    );
+}
+
+/// **Regression**: when a channel adapter resolves a HITL (e.g. Telegram
+/// `callback_query` from a button tap), the inference loop must:
+/// 1. Mark the tool_call's `hitl.status` as `Resolved`
+/// 2. Populate `tool_call.result` with the synthesized response text
+/// 3. Spawn the resume dispatch (`harness.resume` for user chats,
+///    `task_executor.run_task_by_id` for task chats) → trigger a fresh
+///    inference turn (observable via `on_inference_start` on the adapter)
+///
+/// Exercises the same `ChannelManager::resolve_hitl` entry point that the
+/// real Telegram adapter calls from its `on_webhook` callback_query handler.
+#[tokio::test]
+async fn channel_button_resolution_resumes_inference() {
+    let setup = setup_segment_test("hitl_resolve").await;
+
+    // 1. Paused agent message + a pending HITL — what the loop persisted
+    //    when it hit `notify_human::ask_user_question` and called
+    //    `pause_agent_message`. (Tests realistic post-Phase 1 state where
+    //    pause flips status to Paused.)
+    let msg = create_executing_msg(&setup.state, &setup.chat.id, &setup.agent_id).await;
+    {
+        use frona::core::repository::Repository;
+        let mut reloaded = frona::db::repo::generic::SurrealRepo::<
+            frona::chat::message::models::Message,
+        >::new(setup.state.db.clone())
+        .find_by_id(&msg.id)
+        .await
+        .unwrap()
+        .unwrap();
+        reloaded.status = Some(frona::chat::message::models::MessageStatus::Paused);
+        frona::db::repo::generic::SurrealRepo::<frona::chat::message::models::Message>::new(
+            setup.state.db.clone(),
+        )
+        .update(&reloaded)
+        .await
+        .unwrap();
+    }
+    let tc = frona::inference::tool_call::ToolCall {
+        id: frona::core::repository::new_id(),
+        chat_id: setup.chat.id.clone(),
+        message_id: msg.id.clone(),
+        turn: 0,
+        provider_call_id: "tc-1".into(),
+        name: "ask_user_question".into(),
+        arguments: serde_json::json!({"question": "Continue?"}),
+        result: String::new(),
+        success: false,
+        duration_ms: 0,
+        hitl: Some(frona::inference::hitl::Hitl {
+            prompt: "Continue?".into(),
+            url: format!("/chats/{}", setup.chat.id),
+            request: frona::inference::hitl::HitlRequest::Question {
+                options: vec!["yes".into(), "no".into()],
+            },
+            status: frona::inference::tool_call::ToolStatus::Pending,
+            response: None,
+            delivery: None,
+        }),
+        task_event: None,
+        system_prompt: None,
+        description: None,
+        turn_text: None,
+        turn_reasoning: None,
+        created_at: chrono::Utc::now(),
+    };
+    use frona::core::repository::Repository;
+    frona::db::repo::generic::SurrealRepo::<frona::inference::tool_call::ToolCall>::new(
+        setup.state.db.clone(),
+    )
+    .create(&tc)
+    .await
+    .unwrap();
+
+    // 2. Simulate the Telegram callback_query: button tap → adapter parses
+    //    `r:{tcid}:c:0` → builds HitlResponse::Choice("yes") → routes through
+    //    `ChannelManager::resolve_hitl`. We call the entry point directly,
+    //    bypassing only the Telegram-payload parsing.
+    let outcome = setup
+        .state
+        .channel_manager
+        .resolve_hitl(
+            &tc.id,
+            frona::inference::hitl::HitlResponse::Choice("yes".to_string()),
+        )
+        .await
+        .expect("resolve_hitl should succeed");
+    assert!(matches!(
+        outcome,
+        frona::inference::hitl::ResolveOutcome::Resolved { .. }
+    ));
+
+    // 3. Tool call's HITL status must flip to Resolved, with the response
+    //    persisted and `result` populated (notify_human's on_resume synthesizes
+    //    the answer text into the tool result).
+    let chat_service = setup.state.chat_service.clone();
+    let tc_id = tc.id.clone();
+    poll_until("tool_call.hitl.status == Resolved", || {
+        let svc = chat_service.clone();
+        let id = tc_id.clone();
+        async move {
+            let Ok(Some(reloaded)) = svc.get_tool_call(&id).await else {
+                return false;
+            };
+            reloaded
+                .hitl
+                .as_ref()
+                .is_some_and(|h| h.status == frona::inference::tool_call::ToolStatus::Resolved)
+        }
+    })
+    .await;
+
+    let reloaded = setup.state.chat_service.get_tool_call(&tc.id).await.unwrap().unwrap();
+    assert_eq!(reloaded.result, "yes", "tool result carries the user's choice");
+
+    // 4. Resume kicked off — the channel-resolve handler `tokio::spawn`ed
+    //    `harness.resume(...)`, which triggered `inference()`, which emits
+    //    `Inference(Start)`. The dispatcher routes Start to
+    //    `adapter.on_inference_start`. (Inference will fail because the test
+    //    app has no model providers, but the START signal is enough to prove
+    //    the resume kicked off.)
+    let counter = setup.inference_start_count.clone();
+    poll_until("adapter on_inference_start fired (resume kicked off)", || {
+        let counter = counter.clone();
+        async move { counter.load(std::sync::atomic::Ordering::SeqCst) > 0 }
+    })
+    .await;
+
+    // 5. The Paused → Executing status flip happened before resume — the
+    //    startup sweep should pick it up if the server crashes mid-resume.
+    //    (Resume may downstream-flip status further depending on inference
+    //    outcome; we only assert it left Paused.)
+    let chat_service = setup.state.chat_service.clone();
+    let msg_id = msg.id.clone();
+    poll_until("message status flipped out of Paused on resume", || {
+        let svc = chat_service.clone();
+        let id = msg_id.clone();
+        async move {
+            let Ok(Some(reloaded)) = svc.find_message(&id).await else {
+                return false;
+            };
+            !matches!(
+                reloaded.status,
+                Some(frona::chat::message::models::MessageStatus::Paused)
+            )
+        }
+    })
+    .await;
 }
 
 #[tokio::test]

@@ -79,13 +79,7 @@ async fn evaluate_signal(
         annotations.push(Annotation::summary(HTTP_ANNOTATOR_ID, s));
     }
 
-    let user = state
-        .user_service
-        .find_by_id(&auth.user_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("user {}", auth.user_id)))?;
     let candidate = CandidateEvent {
-        user,
         channel: None,
         chat: None,
         message: None,

@@ -13,7 +13,7 @@ use crate::tool::registry::AgentToolRegistry;
 
 use super::config::ModelGroup;
 use super::registry::ModelProviderRegistry;
-use super::tool_call::MessageTool;
+use super::tool_call::TaskEvent;
 
 use crate::chat::message::models::Reasoning;
 
@@ -77,7 +77,7 @@ pub enum InferenceResponse {
     Completed {
         text: String,
         attachments: Vec<crate::storage::Attachment>,
-        lifecycle_event: Option<MessageTool>,
+        lifecycle_event: Option<TaskEvent>,
         reasoning: Option<Reasoning>,
     },
     Cancelled(String),

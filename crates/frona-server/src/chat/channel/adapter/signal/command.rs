@@ -34,7 +34,11 @@ pub enum SignalCommand {
         target: SignalTarget,
         body: String,
         msg_id: String,
-        reply: oneshot::Sender<Result<(), AppError>>,
+        /// On success the reply carries the Signal message timestamp (ms),
+        /// which is Signal's protocol-level message identifier — used as
+        /// `HitlDelivery.external_message_id` for HITL prompts so quote-replies
+        /// can be matched back to the originating tool call.
+        reply: oneshot::Sender<Result<u64, AppError>>,
     },
     SendTyping {
         target: SignalTarget,
@@ -55,13 +59,13 @@ pub async fn handle<S: Store>(
     match cmd {
         SignalCommand::SendText { target, body, msg_id, reply } => {
             let signal_chat = target_label(&target);
-            let r = send_text(mgr, target, body, now).await;
+            let r = send_text(mgr, target, body, now).await.map(|()| now);
             match &r {
-                Ok(()) => tracing::info!(
+                Ok(ts) => tracing::info!(
                     channel_id = %channel_id,
                     msg_id = %msg_id,
                     to = %signal_chat,
-                    signal_ts = now,
+                    signal_ts = ts,
                     "Signal message sent",
                 ),
                 Err(e) => tracing::warn!(

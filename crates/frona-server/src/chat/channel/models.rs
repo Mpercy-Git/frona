@@ -193,6 +193,7 @@ pub struct ChannelCtx {
     pub webhook_url: String,
     pub storage_service: crate::storage::StorageService,
     pub user_service: crate::auth::UserService,
+    pub chat_service: crate::chat::service::ChatService,
     pub data_dir: std::path::PathBuf,
     /// Adapters with long-running tasks MUST observe this — sole `stop_channel` signal.
     pub cancel: tokio_util::sync::CancellationToken,
@@ -246,7 +247,10 @@ pub trait ChannelAdapter: Send + Sync {
         )))
     }
 
-    async fn on_inference_active(
+    /// Called ONCE at the start of an inference turn (initial submit, or
+    /// after a HITL resume). Adapters that show a "thinking/typing" affordance
+    /// should kick it off here. Default: no-op.
+    async fn on_inference_start(
         &self,
         _chat: &Chat,
         _ctx: &ChannelCtx,
@@ -254,12 +258,84 @@ pub trait ChannelAdapter: Send + Sync {
         Ok(())
     }
 
+    /// Called once when the inference turn ends (Done / Cancelled / Failed /
+    /// Paused). Adapters that started a typing affordance in
+    /// `on_inference_start` should tear it down here.
     async fn on_inference_done(
         &self,
         _chat: &Chat,
         _ctx: &ChannelCtx,
     ) -> Result<(), AppError> {
         Ok(())
+    }
+
+    /// Per-token streaming text. Default: no-op. Channels that want live
+    /// streaming (Telegram bots that edit messages, etc.) override this.
+    async fn on_text(
+        &self,
+        _chat: &Chat,
+        _text: &str,
+        _ctx: &ChannelCtx,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    /// Per-token streaming reasoning (model thinking). Default: no-op.
+    /// Channels can override to surface chain-of-thought.
+    async fn on_reasoning(
+        &self,
+        _chat: &Chat,
+        _text: &str,
+        _ctx: &ChannelCtx,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    /// Model emitted a tool call mid-turn. Default: no-op.
+    async fn on_tool_call(
+        &self,
+        _chat: &Chat,
+        _name: &str,
+        _arguments: &serde_json::Value,
+        _ctx: &ChannelCtx,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    /// Tool finished executing mid-turn. Default: no-op.
+    async fn on_tool_result(
+        &self,
+        _chat: &Chat,
+        _name: &str,
+        _success: bool,
+        _result_summary: &str,
+        _ctx: &ChannelCtx,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    /// Render a contiguous prefix of pending HITL prompts starting from the
+    /// delivery cursor. The returned Vec corresponds to `batch[0..returned.len()]`
+    /// in order; the delivery cursor advances by exactly `returned.len()`.
+    ///
+    /// On partway failure, return `Ok(deliveries_so_far)` — the remaining
+    /// entries stay Pending and the retry poller re-attempts them on the next
+    /// pass.
+    ///
+    /// Contract: every batch entry has `hitl.is_some()` with `status == Pending`.
+    ///
+    /// Default impl returns an empty Vec, which signals "I cannot render
+    /// HITLs". The delivery cursor parks and the user must resolve via the
+    /// web URL on each Hitl. Override for adapters that can render natively
+    /// (Telegram inline buttons, SMS prompt + URL fallback, etc.).
+    async fn on_pending_hitl(
+        &self,
+        _batch: &[crate::inference::tool_call::ToolCall],
+        _msg: &Message,
+        _chat: &Chat,
+        _ctx: &ChannelCtx,
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+        Ok(Vec::new())
     }
 }
 

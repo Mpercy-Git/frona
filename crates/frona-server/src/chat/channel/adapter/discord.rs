@@ -1,11 +1,13 @@
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serenity::Error as SerenityError;
 use serenity::all::{
-    ChannelId, Client, Context, CreateMessage, EventHandler, GatewayIntents, Http,
-    Message as DiscordMessage, UserId,
+    ButtonStyle, ChannelId, Client, Context, CreateActionRow, CreateButton,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EventHandler,
+    GatewayIntents, Http, Interaction, Message as DiscordMessage, UserId,
 };
 use serenity::http::HttpError;
 
@@ -16,12 +18,17 @@ use crate::core::error::AppError;
 use super::super::models::{
     ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
 };
+use super::super::typing::TypingIndicator;
 #[cfg(test)]
 use super::super::models::ChannelFactory;
 
 // Discord API cap. https://discord.com/developers/docs/resources/message
 const DISCORD_MAX_MESSAGE_LEN: usize = 2000;
 const DISCORD_CHUNK_TARGET: usize = 1900;
+
+/// Discord's typing indicator auto-fades in ~10s. Refresh a bit early so a
+/// long inference keeps showing "typing…" continuously.
+const TYPING_REFRESH_INTERVAL: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DiscordConfig {
@@ -34,6 +41,7 @@ pub struct DiscordAdapter {
     bot_token: String,
     http: Arc<Http>,
     self_id: Arc<OnceLock<UserId>>,
+    typing: TypingIndicator,
 }
 
 impl From<DiscordConfig> for DiscordAdapter {
@@ -43,6 +51,7 @@ impl From<DiscordConfig> for DiscordAdapter {
             bot_token: cfg.bot_token,
             http,
             self_id: Arc::new(OnceLock::new()),
+            typing: TypingIndicator::new(),
         }
     }
 }
@@ -71,6 +80,8 @@ impl ChannelAdapter for DiscordAdapter {
             emit: ctx.emit.clone(),
             channel_id_log: ctx.channel.id.clone(),
             self_id: self.self_id.clone(),
+            channel_manager: ctx.channel_manager.clone(),
+            chat_service: ctx.chat_service.clone(),
         };
         let intents = GatewayIntents::GUILDS
             | GatewayIntents::GUILD_MESSAGES
@@ -145,20 +156,93 @@ impl ChannelAdapter for DiscordAdapter {
         self.post_message(chat, &msg.content).await
     }
 
-    async fn on_inference_active(
+    async fn on_inference_start(
         &self,
         chat: &Chat,
         _ctx: &ChannelCtx,
     ) -> Result<(), AppError> {
-        let channel_id = parse_external_id(external_chat_id(chat)?)?;
-        if let Err(e) = channel_id.broadcast_typing(&*self.http).await {
-            tracing::debug!(
-                channel_id = %channel_id,
-                error = %e,
-                "Discord broadcast_typing failed (non-fatal)",
-            );
-        }
+        let Ok(external_id) = external_chat_id(chat) else { return Ok(()) };
+        let Ok(discord_channel_id) = parse_external_id(external_id) else { return Ok(()) };
+
+        let http = self.http.clone();
+        self.typing.start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
+            let http = http.clone();
+            async move {
+                if let Err(e) = discord_channel_id.broadcast_typing(&*http).await {
+                    tracing::debug!(
+                        channel_id = %discord_channel_id,
+                        error = %e,
+                        "Discord broadcast_typing failed (best-effort)",
+                    );
+                }
+            }
+        }).await;
         Ok(())
+    }
+
+    async fn on_inference_done(
+        &self,
+        chat: &Chat,
+        _ctx: &ChannelCtx,
+    ) -> Result<(), AppError> {
+        self.typing.stop(&chat.id).await;
+        Ok(())
+    }
+
+    async fn on_pending_hitl(
+        &self,
+        batch: &[crate::inference::tool_call::ToolCall],
+        _msg: &Message,
+        chat: &Chat,
+        ctx: &ChannelCtx,
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+        let channel_id = parse_external_id(external_chat_id(chat)?)?;
+        let mut out = Vec::with_capacity(batch.len());
+        for tc in batch {
+            let Some(h) = tc.hitl.as_ref() else { continue };
+            let kind = crate::chat::channel::hitl::kind_for(&h.request);
+            let body = h.prompt.clone();
+            let components = build_discord_components(&tc.id, &kind, &h.url);
+            let req = CreateMessage::new().content(body).components(components);
+            match channel_id.send_message(&*self.http, req).await {
+                Ok(sent) => out.push(crate::inference::hitl::HitlDelivery {
+                    channel_id: ctx.channel.id.clone(),
+                    external_message_id: sent.id.get().to_string(),
+                    delivered_at: chrono::Utc::now(),
+                }),
+                Err(e) => {
+                    let retryable = is_discord_retryable_error(&e);
+                    tracing::warn!(
+                        channel_id = %ctx.channel.id,
+                        tool_call_id = %tc.id,
+                        retryable = retryable,
+                        error = %e,
+                        "Discord on_pending_hitl: send failed",
+                    );
+                    if retryable {
+                        return Err(AppError::Internal(format!(
+                            "Discord send failed: {e}"
+                        )));
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// 5xx, 429, and non-HTTP errors (network, gateway) are transient — propagate
+/// as `Err` so `record_segment_failure` schedules backoff retry. 4xx (except
+/// 429) is permanent (validation, missing perms, unknown channel) — return
+/// `Ok(partial)` so the batch parks instead of burning the retry budget.
+fn is_discord_retryable_error(err: &SerenityError) -> bool {
+    match err {
+        SerenityError::Http(HttpError::UnsuccessfulRequest(resp)) => {
+            let code = resp.status_code.as_u16();
+            code == 429 || (500..=599).contains(&code)
+        }
+        _ => true,
     }
 }
 
@@ -184,6 +268,8 @@ struct DiscordEventHandler {
     emit: tokio::sync::mpsc::Sender<ExternalMessage>,
     channel_id_log: String,
     self_id: Arc<OnceLock<UserId>>,
+    channel_manager: Arc<super::super::ChannelManager>,
+    chat_service: crate::chat::service::ChatService,
 }
 
 #[async_trait]
@@ -201,6 +287,129 @@ impl EventHandler for DiscordEventHandler {
                 "Discord inbound emit channel closed",
             );
         }
+    }
+
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        let Interaction::Component(component) = interaction else {
+            return;
+        };
+        let custom_id = component.data.custom_id.clone();
+
+        let parsed = crate::chat::channel::hitl::parse_resolve_callback_data(
+            &custom_id,
+            &self.chat_service,
+        )
+        .await;
+
+        let (tool_call_id, response) = match parsed {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    channel_id = %self.channel_id_log,
+                    data = %custom_id,
+                    error = %e,
+                    "Discord callback_data parse failed",
+                );
+                let resp = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .ephemeral(true)
+                        .content("Could not interpret that action."),
+                );
+                let _ = component.create_response(&ctx.http, resp).await;
+                return;
+            }
+        };
+
+        let answer_label = crate::chat::channel::hitl::response_display(&response);
+        let outcome = self
+            .channel_manager
+            .resolve_hitl(&tool_call_id, response)
+            .await;
+
+        let summary = match &outcome {
+            Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) => answer_label,
+            Ok(crate::inference::hitl::ResolveOutcome::AlreadyResolved) => "Already resolved".to_string(),
+            Err(e) => format!("Failed: {e}"),
+        };
+
+        let original = component.message.content.clone();
+        let new_content = format!("{original}\n\n→ {summary}");
+        let resp = CreateInteractionResponse::UpdateMessage(
+            CreateInteractionResponseMessage::new()
+                .content(new_content)
+                .components(Vec::new()),
+        );
+        if let Err(e) = component.create_response(&ctx.http, resp).await {
+            tracing::warn!(
+                channel_id = %self.channel_id_log,
+                error = %e,
+                "Discord interaction response failed",
+            );
+        }
+    }
+}
+
+const DISCORD_LABEL_MAX: usize = 80;
+const DISCORD_CHOICE_BUTTON_CAP: usize = 5;
+
+fn truncate_label(s: &str) -> String {
+    if s.chars().count() <= DISCORD_LABEL_MAX {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(DISCORD_LABEL_MAX - 1).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Mirror of `telegram::build_inline_keyboard`. Approval → Yes/No row plus a
+/// URL fallback (the only Approval path today is `manage_app` deploy, where
+/// the user needs the link to inspect the manifest). Choice → option buttons
+/// only — they ARE the resolve action. External → URL only. Discord rejects
+/// link buttons with non-http(s) URLs, so URL rows silently drop if invalid.
+fn build_discord_components(
+    tcid: &str,
+    kind: &crate::chat::channel::hitl::HitlKind,
+    url: &str,
+) -> Vec<CreateActionRow> {
+    use crate::chat::channel::hitl::HitlKind;
+    let url_row = || -> Option<CreateActionRow> {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            Some(CreateActionRow::Buttons(vec![
+                CreateButton::new_link(url).label("Open on web →"),
+            ]))
+        } else {
+            None
+        }
+    };
+    match kind {
+        HitlKind::Approval => {
+            let mut rows = vec![CreateActionRow::Buttons(vec![
+                CreateButton::new(format!("r:{tcid}:y"))
+                    .label("Yes")
+                    .style(ButtonStyle::Success),
+                CreateButton::new(format!("r:{tcid}:n"))
+                    .label("No")
+                    .style(ButtonStyle::Danger),
+            ])];
+            if let Some(row) = url_row() {
+                rows.push(row);
+            }
+            rows
+        }
+        HitlKind::Choice { options } => options
+            .iter()
+            .take(DISCORD_CHOICE_BUTTON_CAP)
+            .enumerate()
+            .map(|(i, opt)| {
+                CreateActionRow::Buttons(vec![
+                    CreateButton::new(format!("r:{tcid}:c:{i}"))
+                        .label(truncate_label(opt))
+                        .style(ButtonStyle::Primary),
+                ])
+            })
+            .collect(),
+        HitlKind::External => url_row().map(|r| vec![r]).unwrap_or_default(),
     }
 }
 

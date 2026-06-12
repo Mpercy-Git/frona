@@ -69,9 +69,7 @@ async fn delete_task(
     Path(id): Path<String>,
 ) -> Result<(), ApiError> {
     // Fire tokens before DB teardown so in-flight tokios unwind cleanly.
-    if let Some(executor) = state.task_executor() {
-        executor.cancel_task(&id).await;
-    }
+    state.task_executor.cancel_task(&id).await;
     state.task_service.delete(&auth.user_id, &id).await?;
     Ok(())
 }
@@ -83,9 +81,7 @@ async fn cancel_task(
 ) -> Result<Json<TaskResponse>, ApiError> {
     let task = state.task_service.cancel(&auth.user_id, &id).await?;
 
-    if let Some(executor) = state.task_executor() {
-        executor.cancel_task(&id).await;
-    }
+    state.task_executor.cancel_task(&id).await;
 
     Ok(Json(task.into()))
 }

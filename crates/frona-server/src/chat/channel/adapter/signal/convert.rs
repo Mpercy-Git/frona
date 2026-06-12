@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use presage::libsignal_service::content::{Content, ContentBody, Metadata};
 use presage::libsignal_service::protocol::{Aci, ServiceId};
 use presage::libsignal_service::proto::DataMessage;
@@ -6,7 +8,9 @@ use presage::store::Store;
 use presage::Manager;
 use tokio::sync::mpsc;
 
+use crate::chat::channel::ChannelManager;
 use crate::chat::channel::models::ExternalMessage;
+use crate::chat::service::ChatService;
 
 use super::command::SignalCommand;
 use super::external_id;
@@ -17,6 +21,8 @@ pub async fn handle<S: Store>(
     cmd_tx: &mpsc::Sender<SignalCommand>,
     content: Content,
     channel_id: &str,
+    chat_service: &ChatService,
+    channel_manager: &Arc<ChannelManager>,
 ) {
     tracing::debug!(
         channel_id = %channel_id,
@@ -46,26 +52,91 @@ pub async fn handle<S: Store>(
         );
         return;
     };
-    tracing::info!(
-        channel_id = %channel_id,
-        from = %event.sender_address,
-        signal_chat = %event.external_chat_id,
-        "Signal inbound accepted - emitting to inbound pipeline",
-    );
-    if let Err(e) = emit.send(event).await {
-        tracing::warn!(
+
+    let quoted_id: Option<String> = dm.quote.as_ref().and_then(|q| q.id).map(|ts| ts.to_string());
+    let sender = content.metadata.sender;
+    let inbound_ts = content.metadata.timestamp;
+
+    // Spawn the resolve + emit work off the worker loop. The Signal worker
+    // runs on a single-threaded runtime; if resolve_hitl reaches back into
+    // on_pending_hitl → dispatch_text → cmd_tx.send + rx.await, the reply
+    // can only be fulfilled by `command::handle` running on this same loop —
+    // which would be blocked here. Spawn so the loop stays free to drain
+    // outbound commands.
+    let emit = emit.clone();
+    let cmd_tx = cmd_tx.clone();
+    let chat_service = chat_service.clone();
+    let channel_manager = channel_manager.clone();
+    let channel_id = channel_id.to_string();
+    tokio::spawn(async move {
+        let send_receipt = || async {
+            let _ = cmd_tx
+                .send(SignalCommand::SendReadReceipt {
+                    sender,
+                    timestamps: vec![inbound_ts],
+                })
+                .await;
+        };
+
+        if let Ok(Some(chat)) = chat_service
+            .find_chat_by_channel_external_id(&channel_id, &event.external_chat_id)
+            .await
+        {
+            match crate::chat::channel::hitl::try_resolve_inbound(
+                &chat_service,
+                &channel_manager,
+                &chat.id,
+                quoted_id.as_deref(),
+                &event.content,
+            )
+            .await
+            {
+                Ok(Some(crate::inference::hitl::ResolveOutcome::Resolved { .. })) => {
+                    tracing::info!(
+                        channel_id = %channel_id,
+                        signal_chat = %event.external_chat_id,
+                        quoted_id = ?quoted_id,
+                        "Signal inbound consumed as HITL resolution",
+                    );
+                    send_receipt().await;
+                    return;
+                }
+                Ok(Some(crate::inference::hitl::ResolveOutcome::AlreadyResolved)) => {
+                    tracing::info!(
+                        channel_id = %channel_id,
+                        signal_chat = %event.external_chat_id,
+                        "Signal inbound matched an already-resolved HITL; skipping",
+                    );
+                    send_receipt().await;
+                    return;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        channel_id = %channel_id,
+                        error = %e,
+                        "Signal try_resolve_inbound failed; falling through to emit",
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
             channel_id = %channel_id,
-            error = %e,
-            "Signal inbound emit failed (pipeline closed)",
+            from = %event.sender_address,
+            signal_chat = %event.external_chat_id,
+            "Signal inbound accepted - emitting to inbound pipeline",
         );
-        return;
-    }
-    let _ = cmd_tx
-        .send(SignalCommand::SendReadReceipt {
-            sender: content.metadata.sender,
-            timestamps: vec![content.metadata.timestamp],
-        })
-        .await;
+        if let Err(e) = emit.send(event).await {
+            tracing::warn!(
+                channel_id = %channel_id,
+                error = %e,
+                "Signal inbound emit failed (pipeline closed)",
+            );
+            return;
+        }
+        send_receipt().await;
+    });
 }
 
 fn content_body_kind(body: &ContentBody) -> &'static str {
@@ -252,5 +323,27 @@ mod tests {
         };
         let event = shape_event(me, &m, &dm).unwrap();
         assert_eq!(event.content, "[attachment: application/pdf]");
+    }
+
+    #[test]
+    fn quoted_id_extracted_from_quote() {
+        use presage::libsignal_service::proto::data_message::Quote;
+        let dm = DataMessage {
+            body: Some("yes".into()),
+            quote: Some(Quote {
+                id: Some(1_700_000_000_123),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let quoted = dm.quote.as_ref().and_then(|q| q.id).map(|ts| ts.to_string());
+        assert_eq!(quoted.as_deref(), Some("1700000000123"));
+    }
+
+    #[test]
+    fn quoted_id_is_none_when_no_quote() {
+        let dm = dm_text("plain reply");
+        let quoted = dm.quote.as_ref().and_then(|q| q.id).map(|ts| ts.to_string());
+        assert_eq!(quoted, None);
     }
 }

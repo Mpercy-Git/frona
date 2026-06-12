@@ -135,10 +135,29 @@ async fn test_app_state_with_mock(
         state.presign_service.clone(),
     );
     // Replace the chat_service with our version that has the mock provider.
-    state.chat_service = chat_service;
+    state.chat_service = chat_service.clone();
     // Replace the agent_service so chat_service in state shares the same
     // underlying repo as the one above.
-    state.agent_service = agent_service;
+    state.agent_service = agent_service.clone();
+    state.harness = Arc::new(frona::agent::harness::Harness::new(
+        chat_service,
+        state.user_service.clone(),
+        state.storage_service.clone(),
+        agent_service,
+        state.memory_service.clone(),
+        state.skill_service.clone(),
+        state.task_service.clone(),
+        state.vault_service.clone(),
+        state.mcp_service.clone(),
+        state.tool_manager.clone(),
+        state.policy_service.clone(),
+        state.broadcast_service.clone(),
+        state.active_sessions.clone(),
+        state.shutdown_token.clone(),
+        state.prompts.clone(),
+        state.config.clone(),
+    ));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
 
     (state, tmp)
 }
@@ -232,10 +251,11 @@ async fn task_execution_emits_expected_sse_events() {
     let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
     repo.create(&task).await.unwrap();
 
-    // Execute the task (spawns a background tokio task).
+    // Execute the task in the background while we poll for status.
     let task_id = task.id.clone();
-    let executor = Arc::new(TaskExecutor::new(state.clone()));
-    executor.spawn_execution(task).await.unwrap();
+    let executor = Arc::new(TaskExecutor::new(state.harness.clone()));
+    let exec_for_spawn = executor.clone();
+    tokio::spawn(async move { let _ = exec_for_spawn.run_task(task).await; });
 
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -279,17 +299,19 @@ async fn task_execution_emits_expected_sse_events() {
 
     assert_eq!(event_names[1], "chat_message", "Second event should be chat_message");
 
-    assert_eq!(event_names[2], "token", "Third event should be token");
+    assert_eq!(event_names[2], "inference_start", "Third event should be inference_start");
+
+    assert_eq!(event_names[3], "token", "Fourth event should be token");
     assert_eq!(
-        frames[2].data["content"].as_str().unwrap(),
+        frames[3].data["content"].as_str().unwrap(),
         "Hello from the task!",
         "Token should carry the response text"
     );
 
     // `complete_agent_message` no longer fires `chat_message` for streaming
     // completions - `inference_done` is the canonical signal.
-    assert_eq!(event_names[3], "inference_done", "Fourth event should be inference_done");
-    let message = &frames[3].data["message"];
+    assert_eq!(event_names[4], "inference_done", "Fifth event should be inference_done");
+    let message = &frames[4].data["message"];
     assert!(message.is_object(), "inference_done should carry a message object");
     assert_eq!(
         message["content"].as_str().unwrap(),
@@ -378,8 +400,9 @@ async fn delegation_delivers_task_result_to_parent_chat() {
     task_repo.create(&task).await.unwrap();
 
     let task_id = task.id.clone();
-    let executor = Arc::new(TaskExecutor::new(state.clone()));
-    executor.spawn_execution(task).await.unwrap();
+    let executor = Arc::new(TaskExecutor::new(state.harness.clone()));
+    let exec_for_spawn = executor.clone();
+    tokio::spawn(async move { let _ = exec_for_spawn.run_task(task).await; });
 
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

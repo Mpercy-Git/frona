@@ -30,6 +30,7 @@ mod migrate_agent_sandbox_config_to_policies;
 mod migrate_agent_tools_to_policies;
 mod rename_directory_entity_to_path;
 mod rename_vault_grant_to_principal;
+mod translate_tool_data_to_hitl;
 
 pub type MigrationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(), surrealdb::Error>> + Send + 'a>>;

@@ -69,7 +69,7 @@ fn resolve_default_prompt(state: &AppState, user_handle: &crate::core::Handle, a
 async fn to_response(state: &AppState, user_id: &str, user_handle: &crate::core::Handle, agent: Agent) -> Result<AgentResponse, AppError> {
     let registry = state
         .tool_manager
-        .build_agent_registry(user_id, &agent, &state.policy_service)
+        .build_agent_registry(user_id, &agent, &state.policy_service, None)
         .await;
     let tools: Vec<String> = registry.definitions().iter().map(|d| d.id.clone()).collect();
     let sandbox_policy = state

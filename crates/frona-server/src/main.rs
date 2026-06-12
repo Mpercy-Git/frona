@@ -84,7 +84,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.browser_session_manager.kill_all_sessions().await;
     state.skill_service.start_watcher();
 
-    state.init_task_executor();
     let signal_service = state.init_signal_service();
     state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await?;
@@ -117,8 +116,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.policy_service.register_managed_policy(policy);
     }
 
-    if let Some(executor) = state.task_executor() {
-        let executor = executor.clone();
+    {
+        let executor = state.task_executor.clone();
         tokio::spawn(async move {
             executor.resume_all().await;
         });
@@ -126,9 +125,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     {
-        let app_state = state.clone();
+        let harness = state.harness.clone();
         tokio::spawn(async move {
-            frona::agent::execution::resume_all_chats(&app_state).await;
+            harness.resume_all().await;
         });
     }
 
@@ -309,26 +308,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let shutdown_token = state.shutdown_token.clone();
     let shutdown_signal = async move {
-        #[cfg(unix)]
-        {
-            let ctrl_c = tokio::signal::ctrl_c();
-            let mut sigterm = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::terminate(),
-            )
-            .expect("Failed to install SIGTERM handler");
+        let ctrl_c = tokio::signal::ctrl_c();
+        let mut sigterm = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )
+        .expect("Failed to install SIGTERM handler");
 
-            tokio::select! {
-                _ = ctrl_c => { info!("Received SIGINT"); }
-                _ = sigterm.recv() => { info!("Received SIGTERM"); }
-            }
-        }
-
-        #[cfg(not(unix))]
-        {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to install Ctrl+C handler");
-            info!("Received Ctrl+C");
+        tokio::select! {
+            _ = ctrl_c => { info!("Received SIGINT"); }
+            _ = sigterm.recv() => { info!("Received SIGTERM"); }
         }
 
         info!("Initiating graceful shutdown...");

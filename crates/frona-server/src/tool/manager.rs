@@ -7,10 +7,26 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::agent::models::Agent;
+use crate::agent::prompt::PromptLoader;
+use crate::agent::task::models::Task;
+use crate::agent::task::service::TaskService;
+use crate::chat::service::ChatService;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::policy::models::PolicyAction;
 use crate::policy::service::PolicyService;
+use crate::storage::StorageService;
+
+/// Passed to `ToolManager::build_agent_registry` when the chat is backed by
+/// an in-progress task; carries everything `TaskControlTool` and
+/// `ReportSignalTool` need.
+pub struct TaskToolContext {
+    pub task: Task,
+    pub storage_service: StorageService,
+    pub prompts: PromptLoader,
+    pub chat_service: ChatService,
+    pub task_service: TaskService,
+}
 
 use super::registry::AgentToolRegistry;
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
@@ -166,6 +182,7 @@ impl ToolManager {
         user_id: &str,
         agent: &Agent,
         policy_service: &PolicyService,
+        task_ctx: Option<TaskToolContext>,
     ) -> AgentToolRegistry {
         let all_defs = {
             let mut registries = self.user_registries.write().await;
@@ -231,7 +248,46 @@ impl ToolManager {
             definitions.push(def);
         }
 
-        AgentToolRegistry::new(tools, tool_name_to_owner, definitions, self.mcp_bridge_mode)
+        let mut registry =
+            AgentToolRegistry::new(tools, tool_name_to_owner, definitions, self.mcp_bridge_mode);
+
+        if let Some(ctx) = task_ctx {
+            let result_schema = ctx
+                .task
+                .result_schema
+                .as_ref()
+                .and_then(|v| match crate::agent::task::schema::ResultSpec::new(v.clone()) {
+                    Ok(spec) => Some(Arc::new(spec)),
+                    Err(e) => {
+                        tracing::warn!("failed to compile task.result_schema: {e}");
+                        None
+                    }
+                });
+
+            registry.register(Arc::new(crate::tool::task_control::TaskControlTool::new(
+                ctx.storage_service.clone(),
+                ctx.prompts.clone(),
+                result_schema.clone(),
+            )));
+
+            let is_continuous_signal = matches!(
+                &ctx.task.kind,
+                crate::agent::task::models::TaskKind::Signal {
+                    mode: crate::agent::task::models::SignalMode::Continuous,
+                    ..
+                }
+            );
+            if is_continuous_signal {
+                registry.register(Arc::new(crate::tool::report_signal::ReportSignalTool::new(
+                    ctx.chat_service,
+                    ctx.task_service,
+                    ctx.prompts,
+                    result_schema,
+                )));
+            }
+        }
+
+        registry
     }
 
     pub async fn definitions(&self, user_id: &str) -> Vec<ToolDefinition> {
@@ -242,6 +298,21 @@ impl ToolManager {
             let temp = UserToolRegistry::new(self.builtins());
             temp.definitions().into_iter().map(|(_, def)| def).collect()
         }
+    }
+
+    /// Find a builtin tool by its sub-tool name (e.g. "ask_user_question",
+    /// "manage_app") for the resolve dispatcher. Bypasses per-user and
+    /// per-agent filtering — the agent already had policy permission to emit
+    /// the HITL at execute time, so resolution should always succeed.
+    pub fn find_tool_for_resume(&self, tool_name: &str) -> Option<Arc<dyn AgentTool>> {
+        for tool in self.builtins() {
+            for def in tool.definitions() {
+                if def.id == tool_name {
+                    return Some(tool.clone());
+                }
+            }
+        }
+        None
     }
 }
 
@@ -261,7 +332,11 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     let prompts = state.prompts.clone();
 
     let mut tools: Vec<Arc<dyn AgentTool>> = vec![
-        Arc::new(NotifyHumanTool::new(state.vault_service.clone(), prompts.clone())),
+        Arc::new(NotifyHumanTool::new(
+            state.vault_service.clone(),
+            prompts.clone(),
+            state.config.server.external_or_local_base_url(),
+        )),
         Arc::new(super::send_message::SendMessageTool::new(
             state.chat_service.clone(), state.notification_service.clone(),
             state.broadcast_service.clone(), state.agent_service.clone(),
@@ -281,10 +356,15 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         Arc::new(WebFetchTool::new(state.browser_session_manager.clone(), prompts.clone())),
         Arc::new(WebSearchTool::new(state.search_provider.clone(), prompts.clone())),
         Arc::new(HeartbeatTool::new(state.agent_service.clone(), state.storage_service.clone(), prompts.clone(), state.config.server.timezone.clone())),
-        Arc::new(RequestCredentialsTool::new(state.vault_service.clone(), prompts.clone())),
-        Arc::new(super::manage_service::ManageServiceTool::new(
+        Arc::new(RequestCredentialsTool::new(
+            state.vault_service.clone(),
+            prompts.clone(),
+            state.config.server.external_or_local_base_url(),
+        )),
+        Arc::new(super::manage_app::ManageAppTool::new(
             state.app_service.clone(), prompts.clone(),
             state.notification_service.clone(), state.broadcast_service.clone(),
+            state.storage_service.clone(),
             state.config.server.external_or_local_base_url(),
         )),
         Arc::new(super::create_agent::CreateAgentTool::new(
@@ -294,13 +374,12 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         Arc::new(super::manage_policy::ManagePolicyTool::new(state.policy_service.clone(), prompts.clone())),
     ];
 
-    if let Some(executor) = state.task_executor() {
-        tools.push(Arc::new(TaskTool::new(
-            state.task_service.clone(), state.agent_service.clone(), executor,
-            state.policy_service.clone(), prompts.clone(),
-            state.config.server.timezone.clone(),
-        )));
-    }
+    tools.push(Arc::new(TaskTool::new(
+        state.task_service.clone(), state.agent_service.clone(),
+        state.task_executor.clone(),
+        state.policy_service.clone(), prompts.clone(),
+        state.config.server.timezone.clone(),
+    )));
 
     if let Some(signal_service) = state.signal_service() {
         tools.push(Arc::new(super::await_signal::AwaitSignalTool::new(

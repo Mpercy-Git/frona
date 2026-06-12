@@ -7,7 +7,7 @@ use crate::agent::prompt::PromptLoader;
 use crate::agent::task::models::TaskStatus;
 use crate::agent::task::schema::ResultSpec;
 use crate::core::error::AppError;
-use crate::inference::tool_call::MessageTool;
+use crate::inference::tool_call::TaskEvent;
 use crate::storage::resolve_workspace_attachment;
 use crate::storage::service::StorageService;
 
@@ -123,8 +123,8 @@ impl AgentTool for TaskControlTool {
                     }
                 }
 
-                let mut output = ToolOutput::text("Task marked as complete.").with_tool_data(
-                    MessageTool::TaskCompletion {
+                let mut output = ToolOutput::text("Task marked as complete.").with_task_event(
+                    TaskEvent::Completion {
                         task_id: task.id.clone(),
                         chat_id: Some(ctx.chat.id.clone()),
                         status: TaskStatus::Completed,
@@ -145,8 +145,8 @@ impl AgentTool for TaskControlTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AppError::Validation("Missing 'reason' parameter".into()))?;
 
-                Ok(ToolOutput::text("Task marked as failed.").with_tool_data(
-                    MessageTool::TaskCompletion {
+                Ok(ToolOutput::text("Task marked as failed.").with_task_event(
+                    TaskEvent::Completion {
                         task_id: task.id.clone(),
                         chat_id: Some(ctx.chat.id.clone()),
                         status: TaskStatus::Failed,
@@ -170,7 +170,7 @@ impl AgentTool for TaskControlTool {
 
                 Ok(
                     ToolOutput::text(format!("Task deferred for {delay_minutes} minutes."))
-                        .with_tool_data(MessageTool::TaskDeferred {
+                        .with_task_event(TaskEvent::Deferred {
                             task_id: task.id.clone(),
                             delay_minutes,
                             reason: reason.to_string(),

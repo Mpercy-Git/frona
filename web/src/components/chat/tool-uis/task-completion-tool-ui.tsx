@@ -42,6 +42,8 @@ function TaskCompletionContent({ args }: { args: TaskCompletionArgs }) {
 }
 
 export const TaskCompletionToolUI = makeAssistantToolUI<TaskCompletionArgs, string>({
-  toolName: "TaskCompletion",
+  // Matches TaskEvent.Completion (from inference::tool_call::TaskEvent).
+  // task_event is emitted by complete_task / fail_task tools.
+  toolName: "Completion",
   render: ({ args }) => <TaskCompletionContent args={args} />,
 });

@@ -234,10 +234,9 @@ impl Supervisor for AppSupervisor {
                     return;
                 }
             };
-            crate::agent::task::executor::resume_or_notify(
-                &state, &user_id, &chat_id, &message_id,
-            )
-            .await;
+            if let Err(e) = state.harness.resume(&user_id, &chat_id, &message_id).await {
+                tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume app chat for crash fix");
+            }
         });
         true
     }

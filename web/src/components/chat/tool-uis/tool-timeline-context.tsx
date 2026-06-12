@@ -20,10 +20,11 @@ const COLLAPSE_DELAY_MS = 10_000;
 /** Tool calls with custom UIs that render outside the timeline. */
 const EXCLUDED_TOOLS = new Set([
   "Question",
-  "HumanInTheLoop",
-  "VaultApproval",
-  "ServiceApproval",
-  "TaskCompletion",
+  "Takeover",
+  "Credential",
+  "App",
+  "Completion",
+  "Deferred",
   "Attachments",
 ]);
 

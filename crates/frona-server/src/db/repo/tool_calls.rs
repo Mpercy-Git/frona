@@ -79,10 +79,9 @@ impl ToolCallRepository for SurrealRepo<ToolCall> {
             .into_iter()
             .rev()
             .find(|te| {
-                te.tool_data
+                te.hitl
                     .as_ref()
-                    .and_then(|t| t.tool_status())
-                    .is_some_and(|s| matches!(s, crate::inference::tool_call::ToolStatus::Pending))
+                    .is_some_and(|h| h.status == crate::inference::tool_call::ToolStatus::Pending)
             }))
     }
 }

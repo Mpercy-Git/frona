@@ -21,7 +21,7 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   cli: "Terminal",
   python: "Python",
   browser_navigate: "Browser",
-  manage_service: "Service",
+  manage_app: "App",
   request_credentials: "Request Credentials",
   produce_file: "Produce File",
   store_agent_memory: "Remember",

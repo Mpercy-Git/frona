@@ -9,9 +9,8 @@ use rig_core::completion::{AssistantContent, Message as RigMessage};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::broadcast::EventSender;
-use crate::chat::message::models::Reasoning;
+use crate::chat::message::models::{MessageResponse, Reasoning};
 
-use super::tool_call::MessageTool;
 use crate::core::error::AppError;
 use crate::core::metrics::{self, InferenceMetricsContext};
 use crate::tool::registry::AgentToolRegistry;
@@ -27,7 +26,9 @@ pub struct InferenceEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum InferenceEventKind {
+    // ── Streaming within a turn ──────────────────────────────────────
     Text(String),
     Reasoning(String),
     ToolCall {
@@ -48,9 +49,42 @@ pub enum InferenceEventKind {
         fields: serde_json::Value,
     },
     Retry { retry_after_ms: u64, reason: &'static str },
-    Done(String),
-    Cancelled(String),
-    Error(String),
+
+    // ── Turn-lifecycle ───────────────────────────────────────────────
+    /// Inference turn is starting (initial submit or resume after HITL).
+    /// Channel adapters use this to begin a "thinking/typing" affordance.
+    Start,
+    /// Inference loop completed normally. `message` is the persisted final
+    /// state (content, reasoning, attachments).
+    Done { message: MessageResponse },
+    /// Inference loop was cancelled (cancellation token fired, e.g. user
+    /// submitted a new message while a previous turn was running).
+    Cancelled { reason: String },
+    /// Inference loop ended in error (provider failure, max turns, etc.).
+    Failed { error: String },
+    /// Loop is parked, waiting for something external (the human, a sibling
+    /// task, a webhook) to resume it. The `reason` carries WHY; the message
+    /// is the executing-status message at the point of the pause. Every
+    /// pause cause fires this — adapters / FE that just want "loop stopped
+    /// streaming" can match on `Paused { .. }` without inspecting reason.
+    Paused {
+        reason: PauseReason,
+        message: MessageResponse,
+    },
+    /// Human just resolved a HITL — the loop is about to resume. The message
+    /// reflects the post-resolution state (resolved tool_call.result set).
+    Resume { message: MessageResponse },
+}
+
+/// Why the inference loop paused. Each variant gets its own dispatcher
+/// branch on the channel and FE sides — adding a new pause cause is one
+/// new variant + one new branch.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum PauseReason {
+    /// Loop paused on pending HITL prompts. The pending tool_calls are on
+    /// `message.tool_calls` (entries where `hitl.status == Pending`).
+    Hitl,
 }
 
 #[derive(Debug, Clone)]
@@ -61,7 +95,8 @@ pub struct ToolCallResult {
     pub result: String,
     pub success: bool,
     pub duration_ms: u64,
-    pub tool_data: Option<MessageTool>,
+    pub hitl: Option<crate::inference::hitl::Hitl>,
+    pub task_event: Option<crate::inference::tool_call::TaskEvent>,
     pub system_prompt: Option<String>,
 }
 
@@ -71,7 +106,7 @@ pub enum ToolLoopOutcome {
     Completed {
         text: String,
         attachments: Vec<crate::storage::Attachment>,
-        lifecycle_event: Option<MessageTool>,
+        lifecycle_event: Option<crate::inference::tool_call::TaskEvent>,
         reasoning: Option<Reasoning>,
     },
     Cancelled(String),
@@ -81,6 +116,7 @@ pub enum ToolLoopOutcome {
         system_prompt: Option<String>,
     },
 }
+
 
 pub fn extract_reasoning(contents: &[AssistantContent]) -> Option<Reasoning> {
     contents.iter().find_map(|c| {
@@ -119,10 +155,8 @@ async fn check_cancellation(
     event_tx: &EventSender,
     turn_text: &str,
 ) -> Option<ToolLoopOutcome> {
+    let _ = event_tx; // no in-loop Cancelled signal — caller emits the lifecycle event
     if cancel_token.is_cancelled() {
-        event_tx.send(InferenceEvent {
-            kind: InferenceEventKind::Cancelled(String::new()),
-        });
         Some(ToolLoopOutcome::Cancelled(turn_text.to_string()))
     } else {
         None
@@ -205,6 +239,7 @@ async fn execute_tool_calls(
     message_id: &str,
     turn: u32,
     turn_text: Option<&str>,
+    turn_reasoning: Option<&Reasoning>,
 ) -> Result<ToolCallExecutionResult, AppError> {
     let mut result = ToolCallExecutionResult {
         external_tools: Vec::new(),
@@ -212,7 +247,7 @@ async fn execute_tool_calls(
         accumulated_system_prompts: Vec::new(),
     };
 
-    let mut turn_text_used = false;
+    let mut turn_metadata_used = false;
 
     for content in contents {
         if ctx.cancel_token.is_cancelled() {
@@ -244,12 +279,15 @@ async fn execute_tool_calls(
 
         tracing::debug!(tool = %tool_name, args = %arguments, "Executing tool");
 
-        // Persist record BEFORE execution (crash resilience)
-        let current_turn_text = if !turn_text_used {
-            turn_text_used = true;
-            turn_text.map(|s| s.to_string())
+        // Persist record BEFORE execution (crash resilience).
+        // Stamp turn-level metadata (text + reasoning) on the FIRST tool_call
+        // of the turn — both fields gate on the same `turn_metadata_used`
+        // flag so they stay paired even when turn_text is None.
+        let (current_turn_text, current_turn_reasoning) = if !turn_metadata_used {
+            turn_metadata_used = true;
+            (turn_text.map(|s| s.to_string()), turn_reasoning.cloned())
         } else {
-            None
+            (None, None)
         };
         let mut te_record = chat_service
             .begin_tool_call(
@@ -262,6 +300,7 @@ async fn execute_tool_calls(
                 &arguments,
                 description.clone(),
                 current_turn_text,
+                current_turn_reasoning,
             )
             .await?;
 
@@ -294,7 +333,8 @@ async fn execute_tool_calls(
             }
         };
 
-        let td = tool_output.as_ref().and_then(|o| o.tool_data().cloned());
+        let hitl_emitted = tool_output.as_ref().and_then(|o| o.hitl().cloned());
+        let task_event_emitted = tool_output.as_ref().and_then(|o| o.task_event().cloned());
         let sp = tool_output.as_ref().and_then(|o| o.system_prompt().map(str::to_string));
 
         if let Some(ref output) = tool_output {
@@ -313,16 +353,24 @@ async fn execute_tool_calls(
                 text.clone(),
                 success,
                 duration_ms,
-                td.clone(),
                 sp.clone(),
             )
             .await?;
+
+        // Persist the typed HITL / TaskEvent on the tool_call row.
+        if let Some(ref h) = hitl_emitted {
+            chat_service.set_hitl(&te_record.id, h.clone()).await?;
+        }
+        if let Some(ref e) = task_event_emitted {
+            chat_service.set_task_event(&te_record.id, e.clone()).await?;
+        }
 
         // Update in-memory record with finished fields so the SSE response is complete
         te_record.result = text.clone();
         te_record.success = success;
         te_record.duration_ms = duration_ms;
-        te_record.tool_data = td.clone();
+        te_record.hitl = hitl_emitted.clone();
+        te_record.task_event = task_event_emitted.clone();
         te_record.system_prompt = sp.clone();
 
         let te_response: crate::inference::tool_call::ToolCallResponse = te_record.into();
@@ -334,11 +382,18 @@ async fn execute_tool_calls(
             result: text.clone(),
             success,
             duration_ms,
-            tool_data: td,
+            hitl: hitl_emitted.clone(),
+            task_event: task_event_emitted.clone(),
             system_prompt: sp.clone(),
         };
 
-        let is_pending_external = tool_output.as_ref().is_some_and(|o| o.is_pending_external());
+        // A tool pauses the loop when it emits a Pending HITL OR explicitly
+        // sets `as_pending_external` (voice tools, etc., resolve via external
+        // system callback).
+        let is_pending_external = hitl_emitted
+            .as_ref()
+            .is_some_and(|h| h.status == crate::inference::tool_call::ToolStatus::Pending)
+            || tool_output.as_ref().is_some_and(|o| o.is_pending_external());
 
         if is_pending_external {
             result.external_tools.push((te_response, tool_call_result));
@@ -431,9 +486,6 @@ pub async fn run_tool_loop(
         {
             StreamResult::Contents(c) => c,
             StreamResult::Cancelled => {
-                event_tx.send(InferenceEvent {
-                        kind: InferenceEventKind::Cancelled(String::new()),
-                    });
                 return Ok(ToolLoopOutcome::Cancelled(turn_text));
             }
         };
@@ -445,9 +497,6 @@ pub async fn run_tool_loop(
 
         if !has_tool_calls {
             final_text = turn_text;
-            event_tx.send(InferenceEvent {
-                    kind: InferenceEventKind::Done(String::new()),
-                });
             break;
         }
 
@@ -465,6 +514,7 @@ pub async fn run_tool_loop(
             message_id,
             turn as u32,
             turn_text_opt,
+            last_reasoning.as_ref(),
         )
         .await?;
 
@@ -474,9 +524,6 @@ pub async fn run_tool_loop(
 
         if ctx.shutdown_token.is_cancelled() {
             tracing::info!("Server shutting down, stopping tool loop after current tool");
-            event_tx.send(InferenceEvent {
-                kind: InferenceEventKind::Done(String::new()),
-            });
             return Ok(ToolLoopOutcome::Completed {
                 text: turn_text,
                 attachments: all_attachments,
@@ -492,9 +539,6 @@ pub async fn run_tool_loop(
                 .map(|(te, _)| te)
                 .collect();
 
-            event_tx.send(InferenceEvent {
-                    kind: InferenceEventKind::Done(String::new()),
-                });
             return Ok(ToolLoopOutcome::ExternalToolPending {
                 turn_text,
                 tool_calls,
@@ -504,18 +548,11 @@ pub async fn run_tool_loop(
 
         // Check for task lifecycle events (complete_task, fail_task, defer_task)
         // and break immediately — no need for another inference turn.
-        let lifecycle_event = exec_result.internal_tool_results.iter().find_map(|r| {
-            match &r.tool_data {
-                Some(t @ (MessageTool::TaskCompletion { .. } | MessageTool::TaskDeferred { .. })) => {
-                    Some(t.clone())
-                }
-                _ => None,
-            }
-        });
+        let lifecycle_event = exec_result
+            .internal_tool_results
+            .iter()
+            .find_map(|r| r.task_event.clone());
         if lifecycle_event.is_some() {
-            event_tx.send(InferenceEvent {
-                kind: InferenceEventKind::Done(String::new()),
-            });
             return Ok(ToolLoopOutcome::Completed {
                 text: turn_text,
                 attachments: all_attachments,
@@ -531,9 +568,9 @@ pub async fn run_tool_loop(
 
         if turn == max_tool_turns - 1 {
             event_tx.send(InferenceEvent {
-                    kind: InferenceEventKind::Error(
-                        "Max tool turns reached".to_string(),
-                    ),
+                    kind: InferenceEventKind::Failed {
+                        error: "Max tool turns reached".to_string(),
+                    },
                 });
         }
     }

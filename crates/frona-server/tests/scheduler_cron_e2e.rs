@@ -74,8 +74,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
 }
 
 fn install_executor(state: &AppState) -> Arc<TaskExecutor> {
-    state.init_task_executor();
-    state.task_executor().expect("task executor not installed")
+    state.task_executor.clone()
 }
 
 async fn make_template(

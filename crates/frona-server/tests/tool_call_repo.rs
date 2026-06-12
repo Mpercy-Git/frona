@@ -1,5 +1,5 @@
 use chrono::Utc;
-use frona::inference::tool_call::{MessageTool, ToolStatus};
+use frona::inference::tool_call::ToolStatus;
 use frona::core::repository::Repository;
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
@@ -26,10 +26,13 @@ fn test_tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> Too
         result: "tool result".to_string(),
         success: true,
         duration_ms: 42,
-        tool_data: None,
+        
+        hitl: None,
+        task_event: None,
         system_prompt: None,
         description: None,
         turn_text: None,
+        turn_reasoning: None,
         created_at: Utc::now(),
     }
 }
@@ -96,25 +99,35 @@ async fn find_pending_by_chat_id() {
     let db = test_db().await;
     let repo: SurrealRepo<ToolCall> = SurrealRepo::new(db);
 
-    // Resolved tool execution
+    use frona::inference::hitl::{Hitl, HitlRequest};
+
+    // Resolved HITL
     let mut te1 = test_tool_call("chat-1", "msg-1", 0, "tool_resolved");
-    te1.tool_data = Some(MessageTool::VaultApproval {
-        query: "test".into(),
-        reason: "need creds".into(),
-        env_var_prefix: None,
+    te1.hitl = Some(Hitl {
+        prompt: "Allow credential access?".into(),
+        url: "/chats/chat-1".into(),
+        request: HitlRequest::Credential {
+            query: "test".into(),
+            reason: "need creds".into(),
+        },
         status: ToolStatus::Resolved,
-        response: Some("approved".into()),
+        response: None,
+        delivery: None,
     });
     repo.create(&te1).await.unwrap();
 
-    // Pending tool execution
+    // Pending HITL
     let mut te2 = test_tool_call("chat-1", "msg-1", 1, "tool_pending");
-    te2.tool_data = Some(MessageTool::VaultApproval {
-        query: "test2".into(),
-        reason: "need more creds".into(),
-        env_var_prefix: None,
+    te2.hitl = Some(Hitl {
+        prompt: "Allow credential access?".into(),
+        url: "/chats/chat-1".into(),
+        request: HitlRequest::Credential {
+            query: "test2".into(),
+            reason: "need more creds".into(),
+        },
         status: ToolStatus::Pending,
         response: None,
+        delivery: None,
     });
     repo.create(&te2).await.unwrap();
 
@@ -125,16 +138,22 @@ async fn find_pending_by_chat_id() {
 
 #[tokio::test]
 async fn find_pending_returns_none_when_all_resolved() {
+    use frona::inference::hitl::{Hitl, HitlRequest};
+
     let db = test_db().await;
     let repo: SurrealRepo<ToolCall> = SurrealRepo::new(db);
 
     let mut te = test_tool_call("chat-1", "msg-1", 0, "tool_done");
-    te.tool_data = Some(MessageTool::VaultApproval {
-        query: "test".into(),
-        reason: "reason".into(),
-        env_var_prefix: None,
+    te.hitl = Some(Hitl {
+        prompt: "Allow credential access?".into(),
+        url: "/chats/chat-1".into(),
+        request: HitlRequest::Credential {
+            query: "test".into(),
+            reason: "reason".into(),
+        },
         status: ToolStatus::Resolved,
-        response: Some("ok".into()),
+        response: None,
+        delivery: None,
     });
     repo.create(&te).await.unwrap();
 
@@ -204,10 +223,13 @@ async fn begin_creates_incomplete_record() {
         result: String::new(),
         success: false,
         duration_ms: 0,
-        tool_data: None,
+        
+        hitl: None,
+        task_event: None,
         system_prompt: None,
         description: None,
         turn_text: Some("Searching for info:".into()),
+        turn_reasoning: None,
         created_at: Utc::now(),
     };
     let id = te.id.clone();
@@ -217,7 +239,7 @@ async fn begin_creates_incomplete_record() {
     assert_eq!(found.result, "");
     assert!(!found.success);
     assert_eq!(found.duration_ms, 0);
-    assert!(found.tool_data.is_none());
+    assert!(found.hitl.is_none());
     assert!(found.system_prompt.is_none());
     assert_eq!(found.turn_text, Some("Searching for info:".to_string()));
 }
@@ -267,10 +289,13 @@ async fn begin_without_finish_leaves_incomplete() {
         result: String::new(),
         success: false,
         duration_ms: 0,
-        tool_data: None,
+        
+        hitl: None,
+        task_event: None,
         system_prompt: None,
         description: None,
         turn_text: None,
+        turn_reasoning: None,
         created_at: Utc::now(),
     };
     let id = te.id.clone();
