@@ -40,7 +40,10 @@ fn twiml_reject(reason: Option<&str>) -> Response {
     w.write(XmlEvent::end_element()).unwrap(); // Reject
     w.write(XmlEvent::end_element()).unwrap(); // Response
 
-    let twiml = String::from_utf8(buf).expect("xml-rs always emits valid UTF-8");
+    let twiml = match String::from_utf8(buf) {
+        Ok(s) => s,
+        Err(_) => return twiml_reject(None),
+    };
     let mut response = twiml.into_response();
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
@@ -272,8 +275,8 @@ pub(super) async fn twilio_inbound_handler(
         name: user.name.clone(),
         password_hash: String::new(),
         timezone: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: user.created_at,
+        updated_at: user.updated_at,
     };
 
     let created = match state
