@@ -5,6 +5,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Form;
 
+use crate::auth::User;
 use crate::auth::token::models::TokenType;
 use crate::auth::token::service::CreateTokenRequest;
 use crate::call::models::CallDirection;
@@ -39,10 +40,7 @@ fn twiml_reject(reason: Option<&str>) -> Response {
     w.write(XmlEvent::end_element()).unwrap(); // Reject
     w.write(XmlEvent::end_element()).unwrap(); // Response
 
-    let twiml = match String::from_utf8(buf) {
-        Ok(s) => s,
-        Err(_) => return twiml_reject(None),
-    };
+    let twiml = String::from_utf8(buf).expect("xml-rs always emits valid UTF-8");
     let mut response = twiml.into_response();
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
@@ -212,7 +210,6 @@ pub(super) async fn twilio_inbound_handler(
                 task_id: None,
                 agent_id: agent_id.clone(),
                 title: Some(format!("Inbound call from {from}")),
-                metadata: None,
             },
         )
         .await
@@ -267,11 +264,23 @@ pub(super) async fn twilio_inbound_handler(
         }
     };
 
+    // Build a minimal User value — the token service only needs id/username/email.
+    let token_user = User {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        email: user.email.clone(),
+        name: user.name.clone(),
+        password_hash: String::new(),
+        timezone: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+
     let created = match state
         .token_service
         .create_token(
             &state.keypair_service,
-            &user,
+            &token_user,
             CreateTokenRequest {
                 token_type: TokenType::Access,
                 principal: Principal::agent(&agent_id),

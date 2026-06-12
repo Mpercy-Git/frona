@@ -80,25 +80,4 @@ mod tests {
     fn normalize_empty() {
         assert_eq!(normalize_phone(""), "");
     }
-
-    #[test]
-    fn normalize_00_prefix_uk() {
-        // UK international dialling prefix "00" should produce same result as "+".
-        assert_eq!(normalize_phone("00442079460958"), "+442079460958");
-        assert_eq!(normalize_phone("0044 20 7946 0958"), "+442079460958");
-    }
-
-    #[test]
-    fn normalize_00_prefix_matches_plus_prefix() {
-        // A number stored as +44... must match an incoming 0044... and vice-versa.
-        assert_eq!(
-            normalize_phone("00442079460958"),
-            normalize_phone("+44 20 7946 0958")
-        );
-    }
-
-    #[test]
-    fn normalize_trims_whitespace() {
-        assert_eq!(normalize_phone("  +44 20 7946 0958  "), "+442079460958");
-    }
 }

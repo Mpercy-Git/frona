@@ -17,15 +17,13 @@ frona-api-types = { path = "../frona-api-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-chrono-tz = { workspace = true }
-iana-time-zone = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
-jsonwebtoken = "10"
+jsonwebtoken = "9"
 argon2 = "0.5"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 rand = "0.8"
@@ -33,19 +31,11 @@ aes-gcm = "0.10"
 sha2 = "0.10"
 sha1 = "0.10"
 hmac = "0.12"
-hex = "0.4"
-subtle = "2"
 openidconnect = "4"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "http2", "multipart", "ws"] }
 twilio-async = "0.5"
-teloxide = { version = "0.17", default-features = false, features = ["rustls", "ctrlc_handler"] }
-slack-morphism = { version = "2", features = ["hyper"] }
-serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "rustls_backend"] }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
-pulldown-cmark = { version = "0.13", default-features = false }
-telegram-markdown-v2 = "0.2"
-xml-rs = "1"
+xml-rs = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "fs", "trace", "set-header"] }
 tower_governor = "0.8"
@@ -58,25 +48,24 @@ async-stream = { workspace = true }
 serde-aux = { workspace = true }
 base64 = { workspace = true }
 serde_yaml = "0.9"
-config = { version = "0.15", features = ["yaml"] }
-frona-browser = { path = "../frona-browser" }
+config = { version = "0.14", features = ["yaml"] }
+browser-use = { version = "0.2", default-features = false }
 tokio-util = "0.7"
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-url = "2"
 backon = { workspace = true }
-bon = { workspace = true }
 moka = { workspace = true }
 cedar-policy = { workspace = true }
 dashmap = "6"
 libc = "0.2"
-cron = "0.16"
+cron = "0.15"
 metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.18", default-features = false }
-vaultrs = { version = "0.8", default-features = false, features = ["rustls"] }
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
+vaultrs = { version = "0.7", default-features = false, features = ["rustls"] }
 keepass = "0.10"
+keeper-secrets-manager-core = "17"
 cookie = "0.18.1"
 minijinja = "2"
 schemars = { version = "0.8", features = ["chrono"] }
@@ -87,21 +76,6 @@ notify = "8"
 rmcp = { version = "1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 xz2 = "0.1"
 inventory = "0.3"
-jsonschema = { version = "0.18", default-features = false }
-
-# Personal-WhatsApp adapter. Uses the stable-Rust `wa-rs` fork of
-# `whatsapp-rust` - the upstream requires nightly.
-wa-rs = "0.2"
-wa-rs-proto = "0.2"
-wa-rs-sqlite-storage = "0.2"
-wa-rs-tokio-transport = "0.2"
-wa-rs-ureq-http = "0.2"
-
-# Pure-Rust Signal client. See workspace Cargo.toml for the git rev and the
-# curve25519-dalek patch (both non-optional).
-presage = { workspace = true }
-presage-store-sqlite = { workspace = true }
-smol_str = { version = "0.3.6", features = ["serde"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
@@ -119,7 +93,6 @@ required-features = ["__test-bins"]
 __test-bins = []
 
 [dev-dependencies]
-approx = "0.5"
 surrealdb = { version = "3.0.0", features = ["kv-mem"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"

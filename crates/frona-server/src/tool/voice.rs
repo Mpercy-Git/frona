@@ -29,27 +29,12 @@ use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_
 /// Normalise a phone number to a canonical E.164-ish form for comparison:
 /// keep the leading `+` and strip everything that is not an ASCII digit.
 /// "+1 (555) 555-1234" and "+15555551234" both normalise to "+15555551234".
-///
-/// The `00` international dialling prefix (common in the UK and Europe) is
-/// treated as equivalent to `+`, so "0044 20 7946 0958" becomes "+442079460958"
-/// and will match a stored entry of "+442079460958".
 pub fn normalize_phone(phone: &str) -> String {
-    let trimmed = phone.trim();
-    // Determine whether this is an international number and strip any prefix.
-    let (has_plus, digits_only) = if trimmed.starts_with('+') {
-        (true, &trimmed[1..])
-    } else if trimmed.starts_with("00") {
-        // Common European/UK international trunk prefix — treat as '+'.
-        (true, &trimmed[2..])
-    } else {
-        (false, trimmed)
-    };
-
     let mut out = String::new();
-    if has_plus {
+    if phone.starts_with('+') {
         out.push('+');
     }
-    for c in digits_only.chars() {
+    for c in phone.chars() {
         if c.is_ascii_digit() {
             out.push(c);
         }
@@ -418,7 +403,7 @@ mod tests {
         use surrealdb::engine::local::Mem;
         let db = Surreal::new::<Mem>(()).await.unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
-        ContactService::new(SurrealRepo::new(db), crate::chat::broadcast::BroadcastService::new())
+        ContactService::new(SurrealRepo::new(db))
     }
 
     #[test]
