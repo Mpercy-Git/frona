@@ -13,6 +13,7 @@ pub mod messages;
 pub mod notifications;
 pub mod policies;
 pub mod oauth;
+pub mod shares;
 pub mod spaces;
 pub mod tasks;
 pub mod tokens;

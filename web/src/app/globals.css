@@ -29,7 +29,6 @@
 }
 
 :root {
-  --font-brand: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --surface: #ffffff;
   --surface-secondary: #f9fafb;
   --surface-tertiary: #f3f4f6;
@@ -421,4 +420,56 @@
     --info-bg: #1c2730;
     --info-text: #8bb8d4;
   }
+}
+
+/* Lexical composer (assistant-ui react-lexical) — directive chips + editor. */
+.aui-lexical-editor {
+  position: relative;
+}
+.aui-lexical-input {
+  outline: none;
+  resize: none;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.aui-lexical-input p {
+  margin: 0;
+}
+.aui-lexical-placeholder {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  user-select: none;
+  color: var(--text-tertiary);
+}
+.aui-directive-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  margin-right: 0.3em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.95em;
+  user-select: text;
+}
+.aui-directive-chip[data-directive-type="agent"] {
+  background: color-mix(in srgb, var(--info) 18%, transparent);
+  color: var(--info);
+}
+.aui-directive-chip[data-directive-type="client-builtin"] {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+
+/* Hide trigger popover when its filtered item list is empty. The library
+   still renders the listbox + group divs to keep ARIA stable, but there are
+   no `[role="option"]` buttons inside — so we hide the panel rather than
+   show an empty bordered box. */
+.aui-trigger-popover:not(:has([role="option"])) {
+  display: none;
 }

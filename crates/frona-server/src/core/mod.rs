@@ -1,5 +1,6 @@
 pub mod config;
 pub mod error;
+pub mod event_bus;
 pub mod handle;
 pub mod metadata;
 pub mod metrics;

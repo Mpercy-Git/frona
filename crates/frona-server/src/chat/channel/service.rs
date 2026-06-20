@@ -262,9 +262,10 @@ impl ChannelService {
         Ok(())
     }
 
+    /// Flips the channel to Connecting and broadcasts; the watcher in
+    /// `ChannelManager` picks that up and owns the actual spawn.
     pub async fn start(
         &self,
-        state: &crate::core::state::AppState,
         user_id: &str,
         channel_id: &str,
     ) -> Result<Channel, AppError> {
@@ -285,10 +286,6 @@ impl ChannelService {
             return Err(AppError::Validation(msg));
         }
         self.mark_status(channel_id, ChannelStatus::Connecting, None).await?;
-        state
-            .channel_manager
-            .clone()
-            .start_with_retry(state.clone(), channel.id.clone());
         self.find_by_id(channel_id).await
     }
 

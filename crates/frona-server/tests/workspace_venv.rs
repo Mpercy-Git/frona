@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use frona::tool::sandbox::SandboxManager;
+use frona::tool::sandbox::SandboxFactory;
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
 
 fn python3_available() -> bool {
@@ -10,8 +10,8 @@ fn python3_available() -> bool {
         .unwrap_or(false)
 }
 
-fn test_manager() -> SandboxManager {
-    SandboxManager::new(false, Arc::new(SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))
+fn test_manager() -> SandboxFactory {
+    SandboxFactory::new(false, Arc::new(SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))
 }
 
 fn test_workspace(id: &str) -> std::path::PathBuf {

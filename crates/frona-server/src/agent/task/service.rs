@@ -85,6 +85,7 @@ impl TaskService {
             error_message: None,
             quarantined: req.quarantined,
             result_schema: req.result_schema,
+            result_description: req.result_description,
             created_at: now,
             updated_at: now,
         };
@@ -140,6 +141,7 @@ impl TaskService {
             error_message: None,
             quarantined: true,
             result_schema,
+            result_description: None,
             created_at: now,
             updated_at: now,
         };
@@ -387,6 +389,7 @@ impl TaskService {
         concurrency: super::models::CronConcurrency,
         process_result: bool,
         result_schema: Option<serde_json::Value>,
+        result_description: Option<String>,
     ) -> Result<Task, AppError> {
         if let Some(ref schema) = result_schema {
             super::schema::validate_schema_doc(schema).map_err(AppError::Validation)?;
@@ -416,6 +419,7 @@ impl TaskService {
             error_message: None,
             quarantined: false,
             result_schema,
+            result_description,
             created_at: now,
             updated_at: now,
         };
@@ -493,6 +497,7 @@ impl TaskService {
             error_message: None,
             quarantined: false,
             result_schema: template.result_schema.clone(),
+            result_description: template.result_description.clone(),
             created_at: now,
             updated_at: now,
         };

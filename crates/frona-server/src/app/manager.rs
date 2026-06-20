@@ -38,22 +38,17 @@ pub struct AppManager {
     allocated_ports: Arc<Mutex<HashSet<u16>>>,
     port_range: (u16, u16),
     sandbox_manager: Arc<SandboxManager>,
-    storage_service: crate::storage::service::StorageService,
     last_accessed: Arc<Mutex<HashMap<String, DateTime<Utc>>>>,
-    policy_service: crate::policy::service::PolicyService,
     user_service: crate::auth::UserService,
     agent_service: crate::agent::service::AgentService,
     http: reqwest::Client,
 }
 
 impl AppManager {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sandbox_manager: Arc<SandboxManager>,
-        storage_service: crate::storage::service::StorageService,
         port_range_start: u16,
         port_range_end: u16,
-        policy_service: crate::policy::service::PolicyService,
         user_service: crate::auth::UserService,
         agent_service: crate::agent::service::AgentService,
         http: reqwest::Client,
@@ -63,9 +58,7 @@ impl AppManager {
             allocated_ports: Arc::new(Mutex::new(HashSet::new())),
             port_range: (port_range_start, port_range_end),
             sandbox_manager,
-            storage_service,
             last_accessed: Arc::new(Mutex::new(HashMap::new())),
-            policy_service,
             user_service,
             agent_service,
             http,
@@ -314,7 +307,6 @@ impl AppManager {
         Err(AppError::Internal("No available ports in range".into()))
     }
 
-
     async fn spawn_process(
         &self,
         agent_id: &str,
@@ -329,38 +321,12 @@ impl AppManager {
             .find_by_id(user_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
-        let policy = self
-            .policy_service
-            .evaluate_sandbox_policy(
-                crate::policy::service::SandboxPrincipalRef::app(
-                    user_id,
-                    &user.handle,
-                    &manifest.handle,
-                ),
-                true,
-            )
-            .await?;
-
-        // 127.0.0.1:{port} must reach the proxy regardless of policy.
-        let mut network_dests = vec![format!("127.0.0.1:{port}")];
-        network_dests.extend(policy.network_destinations.iter().cloned());
-
-        let mut env_vars = vec![("PORT".to_string(), port.to_string())];
-        env_vars.extend(credential_env_vars.iter().cloned());
-
         let agent = self.agent_service.get(user_id, agent_id).await?;
-        let workspace = self
-            .storage_service
-            .agent_workspace_path(&user.handle, &agent.handle);
+
         let mut sandbox = self
             .sandbox_manager
-            .get_sandbox(workspace, agent_id, policy.network_access, network_dests)
-            .with_bind_ports(vec![port])
-            .with_extra_env_vars(env_vars)
-            .with_read_paths(policy.read_paths.clone())
-            .with_write_paths(policy.write_paths.clone())
-            .with_denied_paths(policy.denied_paths.clone())
-            .with_blocked_networks(policy.blocked_networks.clone());
+            .for_app(&user, &agent, manifest, port, credential_env_vars.to_vec())
+            .await?;
 
         let app_dir = sandbox.path().join("apps").join(manifest.handle.as_str());
         let app_log_dir = app_dir.join("logs");
@@ -440,29 +406,73 @@ fn read_tail(path: &PathBuf, max_bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::sandbox::SandboxFactory;
 
-    async fn test_policy_service() -> crate::policy::service::PolicyService {
+    async fn test_sandbox_manager(
+        storage: crate::storage::StorageService,
+    ) -> Arc<crate::tool::sandbox::SandboxManager> {
         let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(()).await.unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
-        let schema = crate::policy::schema::build_schema();
-        let repo: Arc<dyn crate::policy::repository::PolicyRepository> =
-            Arc::new(crate::db::repo::generic::SurrealRepo::<crate::policy::models::Policy>::new(db.clone()));
-        let tool_manager = Arc::new(crate::tool::manager::ToolManager::new(false));
-        let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
+        let rm = Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0));
+        let factory = Arc::new(SandboxFactory::new(true, rm));
+
         let user_service = crate::auth::UserService::new(
-            crate::db::repo::generic::SurrealRepo::new(db),
+            crate::db::repo::generic::SurrealRepo::new(db.clone()),
             &crate::core::config::CacheConfig::default(),
         );
-        crate::policy::service::PolicyService::new(repo, schema, tool_manager, storage, user_service)
+        let tool_manager = Arc::new(crate::tool::manager::ToolManager::new(false));
+        let policy_repo: Arc<dyn crate::policy::repository::PolicyRepository> =
+            Arc::new(crate::db::repo::generic::SurrealRepo::<crate::policy::models::Policy>::new(db.clone()));
+        let policy_service = crate::policy::service::PolicyService::new(
+            policy_repo,
+            crate::policy::schema::build_schema(),
+            tool_manager,
+            storage.clone(),
+            user_service.clone(),
+        );
+        let skill_service = crate::agent::skill::service::SkillService::new(
+            crate::agent::skill::registry::SkillRegistryClient::new(
+                crate::build_http_client(),
+                "/tmp/frona-test-skills-cache",
+            ),
+            crate::agent::skill::resolver::SkillResolver::new("/tmp/frona-test-shared", storage.clone()),
+            storage.clone(),
+            "/tmp/frona-test-skills",
+            &crate::core::config::CacheConfig::default(),
+        );
+        let keypair_repo: Arc<dyn crate::credential::keypair::repository::KeyPairRepository> =
+            Arc::new(crate::db::repo::generic::SurrealRepo::<crate::credential::keypair::models::KeyPair>::new(db.clone()));
+        let keypair_service =
+            crate::credential::keypair::service::KeyPairService::new("test-secret", keypair_repo);
+        let token_repo: Arc<crate::db::repo::generic::SurrealRepo<crate::auth::token::models::ApiToken>> =
+            Arc::new(crate::db::repo::generic::SurrealRepo::new(db));
+        let token_service = crate::auth::token::service::TokenService::new(
+            token_repo,
+            crate::auth::jwt::JwtService::new(),
+            user_service,
+            3600,
+            86400,
+        );
+
+        Arc::new(crate::tool::sandbox::SandboxManager::new(
+            factory,
+            policy_service,
+            skill_service,
+            storage,
+            token_service,
+            keypair_service,
+            "http://localhost".to_string(),
+            300,
+            "UTC".to_string(),
+        ))
     }
 
     async fn test_manager(port_start: u16, port_end: u16) -> AppManager {
+        let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
         AppManager::new(
-            Arc::new(SandboxManager::new(true, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))),
-            crate::storage::StorageService::new(&crate::core::config::Config::default()),
+            test_sandbox_manager(storage).await,
             port_start,
             port_end,
-            test_policy_service().await,
             test_user_service().await,
             test_agent_service().await,
             crate::build_http_client(),
@@ -617,12 +627,11 @@ mod tests {
 
         let mut test_cfg = crate::core::config::Config::default();
         test_cfg.storage.data_dir = workspaces.to_string_lossy().into_owned();
+        let storage = crate::storage::StorageService::new(&test_cfg);
         let manager = AppManager::new(
-            Arc::new(SandboxManager::new(true, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))),
-            crate::storage::StorageService::new(&test_cfg),
+            test_sandbox_manager(storage).await,
             6000,
             6010,
-            test_policy_service().await,
             test_user_service().await,
             test_agent_service().await,
             crate::build_http_client(),

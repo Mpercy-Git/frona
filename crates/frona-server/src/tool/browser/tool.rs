@@ -10,8 +10,8 @@ use crate::core::error::AppError;
 use crate::credential::vault::service::VaultService;
 use crate::tool::{AgentTool, ImageData, InferenceContext, ToolDefinition, ToolOutput};
 
-use super::session::BrowserSessionManager;
-use frona_browser::{BrowserConnection, ElementTarget, ExtractFormat};
+use super::session::{BrowserSessionManager, run_with_reconnect};
+use frona_browser::{ElementTarget, ExtractFormat};
 
 pub struct BrowserTool {
     session_manager: Arc<BrowserSessionManager>,
@@ -44,30 +44,6 @@ fn element_target(selector: Option<&str>, index: Option<usize>) -> Result<Elemen
         (None, None) => Err(AppError::Validation(
             "must specify selector or index".into(),
         )),
-    }
-}
-
-async fn run_with_reconnect<T, F, Fut>(
-    mgr: &BrowserSessionManager,
-    user_handle: &crate::core::Handle,
-    provider: &str,
-    op: F,
-) -> Result<T, AppError>
-where
-    F: Fn(BrowserConnection) -> Fut,
-    Fut: std::future::Future<Output = Result<T, frona_browser::Error>>,
-{
-    let conn = mgr.connection(user_handle, provider).await?;
-    match op(conn).await {
-        Ok(v) => Ok(v),
-        Err(e) if e.is_disconnect() => {
-            tracing::warn!("Browser session dead, reconnecting");
-            let conn = mgr.reconnect(user_handle, provider).await?;
-            op(conn)
-                .await
-                .map_err(|e| AppError::Browser(e.to_string()))
-        }
-        Err(e) => Err(AppError::Browser(e.to_string())),
     }
 }
 

@@ -10,15 +10,53 @@ use tokio_util::sync::CancellationToken;
 
 use self::driver::{SandboxConfig, SandboxOutput, create_driver, execute_sandboxed};
 use self::driver::resource_monitor::SystemResourceManager;
+use crate::auth::ephemeral_token::EphemeralTokenGuard;
+use crate::core::Principal;
 
-pub struct SandboxManager {
+/// Pre-resolved at factory construction so per-call `allows()` matches
+/// canonical forms without re-canonicalising on every tool call.
+pub struct BaseFilesystemPolicy {
+    pub system_read_dirs: Vec<PathBuf>,
+    pub proc_read_paths: Vec<PathBuf>,
+    pub etc_read_allowlist: Vec<PathBuf>,
+    pub read_write_dirs: Vec<PathBuf>,
+    pub read_write_devices: Vec<PathBuf>,
+}
+
+impl BaseFilesystemPolicy {
+    fn from_driver_constants() -> Self {
+        let canon = |entries: &[&str]| -> Vec<PathBuf> {
+            entries
+                .iter()
+                .map(|p| canonicalize_with_unresolved_tail(Path::new(p)))
+                .collect()
+        };
+        Self {
+            system_read_dirs: canon(driver::linux::SYSTEM_READ_DIRS),
+            proc_read_paths: canon(driver::linux::PROC_READ_PATHS),
+            etc_read_allowlist: canon(driver::ETC_READ_ALLOWLIST),
+            read_write_dirs: canon(driver::linux::READ_WRITE_DIRS),
+            read_write_devices: canon(driver::linux::READ_WRITE_DEVICES),
+        }
+    }
+}
+
+/// Thin factory that owns the platform-specific sandbox driver and the
+/// process resource manager. Hands out `Sandbox` instances configured with
+/// the driver — no service knowledge, no orchestration. All production
+/// callers go through [`SandboxManager`]; the factory itself is only
+/// reached directly for integration tests and for the install-phase
+/// permissive bypass in `McpManager::build_install_sandbox` (which skips
+/// Cedar deliberately).
+pub struct SandboxFactory {
     driver: Arc<dyn driver::SandboxDriver>,
     shared_read_paths: Vec<String>,
     resource_manager: Arc<SystemResourceManager>,
     default_timeout_secs: u64,
+    base_filesystem_policy: Arc<BaseFilesystemPolicy>,
 }
 
-impl SandboxManager {
+impl SandboxFactory {
     pub fn new(
         sandbox_disabled: bool,
         resource_manager: Arc<SystemResourceManager>,
@@ -28,6 +66,7 @@ impl SandboxManager {
             shared_read_paths: Vec::new(),
             resource_manager,
             default_timeout_secs: 0,
+            base_filesystem_policy: Arc::new(BaseFilesystemPolicy::from_driver_constants()),
         }
     }
 
@@ -76,7 +115,252 @@ impl SandboxManager {
             resource_manager: Arc::clone(&self.resource_manager),
             init_venv: true,
             init_node: true,
+            token_guard: None,
+            base_filesystem_policy: Arc::clone(&self.base_filesystem_policy),
         }
+    }
+}
+
+/// Single entry point for building a fully-configured [`Sandbox`]. Owns
+/// the Cedar policy + workspace + token + env machinery and exposes one
+/// constructor per principal kind:
+/// - [`SandboxManager::for_tool`] — agent inference tools (`CliTool`,
+///   the typed file tools). Adds skill paths + ephemeral token + vault env.
+/// - [`SandboxManager::for_app`] — App processes under an agent workspace.
+/// - [`SandboxManager::for_mcp`] — MCP servers in their own workspace.
+///
+/// Wraps a [`SandboxFactory`] internally; exposes it via
+/// [`SandboxManager::factory`] for the two callers that need raw factory
+/// surface (`CliTool` for `default_timeout_secs` / `resource_manager`,
+/// `McpManager::build_install_sandbox` for the permissive install path).
+pub struct SandboxManager {
+    factory: Arc<SandboxFactory>,
+    policy_service: crate::policy::service::PolicyService,
+    skill_service: crate::agent::skill::service::SkillService,
+    storage_service: crate::storage::service::StorageService,
+    token_service: crate::auth::token::service::TokenService,
+    keypair_service: crate::credential::keypair::service::KeyPairService,
+    api_base_url: String,
+    ephemeral_token_expiry_secs: u64,
+    server_timezone: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+impl SandboxManager {
+    pub fn new(
+        factory: Arc<SandboxFactory>,
+        policy_service: crate::policy::service::PolicyService,
+        skill_service: crate::agent::skill::service::SkillService,
+        storage_service: crate::storage::service::StorageService,
+        token_service: crate::auth::token::service::TokenService,
+        keypair_service: crate::credential::keypair::service::KeyPairService,
+        api_base_url: String,
+        ephemeral_token_expiry_secs: u64,
+        server_timezone: String,
+    ) -> Self {
+        Self {
+            factory,
+            policy_service,
+            skill_service,
+            storage_service,
+            token_service,
+            keypair_service,
+            api_base_url,
+            ephemeral_token_expiry_secs,
+            server_timezone,
+        }
+    }
+
+    /// Underlying factory — useful for callers that need things like
+    /// `default_timeout_secs` or `resource_manager` without going through
+    /// `for_tool`.
+    pub fn factory(&self) -> &SandboxFactory {
+        &self.factory
+    }
+
+    /// Build a fully-configured Sandbox for an agent: Cedar policy + skill
+    /// grants + workspace + ctx.file_paths + ephemeral token guard +
+    /// vault/API env vars. Used by both `CliTool` (which then calls
+    /// `.execute()`) and the typed file tools (which call `.is_readable()`
+    /// / `.is_writable()` and drop).
+    pub async fn for_tool(
+        &self,
+        ctx: &crate::inference::request::InferenceContext,
+    ) -> Result<Sandbox, AppError> {
+        let agent_id = &ctx.agent.id;
+
+        let policy = self
+            .policy_service
+            .evaluate_sandbox_policy(
+                crate::policy::service::SandboxPrincipalRef::agent(
+                    &ctx.user.id,
+                    &ctx.user.handle,
+                    &ctx.agent.handle,
+                ),
+                true,
+            )
+            .await?;
+
+        let skill_read_paths: Vec<String> = self
+            .skill_service
+            .list(&ctx.user.handle, &ctx.agent.handle, ctx.agent.skills.as_deref())
+            .await
+            .into_iter()
+            .map(|s| s.path)
+            .collect();
+
+        let workspace = self
+            .storage_service
+            .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
+
+        let mut sandbox = self
+            .factory
+            .get_sandbox(
+                workspace,
+                agent_id,
+                policy.network_access,
+                policy.network_destinations.clone(),
+            )
+            .with_read_paths(skill_read_paths)
+            .with_read_paths(policy.read_paths.clone())
+            .with_write_paths(policy.write_paths.clone())
+            .with_denied_paths(policy.denied_paths.clone())
+            .with_blocked_networks(policy.blocked_networks.clone())
+            .with_bind_ports(policy.bind_ports.clone());
+
+        if !ctx.file_paths.is_empty() {
+            sandbox = sandbox.with_write_paths(ctx.file_paths.clone());
+        }
+
+        let tokens_dir = self.storage_service.user_tokens_path(&ctx.user.handle);
+        let token_guard = EphemeralTokenGuard::issue(
+            &self.token_service,
+            &self.keypair_service,
+            &ctx.user,
+            Principal::agent(agent_id),
+            self.ephemeral_token_expiry_secs,
+            &tokens_dir,
+        )
+        .await?;
+
+        sandbox = sandbox.with_read_files(vec![
+            token_guard.path().to_string_lossy().into_owned(),
+        ]);
+
+        {
+            let mut extra_vars = ctx.vault_env_vars.read().await.clone();
+            extra_vars.push((
+                "TZ".to_string(),
+                ctx.user.resolved_timezone(&self.server_timezone),
+            ));
+            extra_vars.push((
+                "FRONA_TOKEN_FILE".to_string(),
+                token_guard.path().to_string_lossy().into_owned(),
+            ));
+            extra_vars.push((
+                "FRONA_API_URL".to_string(),
+                self.api_base_url.clone(),
+            ));
+            sandbox = sandbox.with_extra_env_vars(extra_vars);
+        }
+
+        sandbox.token_guard = Some(token_guard);
+        Ok(sandbox)
+    }
+
+    /// Build a Sandbox for an App process running under an agent's workspace.
+    /// Evaluates Cedar for `SandboxPrincipalRef::app`, applies the resulting
+    /// policy, opens `127.0.0.1:{port}` for the reverse proxy regardless of
+    /// policy, and prepends `PORT={port}` to the env.
+    pub async fn for_app(
+        &self,
+        user: &crate::auth::User,
+        agent: &crate::agent::models::Agent,
+        manifest: &crate::app::models::AppManifest,
+        port: u16,
+        extra_env: Vec<(String, String)>,
+    ) -> Result<Sandbox, AppError> {
+        let policy = self
+            .policy_service
+            .evaluate_sandbox_policy(
+                crate::policy::service::SandboxPrincipalRef::app(
+                    &user.id,
+                    &user.handle,
+                    &manifest.handle,
+                ),
+                true,
+            )
+            .await?;
+
+        let workspace = self
+            .storage_service
+            .agent_workspace_path(&user.handle, &agent.handle);
+
+        let mut network_dests = vec![format!("127.0.0.1:{port}")];
+        network_dests.extend(policy.network_destinations.iter().cloned());
+
+        let mut env = vec![("PORT".to_string(), port.to_string())];
+        env.extend(extra_env);
+
+        let sandbox = self
+            .factory
+            .get_sandbox(workspace, &agent.id, policy.network_access, network_dests)
+            .with_bind_ports(vec![port])
+            .with_extra_env_vars(env)
+            .with_read_paths(policy.read_paths.clone())
+            .with_write_paths(policy.write_paths.clone())
+            .with_denied_paths(policy.denied_paths.clone())
+            .with_blocked_networks(policy.blocked_networks.clone());
+
+        Ok(sandbox)
+    }
+
+    /// Build a Sandbox for an MCP server in its own workspace. Evaluates
+    /// Cedar for `SandboxPrincipalRef::mcp`, applies the policy, disables
+    /// venv/Node setup (MCP runtimes bring their own toolchains).
+    pub async fn for_mcp(
+        &self,
+        user: &crate::auth::User,
+        server: &crate::tool::mcp::McpServer,
+        extra_env: Vec<(String, String)>,
+        token_path: Option<&Path>,
+    ) -> Result<Sandbox, AppError> {
+        let policy = self
+            .policy_service
+            .evaluate_sandbox_policy(
+                crate::policy::service::SandboxPrincipalRef::mcp(
+                    &server.user_id,
+                    &user.handle,
+                    &server.handle,
+                ),
+                true,
+            )
+            .await?;
+
+        let sandbox_id = format!("mcp-{}", server.id);
+        let workspace = self
+            .storage_service
+            .mcp_workspace_path(&user.handle, &server.handle);
+        let mut sandbox = self
+            .factory
+            .get_sandbox(
+                workspace,
+                &sandbox_id,
+                policy.network_access,
+                policy.network_destinations.clone(),
+            )
+            .without_venv()
+            .without_node()
+            .with_read_paths(policy.read_paths.clone())
+            .with_write_paths(policy.write_paths.clone())
+            .with_denied_paths(policy.denied_paths.clone())
+            .with_blocked_networks(policy.blocked_networks.clone())
+            .with_bind_ports(policy.bind_ports.clone())
+            .with_extra_env_vars(extra_env);
+        if let Some(path) = token_path {
+            sandbox = sandbox.with_read_files(vec![path.to_string_lossy().into_owned()]);
+        }
+        Ok(sandbox)
     }
 }
 
@@ -96,6 +380,15 @@ pub struct Sandbox {
     resource_manager: Arc<SystemResourceManager>,
     init_venv: bool,
     init_node: bool,
+    /// Holds the per-invocation ephemeral token so it lives as long as the
+    /// Sandbox. `Drop` cleans up the token file. Only set by `for_tool`.
+    token_guard: Option<EphemeralTokenGuard>,
+    /// Canonical forms of the driver-hardcoded allow-list paths. Computed
+    /// once at `SandboxFactory` construction and shared via `Arc` across
+    /// every `Sandbox` it produces. Used by `allows()` so the per-call
+    /// check iterates over canonical forms without re-canonicalising on
+    /// every tool invocation.
+    base_filesystem_policy: Arc<BaseFilesystemPolicy>,
 }
 
 impl Sandbox {
@@ -148,6 +441,123 @@ impl Sandbox {
 impl Sandbox {
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Mirrors the same policy the sandbox driver applies to subprocesses,
+    /// so in-process file tools enforce the same allow-list as a spawned
+    /// sandbox without paying for a subprocess.
+    pub fn is_readable(&self, path: &Path) -> bool {
+        self.allows(path, AccessKind::Read)
+    }
+
+    /// Would the sandbox grant write access to this path?
+    pub fn is_writable(&self, path: &Path) -> bool {
+        self.allows(path, AccessKind::Write)
+    }
+
+    fn allows(&self, path: &Path, kind: AccessKind) -> bool {
+        let canonical = canonicalize_with_unresolved_tail(path);
+
+        // Denied paths shadow everything.
+        for d in &self.denied_paths {
+            let denied = canonicalize_with_unresolved_tail(Path::new(d));
+            if canonical.starts_with(&denied) {
+                return false;
+            }
+        }
+
+        let workspace = self.workspace_dir();
+
+        // Driver-hardcoded readable directories — pre-canonicalised at
+        // factory construction.
+        for d in self
+            .base_filesystem_policy
+            .system_read_dirs
+            .iter()
+            .chain(self.base_filesystem_policy.proc_read_paths.iter())
+            .chain(self.base_filesystem_policy.etc_read_allowlist.iter())
+        {
+            if canonical.starts_with(d) {
+                return kind == AccessKind::Read
+                    || self.workspace_or_grant_writable(&canonical, &workspace);
+            }
+        }
+
+        // Driver-hardcoded R+W dirs (e.g. /tmp).
+        for d in &self.base_filesystem_policy.read_write_dirs {
+            if canonical.starts_with(d) {
+                return true;
+            }
+        }
+
+        // Driver-hardcoded R+W devices.
+        for d in &self.base_filesystem_policy.read_write_devices {
+            if canonical == *d {
+                return true;
+            }
+        }
+
+        // Workspace (R+W, no Cedar required).
+        if canonical.starts_with(&workspace) {
+            return true;
+        }
+
+        // Workspace ancestors (read-only, for realpath traversal).
+        if kind == AccessKind::Read {
+            let mut ancestor = workspace.parent();
+            while let Some(parent) = ancestor {
+                if parent == Path::new("/") {
+                    break;
+                }
+                if canonical == parent {
+                    return true;
+                }
+                ancestor = parent.parent();
+            }
+        }
+
+        // Cedar-derived + skill-derived read grants.
+        if kind == AccessKind::Read {
+            for p in &self.shared_read_paths {
+                let grant = canonicalize_with_unresolved_tail(Path::new(p));
+                if canonical.starts_with(&grant) {
+                    return true;
+                }
+            }
+            for f in &self.shared_read_files {
+                let grant = canonicalize_with_unresolved_tail(Path::new(f));
+                if canonical == grant {
+                    return true;
+                }
+            }
+        }
+
+        // Cedar-derived write grants are R+W under the same prefix.
+        for p in &self.shared_write_paths {
+            let grant = canonicalize_with_unresolved_tail(Path::new(p));
+            if canonical.starts_with(&grant) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn workspace_dir(&self) -> PathBuf {
+        canonicalize_with_unresolved_tail(&self.path)
+    }
+
+    fn workspace_or_grant_writable(&self, path: &Path, workspace: &Path) -> bool {
+        if path.starts_with(workspace) {
+            return true;
+        }
+        for p in &self.shared_write_paths {
+            let grant = canonicalize_with_unresolved_tail(Path::new(p));
+            if path.starts_with(&grant) {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn venv_path(&self) -> PathBuf {
@@ -387,6 +797,45 @@ impl Sandbox {
     }
 }
 
+#[derive(PartialEq, Eq)]
+enum AccessKind {
+    Read,
+    Write,
+}
+
+/// Canonicalise `path`. If the full path doesn't exist (e.g. we're about to
+/// create a new file), walk up to the longest-existing ancestor, canonicalise
+/// that, then re-attach the non-existent tail. Result matches the symlink-
+/// resolved form the OS would observe when the file is later created.
+///
+/// Used everywhere the sandbox compares path prefixes so the in-process
+/// `is_readable` / `is_writable` checks stay consistent with what `syd` sees
+/// at the OS layer (workspace path → canonical via symlinks; new-file target
+/// → canonical-prefix + literal tail).
+pub fn canonicalize_with_unresolved_tail(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path.to_path_buf();
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(&cursor) {
+            let mut result = canonical;
+            for component in tail.into_iter().rev() {
+                result.push(component);
+            }
+            return result;
+        }
+        let Some(last) = cursor.file_name().map(|n| n.to_owned()) else {
+            return path.to_path_buf();
+        };
+        tail.push(last);
+        if !cursor.pop() {
+            return path.to_path_buf();
+        }
+    }
+}
+
 pub fn node_env_vars(workspace: &Path) -> (Vec<String>, Vec<(String, String)>) {
     let node_prefix = workspace.join(".node");
     if !node_prefix.exists() {
@@ -435,6 +884,8 @@ mod tests {
             resource_manager: Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
             init_venv: true,
             init_node: true,
+            token_guard: None,
+            base_filesystem_policy: Arc::new(BaseFilesystemPolicy::from_driver_constants()),
         }
     }
 
@@ -483,6 +934,8 @@ mod tests {
             resource_manager: Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
             init_venv: true,
             init_node: true,
+            token_guard: None,
+            base_filesystem_policy: Arc::new(BaseFilesystemPolicy::from_driver_constants()),
         };
         ws.setup().unwrap();
 
@@ -591,5 +1044,84 @@ mod tests {
         assert_eq!(lines[1], "world");
 
         let _ = std::fs::remove_dir_all(&ws.path);
+    }
+
+    // ===== canonicalize_with_unresolved_tail + is_writable / is_readable =====
+
+    #[test]
+    fn canonicalize_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("foo.txt");
+        std::fs::write(&file, "hi").unwrap();
+        let result = canonicalize_with_unresolved_tail(&file);
+        // canonicalize should resolve any platform-level symlinks (e.g.,
+        // /tmp → /private/tmp on macOS).
+        assert_eq!(result, std::fs::canonicalize(&file).unwrap());
+    }
+
+    #[test]
+    fn canonicalize_nonexistent_file_existing_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("does_not_exist.txt");
+        let result = canonicalize_with_unresolved_tail(&target);
+        let expected_parent = std::fs::canonicalize(tmp.path()).unwrap();
+        assert_eq!(result, expected_parent.join("does_not_exist.txt"));
+    }
+
+    #[test]
+    fn canonicalize_deeply_nonexistent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("a").join("b").join("c").join("file.txt");
+        let result = canonicalize_with_unresolved_tail(&target);
+        let expected_parent = std::fs::canonicalize(tmp.path()).unwrap();
+        assert_eq!(result, expected_parent.join("a/b/c/file.txt"));
+    }
+
+    #[test]
+    fn is_writable_nonexistent_target_under_symlinked_workspace() {
+        // Simulate the docker case: workspace path goes through a symlink,
+        // and the target file we want to write doesn't exist yet.
+        let tmp = tempfile::tempdir().unwrap();
+        let real_workspace = tmp.path().join("real_data").join("workspace");
+        std::fs::create_dir_all(&real_workspace).unwrap();
+
+        // Create a symlink "data" → "real_data" and address workspace via it.
+        let symlinked_data = tmp.path().join("data");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(tmp.path().join("real_data"), &symlinked_data).unwrap();
+        #[cfg(not(unix))]
+        return; // Symlink semantics differ on Windows; skip.
+
+        let workspace_via_symlink = symlinked_data.join("workspace");
+        let target = workspace_via_symlink.join("pwgen.py"); // doesn't exist
+
+        let mut ws = temp_sandbox(&format!("symlink_{}", uuid::Uuid::new_v4()));
+        ws.path = workspace_via_symlink;
+
+        // Pre-fix bug: is_writable returned false because target was literal
+        // (file doesn't exist) but workspace was canonical (/var/.../workspace
+        // through the symlink). After fix: both go through the helper, become
+        // canonical, prefix match succeeds.
+        assert!(
+            ws.is_writable(&target),
+            "Write should be allowed for new file under symlinked workspace"
+        );
+        assert!(
+            ws.is_readable(&target),
+            "Read should be allowed for new file under symlinked workspace"
+        );
+    }
+
+    #[test]
+    fn is_writable_path_outside_workspace_denied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = tmp.path().join("outside.txt"); // sibling of workspace
+
+        let mut ws = temp_sandbox(&format!("outside_{}", uuid::Uuid::new_v4()));
+        ws.path = workspace;
+
+        assert!(!ws.is_writable(&outside));
     }
 }

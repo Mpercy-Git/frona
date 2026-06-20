@@ -6,6 +6,7 @@ mod mcp;
 mod auth;
 mod channels;
 mod chats;
+mod commands;
 mod contacts;
 mod files;
 mod messages;
@@ -109,6 +110,7 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::auth::router())
         .merge(routes::agents::router())
         .merge(routes::chats::router())
+        .merge(routes::commands::router())
         .merge(routes::channels::router())
         .merge(routes::spaces::router())
         .merge(routes::tasks::router())

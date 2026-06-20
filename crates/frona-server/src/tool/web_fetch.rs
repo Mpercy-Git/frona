@@ -7,7 +7,7 @@ use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use frona_derive::agent_tool;
 
-use super::browser::session::BrowserSessionManager;
+use super::browser::session::{BrowserSessionManager, run_with_reconnect};
 use super::{InferenceContext, ToolOutput};
 
 pub struct WebFetchTool {
@@ -41,23 +41,19 @@ impl WebFetchTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::Validation("Missing required parameter: url".into()))?;
 
-        let conn = self
-            .session_manager
-            .connection(&ctx.user.handle, self.provider())
-            .await?;
-
-        conn.navigate(url, false)
-            .await
-            .map_err(|e| AppError::Browser(format!("navigate: {e}")))?;
-
-        let _ = conn
-            .wait_for_selector("body", Duration::from_secs(15))
-            .await;
-
-        let markdown = conn
-            .get_markdown(1, 100_000)
-            .await
-            .map_err(|e| AppError::Browser(format!("get_markdown: {e}")))?;
+        let markdown = run_with_reconnect(
+            &self.session_manager,
+            &ctx.user.handle,
+            self.provider(),
+            |conn| async move {
+                conn.navigate(url, false).await?;
+                let _ = conn
+                    .wait_for_selector("body", Duration::from_secs(15))
+                    .await;
+                conn.get_markdown(1, 100_000).await
+            },
+        )
+        .await?;
 
         Ok(ToolOutput::text(markdown.content))
     }

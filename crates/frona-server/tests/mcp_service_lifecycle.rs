@@ -124,7 +124,7 @@ async fn build_test_harness(
     );
     vault.sync_config_connections().await.unwrap();
 
-    let sandbox_manager = Arc::new(frona::tool::sandbox::SandboxManager::new(true, // sandbox_disabled: we never actually start servers in these tests
+    let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(true, // sandbox_disabled: we never actually start servers in these tests
         Arc::new(frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
             80.0, 80.0, 90.0, 90.0,
         )),
@@ -141,7 +141,39 @@ async fn build_test_harness(
     let policy_service = frona::policy::service::PolicyService::new(
         policy_repo, policy_schema, policy_tool_manager, storage.clone(), user_service.clone(),
     );
-    let manager = Arc::new(McpManager::new(sandbox_manager, test_storage, 4100, 4200, policy_service.clone(), user_service, frona::build_http_client()));
+    let skill_service = frona::agent::skill::service::SkillService::new(
+        frona::agent::skill::registry::SkillRegistryClient::new(
+            frona::build_http_client(),
+            "/tmp/frona-test-lifecycle-cache",
+        ),
+        frona::agent::skill::resolver::SkillResolver::new("/tmp/frona-test-lifecycle-shared", storage.clone()),
+        storage.clone(),
+        "/tmp/frona-test-lifecycle-skills",
+        &frona::core::config::CacheConfig::default(),
+    );
+    let lifecycle_keypair_service = frona::credential::keypair::service::KeyPairService::new(
+        "test-secret",
+        Arc::new(SurrealRepo::new(db.clone())),
+    );
+    let lifecycle_token_service = frona::auth::token::service::TokenService::new(
+        Arc::new(SurrealRepo::new(db.clone())),
+        frona::auth::jwt::JwtService::new(),
+        user_service.clone(),
+        3600,
+        86400,
+    );
+    let sandbox_manager = Arc::new(frona::tool::sandbox::SandboxManager::new(
+        factory,
+        policy_service.clone(),
+        skill_service,
+        storage.clone(),
+        lifecycle_token_service,
+        lifecycle_keypair_service,
+        "http://localhost".to_string(),
+        300,
+        "UTC".to_string(),
+    ));
+    let manager = Arc::new(McpManager::new(sandbox_manager, test_storage, 4100, 4200, user_service, frona::build_http_client()));
     let mcp_repo: Arc<dyn McpServerRepository> =
         Arc::new(SurrealRepo::<McpServer>::new(db.clone()));
     let registry: Arc<dyn McpRegistryClient> = Arc::new(FakeRegistry {

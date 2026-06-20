@@ -35,13 +35,19 @@ impl Error {
         if matches!(self, Error::Disconnected | Error::NoActivePage) {
             return true;
         }
-        if let Error::Cdp(e) = self {
-            let s = e.to_string();
-            return s.contains("connection closed")
-                || s.contains("channel closed")
-                || s.contains("WebSocket")
-                || s.contains("ConnectionClosed");
+        if let Error::Cdp(cdp) = self {
+            return is_cdp_disconnect(cdp);
         }
         false
     }
+}
+
+/// Shared by the handler loop and the public `is_disconnect` so they
+/// classify identically.
+pub(crate) fn is_cdp_disconnect(e: &chromiumoxide::error::CdpError) -> bool {
+    use chromiumoxide::error::CdpError;
+    matches!(
+        e,
+        CdpError::Ws(_) | CdpError::ChannelSendError(_) | CdpError::Timeout | CdpError::NoResponse
+    )
 }

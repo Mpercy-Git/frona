@@ -71,7 +71,7 @@ async fn space_stream(
     let space_id = id.clone();
 
     tokio::spawn(async move {
-        while let Ok(event) = raw.recv().await {
+        while let Some(event) = raw.recv().await {
             if event.user_id != auth.user_id {
                 continue;
             }

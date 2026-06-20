@@ -7,18 +7,25 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use teloxide::Bot;
 use teloxide::payloads::{
-    AnswerCallbackQuerySetters, DeleteWebhookSetters, EditMessageTextSetters, SendMessageSetters,
+    AnswerCallbackQuerySetters, DeleteWebhookSetters, EditMessageTextSetters,
+    SendAudioSetters, SendMediaGroupSetters, SendMessageSetters,
+    SendPhotoSetters, SendVideoSetters,
 };
 use teloxide::prelude::Requester;
 use teloxide::types::{
-    ChatAction, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, Recipient, ThreadId,
+    ChatAction, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, InputMedia,
+    InputMediaPhoto, ParseMode, Recipient, ThreadId,
 };
 use url::Url;
 
 use crate::chat::message::models::Message;
 use crate::chat::models::Chat;
 use crate::core::error::AppError;
+use teloxide::ApiError;
+use teloxide::RequestError;
 
+use super::super::attachment;
+use super::super::error::{ChannelError, ChannelErrorKind};
 use super::super::models::{
     ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
 };
@@ -40,41 +47,159 @@ pub struct TelegramConfig {
 pub struct TelegramAdapter {
     bot: Bot,
     typing: TypingIndicator,
+    splitter: super::split::TelegramMarkdownV2Splitter,
 }
+
+/// Telegram MarkdownV2 caps a single `send_message` at 4096 chars. Longer
+/// agent replies split into sequential top-level messages.
+const TELEGRAM_MAX_MESSAGE_LEN: usize = 4096;
 
 impl From<TelegramConfig> for TelegramAdapter {
     fn from(cfg: TelegramConfig) -> Self {
         Self {
             bot: Bot::new(cfg.bot_token),
             typing: TypingIndicator::new(),
+            splitter: super::split::TelegramMarkdownV2Splitter::new(
+                TELEGRAM_MAX_MESSAGE_LEN,
+                None,
+            ),
         }
     }
 }
 
+fn classify_telegram_error(e: &RequestError) -> ChannelError {
+    let msg = e.to_string();
+    match e {
+        RequestError::RetryAfter(s) => {
+            ChannelError::transient(msg).with_retry_hint(s.duration())
+        }
+        RequestError::Network(_) | RequestError::Io(_) => ChannelError::transient(msg),
+        RequestError::MigrateToChatId(_) => {
+            ChannelError::terminal(msg, ChannelErrorKind::NotFound)
+        }
+        RequestError::Api(api) => match api {
+            ApiError::BotBlocked
+            | ApiError::BotKicked
+            | ApiError::BotKickedFromSupergroup
+            | ApiError::BotKickedFromChannel
+            | ApiError::UserDeactivated
+            | ApiError::CantInitiateConversation
+            | ApiError::CantTalkWithBots
+            | ApiError::NotEnoughRightsToPostMessages
+            | ApiError::GroupDeactivated
+            | ApiError::MethodNotAvailableInPrivateChats => {
+                ChannelError::terminal(msg, ChannelErrorKind::Forbidden)
+            }
+            ApiError::ChatNotFound | ApiError::UserNotFound => {
+                ChannelError::terminal(msg, ChannelErrorKind::NotFound)
+            }
+            ApiError::InvalidToken => {
+                ChannelError::terminal(msg, ChannelErrorKind::Unauthorized)
+            }
+            ApiError::CantParseEntities(_)
+            | ApiError::CantParseUrl
+            | ApiError::WrongHttpUrl
+            | ApiError::WrongFileId
+            | ApiError::WrongFileIdOrUrl
+            | ApiError::FailedToGetUrlContent
+            | ApiError::ImageProcessFailed
+            | ApiError::PhotoAsInputFileRequired
+            | ApiError::ButtonUrlInvalid
+            | ApiError::ButtonDataInvalid => {
+                ChannelError::terminal(msg, ChannelErrorKind::PayloadInvalid)
+            }
+            ApiError::MessageIsTooLong
+            | ApiError::EditedMessageIsTooLong
+            | ApiError::TooMuchMessages
+            | ApiError::RequestEntityTooLarge => {
+                ChannelError::terminal(msg, ChannelErrorKind::PayloadTooLarge)
+            }
+            _ => ChannelError::transient(msg),
+        },
+        _ => ChannelError::transient(msg),
+    }
+}
+
 impl TelegramAdapter {
-    async fn send_bubble(&self, chat: &Chat, text: &str) -> Result<String, AppError> {
+    async fn send_bubble(&self, chat: &Chat, text: &str) -> Result<String, ChannelError> {
+        self.send_bubble_with_keyboard(chat, text, None).await
+    }
+
+    async fn send_bubble_with_keyboard(
+        &self,
+        chat: &Chat,
+        text: &str,
+        keyboard: Option<InlineKeyboardMarkup>,
+    ) -> Result<String, ChannelError> {
         let (chat_id, thread_id) = parse_external_id(external_chat_id(chat)?)?;
-        let (rendered, parse_mode) = match telegram_markdown_v2::convert(text) {
-            Ok(v2) => (v2, Some(ParseMode::MarkdownV2)),
+
+        // The keyboard rides on the final chunk so the user reads the whole
+        // reply before deciding.
+        let (chunks, parse_mode) = match telegram_markdown_v2::convert_with_strategy(
+            &super::markdown::fence_tables(text),
+            telegram_markdown_v2::UnsupportedTagsStrategy::Escape,
+        ) {
+            Ok(v2) => (self.splitter.split(&v2), Some(ParseMode::MarkdownV2)),
             Err(e) => {
                 tracing::debug!(
                     error = %e,
                     "telegram MarkdownV2 conversion failed; falling back to plain text",
                 );
-                (super::markdown::to_plain(text), None)
+                (
+                    super::split::silent_split_plain(
+                        &super::markdown::to_plain(text),
+                        TELEGRAM_MAX_MESSAGE_LEN,
+                    ),
+                    None,
+                )
             }
         };
-        let mut send = self.bot.send_message(Recipient::Id(chat_id), rendered);
-        if let Some(mode) = parse_mode {
-            send = send.parse_mode(mode);
+
+        if chunks.is_empty() {
+            // No body to send. Callers ignore the id.
+            return Ok(String::new());
         }
-        if let Some(t) = thread_id {
-            send = send.message_thread_id(t);
+
+        let last_idx = chunks.len() - 1;
+        let mut last_sent_id = String::new();
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            let is_last = i == last_idx;
+            let mut send = self.bot.send_message(Recipient::Id(chat_id), chunk.clone());
+            if let Some(mode) = parse_mode {
+                send = send.parse_mode(mode);
+            }
+            if let Some(t) = thread_id {
+                send = send.message_thread_id(t);
+            }
+            if is_last && let Some(kb) = keyboard.clone() {
+                send = send.reply_markup(kb);
+            }
+            match send.await {
+                Ok(sent) => last_sent_id = sent.id.0.to_string(),
+                Err(RequestError::Api(ApiError::CantParseEntities(detail)))
+                    if parse_mode.is_some() =>
+                {
+                    tracing::warn!(
+                        detail = %detail,
+                        chunk_idx = i,
+                        "Telegram rejected MarkdownV2 chunk; retrying as plain text",
+                    );
+                    let mut retry = self.bot.send_message(Recipient::Id(chat_id), chunk);
+                    if let Some(t) = thread_id {
+                        retry = retry.message_thread_id(t);
+                    }
+                    if is_last && let Some(kb) = keyboard.clone() {
+                        retry = retry.reply_markup(kb);
+                    }
+                    match retry.await {
+                        Ok(sent) => last_sent_id = sent.id.0.to_string(),
+                        Err(e) => return Err(classify_telegram_error(&e)),
+                    }
+                }
+                Err(e) => return Err(classify_telegram_error(&e)),
+            }
         }
-        let sent = send
-            .await
-            .map_err(|e| AppError::Internal(format!("Telegram sendMessage failed: {e}")))?;
-        Ok(sent.id.0.to_string())
+        Ok(last_sent_id)
     }
 }
 
@@ -157,7 +282,7 @@ impl ChannelAdapter for TelegramAdapter {
         _msg: &Message,
         chat: &Chat,
         _ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ChannelError> {
         let Some(text) = tool_call.turn_text.as_deref() else { return Ok(()) };
         if text.trim().is_empty() {
             return Ok(());
@@ -171,12 +296,135 @@ impl ChannelAdapter for TelegramAdapter {
         msg: &Message,
         _tool_calls: &[crate::inference::tool_call::ToolCall],
         chat: &Chat,
-        _ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
-        if msg.content.trim().is_empty() {
+        ctx: &ChannelCtx,
+    ) -> Result<(), ChannelError> {
+        let body = crate::chat::channel::render::render_message_body(msg);
+        let has_attachments = !msg.attachments.is_empty();
+
+        if !has_attachments {
+            if !body.trim().is_empty() {
+                self.send_bubble(chat, &body).await?;
+            }
             return Ok(());
         }
-        self.send_bubble(chat, &msg.content).await?;
+
+        let (chat_id, thread_id) = parse_external_id(external_chat_id(chat)?)?;
+
+        let mut photo_group: Vec<InputMedia> = Vec::new();
+        let mut audio_atts = Vec::new();
+        let mut video_atts = Vec::new();
+        let mut doc_atts = Vec::new();
+        for att in &msg.attachments {
+            match attachment::classify(att) {
+                attachment::AttachmentKind::Image => {
+                    match attachment::read_attachment_bytes(att, ctx).await {
+                        Ok(bytes) => {
+                            let f = InputFile::memory(bytes).file_name(att.filename.clone());
+                            photo_group.push(InputMedia::Photo(InputMediaPhoto::new(f)));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                msg_id = %msg.id,
+                                path = %att.path,
+                                error = %e,
+                                "telegram: failed to read image bytes; skipping",
+                            );
+                        }
+                    }
+                }
+                attachment::AttachmentKind::Audio => audio_atts.push(att),
+                attachment::AttachmentKind::Video => video_atts.push(att),
+                attachment::AttachmentKind::Document => doc_atts.push(att),
+            }
+        }
+
+        // Built before the body send so it can ride on the body bubble — or,
+        // if the body is empty, on the paperclip-only fallback bubble below.
+        let mut doc_keyboard: Option<InlineKeyboardMarkup> = None;
+        if !doc_atts.is_empty() {
+            let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::with_capacity(doc_atts.len());
+            for att in &doc_atts {
+                let url_str = match attachment::outbound_url(att, ctx, attachment::ChannelMode::Button).await {
+                    Ok(u) => u,
+                    Err(e) => {
+                        tracing::warn!(msg_id = %msg.id, path = %att.path, error = %e, "telegram: canonical URL failed; skipping doc");
+                        continue;
+                    }
+                };
+                let Ok(parsed) = Url::parse(&url_str) else {
+                    tracing::warn!(msg_id = %msg.id, url = %url_str, "telegram: unparseable canonical URL; skipping doc");
+                    continue;
+                };
+                let label = attachment::button_label(att);
+                rows.push(vec![InlineKeyboardButton::url(label, parsed)]);
+            }
+            if !rows.is_empty() {
+                doc_keyboard = Some(InlineKeyboardMarkup::new(rows));
+            }
+        }
+
+        let mut keyboard_consumed = false;
+        if !body.trim().is_empty() {
+            self.send_bubble_with_keyboard(chat, &body, doc_keyboard.clone()).await?;
+            keyboard_consumed = doc_keyboard.is_some();
+        }
+
+        // sendMediaGroup is capped at 10 items per album.
+        for chunk in photo_group.chunks(10) {
+            if chunk.len() == 1 {
+                if let InputMedia::Photo(p) = &chunk[0] {
+                    let mut req = self.bot.send_photo(Recipient::Id(chat_id), p.media.clone());
+                    if let Some(t) = thread_id {
+                        req = req.message_thread_id(t);
+                    }
+                    req.await.map_err(|e| classify_telegram_error(&e))?;
+                }
+            } else {
+                let mut req = self
+                    .bot
+                    .send_media_group(Recipient::Id(chat_id), chunk.to_vec());
+                if let Some(t) = thread_id {
+                    req = req.message_thread_id(t);
+                }
+                req.await.map_err(|e| classify_telegram_error(&e))?;
+            }
+        }
+
+        for att in audio_atts {
+            let bytes = attachment::read_attachment_bytes(att, ctx).await?;
+            let f = InputFile::memory(bytes).file_name(att.filename.clone());
+            let mut req = self.bot.send_audio(Recipient::Id(chat_id), f);
+            if let Some(t) = thread_id {
+                req = req.message_thread_id(t);
+            }
+            req.await.map_err(|e| classify_telegram_error(&e))?;
+        }
+
+        for att in video_atts {
+            let bytes = attachment::read_attachment_bytes(att, ctx).await?;
+            let f = InputFile::memory(bytes).file_name(att.filename.clone());
+            let mut req = self.bot.send_video(Recipient::Id(chat_id), f);
+            if let Some(t) = thread_id {
+                req = req.message_thread_id(t);
+            }
+            req.await.map_err(|e| classify_telegram_error(&e))?;
+        }
+
+        if !keyboard_consumed && let Some(kb) = doc_keyboard {
+            // sendMessage requires non-empty text; this paperclip is the
+            // smallest valid placeholder.
+            let mut req = self
+                .bot
+                .send_message(Recipient::Id(chat_id), "📎".to_string())
+                .reply_markup(kb);
+            if let Some(t) = thread_id {
+                req = req.message_thread_id(t);
+            }
+            if let Err(e) = req.await {
+                tracing::warn!(msg_id = %msg.id, error = %e, "telegram doc-button send_message failed");
+            }
+        }
+
         Ok(())
     }
 
@@ -184,7 +432,7 @@ impl ChannelAdapter for TelegramAdapter {
         &self,
         chat: &Chat,
         _ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ChannelError> {
         let Ok(external_id) = external_chat_id(chat) else { return Ok(()) };
         let Ok((tg_chat_id, _thread)) = parse_external_id(external_id) else {
             return Ok(());
@@ -209,7 +457,7 @@ impl ChannelAdapter for TelegramAdapter {
         &self,
         chat: &Chat,
         _ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ChannelError> {
         self.typing.stop(&chat.id).await;
         Ok(())
     }
@@ -218,7 +466,7 @@ impl ChannelAdapter for TelegramAdapter {
         &self,
         ctx: &ChannelCtx,
         request: Request<Bytes>,
-    ) -> Result<Response, AppError> {
+    ) -> Result<Response, ChannelError> {
         let body: serde_json::Value = serde_json::from_slice(request.body())
             .map_err(|e| AppError::Validation(format!("invalid Telegram webhook body: {e}")))?;
 
@@ -241,7 +489,7 @@ impl ChannelAdapter for TelegramAdapter {
         _msg: &Message,
         chat: &Chat,
         ctx: &ChannelCtx,
-    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, ChannelError> {
         let mut out = Vec::new();
         for tc in batch {
             let Some(h) = tc.hitl.as_ref() else { continue };
@@ -256,42 +504,62 @@ impl ChannelAdapter for TelegramAdapter {
                 }
             };
 
-            let (rendered, parse_mode) = match telegram_markdown_v2::convert(&h.prompt) {
-                Ok(v2) => (v2, Some(ParseMode::MarkdownV2)),
-                Err(_) => (super::markdown::to_plain(&h.prompt), None),
+            let (chunks, parse_mode) = match telegram_markdown_v2::convert_with_strategy(
+                &super::markdown::fence_tables(&h.prompt),
+                telegram_markdown_v2::UnsupportedTagsStrategy::Escape,
+            ) {
+                Ok(v2) => (self.splitter.split(&v2), Some(ParseMode::MarkdownV2)),
+                Err(_) => (
+                    super::split::silent_split_plain(
+                        &super::markdown::to_plain(&h.prompt),
+                        TELEGRAM_MAX_MESSAGE_LEN,
+                    ),
+                    None,
+                ),
             };
 
-            let mut send = self
-                .bot
-                .send_message(Recipient::Id(chat_id), rendered)
-                .reply_markup(keyboard);
-            if let Some(mode) = parse_mode {
-                send = send.parse_mode(mode);
-            }
-            if let Some(t) = thread_id {
-                send = send.message_thread_id(t);
+            if chunks.is_empty() {
+                continue;
             }
 
-            match send.await {
-                Ok(sent) => out.push(crate::inference::hitl::HitlDelivery {
+            let last_idx = chunks.len() - 1;
+            let mut send_err: Option<RequestError> = None;
+            let mut last_sent_id = String::new();
+            for (i, chunk) in chunks.into_iter().enumerate() {
+                let is_last = i == last_idx;
+                let mut send = self.bot.send_message(Recipient::Id(chat_id), chunk);
+                if let Some(mode) = parse_mode {
+                    send = send.parse_mode(mode);
+                }
+                if let Some(t) = thread_id {
+                    send = send.message_thread_id(t);
+                }
+                if is_last {
+                    send = send.reply_markup(keyboard.clone());
+                }
+                match send.await {
+                    Ok(sent) => last_sent_id = sent.id.0.to_string(),
+                    Err(e) => {
+                        send_err = Some(e);
+                        break;
+                    }
+                }
+            }
+
+            match send_err {
+                None => out.push(crate::inference::hitl::HitlDelivery {
                     channel_id: ctx.channel.id.clone(),
-                    external_message_id: sent.id.0.to_string(),
+                    external_message_id: last_sent_id,
                     delivered_at: chrono::Utc::now(),
                 }),
-                Err(e) => {
+                Some(e) => {
                     tracing::warn!(
                         tool_call_id = %tc.id,
                         error = %e,
                         "Telegram on_pending_hitl: send failed",
                     );
                     if out.is_empty() {
-                        // Propagate so `record_segment_failure` either schedules
-                        // backoff retry (transient) or marks terminal (permanent
-                        // — `is_permanent_error` matches Telegram phrases like
-                        // "bot was blocked", "chat not found", "forbidden").
-                        return Err(AppError::Internal(format!(
-                            "Telegram send failed: {e}"
-                        )));
+                        return Err(classify_telegram_error(&e));
                     }
                     break;
                 }
@@ -554,6 +822,18 @@ async fn emit_inbound_update(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn table_converts_to_monospace_block_without_escaped_pipes() {
+        let input = "Here you go:\n\n| a | b |\n| - | - |\n| 1 | 2 |";
+        let out = telegram_markdown_v2::convert_with_strategy(
+            &super::super::markdown::fence_tables(input),
+            telegram_markdown_v2::UnsupportedTagsStrategy::Escape,
+        )
+        .unwrap();
+        assert!(out.contains("```"), "table must render as code block: {out}");
+        assert!(!out.contains("\\|"), "no escaped pipes outside code: {out}");
+    }
 
     #[test]
     fn manifest_has_bot_token_param() {

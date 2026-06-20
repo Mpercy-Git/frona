@@ -2,6 +2,7 @@ pub mod await_signal;
 pub mod browser;
 pub mod manager;
 pub mod cli;
+pub mod files;
 pub mod create_agent;
 pub mod manage_policy;
 pub mod heartbeat;

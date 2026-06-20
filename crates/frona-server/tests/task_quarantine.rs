@@ -58,6 +58,7 @@ fn ctx_with_task(quarantined: bool, result_schema: Option<Value>) -> frona::tool
         error_message: None,
         quarantined,
         result_schema,
+        result_description: None,
         created_at: now,
         updated_at: now,
     });

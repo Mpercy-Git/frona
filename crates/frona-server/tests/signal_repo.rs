@@ -125,6 +125,7 @@ async fn find_pending_signal_tasks_returns_only_signals() {
             run_at: None,
         quarantined: false,
         result_schema: None,
+        result_description: None,
         },
     )
     .await
@@ -291,6 +292,7 @@ async fn find_expired_signal_tasks_excludes_non_signal_kinds() {
             run_at: Some(Utc::now() - Duration::hours(1)),
         quarantined: false,
         result_schema: None,
+        result_description: None,
         },
     )
     .await

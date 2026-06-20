@@ -3,7 +3,7 @@ use surrealdb::types::SurrealValue;
 
 use crate::core::error::AppError;
 
-#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct Attachment {
     pub filename: String,

@@ -1,14 +1,21 @@
+use std::sync::Arc;
+
 use chrono::Utc;
+use frona::agent::service::AgentService;
 use frona::auth::UserService;
 use frona::chat::message::models::{Message, MessageRole, MessageStatus, Reasoning};
 use frona::db::init as db;
+use frona::db::repo::agents::SurrealAgentRepo;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder,
 };
 use frona::inference::provider::ModelRef;
 use frona::inference::tool_call::ToolCall;
+use frona::policy::service::PolicyService;
 use frona::storage::StorageService;
+use frona::tool::manager::ToolManager;
+use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
 use rig_core::completion::message::UserContent;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
 use surrealdb::engine::local::{Db, Mem};
@@ -31,9 +38,28 @@ fn test_builder(db: &Surreal<Db>) -> DefaultConversationBuilder {
         },
         ..Default::default()
     };
+    let user_service = UserService::new(SurrealRepo::new(db.clone()), &config.cache);
+    let storage_service = StorageService::new(&config);
+    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
+        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+    let policy_service = PolicyService::new(
+        policy_repo,
+        frona::policy::schema::build_schema(),
+        Arc::new(ToolManager::new(false)),
+        storage_service.clone(),
+        user_service.clone(),
+    );
+    let agent_service = AgentService::new(
+        SurrealAgentRepo::new(db.clone()),
+        &config.cache,
+        Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
+        policy_service,
+        user_service.clone(),
+    );
     DefaultConversationBuilder {
-        user_service: UserService::new(SurrealRepo::new(db.clone()), &config.cache),
-        storage_service: StorageService::new(&config),
+        user_service,
+        storage_service,
+        agent_service,
     }
 }
 

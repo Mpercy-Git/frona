@@ -1,4 +1,55 @@
+use std::borrow::Cow;
+
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+
+/// Wrap GFM tables in ``` fences so platforms without native table support
+/// (Telegram, Discord, …) display them as aligned monospace blocks instead of
+/// ragged pipe text. Parses with the same parser+options as
+/// `telegram_markdown_v2`, so the spans we wrap match what the converter
+/// would treat as a table.
+pub(super) fn fence_tables(text: &str) -> Cow<'_, str> {
+    let Ok(::markdown::mdast::Node::Root(root)) =
+        ::markdown::to_mdast(text, &::markdown::ParseOptions::gfm())
+    else {
+        return Cow::Borrowed(text);
+    };
+
+    let ranges: Vec<(usize, usize)> = root
+        .children
+        .iter()
+        .filter_map(|node| match node {
+            ::markdown::mdast::Node::Table(t) => {
+                t.position.as_ref().map(|p| (p.start.offset, p.end.offset))
+            }
+            _ => None,
+        })
+        .collect();
+
+    if ranges.is_empty() {
+        return Cow::Borrowed(text);
+    }
+
+    let mut out = String::with_capacity(text.len() + ranges.len() * 8);
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        let span = &text[start..end];
+        // Re-render the span through the converter's own table renderer
+        // (Keep = no escaping): its width-padding math aligns the columns
+        // regardless of how the model padded its cells.
+        let aligned = telegram_markdown_v2::convert_with_strategy(
+            span,
+            telegram_markdown_v2::UnsupportedTagsStrategy::Keep,
+        )
+        .unwrap_or_else(|_| span.to_string());
+        out.push_str(&text[cursor..start]);
+        out.push_str("```\n");
+        out.push_str(aligned.trim_end_matches('\n'));
+        out.push_str("\n```");
+        cursor = end;
+    }
+    out.push_str(&text[cursor..]);
+    Cow::Owned(out)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalStyle {
@@ -771,6 +822,35 @@ pub fn to_plain(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fence_tables_wraps_top_level_table() {
+        let input = "Intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nOutro";
+        let fenced = fence_tables(input);
+        assert_eq!(
+            fenced,
+            "Intro\n\n```\n| a | b |\n| - | - |\n| 1 | 2 |\n```\n\nOutro"
+        );
+    }
+
+    #[test]
+    fn fence_tables_realigns_ragged_columns() {
+        let input = "| Col A | B |\n| - | - |\n| 1 | 2 |";
+        let fenced = fence_tables(input);
+        assert_eq!(fenced, "```\n| Col A | B |\n| -     | - |\n| 1     | 2 |\n```");
+    }
+
+    #[test]
+    fn fence_tables_leaves_plain_text_untouched() {
+        let input = "no tables here, just a | pipe";
+        assert!(matches!(fence_tables(input), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn fence_tables_skips_tables_already_inside_code_fences() {
+        let input = "```\n| a | b |\n| - | - |\n```\n";
+        assert!(matches!(fence_tables(input), Cow::Borrowed(_)));
+    }
 
     #[test]
     fn wa_bold_uses_single_asterisk() {

@@ -286,14 +286,10 @@ impl SignalService {
             .await?;
 
         let Some(agent) = self.agent_service.find_by_id(&chat.agent_id).await? else {
-            let _ = chat_service
-                .complete_agent_message(
-                    &agent_msg.id,
-                    format!("Signal extraction skipped: agent {} not found", chat.agent_id),
-                    vec![],
-                    None,
-                )
-                .await;
+            if let Ok(mut msg) = chat_service.get_message(&channel.user_id, &agent_msg.id).await {
+                msg.content = format!("Signal extraction skipped: agent {} not found", chat.agent_id);
+                let _ = chat_service.complete_agent_message(msg).await;
+            }
             return Ok(());
         };
         let model_group = registry.resolve_model_group(&agent.model_group)?;
@@ -323,14 +319,10 @@ impl SignalService {
                     error = %e,
                     "Signal extraction failed",
                 );
-                let _ = chat_service
-                    .complete_agent_message(
-                        &agent_msg.id,
-                        format!("Signal extraction failed: {e}"),
-                        vec![],
-                        None,
-                    )
-                    .await;
+                if let Ok(mut msg) = chat_service.get_message(&channel.user_id, &agent_msg.id).await {
+                    msg.content = format!("Signal extraction failed: {e}");
+                    let _ = chat_service.complete_agent_message(msg).await;
+                }
                 return Ok(());
             }
         };
@@ -386,9 +378,10 @@ impl SignalService {
                 fired.len()
             )
         };
-        let _ = chat_service
-            .complete_agent_message(&agent_msg.id, summary_text, vec![], None)
-            .await;
+        if let Ok(mut msg) = chat_service.get_message(&channel.user_id, &agent_msg.id).await {
+            msg.content = summary_text;
+            let _ = chat_service.complete_agent_message(msg).await;
+        }
         Ok(())
     }
 
@@ -728,6 +721,7 @@ mod tests {
             error_message: None,
             quarantined: false,
             result_schema: None,
+            result_description: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

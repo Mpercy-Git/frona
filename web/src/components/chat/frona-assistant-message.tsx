@@ -4,7 +4,6 @@ import { useState, useEffect } from "react";
 import { MessagePrimitive, useMessage, useMessagePartText } from "@assistant-ui/react";
 import { useThreadIsRunning } from "@assistant-ui/core/react";
 import { MarkdownText } from "./markdown-text";
-import { ChevronDownIcon, ChevronRightIcon } from "@heroicons/react/16/solid";
 import { useSession } from "@/lib/session-context";
 import { useNavigation } from "@/lib/navigation-context";
 import { useRetryInfo } from "@/lib/retry-context";
@@ -17,30 +16,43 @@ import { agentDisplayName } from "@/lib/types";
 import type { Attachment } from "@/lib/types";
 import { DefaultToolCallUI } from "./tool-uis/default-tool-call-ui";
 import { ToolTimelineProvider } from "./tool-uis/tool-timeline-context";
-import { ArrowDownTrayIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { ArrowDownTrayIcon, XMarkIcon, ClipboardDocumentListIcon, SparklesIcon } from "@heroicons/react/24/outline";
+import { useRouter } from "next/navigation";
+import * as Tooltip from "@radix-ui/react-tooltip";
 
-function ReasoningPart({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+function ReasoningToggle({ text, open, onToggle }: { text: string; open: boolean; onToggle: () => void }) {
   if (!text) return null;
-
   return (
-    <div className="mb-2">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1 text-xs font-medium text-text-tertiary hover:text-text-secondary transition"
-      >
-        {open ? (
-          <ChevronDownIcon className="h-3.5 w-3.5" />
-        ) : (
-          <ChevronRightIcon className="h-3.5 w-3.5" />
-        )}
-        Reasoning
-      </button>
-      {open && (
-        <div className="mt-1 rounded-md border border-border bg-surface-secondary px-3 py-2 text-xs text-text-secondary whitespace-pre-wrap">
-          {text}
-        </div>
-      )}
+    <Tooltip.Provider delayDuration={200}>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          <button
+            onClick={onToggle}
+            aria-pressed={open}
+            className={`inline-flex items-center transition cursor-pointer ${open ? "text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}
+          >
+            <SparklesIcon className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content
+            side="top"
+            sideOffset={4}
+            className="z-50 rounded-lg bg-surface-secondary border border-border px-3 py-2 text-xs text-text-secondary shadow-lg animate-in fade-in-0 zoom-in-95"
+          >
+            {open ? "Hide reasoning" : "Show reasoning"}
+            <Tooltip.Arrow className="fill-surface-secondary" />
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
+  );
+}
+
+function ReasoningPanel({ text }: { text: string }) {
+  return (
+    <div className="mb-2 rounded-md border border-border bg-surface-secondary px-3 py-2 text-xs text-text-secondary whitespace-pre-wrap">
+      {text}
     </div>
   );
 }
@@ -271,17 +283,25 @@ function MessageAttachments() {
 }
 
 export function FronaAssistantMessage() {
-  const { agentId: sessionAgentId } = useSession();
+  const { agentId: sessionAgentId, activeTaskId } = useSession();
   const message = useMessage();
   const messageAgentId = (message.metadata as Record<string, any>)?.custom?.agentId;
   const agentId = messageAgentId ?? sessionAgentId ?? undefined;
   const { agents } = useNavigation();
   const tz = useTimezone();
+  const router = useRouter();
+  const [reasoningOpen, setReasoningOpen] = useState(false);
 
   const agent = agents.find((a) => a.id === agentId);
   const agentName = agentDisplayName(agentId, agent?.name);
   const custom = (message.metadata as Record<string, any>)?.custom ?? {};
   const isContinuation = custom.continuation;
+  const reasoningText = (custom.reasoning as string | undefined) ?? "";
+  const taskCompletion = custom.taskCompletion as
+    | { task_id: string; status: string }
+    | undefined;
+  const showTaskBadge =
+    taskCompletion && activeTaskId !== taskCompletion.task_id;
   const isoTime = message.createdAt?.toISOString();
 
   return (
@@ -294,6 +314,37 @@ export function FronaAssistantMessage() {
             <p className="text-xs font-medium text-text-tertiary">
               {agentName}
             </p>
+            {reasoningText && (
+              <ReasoningToggle
+                text={reasoningText}
+                open={reasoningOpen}
+                onToggle={() => setReasoningOpen((v) => !v)}
+              />
+            )}
+            {showTaskBadge && (
+              <Tooltip.Provider delayDuration={200}>
+                <Tooltip.Root>
+                  <Tooltip.Trigger asChild>
+                    <button
+                      onClick={() => router.push(`/chat?task=${taskCompletion!.task_id}`)}
+                      className="inline-flex items-center text-text-tertiary hover:text-text-primary transition cursor-pointer"
+                    >
+                      <ClipboardDocumentListIcon className="h-3.5 w-3.5" />
+                    </button>
+                  </Tooltip.Trigger>
+                  <Tooltip.Portal>
+                    <Tooltip.Content
+                      side="top"
+                      sideOffset={4}
+                      className="z-50 rounded-lg bg-surface-secondary border border-border px-3 py-2 text-xs text-text-secondary shadow-lg animate-in fade-in-0 zoom-in-95"
+                    >
+                      Open Task
+                      <Tooltip.Arrow className="fill-surface-secondary" />
+                    </Tooltip.Content>
+                  </Tooltip.Portal>
+                </Tooltip.Root>
+              </Tooltip.Provider>
+            )}
             {isoTime && (
               <time
                 dateTime={isoTime}
@@ -309,12 +360,12 @@ export function FronaAssistantMessage() {
           </div>
         )}
         <div className={`${isContinuation ? "pl-[42px] -mt-1" : "pl-[42px]"} text-base text-text-primary flex flex-col items-start`}>
+          {reasoningOpen && reasoningText && <ReasoningPanel text={reasoningText} />}
           <ToolTimelineProvider>
             <MessagePrimitive.Parts
               unstable_showEmptyOnNonTextEnd={false}
               components={{
                 Text: SmoothMarkdownText,
-                Reasoning: ReasoningPart,
                 Empty: StreamingIndicator,
                 tools: {
                   Fallback: DefaultToolCallUI,

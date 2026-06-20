@@ -287,7 +287,7 @@ mod tests {
             .await
             .unwrap();
         let row: serde_json::Value = res.take::<Option<serde_json::Value>>(0).unwrap().unwrap();
-        let id = row.get("id").and_then(|v| v.as_str()).map(str::to_string)
+        row.get("id").and_then(|v| v.as_str()).map(str::to_string)
             .unwrap_or_else(|| {
                 // SurrealDB returns IDs as objects sometimes; extract id field.
                 row.get("id")
@@ -295,8 +295,7 @@ mod tests {
                     .and_then(|v| v.as_str())
                     .map(str::to_string)
                     .unwrap_or_default()
-            });
-        id
+            })
     }
 
     async fn fetch(db: &Surreal<Db>) -> Vec<serde_json::Value> {
@@ -333,7 +332,7 @@ mod tests {
         let rows = fetch(&db).await;
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
-        assert!(row.get("tool_data").map_or(true, |v| v.is_null()));
+        assert!(row.get("tool_data").is_none_or(|v| v.is_null()));
         let hitl = row.get("hitl").unwrap();
         assert_eq!(hitl.get("status").and_then(|v| v.as_str()), Some("pending"));
         assert_eq!(hitl.get("prompt").and_then(|v| v.as_str()), Some("Which region?"));
@@ -456,7 +455,7 @@ mod tests {
         translate_tool_data_to_hitl(&db).await.unwrap();
 
         let rows = fetch(&db).await;
-        assert!(rows[0].get("tool_data").map_or(true, |v| v.is_null()));
+        assert!(rows[0].get("tool_data").is_none_or(|v| v.is_null()));
         let ev = rows[0].get("task_event").unwrap();
         assert_eq!(ev.get("type").and_then(|v| v.as_str()), Some("Completion"));
         let inner = ev.get("data").unwrap();
@@ -514,7 +513,7 @@ mod tests {
         let rows = fetch(&db).await;
         assert_eq!(rows.len(), 1);
         assert!(rows[0].get("hitl").is_some());
-        assert!(rows[0].get("tool_data").map_or(true, |v| v.is_null()));
+        assert!(rows[0].get("tool_data").is_none_or(|v| v.is_null()));
     }
 
     #[tokio::test]

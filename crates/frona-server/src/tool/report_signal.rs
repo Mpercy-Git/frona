@@ -7,7 +7,6 @@ use crate::agent::prompt::PromptLoader;
 use crate::agent::task::executor::{deliver_event_to_source, TaskLifecycleEvent};
 use crate::agent::task::models::{SignalMode, TaskKind};
 use crate::agent::task::schema::ResultSpec;
-use crate::agent::task::service::TaskService;
 use crate::chat::service::ChatService;
 use crate::core::error::AppError;
 
@@ -17,7 +16,6 @@ const MAX_SUMMARY_LEN: usize = 512;
 
 pub struct ReportSignalTool {
     chat_service: ChatService,
-    task_service: TaskService,
     prompts: PromptLoader,
     result_schema: Option<Arc<ResultSpec>>,
 }
@@ -25,13 +23,11 @@ pub struct ReportSignalTool {
 impl ReportSignalTool {
     pub fn new(
         chat_service: ChatService,
-        task_service: TaskService,
         prompts: PromptLoader,
         result_schema: Option<Arc<ResultSpec>>,
     ) -> Self {
         Self {
             chat_service,
-            task_service,
             prompts,
             result_schema,
         }
@@ -112,7 +108,6 @@ impl AgentTool for ReportSignalTool {
 
         deliver_event_to_source(
             &self.chat_service,
-            &self.task_service,
             task,
             TaskLifecycleEvent::Match {
                 attempt_index,

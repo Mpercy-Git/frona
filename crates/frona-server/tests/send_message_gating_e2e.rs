@@ -200,6 +200,7 @@ async fn build_session_for_chat(
     let builder = Box::new(DefaultConversationBuilder {
         user_service: state.user_service.clone(),
         storage_service: state.storage_service.clone(),
+        agent_service: state.agent_service.clone(),
     });
     ChatSessionContext::build(&state.harness, "user-1", chat, CancellationToken::new(), builder)
         .await
@@ -276,6 +277,7 @@ async fn send_message_filtered_in_task_chat() {
         error_message: None,
         quarantined: false,
         result_schema: Some(serde_json::json!({"type": "string"})),
+        result_description: None,
         created_at: now,
         updated_at: now,
     };

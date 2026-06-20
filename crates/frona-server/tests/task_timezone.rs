@@ -42,7 +42,7 @@ async fn create_cron_template_snapshots_timezone() {
             None,
             Default::default(),
             Default::default(),
-            false, None)
+            false, None, None)
         .await
         .unwrap();
 
@@ -114,7 +114,7 @@ async fn advance_cron_template_preserves_kind_and_timezone() {
             None,
             Default::default(),
             Default::default(),
-            false, None)
+            false, None, None)
         .await
         .unwrap();
 

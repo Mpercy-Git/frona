@@ -314,6 +314,17 @@ export class ChatStore {
           this.messages.push(msg);
         }
         this.clearStreaming();
+
+        // The agent loop can pause on a fresh set of HITLs and signal that via
+        // inference_done (vs. inference_paused). Re-seed the pending map so the
+        // wizard renders the new questions; matches the inference_paused path.
+        if (msg.tool_calls?.length) {
+          for (const te of msg.tool_calls) {
+            if (te.hitl && te.hitl.status === "pending") {
+              this.pendingExternalTools.set(te.id, te);
+            }
+          }
+        }
         break;
       }
 
@@ -524,7 +535,7 @@ export function mergeConsecutiveMessages(messages: MessageResponse[]): MessageRe
     const isContinuation =
       prev &&
       prev.role === "agent" &&
-      (msg.role === "agent" || (msg.role === "system" && msg.event) || msg.role === "taskcompletion") &&
+      (msg.role === "agent" || (msg.role === "system" && msg.event)) &&
       (prev.agent_id === msg.agent_id || msg.role === "system") &&
       prev.status !== "executing";
 

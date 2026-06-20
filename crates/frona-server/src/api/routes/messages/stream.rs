@@ -2,11 +2,12 @@ use axum::extract::{Path, State};
 use axum::Json;
 
 use crate::chat::broadcast::BroadcastEventKind;
-use crate::inference::tool_loop::{InferenceEvent, InferenceEventKind};
-use crate::chat::message::models::SendMessageRequest;
+use crate::chat::message::models::{MessageCommand, MessageResponse, SendMessageRequest};
+use crate::chat::slash::{self, ParsedInvocation};
+use crate::core::error::AppError;
 use crate::credential::presign::presign_response;
 use crate::inference::conversation::DefaultConversationBuilder;
-use crate::chat::message::models::MessageResponse;
+use crate::inference::tool_loop::{InferenceEvent, InferenceEventKind};
 
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;
@@ -34,9 +35,11 @@ pub(crate) async fn stream_message(
     let needs_title = chat.title.is_none();
 
     if let Some(pending_te) = pending_tool {
+        // HITL-resolve path — `/slash` here would be ambiguous (is it a
+        // command or a tool response?). Treat as plain text and don't parse.
         let mut user_response = state
             .chat_service
-            .create_stream_user_message(&auth.user_id, &chat_id, &user_content, vec![])
+            .create_stream_user_message(&auth.user_id, &chat_id, &user_content, vec![], None)
             .await
             .map_err(ApiError::from)?;
 
@@ -75,9 +78,25 @@ pub(crate) async fn stream_message(
 
         Ok(Json(user_response))
     } else {
+        let parsed_command = match slash::parse(&user_content) {
+            None => None,
+            Some(ParsedInvocation::Slash { name, rest }) => {
+                Some(resolve_slash_invocation(&state, &auth.user_id, &agent_id, name, rest).await?)
+            }
+            Some(ParsedInvocation::At { name, rest }) => {
+                Some(resolve_at_invocation(&state, &auth.user_id, name, rest).await?)
+            }
+        };
+
         let mut user_response = state
             .chat_service
-            .create_stream_user_message(&auth.user_id, &chat_id, &user_content, req.attachments)
+            .create_stream_user_message(
+                &auth.user_id,
+                &chat_id,
+                &user_content,
+                req.attachments,
+                parsed_command,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -118,15 +137,88 @@ pub(crate) async fn stream_message(
         let builder = Box::new(DefaultConversationBuilder {
             user_service: state.user_service.clone(),
             storage_service: state.storage_service.clone(),
+            agent_service: state.agent_service.clone(),
         });
         let active_sessions = state.active_sessions.clone();
         tokio::spawn(async move {
             harness
-                .run_turn(&user_id, &chat_id_clone, &agent_msg_id, cancel_token, builder, &[])
+                .run_turn(&user_id, &chat_id_clone, &agent_msg_id, cancel_token, builder, &[], None)
                 .await;
             active_sessions.remove(&chat_id_clone).await;
         });
 
         Ok(Json(user_response))
     }
+}
+
+/// Precedence: static commands > skills > agent handles. 400 on miss.
+async fn resolve_slash_invocation(
+    state: &AppState,
+    user_id: &str,
+    chat_agent_id: &str,
+    name: String,
+    rest: String,
+) -> Result<MessageCommand, ApiError> {
+    if state.harness.commands.get(&name).is_some() {
+        return Ok(MessageCommand::Command { name, args: rest });
+    }
+
+    let agent = state
+        .agent_service
+        .find_by_id(chat_agent_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError::from(AppError::NotFound(format!("agent {chat_agent_id}")))
+        })?;
+    let user_handle = match state
+        .user_service
+        .find_by_id(user_id)
+        .await
+        .map_err(ApiError::from)?
+    {
+        Some(u) => u.handle,
+        None => return Err(ApiError::from(AppError::NotFound(format!("user {user_id}")))),
+    };
+    let skills = state
+        .skill_service
+        .list(&user_handle, &agent.handle, agent.skills.as_deref())
+        .await;
+    if skills.iter().any(|s| s.name == name) {
+        return Ok(MessageCommand::Skill { name, prompt: rest });
+    }
+
+    if state
+        .agent_service
+        .find_by_handle(user_id, &name)
+        .await
+        .map_err(ApiError::from)?
+        .is_some()
+    {
+        return Ok(MessageCommand::Command { name, args: rest });
+    }
+
+    Err(ApiError::from(AppError::Validation(format!(
+        "unknown command '/{name}'"
+    ))))
+}
+
+async fn resolve_at_invocation(
+    state: &AppState,
+    user_id: &str,
+    name: String,
+    rest: String,
+) -> Result<MessageCommand, ApiError> {
+    if state
+        .agent_service
+        .find_by_handle(user_id, &name)
+        .await
+        .map_err(ApiError::from)?
+        .is_some()
+    {
+        return Ok(MessageCommand::Command { name, args: rest });
+    }
+    Err(ApiError::from(AppError::Validation(format!(
+        "no such agent '@{name}'"
+    ))))
 }

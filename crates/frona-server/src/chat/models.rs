@@ -5,7 +5,7 @@ use crate::Entity;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
-#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "chat")]
 pub struct Chat {

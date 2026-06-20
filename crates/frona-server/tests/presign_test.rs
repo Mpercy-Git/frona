@@ -80,6 +80,7 @@ fn make_message_response(attachments: Vec<Attachment>) -> MessageResponse {
         from_address: None,
         delivery: None,
         tool_calls: vec![],
+        command: None,
         metadata: Default::default(),
         created_at: Utc::now(),
     }

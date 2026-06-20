@@ -622,6 +622,21 @@ struct StubConfig {
     fail_on_send: Option<String>,
 }
 
+/// Mirrors what a real adapter's classify_<provider> does: maps the test
+/// injected free-form string into a typed ChannelError. Tests use it via
+/// `fail_on_tool`/`fail_on_send`.
+fn stub_classify_error(msg: &str) -> frona::chat::channel::ChannelError {
+    use frona::chat::channel::{ChannelError, ChannelErrorKind};
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("blocked") || lower.contains("forbidden") || lower.contains("kicked") {
+        ChannelError::terminal(msg.to_string(), ChannelErrorKind::Forbidden)
+    } else if lower.contains("chat not found") || lower.contains("user not found") {
+        ChannelError::terminal(msg.to_string(), ChannelErrorKind::NotFound)
+    } else {
+        ChannelError::transient(msg.to_string())
+    }
+}
+
 struct StubAdapter {
     captured: std::sync::Arc<StdMutex<Vec<CapturedSend>>>,
     tool_calls: std::sync::Arc<StdMutex<Vec<CapturedToolCall>>>,
@@ -653,7 +668,7 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
         msg: &frona::chat::message::models::Message,
         _chat: &frona::chat::models::Chat,
         _ctx: &frona::chat::channel::ChannelCtx,
-    ) -> Result<(), frona::core::error::AppError> {
+    ) -> Result<(), frona::chat::channel::ChannelError> {
         let injected = {
             let mut cfg = self.config.lock().unwrap();
             if let Some((id, _)) = &cfg.fail_on_tool {
@@ -667,7 +682,7 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
             }
         };
         if let Some((_, err)) = injected {
-            return Err(frona::core::error::AppError::Internal(err));
+            return Err(stub_classify_error(&err));
         }
         let render = self.config.lock().unwrap().render_tool_segments;
         if !render {
@@ -686,10 +701,10 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
         _tool_calls: &[frona::inference::tool_call::ToolCall],
         chat: &frona::chat::models::Chat,
         _ctx: &frona::chat::channel::ChannelCtx,
-    ) -> Result<(), frona::core::error::AppError> {
+    ) -> Result<(), frona::chat::channel::ChannelError> {
         let injected = self.config.lock().unwrap().fail_on_send.take();
         if let Some(err) = injected {
-            return Err(frona::core::error::AppError::Internal(err));
+            return Err(stub_classify_error(&err));
         }
         if msg.content.trim().is_empty() {
             return Ok(());
@@ -705,7 +720,7 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
         &self,
         _chat: &frona::chat::models::Chat,
         _ctx: &frona::chat::channel::ChannelCtx,
-    ) -> Result<(), frona::core::error::AppError> {
+    ) -> Result<(), frona::chat::channel::ChannelError> {
         self.inference_start_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
@@ -716,7 +731,7 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
         msg: &frona::chat::message::models::Message,
         _chat: &frona::chat::models::Chat,
         ctx: &frona::chat::channel::ChannelCtx,
-    ) -> Result<Vec<frona::inference::hitl::HitlDelivery>, frona::core::error::AppError> {
+    ) -> Result<Vec<frona::inference::hitl::HitlDelivery>, frona::chat::channel::ChannelError> {
         self.pending_hitls
             .lock()
             .unwrap()
@@ -741,7 +756,7 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
         &self,
         ctx: &frona::chat::channel::ChannelCtx,
         request: axum::http::Request<axum::body::Bytes>,
-    ) -> Result<axum::response::Response, frona::core::error::AppError> {
+    ) -> Result<axum::response::Response, frona::chat::channel::ChannelError> {
         let params: std::collections::HashMap<String, String> =
             url::form_urlencoded::parse(request.body())
                 .into_owned()
@@ -759,7 +774,7 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
         ctx.emit
             .send(event)
             .await
-            .map_err(|e| frona::core::error::AppError::Internal(format!("emit: {e}")))?;
+            .map_err(|e| frona::chat::channel::ChannelError::transient(format!("emit: {e}")))?;
         use axum::response::IntoResponse;
         Ok((axum::http::StatusCode::OK, "ok").into_response())
     }
@@ -772,6 +787,7 @@ struct StubFactory {
     inference_start_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     config: std::sync::Arc<StdMutex<StubConfig>>,
     disconnect_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    create_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl StubFactory {
@@ -783,6 +799,7 @@ impl StubFactory {
             inference_start_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             config: std::sync::Arc::new(StdMutex::new(StubConfig::default())),
             disconnect_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            create_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -807,6 +824,8 @@ impl frona::chat::channel::ChannelFactory for StubFactory {
         &self,
         _config: serde_json::Value,
     ) -> Result<Box<dyn frona::chat::channel::ChannelAdapter>, frona::core::error::AppError> {
+        self.create_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Box::new(StubAdapter {
             captured: self.captured.clone(),
             tool_calls: self.tool_calls.clone(),
@@ -1116,11 +1135,9 @@ async fn agent_message_completion_dispatches_to_outbound_adapter() {
         .create_executing_agent_message(&chat.id, &agent_id)
         .await
         .unwrap();
-    state
-        .chat_service
-        .complete_agent_message(&executing.id, "hello back".into(), vec![], None)
-        .await
-        .unwrap();
+    let mut msg = state.chat_service.get_message(&user_id, &executing.id).await.unwrap();
+    msg.content = "hello back".into();
+    state.chat_service.complete_agent_message(msg).await.unwrap();
 
     let captured_for_poll = captured.clone();
     poll_until("on_send invoked", || {
@@ -1328,11 +1345,8 @@ async fn empty_agent_message_skips_adapter_and_marks_sent() {
         .create_executing_agent_message(&chat.id, &agent_id)
         .await
         .unwrap();
-    state
-        .chat_service
-        .complete_agent_message(&executing.id, String::new(), vec![], None)
-        .await
-        .unwrap();
+    let msg = state.chat_service.get_message(&user_id, &executing.id).await.unwrap();
+    state.chat_service.complete_agent_message(msg).await.unwrap();
 
     let svc = state.chat_service.clone();
     let user_for_poll = user_id.clone();
@@ -1515,11 +1529,13 @@ async fn complete_msg(
     msg_id: &str,
     content: &str,
 ) {
-    state
-        .chat_service
-        .complete_agent_message(msg_id, content.to_string(), vec![], None)
-        .await
-        .unwrap();
+    // The terminal-write API now takes an owned Message rather than re-fetching by id.
+    // Tests don't always have user_id in scope; pull the row directly via the repo.
+    use frona::core::repository::Repository;
+    let repo = frona::db::repo::messages::SurrealMessageRepo::new(state.db.clone());
+    let mut msg = repo.find_by_id(msg_id).await.unwrap().unwrap();
+    msg.content = content.to_string();
+    state.chat_service.complete_agent_message(msg).await.unwrap();
 }
 
 async fn reload_msg(
@@ -1785,12 +1801,17 @@ async fn channel_hitl_pause_renders_pending_hitls() {
         .into_iter()
         .map(Into::into)
         .collect();
-    setup
-        .state
-        .chat_service
-        .pause_agent_message(&msg.id, frona::inference::tool_loop::PauseReason::Hitl, tcs)
-        .await
-        .unwrap();
+    {
+        use frona::core::repository::Repository;
+        let repo = frona::db::repo::messages::SurrealMessageRepo::new(setup.state.db.clone());
+        let placeholder = repo.find_by_id(&msg.id).await.unwrap().unwrap();
+        setup
+            .state
+            .chat_service
+            .pause_agent_message(placeholder, frona::inference::tool_loop::PauseReason::Hitl, tcs)
+            .await
+            .unwrap();
+    }
 
     // 4. Adapter must see the pending HITL.
     let pending_hitls_recorder = setup.pending_hitls_recorder.clone();
@@ -2115,5 +2136,96 @@ async fn slack_pairing_binds_slack_user_id_into_user_address() {
         still.user_address.and_then(|ua| ua.address).as_deref(),
         Some("U07AB12C"),
         "second attempt does not overwrite the paired address",
+    );
+}
+
+// Regression: a single channel_service.start() once spawned the adapter
+// twice — direct start_with_retry plus a second one from the watcher
+// catching its own mark_status(Connecting) broadcast — producing duplicate
+// gateways (inbound dup) and duplicate run_outbound subscribers (outbound dup).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn channel_service_start_spawns_adapter_exactly_once() {
+    use frona::core::repository::Repository;
+
+    let (state, _tmp) = test_app_state().await;
+    let (token, user_id) = register_user(
+        &state,
+        "racr",
+        "racr@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "RaceAgent").await;
+    let agent_id = agent["id"].as_str().unwrap().to_string();
+
+    let captured = std::sync::Arc::new(StdMutex::new(Vec::<CapturedSend>::new()));
+    let factory = std::sync::Arc::new(StubFactory::new(captured.clone()));
+    let create_count = factory.create_count.clone();
+    state.channel_registry.register_factory(factory);
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/spaces",
+            &token,
+            serde_json::json!({"name": "RaceSpace"}),
+        ))
+        .await
+        .unwrap();
+    let space_id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // Direct write keeps the row Disconnected so manager.start() below
+    // doesn't auto-iterate it via find_active.
+    let now = chrono::Utc::now();
+    let channel = frona::chat::channel::Channel {
+        id: frona::core::repository::new_id(),
+        user_id: user_id.clone(),
+        handle: frona::handle!("test"),
+        space_id: space_id.clone(),
+        provider: "test".into(),
+        agent_id: agent_id.clone(),
+        config: Default::default(),
+        dispatch_mode: frona::chat::channel::DispatchMode::Message,
+        status: frona::chat::channel::ChannelStatus::Disconnected,
+        error_message: None,
+        last_started_at: None,
+        user_address: None,
+        setup: None,
+        retry: None,
+        created_at: now,
+        updated_at: now,
+        webhook_url: None,
+    };
+    SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
+        .create(&channel)
+        .await
+        .unwrap();
+
+    state
+        .channel_manager
+        .clone()
+        .start(state.clone())
+        .await
+        .unwrap();
+
+    let before = create_count.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        before, 0,
+        "factory.create must not run during manager.start() for a Disconnected channel \
+         (got {before}) — test invariant broken",
+    );
+
+    state
+        .channel_service
+        .start(&user_id, &channel.id)
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let count = create_count.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        count, 1,
+        "factory.create should run exactly once per channel start; got {count}",
     );
 }

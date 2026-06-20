@@ -60,12 +60,16 @@ export async function ensureAccessToken(): Promise<RefreshResult> {
   return refreshPromise;
 }
 
-async function request<T>(
+/// Retries once on 401 with a fresh access token to cover the race where the
+/// token expired between `ensureAccessToken` and the fetch. Throws
+/// [`ApiError`] only on network failure or unavailable refresh; protocol
+/// status codes flow back through the Response so callers (raw-byte
+/// downloads, the preview page, etc.) render the right UX themselves.
+export async function apiFetch(
   path: string,
   options: RequestInit = {},
-): Promise<T> {
+): Promise<Response> {
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     ...((options.headers as Record<string, string>) || {}),
   };
 
@@ -78,34 +82,43 @@ async function request<T>(
   // On "unauthenticated" we still try — some endpoints are public, and a 401
   // here surfaces a real auth failure the caller can act on.
 
-  let res: Response;
-  try {
-    res = await fetch(`${API_URL}${path}`, {
-      ...options,
-      headers,
-      credentials: "include",
-    });
-  } catch {
-    throw new ApiError(0, "Server unavailable", "unavailable");
-  }
+  const doFetch = async (): Promise<Response> => {
+    try {
+      return await fetch(`${API_URL}${path}`, {
+        ...options,
+        headers,
+        credentials: "include",
+      });
+    } catch {
+      throw new ApiError(0, "Server unavailable", "unavailable");
+    }
+  };
+
+  let res = await doFetch();
 
   if (res.status === 401 && tokenResult.ok) {
     const refreshed = await refreshAccessToken();
     if (refreshed.ok) {
       headers["Authorization"] = `Bearer ${refreshed.token}`;
-      try {
-        res = await fetch(`${API_URL}${path}`, {
-          ...options,
-          headers,
-          credentials: "include",
-        });
-      } catch {
-        throw new ApiError(0, "Server unavailable", "unavailable");
-      }
+      res = await doFetch();
     } else if (refreshed.reason === "unavailable") {
       throw new ApiError(0, "Server unavailable", "unavailable");
     }
   }
+
+  return res;
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((options.headers as Record<string, string>) || {}),
+  };
+
+  const res = await apiFetch(path, { ...options, headers });
 
   if (!res.ok) {
     if (res.status >= 500) {
@@ -136,16 +149,11 @@ export async function uploadFile(file: File, relativePath?: string): Promise<Att
     formData.append("path", relativePath);
   }
 
-  const tokenResult = await ensureAccessToken();
-  const headers: Record<string, string> = {};
-  if (tokenResult.ok) {
-    headers["Authorization"] = `Bearer ${tokenResult.token}`;
-  }
-
-  const res = await fetch(`${API_URL}/api/files`, {
+  // No `Content-Type` header — the browser sets multipart/form-data with the
+  // correct boundary automatically.
+  const res = await apiFetch("/api/files", {
     method: "POST",
     body: formData,
-    headers,
   });
 
   if (!res.ok) {
@@ -261,6 +269,29 @@ export async function sendMessage(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export interface CommandsResponse {
+  skills: Array<{
+    name: string;
+    description: string;
+    argument_hint?: string;
+    /** False when SKILL.md sets `disable-model-invocation: true`. */
+    model_invocable: boolean;
+  }>;
+  commands: Array<{
+    /** Wire-format name (handle for agents, plain name for static commands). */
+    name: string;
+    /** Pretty name for dropdown + chip. Equals `name` for static commands;
+     *  for agents it's the agent's display name (e.g. "Dark Matter"). */
+    display_name: string;
+    description: string;
+    argument_hint?: string;
+  }>;
+}
+
+export async function listCommands(chatId: string): Promise<CommandsResponse> {
+  return request<CommandsResponse>(`/api/chats/${chatId}/commands`);
 }
 
 export async function cancelGeneration(chatId: string): Promise<void> {

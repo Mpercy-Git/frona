@@ -161,7 +161,7 @@ async fn start_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Channel>, ApiError> {
-    let channel = state.channel_service.start(&state, &auth.user_id, &id).await?;
+    let channel = state.channel_service.start(&auth.user_id, &id).await?;
     Ok(Json(channel))
 }
 

@@ -4,6 +4,13 @@ use axum::response::{IntoResponse, Response};
 use crate::core::error::{AppError, AuthErrorCode};
 use serde_json::json;
 
+/// Byte-identical 404 for routes that must not leak whether a resource
+/// exists. Uses a plain-text body (not `ApiError`'s `{"error": "..."}`) so
+/// different failure causes can't be told apart by length.
+pub fn anonymous_not_found() -> Response {
+    (StatusCode::NOT_FOUND, "Not found").into_response()
+}
+
 pub struct ApiError(pub AppError);
 
 impl From<AppError> for ApiError {

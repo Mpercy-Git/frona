@@ -58,6 +58,8 @@ use chrono::Utc;
 use serde::Deserialize;
 use tokio::sync::{Mutex, oneshot};
 
+use crate::chat::channel::attachment;
+use crate::chat::channel::error::ChannelError;
 use crate::chat::channel::models::{
     ChannelAdapter, ChannelCtx, SetupConfig, external_chat_id,
 };
@@ -85,11 +87,16 @@ const TYPING_REFRESH_INTERVAL: Duration = Duration::from_secs(12);
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SignalConfig {}
 
+/// Practical body cap for a single Signal `DataMessage`. The libsignal
+/// proto accepts more, but clients chunk visually above ~2k characters.
+const SIGNAL_MAX_MESSAGE_LEN: usize = 2000;
+
 #[derive(crate::ChannelFactory)]
 #[channel(id = "signal", from = SignalConfig)]
 pub struct SignalAdapter {
     handle: Mutex<Option<SignalHandle>>,
     typing: TypingIndicator,
+    splitter: super::split::SignalSplitter,
 }
 
 impl From<SignalConfig> for SignalAdapter {
@@ -97,6 +104,9 @@ impl From<SignalConfig> for SignalAdapter {
         Self {
             handle: Mutex::new(None),
             typing: TypingIndicator::new(),
+            splitter: super::split::SignalSplitter::new(
+                super::split::MarkdownSplitter::new(SIGNAL_MAX_MESSAGE_LEN, None),
+            ),
         }
     }
 }
@@ -106,7 +116,7 @@ impl ChannelAdapter for SignalAdapter {
     async fn on_setup_begin(
         &self,
         ctx: &ChannelCtx,
-    ) -> Result<Option<SetupConfig>, AppError> {
+    ) -> Result<Option<SetupConfig>, ChannelError> {
         // `link_secondary_device` would wipe the existing registration, so
         // skip setup entirely when the store already has one.
         let db_path = ctx.data_dir.join("store.db");
@@ -145,7 +155,7 @@ impl ChannelAdapter for SignalAdapter {
         }))
     }
 
-    async fn on_setup_complete(&self, _ctx: &ChannelCtx) -> Result<(), AppError> {
+    async fn on_setup_complete(&self, _ctx: &ChannelCtx) -> Result<(), ChannelError> {
         Ok(())
     }
 
@@ -183,7 +193,7 @@ impl ChannelAdapter for SignalAdapter {
         msg: &Message,
         chat: &Chat,
         ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ChannelError> {
         let Some(text) = tool_call.turn_text.as_deref() else {
             return Ok(());
         };
@@ -199,14 +209,40 @@ impl ChannelAdapter for SignalAdapter {
         _tool_calls: &[ToolCall],
         chat: &Chat,
         ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
-        if msg.content.trim().is_empty() {
+    ) -> Result<(), ChannelError> {
+        let body = crate::chat::channel::render::render_message_body(msg);
+        let has_attachments = !msg.attachments.is_empty();
+        if body.trim().is_empty() && !has_attachments {
             return Ok(());
         }
-        self.dispatch_text(chat, &msg.content, &msg.id, ctx).await.map(|_| ())
+        let mut combined = body.clone();
+        for att in &msg.attachments {
+            match attachment::outbound_url(att, ctx, attachment::ChannelMode::Inline).await {
+                Ok(url) => {
+                    let line = attachment::inline_list_line(att, &url);
+                    if !combined.is_empty() {
+                        combined.push_str("\n\n");
+                    }
+                    combined.push_str(&line);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel_id = %ctx.channel.id,
+                        msg_id = %msg.id,
+                        path = %att.path,
+                        error = %e,
+                        "signal: share_url issue failed; skipping attachment",
+                    );
+                }
+            }
+        }
+        if combined.trim().is_empty() {
+            return Ok(());
+        }
+        self.dispatch_text(chat, &combined, &msg.id, ctx).await.map(|_| ())
     }
 
-    async fn on_inference_start(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), AppError> {
+    async fn on_inference_start(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), ChannelError> {
         let Ok(target) = SignalTarget::parse(match external_chat_id(chat) {
             Ok(s) => s,
             Err(_) => return Ok(()),
@@ -231,7 +267,7 @@ impl ChannelAdapter for SignalAdapter {
         Ok(())
     }
 
-    async fn on_inference_done(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), AppError> {
+    async fn on_inference_done(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), ChannelError> {
         self.typing.stop(&chat.id).await;
         self.dispatch_typing(chat, ctx, TypingAction::Stopped).await
     }
@@ -242,23 +278,14 @@ impl ChannelAdapter for SignalAdapter {
         _msg: &Message,
         chat: &Chat,
         ctx: &ChannelCtx,
-    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, ChannelError> {
         // Sequential cadence: render only the first pending HITL. The cursor
         // advances by 1; the next pending HITL renders after this one resolves
         // (via text reply or web URL).
         let Some(tc) = batch.first() else { return Ok(Vec::new()) };
         let Some(h) = tc.hitl.as_ref() else { return Ok(Vec::new()) };
 
-        // Body policy mirrors WhatsApp/Discord/Slack: Choice/Approval → prompt
-        // only (text reply IS the resolve action); External (creds) → prompt +
-        // URL (URL is the only resolve path for vault picks).
-        let kind = crate::chat::channel::hitl::kind_for(&h.request);
-        let body = match kind {
-            crate::chat::channel::hitl::HitlKind::External => {
-                crate::chat::channel::hitl::render_default_text(h)
-            }
-            _ => h.prompt.clone(),
-        };
+        let body = crate::chat::channel::hitl::render_text(h);
         let ts = self.dispatch_text(chat, &body, &tc.id, ctx).await?;
         tracing::info!(
             channel_id = %ctx.channel.id,
@@ -297,21 +324,27 @@ impl SignalAdapter {
         text: &str,
         msg_id: &str,
         ctx: &ChannelCtx,
-    ) -> Result<u64, AppError> {
+    ) -> Result<u64, ChannelError> {
         let target = SignalTarget::parse(external_chat_id(chat)?)?;
         let cmd_tx = self.cmd_tx(&ctx.channel.id).await?;
+        let chunks = self.splitter.split(text);
+        if chunks.is_empty() {
+            return Ok(0);
+        }
         let (reply, rx) = oneshot::channel();
         cmd_tx
             .send(SignalCommand::SendText {
                 target,
-                body: text.to_string(),
+                chunks,
                 msg_id: msg_id.to_string(),
                 reply,
             })
             .await
-            .map_err(|_| AppError::Internal("Signal worker command channel closed".into()))?;
+            .map_err(|_| {
+                ChannelError::transient("Signal worker command channel closed")
+            })?;
         rx.await
-            .map_err(|_| AppError::Internal("Signal worker dropped reply oneshot".into()))?
+            .map_err(|_| ChannelError::transient("Signal worker dropped reply oneshot"))?
     }
 
     async fn dispatch_typing(
@@ -319,7 +352,7 @@ impl SignalAdapter {
         chat: &Chat,
         ctx: &ChannelCtx,
         action: TypingAction,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ChannelError> {
         // Best-effort: never propagate errors, they'd block delivery.
         let Ok(target) = SignalTarget::parse(match external_chat_id(chat) {
             Ok(s) => s,

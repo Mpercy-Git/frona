@@ -6,7 +6,7 @@ use crate::storage::Attachment;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
-#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct Reasoning {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,7 +39,18 @@ pub enum MessageRole {
     System,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+/// Parsed slash invocation on a user message. `Message.content` keeps the raw
+/// text; this side field carries the parsed form. Command responses have no
+/// marker — they're identified by adjacency to the preceding user message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MessageCommand {
+    Skill { name: String, prompt: String },
+    Command { name: String, args: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[serde(tag = "type", content = "data")]
 #[surreal(crate = "surrealdb::types", tag = "type", content = "data")]
 pub enum MessageEvent {
@@ -49,6 +60,11 @@ pub enum MessageEvent {
         status: crate::agent::task::models::TaskStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
+        /// Schema the LLM produced its result against. Renderers (channel
+        /// adapters, web UI) read this together with `message.content` (raw
+        /// JSON) to format the result for humans.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<serde_json::Value>,
     },
     TaskMatch {
         task_id: String,
@@ -87,6 +103,9 @@ pub struct MessageDelivery {
     pub last_attempt_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Classification of the last send failure. Cleared on success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<crate::chat::channel::ChannelErrorKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,6 +124,7 @@ impl MessageDelivery {
             next_attempt_at: Some(now),
             last_attempt_at: None,
             last_error: None,
+            failure_kind: None,
             sent_at: None,
             delivered_at: None,
             tool_index: 0,
@@ -112,7 +132,7 @@ impl MessageDelivery {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "message")]
 pub struct Message {
@@ -139,6 +159,10 @@ pub struct Message {
     /// for non-channel messages (callers use the channel's nominal mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_mode: Option<crate::chat::channel::DispatchMode>,
+    /// User-role only: parsed slash invocation. `None` for plain messages and
+    /// for all assistant/system/etc. roles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<MessageCommand>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
@@ -159,6 +183,7 @@ impl Message {
             from_address: None,
             delivery: None,
             dispatch_mode: None,
+            command: None,
             metadata: BTreeMap::new(),
         }
     }
@@ -177,6 +202,7 @@ pub struct MessageBuilder {
     from_address: Option<String>,
     delivery: Option<MessageDelivery>,
     dispatch_mode: Option<crate::chat::channel::DispatchMode>,
+    command: Option<MessageCommand>,
     metadata: BTreeMap<String, serde_json::Value>,
 }
 
@@ -231,6 +257,11 @@ impl MessageBuilder {
         self
     }
 
+    pub fn command(mut self, c: MessageCommand) -> Self {
+        self.command = Some(c);
+        self
+    }
+
     pub fn build(self) -> Message {
         Message {
             id: crate::core::repository::new_id(),
@@ -246,6 +277,7 @@ impl MessageBuilder {
             from_address: self.from_address,
             delivery: self.delivery,
             dispatch_mode: self.dispatch_mode,
+            command: self.command,
             metadata: self.metadata,
             created_at: chrono::Utc::now(),
         }
@@ -334,6 +366,8 @@ pub struct MessageResponse {
     pub delivery: Option<MessageDelivery>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<crate::inference::tool_call::ToolCallResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<MessageCommand>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
@@ -355,6 +389,7 @@ impl From<Message> for MessageResponse {
             from_address: msg.from_address,
             delivery: msg.delivery,
             tool_calls: vec![],
+            command: msg.command,
             metadata: msg.metadata,
             created_at: msg.created_at,
         }
@@ -461,6 +496,75 @@ mod tests {
         let d: MessageDelivery = serde_json::from_value(json).unwrap();
         assert_eq!(d.tool_index, 0);
         assert_eq!(d.attempts, 2);
+    }
+
+    #[test]
+    fn message_command_skill_round_trip() {
+        let msg = Message::builder("chat-1", MessageRole::User, "/weather London".to_string())
+            .command(MessageCommand::Skill {
+                name: "weather".to_string(),
+                prompt: "London".to_string(),
+            })
+            .build();
+
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["command"]["type"], "skill");
+        assert_eq!(json["command"]["name"], "weather");
+        assert_eq!(json["command"]["prompt"], "London");
+
+        let round: Message = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            round.command,
+            Some(MessageCommand::Skill {
+                name: "weather".to_string(),
+                prompt: "London".to_string(),
+            })
+        );
+        // raw content preserved
+        assert_eq!(round.content, "/weather London");
+    }
+
+    #[test]
+    fn message_command_handler_round_trip() {
+        let msg = Message::builder("chat-1", MessageRole::User, "/clear".to_string())
+            .command(MessageCommand::Command {
+                name: "clear".to_string(),
+                args: String::new(),
+            })
+            .build();
+
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["command"]["type"], "command");
+        assert_eq!(json["command"]["name"], "clear");
+        assert_eq!(json["command"]["args"], "");
+
+        let round: Message = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            round.command,
+            Some(MessageCommand::Command { ref name, ref args }) if name == "clear" && args.is_empty()
+        ));
+    }
+
+    #[test]
+    fn message_omits_command_when_absent() {
+        let msg = Message::builder("chat-1", MessageRole::User, "hello".to_string()).build();
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("\"command\""));
+    }
+
+    #[test]
+    fn message_response_propagates_command() {
+        let msg = Message::builder("chat-1", MessageRole::User, "/clear".to_string())
+            .command(MessageCommand::Command {
+                name: "clear".to_string(),
+                args: String::new(),
+            })
+            .build();
+        let resp: MessageResponse = msg.into();
+        assert!(matches!(
+            resp.command,
+            Some(MessageCommand::Command { ref name, .. }) if name == "clear"
+        ));
     }
 
     #[test]

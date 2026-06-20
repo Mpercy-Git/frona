@@ -35,7 +35,7 @@ async fn build_mcp_supervisor() -> (
         ..Default::default()
     });
 
-    let sandbox_manager = Arc::new(frona::tool::sandbox::SandboxManager::new(true, Arc::new(
+    let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(true, Arc::new(
             frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
                 80.0, 80.0, 90.0, 90.0,
             ),
@@ -51,9 +51,41 @@ async fn build_mcp_supervisor() -> (
         &frona::core::config::CacheConfig::default(),
     );
     let policy_service = frona::policy::service::PolicyService::new(
-        policy_repo, policy_schema, policy_tool_manager, storage, user_service.clone(),
+        policy_repo, policy_schema, policy_tool_manager, storage.clone(), user_service.clone(),
     );
-    let manager = Arc::new(McpManager::new(sandbox_manager, storage_for_mcp.clone(), 4100, 4200, policy_service.clone(), user_service.clone(), frona::build_http_client()));
+    let supervisor_skill_service = frona::agent::skill::service::SkillService::new(
+        frona::agent::skill::registry::SkillRegistryClient::new(
+            frona::build_http_client(),
+            "/tmp/frona-test-supervisor-cache",
+        ),
+        frona::agent::skill::resolver::SkillResolver::new("/tmp/frona-test-supervisor-shared", storage.clone()),
+        storage.clone(),
+        "/tmp/frona-test-supervisor-skills",
+        &frona::core::config::CacheConfig::default(),
+    );
+    let supervisor_keypair_service = frona::credential::keypair::service::KeyPairService::new(
+        "test-secret",
+        Arc::new(SurrealRepo::new(db.clone())),
+    );
+    let supervisor_token_service = frona::auth::token::service::TokenService::new(
+        Arc::new(SurrealRepo::new(db.clone())),
+        frona::auth::jwt::JwtService::new(),
+        user_service.clone(),
+        3600,
+        86400,
+    );
+    let sandbox_manager = Arc::new(frona::tool::sandbox::SandboxManager::new(
+        factory,
+        policy_service.clone(),
+        supervisor_skill_service,
+        storage.clone(),
+        supervisor_token_service,
+        supervisor_keypair_service,
+        "http://localhost".to_string(),
+        300,
+        "UTC".to_string(),
+    ));
+    let manager = Arc::new(McpManager::new(sandbox_manager, storage_for_mcp.clone(), 4100, 4200, user_service.clone(), frona::build_http_client()));
     let mcp_repo: Arc<dyn McpServerRepository> =
         Arc::new(SurrealRepo::<McpServer>::new(db.clone()));
     let vault_storage = frona::storage::StorageService::new(&frona::core::config::Config {

@@ -136,6 +136,7 @@ fn make_task(kind: TaskKind) -> Task {
         error_message: None,
         quarantined: false,
         result_schema: None,
+        result_description: None,
         created_at: now,
         updated_at: now,
     }
@@ -297,6 +298,7 @@ async fn lifecycle_complete_event_detected() {
                 chat_id: Some(source_chat.id.clone()),
                 status: TaskStatus::Completed,
                 summary: Some("Research findings here".to_string()),
+                schema: None,
             },
         )
         .await
@@ -391,12 +393,10 @@ async fn mark_deferred_sets_pending_with_run_at() {
 #[tokio::test]
 async fn deliver_to_source_skips_direct_tasks() {
     let (state, _tmp) = test_app_state().await;
-    let executor = make_executor(&state);
     let task = make_task(TaskKind::Direct { source_chat_id: None });
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-        &state.task_service,
             &task,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -410,7 +410,6 @@ async fn deliver_to_source_skips_direct_tasks() {
 #[tokio::test]
 async fn deliver_to_source_sends_to_delegation() {
     let (state, _tmp) = test_app_state().await;
-    let executor = make_executor(&state);
 
     let source_chat = state
         .chat_service
@@ -436,7 +435,6 @@ async fn deliver_to_source_sends_to_delegation() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-        &state.task_service,
             &task,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -457,7 +455,6 @@ async fn deliver_to_source_sends_to_delegation() {
 #[tokio::test]
 async fn deliver_to_source_sends_to_direct_with_source_chat() {
     let (state, _tmp) = test_app_state().await;
-    let executor = make_executor(&state);
 
     let source_chat = state
         .chat_service
@@ -481,7 +478,6 @@ async fn deliver_to_source_sends_to_direct_with_source_chat() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-        &state.task_service,
             &task,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -560,7 +556,6 @@ async fn concurrency_global_limit() {
 #[tokio::test]
 async fn deliver_to_source_signal_only_sends_empty_content() {
     let (state, _tmp) = test_app_state().await;
-    let executor = make_executor(&state);
 
     let source_chat = state
         .chat_service
@@ -587,7 +582,6 @@ async fn deliver_to_source_signal_only_sends_empty_content() {
     // Signal-only completion: no result text, no deliverables
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-        &state.task_service,
             &task,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -608,7 +602,6 @@ async fn deliver_to_source_signal_only_sends_empty_content() {
 #[tokio::test]
 async fn deliver_to_source_saves_message_to_user_chat() {
     let (state, _tmp) = test_app_state().await;
-    let executor = make_executor(&state);
 
     // check_and_resume_parent runs, but it should bail out because
     // the source chat is not a task chat.
@@ -639,7 +632,6 @@ async fn deliver_to_source_saves_message_to_user_chat() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-        &state.task_service,
             &task,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -696,6 +688,7 @@ async fn lifecycle_event_saved_after_assistant_message() {
                 chat_id: Some(chat.id.clone()),
                 status: TaskStatus::Completed,
                 summary: None,
+                schema: None,
             },
         )
         .await
@@ -738,7 +731,7 @@ async fn make_cron_template_with(
             None,
             CronMode::Singleton,
             CronConcurrency::Replace,
-            process_result, None)
+            process_result, None, None)
         .await
         .unwrap()
 }
@@ -749,7 +742,6 @@ async fn deliver_to_source_cron_run_posts_regardless_of_process_result() {
     // caller chat. `process_result` only governs whether the caller agent
     // resumes (separate `resume_parent_if_requested` path).
     let (state, _tmp) = test_app_state().await;
-    let executor = make_executor(&state);
 
     let source_chat = state
         .chat_service
@@ -775,7 +767,6 @@ async fn deliver_to_source_cron_run_posts_regardless_of_process_result() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-        &state.task_service,
             &run,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -797,7 +788,6 @@ async fn deliver_to_source_cron_run_posts_regardless_of_process_result() {
 #[tokio::test]
 async fn deliver_to_source_cron_run_posts_when_process_result_true() {
     let (state, _tmp) = test_app_state().await;
-    let executor = make_executor(&state);
 
     let source_chat = state
         .chat_service
@@ -823,7 +813,6 @@ async fn deliver_to_source_cron_run_posts_when_process_result_true() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-        &state.task_service,
             &run,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -848,7 +837,6 @@ async fn deliver_to_source_cron_run_skips_when_no_source_chat() {
     // no calling agent). Even with process_result=true the delivery is a no-op
     // because there's nowhere to deliver to.
     let (state, _tmp) = test_app_state().await;
-    let executor = make_executor(&state);
 
     let template = make_cron_template_with(&state, None, true).await;
     let run = state
@@ -859,7 +847,6 @@ async fn deliver_to_source_cron_run_skips_when_no_source_chat() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-        &state.task_service,
             &run,
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -962,6 +949,7 @@ async fn resume_all_marks_only_in_progress_cron_runs_failed() {
             frona::agent::task::models::CronMode::Singleton,
             frona::agent::task::models::CronConcurrency::Replace,
             false,
+            None,
             None,
         )
         .await

@@ -140,6 +140,9 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_vault_access_log_chat ON TABLE vault_access_log COLUMNS chat_id;
         DEFINE INDEX IF NOT EXISTS idx_vault_access_log_user ON TABLE vault_access_log COLUMNS user_id;
 
+        DEFINE TABLE IF NOT EXISTS share SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_share_expires ON TABLE share COLUMNS expires_at;
+
         DEFINE TABLE IF NOT EXISTS runtime_config SCHEMAFULL;
         DEFINE FIELD IF NOT EXISTS `key` ON runtime_config TYPE string;
         DEFINE FIELD IF NOT EXISTS `value` ON runtime_config TYPE string;

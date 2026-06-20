@@ -9,6 +9,7 @@ import { sseBus } from "./sse-event-bus";
 import { sendMessage as apiSendMessage, cancelGeneration, api, uploadFile } from "./api-client";
 import { computeTimeMarkers, useTimezone } from "./format-time";
 import type { MessageResponse, ChatResponse, Attachment } from "./types";
+import { renderMessageBody } from "./task-result-render";
 
 // ---------------------------------------------------------------------------
 // Attachment registry — shared between composer and message rendering
@@ -109,18 +110,6 @@ export function promoteTurnText(parts: AssistantContentPart[]): AssistantContent
 }
 
 export function convertMessage(msg: MessageResponse) {
-  // Filter out signal-only task completions (no content, no attachments, non-failed status).
-  // The task status update SSE event still fires so the task list updates.
-  if (
-    msg.role === "taskcompletion" &&
-    !msg.content &&
-    !msg.attachments?.length &&
-    msg.event?.type === "TaskCompletion" &&
-    msg.event.data.status !== "Failed"
-  ) {
-    return null;
-  }
-
   if (msg.role === "user" || msg.role === "contact" || msg.role === "livecall") {
     const attachments = msg.attachments?.map(convertBackendAttachment);
     return {
@@ -135,17 +124,27 @@ export function convertMessage(msg: MessageResponse) {
           contactId: msg.contact_id,
           daySeparator: msg._daySeparator,
           gap: msg._gap,
+          command: msg.command,
         },
       },
     };
   }
 
   if (msg.role === "agent" || msg.role === "taskcompletion" || (msg.role === "system" && msg.event)) {
-    const content: AssistantContentPart[] = [];
-
-    if (msg.reasoning) {
-      content.push({ type: "reasoning", text: msg.reasoning });
+    // TaskCompletion with nothing to show (complex schema with no recognized
+    // text field, no attachments) → suppress the bubble entirely. Failed
+    // tasks still surface so the user can see the failure.
+    if (
+      msg.role === "taskcompletion" &&
+      msg.event?.type === "TaskCompletion" &&
+      msg.event.data.status !== "Failed" &&
+      !msg.attachments?.length &&
+      !renderMessageBody(msg).trim()
+    ) {
+      return null;
     }
+
+    const content: AssistantContentPart[] = [];
 
     // User-facing external tools (HITL prompts) render BEFORE text.
     if (msg.tool_calls?.length) {
@@ -193,10 +192,11 @@ export function convertMessage(msg: MessageResponse) {
       }
     }
 
-    if (msg.content) {
-      content.push({ type: "text", text: msg.content });
+    const bodyText = renderMessageBody(msg);
+    if (bodyText) {
+      content.push({ type: "text", text: bodyText });
     }
-    if (!msg.content && !msg.reasoning && !msg.event) {
+    if (!bodyText && !msg.reasoning && !msg.event) {
       content.push({ type: "text", text: "" });
     }
 
@@ -282,7 +282,16 @@ export function convertMessage(msg: MessageResponse) {
           continuation: msg._continuation,
           daySeparator: msg._daySeparator,
           gap: msg._gap,
+          ...(msg.reasoning ? { reasoning: msg.reasoning } : {}),
           ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
+          ...(msg.role === "taskcompletion" && msg.event?.type === "TaskCompletion"
+            ? {
+                taskCompletion: {
+                  task_id: msg.event.data.task_id,
+                  status: msg.event.data.status,
+                },
+              }
+            : {}),
         },
       },
     };
@@ -436,6 +445,8 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
   const filteredMessages = useMemo(() => {
     const kept = storeSnapshot.messages.filter((msg) => convertMessage(msg) !== null);
     const markers = computeTimeMarkers(kept, timeZone);
+    // Annotate each assistant message with the prior message's command (if any),
+    // so the bubble renders as a compact command-response when applicable.
     return kept.map((msg) => {
       const marker = markers.get(msg.id);
       if (!marker) return msg;

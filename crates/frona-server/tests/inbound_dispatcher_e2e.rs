@@ -342,7 +342,7 @@ async fn dispatcher_skips_web_submitted_messages_in_channel_chats() {
     // Simulates `/messages/stream` — `from_address` is None for web submissions.
     state
         .chat_service
-        .create_stream_user_message("user-1", &chat.id, "hi", vec![])
+        .create_stream_user_message("user-1", &chat.id, "hi", vec![], None)
         .await
         .unwrap();
 

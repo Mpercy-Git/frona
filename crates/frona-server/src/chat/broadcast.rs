@@ -69,7 +69,7 @@ struct DispatchEvent {
 #[derive(Clone)]
 pub struct EventSender {
     tx: mpsc::UnboundedSender<DispatchEvent>,
-    raw: tokio::sync::broadcast::Sender<BroadcastEvent>,
+    bus: crate::core::event_bus::EventBus<BroadcastEvent>,
     user_id: String,
     chat_id: String,
     space_id: Option<String>,
@@ -83,7 +83,7 @@ impl EventSender {
             space_id: self.space_id.clone(),
             kind: BroadcastEventKind::Inference(event.kind),
         };
-        let _ = self.raw.send(broadcast.clone());
+        self.bus.publish(broadcast.clone());
         if let Some(sse) = map_event_to_sse(&broadcast) {
             let _ = self.tx.send(DispatchEvent {
                 user_id: broadcast.user_id,
@@ -100,7 +100,7 @@ impl EventSender {
             space_id: self.space_id.clone(),
             kind,
         };
-        let _ = self.raw.send(broadcast.clone());
+        self.bus.publish(broadcast.clone());
         if let Some(sse) = map_event_to_sse(&broadcast) {
             let _ = self.tx.send(DispatchEvent {
                 user_id: broadcast.user_id,
@@ -124,7 +124,7 @@ pub struct BroadcastService {
     tx: mpsc::UnboundedSender<DispatchEvent>,
     sessions: SessionRegistry,
     pending_events: PendingEventsCache,
-    raw_events: tokio::sync::broadcast::Sender<BroadcastEvent>,
+    bus: crate::core::event_bus::EventBus<BroadcastEvent>,
 }
 
 impl Default for BroadcastService {
@@ -294,12 +294,12 @@ impl BroadcastService {
             Self::run_dispatcher(rx, sessions_clone, pending_events_clone).await;
         });
 
-        let (raw_events, _) = tokio::sync::broadcast::channel(1024);
-        Self { tx, sessions, pending_events, raw_events }
+        let bus = crate::core::event_bus::EventBus::<BroadcastEvent>::new();
+        Self { tx, sessions, pending_events, bus }
     }
 
-    pub fn subscribe_raw(&self) -> tokio::sync::broadcast::Receiver<BroadcastEvent> {
-        self.raw_events.subscribe()
+    pub fn subscribe_raw(&self) -> mpsc::UnboundedReceiver<BroadcastEvent> {
+        self.bus.subscribe()
     }
 
     async fn run_dispatcher(
@@ -355,7 +355,7 @@ impl BroadcastService {
     }
 
     fn dispatch(&self, event: BroadcastEvent) {
-        let _ = self.raw_events.send(event.clone());
+        self.bus.publish(event.clone());
 
         let is_global = matches!(event.kind, BroadcastEventKind::InferenceCount { .. });
         if let Some(sse) = map_event_to_sse(&event) {
@@ -375,7 +375,7 @@ impl BroadcastService {
     ) -> EventSender {
         EventSender {
             tx: self.tx.clone(),
-            raw: self.raw_events.clone(),
+            bus: self.bus.clone(),
             user_id: user_id.to_string(),
             chat_id: chat_id.to_string(),
             space_id,

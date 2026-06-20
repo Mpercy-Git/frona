@@ -78,37 +78,35 @@ fn source_chat_id_and_resume(task: &Task) -> Option<(&str, bool)> {
     }
 }
 
-/// `None` means skip the row (silent fire). Schema-parse failure falls back to
-/// the raw `summary` so system-generated strings like the max-retries auto-
-/// complete sentinel still get delivered. `process_result=true` emits JSON in
-/// `<task_result>` for parent consumption; otherwise renders human-readable.
-fn render_completion_body(
+/// Returns `(content, schema)` to persist on the completion message, or
+/// `None` to silently skip delivery (parsed value is null / empty obj/arr).
+/// `schema` is `Some` only when `content` is JSON — that's the signal for
+/// renderers (LLM, adapters, UI) to re-render. `Failed` and no-schema cases
+/// pass `summary` through as plain prose.
+fn build_completion_body(
     task: &Task,
     status: &TaskStatus,
     summary: Option<&str>,
-    process_result: bool,
-) -> Option<String> {
+) -> Option<(String, Option<serde_json::Value>)> {
     let legacy = || summary.unwrap_or("").to_string();
-    // `Failed` summaries are operator-written reasons, not schema-shaped.
     if !matches!(status, TaskStatus::Completed) {
-        return Some(legacy());
+        return Some((legacy(), None));
     }
-    let Some(schema) = task.result_schema.as_ref() else {
-        return Some(legacy());
+    let Some(schema) = task.effective_result_schema() else {
+        return Some((legacy(), None));
     };
     let summary_str = summary.unwrap_or("");
     let spec = match crate::agent::task::schema::ResultSpec::new(schema.clone()) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(task_id = %task.id, error = %e, "task.result_schema is invalid; using raw summary");
-            return Some(legacy());
+            return Some((legacy(), None));
         }
     };
     let value = match spec.parse(summary_str) {
         Ok(v) => v,
-        Err(_) => return Some(legacy()),
+        Err(_) => return Some((legacy(), None)),
     };
-    // Silent skip applies regardless of process_result.
     if value.is_null() {
         return None;
     }
@@ -122,29 +120,25 @@ fn render_completion_body(
     {
         return None;
     }
-    if process_result {
-        let json = serde_json::to_string(&value).unwrap_or_default();
-        Some(format!("<task_result>{json}</task_result>"))
-    } else {
-        crate::agent::task::schema::render_result(schema, &value)
-    }
+    let json = serde_json::to_string(&value).unwrap_or_default();
+    Some((json, Some(schema)))
 }
 
 fn build_message_event(
     task: &Task,
     event: TaskLifecycleEvent,
-    process_result: bool,
 ) -> Option<(String, MessageEvent)> {
     match event {
         TaskLifecycleEvent::Completion { status, summary } => {
-            let text = render_completion_body(task, &status, summary.as_deref(), process_result)?;
+            let (content, schema) = build_completion_body(task, &status, summary.as_deref())?;
             let evt = MessageEvent::TaskCompletion {
                 task_id: task.id.clone(),
                 chat_id: task.chat_id.clone(),
                 status,
-                summary: if text.is_empty() { None } else { Some(text.clone()) },
+                summary: if content.is_empty() { None } else { Some(content.clone()) },
+                schema,
             };
-            Some((text, evt))
+            Some((content, evt))
         }
         TaskLifecycleEvent::Match { attempt_index, summary, result } => {
             let content = summary.clone();
@@ -160,30 +154,8 @@ fn build_message_event(
     }
 }
 
-/// CronRun's flag lives on the template, not the run — others read directly.
-pub async fn resolve_process_result(
-    task_service: &crate::agent::task::service::TaskService,
-    task: &Task,
-) -> bool {
-    match &task.kind {
-        TaskKind::CronRun { source_cron_id, .. } => {
-            match task_service.find_by_id(source_cron_id).await {
-                Ok(Some(template)) => matches!(
-                    template.kind,
-                    TaskKind::Cron { process_result: true, .. }
-                ),
-                _ => false,
-            }
-        }
-        TaskKind::Delegation { resume_parent, .. }
-        | TaskKind::Signal { resume_parent, .. } => *resume_parent,
-        TaskKind::Direct { .. } | TaskKind::Cron { .. } => false,
-    }
-}
-
 pub async fn deliver_event_to_source(
     chat_service: &crate::chat::service::ChatService,
-    task_service: &crate::agent::task::service::TaskService,
     task: &Task,
     event: TaskLifecycleEvent,
     attachments: Vec<Attachment>,
@@ -192,9 +164,7 @@ pub async fn deliver_event_to_source(
         return;
     };
 
-    let process_result = resolve_process_result(task_service, task).await;
-
-    let Some((content, message_event)) = build_message_event(task, event, process_result) else {
+    let Some((content, message_event)) = build_message_event(task, event) else {
         tracing::debug!(task_id = %task.id, "schema rendered to silent — skipping source-chat delivery");
         return;
     };
@@ -506,6 +476,7 @@ impl TaskExecutor {
             let builder = Box::new(TaskConversationBuilder {
                 user_service: self.harness.user_service.clone(),
                 storage_service: self.harness.storage_service.clone(),
+                agent_service: self.harness.agent_service.clone(),
                 continuation_prompt: continuation_prompt.clone(),
             });
             let filters = tool_filters_for_task(&task);
@@ -516,16 +487,20 @@ impl TaskExecutor {
                 cancel_token.clone(),
                 builder,
                 &filters,
+                None,
             )
             .await;
             drop(session_token);
             self.harness.active_sessions.remove(&chat_id).await;
 
             match result {
-                Ok(crate::agent::harness::AgentLoopOutcome { response }) => match response {
+                Ok(crate::agent::harness::AgentLoopOutcome { inference, mut response }) => match inference {
                     InferenceResponse::Completed { text, attachments, lifecycle_event, reasoning, .. } => {
+                        response.content = text;
+                        response.attachments = attachments;
+                        response.reasoning = reasoning;
                         let _ = self.harness.chat_service
-                            .complete_agent_message(&agent_msg_id, text, attachments, reasoning)
+                            .complete_agent_message(response)
                             .await;
 
                         if let Some(event) = lifecycle_event {
@@ -545,7 +520,7 @@ impl TaskExecutor {
                     InferenceResponse::ExternalToolPending { tool_calls, .. } => {
                         let _ = self.harness.chat_service
                             .pause_agent_message(
-                                &agent_msg_id,
+                                response,
                                 crate::inference::tool_loop::PauseReason::Hitl,
                                 tool_calls,
                             ).await;
@@ -554,15 +529,25 @@ impl TaskExecutor {
                         return Ok(());
                     }
                     InferenceResponse::Cancelled(text) => {
+                        response.content = text;
                         let _ = self.harness.chat_service
-                            .cancel_agent_message(&agent_msg_id, text).await;
+                            .cancel_agent_message(response).await;
                         self.handle_cancelled(&task).await?;
+                        return Ok(());
+                    }
+                    InferenceResponse::Handled => {
+                        // Command dispatch already finalized the response.
+                        // Treat as a no-op turn end — let the task continue or wrap up.
                         return Ok(());
                     }
                 },
                 Err(e) => {
-                    let _ = self.harness.chat_service
-                        .fail_agent_message(&agent_msg_id, e.to_string()).await;
+                    if let Ok(msg) = self.harness.chat_service
+                        .get_message(&task.user_id, &agent_msg_id).await
+                    {
+                        let _ = self.harness.chat_service
+                            .fail_agent_message(msg, e.to_string()).await;
+                    }
                     self.handle_error(&task, &e).await?;
                     return Ok(());
                 }
@@ -580,7 +565,6 @@ impl TaskExecutor {
             .await?;
         deliver_event_to_source(
             &self.harness.chat_service,
-            &self.harness.task_service,
             &task,
             TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
@@ -683,7 +667,6 @@ impl TaskExecutor {
                     .await?;
                 deliver_event_to_source(
                     &self.harness.chat_service,
-                    &self.harness.task_service,
                     task,
                     TaskLifecycleEvent::Completion {
                         status: TaskStatus::Completed,
@@ -706,7 +689,6 @@ impl TaskExecutor {
                     .await?;
                 deliver_event_to_source(
                     &self.harness.chat_service,
-                    &self.harness.task_service,
                     task,
                     TaskLifecycleEvent::Completion {
                         status: TaskStatus::Failed,
@@ -772,6 +754,7 @@ impl TaskExecutor {
         let builder = Box::new(TaskConversationBuilder {
             user_service: self.harness.user_service.clone(),
             storage_service: self.harness.storage_service.clone(),
+            agent_service: self.harness.agent_service.clone(),
             continuation_prompt: None,
         });
         let filters = tool_filters_for_task(task);
@@ -782,35 +765,41 @@ impl TaskExecutor {
             cancel_token,
             builder,
             &filters,
+            None,
         )
         .await;
 
         // Signal tasks complete via tool call, not System MessageEvent.
         let mut lifecycle_event = None;
         match outcome {
-            Ok(crate::agent::harness::AgentLoopOutcome { response }) => {
+            Ok(crate::agent::harness::AgentLoopOutcome { inference, mut response }) => {
                 if let InferenceResponse::Completed {
                     text,
                     attachments,
                     reasoning,
                     lifecycle_event: lc,
                     ..
-                } = response
+                } = inference
                 {
+                    response.content = text;
+                    response.attachments = attachments;
+                    response.reasoning = reasoning;
                     let _ = self
                         .harness
                         .chat_service
-                        .complete_agent_message(&agent_msg_id, text, attachments, reasoning)
+                        .complete_agent_message(response)
                         .await;
                     lifecycle_event = lc;
                 }
             }
             Err(e) => {
-                let _ = self
-                    .harness
-                    .chat_service
-                    .fail_agent_message(&agent_msg_id, e.to_string())
-                    .await;
+                if let Ok(msg) = self.harness.chat_service.get_message(&task.user_id, &agent_msg_id).await {
+                    let _ = self
+                        .harness
+                        .chat_service
+                        .fail_agent_message(msg, e.to_string())
+                        .await;
+                }
                 tracing::warn!(
                     task_id = %task.id,
                     error = %e,
@@ -913,7 +902,6 @@ impl TaskExecutor {
             .await?;
         deliver_event_to_source(
             &self.harness.chat_service,
-            &self.harness.task_service,
             task,
             TaskLifecycleEvent::Completion {
                 status: TaskStatus::Failed,
@@ -1087,6 +1075,7 @@ mod tests {
             error_message: None,
             quarantined,
             result_schema: None,
+            result_description: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -1108,6 +1097,7 @@ mod tests {
             error_message: None,
             quarantined,
             result_schema: None,
+            result_description: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

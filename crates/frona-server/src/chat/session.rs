@@ -1,7 +1,10 @@
 use rig_core::completion::Message as RigMessage;
 pub use tokio_util::sync::CancellationToken;
 
+use crate::agent::skill::resolver::Skill;
 use crate::chat::broadcast::EventSender;
+use crate::chat::command::render::render_skill;
+use crate::chat::message::models::{Message, MessageCommand, MessageRole};
 use crate::chat::models::Chat;
 use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
@@ -169,6 +172,17 @@ impl ChatSessionContext {
             .await
             .unwrap_or_default();
 
+        // Apply two slash-command transformations to the message list the
+        // builder will see:
+        //   1. For user messages with `command: Some(Skill { name, prompt })`,
+        //      render the SKILL.md body and replace `content` with the
+        //      `<skill ...>...</skill>` form. Persistent DB row is untouched.
+        //   2. Drop assistant messages whose immediately-preceding message is
+        //      a user message with `command: Some(Command { … })`. Those are
+        //      synthetic acknowledgements for `/clear`, `/compact`, etc. —
+        //      user-facing chrome, not conversation the model needs.
+        let stored_messages = transform_for_commands(stored_messages, &skills);
+
         // Cron is already filtered from `task_in_progress`: TASK.md would prompt
         // complete_task → status=Completed → cron stops firing forever.
         if task_in_progress
@@ -258,4 +272,21 @@ impl ChatSessionContext {
             cancel_token,
         })
     }
+}
+
+/// Rewrites Skill-command user messages to the rendered SKILL.md body for the
+/// model's view of this turn. The persisted DB row is untouched.
+fn transform_for_commands(messages: Vec<Message>, skills: &[Skill]) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::with_capacity(messages.len());
+    for mut msg in messages {
+        if matches!(msg.role, MessageRole::User)
+            && let Some(MessageCommand::Skill { name, prompt }) = msg.command.clone()
+            && let Some(rendered) = render_skill(&name, &prompt, skills)
+        {
+            msg.content = rendered;
+        }
+
+        out.push(msg);
+    }
+    out
 }

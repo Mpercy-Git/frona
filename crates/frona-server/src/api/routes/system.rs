@@ -39,7 +39,7 @@ async fn info_handler(_auth: AuthUser, State(state): State<AppState>) -> axum::J
         "version": env!("CARGO_PKG_VERSION"),
         "cpus": cpus,
         "total_memory_bytes": total_memory,
-        "sandbox_driver": state.sandbox_manager.driver_id(),
+        "sandbox_driver": state.sandbox_factory.driver_id(),
         "server_timezone": state.config.server.timezone,
     }))
 }
@@ -76,21 +76,11 @@ async fn restart_handler(
 }
 
 fn re_exec_self() -> ! {
+    use std::os::unix::process::CommandExt;
+
     let exe = std::env::current_exe().expect("failed to get current executable path");
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let err = std::process::Command::new(&exe).args(&args).exec();
-        panic!("exec failed: {err}");
-    }
-
-    #[cfg(not(unix))]
-    {
-        match std::process::Command::new(&exe).args(&args).spawn() {
-            Ok(_) => std::process::exit(0),
-            Err(err) => panic!("failed to restart: {err}"),
-        }
-    }
+    let err = std::process::Command::new(&exe).args(&args).exec();
+    panic!("exec failed: {err}");
 }

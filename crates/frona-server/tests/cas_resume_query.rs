@@ -38,6 +38,7 @@ fn make_message(id: &str, status: MessageStatus) -> Message {
         from_address: None,
         delivery: None,
         dispatch_mode: None,
+        command: None,
         metadata: Default::default(),
         created_at: Utc::now(),
     }

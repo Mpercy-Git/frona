@@ -144,8 +144,26 @@ pub struct Task {
     pub quarantined: bool,
     #[serde(default)]
     pub result_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub result_description: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Task {
+    /// Without a typed `complete_task.result` channel the executor falls
+    /// back to `send_message`, so a bare `result_description` must still
+    /// synthesize a string schema at read time.
+    pub fn effective_result_schema(&self) -> Option<serde_json::Value> {
+        if let Some(schema) = &self.result_schema {
+            return Some(schema.clone());
+        }
+        let description = self.result_description.as_ref()?;
+        Some(serde_json::json!({
+            "type": "string",
+            "description": description,
+        }))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +181,8 @@ pub struct CreateTaskRequest {
     pub quarantined: bool,
     #[serde(default)]
     pub result_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub result_description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +207,7 @@ pub struct TaskResponse {
     pub error_message: Option<String>,
     pub quarantined: bool,
     pub result_schema: Option<serde_json::Value>,
+    pub result_description: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -207,6 +228,7 @@ impl From<Task> for TaskResponse {
             error_message: task.error_message,
             quarantined: task.quarantined,
             result_schema: task.result_schema,
+            result_description: task.result_description,
             created_at: task.created_at,
             updated_at: task.updated_at,
         }
@@ -216,6 +238,63 @@ impl From<Task> for TaskResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bare_task() -> Task {
+        Task {
+            id: "t".into(),
+            user_id: "u".into(),
+            agent_id: "a".into(),
+            space_id: None,
+            chat_id: None,
+            title: "t".into(),
+            description: "d".into(),
+            status: TaskStatus::Pending,
+            kind: TaskKind::Direct { source_chat_id: None },
+            run_at: None,
+            result_summary: None,
+            error_message: None,
+            quarantined: false,
+            result_schema: None,
+            result_description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn effective_result_schema_none_when_both_unset() {
+        assert!(bare_task().effective_result_schema().is_none());
+    }
+
+    #[test]
+    fn effective_result_schema_passes_through_explicit_schema() {
+        let mut t = bare_task();
+        let schema = serde_json::json!({"type": "number"});
+        t.result_schema = Some(schema.clone());
+        assert_eq!(t.effective_result_schema(), Some(schema));
+    }
+
+    #[test]
+    fn effective_result_schema_synthesizes_string_from_description() {
+        let mut t = bare_task();
+        t.result_description = Some("a friendly reminder".into());
+        assert_eq!(
+            t.effective_result_schema(),
+            Some(serde_json::json!({
+                "type": "string",
+                "description": "a friendly reminder",
+            }))
+        );
+    }
+
+    #[test]
+    fn effective_result_schema_prefers_schema_when_both_set() {
+        let mut t = bare_task();
+        let schema = serde_json::json!({"type": "boolean"});
+        t.result_schema = Some(schema.clone());
+        t.result_description = Some("should be ignored".into());
+        assert_eq!(t.effective_result_schema(), Some(schema));
+    }
 
     #[test]
     fn source_chat_id_direct() {

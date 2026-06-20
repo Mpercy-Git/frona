@@ -12,6 +12,13 @@ use crate::core::config::BrowserConfig;
 use crate::core::error::AppError;
 use frona_browser::BrowserConnection;
 
+/// Browserless treats `<=0` as `0ms` and 408s the upgrade instantly, so we
+/// pass a long positive instead to defeat its 30s per-job default.
+const BROWSERLESS_SESSION_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
+/// Self-evict before Browserless's hard limit so the next request rebuilds
+/// cleanly instead of hitting a forced close mid-op.
+const SELF_EVICT_MARGIN: Duration = Duration::from_secs(60);
+
 #[derive(serde::Deserialize)]
 struct BrowserlessSession {
     #[serde(rename = "browserId")]
@@ -48,7 +55,12 @@ impl BrowserSessionManager {
     fn ws_url_for_profile(config: &BrowserConfig, user_handle: &crate::core::Handle, provider: &str) -> String {
         let user_data_dir = config.profile_path(user_handle, provider);
         let base = config.ws_url.trim_end_matches('/');
-        format!("{}/?--user-data-dir={}", base, user_data_dir.display())
+        format!(
+            "{}/?--user-data-dir={}&timeout={}",
+            base,
+            user_data_dir.display(),
+            BROWSERLESS_SESSION_TIMEOUT.as_millis()
+        )
     }
 
     async fn create_connection(
@@ -67,7 +79,8 @@ impl BrowserSessionManager {
         tracing::debug!(ws_url = %ws_url, browserless_ws_url = %config.ws_url, "Connecting to browser");
 
         let timeout = Duration::from_millis(config.connection_timeout_ms);
-        BrowserConnection::connect(&ws_url, timeout)
+        let lifetime = BROWSERLESS_SESSION_TIMEOUT.saturating_sub(SELF_EVICT_MARGIN);
+        BrowserConnection::connect(&ws_url, timeout, lifetime)
             .await
             .map_err(|e| AppError::Browser(format!("Failed to connect to browser: {e}")))
     }
@@ -79,8 +92,16 @@ impl BrowserSessionManager {
     ) -> Result<BrowserConnection, AppError> {
         let key = Self::profile_key(user_handle, provider);
         if let Some(conn) = self.sessions.read().await.get(&key).cloned() {
-            return Ok(conn);
+            if conn.is_alive() {
+                return Ok(conn);
+            }
+            tracing::warn!(
+                user = %user_handle,
+                provider = %provider,
+                "Cached browser connection is dead; evicting and reconnecting"
+            );
         }
+        self.sessions.write().await.remove(&key);
         let conn = self.create_connection(user_handle, provider).await?;
         self.sessions.write().await.insert(key, conn.clone());
         Ok(conn)
@@ -216,6 +237,30 @@ impl BrowserSessionManager {
     }
 }
 
+/// No outer timeout: the handler-loop catches transport errors in ms and
+/// chromiumoxide's `request_timeout` bounds individual CDP calls.
+pub(crate) async fn run_with_reconnect<T, F, Fut>(
+    mgr: &BrowserSessionManager,
+    user_handle: &crate::core::Handle,
+    provider: &str,
+    op: F,
+) -> Result<T, AppError>
+where
+    F: Fn(BrowserConnection) -> Fut,
+    Fut: std::future::Future<Output = Result<T, frona_browser::Error>>,
+{
+    let conn = mgr.connection(user_handle, provider).await?;
+    match op(conn).await {
+        Ok(v) => Ok(v),
+        Err(e) if e.is_disconnect() => {
+            tracing::warn!("Browser session disconnected, reconnecting");
+            let conn = mgr.reconnect(user_handle, provider).await?;
+            op(conn).await.map_err(|e| AppError::Browser(e.to_string()))
+        }
+        Err(e) => Err(AppError::Browser(e.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,7 +279,7 @@ mod tests {
         let url = BrowserSessionManager::ws_url_for_profile(&cfg("ws://browserless:3333"), &crate::handle!("alice"), "openai");
         assert_eq!(
             url,
-            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai"
+            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"
         );
     }
 
@@ -243,7 +288,7 @@ mod tests {
         let url = BrowserSessionManager::ws_url_for_profile(&cfg("ws://browserless:3333/"), &crate::handle!("alice"), "openai");
         assert_eq!(
             url,
-            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai"
+            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"
         );
     }
 }

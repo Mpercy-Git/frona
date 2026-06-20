@@ -88,6 +88,7 @@ async fn test_task_spawn_rejected_during_shutdown() {
         error_message: None,
         quarantined: false,
         result_schema: None,
+        result_description: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

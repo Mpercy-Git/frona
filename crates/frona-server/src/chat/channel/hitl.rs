@@ -30,6 +30,20 @@ pub fn render_default_text(hitl: &Hitl) -> String {
     format!("{}\n\n{}", hitl.prompt, hitl.url)
 }
 
+/// Per-kind body for text-only adapters (Signal, WhatsApp user, SMS) which
+/// can't render native buttons. Approval is currently App-deploy only; the
+/// YES/NO hint cues users to reply with a parseable word (`parse_yes_no`)
+/// since they have no button to tap.
+pub fn render_text(hitl: &Hitl) -> String {
+    match kind_for(&hitl.request) {
+        HitlKind::Approval => {
+            format!("{}\n\nReply YES or NO", hitl.prompt)
+        }
+        HitlKind::Choice { .. } => hitl.prompt.clone(),
+        HitlKind::External => render_default_text(hitl),
+    }
+}
+
 /// Reply-based HITL resolution for text-only channel adapters (WhatsApp,
 /// Signal, SMS reply).
 ///

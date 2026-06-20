@@ -6,12 +6,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::agent::prompt::PromptLoader;
-use crate::agent::skill::service::SkillService;
-use crate::auth::ephemeral_token::EphemeralTokenGuard;
-use crate::auth::token::service::TokenService;
-use crate::core::Principal;
 use crate::core::error::AppError;
+#[cfg(test)]
+use crate::agent::skill::service::SkillService;
+#[cfg(test)]
+use crate::auth::token::service::TokenService;
+#[cfg(test)]
 use crate::credential::keypair::service::KeyPairService;
+#[cfg(test)]
 use crate::policy::service::PolicyService;
 
 use super::sandbox::SandboxManager;
@@ -37,41 +39,13 @@ pub struct CliToolConfig {
 pub struct CliTool {
     config: CliToolConfig,
     sandbox_manager: Arc<SandboxManager>,
-    storage_service: crate::storage::service::StorageService,
-    skill_service: SkillService,
-    token_service: TokenService,
-    keypair_service: KeyPairService,
-    policy_service: PolicyService,
-    api_base_url: String,
-    ephemeral_token_expiry_secs: u64,
-    server_timezone: String,
 }
 
-#[allow(clippy::too_many_arguments)]
 impl CliTool {
-    pub fn new(
-        config: CliToolConfig,
-        sandbox_manager: Arc<SandboxManager>,
-        storage_service: crate::storage::service::StorageService,
-        skill_service: SkillService,
-        token_service: TokenService,
-        keypair_service: KeyPairService,
-        policy_service: PolicyService,
-        api_base_url: String,
-        ephemeral_token_expiry_secs: u64,
-        server_timezone: String,
-    ) -> Self {
+    pub fn new(config: CliToolConfig, sandbox_manager: Arc<SandboxManager>) -> Self {
         Self {
             config,
             sandbox_manager,
-            storage_service,
-            skill_service,
-            token_service,
-            keypair_service,
-            policy_service,
-            api_base_url,
-            ephemeral_token_expiry_secs,
-            server_timezone,
         }
     }
 
@@ -143,86 +117,16 @@ impl AgentTool for CliTool {
 
         let agent_id = &ctx.agent.id;
 
-        let policy = self
-            .policy_service
-            .evaluate_sandbox_policy(
-                crate::policy::service::SandboxPrincipalRef::agent(
-                    &ctx.user.id,
-                    &ctx.user.handle,
-                    &ctx.agent.handle,
-                ),
-                true,
-            )
-            .await?;
-
-        let skill_read_paths: Vec<String> = self
-            .skill_service
-            .list(&ctx.user.handle, &ctx.agent.handle, ctx.agent.skills.as_deref())
-            .await
-            .into_iter()
-            .map(|s| s.path)
-            .collect();
-
-        let workspace = self
-            .storage_service
-            .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
-        let mut sandbox = self.sandbox_manager.get_sandbox(
-            workspace,
-            agent_id,
-            policy.network_access,
-            policy.network_destinations.clone(),
-        )
-        .with_read_paths(skill_read_paths)
-        .with_read_paths(policy.read_paths.clone())
-        .with_write_paths(policy.write_paths.clone())
-        .with_denied_paths(policy.denied_paths.clone())
-        .with_blocked_networks(policy.blocked_networks.clone())
-        .with_bind_ports(policy.bind_ports.clone());
-
-        if !ctx.file_paths.is_empty() {
-            sandbox = sandbox.with_write_paths(ctx.file_paths.clone());
-        }
-
-        let tokens_dir = self.storage_service.user_tokens_path(&ctx.user.handle);
-        let token_guard = EphemeralTokenGuard::issue(
-            &self.token_service,
-            &self.keypair_service,
-            &ctx.user,
-            Principal::agent(agent_id),
-            self.ephemeral_token_expiry_secs,
-            &tokens_dir,
-        )
-        .await?;
-
-        sandbox = sandbox.with_read_files(vec![
-            token_guard.path().to_string_lossy().into_owned(),
-        ]);
-
-        {
-            let mut extra_vars = ctx.vault_env_vars.read().await.clone();
-            extra_vars.push((
-                "TZ".to_string(),
-                ctx.user.resolved_timezone(&self.server_timezone),
-            ));
-            extra_vars.push((
-                "FRONA_TOKEN_FILE".to_string(),
-                token_guard.path().to_string_lossy().into_owned(),
-            ));
-            extra_vars.push((
-                "FRONA_API_URL".to_string(),
-                self.api_base_url.clone(),
-            ));
-            sandbox = sandbox.with_extra_env_vars(extra_vars);
-        }
+        let sandbox = self.sandbox_manager.for_tool(ctx).await?;
 
         let timeout = ctx
             .agent
             .sandbox_limits
             .as_ref()
             .map(|l| l.timeout_secs)
-            .unwrap_or_else(|| self.sandbox_manager.default_timeout_secs());
+            .unwrap_or_else(|| self.sandbox_manager.factory().default_timeout_secs());
 
-        let rm = self.sandbox_manager.resource_manager();
+        let rm = self.sandbox_manager.factory().resource_manager();
         let (eff_cpu, eff_mem) = rm.effective_agent_limits(agent_id);
 
         tracing::debug!(
@@ -484,26 +388,31 @@ mod tests {
             provider: None,
         };
 
-        let wm = Arc::new(SandboxManager::new(false, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0))));
-        let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
-        let service = mock_skill_service();
-        let (tokens, keypair) = mock_token_services().await;
-        let tool = CliTool::new(
-            config,
-            wm,
-            storage,
-            service,
-            tokens,
-            keypair,
-            mock_policy_service().await,
-            "http://localhost".into(),
-            300,
-            "UTC".to_string(),
-        );
+        let tool = CliTool::new(config, mock_sandbox_manager().await);
         let defs = tool.definitions();
 
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].id, "shell");
+    }
+
+    async fn mock_sandbox_manager() -> Arc<SandboxManager> {
+        let factory = Arc::new(crate::tool::sandbox::SandboxFactory::new(
+            false,
+            Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)),
+        ));
+        let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
+        let (tokens, keypair) = mock_token_services().await;
+        Arc::new(SandboxManager::new(
+            factory,
+            mock_policy_service().await,
+            mock_skill_service(),
+            storage,
+            tokens,
+            keypair,
+            "http://localhost".into(),
+            300,
+            "UTC".to_string(),
+        ))
     }
 
     fn mock_context() -> InferenceContext {
@@ -586,24 +495,26 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_test_cli_tool");
         let _ = std::fs::create_dir_all(&tmp);
 
-        let wm = Arc::new(SandboxManager::new(false, Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0))));
         let mut config_obj = crate::core::config::Config::default();
         config_obj.storage.data_dir = tmp.to_string_lossy().into_owned();
         let storage = crate::storage::StorageService::new(&config_obj);
-        let service = mock_skill_service();
         let (tokens, keypair) = mock_token_services().await;
-        let tool = CliTool::new(
-            config,
-            wm,
+        let factory = Arc::new(crate::tool::sandbox::SandboxFactory::new(
+            false,
+            Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)),
+        ));
+        let wm = Arc::new(SandboxManager::new(
+            factory,
+            mock_policy_service().await,
+            mock_skill_service(),
             storage,
-            service,
             tokens,
             keypair,
-            mock_policy_service().await,
             "http://localhost".into(),
             300,
             "UTC".to_string(),
-        );
+        ));
+        let tool = CliTool::new(config, wm);
         let ctx = mock_context();
 
         let result = tool

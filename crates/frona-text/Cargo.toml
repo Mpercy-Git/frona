@@ -1,0 +1,17 @@
+[package]
+name = "frona-text"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+unicode-normalization-alignments = "0.1"
+ignore = "0.4"
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dev-dependencies]
+tempfile = "3"
+unicode_categories = "0.1"

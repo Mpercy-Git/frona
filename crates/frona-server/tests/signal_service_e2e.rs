@@ -877,7 +877,7 @@ forbid(
         Some("sms"),
         Some("+15551234"),
     );
-    cand.contact = Some(contact.clone().into());
+    cand.contact = Some(contact.clone());
 
     let fired = svc.evaluate("user-1", cand).await?;
     assert!(fired.is_empty(), "handle-based policy denial must drop the match");

@@ -16,6 +16,48 @@ use frona_derive::agent_tool;
 
 use super::{InferenceContext, ToolOutput};
 
+/// XOR: both together is rejected because the schema's own root
+/// `description` already covers the prose case.
+fn parse_result_spec(
+    arguments: &Value,
+    tool_name: &str,
+    process_result: bool,
+) -> Result<(Option<Value>, Option<String>), AppError> {
+    let result_schema = arguments.get("result_schema").cloned();
+    let result_description = arguments
+        .get("result_description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    match (result_schema, result_description) {
+        (None, None) => Err(AppError::Validation(format!(
+            "{tool_name} requires either 'result_description' (one-line prose describing the result the executing agent should produce — default for human-facing tasks) or 'result_schema' (JSON Schema for structured agent-to-agent handoff). See the tool docs for examples."
+        ))),
+        (Some(_), Some(_)) => Err(AppError::Validation(
+            "Pass either 'result_description' OR 'result_schema', not both. Use 'result_description' for prose results; use 'result_schema' when the executing agent must produce a typed shape.".into(),
+        )),
+        (Some(schema), None) => {
+            crate::agent::task::schema::validate_schema_doc(&schema)
+                .map_err(AppError::Validation)?;
+            if !crate::agent::task::schema::is_simple_schema(&schema) {
+                if !process_result {
+                    return Err(AppError::Validation(
+                        "Complex result_schema (nested objects, arrays of objects, etc.) cannot be rendered deterministically. Set process_result=true so the parent agent can render the structured result, or simplify the schema to a top-level scalar / array-of-scalars / oneOf-of-scalars / object-with-scalar-properties.".into(),
+                    ));
+                }
+                if !crate::agent::task::schema::has_renderable_summary_field(&schema) {
+                    return Err(AppError::Validation(
+                        "Complex result_schema must include a required top-level `summary` string property — the user-facing renderer only shows that field when the schema is complex. Either add `summary: { type: \"string\" }` to `required`, or simplify the schema to top-level scalar / array-of-scalars / object-with-scalar-properties.".into(),
+                    ));
+                }
+            }
+            Ok((Some(schema), None))
+        }
+        (None, Some(desc)) => Ok((None, Some(desc))),
+    }
+}
+
 pub fn parse_cron(expression: &str) -> Result<cron::Schedule, AppError> {
     let seven_field = format!("0 {} *", expression);
     cron::Schedule::from_str(&seven_field)
@@ -303,19 +345,8 @@ impl TaskTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let result_schema = arguments
-            .get("result_schema")
-            .cloned()
-            .ok_or_else(|| AppError::Validation(
-                "Missing 'result_schema' parameter. Declare the shape each fire's `result` will take (see create_recurring_task tool docs for examples).".into(),
-            ))?;
-        crate::agent::task::schema::validate_schema_doc(&result_schema)
-            .map_err(AppError::Validation)?;
-        if !crate::agent::task::schema::is_simple_schema(&result_schema) && !process_result {
-            return Err(AppError::Validation(
-                "Complex result_schema (nested objects, arrays of objects, etc.) cannot be rendered deterministically. Set process_result=true so the parent agent can render the structured result, or simplify the schema to a top-level scalar / array-of-scalars / oneOf-of-scalars / object-with-scalar-properties.".into(),
-            ));
-        }
+        let (result_schema, result_description) =
+            parse_result_spec(arguments, "create_recurring_task", process_result)?;
 
         let task = self
             .task_service
@@ -334,7 +365,8 @@ impl TaskTool {
                 cron_mode,
                 cron_concurrency,
                 process_result,
-                Some(result_schema),
+                result_schema,
+                result_description,
             )
             .await?;
 
@@ -373,19 +405,8 @@ impl TaskTool {
     ) -> Result<ToolOutput, AppError> {
         let run_at = super::resolve_run_at(arguments, timezone)?;
 
-        let result_schema = arguments
-            .get("result_schema")
-            .cloned()
-            .ok_or_else(|| AppError::Validation(
-                "Missing 'result_schema' parameter. Declare the shape the task's `result` will take (see create_task tool docs for examples).".into(),
-            ))?;
-        crate::agent::task::schema::validate_schema_doc(&result_schema)
-            .map_err(AppError::Validation)?;
-        if !crate::agent::task::schema::is_simple_schema(&result_schema) && !process_result {
-            return Err(AppError::Validation(
-                "Complex result_schema (nested objects, arrays of objects, etc.) cannot be rendered deterministically. Set process_result=true so the parent agent can render the structured result, or simplify the schema to a top-level scalar / array-of-scalars / oneOf-of-scalars / object-with-scalar-properties.".into(),
-            ));
-        }
+        let (result_schema, result_description) =
+            parse_result_spec(arguments, "create_task", process_result)?;
 
         // source_agent_id set even for self-targets so kind=Delegation;
         // Direct has no resume_parent machinery.
@@ -402,7 +423,8 @@ impl TaskTool {
             resume_parent: Some(process_result),
             run_at,
             quarantined: false,
-            result_schema: Some(result_schema),
+            result_schema,
+            result_description,
         };
 
         let task_response = self.task_service.create(user_id, req).await?;
@@ -532,6 +554,77 @@ impl TaskTool {
 mod tests {
     use super::*;
     use chrono::{Datelike, Timelike};
+
+    #[test]
+    fn parse_result_spec_requires_one_of_the_two() {
+        let err = parse_result_spec(&serde_json::json!({}), "create_task", false).unwrap_err();
+        match err {
+            AppError::Validation(msg) => {
+                assert!(msg.contains("result_description"));
+                assert!(msg.contains("result_schema"));
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_result_spec_rejects_both_together() {
+        let args = serde_json::json!({
+            "result_description": "a string",
+            "result_schema": { "type": "string" }
+        });
+        let err = parse_result_spec(&args, "create_task", false).unwrap_err();
+        match err {
+            AppError::Validation(msg) => assert!(msg.contains("not both")),
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_result_spec_description_only_returns_description() {
+        let args = serde_json::json!({ "result_description": "A research report" });
+        let (schema, desc) = parse_result_spec(&args, "create_task", false).unwrap();
+        assert!(schema.is_none());
+        assert_eq!(desc, Some("A research report".into()));
+    }
+
+    #[test]
+    fn parse_result_spec_blank_description_is_rejected_as_missing() {
+        let args = serde_json::json!({ "result_description": "   " });
+        let err = parse_result_spec(&args, "create_task", false).unwrap_err();
+        match err {
+            AppError::Validation(msg) => assert!(msg.contains("result_description")),
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_result_spec_schema_only_validates_simple() {
+        let args = serde_json::json!({ "result_schema": { "type": "string" } });
+        let (schema, desc) = parse_result_spec(&args, "create_task", false).unwrap();
+        assert!(schema.is_some());
+        assert!(desc.is_none());
+    }
+
+    #[test]
+    fn parse_result_spec_complex_schema_requires_process_result() {
+        let args = serde_json::json!({
+            "result_schema": {
+                "type": "object",
+                "properties": {
+                    "phones": {
+                        "type": "array",
+                        "items": { "type": "object", "properties": { "name": { "type": "string" } } }
+                    }
+                }
+            }
+        });
+        let err = parse_result_spec(&args, "create_task", false).unwrap_err();
+        match err {
+            AppError::Validation(msg) => assert!(msg.contains("Complex result_schema")),
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_cron_valid_every_minute() {

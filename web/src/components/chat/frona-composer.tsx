@@ -1,15 +1,25 @@
 "use client";
 
 import { useRef, useState, useEffect, useCallback } from "react";
-import { ComposerPrimitive, ThreadPrimitive, AttachmentPrimitive, useComposerRuntime } from "@assistant-ui/react";
+import { useRouter } from "next/navigation";
+import { ComposerPrimitive, ThreadPrimitive, AttachmentPrimitive, useComposerRuntime, unstable_useTriggerPopoverScopeContextOptional } from "@assistant-ui/react";
 import { useThreadIsRunning } from "@assistant-ui/core/react";
+import { LexicalComposerInput } from "@assistant-ui/react-lexical";
+import type { Unstable_TriggerItem } from "@assistant-ui/core";
 import { PaperAirplaneIcon, StopIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import { ArrowUpTrayIcon, CloudIcon, FolderOpenIcon } from "@heroicons/react/24/outline";
 import { FileBrowserModal } from "@/components/chat/file-browser-modal";
+import { tryDispatchClientBuiltin } from "@/components/chat/client-commands";
+import {
+  useFronaTriggerAdapter,
+  fronaSlashFormatter,
+  fronaAtFormatter,
+} from "@/components/chat/frona-trigger-adapter";
 import { registerBackendAttachment, getBackendAttachment } from "@/lib/use-chat-runtime";
 import { useContext } from "react";
 import { usePendingTools } from "@/lib/pending-tools-context";
 import { ChatContext } from "@/lib/chat-context";
+import { useCommands } from "@/lib/use-commands";
 import { api } from "@/lib/api-client";
 import type { ToolWizardState } from "./external-tool-drawer";
 import type { Attachment } from "@/lib/types";
@@ -29,17 +39,50 @@ function ComposerAttachmentBadge() {
   );
 }
 
+/** `aui-trigger-popover` is the hook for the empty-popover hide rule in globals.css. */
+const POPOVER_PANEL_CLASS =
+  "aui-trigger-popover absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-xl border border-border bg-surface-secondary py-1 shadow-lg z-50";
+
+function TriggerPopoverItemButton({ item, index }: { item: Unstable_TriggerItem; index: number }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const scope = unstable_useTriggerPopoverScopeContextOptional();
+  const isHighlighted = scope?.highlightedIndex === index;
+
+  // Popover marks `data-highlighted` but doesn't scroll into view itself.
+  useEffect(() => {
+    if (isHighlighted) {
+      ref.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [isHighlighted]);
+
+  return (
+    <ComposerPrimitive.Unstable_TriggerPopoverItem
+      ref={ref}
+      item={item}
+      index={index}
+      className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-sm text-text-secondary transition-colors hover:bg-surface-tertiary data-[highlighted]:bg-surface-tertiary data-[highlighted]:text-text-primary"
+    >
+      <span className="font-mono text-text-primary">{item.label}</span>
+      {item.description && (
+        <span className="ml-auto truncate text-xs text-text-tertiary">
+          {item.description}
+        </span>
+      )}
+    </ComposerPrimitive.Unstable_TriggerPopoverItem>
+  );
+}
+
 export function FronaComposer({
   placeholder = "Send a message...",
   onSend,
   wizard,
 }: {
   placeholder?: string;
-  /** Called on form submit for custom send handling (e.g. HomeComposer navigation). */
   onSend?: (content: string, attachments?: Attachment[]) => void;
   wizard?: ToolWizardState;
 }) {
   const composerRuntime = useComposerRuntime();
+  const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -48,6 +91,28 @@ export function FronaComposer({
   const threadRunning = useThreadIsRunning();
   const pendingTools = usePendingTools();
   const chatCtx = useContext(ChatContext);
+  const commands = useCommands(chatCtx?.chatId);
+
+  const slashAdapter = useFronaTriggerAdapter(commands, "slash");
+  const atAdapter = useFronaTriggerAdapter(commands, "at");
+
+  // Client built-ins (e.g. /new) dispatch locally; clear the composer so the
+  // chip isn't POSTed to the server.
+  const handleDirectiveInserted = useCallback(
+    (item: Unstable_TriggerItem) => {
+      if (item.type !== "client-builtin") return;
+      const name = (item.metadata?.["name"] as string | undefined) ?? item.id;
+      void tryDispatchClientBuiltin(`/${name}`, {
+        chatId: chatCtx?.chatId,
+        agentId: chatCtx?.agentId,
+        router,
+      }).then(() => {
+        composerRuntime.setText("");
+      });
+    },
+    [composerRuntime, chatCtx?.chatId, chatCtx?.agentId, router],
+  );
+
   const currentIndex = wizard?.currentIndex ?? 0;
   const safeIndex = Math.min(currentIndex, Math.max(0, pendingTools.length - 1));
   const currentPendingTool = pendingTools.length > 0 ? pendingTools[safeIndex] : undefined;
@@ -58,9 +123,6 @@ export function FronaComposer({
     if (!text) return;
     composerRuntime.setText("");
 
-    // For a Choice-kind HITL (Question / Takeover), typed text becomes the
-    // user's freeform answer. For App / Credential, typed text is a denial
-    // reason.
     const kind = currentPendingTool.hitl?.request.type;
     const isChoiceKind = kind === "Question" || kind === "Takeover";
     let hitlResponse: import("@/lib/types").HitlResponse;
@@ -78,7 +140,6 @@ export function FronaComposer({
     nextAnswers.set(currentPendingTool.id, { hitlResponse, displayText: text });
     wizard.setAnswers(nextAnswers);
 
-    // If all tools now have answers, auto-submit
     const allNowAnswered = pendingTools.every((te) => nextAnswers.has(te.id));
     if (allNowAnswered && chatCtx?.chatId) {
       const resolutions = pendingTools.map((te) => {
@@ -131,133 +192,191 @@ export function FronaComposer({
     [composerRuntime],
   );
 
+  // HomeComposer (custom `onSend`) needs to go through the form's onSubmit;
+  // Lexical's default Enter handler bypasses the form by calling send() directly.
+  const submitMode: "enter" | "none" = onSend ? "none" : "enter";
+
+  // Restore Enter-submits-form behaviour when submitMode is "none".
+  const editorBridgeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!onSend) return;
+    const el = editorBridgeRef.current;
+    if (!el) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || e.shiftKey || (e as KeyboardEvent).isComposing) return;
+      e.preventDefault();
+      el.closest("form")?.requestSubmit();
+    };
+    el.addEventListener("keydown", handler);
+    return () => el.removeEventListener("keydown", handler);
+  }, [onSend]);
+
   return (
-    <div>
-      <ComposerPrimitive.Root
-        className={currentPendingTool && !wizard?.submitted
-          ? "bg-transparent p-4"
-          : "rounded-2xl border border-border bg-surface-secondary p-4 focus-within:border-accent transition-colors"
-        }
-        {...(currentPendingTool ? { onSubmit: handleWizardAnswer } : onSend ? { onSubmit: () => {
-          const state = composerRuntime.getState();
-          const text = state.text.trim();
-          if (!text && !state.attachments.length) return;
-          const backendAttachments = state.attachments
-            .map((a) => getBackendAttachment(a.id))
-            .filter((a): a is Attachment => a != null);
-          onSend(text, backendAttachments.length > 0 ? backendAttachments : undefined);
-        }} : {})}
-      >
-        <div className="flex flex-wrap gap-1.5 empty:hidden">
-          <ComposerPrimitive.Attachments
-            components={{ Attachment: ComposerAttachmentBadge }}
-          />
-        </div>
-        <ComposerPrimitive.Input
-          autoFocus
-          placeholder={activePlaceholder}
-          rows={1}
-          className="w-full bg-transparent text-sm leading-5 text-text-primary placeholder:text-text-tertiary focus:outline-none resize-none max-h-[200px] overflow-y-auto"
+    <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      <ComposerPrimitive.Unstable_TriggerPopover char="/" adapter={slashAdapter} className={POPOVER_PANEL_CLASS}>
+        <ComposerPrimitive.Unstable_TriggerPopover.Directive
+          formatter={fronaSlashFormatter}
+          onInserted={handleDirectiveInserted}
         />
-        <div className="flex items-center justify-between pt-2">
-          <div className="relative">
-            <button
-              ref={menuButtonRef}
-              type="button"
-              onClick={() => setMenuOpen((v) => !v)}
-              className="rounded-lg p-1 text-text-tertiary hover:text-text-secondary hover:bg-surface-tertiary transition"
-              title="Attach"
-            >
-              <PlusIcon className="h-5 w-5" />
-            </button>
-            {menuOpen && (
-              <div
-                ref={menuRef}
-                className="absolute bottom-full left-0 mb-1 w-max rounded-lg border border-border bg-surface-secondary py-1 shadow-lg"
+        <ComposerPrimitive.Unstable_TriggerPopoverItems>
+          {(items) =>
+            items.map((item, idx) => (
+              <TriggerPopoverItemButton key={item.id} item={item} index={idx} />
+            ))
+          }
+        </ComposerPrimitive.Unstable_TriggerPopoverItems>
+      </ComposerPrimitive.Unstable_TriggerPopover>
+
+      <ComposerPrimitive.Unstable_TriggerPopover char="@" adapter={atAdapter} className={POPOVER_PANEL_CLASS}>
+        <ComposerPrimitive.Unstable_TriggerPopover.Directive
+          formatter={fronaAtFormatter}
+          onInserted={handleDirectiveInserted}
+        />
+        <ComposerPrimitive.Unstable_TriggerPopoverItems>
+          {(items) =>
+            items.map((item, idx) => (
+              <TriggerPopoverItemButton key={item.id} item={item} index={idx} />
+            ))
+          }
+        </ComposerPrimitive.Unstable_TriggerPopoverItems>
+      </ComposerPrimitive.Unstable_TriggerPopover>
+
+      <div className="relative">
+        <ComposerPrimitive.Root
+          className={currentPendingTool && !wizard?.submitted
+            ? "bg-transparent p-4"
+            : "rounded-2xl border border-border bg-surface-secondary p-4 focus-within:border-accent transition-colors"
+          }
+          {...(currentPendingTool
+            ? { onSubmit: handleWizardAnswer }
+            : onSend
+              ? {
+                  onSubmit: (e: React.FormEvent) => {
+                    e.preventDefault();
+                    const state = composerRuntime.getState();
+                    const text = state.text.trim();
+                    if (!text && !state.attachments.length) return;
+                    const backendAttachments = state.attachments
+                      .map((a) => getBackendAttachment(a.id))
+                      .filter((a): a is Attachment => a != null);
+                    onSend(text, backendAttachments.length > 0 ? backendAttachments : undefined);
+                  },
+                }
+              : {})}
+        >
+          <div className="flex flex-wrap gap-1.5 empty:hidden">
+            <ComposerPrimitive.Attachments
+              components={{ Attachment: ComposerAttachmentBadge }}
+            />
+          </div>
+          <div ref={editorBridgeRef}>
+            <LexicalComposerInput
+              autoFocus
+              placeholder={activePlaceholder}
+              submitMode={submitMode}
+              className="aui-frona-composer-input w-full text-sm leading-5 text-text-primary"
+            />
+          </div>
+          <div className="flex items-center justify-between pt-2">
+            <div className="relative">
+              <button
+                ref={menuButtonRef}
+                type="button"
+                onClick={() => setMenuOpen((v) => !v)}
+                className="rounded-lg p-1 text-text-tertiary hover:text-text-secondary hover:bg-surface-tertiary transition"
+                title="Attach"
               >
-                <ComposerPrimitive.AddAttachment asChild multiple>
+                <PlusIcon className="h-5 w-5" />
+              </button>
+              {menuOpen && (
+                <div
+                  ref={menuRef}
+                  className="absolute bottom-full left-0 mb-1 w-max rounded-lg border border-border bg-surface-secondary py-1 shadow-lg"
+                >
+                  <ComposerPrimitive.AddAttachment asChild multiple>
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-tertiary transition-colors"
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      <ArrowUpTrayIcon className="h-4 w-4" />
+                      Upload files
+                    </button>
+                  </ComposerPrimitive.AddAttachment>
                   <button
                     type="button"
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-tertiary transition-colors"
+                    onClick={() => {
+                      setBrowseOpen(true);
+                      setMenuOpen(false);
+                    }}
+                  >
+                    <FolderOpenIcon className="h-4 w-4" />
+                    Browse files
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-tertiary cursor-default"
                     onClick={() => setMenuOpen(false)}
                   >
-                    <ArrowUpTrayIcon className="h-4 w-4" />
-                    Upload files
+                    <CloudIcon className="h-4 w-4" />
+                    Connect to Google Drive
                   </button>
-                </ComposerPrimitive.AddAttachment>
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-tertiary transition-colors"
-                  onClick={() => {
-                    setBrowseOpen(true);
-                    setMenuOpen(false);
-                  }}
-                >
-                  <FolderOpenIcon className="h-4 w-4" />
-                  Browse files
-                </button>
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-tertiary cursor-default"
-                  onClick={() => setMenuOpen(false)}
-                >
-                  <CloudIcon className="h-4 w-4" />
-                  Connect to Google Drive
-                </button>
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-1">
-            {wizard?.submitted && threadRunning ? (
-              <ComposerPrimitive.Cancel asChild>
-                <button
-                  type="button"
-                  className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
-                >
-                  <StopIcon className="h-5 w-5" />
-                </button>
-              </ComposerPrimitive.Cancel>
-            ) : (
-            <>
-            <ThreadPrimitive.If running>
-              <ComposerPrimitive.Cancel asChild>
-                <button
-                  type="button"
-                  className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
-                >
-                  <StopIcon className="h-5 w-5" />
-                </button>
-              </ComposerPrimitive.Cancel>
-            </ThreadPrimitive.If>
-            <ThreadPrimitive.If running={false}>
-              {onSend || currentPendingTool ? (
-                <button
-                  type="submit"
-                  className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
-                >
-                  <PaperAirplaneIcon className="h-5 w-5" />
-                </button>
-              ) : (
-                <ComposerPrimitive.Send asChild>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-1">
+              {wizard?.submitted && threadRunning ? (
+                <ComposerPrimitive.Cancel asChild>
                   <button
                     type="button"
                     className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
                   >
+                    <StopIcon className="h-5 w-5" />
+                  </button>
+                </ComposerPrimitive.Cancel>
+              ) : (
+              <>
+              <ThreadPrimitive.If running>
+                <ComposerPrimitive.Cancel asChild>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
+                  >
+                    <StopIcon className="h-5 w-5" />
+                  </button>
+                </ComposerPrimitive.Cancel>
+              </ThreadPrimitive.If>
+              <ThreadPrimitive.If running={false}>
+                {onSend || currentPendingTool ? (
+                  <button
+                    type="submit"
+                    className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
+                  >
                     <PaperAirplaneIcon className="h-5 w-5" />
                   </button>
-                </ComposerPrimitive.Send>
+                ) : (
+                  <ComposerPrimitive.Send asChild>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
+                    >
+                      <PaperAirplaneIcon className="h-5 w-5" />
+                    </button>
+                  </ComposerPrimitive.Send>
+                )}
+              </ThreadPrimitive.If>
+              </>
               )}
-            </ThreadPrimitive.If>
-            </>
-            )}
+            </div>
           </div>
-        </div>
-      </ComposerPrimitive.Root>
-      <FileBrowserModal
-        open={browseOpen}
-        onClose={() => setBrowseOpen(false)}
-        onSelect={handleBrowseSelect}
-      />
-    </div>
+        </ComposerPrimitive.Root>
+        <FileBrowserModal
+          open={browseOpen}
+          onClose={() => setBrowseOpen(false)}
+          onSelect={handleBrowseSelect}
+        />
+      </div>
+    </ComposerPrimitive.Unstable_TriggerPopoverRoot>
   );
 }

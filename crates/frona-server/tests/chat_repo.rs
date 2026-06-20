@@ -75,6 +75,7 @@ fn test_message_at(chat_id: &str, content: &str, created_at: chrono::DateTime<Ut
         from_address: None,
         delivery: None,
         dispatch_mode: None,
+        command: None,
         metadata: Default::default(),
         created_at,
     }
@@ -346,6 +347,7 @@ fn test_task(user_id: &str, agent_id: &str, chat_id: Option<&str>) -> Task {
         error_message: None,
         quarantined: false,
         result_schema: None,
+        result_description: None,
         created_at: now,
         updated_at: now,
     }

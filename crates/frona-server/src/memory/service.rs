@@ -65,6 +65,56 @@ impl MemoryService {
         self.prompts.read(name)
     }
 
+    /// Forced wrapper for `/compact` — looks up the compaction model group
+    /// from the registry (falling back to `primary` if `compaction` isn't
+    /// configured) and threads through to `compact_chat_if_needed`. The
+    /// threshold check still applies — under-threshold chats are a no-op.
+    /// Returns a short status string suitable for an assistant message.
+    pub async fn compact_chat_via_command(
+        &self,
+        chat_id: &str,
+        chat_agent_id: &str,
+        system_prompt: &str,
+        model_id: &str,
+        context_window: Option<usize>,
+        max_output_tokens: usize,
+    ) -> Result<&'static str, AppError> {
+        let compaction_group = self
+            .provider_registry
+            .get_model_group("compaction")
+            .or_else(|_| self.provider_registry.get_model_group("primary"))
+            .map_err(|e| AppError::Internal(format!("No compaction model group available: {e}")))?;
+
+        let before = self
+            .memory_repo
+            .find_latest(MemorySourceType::Chat, chat_id)
+            .await?
+            .map(|m| m.updated_at);
+
+        self.compact_chat_if_needed(
+            chat_id,
+            chat_agent_id,
+            system_prompt,
+            model_id,
+            context_window,
+            max_output_tokens,
+            compaction_group,
+        )
+        .await?;
+
+        let after = self
+            .memory_repo
+            .find_latest(MemorySourceType::Chat, chat_id)
+            .await?
+            .map(|m| m.updated_at);
+
+        if before == after {
+            Ok("Chat is already at optimal size — no compaction needed.")
+        } else {
+            Ok("Compacted older messages into a summary.")
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn compact_chat_if_needed(
         &self,
@@ -95,7 +145,7 @@ impl MemoryService {
                     Some(RigMessage::user(format!("[LIVE_CALL] {content}")))
                 }
                 crate::chat::message::models::MessageRole::Agent => {
-                    convert_agent_message(msg, chat_agent_id)
+                    convert_agent_message(msg, chat_agent_id, None)
                 }
                 crate::chat::message::models::MessageRole::System => None,
             })
@@ -633,8 +683,12 @@ impl MemoryService {
             }
         }
 
+        // Skills flagged `disable-model-invocation: true` stay user-invocable
+        // (visible in the `/` dropdown) but are hidden from the model's
+        // `<available_skills>` block so it can't auto-trigger them.
         let skill_items: Vec<(String, String)> = skills
             .iter()
+            .filter(|s| !s.disable_model_invocation)
             .map(|s| (s.name.clone(), format!("{} (file: {}/SKILL.md)", s.description, s.path)))
             .collect();
         append_tagged_section(

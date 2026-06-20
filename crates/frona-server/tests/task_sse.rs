@@ -179,6 +179,7 @@ fn make_task() -> Task {
         error_message: None,
         quarantined: false,
         result_schema: None,
+        result_description: None,
         created_at: now,
         updated_at: now,
     }
@@ -366,6 +367,7 @@ async fn delegation_delivers_task_result_to_parent_chat() {
             &parent_chat.id,
             "Ask the researcher: what is the answer to life?",
             vec![],
+            None,
         )
         .await
         .unwrap();
@@ -393,6 +395,7 @@ async fn delegation_delivers_task_result_to_parent_chat() {
         error_message: None,
         quarantined: false,
         result_schema: None,
+        result_description: None,
         created_at: now,
         updated_at: now,
     };

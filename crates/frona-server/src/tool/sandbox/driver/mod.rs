@@ -1,8 +1,10 @@
 pub mod macos;
 pub mod noop;
 pub mod resource_monitor;
-#[cfg(target_os = "linux")]
-mod linux;
+/// Platform-agnostic filesystem allow-list constants used by both the Linux
+/// syd/landlock drivers and the in-process `Sandbox::is_readable` checks.
+/// The constants are just `&[&str]` so they're cheap to compile everywhere.
+pub mod linux;
 #[cfg(target_os = "linux")]
 pub mod landlock;
 #[cfg(target_os = "linux")]

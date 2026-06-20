@@ -89,6 +89,29 @@ pub fn is_simple_schema(schema: &Value) -> bool {
     false
 }
 
+/// Complex schemas must include a top-level required `summary` string
+/// property. The user-facing renderer surfaces only that field for complex
+/// shapes, so requiring it guarantees the result bubble is never empty.
+pub fn has_renderable_summary_field(schema: &Value) -> bool {
+    let Some(props) = schema.get("properties").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    if !required.contains(&"summary") {
+        return false;
+    }
+    let Some(prop) = props.get("summary") else { return false };
+    prop.get("type").and_then(|v| v.as_str()) == Some("string")
+        || prop
+            .get("type")
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| arr.iter().any(|t| t.as_str() == Some("string")))
+}
+
 fn is_simple_branch(schema: &Value) -> bool {
     if let Some(t) = schema.get("type") {
         match t {
@@ -122,97 +145,6 @@ fn is_simple_branch(schema: &Value) -> bool {
         return branches.iter().all(is_simple_branch);
     }
     false
-}
-
-/// Returns `None` to signal "no delivery" (null, empty object, empty array).
-pub fn render_result(schema: &Value, value: &Value) -> Option<String> {
-    if value.is_null() {
-        return None;
-    }
-    match value {
-        Value::Array(arr) => {
-            if arr.is_empty() {
-                return None;
-            }
-            Some(
-                arr.iter()
-                    .map(|v| format!("- {}", render_value(v)))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-        }
-        Value::Object(obj) => {
-            if obj.is_empty() {
-                return None;
-            }
-            let props = find_object_properties(schema);
-            let mut lines: Vec<(String, String)> = Vec::new();
-            if let Some(props) = props {
-                for (key, prop_schema) in props {
-                    match obj.get(key) {
-                        Some(v) if !v.is_null() => {
-                            let label = prop_schema
-                                .get("description")
-                                .and_then(|d| d.as_str())
-                                .unwrap_or(key.as_str())
-                                .to_string();
-                            lines.push((label, render_value(v)));
-                        }
-                        _ => {}
-                    }
-                }
-            } else {
-                for (key, v) in obj {
-                    if !v.is_null() {
-                        lines.push((key.clone(), render_value(v)));
-                    }
-                }
-            }
-            if lines.is_empty() {
-                return None;
-            }
-            if lines.len() == 1 {
-                return Some(lines.remove(0).1);
-            }
-            Some(
-                lines
-                    .iter()
-                    .map(|(label, val)| format!("{label}: {val}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-        }
-        _ => Some(render_value(value)),
-    }
-}
-
-fn find_object_properties(schema: &Value) -> Option<&serde_json::Map<String, Value>> {
-    if let Some(p) = schema.get("properties").and_then(|v| v.as_object()) {
-        return Some(p);
-    }
-    if let Some(Value::Array(branches)) = schema.get("oneOf").or_else(|| schema.get("anyOf")) {
-        for branch in branches {
-            if let Some(p) = branch.get("properties").and_then(|v| v.as_object()) {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
-
-fn render_value(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null => String::new(),
-        Value::Array(arr) => arr
-            .iter()
-            .map(render_value)
-            .collect::<Vec<_>>()
-            .join(", "),
-        Value::Object(_) => serde_json::to_string(v).unwrap_or_default(),
-    }
 }
 
 #[cfg(test)]
@@ -418,121 +350,6 @@ mod tests {
     #[test]
     fn is_complex_object_without_properties() {
         assert!(!is_simple_schema(&json!({"type": "object"})));
-    }
-
-    #[test]
-    fn render_scalar_string() {
-        let schema = json!({"type": "string"});
-        assert_eq!(
-            render_result(&schema, &json!("hello")),
-            Some("hello".to_string())
-        );
-    }
-
-    #[test]
-    fn render_scalar_number() {
-        let schema = json!({"type": "number"});
-        assert_eq!(render_result(&schema, &json!(42)), Some("42".to_string()));
-        assert_eq!(render_result(&schema, &json!(3.14)), Some("3.14".to_string()));
-    }
-
-    #[test]
-    fn render_nullable_string_with_null_returns_none() {
-        let schema = json!({"type": ["string", "null"]});
-        assert_eq!(render_result(&schema, &Value::Null), None);
-    }
-
-    #[test]
-    fn render_nullable_string_with_value() {
-        let schema = json!({"type": ["string", "null"]});
-        assert_eq!(
-            render_result(&schema, &json!("emergency")),
-            Some("emergency".to_string())
-        );
-    }
-
-    #[test]
-    fn render_array_of_scalars_bullet_list() {
-        let schema = json!({"type": "array", "items": {"type": "string"}});
-        assert_eq!(
-            render_result(&schema, &json!(["a", "b", "c"])),
-            Some("- a\n- b\n- c".to_string())
-        );
-    }
-
-    #[test]
-    fn render_empty_array_returns_none() {
-        let schema = json!({"type": "array", "items": {"type": "string"}});
-        assert_eq!(render_result(&schema, &json!([])), None);
-    }
-
-    #[test]
-    fn render_object_multi_prop_uses_descriptions_as_labels() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string", "description": "ticker"},
-                "price": {"type": "number", "description": "current price (USD)"}
-            }
-        });
-        let value = json!({"symbol": "AAPL", "price": 234});
-        assert_eq!(
-            render_result(&schema, &value),
-            Some("ticker: AAPL\ncurrent price (USD): 234".to_string())
-        );
-    }
-
-    #[test]
-    fn render_object_single_prop_renders_bare_value() {
-        let schema = json!({
-            "type": "object",
-            "properties": {"joke": {"type": "string", "description": "the joke"}}
-        });
-        let value = json!({"joke": "Why did the chicken cross the road?"});
-        assert_eq!(
-            render_result(&schema, &value),
-            Some("Why did the chicken cross the road?".to_string())
-        );
-    }
-
-    #[test]
-    fn render_object_empty_result_returns_none() {
-        let schema = json!({
-            "type": "object",
-            "properties": {"emergency": {"type": "string"}}
-        });
-        assert_eq!(render_result(&schema, &json!({})), None);
-    }
-
-    #[test]
-    fn render_object_skips_absent_optional_properties() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "price": {"type": "number"},
-                "change_pct": {"type": "number"}
-            }
-        });
-        // Only `symbol` present; absent optional fields skipped → single line → bare value.
-        let value = json!({"symbol": "AAPL"});
-        assert_eq!(render_result(&schema, &value), Some("AAPL".to_string()));
-    }
-
-    #[test]
-    fn render_falls_back_to_key_when_no_description() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "age": {"type": "integer"}
-            }
-        });
-        let value = json!({"name": "Ada", "age": 30});
-        assert_eq!(
-            render_result(&schema, &value),
-            Some("name: Ada\nage: 30".to_string())
-        );
     }
 
     #[test]

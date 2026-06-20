@@ -16,7 +16,7 @@ use frona::tool::mcp::models::{
     McpPackage, McpRuntime, McpServer, McpServerStatus,
 };
 use frona::tool::mcp::{McpManager};
-use frona::tool::sandbox::SandboxManager;
+use frona::tool::sandbox::{SandboxFactory, SandboxManager};
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
 
 fn fake_server_binary() -> String {
@@ -62,14 +62,9 @@ fn make_server(id: &str, binary: &str, workspace: &str) -> McpServer {
 }
 
 async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
-    let sandbox = Arc::new(SandboxManager::new(true, Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
-    ));
+    let factory = Arc::new(SandboxFactory::new(true, Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0))));
     let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
-    let policy_schema = frona::policy::schema::build_schema();
-    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(frona::db::repo::generic::SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
-    let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config {
         storage: frona::core::config::StorageConfig {
             data_dir: tmp.to_string_lossy().into_owned(),
@@ -78,16 +73,57 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
         ..Default::default()
     });
     let user_service = frona::auth::UserService::new(
-        frona::db::repo::generic::SurrealRepo::new(db),
+        frona::db::repo::generic::SurrealRepo::new(db.clone()),
         &frona::core::config::CacheConfig::default(),
     );
-    let policy_service = frona::policy::service::PolicyService::new(policy_repo, policy_schema, tool_manager, storage.clone(), user_service.clone());
+    let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
+    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
+        Arc::new(frona::db::repo::generic::SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+    let policy_service = frona::policy::service::PolicyService::new(
+        policy_repo,
+        frona::policy::schema::build_schema(),
+        tool_manager,
+        storage.clone(),
+        user_service.clone(),
+    );
+    let skill_service = frona::agent::skill::service::SkillService::new(
+        frona::agent::skill::registry::SkillRegistryClient::new(
+            frona::build_http_client(),
+            "/tmp/frona-test-mcp-e2e-cache",
+        ),
+        frona::agent::skill::resolver::SkillResolver::new("/tmp/frona-test-mcp-e2e-shared", storage.clone()),
+        storage.clone(),
+        "/tmp/frona-test-mcp-e2e-skills",
+        &frona::core::config::CacheConfig::default(),
+    );
+    let keypair_repo: Arc<dyn frona::credential::keypair::repository::KeyPairRepository> =
+        Arc::new(frona::db::repo::generic::SurrealRepo::new(db.clone()));
+    let keypair_service = frona::credential::keypair::service::KeyPairService::new("test-secret", keypair_repo);
+    let token_repo: Arc<frona::db::repo::generic::SurrealRepo<frona::auth::token::models::ApiToken>> =
+        Arc::new(frona::db::repo::generic::SurrealRepo::new(db));
+    let token_service = frona::auth::token::service::TokenService::new(
+        token_repo,
+        frona::auth::jwt::JwtService::new(),
+        user_service.clone(),
+        3600,
+        86400,
+    );
+    let sandbox_manager = Arc::new(SandboxManager::new(
+        factory,
+        policy_service,
+        skill_service,
+        storage.clone(),
+        token_service,
+        keypair_service,
+        "http://localhost".to_string(),
+        300,
+        "UTC".to_string(),
+    ));
     Arc::new(McpManager::new(
-        sandbox,
+        sandbox_manager,
         storage,
         4100,
         4200,
-        policy_service,
         user_service,
         frona::build_http_client(),
     ))

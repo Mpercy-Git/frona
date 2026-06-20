@@ -31,7 +31,6 @@ pub struct McpManager {
     storage: crate::storage::StorageService,
     allocated_ports: Arc<Mutex<HashSet<u16>>>,
     port_range: (u16, u16),
-    policy_service: crate::policy::service::PolicyService,
     user_service: crate::auth::UserService,
     http: reqwest::Client,
 }
@@ -42,7 +41,6 @@ impl McpManager {
         storage: crate::storage::StorageService,
         port_range_start: u16,
         port_range_end: u16,
-        policy_service: crate::policy::service::PolicyService,
         user_service: crate::auth::UserService,
         http: reqwest::Client,
     ) -> Self {
@@ -52,7 +50,6 @@ impl McpManager {
             storage,
             allocated_ports: Arc::new(Mutex::new(HashSet::new())),
             port_range: (port_range_start, port_range_end),
-            policy_service,
             user_service,
             http,
         }
@@ -78,19 +75,22 @@ impl McpManager {
     }
 
     /// Install-phase: permissive network for `npx`/`uv pip install` registries;
-    /// bypasses per-principal Cedar evaluation.
+    /// bypasses per-principal Cedar evaluation. Reaches through to the raw
+    /// `SandboxFactory` because the standard `for_mcp` path always runs Cedar.
     pub fn build_install_sandbox(&self, server: &McpServer) -> Sandbox {
         let permissive = crate::policy::sandbox::SandboxPolicy::permissive();
-        self.mcp_sandbox(server, &permissive)
+        let sandbox_id = format!("mcp-{}", server.id);
+        self.sandbox_manager
+            .factory()
+            .get_sandbox(
+                std::path::PathBuf::from(&server.workspace_dir),
+                &sandbox_id,
+                permissive.network_access,
+                permissive.network_destinations.clone(),
+            )
+            .without_venv()
+            .without_node()
             .with_extra_env_vars(package_manager_env_vars(&server.workspace_dir))
-    }
-
-    pub async fn build_run_sandbox(
-        &self,
-        server: &McpServer,
-        resolved_env: Vec<(String, String)>,
-    ) -> Result<Sandbox, AppError> {
-        self.build_run_sandbox_with_token(server, resolved_env, None).await
     }
 
     pub async fn build_run_sandbox_with_token(
@@ -107,42 +107,10 @@ impl McpManager {
             .find_by_id(&server.user_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("user {}", server.user_id)))?;
-        let policy = self
-            .policy_service
-            .evaluate_sandbox_policy(
-                crate::policy::service::SandboxPrincipalRef::mcp(
-                    &server.user_id,
-                    &user.handle,
-                    &server.handle,
-                ),
-                true,
-            )
-            .await?;
 
-        let mut sandbox = self.mcp_sandbox(server, &policy)
-            .with_read_paths(policy.read_paths.clone())
-            .with_write_paths(policy.write_paths.clone())
-            .with_denied_paths(policy.denied_paths.clone())
-            .with_blocked_networks(policy.blocked_networks.clone())
-            .with_bind_ports(policy.bind_ports.clone())
-            .with_extra_env_vars(env);
-        if let Some(path) = token_path {
-            sandbox = sandbox.with_read_files(vec![path.to_string_lossy().into_owned()]);
-        }
-        Ok(sandbox)
-    }
-
-    fn mcp_sandbox(&self, server: &McpServer, policy: &crate::policy::sandbox::SandboxPolicy) -> Sandbox {
-        let sandbox_id = format!("mcp-{}", server.id);
         self.sandbox_manager
-            .get_sandbox(
-                std::path::PathBuf::from(&server.workspace_dir),
-                &sandbox_id,
-                policy.network_access,
-                policy.network_destinations.clone(),
-            )
-            .without_venv()
-            .without_node()
+            .for_mcp(&user, server, env, token_path)
+            .await
     }
 
     pub async fn start(

@@ -6,8 +6,49 @@ import type { CompleteAttachment } from "@assistant-ui/react";
 import { presignFile } from "@/lib/api-client";
 import { getBackendAttachment } from "@/lib/use-chat-runtime";
 import { formatFullTimestamp, formatTime, useTimezone } from "@/lib/format-time";
+import { useNavigation } from "@/lib/navigation-context";
+import type { MessageCommand } from "@/lib/types";
 import { MarkdownText } from "./markdown-text";
 import { TimeMarkers } from "./time-markers";
+
+function InvocationChip({ command, prefix }: { command: MessageCommand; prefix: string }) {
+  const { agents } = useNavigation();
+  const tail = (command.type === "skill" ? command.prompt : command.args).trim();
+
+  const matchedAgent =
+    command.type === "command"
+      ? agents.find((a) => a.handle === command.name)
+      : undefined;
+  const displayName = matchedAgent?.name ?? command.name;
+
+  const directiveType =
+    command.type === "skill"
+      ? "skill"
+      : matchedAgent || prefix === "@"
+        ? "agent"
+        : "command";
+  return (
+    <div className="text-base text-text-primary">
+      <span className="aui-directive-chip" data-directive-type={directiveType}>
+        {prefix}{displayName}
+      </span>
+      {tail && <span>{tail}</span>}
+    </div>
+  );
+}
+
+function CommandTypeBadge({ command }: { command: MessageCommand }) {
+  const { agents } = useNavigation();
+  const isAgent =
+    command.type === "command" && agents.some((a) => a.handle === command.name);
+  if (isAgent) return null;
+  const label = command.type === "skill" ? "Skill" : "Command";
+  return (
+    <span className="inline-flex items-center rounded-full bg-surface-tertiary px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-text-tertiary">
+      {label}
+    </span>
+  );
+}
 
 function usePresignedUrl(attachmentId: string) {
   const [url, setUrl] = useState<string | null>(null);
@@ -70,6 +111,12 @@ export function FronaUserMessage() {
   const message = useMessage();
   const tz = useTimezone();
   const custom = (message.metadata as Record<string, any>)?.custom ?? {};
+  const command: MessageCommand | undefined = custom.command;
+  const rawText =
+    (message.content[0] as { type?: string; text?: string } | undefined)?.type === "text"
+      ? ((message.content[0] as { text?: string }).text ?? "")
+      : "";
+  const prefix = rawText.charAt(0) === "@" ? "@" : "/";
   const isoTime = message.createdAt?.toISOString();
   return (
     <MessagePrimitive.Root>
@@ -80,6 +127,7 @@ export function FronaUserMessage() {
             Y
           </div>
           <p className="text-xs font-medium text-text-tertiary">You</p>
+          {command && <CommandTypeBadge command={command} />}
           {isoTime && (
             <time
               dateTime={isoTime}
@@ -91,11 +139,15 @@ export function FronaUserMessage() {
           )}
         </div>
         <div className="pl-[42px] text-base text-text-primary">
-          <MessagePrimitive.Parts
-            components={{
-              Text: MarkdownText,
-            }}
-          />
+          {command ? (
+            <InvocationChip command={command} prefix={prefix} />
+          ) : (
+            <MessagePrimitive.Parts
+              components={{
+                Text: MarkdownText,
+              }}
+            />
+          )}
           <div className="flex flex-wrap gap-2 mt-2 empty:hidden">
             <MessagePrimitive.Attachments>
               {({ attachment }) => <UserAttachment attachment={attachment} />}

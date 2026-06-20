@@ -1,16 +1,74 @@
 use std::time::Duration;
 
 use frona_browser::{BrowserConnection, ElementTarget, ExtractFormat};
+use serde::Deserialize;
 
 fn ws_url() -> Option<String> {
     std::env::var("FRONA_TEST_BROWSER_WS_URL").ok()
 }
 
+/// Browserless treats `<=0` as `0ms` and 408s instantly, so we pick a 24h
+/// positive instead.
+fn ws_url_with_no_limiter_timeout() -> String {
+    let base = ws_url()
+        .expect("set FRONA_TEST_BROWSER_WS_URL")
+        .trim_end_matches('/')
+        .to_string();
+    format!("{base}/?timeout=86400000")
+}
+
 async fn connect() -> BrowserConnection {
-    let url = ws_url().expect("set FRONA_TEST_BROWSER_WS_URL to a browserless ws:// endpoint");
-    BrowserConnection::connect(&url, Duration::from_secs(30))
+    BrowserConnection::connect(
+        &ws_url_with_no_limiter_timeout(),
+        Duration::from_secs(30),
+        Duration::from_secs(24 * 3600),
+    )
+    .await
+    .expect("connect to browserless")
+}
+
+async fn connect_with_lifetime(lifetime: Duration) -> BrowserConnection {
+    BrowserConnection::connect(
+        &ws_url_with_no_limiter_timeout(),
+        Duration::from_secs(30),
+        lifetime,
+    )
+    .await
+    .expect("connect to browserless")
+}
+
+fn http_base() -> String {
+    let ws = ws_url().expect("set FRONA_TEST_BROWSER_WS_URL");
+    ws.replace("ws://", "http://").replace("wss://", "https://")
+}
+
+#[derive(Deserialize)]
+struct AdminSession {
+    #[serde(rename = "browserId")]
+    browser_id: String,
+    #[serde(rename = "type")]
+    session_type: Option<String>,
+}
+
+async fn kill_all_browserless_browsers() {
+    let http = http_base();
+    let client = reqwest::Client::new();
+    let sessions: Vec<AdminSession> = client
+        .get(format!("{http}/sessions"))
+        .send()
         .await
-        .expect("connect to browserless")
+        .expect("GET /sessions")
+        .json()
+        .await
+        .expect("parse /sessions");
+    for s in sessions {
+        if s.session_type.as_deref() == Some("browser") {
+            let _ = client
+                .get(format!("{http}/kill/{}", s.browser_id))
+                .send()
+                .await;
+        }
+    }
 }
 
 fn data_url(html: &str) -> String {
@@ -233,22 +291,6 @@ async fn hover_dispatches_mouseover() {
 
 #[tokio::test]
 #[ignore = "requires FRONA_TEST_BROWSER_WS_URL"]
-async fn connection_stays_alive_across_keepalive_interval() {
-    // Default keepalive ticks every 25s. Idle the connection just over that
-    // interval; a healthy keepalive prevents the WebSocket from going stale.
-    // We then verify the connection is still usable for normal commands.
-    let conn = connect().await;
-    conn.navigate(&data_url("<html><title>ok</title></html>"), true)
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_secs(30)).await;
-    let v = conn.evaluate("1 + 1", false).await.unwrap();
-    assert_eq!(v.as_i64(), Some(2));
-    conn.disconnect().await.unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires FRONA_TEST_BROWSER_WS_URL"]
 async fn compact_snapshot_is_smaller_than_full() {
     let html = r##"<!doctype html><html><body>
         <header><nav><ul>
@@ -400,4 +442,100 @@ async fn tabs_lifecycle() {
         t3.len()
     );
     conn.disconnect().await.unwrap();
+}
+
+// `kill_all_browserless_browsers` is global, so the tests below must run
+// with `--test-threads=1`.
+
+#[tokio::test]
+#[ignore = "requires FRONA_TEST_BROWSER_WS_URL (run with --test-threads=1)"]
+async fn fresh_connection_reports_alive() {
+    let conn = connect().await;
+    assert!(conn.is_alive(), "fresh connection should be alive");
+    assert_eq!(
+        conn.evaluate("1 + 1", false).await.unwrap().as_i64(),
+        Some(2)
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires FRONA_TEST_BROWSER_WS_URL (run with --test-threads=1)"]
+async fn connection_self_evicts_after_lifetime_elapses() {
+    let conn = connect_with_lifetime(Duration::from_secs(2)).await;
+    assert!(conn.is_alive(), "still alive before lifetime expires");
+    let expires_at = conn.expires_at();
+    assert!(
+        expires_at > std::time::Instant::now(),
+        "expires_at should be in the future immediately after connect"
+    );
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        !conn.is_alive(),
+        "connection should report dead after the configured lifetime"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires FRONA_TEST_BROWSER_WS_URL (run with --test-threads=1)"]
+async fn idle_connection_survives_45s() {
+    // Guards against regressing the `&timeout=` override that defeats
+    // Browserless's 30s per-job limiter — interactive agent flows depend on it.
+    let conn = connect().await;
+    conn.navigate(&data_url("<html><body>idle test</body></html>"), true)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(45)).await;
+    assert!(
+        conn.is_alive(),
+        "connection went dead during 45s idle — Browserless's per-job limiter is firing again"
+    );
+    let v = conn
+        .evaluate("1 + 1", false)
+        .await
+        .expect("connection should still execute CDP after idle");
+    assert_eq!(v.as_i64(), Some(2));
+}
+
+#[tokio::test]
+#[ignore = "requires FRONA_TEST_BROWSER_WS_URL (run with --test-threads=1)"]
+async fn handler_detects_kill_within_500ms() {
+    let conn = connect().await;
+    assert!(conn.is_alive());
+
+    let killed_at = std::time::Instant::now();
+    kill_all_browserless_browsers().await;
+
+    let deadline = killed_at + Duration::from_millis(500);
+    while conn.is_alive() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let elapsed = killed_at.elapsed();
+    assert!(
+        !conn.is_alive(),
+        "handler should have flipped alive=false within 500ms of kill (elapsed {:?})",
+        elapsed
+    );
+    eprintln!("handler detected kill in {:?}", elapsed);
+}
+
+#[tokio::test]
+#[ignore = "requires FRONA_TEST_BROWSER_WS_URL (run with --test-threads=1)"]
+async fn op_after_kill_surfaces_disconnect_shaped_error() {
+    // Pins the invariant `run_with_reconnect` relies on.
+    let conn = connect().await;
+    conn.navigate(&data_url("<html><title>before</title></html>"), true)
+        .await
+        .unwrap();
+
+    kill_all_browserless_browsers().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let err = conn
+        .evaluate("1 + 1", false)
+        .await
+        .expect_err("expected evaluate to fail after browserless kill");
+    assert!(
+        err.is_disconnect(),
+        "post-kill error must classify as disconnect so run_with_reconnect triggers — got: {err}"
+    );
 }

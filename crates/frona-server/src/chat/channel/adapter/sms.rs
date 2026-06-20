@@ -13,6 +13,8 @@ use crate::chat::message::models::Message;
 use crate::chat::models::Chat;
 use crate::core::error::AppError;
 
+use super::super::attachment;
+use super::super::error::{ChannelError, ChannelErrorKind};
 use super::super::models::{
     ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
 };
@@ -22,12 +24,39 @@ use super::super::models::{ChannelFactory, ConfigRef};
 const TWIML_EMPTY_RESPONSE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response/>";
 const TWILIO_API_BASE: &str = "https://api.twilio.com/2010-04-01";
 
-#[derive(Debug, Clone, Deserialize, crate::ChannelFactory)]
-#[channel(id = "sms")]
+/// Twilio Programmable Messaging hard cap (concatenated SMS, segmented at
+/// the carrier). Used as both `provider_limit` and `hard_limit` — SMS
+/// triggers truncate-with-link mode for replies exceeding the cap.
+const SMS_MAX_MESSAGE_LEN: usize = 1600;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SmsConfig {
+    pub account_sid: String,
+    pub auth_token: String,
+    pub from_number: String,
+}
+
+#[derive(crate::ChannelFactory)]
+#[channel(id = "sms", from = SmsConfig)]
 pub struct SmsAdapter {
     pub account_sid: String,
     pub auth_token: String,
     pub from_number: String,
+    splitter: super::split::PlainSplitter,
+}
+
+impl From<SmsConfig> for SmsAdapter {
+    fn from(cfg: SmsConfig) -> Self {
+        Self {
+            account_sid: cfg.account_sid,
+            auth_token: cfg.auth_token,
+            from_number: cfg.from_number,
+            splitter: super::split::PlainSplitter::new(
+                SMS_MAX_MESSAGE_LEN,
+                Some(SMS_MAX_MESSAGE_LEN),
+            ),
+        }
+    }
 }
 
 impl SmsAdapter {
@@ -76,8 +105,31 @@ impl ChannelAdapter for SmsAdapter {
         tool_calls: &[crate::inference::tool_call::ToolCall],
         chat: &Chat,
         ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
-        let body = compose_sms_body(tool_calls, &msg.content);
+    ) -> Result<(), ChannelError> {
+        let raw_body = crate::chat::channel::render::render_message_body(msg);
+        let mut body = compose_sms_body(tool_calls, &raw_body);
+
+        // Inline short links for any attachments. No emoji to save char
+        // budget in SMS segments.
+        for att in &msg.attachments {
+            match attachment::outbound_url(att, ctx, attachment::ChannelMode::Inline).await {
+                Ok(url) => {
+                    if !body.is_empty() {
+                        body.push_str("\n\n");
+                    }
+                    body.push_str(&format!("{} — {url}", att.filename));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel_id = %ctx.channel.id,
+                        msg_id = %msg.id,
+                        path = %att.path,
+                        error = %e,
+                        "SMS: share_url issue failed; skipping attachment",
+                    );
+                }
+            }
+        }
 
         if body.trim().is_empty() {
             return Ok(());
@@ -86,28 +138,37 @@ impl ChannelAdapter for SmsAdapter {
         let to_number = parse_external_id(external_chat_id(chat)?)?;
         let status_callback = status_callback_url(&ctx.webhook_url, &msg.id);
 
+        let sctx = super::split::SplitCtx {
+            chat_id: &chat.id,
+            user_id: &ctx.channel.user_id,
+        };
+        let chunks = self.splitter.split(&body, ctx, sctx).await?;
+
         tracing::info!(
             channel_id = %ctx.channel.id,
             msg_id = %msg.id,
             from = %self.from_number,
             to = %to_number,
             content_len = body.len(),
+            chunks = chunks.len(),
             tool_count = tool_calls.len(),
-            "SMS on_send: dispatching composed body to Twilio",
+            "SMS on_send: dispatching split body to Twilio",
         );
-        self.twilio()
-            .send_message(&self.from_number, &to_number, &body, &status_callback)
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    channel_id = %ctx.channel.id,
-                    msg_id = %msg.id,
-                    to = %to_number,
-                    error = %e,
-                    "SMS on_send: Twilio synchronously rejected message",
-                );
-                e
-            })?;
+        for chunk in chunks {
+            self.twilio()
+                .send_message(&self.from_number, &to_number, &chunk, &status_callback)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(
+                        channel_id = %ctx.channel.id,
+                        msg_id = %msg.id,
+                        to = %to_number,
+                        error = %e,
+                        "SMS on_send: Twilio synchronously rejected message",
+                    );
+                    e
+                })?;
+        }
         tracing::debug!(
             channel_id = %ctx.channel.id,
             msg_id = %msg.id,
@@ -123,37 +184,49 @@ impl ChannelAdapter for SmsAdapter {
         _msg: &Message,
         chat: &Chat,
         ctx: &ChannelCtx,
-    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, ChannelError> {
         // SMS is text-only → sequential cadence: render only the first pending
-        // HITL with `render_default_text` (prompt + URL). The delivery cursor
-        // advances by 1; the next pending HITL renders after this one resolves.
+        // HITL. The delivery cursor advances by 1; the next pending HITL
+        // renders after this one resolves.
         let Some(tc) = batch.first() else { return Ok(Vec::new()) };
         let Some(h) = tc.hitl.as_ref() else { return Ok(Vec::new()) };
 
-        let body = crate::chat::channel::hitl::render_default_text(h);
+        let body = crate::chat::channel::hitl::render_text(h);
         let to_number = parse_external_id(external_chat_id(chat)?)?;
         let status_callback = status_callback_url(&ctx.webhook_url, &tc.id);
 
-        let sid = match self
-            .twilio()
-            .send_message(&self.from_number, &to_number, &body, &status_callback)
-            .await
-        {
-            Ok(sid) => sid,
-            Err(e) => {
-                tracing::warn!(
-                    channel_id = %ctx.channel.id,
-                    tool_call_id = %tc.id,
-                    error = %e,
-                    "SMS on_pending_hitl: send failed",
-                );
-                return Ok(Vec::new());
-            }
+        let sctx = super::split::SplitCtx {
+            chat_id: &chat.id,
+            user_id: &ctx.channel.user_id,
         };
+        let chunks = self.splitter.split(&body, ctx, sctx).await?;
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut last_sid = String::new();
+        for chunk in chunks {
+            match self
+                .twilio()
+                .send_message(&self.from_number, &to_number, &chunk, &status_callback)
+                .await
+            {
+                Ok(sid) => last_sid = sid,
+                Err(e) => {
+                    tracing::warn!(
+                        channel_id = %ctx.channel.id,
+                        tool_call_id = %tc.id,
+                        error = %e,
+                        "SMS on_pending_hitl: send failed",
+                    );
+                    return Ok(Vec::new());
+                }
+            }
+        }
 
         Ok(vec![crate::inference::hitl::HitlDelivery {
             channel_id: ctx.channel.id.clone(),
-            external_message_id: sid,
+            external_message_id: last_sid,
             delivered_at: chrono::Utc::now(),
         }])
     }
@@ -162,7 +235,7 @@ impl ChannelAdapter for SmsAdapter {
         &self,
         ctx: &ChannelCtx,
         request: Request<Bytes>,
-    ) -> Result<Response, AppError> {
+    ) -> Result<Response, ChannelError> {
         let Some(signature) = header_str(&request, "X-Twilio-Signature") else {
             return Ok(forbidden("missing X-Twilio-Signature"));
         };
@@ -183,7 +256,8 @@ impl ChannelAdapter for SmsAdapter {
         if webhook.from.is_empty() {
             return Err(AppError::Validation(
                 "Twilio webhook missing From".into(),
-            ));
+            )
+            .into());
         }
         webhook.emit_inbound(ctx).await?;
         Ok(ok_twiml())
@@ -211,7 +285,7 @@ impl TwilioApi<'_> {
         to: &str,
         body: &str,
         status_callback: &str,
-    ) -> Result<String, AppError> {
+    ) -> Result<String, ChannelError> {
         #[derive(Deserialize)]
         struct Out {
             sid: String,
@@ -226,8 +300,27 @@ impl TwilioApi<'_> {
             ])
             .send()
             .await
-            .map_err(|e| AppError::Internal(format!("Twilio send Messages: {e}")))?;
-        let parsed: Out = ok_json(resp, "send Messages").await?;
+            .map_err(|e| {
+                classify_twilio_error(
+                    &TwilioError::Transport,
+                    format!("Twilio send Messages: {e}"),
+                )
+            })?;
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let msg = format!("Twilio send Messages HTTP {status}: {body}");
+            return Err(classify_twilio_error(
+                &TwilioError::from_http(status, &body),
+                msg,
+            ));
+        }
+        let parsed: Out = resp.json().await.map_err(|e| {
+            classify_twilio_error(
+                &TwilioError::Transport,
+                format!("Twilio send Messages parse: {e}"),
+            )
+        })?;
         Ok(parsed.sid)
     }
 
@@ -291,6 +384,131 @@ async fn ok_json<T: for<'de> Deserialize<'de>>(
 
 async fn ok_empty(resp: reqwest::Response, op: &str) -> Result<(), AppError> {
     ensure_status(resp, op).await.map(|_| ())
+}
+
+/// See https://www.twilio.com/docs/api/errors
+#[derive(Debug, Clone)]
+enum TwilioError {
+    Transport,
+    HttpStatusOnly(u16),
+    /// 20003
+    AuthError,
+    /// 20404
+    NotFound,
+    /// 20429
+    RateLimit,
+    /// 21211
+    InvalidToNumber,
+    /// 21212
+    InvalidFromNumber,
+    /// 21408 — region not in Geo Permissions allow-list.
+    GeoPermissionDenied,
+    /// 21601
+    NumberNotSmsCapable,
+    /// 21610 — recipient previously replied STOP.
+    RecipientOptedOut,
+    /// 21611
+    MessageTooLong,
+    /// 21612
+    ChannelMismatch,
+    /// 21617
+    SegmentLimitExceeded,
+    /// 21703
+    MessagingServiceUnusable,
+    /// 30003 — phone might come back online, retry.
+    HandsetUnreachable,
+    /// 30004
+    MessageBlocked,
+    /// 30005
+    UnknownDestination,
+    /// 30006
+    LandlineOrUnreachable,
+    /// 30007
+    CarrierFiltered,
+    /// 30008 — opaque from carrier, retry.
+    UnknownCarrierError,
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+struct TwilioErrorBody {
+    code: Option<u32>,
+}
+
+impl TwilioError {
+    fn from_http(status: u16, body: &str) -> Self {
+        if let Ok(parsed) = serde_json::from_str::<TwilioErrorBody>(body)
+            && let Some(code) = parsed.code
+        {
+            return Self::from_code(code);
+        }
+        Self::HttpStatusOnly(status)
+    }
+
+    fn from_code(code: u32) -> Self {
+        match code {
+            20003 => Self::AuthError,
+            20404 => Self::NotFound,
+            20429 => Self::RateLimit,
+            21211 => Self::InvalidToNumber,
+            21212 => Self::InvalidFromNumber,
+            21408 => Self::GeoPermissionDenied,
+            21601 => Self::NumberNotSmsCapable,
+            21610 => Self::RecipientOptedOut,
+            21611 => Self::MessageTooLong,
+            21612 => Self::ChannelMismatch,
+            21617 => Self::SegmentLimitExceeded,
+            21703 => Self::MessagingServiceUnusable,
+            30003 => Self::HandsetUnreachable,
+            30004 => Self::MessageBlocked,
+            30005 => Self::UnknownDestination,
+            30006 => Self::LandlineOrUnreachable,
+            30007 => Self::CarrierFiltered,
+            30008 => Self::UnknownCarrierError,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn to_channel_error(&self, msg: String) -> ChannelError {
+        use ChannelErrorKind::*;
+        match self {
+            Self::Transport
+            | Self::Unknown
+            | Self::RateLimit
+            | Self::HandsetUnreachable
+            | Self::UnknownCarrierError => ChannelError::transient(msg),
+            Self::HttpStatusOnly(status) => match status {
+                401 => ChannelError::terminal(msg, Unauthorized),
+                403 => ChannelError::terminal(msg, Forbidden),
+                404 => ChannelError::terminal(msg, NotFound),
+                413 => ChannelError::terminal(msg, PayloadTooLarge),
+                429 => ChannelError::transient(msg),
+                500..=599 => ChannelError::transient(msg),
+                400 | 422 => ChannelError::terminal(msg, PayloadInvalid),
+                _ => ChannelError::transient(msg),
+            },
+            Self::AuthError => ChannelError::terminal(msg, Unauthorized),
+            Self::GeoPermissionDenied
+            | Self::RecipientOptedOut
+            | Self::MessageBlocked
+            | Self::CarrierFiltered
+            | Self::MessagingServiceUnusable => ChannelError::terminal(msg, Forbidden),
+            Self::NotFound
+            | Self::UnknownDestination
+            | Self::LandlineOrUnreachable
+            | Self::NumberNotSmsCapable => ChannelError::terminal(msg, NotFound),
+            Self::MessageTooLong | Self::SegmentLimitExceeded => {
+                ChannelError::terminal(msg, PayloadTooLarge)
+            }
+            Self::InvalidToNumber
+            | Self::InvalidFromNumber
+            | Self::ChannelMismatch => ChannelError::terminal(msg, PayloadInvalid),
+        }
+    }
+}
+
+fn classify_twilio_error(err: &TwilioError, msg: String) -> ChannelError {
+    err.to_channel_error(msg)
 }
 
 async fn ensure_status(resp: reqwest::Response, op: &str) -> Result<reqwest::Response, AppError> {
@@ -543,6 +761,65 @@ fn ok_twiml() -> Response {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn twilio_classifies_recipient_opted_out_as_forbidden() {
+        let body = r#"{"code":21610,"message":"unsubscribed"}"#;
+        let e = TwilioError::from_http(400, body).to_channel_error(body.into());
+        assert_eq!(e.kind, ChannelErrorKind::Forbidden);
+    }
+
+    #[test]
+    fn twilio_classifies_invalid_to_number_as_payload_invalid() {
+        let body = r#"{"code":21211,"message":"invalid 'To'"}"#;
+        let e = TwilioError::from_http(400, body).to_channel_error(body.into());
+        assert_eq!(e.kind, ChannelErrorKind::PayloadInvalid);
+    }
+
+    #[test]
+    fn twilio_classifies_unknown_destination_as_not_found() {
+        let body = r#"{"code":30005,"message":"unknown destination"}"#;
+        let e = TwilioError::from_http(400, body).to_channel_error(body.into());
+        assert_eq!(e.kind, ChannelErrorKind::NotFound);
+    }
+
+    #[test]
+    fn twilio_classifies_message_too_long_as_payload_too_large() {
+        let body = r#"{"code":21611,"message":"too long"}"#;
+        let e = TwilioError::from_http(400, body).to_channel_error(body.into());
+        assert_eq!(e.kind, ChannelErrorKind::PayloadTooLarge);
+    }
+
+    #[test]
+    fn twilio_classifies_rate_limit_as_transient() {
+        let body = r#"{"code":20429,"message":"too many requests"}"#;
+        let e = TwilioError::from_http(429, body).to_channel_error(body.into());
+        assert_eq!(e.kind, ChannelErrorKind::Transient);
+    }
+
+    #[test]
+    fn twilio_classifies_handset_unreachable_as_transient() {
+        let body = r#"{"code":30003,"message":"unreachable"}"#;
+        let e = TwilioError::from_http(400, body).to_channel_error(body.into());
+        assert_eq!(e.kind, ChannelErrorKind::Transient);
+    }
+
+    #[test]
+    fn twilio_falls_back_to_http_status_when_body_unparseable() {
+        let e = TwilioError::from_http(500, "<html>upstream gateway</html>")
+            .to_channel_error("transient".into());
+        assert_eq!(e.kind, ChannelErrorKind::Transient);
+        let e = TwilioError::from_http(401, "no body")
+            .to_channel_error("auth".into());
+        assert_eq!(e.kind, ChannelErrorKind::Unauthorized);
+    }
+
+    #[test]
+    fn twilio_unknown_code_defaults_to_transient() {
+        let body = r#"{"code":999999,"message":"never seen"}"#;
+        let e = TwilioError::from_http(400, body).to_channel_error(body.into());
+        assert_eq!(e.kind, ChannelErrorKind::Transient);
+    }
 
     #[test]
     fn manifest_has_required_fields_with_default_from() {

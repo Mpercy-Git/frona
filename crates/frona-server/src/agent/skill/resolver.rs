@@ -21,6 +21,49 @@ pub struct Skill {
     #[serde(skip)]
     pub path: String,
     pub scope: SkillScope,
+    /// SKILL.md `disable-model-invocation: true` — when set, this skill is
+    /// excluded from the rendered `<available_skills>` block (model can't
+    /// auto-trigger) but still shows up in the `/` dropdown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_model_invocation: bool,
+    /// SKILL.md `argument-hint: "[city]"` or similar — display string shown in
+    /// the `/` dropdown next to the skill name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
+    /// SKILL.md `arguments: [name1, name2]` — declared names for `$<name>`
+    /// substitution in the skill body. Empty if not declared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<String>,
+}
+
+/// Pull the three slash-command frontmatter fields out of the parsed metadata
+/// map. Centralised so both the workspace and FS scanners produce identical
+/// Skill rows.
+fn extract_command_frontmatter(
+    metadata: &HashMap<String, String>,
+) -> (bool, Option<String>, Vec<String>) {
+    let disable_model_invocation = metadata
+        .get("disable-model-invocation")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let argument_hint = metadata
+        .get("argument-hint")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // `arguments: [a, b]` round-trips through serde_yaml's fallback as a
+    // serialized YAML list (`- a\n- b`). Split lines, strip the `- ` prefix.
+    let arguments = metadata
+        .get("arguments")
+        .map(|raw| {
+            raw.lines()
+                .filter_map(|l| l.trim().strip_prefix("- ").map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    (disable_model_invocation, argument_hint, arguments)
 }
 
 #[derive(Clone)]
@@ -74,6 +117,8 @@ impl SkillResolver {
                     .get("description")
                     .cloned()
                     .unwrap_or_default();
+                let (disable_model_invocation, argument_hint, arguments) =
+                    extract_command_frontmatter(&parsed.metadata);
 
                 let dir_path = ws
                     .resolve_path(&format!("skills/{name}"))
@@ -86,6 +131,9 @@ impl SkillResolver {
                     description,
                     path: dir_path,
                     scope: SkillScope::Agent,
+                    disable_model_invocation,
+                    argument_hint,
+                    arguments,
                 });
             }
         }
@@ -128,6 +176,8 @@ impl SkillResolver {
                     .get("description")
                     .cloned()
                     .unwrap_or_default();
+                let (disable_model_invocation, argument_hint, arguments) =
+                    extract_command_frontmatter(&parsed.metadata);
 
                 let abs_dir = std::fs::canonicalize(entry.path())
                     .map(|p| p.to_string_lossy().into_owned())
@@ -138,6 +188,9 @@ impl SkillResolver {
                     name: skill_name,
                     description,
                     path: abs_dir,
+                    disable_model_invocation,
+                    argument_hint,
+                    arguments,
                 });
             }
         }

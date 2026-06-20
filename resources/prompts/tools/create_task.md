@@ -23,27 +23,45 @@ parameters:
   timezone:
     type: string
     description: "Optional IANA timezone (e.g. 'America/Los_Angeles', 'Asia/Tokyo') overriding the default for naive run_at in this task. Default is the user's local timezone. Set only when the user explicitly names a different zone — 'wake me at 6am London time'."
+  result_description:
+    type: string
+    description: "One-line description of the result the executing agent should produce. The executor fills `complete_task.result` with a prose/markdown string matching this description, and it renders directly into this chat. Use this for almost every task; pass either this OR `result_schema`, not both. See examples below."
   result_schema:
     type: object
-    description: "Required. JSON Schema describing the shape of the task's `result` argument to `complete_task`. Drives both validation and how the result is rendered into this chat. Use the simplest shape that fits — patterns below."
+    description: "Advanced: JSON Schema describing the typed shape of `complete_task.result`. Use only when you'll programmatically consume structured fields (process_result=true and you'll read individual properties). For prose results delivered to a human, prefer `result_description`. Pass either this OR `result_description`, not both."
 required:
   - title
   - instruction
-  - result_schema
 ---
 Create a one-off task — immediate or deferred, for yourself or another agent. Use to parallelize work by splitting a problem into independent pieces, each running in its own chat. Target another agent from <available_agents> when expertise matches; target yourself to spawn parallel slices of your own work. Default behavior is fire-and-forget — the task runs and the completion summary lands in this chat for the user to read. Set `process_result: true` only when you'll synthesize the result with a fresh inference turn. For recurring work, use create_recurring_task. For periodic autonomous check-ins, use set_heartbeat.
 
-## result_schema (required)
+## Describing the result (required: pick one)
 
-Every task must declare the shape of its `result`. The schema is injected into `complete_task`'s `result` parameter at run time, validated when the task closes, and used to render the completion summary into this chat. Pick the simplest shape that fits:
+The result spec tells the executing agent what to put in `complete_task.result` and shapes how it renders in this chat. Pass **exactly one** of:
 
-- **Single-value answer** — top-level scalar. The agent must pass a value.
+### `result_description` (default — prose answer for a human)
+
+Use for any task whose output is a message, report, or document the user reads directly. One line describing what the executing agent should produce. The executor returns a markdown string and it renders as-is in the chat.
+
+```text
+result_description: "A short, friendly reminder to drink water"
+result_description: "Markdown research report on used H100 GPU prices, with sources"
+result_description: "The verification code as a string"
+result_description: "A summary of today's calendar with one bullet per event"
+```
+
+This is the right choice for >90% of tasks — research, summaries, reminders, drafted replies, extracted values, anything a user reads.
+
+### `result_schema` (advanced — typed structure for programmatic use)
+
+Use only when `process_result: true` and you'll read individual properties from the result. Pick the simplest shape that fits:
+
+- **Single scalar** — top-level scalar.
   ```json
-  { "type": "string", "description": "the joke text" }
   { "type": "number", "description": "computed total" }
   ```
 
-- **Optional answer** — nullable scalar. Pass `null` to close silently (no row in this chat); pass a value to deliver.
+- **Optional answer** — nullable scalar. Pass `null` to close silently; pass a value to deliver.
   ```json
   { "type": ["string", "null"], "description": "alert text (null = nothing to report)" }
   ```
@@ -53,7 +71,7 @@ Every task must declare the shape of its `result`. The schema is injected into `
   { "type": "array", "items": { "type": "string" }, "description": "found items" }
   ```
 
-- **Multi-field structured output** — object with scalar properties. Each present property renders as `<description>: <value>` on its own line. Use `required` for mandatory fields.
+- **Multi-field structured output** — object with scalar properties.
   ```json
   {
     "type": "object",
@@ -65,4 +83,6 @@ Every task must declare the shape of its `result`. The schema is injected into `
   }
   ```
 
-- **Complex / nested schemas** (objects whose properties are themselves objects, arrays-of-objects, etc.) — require `process_result: true` so you (the parent) render the structured result with a fresh inference turn. Otherwise creation is rejected.
+- **Complex / nested schemas** — avoid unless you actually need them. If you must, set `process_result: true` and include a required top-level `summary` string property (only that field renders to the user; everything else is for parent-agent consumption).
+
+When in doubt, use `result_description`. Schemas are for handing typed data to a parent agent that will process it programmatically — not for steering the executor to produce a particular text format.

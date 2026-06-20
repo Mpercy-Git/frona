@@ -323,6 +323,22 @@ impl ChatService {
         Ok(saved)
     }
 
+    /// Update an existing message row from a fully-constructed `Message` and
+    /// broadcast the change. Used by the command dispatch path so a handler
+    /// can mutate the placeholder agent message (e.g. swap its `agent_id`)
+    /// and have the harness persist the change in a single call.
+    pub async fn save_updated_message(&self, msg: &Message) -> Result<Message, AppError> {
+        let saved = self.message_repo.update(msg).await?;
+        if let Ok(Some(chat)) = self.chat_repo.find_by_id(&saved.chat_id).await {
+            self.broadcast_message_persisted(
+                &saved,
+                &chat,
+                crate::chat::broadcast::EntityAction::Updated,
+            );
+        }
+        Ok(saved)
+    }
+
     pub async fn patch_message_metadata(
         &self,
         message_id: &str,
@@ -345,6 +361,22 @@ impl ChatService {
         let chat = self.get_chat(user_id, chat_id).await?;
         self.chat_repo.delete(chat_id).await?;
         self.broadcast_chat_entity(&chat, crate::chat::broadcast::EntityAction::Deleted);
+        Ok(())
+    }
+
+    /// Wipe every message in a chat without deleting the chat itself.
+    /// Used by `/clear`. The chat row stays intact (same id, agent, title);
+    /// the message history goes away. Broadcasts an `EntityUpdated` event
+    /// keyed on the chat so SSE listeners refresh.
+    pub async fn delete_messages_for_chat(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+    ) -> Result<(), AppError> {
+        // Authorize by ownership: get_chat returns NotFound otherwise.
+        let chat = self.get_chat(user_id, chat_id).await?;
+        self.message_repo.delete_by_chat_id(chat_id).await?;
+        self.broadcast_chat_entity(&chat, crate::chat::broadcast::EntityAction::Updated);
         Ok(())
     }
 
@@ -431,6 +463,7 @@ impl ChatService {
         let conv_builder = DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
+            agent_service: self.agent_service.clone(),
         };
         let conv_ctx = ConversationContext {
             agent_id: chat.agent_id.clone(),
@@ -520,7 +553,7 @@ impl ChatService {
 
         let has_more = messages.len() > limit as usize;
         if has_more {
-            messages.truncate(limit as usize);
+            trim_overfetched_page(&mut messages, limit as usize, after.is_some());
         }
 
         let message_ids: Vec<String> = messages.iter().map(|m| m.id.clone()).collect();
@@ -560,12 +593,16 @@ impl ChatService {
         chat_id: &str,
         content: &str,
         attachments: Vec<crate::storage::Attachment>,
+        command: Option<crate::chat::message::models::MessageCommand>,
     ) -> Result<MessageResponse, AppError> {
         let chat = self.get_chat(user_id, chat_id).await?;
 
-        let msg = Message::builder(chat_id, MessageRole::User, content.to_string())
-            .attachments(attachments)
-            .build();
+        let mut builder = Message::builder(chat_id, MessageRole::User, content.to_string())
+            .attachments(attachments);
+        if let Some(c) = command {
+            builder = builder.command(c);
+        }
+        let msg = builder.build();
         self.save_message_and_broadcast(
             msg,
             user_id,
@@ -773,29 +810,19 @@ impl ChatService {
         self.save_message(msg).await
     }
 
+    /// Mark `msg` as completed. The caller is responsible for pre-filling
+    /// `content`, `attachments`, `reasoning`, `agent_id`, and any other field
+    /// the completed reply should carry. We just set status + write + broadcast.
     pub async fn complete_agent_message(
         &self,
-        message_id: &str,
-        content: String,
-        attachments: Vec<crate::storage::Attachment>,
-        reasoning: Option<Reasoning>,
+        mut msg: Message,
     ) -> Result<MessageResponse, AppError> {
-        let mut message = self
-            .message_repo
-            .find_by_id(message_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
-
-        message.content = content;
-        message.attachments = attachments;
-        message.reasoning = reasoning;
-        message.status = Some(MessageStatus::Completed);
-
-        let updated = self.message_repo.update(&message).await?;
+        msg.status = Some(MessageStatus::Completed);
+        let updated = self.message_repo.update(&msg).await?;
         let chat = self.chat_repo.find_by_id(&updated.chat_id).await?;
 
         let mut response: MessageResponse = updated.clone().into();
-        if let Ok(tes) = self.get_tool_calls_by_message(message_id).await {
+        if let Ok(tes) = self.get_tool_calls_by_message(&updated.id).await {
             response.tool_calls = tes.into_iter().map(Into::into).collect();
         }
         if let Some(ref chat) = chat {
@@ -830,21 +857,13 @@ impl ChatService {
         Ok(response)
     }
 
+    /// Mark `msg` as cancelled. Caller pre-fills any fields it wants set.
     pub async fn cancel_agent_message(
         &self,
-        message_id: &str,
-        content: String,
+        mut msg: Message,
     ) -> Result<MessageResponse, AppError> {
-        let mut message = self
-            .message_repo
-            .find_by_id(message_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
-
-        message.content = content;
-        message.status = Some(MessageStatus::Cancelled);
-
-        let updated = self.message_repo.update(&message).await?;
+        msg.status = Some(MessageStatus::Cancelled);
+        let updated = self.message_repo.update(&msg).await?;
         if let Ok(Some(chat)) = self.chat_repo.find_by_id(&updated.chat_id).await {
             self.broadcast.broadcast_entity_updated(
                 &chat.user_id,
@@ -868,19 +887,15 @@ impl ChatService {
         Ok(updated.into())
     }
 
+    /// Mark `msg` as failed. `error` is included in the broadcast event but
+    /// NOT persisted on the message row (preserves existing behaviour).
     pub async fn fail_agent_message(
         &self,
-        message_id: &str,
+        mut msg: Message,
         error: String,
     ) -> Result<MessageResponse, AppError> {
-        let mut message = self
-            .message_repo
-            .find_by_id(message_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
-
-        message.status = Some(MessageStatus::Failed);
-        let updated = self.message_repo.update(&message).await?;
+        msg.status = Some(MessageStatus::Failed);
+        let updated = self.message_repo.update(&msg).await?;
         if let Ok(Some(chat)) = self.chat_repo.find_by_id(&updated.chat_id).await {
             self.broadcast.broadcast_entity_updated(
                 &chat.user_id,
@@ -902,16 +917,14 @@ impl ChatService {
         Ok(updated.into())
     }
 
+    /// Mark `msg` as paused (for external tool resolution). Idempotent on
+    /// status. `reason` + `tool_calls` are piggybacked on the broadcast event.
     pub async fn pause_agent_message(
         &self,
-        message_id: &str,
+        mut msg: Message,
         reason: crate::inference::tool_loop::PauseReason,
         tool_calls: Vec<crate::inference::tool_call::ToolCallResponse>,
     ) -> Result<(), AppError> {
-        let mut msg = match self.message_repo.find_by_id(message_id).await? {
-            Some(m) => m,
-            None => return Ok(()),
-        };
         if !matches!(msg.status, Some(MessageStatus::Paused)) {
             msg.status = Some(MessageStatus::Paused);
             msg = self.message_repo.update(&msg).await?;
@@ -934,6 +947,15 @@ impl ChatService {
             ),
         });
         Ok(())
+    }
+
+    /// Generic chat row update + broadcast. Mirror of `save_updated_message`
+    /// for the Chat entity. Used by the command dispatch path so handlers can
+    /// mutate `ctx.chat.*` and have the harness persist the result.
+    pub async fn save_chat(&self, chat: &Chat) -> Result<Chat, AppError> {
+        let updated = self.chat_repo.update(chat).await?;
+        self.broadcast_chat_entity(&updated, crate::chat::broadcast::EntityAction::Updated);
+        Ok(updated)
     }
 
     /// Returns `true` iff this call performed the flip. Callers racing on the
@@ -1467,6 +1489,28 @@ impl ChatService {
     }
 }
 
+/// `find_by_chat_id_page` returns messages in oldest-first order. When we
+/// over-fetch by one to detect `has_more`, the extra item sits at whichever
+/// end was the "edge" of the SQL window:
+/// - default DESC + reverse path (`after.is_none()`): extra is the OLDEST item,
+///   sitting at the front of the returned vec.
+/// - ASC path (`after.is_some()`): extra is the NEWEST item, at the back.
+///
+/// Dropping from the wrong end silently hides one real message per page; in
+/// the default case it hides the newest message in the chat once the chat
+/// crosses the limit.
+fn trim_overfetched_page<T>(messages: &mut Vec<T>, limit: usize, after_is_some: bool) {
+    if messages.len() <= limit {
+        return;
+    }
+    let drop = messages.len() - limit;
+    if after_is_some {
+        messages.truncate(limit);
+    } else {
+        messages.drain(..drop);
+    }
+}
+
 fn parse_title_response(response: &str, fallback_content: &str) -> String {
     if let Some(title) = try_extract_title(response) {
         return title;
@@ -1506,6 +1550,27 @@ fn try_parse_title_json(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trim_overfetched_drops_oldest_when_loading_latest_page() {
+        let mut msgs = vec![1, 2, 3, 4, 5];
+        trim_overfetched_page(&mut msgs, 4, /* after_is_some */ false);
+        assert_eq!(msgs, vec![2, 3, 4, 5], "newest must be preserved");
+    }
+
+    #[test]
+    fn trim_overfetched_drops_newest_when_paging_forward_with_after() {
+        let mut msgs = vec![1, 2, 3, 4, 5];
+        trim_overfetched_page(&mut msgs, 4, /* after_is_some */ true);
+        assert_eq!(msgs, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn trim_overfetched_noop_when_under_limit() {
+        let mut msgs = vec![1, 2, 3];
+        trim_overfetched_page(&mut msgs, 4, false);
+        assert_eq!(msgs, vec![1, 2, 3]);
+    }
 
     #[test]
     fn test_parse_title_response_valid_json() {

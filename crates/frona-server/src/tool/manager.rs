@@ -254,9 +254,8 @@ impl ToolManager {
         if let Some(ctx) = task_ctx {
             let result_schema = ctx
                 .task
-                .result_schema
-                .as_ref()
-                .and_then(|v| match crate::agent::task::schema::ResultSpec::new(v.clone()) {
+                .effective_result_schema()
+                .and_then(|v| match crate::agent::task::schema::ResultSpec::new(v) {
                     Ok(spec) => Some(Arc::new(spec)),
                     Err(e) => {
                         tracing::warn!("failed to compile task.result_schema: {e}");
@@ -280,7 +279,6 @@ impl ToolManager {
             if is_continuous_signal {
                 registry.register(Arc::new(crate::tool::report_signal::ReportSignalTool::new(
                     ctx.chat_service,
-                    ctx.task_service,
                     ctx.prompts,
                     result_schema,
                 )));
@@ -322,6 +320,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     use super::heartbeat::HeartbeatTool;
     use super::memory::{StoreAgentMemoryTool, StoreUserMemoryTool};
     use super::notify_human::NotifyHumanTool;
+    use super::files::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
     use super::produce_file::ProduceFileTool;
     use super::request_credentials::RequestCredentialsTool;
     use super::task::TaskTool;
@@ -344,6 +343,21 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         )),
         Arc::new(ProduceFileTool::new(
             state.storage_service.clone(), prompts.clone(),
+        )),
+        Arc::new(ReadTool::new(
+            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+        )),
+        Arc::new(WriteTool::new(
+            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+        )),
+        Arc::new(EditTool::new(
+            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+        )),
+        Arc::new(GlobTool::new(
+            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+        )),
+        Arc::new(GrepTool::new(
+            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
         )),
         Arc::new(UpdateIdentityTool::new(state.agent_service.clone(), prompts.clone())),
         Arc::new(StoreAgentMemoryTool::new(
@@ -411,16 +425,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     }
 
     for tool_config in state.cli_tools_config.iter() {
-        tools.push(Arc::new(CliTool::new(
-            tool_config.clone(), state.sandbox_manager.clone(),
-            state.storage_service.clone(),
-            state.skill_service.clone(),
-            state.token_service.clone(), state.keypair_service.clone(),
-            state.policy_service.clone(),
-            state.config.server.public_base_url(),
-            state.config.auth.ephemeral_token_expiry_secs,
-            state.config.server.timezone.clone(),
-        )));
+        tools.push(Arc::new(CliTool::new(tool_config.clone(), state.sandbox_manager.clone())));
     }
 
     tools

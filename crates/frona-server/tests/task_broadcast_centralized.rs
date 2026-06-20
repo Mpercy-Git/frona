@@ -64,6 +64,7 @@ async fn create_broadcasts_pending() {
             run_at: None,
             quarantined: false,
             result_schema: None,
+            result_description: None,
         },
     )
     .await
@@ -133,7 +134,7 @@ async fn cancel_cron_template_broadcasts_template_plus_each_active_child() {
         .create_cron_template(
             "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
             next, None, None, None, None,
-            CronMode::PerInstance, CronConcurrency::Allow, false, None)
+            CronMode::PerInstance, CronConcurrency::Allow, false, None, None)
         .await
         .unwrap();
     svc.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
@@ -157,7 +158,7 @@ async fn create_cron_template_broadcasts_pending() {
     svc.create_cron_template(
         "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
         next, None, None, None, None,
-        CronMode::Singleton, CronConcurrency::Replace, false, None)
+        CronMode::Singleton, CronConcurrency::Replace, false, None, None)
     .await
     .unwrap();
 
@@ -172,7 +173,7 @@ async fn spawn_cron_run_broadcasts_pending() {
         .create_cron_template(
             "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
             next, None, None, None, None,
-            CronMode::Singleton, CronConcurrency::Replace, false, None)
+            CronMode::Singleton, CronConcurrency::Replace, false, None, None)
         .await
         .unwrap();
     let _ = drain_events(&mut rx).await;
@@ -198,6 +199,7 @@ async fn seed_direct_task(db: &Surreal<Db>, user_id: &str) -> Task {
         error_message: None,
         quarantined: false,
         result_schema: None,
+        result_description: None,
         created_at: now,
         updated_at: now,
     };

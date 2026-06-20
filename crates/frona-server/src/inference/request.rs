@@ -86,4 +86,9 @@ pub enum InferenceResponse {
         tool_calls: Vec<crate::inference::tool_call::ToolCallResponse>,
         system_prompt: Option<String>,
     },
+    /// The harness already wrote the response for this turn — `finalize`
+    /// should leave the placeholder agent message alone. Used by the
+    /// `Command` dispatch path (`/clear`, `/compact`, `/title`, etc.) which
+    /// either completes the placeholder inline or wipes it as a side effect.
+    Handled,
 }

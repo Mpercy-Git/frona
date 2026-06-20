@@ -11,6 +11,8 @@ use crate::chat::message::models::Message;
 use crate::chat::models::Chat;
 use crate::core::error::AppError;
 
+use super::super::attachment;
+use super::super::error::ChannelError;
 use super::super::models::{
     ChannelAdapter, ChannelCtx, ExternalMessage, SetupConfig, external_chat_id,
 };
@@ -32,11 +34,18 @@ const TYPING_REFRESH_INTERVAL: Duration = Duration::from_secs(8);
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct WhatsAppUserConfig {}
 
+/// Practical cap for a single text-message via `wa-rs`. WhatsApp accepts
+/// well above 4k for non-WA-Cloud text in the personal protocol; we use the
+/// same 4096 ceiling as WA Cloud for symmetry until a real upper bound is
+/// established.
+const WA_USER_MAX_MESSAGE_LEN: usize = 4096;
+
 #[derive(crate::ChannelFactory)]
 #[channel(id = "whatsapp_user", from = WhatsAppUserConfig)]
 pub struct WhatsAppUserAdapter {
     client: Mutex<Option<Arc<Client>>>,
     typing: TypingIndicator,
+    splitter: super::split::MarkdownSplitter,
 }
 
 impl From<WhatsAppUserConfig> for WhatsAppUserAdapter {
@@ -44,6 +53,7 @@ impl From<WhatsAppUserConfig> for WhatsAppUserAdapter {
         Self {
             client: Mutex::new(None),
             typing: TypingIndicator::new(),
+            splitter: super::split::MarkdownSplitter::new(WA_USER_MAX_MESSAGE_LEN, None),
         }
     }
 }
@@ -53,7 +63,7 @@ impl ChannelAdapter for WhatsAppUserAdapter {
     async fn on_setup_begin(
         &self,
         ctx: &ChannelCtx,
-    ) -> Result<Option<SetupConfig>, AppError> {
+    ) -> Result<Option<SetupConfig>, ChannelError> {
         // Building a bot when paired makes WhatsApp kick one of the sessions
         // with `conflict=replaced`, breaking delivery.
         if is_already_paired(&ctx.data_dir).await {
@@ -83,7 +93,7 @@ impl ChannelAdapter for WhatsAppUserAdapter {
         }))
     }
 
-    async fn on_setup_complete(&self, ctx: &ChannelCtx) -> Result<(), AppError> {
+    async fn on_setup_complete(&self, ctx: &ChannelCtx) -> Result<(), ChannelError> {
         // wa-rs has already persisted device keys; nothing else to do.
         tracing::info!(
             channel_id = %ctx.channel.id,
@@ -110,7 +120,7 @@ impl ChannelAdapter for WhatsAppUserAdapter {
         Ok(())
     }
 
-    async fn on_inference_start(&self, chat: &Chat, _ctx: &ChannelCtx) -> Result<(), AppError> {
+    async fn on_inference_start(&self, chat: &Chat, _ctx: &ChannelCtx) -> Result<(), ChannelError> {
         let Some(client) = self.client.lock().await.clone() else { return Ok(()) };
         let Ok(external) = external_chat_id(chat) else { return Ok(()) };
         let Ok(to_raw) = parse_external_id(external) else { return Ok(()) };
@@ -128,7 +138,7 @@ impl ChannelAdapter for WhatsAppUserAdapter {
         Ok(())
     }
 
-    async fn on_inference_done(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), AppError> {
+    async fn on_inference_done(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), ChannelError> {
         self.typing.stop(&chat.id).await;
         let Some(client) = self.client.lock().await.clone() else { return Ok(()) };
         let Ok(external) = external_chat_id(chat) else { return Ok(()) };
@@ -150,28 +160,64 @@ impl ChannelAdapter for WhatsAppUserAdapter {
         _tool_calls: &[crate::inference::tool_call::ToolCall],
         chat: &Chat,
         ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
-        if msg.content.trim().is_empty() {
-            // Nothing to send; media attachments aren't wired yet.
+    ) -> Result<(), ChannelError> {
+        let raw_body = crate::chat::channel::render::render_message_body(msg);
+        let has_attachments = !msg.attachments.is_empty();
+        if raw_body.trim().is_empty() && !has_attachments {
             return Ok(());
         }
         let client = self.require_client(ctx, &msg.id).await?;
         let to = resolve_send_jid(&client, chat, ctx).await?;
-        let body = super::markdown::to_whatsapp(&msg.content);
-        let request_id = send_text(&client, &to, body).await.inspect_err(|e| {
-            tracing::warn!(
-                channel_id = %ctx.channel.id,
-                msg_id = %msg.id,
-                to = %to,
-                error = %e,
-                "WhatsApp Personal send_message failed (check connectivity / device unlinked)",
-            );
-        })?;
+        let body = super::markdown::to_whatsapp(&raw_body);
+
+        // Inline channel — append "📄 {filename} — {short_url}" per attachment
+        // (no native media wiring in this iteration; see plan).
+        let mut combined = body.clone();
+        for att in &msg.attachments {
+            match attachment::outbound_url(att, ctx, attachment::ChannelMode::Inline).await {
+                Ok(url) => {
+                    let line = attachment::inline_list_line(att, &url);
+                    if !combined.is_empty() {
+                        combined.push_str("\n\n");
+                    }
+                    combined.push_str(&line);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel_id = %ctx.channel.id,
+                        msg_id = %msg.id,
+                        path = %att.path,
+                        error = %e,
+                        "WA User: share_url issue failed; skipping attachment",
+                    );
+                }
+            }
+        }
+        if combined.trim().is_empty() {
+            return Ok(());
+        }
+
+        let chunks = self.splitter.split(&combined);
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        let mut last_request_id = String::new();
+        for chunk in chunks {
+            last_request_id = send_text(&client, &to, chunk).await.inspect_err(|e| {
+                tracing::warn!(
+                    channel_id = %ctx.channel.id,
+                    msg_id = %msg.id,
+                    to = %to,
+                    error = %e,
+                    "WhatsApp Personal send_message failed (check connectivity / device unlinked)",
+                );
+            })?;
+        }
         tracing::info!(
             channel_id = %ctx.channel.id,
             msg_id = %msg.id,
             to = %to,
-            wa_request_id = %request_id,
+            wa_request_id = %last_request_id,
             "WhatsApp Personal message sent",
         );
         Ok(())
@@ -183,7 +229,7 @@ impl ChannelAdapter for WhatsAppUserAdapter {
         _msg: &Message,
         chat: &Chat,
         ctx: &ChannelCtx,
-    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, ChannelError> {
         // wa_rs is text-only. Sequential cadence: render only the first
         // pending HITL. The delivery cursor advances by 1; the next pending
         // HITL renders after this one resolves (via text reply or web URL).
@@ -192,26 +238,24 @@ impl ChannelAdapter for WhatsAppUserAdapter {
 
         let client = self.require_client(ctx, &tc.id).await?;
         let to = resolve_send_jid(&client, chat, ctx).await?;
-        // Body policy mirrors Discord/Slack: Choice/Approval → prompt only
-        // (text reply IS the resolve action); External (creds) → prompt + URL
-        // (URL is the only resolve path for vault picks).
-        let kind = crate::chat::channel::hitl::kind_for(&h.request);
-        let raw_body = match kind {
-            crate::chat::channel::hitl::HitlKind::External => {
-                crate::chat::channel::hitl::render_default_text(h)
-            }
-            _ => h.prompt.clone(),
-        };
+        let raw_body = crate::chat::channel::hitl::render_text(h);
         let body = super::markdown::to_whatsapp(&raw_body);
-        let request_id = send_text(&client, &to, body).await.inspect_err(|e| {
-            tracing::warn!(
-                channel_id = %ctx.channel.id,
-                tool_call_id = %tc.id,
-                to = %to,
-                error = %e,
-                "whatsapp_user on_pending_hitl: send failed",
-            );
-        })?;
+        let chunks = self.splitter.split(&body);
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut request_id = String::new();
+        for chunk in chunks {
+            request_id = send_text(&client, &to, chunk).await.inspect_err(|e| {
+                tracing::warn!(
+                    channel_id = %ctx.channel.id,
+                    tool_call_id = %tc.id,
+                    to = %to,
+                    error = %e,
+                    "whatsapp_user on_pending_hitl: send failed",
+                );
+            })?;
+        }
         tracing::info!(
             channel_id = %ctx.channel.id,
             tool_call_id = %tc.id,

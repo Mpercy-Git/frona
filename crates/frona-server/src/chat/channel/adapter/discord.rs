@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serenity::Error as SerenityError;
 use serenity::all::{
-    ButtonStyle, ChannelId, Client, Context, CreateActionRow, CreateButton,
+    ButtonStyle, ChannelId, Client, Context, CreateActionRow, CreateAttachment, CreateButton,
     CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EventHandler,
     GatewayIntents, Http, Interaction, Message as DiscordMessage, UserId,
 };
@@ -15,6 +15,8 @@ use crate::chat::message::models::Message;
 use crate::chat::models::Chat;
 use crate::core::error::AppError;
 
+use super::super::attachment;
+use super::super::error::{ChannelError, ChannelErrorKind};
 use super::super::models::{
     ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
 };
@@ -24,7 +26,6 @@ use super::super::models::ChannelFactory;
 
 // Discord API cap. https://discord.com/developers/docs/resources/message
 const DISCORD_MAX_MESSAGE_LEN: usize = 2000;
-const DISCORD_CHUNK_TARGET: usize = 1900;
 
 /// Discord's typing indicator auto-fades in ~10s. Refresh a bit early so a
 /// long inference keeps showing "typing…" continuously.
@@ -42,6 +43,7 @@ pub struct DiscordAdapter {
     http: Arc<Http>,
     self_id: Arc<OnceLock<UserId>>,
     typing: TypingIndicator,
+    splitter: super::split::MarkdownSplitter,
 }
 
 impl From<DiscordConfig> for DiscordAdapter {
@@ -52,6 +54,7 @@ impl From<DiscordConfig> for DiscordAdapter {
             http,
             self_id: Arc::new(OnceLock::new()),
             typing: TypingIndicator::new(),
+            splitter: super::split::MarkdownSplitter::new(DISCORD_MAX_MESSAGE_LEN, None),
         }
     }
 }
@@ -133,7 +136,7 @@ impl ChannelAdapter for DiscordAdapter {
         _msg: &Message,
         chat: &Chat,
         _ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ChannelError> {
         let Some(text) = tool_call.turn_text.as_deref() else {
             return Ok(());
         };
@@ -148,19 +151,122 @@ impl ChannelAdapter for DiscordAdapter {
         msg: &Message,
         _tool_calls: &[crate::inference::tool_call::ToolCall],
         chat: &Chat,
-        _ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
-        if msg.content.trim().is_empty() {
-            return Ok(());
+        ctx: &ChannelCtx,
+    ) -> Result<(), ChannelError> {
+        let body = crate::chat::channel::render::render_message_body(msg);
+        let has_attachments = !msg.attachments.is_empty();
+
+        // Fast path: pre-existing text-only behavior.
+        if !has_attachments {
+            if body.trim().is_empty() {
+                return Ok(());
+            }
+            return self.post_message(chat, &body).await;
         }
-        self.post_message(chat, &msg.content).await
+
+        // Discord supports content + files + components in a single message.
+        // We do one bubble per chunk if body exceeds DISCORD_MAX_MESSAGE_LEN.
+        let channel_id = parse_external_id(external_chat_id(chat)?)?;
+
+        // Build attachment payloads.
+        let mut files: Vec<CreateAttachment> = Vec::new();
+        let mut buttons: Vec<CreateButton> = Vec::new();
+        for att in &msg.attachments {
+            let kind = attachment::classify(att);
+            if attachment::is_media(kind) {
+                match attachment::read_attachment_bytes(att, ctx).await {
+                    Ok(bytes) => {
+                        files.push(CreateAttachment::bytes(bytes, att.filename.clone()));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            msg_id = %msg.id,
+                            path = %att.path,
+                            error = %e,
+                            "discord: failed to read media bytes; skipping",
+                        );
+                    }
+                }
+            } else {
+                let url = match attachment::outbound_url(att, ctx, attachment::ChannelMode::Button).await {
+                    Ok(u) => u,
+                    Err(e) => {
+                        tracing::warn!(
+                            msg_id = %msg.id,
+                            path = %att.path,
+                            error = %e,
+                            "discord: canonical URL failed; skipping doc",
+                        );
+                        continue;
+                    }
+                };
+                let label = attachment::button_label(att);
+                buttons.push(CreateButton::new_link(url).label(label));
+            }
+        }
+
+        // Discord cap: 5 rows × 5 = 25 buttons max. Truncate beyond that.
+        const MAX_BUTTONS: usize = 25;
+        let truncated_count = buttons.len().saturating_sub(MAX_BUTTONS);
+        buttons.truncate(MAX_BUTTONS);
+        let action_rows: Vec<CreateActionRow> = buttons
+            .chunks(5)
+            .map(|chunk| CreateActionRow::Buttons(chunk.to_vec()))
+            .collect();
+
+        let mut body_with_overflow = body.clone();
+        if truncated_count > 0 {
+            tracing::warn!(
+                msg_id = %msg.id,
+                truncated = truncated_count,
+                "discord: too many doc buttons; truncated",
+            );
+            body_with_overflow.push_str(&format!(
+                "\n\n(plus {} more attachment{} — see in app)",
+                truncated_count,
+                if truncated_count == 1 { "" } else { "s" }
+            ));
+        }
+
+        // Discord requires non-empty content if there are no embeds/files.
+        // Our message always has files OR components when there are attachments
+        // (we only reach this branch when `has_attachments`), so empty body
+        // is fine.
+        let mut req = CreateMessage::new();
+        if !body_with_overflow.is_empty() {
+            // Discord caps content at 2000; chunk if needed.
+            // For attachment messages we keep the first chunk (the rest goes
+            // before the attachments as separate text messages).
+            let fenced = super::markdown::fence_tables(&body_with_overflow);
+            let chunks = self.splitter.split(&fenced);
+            let mut iter = chunks.into_iter();
+            if let Some(first) = iter.next() {
+                req = req.content(first);
+            }
+            for extra in iter {
+                let _ = channel_id
+                    .send_message(&*self.http, CreateMessage::new().content(extra))
+                    .await;
+            }
+        }
+        if !files.is_empty() {
+            req = req.add_files(files);
+        }
+        if !action_rows.is_empty() {
+            req = req.components(action_rows);
+        }
+
+        if let Err(e) = channel_id.send_message(&*self.http, req).await {
+            return Err(classify_discord_error(&e));
+        }
+        Ok(())
     }
 
     async fn on_inference_start(
         &self,
         chat: &Chat,
         _ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ChannelError> {
         let Ok(external_id) = external_chat_id(chat) else { return Ok(()) };
         let Ok(discord_channel_id) = parse_external_id(external_id) else { return Ok(()) };
 
@@ -184,7 +290,7 @@ impl ChannelAdapter for DiscordAdapter {
         &self,
         chat: &Chat,
         _ctx: &ChannelCtx,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ChannelError> {
         self.typing.stop(&chat.id).await;
         Ok(())
     }
@@ -195,13 +301,13 @@ impl ChannelAdapter for DiscordAdapter {
         _msg: &Message,
         chat: &Chat,
         ctx: &ChannelCtx,
-    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, AppError> {
+    ) -> Result<Vec<crate::inference::hitl::HitlDelivery>, ChannelError> {
         let channel_id = parse_external_id(external_chat_id(chat)?)?;
         let mut out = Vec::with_capacity(batch.len());
         for tc in batch {
             let Some(h) = tc.hitl.as_ref() else { continue };
             let kind = crate::chat::channel::hitl::kind_for(&h.request);
-            let body = h.prompt.clone();
+            let body = super::markdown::fence_tables(&h.prompt).into_owned();
             let components = build_discord_components(&tc.id, &kind, &h.url);
             let req = CreateMessage::new().content(body).components(components);
             match channel_id.send_message(&*self.http, req).await {
@@ -211,18 +317,16 @@ impl ChannelAdapter for DiscordAdapter {
                     delivered_at: chrono::Utc::now(),
                 }),
                 Err(e) => {
-                    let retryable = is_discord_retryable_error(&e);
+                    let classified = classify_discord_error(&e);
                     tracing::warn!(
                         channel_id = %ctx.channel.id,
                         tool_call_id = %tc.id,
-                        retryable = retryable,
+                        kind = ?classified.kind,
                         error = %e,
                         "Discord on_pending_hitl: send failed",
                     );
-                    if retryable {
-                        return Err(AppError::Internal(format!(
-                            "Discord send failed: {e}"
-                        )));
+                    if !classified.kind.is_terminal() && out.is_empty() {
+                        return Err(classified);
                     }
                     break;
                 }
@@ -232,28 +336,37 @@ impl ChannelAdapter for DiscordAdapter {
     }
 }
 
-/// 5xx, 429, and non-HTTP errors (network, gateway) are transient — propagate
-/// as `Err` so `record_segment_failure` schedules backoff retry. 4xx (except
-/// 429) is permanent (validation, missing perms, unknown channel) — return
-/// `Ok(partial)` so the batch parks instead of burning the retry budget.
-fn is_discord_retryable_error(err: &SerenityError) -> bool {
+fn classify_discord_error(err: &SerenityError) -> ChannelError {
+    let msg = err.to_string();
     match err {
         SerenityError::Http(HttpError::UnsuccessfulRequest(resp)) => {
             let code = resp.status_code.as_u16();
-            code == 429 || (500..=599).contains(&code)
+            match code {
+                429 => ChannelError::transient(msg),
+                401 => ChannelError::terminal(msg, ChannelErrorKind::Unauthorized),
+                403 => ChannelError::terminal(msg, ChannelErrorKind::Forbidden),
+                404 => ChannelError::terminal(msg, ChannelErrorKind::NotFound),
+                413 => ChannelError::terminal(msg, ChannelErrorKind::PayloadTooLarge),
+                400 => ChannelError::terminal(msg, ChannelErrorKind::PayloadInvalid),
+                500..=599 => ChannelError::transient(msg),
+                _ => ChannelError::terminal(msg, ChannelErrorKind::Other),
+            }
         }
-        _ => true,
+        // Non-HTTP errors are gateway/network: transient by default.
+        _ => ChannelError::transient(msg),
     }
 }
 
 impl DiscordAdapter {
-    async fn post_message(&self, chat: &Chat, text: &str) -> Result<(), AppError> {
+    async fn post_message(&self, chat: &Chat, text: &str) -> Result<(), ChannelError> {
         let channel_id = parse_external_id(external_chat_id(chat)?)?;
-        for chunk in chunk_for_discord(text) {
+        let fenced = super::markdown::fence_tables(text);
+        for chunk in self.splitter.split(&fenced) {
             let req = CreateMessage::new().content(chunk);
-            if let Err(e) = channel_id.send_message(&*self.http, req).await {
-                return Err(map_send_error(e, channel_id));
-            }
+            channel_id
+                .send_message(&*self.http, req)
+                .await
+                .map_err(|e| classify_discord_error(&e))?;
         }
         Ok(())
     }
@@ -460,46 +573,6 @@ fn parse_external_id(s: &str) -> Result<ChannelId, AppError> {
     Ok(ChannelId::new(id))
 }
 
-fn map_send_error(err: SerenityError, channel_id: ChannelId) -> AppError {
-    if let SerenityError::Http(HttpError::UnsuccessfulRequest(resp)) = &err
-        && resp.status_code.as_u16() == 403
-    {
-        return AppError::Validation(format!(
-            "Discord rejected send_message on {channel_id}: bot lacks `View Channel` or `Send Messages` permission"
-        ));
-    }
-    AppError::Internal(format!("Discord send_message failed: {err}"))
-}
-
-fn chunk_for_discord(text: &str) -> Vec<String> {
-    if text.len() <= DISCORD_MAX_MESSAGE_LEN {
-        return vec![text.to_string()];
-    }
-    let mut chunks = Vec::new();
-    let mut remaining = text;
-    while !remaining.is_empty() {
-        if remaining.len() <= DISCORD_MAX_MESSAGE_LEN {
-            chunks.push(remaining.to_string());
-            break;
-        }
-        let upper = remaining
-            .char_indices()
-            .take_while(|(i, _)| *i < DISCORD_CHUNK_TARGET)
-            .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(remaining.len());
-        let slice = &remaining[..upper];
-        let split_at = slice
-            .rfind('\n')
-            .map(|i| i + 1)
-            .or_else(|| slice.rfind(' ').map(|i| i + 1))
-            .unwrap_or(upper);
-        chunks.push(remaining[..split_at].to_string());
-        remaining = remaining[split_at..].trim_start();
-    }
-    chunks
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,34 +684,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn chunk_for_discord_under_limit_returns_one_chunk() {
-        let chunks = chunk_for_discord("hello world");
-        assert_eq!(chunks, vec!["hello world".to_string()]);
-    }
-
-    #[test]
-    fn chunk_for_discord_splits_on_newline_boundary() {
-        let line = "a".repeat(500);
-        let blob = format!("{line}\n{line}\n{line}\n{line}\n{line}");
-        let chunks = chunk_for_discord(&blob);
-        assert!(chunks.len() >= 2, "expected at least 2 chunks, got {}", chunks.len());
-        for c in &chunks {
-            assert!(c.len() <= DISCORD_MAX_MESSAGE_LEN, "chunk exceeds limit: {}", c.len());
-        }
-        let rejoined: String = chunks.join("\n");
-        assert_eq!(rejoined.replace('\n', ""), blob.replace('\n', ""));
-    }
-
-    #[test]
-    fn chunk_for_discord_falls_back_to_hard_split_when_no_boundary() {
-        let blob = "x".repeat(2500);
-        let chunks = chunk_for_discord(&blob);
-        assert!(chunks.len() >= 2);
-        for c in &chunks {
-            assert!(c.len() <= DISCORD_MAX_MESSAGE_LEN);
-        }
-        let rejoined: String = chunks.concat();
-        assert_eq!(rejoined, blob);
-    }
 }

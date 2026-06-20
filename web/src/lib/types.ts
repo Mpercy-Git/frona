@@ -258,7 +258,7 @@ export function hitlResponseText(hitl: Hitl): string | null {
 }
 
 export type MessageEvent =
-  | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string; summary?: string } }
+  | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string; summary?: string; schema?: Record<string, unknown> } }
   | { type: "TaskDeferred"; data: { task_id: string; delay_minutes: number; reason: string } };
 
 export type MessageStatus = "executing" | "paused" | "completed" | "failed" | "cancelled";
@@ -287,6 +287,13 @@ export interface ToolCall {
   created_at: string;
 }
 
+/** Parsed slash invocation captured on the user-role Message. The raw
+ *  `content` field is preserved verbatim ("/weather London" or "@developer hi");
+ *  this carries the structured form for chip rendering and dispatch. */
+export type MessageCommand =
+  | { type: "skill"; name: string; prompt: string }
+  | { type: "command"; name: string; args: string };
+
 export interface MessageResponse {
   id: string;
   chat_id: string;
@@ -299,6 +306,8 @@ export interface MessageResponse {
   status?: MessageStatus;
   reasoning?: string;
   tool_calls?: ToolCall[];
+  /** Set when the user typed `/skill ...`, `/command ...`, or `@agent ...`. */
+  command?: MessageCommand;
   created_at: string;
   /** Set by mergeConsecutiveMessages — this message continues the previous agent message. */
   _continuation?: boolean;

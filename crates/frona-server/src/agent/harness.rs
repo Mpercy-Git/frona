@@ -6,7 +6,8 @@ use crate::agent::skill::service::SkillService;
 use crate::agent::task::service::TaskService;
 use crate::auth::UserService;
 use crate::chat::broadcast::BroadcastService;
-use crate::chat::message::models::Message;
+use crate::chat::command::{CommandContext, CommandOutcome, CommandRegistry};
+use crate::chat::message::models::{Message, MessageCommand, MessageRole};
 use crate::chat::service::ChatService;
 use crate::chat::session::ChatSessionContext;
 use crate::core::config::Config;
@@ -26,7 +27,15 @@ use crate::tool::mcp::McpServerService;
 use crate::tool::registry::ToolFilter;
 
 pub struct AgentLoopOutcome {
-    pub response: InferenceResponse,
+    /// What inference produced (Completed text, Cancelled, ExternalToolPending,
+    /// or Handled when a command short-circuited the turn).
+    pub inference: InferenceResponse,
+    /// The in-flight agent message that the reply gets written into. Already
+    /// reflects any mutations a command handler made (e.g. `agent_id` swap
+    /// from `SwitchAgentCommand`). Callers pass this into the terminal-write
+    /// APIs (`complete_agent_message`, `cancel_agent_message`, etc.) instead
+    /// of fetching by id, so the handler's mutations land in a single write.
+    pub response: Message,
 }
 
 /// Field typing mirrors AppState: bare types for services that derive `Clone`
@@ -49,6 +58,7 @@ pub struct Harness {
     pub(crate) shutdown_token: CancellationToken,
     pub(crate) prompts: PromptLoader,
     pub(crate) config: Arc<Config>,
+    pub(crate) commands: Arc<CommandRegistry>,
 }
 
 impl Harness {
@@ -71,6 +81,10 @@ impl Harness {
         prompts: PromptLoader,
         config: Arc<Config>,
     ) -> Self {
+        let mut registry = CommandRegistry::new();
+        crate::chat::command::builtin::register_all(&mut registry);
+        let commands = Arc::new(registry);
+
         Self {
             chat_service,
             user_service,
@@ -88,9 +102,11 @@ impl Harness {
             shutdown_token,
             prompts,
             config,
+            commands,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_turn(
         &self,
         user_id: &str,
@@ -99,13 +115,23 @@ impl Harness {
         cancel_token: CancellationToken,
         builder: Box<dyn ConversationBuilder>,
         tool_filters: &[ToolFilter],
+        command_context_registry: Option<Arc<CommandRegistry>>,
     ) {
         let outcome = self
-            .run_loop(user_id, chat_id, message_id, cancel_token, builder, tool_filters)
+            .run_loop(
+                user_id,
+                chat_id,
+                message_id,
+                cancel_token,
+                builder,
+                tool_filters,
+                command_context_registry,
+            )
             .await;
-        self.finalize(message_id, outcome).await;
+        self.finalize(message_id, user_id, outcome).await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_loop(
         &self,
         user_id: &str,
@@ -114,24 +140,130 @@ impl Harness {
         cancel_token: CancellationToken,
         builder: Box<dyn ConversationBuilder>,
         tool_filters: &[ToolFilter],
+        command_context_registry: Option<Arc<CommandRegistry>>,
     ) -> Result<AgentLoopOutcome, AppError> {
-        let chat = self
+        let mut chat = self
             .chat_service
             .find_chat(chat_id)
             .await?
             .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
 
+        // `message_id` is the AGENT response placeholder. The user message is
+        // separate. Signal/system-only chats may have no user-role message at
+        // all — then there's nothing to dispatch and we go straight to inference.
+        let request = self
+            .chat_service
+            .get_stored_messages(chat_id)
+            .await?
+            .into_iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::User));
+
+        let mut response = self.chat_service.get_message(user_id, message_id).await?;
+
         let builder_system_prompt = builder.system_prompt();
+
+        let mut session = ChatSessionContext::build(
+            self,
+            user_id,
+            chat.clone(),
+            cancel_token.clone(),
+            builder,
+        )
+        .await?;
+
+        let mut prompt_override: Option<String> = None;
+        if let Some(mut request) = request
+            && matches!(request.role, MessageRole::User)
+            && let Some(MessageCommand::Command { name, args }) = request.command.clone()
+        {
+            // Per-call registry wins over the default so callers can override
+            // a built-in name within their own context.
+            let user = self
+                .user_service
+                .find_by_id(user_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
+
+            let cmd = match command_context_registry.as_ref().and_then(|r| r.get(&name)) {
+                Some(c) => Some(c),
+                None => self.commands.resolve(&name, self, &user).await,
+            };
+            let cmd = cmd.ok_or_else(|| {
+                AppError::NotFound(format!("command '{name}' not registered for this chat"))
+            })?;
+
+            // `response` is always written via the terminal API at end-of-turn,
+            // so no snapshot is needed for it — only chat/request.
+            let chat_snapshot = chat.clone();
+            let request_snapshot = request.clone();
+
+            let mut cmd_ctx = CommandContext {
+                harness: self,
+                session: &mut session,
+                user: &user,
+                chat: &mut chat,
+                request: &mut request,
+                response: &mut response,
+            };
+
+            let outcome = cmd.run(&args, &mut cmd_ctx).await;
+
+            if chat != chat_snapshot {
+                let _ = self.chat_service.save_chat(&chat).await;
+            }
+            if request != request_snapshot {
+                let _ = self.chat_service.save_updated_message(&request).await;
+            }
+
+            match outcome {
+                Ok(CommandOutcome::Prompt(rendered)) => {
+                    prompt_override = Some(rendered);
+                }
+                Ok(CommandOutcome::Message(text)) => {
+                    response.content = text;
+                    let _ = self
+                        .chat_service
+                        .complete_agent_message(response.clone())
+                        .await;
+                    return Ok(AgentLoopOutcome {
+                        inference: InferenceResponse::Handled,
+                        response,
+                    });
+                }
+                Ok(CommandOutcome::End) => {
+                    let _ = self
+                        .chat_service
+                        .cancel_agent_message(response.clone())
+                        .await;
+                    return Ok(AgentLoopOutcome {
+                        inference: InferenceResponse::Handled,
+                        response,
+                    });
+                }
+                Err(e) => {
+                    response.content = format!("Command failed: {e}");
+                    let _ = self
+                        .chat_service
+                        .complete_agent_message(response.clone())
+                        .await;
+                    return Ok(AgentLoopOutcome {
+                        inference: InferenceResponse::Handled,
+                        response,
+                    });
+                }
+            }
+        }
 
         let ChatSessionContext {
             mut system_prompt,
             model_group,
-            rig_history,
+            mut rig_history,
             registry,
             mut tool_registry,
             tool_ctx,
             ..
-        } = ChatSessionContext::build(self, user_id, chat, cancel_token.clone(), builder).await?;
+        } = session;
 
         if let Some(extra) = builder_system_prompt {
             let trimmed = extra.trim();
@@ -145,7 +277,17 @@ impl Harness {
             tool_registry.apply_filter(filter);
         }
 
-        let response = crate::inference::inference(InferenceRequest {
+        // Swap only the model's view; the persisted `Message.content` is untouched.
+        if let Some(rendered) = prompt_override
+            && let Some(last_user) = rig_history
+                .iter_mut()
+                .rev()
+                .find(|m| matches!(m, rig_core::completion::Message::User { .. }))
+        {
+            *last_user = rig_core::completion::Message::user(rendered);
+        }
+
+        let inference = crate::inference::inference(InferenceRequest {
             registry,
             model_group,
             system_prompt,
@@ -158,7 +300,7 @@ impl Harness {
         })
         .await?;
 
-        Ok(AgentLoopOutcome { response })
+        Ok(AgentLoopOutcome { inference, response })
     }
 
     pub async fn resume(
@@ -171,8 +313,9 @@ impl Harness {
         let builder = Box::new(DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
+            agent_service: self.agent_service.clone(),
         });
-        self.run_turn(user_id, chat_id, message_id, cancel_token, builder, &[])
+        self.run_turn(user_id, chat_id, message_id, cancel_token, builder, &[], None)
             .await;
         self.active_sessions.remove(chat_id).await;
         Ok(())
@@ -316,43 +459,52 @@ impl Harness {
         }
     }
 
-    async fn finalize(&self, message_id: &str, outcome: Result<AgentLoopOutcome, AppError>) {
+    async fn finalize(
+        &self,
+        message_id: &str,
+        user_id: &str,
+        outcome: Result<AgentLoopOutcome, AppError>,
+    ) {
         match outcome {
-            Ok(AgentLoopOutcome { response }) => match response {
+            Ok(AgentLoopOutcome { inference, mut response }) => match inference {
                 InferenceResponse::Completed {
                     text,
                     attachments,
                     reasoning,
                     ..
                 } => {
-                    let _ = self
-                        .chat_service
-                        .complete_agent_message(message_id, text, attachments, reasoning)
-                        .await;
+                    response.content = text;
+                    response.attachments = attachments;
+                    response.reasoning = reasoning;
+                    let _ = self.chat_service.complete_agent_message(response).await;
                 }
                 InferenceResponse::Cancelled(text) => {
-                    let _ = self
-                        .chat_service
-                        .cancel_agent_message(message_id, text)
-                        .await;
+                    response.content = text;
+                    let _ = self.chat_service.cancel_agent_message(response).await;
                 }
                 InferenceResponse::ExternalToolPending { tool_calls, .. } => {
                     let _ = self
                         .chat_service
                         .pause_agent_message(
-                            message_id,
+                            response,
                             crate::inference::tool_loop::PauseReason::Hitl,
                             tool_calls,
                         )
                         .await;
                 }
+                InferenceResponse::Handled => {
+                    // Command dispatch already wrote/cancelled the response.
+                }
             },
             Err(e) => {
                 tracing::warn!(message_id, error = %e, "agent loop failed");
-                let _ = self
-                    .chat_service
-                    .fail_agent_message(message_id, e.to_string())
-                    .await;
+                // Best-effort: fetch the response for the failure event.
+                if let Ok(msg) = self.chat_service.get_message(user_id, message_id).await {
+                    let _ = self
+                        .chat_service
+                        .fail_agent_message(msg, e.to_string())
+                        .await;
+                }
             }
         }
     }

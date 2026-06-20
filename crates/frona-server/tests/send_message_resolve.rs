@@ -49,6 +49,7 @@ fn test_task(id: &str, user_id: &str, agent_id: &str, kind: TaskKind) -> Task {
         error_message: None,
         quarantined: false,
         result_schema: None,
+        result_description: None,
         created_at: now,
         updated_at: now,
     }

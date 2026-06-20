@@ -1,5 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chromiumoxide::Page;
 use chromiumoxide::browser::Browser;
@@ -14,24 +15,23 @@ use crate::error::Error;
 struct Handle {
     browser: Browser,
     handler_task: Mutex<Option<JoinHandle<()>>>,
-    keepalive_task: Mutex<Option<JoinHandle<()>>>,
     snapshot_refs: Mutex<Option<Vec<AxRef>>>,
     last_snapshot: Mutex<Option<String>>,
+    alive: AtomicBool,
+    /// Set shorter than Browserless's per-job timeout so we self-evict before
+    /// Browserless force-closes the WS mid-op.
+    expires_at: Instant,
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        for slot in [&self.handler_task, &self.keepalive_task] {
-            if let Ok(mut guard) = slot.lock()
-                && let Some(task) = guard.take()
-            {
-                task.abort();
-            }
+        if let Ok(mut guard) = self.handler_task.lock()
+            && let Some(task) = guard.take()
+        {
+            task.abort();
         }
     }
 }
-
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(25);
 
 #[derive(Clone)]
 pub struct BrowserConnection {
@@ -39,7 +39,7 @@ pub struct BrowserConnection {
 }
 
 impl BrowserConnection {
-    pub async fn connect(ws_url: &str, timeout: Duration) -> Result<Self> {
+    pub async fn connect(ws_url: &str, timeout: Duration, lifetime: Duration) -> Result<Self> {
         let config = HandlerConfig {
             request_timeout: timeout,
             ..Default::default()
@@ -48,21 +48,40 @@ impl BrowserConnection {
             .await
             .map_err(Error::Cdp)?;
 
+        let inner = Arc::new(Handle {
+            browser,
+            handler_task: Mutex::new(None),
+            snapshot_refs: Mutex::new(None),
+            last_snapshot: Mutex::new(None),
+            alive: AtomicBool::new(true),
+            expires_at: Instant::now() + lifetime,
+        });
+
+        let weak = Arc::downgrade(&inner);
         let handler_task = tokio::spawn(async move {
             while let Some(res) = handler.next().await {
                 if let Err(e) = res {
+                    // chromiumoxide's handler stream re-yields disconnect
+                    // errors instead of terminating, so we act on them here.
+                    if crate::error::is_cdp_disconnect(&e) {
+                        tracing::warn!(error = %e, "chromiumoxide handler reported dead WS; marking connection dead");
+                        if let Some(inner) = weak.upgrade() {
+                            inner.alive.store(false, Ordering::Release);
+                        }
+                        return;
+                    }
                     tracing::debug!(error = %e, "chromiumoxide handler event error");
                 }
             }
+            tracing::warn!("chromiumoxide handler stream ended; marking browser connection dead");
+            if let Some(inner) = weak.upgrade() {
+                inner.alive.store(false, Ordering::Release);
+            }
         });
+        if let Ok(mut guard) = inner.handler_task.lock() {
+            *guard = Some(handler_task);
+        }
 
-        let inner = Arc::new(Handle {
-            browser,
-            handler_task: Mutex::new(Some(handler_task)),
-            keepalive_task: Mutex::new(None),
-            snapshot_refs: Mutex::new(None),
-            last_snapshot: Mutex::new(None),
-        });
         let conn = BrowserConnection { inner };
         if conn.pages().await?.is_empty() {
             conn.inner
@@ -71,34 +90,19 @@ impl BrowserConnection {
                 .await
                 .map_err(Error::Cdp)?;
         }
-        conn.spawn_keepalive();
         Ok(conn)
     }
 
-    fn spawn_keepalive(&self) {
-        let weak = Arc::downgrade(&self.inner);
-        let task = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(KEEPALIVE_INTERVAL);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            ticker.tick().await;
-            loop {
-                ticker.tick().await;
-                let Some(inner) = weak.upgrade() else {
-                    return;
-                };
-                let pages = inner.browser.pages().await;
-                match pages {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::debug!(error = %e, "keepalive ping failed; stopping");
-                        return;
-                    }
-                }
-            }
-        });
-        if let Ok(mut guard) = self.inner.keepalive_task.lock() {
-            *guard = Some(task);
-        }
+    pub fn is_alive(&self) -> bool {
+        self.inner.alive.load(Ordering::Acquire) && Instant::now() < self.inner.expires_at
+    }
+
+    pub fn mark_dead(&self) {
+        self.inner.alive.store(false, Ordering::Release);
+    }
+
+    pub fn expires_at(&self) -> Instant {
+        self.inner.expires_at
     }
 
     pub(crate) async fn active_page(&self) -> Result<Page> {
@@ -154,12 +158,10 @@ impl BrowserConnection {
     }
 
     pub async fn disconnect(self) -> Result<()> {
-        for slot in [&self.inner.handler_task, &self.inner.keepalive_task] {
-            if let Ok(mut guard) = slot.lock()
-                && let Some(task) = guard.take()
-            {
-                task.abort();
-            }
+        if let Ok(mut guard) = self.inner.handler_task.lock()
+            && let Some(task) = guard.take()
+        {
+            task.abort();
         }
         Ok(())
     }

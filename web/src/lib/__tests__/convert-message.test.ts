@@ -102,13 +102,12 @@ describe("convertMessage: agent messages", () => {
     );
   });
 
-  it("includes reasoning as a content part", () => {
+  it("exposes reasoning text via metadata for the header toggle", () => {
     const msg = makeAgentMessage({ reasoning: "Let me think about this" });
 
     const result = convertMessage(msg);
-    const reasoningPart = result!.content.find((p: any) => p.type === "reasoning");
-    expect(reasoningPart).toBeDefined();
-    expect((reasoningPart as any).text).toBe("Let me think about this");
+    expect((result!.metadata.custom as Record<string, unknown>).reasoning).toBe("Let me think about this");
+    expect(result!.content.find((p: any) => p.type === "reasoning")).toBeUndefined();
   });
 
   it("preserves agent_id in metadata", () => {
@@ -342,7 +341,7 @@ describe("convertMessage: special roles", () => {
     expect(result).toBeNull();
   });
 
-  it("filters signal-only taskcompletion (empty content, non-failed)", () => {
+  it("suppresses taskcompletion bubble when content is empty and not failed", () => {
     const msg: MessageResponse = {
       id: "msg-tc-signal",
       chat_id: "chat-1",
@@ -352,8 +351,7 @@ describe("convertMessage: special roles", () => {
       created_at: "2026-01-01T00:00:00Z",
     };
 
-    const result = convertMessage(msg);
-    expect(result).toBeNull();
+    expect(convertMessage(msg)).toBeNull();
   });
 
   it("shows failed taskcompletion even with empty content", () => {

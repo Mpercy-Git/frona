@@ -94,6 +94,7 @@ async fn event_stream_receives_chat_message_broadcast() {
         from_address: None,
         delivery: None,
         tool_calls: vec![],
+        command: None,
         metadata: Default::default(),
         created_at: chrono::Utc::now(),
     };
@@ -114,6 +115,7 @@ async fn event_stream_receives_chat_message_broadcast() {
         from_address: None,
         delivery: None,
         tool_calls: vec![],
+        command: None,
         metadata: Default::default(),
         created_at: chrono::Utc::now(),
     };

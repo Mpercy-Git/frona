@@ -364,7 +364,6 @@ async fn execute_tool_calls(
         if let Some(ref e) = task_event_emitted {
             chat_service.set_task_event(&te_record.id, e.clone()).await?;
         }
-
         // Update in-memory record with finished fields so the SSE response is complete
         te_record.result = text.clone();
         te_record.success = success;
