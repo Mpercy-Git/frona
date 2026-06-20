@@ -990,6 +990,8 @@ pub const SENSITIVE_PATHS: &[&[&str]] = &[
     &["sso", "client_secret"],
     &["voice", "twilio_account_sid"],
     &["voice", "twilio_auth_token"],
+    &["voice", "plivo_auth_id"],
+    &["voice", "plivo_auth_token"],
     &["vault", "onepassword_service_account_token"],
     &["vault", "bitwarden_client_secret"],
     &["vault", "bitwarden_master_password"],

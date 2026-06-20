@@ -213,6 +213,7 @@ pub(super) async fn twilio_inbound_handler(
                 task_id: None,
                 agent_id: agent_id.clone(),
                 title: Some(format!("Inbound call from {from}")),
+                metadata: None,
             },
         )
         .await
@@ -393,11 +394,11 @@ mod tests {
         let auth_token = "abc123";
         let url = "https://example.com/inbound";
         let mut params: HashMap<String, String> = HashMap::new();
-        params.insert("From".into(), "+15555550000".into());
+        params.insert("From".into(), "+155****0000".into());
         params.insert("CallSid".into(), "CA123".into());
 
-        // Build expected: url + "CallSid" + "CA123" + "From" + "+15555550000" (sorted)
-        let s = format!("{}CallSidCA123From+15555550000", url);
+        // Build expected: url + "CallSid" + "CA123" + "From" + "+155****0000" (sorted)
+        let s = format!("{}CallSidCA123From+155****0000", url);
         let mut mac = HmacSha1::new_from_slice(auth_token.as_bytes()).unwrap();
         mac.update(s.as_bytes());
         let result = mac.finalize().into_bytes();
