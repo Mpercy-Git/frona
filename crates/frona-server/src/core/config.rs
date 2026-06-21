@@ -724,7 +724,7 @@ impl Default for InferenceConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct VoiceConfig {
-    #[schemars(description = "Voice provider (twilio or none).")]
+    #[schemars(description = "Voice provider (twilio, plivo, or none).")]
     pub provider: Option<String>,
     #[schemars(description = "Twilio account SID.")]
     pub twilio_account_sid: Option<String>,
@@ -736,6 +736,24 @@ pub struct VoiceConfig {
     pub twilio_voice_id: Option<String>,
     #[schemars(description = "Twilio speech recognition model.")]
     pub twilio_speech_model: Option<String>,
+    #[schemars(description = "Plivo auth ID.")]
+    pub plivo_auth_id: Option<String>,
+    #[schemars(description = "Plivo auth token.")]
+    pub plivo_auth_token: Option<String>,
+    #[schemars(description = "Plivo phone number to call from.")]
+    pub plivo_from_number: Option<String>,
+    #[schemars(description = "Public-facing base URL for voice callbacks. Overrides server.base_url for voice only.")]
+    pub callback_base_url: Option<String>,
+    #[schemars(description = "Enable inbound call answering. Requires the voice provider to POST to the inbound webhook.")]
+    pub inbound_enabled: bool,
+    #[schemars(description = "Fallback user ID that owns inbound calls when the caller matches the static inbound_allowlist (or when no per-user allowlist matches).")]
+    pub inbound_user_id: Option<String>,
+    #[schemars(description = "Agent ID that handles inbound calls. Defaults to 'receptionist'.")]
+    pub inbound_agent_id: Option<String>,
+    #[schemars(description = "Greeting spoken immediately when an inbound call connects.")]
+    pub inbound_welcome_greeting: Option<String>,
+    #[schemars(description = "Static E.164 phone numbers allowed to reach inbound_user_id. Dynamic per-user lists are managed via /api/voice/allowlist.")]
+    pub inbound_allowlist: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]

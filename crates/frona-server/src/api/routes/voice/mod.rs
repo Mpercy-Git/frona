@@ -153,7 +153,9 @@ async fn twilio_callback(
 
     let user = User {
         id: user_id.clone(),
-        username: claims.username.clone(),
+        handle: claims.handle.clone(),
+        groups: Vec::new(),
+        deactivated_at: None,
         email: claims.email.clone(),
         name: String::new(),
         password_hash: String::new(),

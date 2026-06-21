@@ -268,10 +268,12 @@ pub(super) async fn twilio_inbound_handler(
         }
     };
 
-    // Build a minimal User value — the token service only needs id/username/email.
+    // Build a minimal User value — the token service only needs id/handle/email.
     let token_user = User {
         id: user.id.clone(),
-        username: user.username.clone(),
+        handle: user.handle.clone(),
+        groups: user.groups.clone(),
+        deactivated_at: user.deactivated_at.clone(),
         email: user.email.clone(),
         name: user.name.clone(),
         password_hash: String::new(),
