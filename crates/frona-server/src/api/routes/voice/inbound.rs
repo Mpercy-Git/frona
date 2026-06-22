@@ -151,12 +151,29 @@ pub(super) async fn twilio_inbound_handler(
 
     // ------------------------------------------------------------------
     // 5. Fetch the owning user record (needed to sign the JWT)
+    //    Try by ID first, then fall back to resolving by handle (username).
     // ------------------------------------------------------------------
     let user = match state.user_service.find_by_id(&user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => {
-            tracing::warn!(user_id = %user_id, "Inbound call: resolved user not found — rejecting");
-            return twiml_reject(None);
+            // Not found by ID — try resolving as a handle/username.
+            match crate::core::Handle::try_new(&user_id)
+                .ok()
+            {
+                Some(handle) => {
+                    match state.user_service.find_by_handle(&handle).await {
+                        Ok(Some(u)) => u,
+                        _ => {
+                            tracing::warn!(user_id = %user_id, "Inbound call: user not found by ID or handle — rejecting");
+                            return twiml_reject(None);
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!(user_id = %user_id, "Inbound call: user not found and not a valid handle — rejecting");
+                    return twiml_reject(None);
+                }
+            }
         }
         Err(e) => {
             tracing::error!(error = %e, user_id = %user_id, "Inbound call: failed to fetch user — rejecting");

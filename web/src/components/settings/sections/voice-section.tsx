@@ -103,11 +103,11 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
           />
 
           <TextInput
-            label="Inbound Fallback User ID"
-            description="User that owns calls matching the static inbound allowlist"
+            label="Inbound Fallback User"
+            description="User ID or username that owns calls matching the static inbound allowlist"
             value={voice.inbound_user_id}
             onChange={(inbound_user_id) => onChange({ ...voice, inbound_user_id })}
-            placeholder="user-id"
+            placeholder="user-id or username"
           />
 
           <TextInput

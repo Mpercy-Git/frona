@@ -69,6 +69,10 @@ services:
       - FRONA_VOICE_PLIVO_AUTH_ID
       - FRONA_VOICE_PLIVO_AUTH_TOKEN
       - FRONA_VOICE_PLIVO_FROM_NUMBER
+      - FRONA_VOICE_INBOUND_ENABLED
+      - FRONA_VOICE_INBOUND_USER_ID
+      - FRONA_VOICE_INBOUND_AGENT_ID
+      - FRONA_VOICE_INBOUND_WELCOME_GREETING
     depends_on: [browserless, searxng]
     restart: unless-stopped
 
@@ -100,6 +104,10 @@ services:
       - FRONA_VOICE_PLIVO_AUTH_ID
       - FRONA_VOICE_PLIVO_AUTH_TOKEN
       - FRONA_VOICE_PLIVO_FROM_NUMBER
+      - FRONA_VOICE_INBOUND_ENABLED
+      - FRONA_VOICE_INBOUND_USER_ID
+      - FRONA_VOICE_INBOUND_AGENT_ID
+      - FRONA_VOICE_INBOUND_WELCOME_GREETING
     depends_on: [browserless, searxng]
     restart: unless-stopped
 

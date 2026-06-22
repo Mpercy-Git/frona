@@ -746,7 +746,7 @@ pub struct VoiceConfig {
     pub callback_base_url: Option<String>,
     #[schemars(description = "Enable inbound call answering. Requires the voice provider to POST to the inbound webhook.")]
     pub inbound_enabled: bool,
-    #[schemars(description = "Fallback user ID that owns inbound calls when the caller matches the static inbound_allowlist (or when no per-user allowlist matches).")]
+    #[schemars(description = "Fallback user ID or username that owns inbound calls when the caller matches the static inbound_allowlist (or when no per-user allowlist matches).")]
     pub inbound_user_id: Option<String>,
     #[schemars(description = "Agent ID that handles inbound calls. Defaults to 'receptionist'.")]
     pub inbound_agent_id: Option<String>,
