@@ -750,7 +750,7 @@ pub struct VoiceConfig {
     pub inbound_enabled: bool,
     #[schemars(description = "Fallback user ID or username that owns inbound calls when the caller matches the static inbound_allowlist (or when no per-user allowlist matches).")]
     pub inbound_user_id: Option<String>,
-    #[schemars(description = "Agent ID that handles inbound calls. Defaults to 'receptionist'.")]
+    #[schemars(description = "Agent ID, handle, or name that handles inbound calls. Defaults to 'receptionist'..")]
     pub inbound_agent_id: Option<String>,
     #[schemars(description = "Greeting spoken immediately when an inbound call connects.")]
     pub inbound_welcome_greeting: Option<String>,

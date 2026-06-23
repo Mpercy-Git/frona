@@ -211,25 +211,49 @@ pub(super) async fn twilio_inbound_handler(
 
     // ------------------------------------------------------------------
     // 6. Resolve answering agent
+    //    Try by ID first, then by handle (username), then by name.
+    //    Defaults to "receptionist" handle.
     // ------------------------------------------------------------------
-    let agent_id = state
+    let agent_query = state
         .config
         .voice
         .inbound_agent_id
         .clone()
         .unwrap_or_else(|| "receptionist".to_string());
 
-    if state
-        .agent_service
-        .find_by_id(&agent_id)
-        .await
-        .ok()
-        .flatten()
-        .is_none()
-    {
-        tracing::warn!(agent_id = %agent_id, "Inbound call: configured agent not found — rejecting");
-        return twiml_reject(None);
-    }
+    // Try by ID (UUID) first
+    let agent = match state.agent_service.find_by_id(&agent_query).await {
+        Ok(Some(a)) => Some(a),
+        _ => None,
+    };
+
+    // If not found by ID, try by handle
+    let agent = match agent {
+        Some(a) => Some(a),
+        None => match state.agent_service.find_by_handle(&user_id, &agent_query).await {
+            Ok(Some(a)) => Some(a),
+            _ => None,
+        },
+    };
+
+    // If still not found, try by name
+    let agent = match agent {
+        Some(a) => Some(a),
+        None => match state.agent_service.find_by_name(&user_id, &agent_query).await {
+            Ok(Some(a)) => Some(a),
+            _ => None,
+        },
+    };
+
+    let agent = match agent {
+        Some(a) => a,
+        None => {
+            tracing::warn!(agent_query = %agent_query, "Inbound call: agent not found by ID, handle, or name — rejecting");
+            return twiml_reject(None);
+        }
+    };
+
+    let agent_id = agent.id.clone();
 
     // ------------------------------------------------------------------
     // 7. Find or create the caller's contact record

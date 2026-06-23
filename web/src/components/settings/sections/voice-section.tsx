@@ -119,11 +119,11 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
           />
 
           <TextInput
-            label="Inbound Agent ID"
-            description="Agent that answers inbound calls (defaults to receptionist)"
+            label="Inbound Agent"
+            description="Agent ID, handle, or name that answers inbound calls (defaults to receptionist)"
             value={voice.inbound_agent_id}
             onChange={(inbound_agent_id) => onChange({ ...voice, inbound_agent_id })}
-            placeholder="receptionist"
+            placeholder="receptionist (handle or name)"
           />
 
           <TextInput
