@@ -116,13 +116,41 @@ pub(super) async fn twilio_inbound_handler(
             "Inbound call: validating Twilio signature"
         );
 
-        let sig_valid = validate_twilio_signature(auth_token, &full_url, &params, sig)
-            || validate_twilio_signature(auth_token, &proxy_url, &params, sig);
+        // Build multiple URL candidates to try — reverse proxies (Cloudflare,
+        // Caddy, nginx) may change the scheme, causing Twilio to sign a
+        // different URL than what we expect.
+        let mut url_candidates = vec![full_url.clone(), proxy_url.clone()];
+
+        // Also try http:// variant of the callback_base_url (in case Twilio
+        // signed the pre-redirect HTTP URL).
+        if full_url.starts_with("https://") {
+            url_candidates.push(full_url.replacen("https://", "http://", 1));
+        }
+        if proxy_url.starts_with("https://") {
+            url_candidates.push(proxy_url.replacen("https://", "http://", 1));
+        }
+        // Also try http:// variant with the configured host (not the proxy host).
+        if let Some(host_only) = base_url.strip_prefix("https://").or_else(|| base_url.strip_prefix("http://")) {
+            url_candidates.push(format!("http://{host_only}/api/voice/twilio/inbound"));
+            url_candidates.push(format!("https://{host_only}/api/voice/twilio/inbound"));
+        }
+
+        // Deduplicate while preserving order.
+        let mut seen = std::collections::HashSet::new();
+        url_candidates.retain(|u| seen.insert(u.clone()));
+
+        let sig_valid = url_candidates.iter().any(|url| {
+            if validate_twilio_signature(auth_token, url, &params, sig) {
+                tracing::info!(matched_url = %url, "Inbound call: signature validated");
+                true
+            } else {
+                false
+            }
+        });
 
         if !sig_valid {
             tracing::warn!(
-                expected_url = %full_url,
-                proxy_url = %proxy_url,
+                tried_urls = ?url_candidates,
                 "Inbound call: invalid Twilio signature — rejecting"
             );
             return (StatusCode::FORBIDDEN, "Invalid signature").into_response();
