@@ -344,6 +344,7 @@ pub(super) async fn twilio_inbound_handler(
         None, // hints — not applicable for inbound
         state.config.voice.twilio_voice_id.as_deref(),
         state.config.voice.twilio_speech_model.as_deref(),
+        state.config.voice.twilio_tts_provider.as_deref(),
     );
 
     tracing::info!(

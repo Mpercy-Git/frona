@@ -88,6 +88,14 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
           />
 
           <TextInput
+            label="TTS Provider"
+            description="Text-to-speech provider (e.g. elevenlabs, polly). Leave empty for default (Polly)."
+            value={voice.twilio_tts_provider}
+            onChange={(twilio_tts_provider) => onChange({ ...voice, twilio_tts_provider })}
+            placeholder="elevenlabs"
+          />
+
+          <TextInput
             label="Callback Base URL"
             description="Public URL Twilio should use for voice webhooks (defaults to server.base_url)"
             value={voice.callback_base_url}

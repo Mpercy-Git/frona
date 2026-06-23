@@ -736,6 +736,8 @@ pub struct VoiceConfig {
     pub twilio_voice_id: Option<String>,
     #[schemars(description = "Twilio speech recognition model.")]
     pub twilio_speech_model: Option<String>,
+    #[schemars(description = "TTS provider for ConversationRelay (e.g. elevenlabs, polly). Defaults to polly when not set.")]
+    pub twilio_tts_provider: Option<String>,
     #[schemars(description = "Plivo auth ID.")]
     pub plivo_auth_id: Option<String>,
     #[schemars(description = "Plivo auth token.")]

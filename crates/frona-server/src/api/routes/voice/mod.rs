@@ -26,6 +26,7 @@ pub(super) fn build_twiml(
     hints: Option<&str>,
     voice_id: Option<&str>,
     speech_model: Option<&str>,
+    tts_provider: Option<&str>,
 ) -> String {
     use xml::writer::{EmitterConfig, XmlEvent};
 
@@ -50,6 +51,9 @@ pub(super) fn build_twiml(
     }
     if let Some(m) = speech_model {
         relay = relay.attr("speechModel", m);
+    }
+    if let Some(tp) = tts_provider {
+        relay = relay.attr("ttsProvider", tp);
     }
     if let Some(h) = hints {
         relay = relay.attr("hints", h);
@@ -202,6 +206,7 @@ async fn twilio_callback(
         ext.hints.as_deref(),
         state.config.voice.twilio_voice_id.as_deref(),
         state.config.voice.twilio_speech_model.as_deref(),
+        state.config.voice.twilio_tts_provider.as_deref(),
     );
 
     tracing::info!(chat_id = %chat_id, user_id = %user_id, ws_url = %ws_url, "Voice callback: issuing TwiML with ConversationRelay");
