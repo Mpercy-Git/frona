@@ -80,11 +80,26 @@ pub(super) async fn twilio_inbound_handler(
     // ------------------------------------------------------------------
     // 1. Validate Twilio signature
     // ------------------------------------------------------------------
-    if let Some(auth_token) = &state.config.voice.twilio_auth_token {
+    // Signature validation — skip if FRONA_VOICE_SKIP_SIG_CHECK is set (for debugging)
+    let skip_sig_check = std::env::var("FRONA_VOICE_SKIP_SIG_CHECK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if skip_sig_check {
+        tracing::warn!("Inbound call: skipping Twilio signature validation (FRONA_VOICE_SKIP_SIG_CHECK=1)");
+    } else if let Some(auth_token) = &state.config.voice.twilio_auth_token {
         let sig = headers
             .get("x-twilio-signature")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
+
+        tracing::debug!(
+            param_count = params.len(),
+            params = ?params,
+            has_signature = !sig.is_empty(),
+            content_type = ?headers.get("content-type").and_then(|v| v.to_str().ok()),
+            "Inbound call: raw request details"
+        );
 
         let base_url = state
             .config
