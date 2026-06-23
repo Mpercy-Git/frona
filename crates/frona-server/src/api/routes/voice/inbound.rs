@@ -95,8 +95,36 @@ pub(super) async fn twilio_inbound_handler(
             .unwrap_or_else(|| format!("http://localhost:{}", state.config.server.port));
         let full_url = format!("{base_url}/api/voice/twilio/inbound");
 
-        if !validate_twilio_signature(auth_token, &full_url, &params, sig) {
-            tracing::warn!("Inbound call: invalid Twilio signature — rejecting");
+        // Also try the URL as Twilio sees it (from X-Forwarded-Proto and Host headers),
+        // in case a reverse proxy (Cloudflare, Caddy, nginx) changed the scheme.
+        let forwarded_proto = headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("https");
+        let host = headers
+            .get("x-forwarded-host")
+            .or_else(|| headers.get("host"))
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let proxy_url = format!("{forwarded_proto}://{host}/api/voice/twilio/inbound");
+
+        tracing::debug!(
+            expected_url = %full_url,
+            proxy_url = %proxy_url,
+            has_signature = !sig.is_empty(),
+            param_count = params.len(),
+            "Inbound call: validating Twilio signature"
+        );
+
+        let sig_valid = validate_twilio_signature(auth_token, &full_url, &params, sig)
+            || validate_twilio_signature(auth_token, &proxy_url, &params, sig);
+
+        if !sig_valid {
+            tracing::warn!(
+                expected_url = %full_url,
+                proxy_url = %proxy_url,
+                "Inbound call: invalid Twilio signature — rejecting"
+            );
             return (StatusCode::FORBIDDEN, "Invalid signature").into_response();
         }
     }
