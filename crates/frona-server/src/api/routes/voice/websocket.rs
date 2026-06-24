@@ -182,7 +182,6 @@ async fn handle_voice_socket(
                     ws_send.clone(),
                     contact_id.as_deref(),
                     call_id.as_deref(),
-                    &filler_cancel,
                 )
                 .await
                 {
@@ -342,7 +341,6 @@ async fn handle_voice_turn(
     ws_send: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     contact_id: Option<&str>,
     call_id: Option<&str>,
-    filler_cancel: &CancellationToken,
 ) -> Result<(String, bool), AppError> {
     state
         .chat_service
@@ -438,10 +436,14 @@ async fn handle_voice_turn(
                 // The agent called a non-voice tool (search, browser, etc.)
                 // and produced `turn_text` alongside the tool call. Send it
                 // to the caller as TTS so they know what the agent is doing.
+                //
+                // NOTE: We intentionally do NOT cancel the timer-based filler
+                // here. Cancelling it on the first tool call killed it for
+                // the rest of the turn and all subsequent thinking time.
+                // The Arc<Mutex<ws_send>> already prevents overlapping sends,
+                // and the filler's own interval provides natural spacing
+                // between phrases.
                 if !turn_text.is_empty() {
-                    // Pause the timer-based filler so it doesn't overlap.
-                    filler_cancel.cancel();
-
                     let tts = serde_json::json!({
                         "type": "text",
                         "token": turn_text,
