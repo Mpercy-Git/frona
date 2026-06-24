@@ -366,6 +366,8 @@ function OpenAIParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: 
 }
 
 function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: (u: Partial<ModelGroupConfig>) => void }) {
+  const routing = (group.provider ?? null) as { order?: string[]; allow_fallbacks?: boolean; require_parameters?: boolean; ignore?: string[]; quantizations?: string[]; sort?: string } | null;
+
   return (
     <div className="space-y-4">
       {/* Standard OpenAI-compatible params */}
@@ -405,17 +407,17 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
           <TextInput
             label="Route"
             description="Simple provider routing, e.g. 'openai' or 'anthropic'. Mutually exclusive with Provider Routing below."
-            value={group.route as string | null ?? null}
+            value={(group.route as string | null) ?? null}
             onChange={(v) => onUpdate({ route: v || null })}
             placeholder="openai"
           />
           <TextInput
             label="Provider Order"
             description="Comma-separated provider preferences, e.g. 'OpenAI, Anthropic'"
-            value={Array.isArray(group.provider?.order) ? group.provider.order.join(", ") : ""}
+            value={Array.isArray(routing?.order) ? routing!.order!.join(", ") : ""}
             onChange={(raw) => {
               const order = raw.split(",").map(s => s.trim()).filter(Boolean);
-              const existing = (group.provider as Record<string, unknown> | null) ?? {};
+              const existing = routing ?? {};
               onUpdate({ provider: order.length > 0 ? { ...existing, order } : { ...existing, order: null } });
             }}
             placeholder="OpenAI, Anthropic"
@@ -424,18 +426,18 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
             <Toggle
               label="Allow Fallbacks"
               description="Fall back to other providers if preferred ones fail"
-              value={group.provider?.allow_fallbacks ?? true}
+              value={routing?.allow_fallbacks ?? true}
               onChange={(v) => {
-                const existing = (group.provider as Record<string, unknown> | null) ?? {};
+                const existing = routing ?? {};
                 onUpdate({ provider: { ...existing, allow_fallbacks: v } });
               }}
             />
             <Toggle
               label="Require Parameters"
               description="Only use providers that support all request parameters"
-              value={group.provider?.require_parameters ?? false}
+              value={routing?.require_parameters ?? false}
               onChange={(v) => {
-                const existing = (group.provider as Record<string, unknown> | null) ?? {};
+                const existing = routing ?? {};
                 onUpdate({ provider: { ...existing, require_parameters: v } });
               }}
             />
@@ -444,10 +446,10 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
             <TextInput
               label="Ignore Providers"
               description="Comma-separated providers to ignore"
-              value={Array.isArray(group.provider?.ignore) ? group.provider.ignore.join(", ") : ""}
+              value={Array.isArray(routing?.ignore) ? routing!.ignore!.join(", ") : ""}
               onChange={(raw) => {
                 const ignore = raw.split(",").map(s => s.trim()).filter(Boolean);
-                const existing = (group.provider as Record<string, unknown> | null) ?? {};
+                const existing = routing ?? {};
                 onUpdate({ provider: { ...existing, ignore: ignore.length > 0 ? ignore : null } });
               }}
               placeholder="Together, DeepSeek"
@@ -455,10 +457,10 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
             <TextInput
               label="Quantizations"
               description="Comma-separated, e.g. 'fp8, bf16'"
-              value={Array.isArray(group.provider?.quantizations) ? group.provider.quantizations.join(", ") : ""}
+              value={Array.isArray(routing?.quantizations) ? routing!.quantizations!.join(", ") : ""}
               onChange={(raw) => {
                 const quantizations = raw.split(",").map(s => s.trim()).filter(Boolean);
-                const existing = (group.provider as Record<string, unknown> | null) ?? {};
+                const existing = routing ?? {};
                 onUpdate({ provider: { ...existing, quantizations: quantizations.length > 0 ? quantizations : null } });
               }}
               placeholder="fp8, bf16"
@@ -467,9 +469,9 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
           <div className="space-y-1">
             <label className="block text-sm font-medium text-text-secondary">Sort By</label>
             <select
-              value={group.provider?.sort ?? ""}
+              value={routing?.sort ?? ""}
               onChange={(e) => {
-                const existing = (group.provider as Record<string, unknown> | null) ?? {};
+                const existing = routing ?? {};
                 onUpdate({ provider: { ...existing, sort: e.target.value || null } });
               }}
               className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
