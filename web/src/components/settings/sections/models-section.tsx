@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import type { ModelGroupConfig, RetryConfig } from "@/lib/config-types";
-import { NumberInput, SectionHeader, Toggle } from "@/components/settings/field";
+import { NumberInput, SectionHeader, Toggle, TextInput } from "@/components/settings/field";
 import { CubeIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import { ComboboxInput } from "@/components/settings/combobox";
 import { ModelSelector } from "@/components/settings/model-selector";
