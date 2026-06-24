@@ -262,12 +262,13 @@ function ProviderParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate
       return <OllamaParams group={group} onUpdate={onUpdate} />;
     case "openai":
     case "groq":
-    case "openrouter":
     case "deepseek":
     case "xai":
     case "together":
     case "hyperbolic":
       return <OpenAIParams group={group} onUpdate={onUpdate} />;
+    case "openrouter":
+      return <OpenRouterParamsComponent group={group} onUpdate={onUpdate} />;
     case "gemini":
       return <GeminiParams group={group} onUpdate={onUpdate} />;
     default:
@@ -360,6 +361,127 @@ function OpenAIParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: 
         <NumberInput label="Max Completion Tokens" value={group.max_completion_tokens ?? null} onChange={(v) => onUpdate({ max_completion_tokens: v || null })} min={1} placeholder="Default" />
       </div>
       <Toggle label="Log Probabilities" value={group.logprobs ?? false} onChange={(v) => onUpdate({ logprobs: v || null })} />
+    </div>
+  );
+}
+
+function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: (u: Partial<ModelGroupConfig>) => void }) {
+  return (
+    <div className="space-y-4">
+      {/* Standard OpenAI-compatible params */}
+      <div className="space-y-1">
+        <label className="block text-sm font-medium text-text-secondary">Reasoning Effort</label>
+        <select
+          value={group.reasoning_effort ?? ""}
+          onChange={(e) => onUpdate({ reasoning_effort: e.target.value || null })}
+          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
+        >
+          <option value="">Default</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <NumberInput label="Top P" value={group.top_p ?? null} onChange={(v) => onUpdate({ top_p: v || null })} min={0} step={0.05} placeholder="Default" />
+        <NumberInput label="Min P" value={group.min_p ?? null} onChange={(v) => onUpdate({ min_p: v || null })} min={0} step={0.05} placeholder="Default" />
+        <NumberInput label="Frequency Penalty" value={group.frequency_penalty ?? null} onChange={(v) => onUpdate({ frequency_penalty: v || null })} step={0.05} placeholder="0.0" />
+        <NumberInput label="Presence Penalty" value={group.presence_penalty ?? null} onChange={(v) => onUpdate({ presence_penalty: v || null })} step={0.05} placeholder="0.0" />
+        <NumberInput label="Seed" value={group.seed ?? null} onChange={(v) => onUpdate({ seed: v || null })} min={0} placeholder="Random" />
+        <NumberInput label="Max Completion Tokens" value={group.max_completion_tokens ?? null} onChange={(v) => onUpdate({ max_completion_tokens: v || null })} min={1} placeholder="Default" />
+      </div>
+      <Toggle label="Log Probabilities" value={group.logprobs ?? false} onChange={(v) => onUpdate({ logprobs: v || null })} />
+
+      {/* OpenRouter-specific routing */}
+      <div className="border-t border-border pt-4 mt-4">
+        <h4 className="text-sm font-medium text-text-secondary mb-3">Provider Routing</h4>
+        <p className="text-xs text-text-tertiary mb-3">
+          Control which backend providers OpenRouter uses. See{" "}
+          <a href="https://openrouter.ai/docs/guides/routing/provider-selection" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+            OpenRouter docs
+          </a>.
+        </p>
+        <div className="space-y-3">
+          <TextInput
+            label="Route"
+            description="Simple provider routing, e.g. 'openai' or 'anthropic'. Mutually exclusive with Provider Routing below."
+            value={group.route as string | null ?? null}
+            onChange={(v) => onUpdate({ route: v || null })}
+            placeholder="openai"
+          />
+          <TextInput
+            label="Provider Order"
+            description="Comma-separated provider preferences, e.g. 'OpenAI, Anthropic'"
+            value={Array.isArray(group.provider?.order) ? group.provider.order.join(", ") : ""}
+            onChange={(raw) => {
+              const order = raw.split(",").map(s => s.trim()).filter(Boolean);
+              const existing = (group.provider as Record<string, unknown> | null) ?? {};
+              onUpdate({ provider: order.length > 0 ? { ...existing, order } : { ...existing, order: null } });
+            }}
+            placeholder="OpenAI, Anthropic"
+          />
+          <div className="grid grid-cols-2 gap-4">
+            <Toggle
+              label="Allow Fallbacks"
+              description="Fall back to other providers if preferred ones fail"
+              value={group.provider?.allow_fallbacks ?? true}
+              onChange={(v) => {
+                const existing = (group.provider as Record<string, unknown> | null) ?? {};
+                onUpdate({ provider: { ...existing, allow_fallbacks: v } });
+              }}
+            />
+            <Toggle
+              label="Require Parameters"
+              description="Only use providers that support all request parameters"
+              value={group.provider?.require_parameters ?? false}
+              onChange={(v) => {
+                const existing = (group.provider as Record<string, unknown> | null) ?? {};
+                onUpdate({ provider: { ...existing, require_parameters: v } });
+              }}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <TextInput
+              label="Ignore Providers"
+              description="Comma-separated providers to ignore"
+              value={Array.isArray(group.provider?.ignore) ? group.provider.ignore.join(", ") : ""}
+              onChange={(raw) => {
+                const ignore = raw.split(",").map(s => s.trim()).filter(Boolean);
+                const existing = (group.provider as Record<string, unknown> | null) ?? {};
+                onUpdate({ provider: { ...existing, ignore: ignore.length > 0 ? ignore : null } });
+              }}
+              placeholder="Together, DeepSeek"
+            />
+            <TextInput
+              label="Quantizations"
+              description="Comma-separated, e.g. 'fp8, bf16'"
+              value={Array.isArray(group.provider?.quantizations) ? group.provider.quantizations.join(", ") : ""}
+              onChange={(raw) => {
+                const quantizations = raw.split(",").map(s => s.trim()).filter(Boolean);
+                const existing = (group.provider as Record<string, unknown> | null) ?? {};
+                onUpdate({ provider: { ...existing, quantizations: quantizations.length > 0 ? quantizations : null } });
+              }}
+              placeholder="fp8, bf16"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-text-secondary">Sort By</label>
+            <select
+              value={group.provider?.sort ?? ""}
+              onChange={(e) => {
+                const existing = (group.provider as Record<string, unknown> | null) ?? {};
+                onUpdate({ provider: { ...existing, sort: e.target.value || null } });
+              }}
+              className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
+            >
+              <option value="">Default</option>
+              <option value="throughput">Throughput</option>
+              <option value="latency">Latency</option>
+              <option value="price">Price</option>
+            </select>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

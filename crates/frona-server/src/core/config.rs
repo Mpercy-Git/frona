@@ -465,6 +465,54 @@ pub struct OpenAICompatParams {
     pub stop: Option<Vec<String>>,
 }
 
+/// OpenRouter provider routing configuration.
+///
+/// Maps to the `provider` object in the OpenRouter API request.
+/// See https://openrouter.ai/docs/guides/routing/provider-selection
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct OpenRouterProviderRouting {
+    /// Ordered list of provider names to try (e.g. ["OpenAI", "Anthropic"]).
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "order")]
+    #[schemars(description = "Ordered provider preferences, e.g. ['OpenAI', 'Anthropic'].")]
+    pub order: Option<Vec<String>>,
+    /// Whether to allow fallback to other providers if preferred ones fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Allow fallback to other providers if preferred ones fail (default true).")]
+    pub allow_fallbacks: Option<bool>,
+    /// Require all preferred providers to support the request parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Require all preferred providers to support the request parameters.")]
+    pub require_parameters: Option<bool>,
+    /// Ignore specific providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Ignore specific providers, e.g. ['Together'].")]
+    pub ignore: Option<Vec<String>>,
+    /// Quantization filter, e.g. ["fp8", "bf16"].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Quantization preferences, e.g. ['fp8', 'bf16'].")]
+    pub quantizations: Option<Vec<String>>,
+    /// Sort preference for provider selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Sort providers by: 'throughput', 'latency', 'price'.")]
+    pub sort: Option<String>,
+}
+
+/// OpenRouter-specific parameters beyond the OpenAI-compatible fields.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct OpenRouterParams {
+    #[serde(flatten)]
+    pub compat: OpenAICompatParams,
+    /// Simple routing string, e.g. "openai" or "anthropic".
+    /// Sent as top-level `route` in the API request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Simple provider routing, e.g. 'openai' or 'anthropic'. Mutually exclusive with provider routing.")]
+    pub route: Option<String>,
+    /// Provider routing object. Sent as `provider` in the API request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Provider routing preferences (order, fallbacks, etc.). See https://openrouter.ai/docs/guides/routing/provider-selection")]
+    pub provider: Option<OpenRouterProviderRouting>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct GeminiThinkingConfig {
     pub thinking_budget: u64,
@@ -556,7 +604,7 @@ pub enum ModelGroupConfig {
         #[serde(flatten)]
         common: CommonModelFields,
         #[serde(flatten)]
-        params: OpenAICompatParams,
+        params: OpenRouterParams,
     },
     #[serde(rename = "deepseek")]
     DeepSeek {
