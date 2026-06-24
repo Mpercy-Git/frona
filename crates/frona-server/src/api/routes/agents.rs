@@ -121,6 +121,7 @@ async fn create_agent(
 
     if let Some(tool_list) = tools {
         sync_agent_tools(&state, &auth.user_id, &agent.id, &tool_list).await?;
+        state.policy_service.invalidate_all_caches();
     }
 
     let handle = agent.handle.clone();
@@ -189,6 +190,11 @@ async fn update_agent(
 
     if let Some(tool_list) = tools {
         sync_agent_tools(&state, &auth.user_id, &id, &tool_list).await?;
+        // Force-invalidate all caches synchronously — moka's per-key
+        // invalidate() is eventually-consistent and the stale decision
+        // cache entries can survive long enough for to_response() below
+        // to read them, causing disabled tools to reappear as enabled.
+        state.policy_service.invalidate_all_caches();
     }
 
     let handle = agent.handle.clone();
