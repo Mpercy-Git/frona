@@ -275,9 +275,11 @@ async fn handle_voice_socket(
 /// Periodically sends filler phrases to the caller while the agent is
 /// processing a turn. Stops when `cancel` is triggered.
 ///
-/// Each filler phrase is sent as `{"type":"text","token":"…","last":false}`
-/// so ConversationRelay does not end the turn — it just speaks the phrase
-/// and continues listening for the agent's real response.
+/// Each filler phrase is sent as `{"type":"text","token":"…","last":true}`
+/// so ConversationRelay speaks it immediately. The agent's real response
+/// is sent later as another `last: true` message — ConversationRelay
+/// handles multiple `last: true` messages in a single turn by queuing
+/// them sequentially.
 async fn silence_filler(
     ws_send: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     cancel: CancellationToken,
@@ -306,7 +308,7 @@ async fn silence_filler(
         let filler_msg = serde_json::json!({
             "type": "text",
             "token": phrase,
-            "last": false
+            "last": true
         });
 
         {
@@ -320,7 +322,7 @@ async fn silence_filler(
                 return;
             }
         }
-        tracing::debug!(chat_id = %chat_id, phrase = %phrase, "Silence filler sent");
+        tracing::info!(chat_id = %chat_id, phrase = %phrase, "Silence filler sent");
 
         tokio::select! {
             _ = cancel.cancelled() => return,
