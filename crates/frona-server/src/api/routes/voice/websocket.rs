@@ -182,6 +182,7 @@ async fn handle_voice_socket(
                     ws_send.clone(),
                     contact_id.as_deref(),
                     call_id.as_deref(),
+                    &filler_cancel,
                 )
                 .await
                 {
@@ -341,6 +342,7 @@ async fn handle_voice_turn(
     ws_send: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     contact_id: Option<&str>,
     call_id: Option<&str>,
+    filler_cancel: &CancellationToken,
 ) -> Result<(String, bool), AppError> {
     state
         .chat_service
@@ -429,6 +431,42 @@ async fn handle_voice_turn(
                     .complete_agent_message(response)
                     .await;
                 return Ok((text, false));
+            }
+            InferenceResponse::ExternalToolPending {
+                ref tool_calls, ref turn_text, ..
+            } => {
+                // The agent called a non-voice tool (search, browser, etc.)
+                // and produced `turn_text` alongside the tool call. Send it
+                // to the caller as TTS so they know what the agent is doing.
+                if !turn_text.is_empty() {
+                    // Pause the timer-based filler so it doesn't overlap.
+                    filler_cancel.cancel();
+
+                    let tts = serde_json::json!({
+                        "type": "text",
+                        "token": turn_text,
+                        "last": true
+                    });
+                    {
+                        let mut send = ws_send.lock().await;
+                        send.send(Message::Text(tts.to_string().into())).await.ok();
+                    }
+                    tracing::info!(chat_id = %chat_id, text = %turn_text, "Agent narration sent to caller");
+                }
+
+                // Resolve tool calls and continue the loop for the next
+                // inference round.
+                for tc in tool_calls {
+                    let _ = state.chat_service
+                        .resolve_tool_call(&tc.id, Some("executed".to_string()))
+                        .await;
+                }
+                response.content = turn_text.clone();
+                let _ = state.chat_service
+                    .complete_agent_message(response)
+                    .await;
+                // Continue the loop — the harness will process the tool
+                // results and produce the next inference.
             }
             _ => {
                 let _ = state.chat_service
