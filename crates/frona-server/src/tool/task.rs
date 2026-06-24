@@ -491,14 +491,36 @@ impl TaskTool {
             .await
             .unwrap_or_default();
 
+        // Collect unique agent IDs and fetch agent names in one batch so the
+        // caller can see which agent each task belongs to.
+        let agent_ids: Vec<String> = all_tasks
+            .iter()
+            .map(|t| t.agent_id.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let mut agent_names: std::collections::HashMap<String, (String, String)> =
+            std::collections::HashMap::new();
+        for aid in &agent_ids {
+            if let Ok(Some(agent)) = self.agent_service.find_by_id(aid).await {
+                agent_names.insert(aid.clone(), (agent.name.clone(), agent.handle.to_string()));
+            }
+        }
+
         let tasks: Vec<_> = all_tasks
             .into_iter()
             .map(|t| {
+                let (agent_name, agent_handle) = agent_names
+                    .get(&t.agent_id)
+                    .cloned()
+                    .unwrap_or_else(|| ("Unknown".to_string(), "unknown".to_string()));
                 serde_json::json!({
                     "id": t.id,
                     "title": t.title,
                     "description": t.description,
                     "agent_id": t.agent_id,
+                    "agent_name": agent_name,
+                    "agent_handle": agent_handle,
                     "kind": t.kind,
                     "status": t.status,
                 })

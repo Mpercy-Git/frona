@@ -9,6 +9,7 @@ export interface UserInfo {
   email: string;
   name: string;
   timezone?: string;
+  phone?: string;
   needs_setup?: boolean;
   permissions?: UserPermissions;
 }

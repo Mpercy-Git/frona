@@ -370,6 +370,7 @@ mod tests {
             crate::auth::User {
                 id: "u".into(), handle: crate::handle!("uu"), email: "e".into(), name: "n".into(),
                 password_hash: String::new(), timezone: None,
+                phone: None,
                 groups: Vec::new(), deactivated_at: None,
                 created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
             },

@@ -756,6 +756,14 @@ pub struct VoiceConfig {
     pub inbound_welcome_greeting: Option<String>,
     #[schemars(description = "Static E.164 phone numbers allowed to reach inbound_user_id. Dynamic per-user lists are managed via /api/voice/allowlist.")]
     pub inbound_allowlist: Vec<String>,
+    #[schemars(description = "Enable silence filling during agent processing — sends periodic filler phrases to the caller while the agent is thinking.")]
+    pub silence_fill_enabled: bool,
+    #[schemars(description = "Seconds of silence before the first filler phrase is sent. Defaults to 3.")]
+    pub silence_fill_initial_delay_secs: u64,
+    #[schemars(description = "Seconds between successive filler phrases. Defaults to 7.")]
+    pub silence_fill_interval_secs: u64,
+    #[schemars(description = "Filler phrases spoken to the caller while the agent is processing. One is chosen at random each interval. If empty, uses built-in defaults.")]
+    pub silence_fill_phrases: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]

@@ -251,6 +251,7 @@ impl OAuthService {
                 .unwrap_or_else(|| "SSO User".to_string()),
             password_hash: String::new(),
             timezone: None,
+            phone: None,
             groups: Vec::new(),
             deactivated_at: None,
             created_at: now,

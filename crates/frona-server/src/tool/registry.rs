@@ -211,6 +211,7 @@ mod tests {
                 name: "Test".into(),
                 password_hash: String::new(),
                 timezone: None,
+                phone: None,
                 groups: Vec::new(),
                 deactivated_at: None,
                 created_at: chrono::Utc::now(),

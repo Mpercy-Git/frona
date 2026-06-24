@@ -65,6 +65,7 @@ impl AuthService {
             name: req.name,
             password_hash,
             timezone: None,
+            phone: None,
             groups,
             deactivated_at: None,
             created_at: now,
@@ -97,6 +98,7 @@ impl AuthService {
                 email: user.email,
                 name: user.name,
                 timezone: user.timezone,
+                phone: user.phone.clone(),
                 needs_setup: None,
                 permissions: UserPermissions::default(),
             },
@@ -142,6 +144,7 @@ impl AuthService {
                 email: user.email,
                 name: user.name,
                 timezone: user.timezone,
+                phone: user.phone.clone(),
                 needs_setup: None,
                 permissions: UserPermissions::default(),
             },
@@ -275,6 +278,7 @@ impl AuthService {
                 email: user.email,
                 name: user.name,
                 timezone: user.timezone,
+                phone: user.phone.clone(),
                 needs_setup: None,
                 permissions: UserPermissions::default(),
             },
@@ -305,6 +309,7 @@ impl AuthService {
         }
 
         user.timezone = req.timezone.filter(|s| !s.is_empty());
+        user.phone = req.phone.filter(|s| !s.is_empty());
         user.updated_at = chrono::Utc::now();
         user_service.update(&user).await?;
 
@@ -314,6 +319,7 @@ impl AuthService {
             email: user.email,
             name: user.name,
             timezone: user.timezone,
+            phone: user.phone.clone(),
             needs_setup: None,
             permissions: UserPermissions::default(),
         })

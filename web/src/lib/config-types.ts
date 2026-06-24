@@ -79,6 +79,10 @@ export interface VoiceConfig {
   inbound_agent_id: string | null;
   inbound_welcome_greeting: string | null;
   inbound_allowlist: string[];
+  silence_fill_enabled: boolean;
+  silence_fill_initial_delay_secs: number;
+  silence_fill_interval_secs: number;
+  silence_fill_phrases: string[];
 }
 
 export interface VaultConfig {

@@ -50,6 +50,14 @@ use super::config::Config;
 use crate::auth::UserService;
 use crate::db::repo::generic::SurrealRepo;
 
+/// A named entry in the per-user voice inbound allowlist.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AllowlistEntry {
+    pub phone: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 #[derive(Clone, Default)]
 pub struct ActiveSessions {
     inner: Arc<Mutex<HashMap<String, CancellationToken>>>,
@@ -545,20 +553,29 @@ impl AppState {
         format!("voice.inbound_allowlist.{user_id}")
     }
 
-    /// Return the normalised E.164 numbers on a user's allowlist (DB-stored).
-    pub async fn get_allowlist(&self, user_id: &str) -> Vec<String> {
+    /// Return the allowlist entries on a user's allowlist (DB-stored).
+    pub async fn get_allowlist(&self, user_id: &str) -> Vec<AllowlistEntry> {
         let key = Self::allowlist_key(user_id);
         match self.get_runtime_config(&key).await {
-            Ok(Some(json)) => serde_json::from_str::<Vec<String>>(&json).unwrap_or_default(),
+            Ok(Some(json)) => {
+                // Try new format (Vec<AllowlistEntry>) first, fall back to
+                // legacy Vec<String> and convert.
+                serde_json::from_str::<Vec<AllowlistEntry>>(&json)
+                    .unwrap_or_else(|_| {
+                        let phones: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+                        phones.into_iter().map(|p| AllowlistEntry { phone: p, name: None }).collect()
+                    })
+            }
             _ => Vec::new(),
         }
     }
 
-    /// Add `phone` to the user's allowlist (idempotent).
+    /// Add `phone` (with optional `name`) to the user's allowlist (idempotent).
     pub async fn add_to_allowlist(
         &self,
         user_id: &str,
         phone: &str,
+        name: Option<&str>,
     ) -> Result<(), crate::core::error::AppError> {
         let normalized = crate::tool::voice::normalize_phone(phone);
         if normalized.is_empty() || normalized == "+" {
@@ -567,8 +584,18 @@ impl AppState {
             ));
         }
         let mut list = self.get_allowlist(user_id).await;
-        if !list.contains(&normalized) {
-            list.push(normalized);
+        // If the phone already exists, update the name; otherwise add.
+        if let Some(entry) = list.iter_mut().find(|e| {
+            crate::tool::voice::normalize_phone(&e.phone) == normalized
+        }) {
+            if let Some(n) = name {
+                entry.name = Some(n.to_string());
+            }
+        } else {
+            list.push(AllowlistEntry {
+                phone: normalized,
+                name: name.map(|s| s.to_string()),
+            });
         }
         let json = serde_json::to_string(&list)
             .map_err(|e| crate::core::error::AppError::Internal(e.to_string()))?;
@@ -584,7 +611,7 @@ impl AppState {
     ) -> Result<(), crate::core::error::AppError> {
         let normalized = crate::tool::voice::normalize_phone(phone);
         let mut list = self.get_allowlist(user_id).await;
-        list.retain(|p| p != &normalized);
+        list.retain(|e| crate::tool::voice::normalize_phone(&e.phone) != normalized);
         let json = serde_json::to_string(&list)
             .map_err(|e| crate::core::error::AppError::Internal(e.to_string()))?;
         self.set_runtime_config(&Self::allowlist_key(user_id), &json)
@@ -599,12 +626,13 @@ impl AppState {
     /// 2. Static `config_allowlist` (owned by `fallback_user_id`).
     ///
     /// Returns `None` when the caller is not on any allowlist.
+    /// When matched via a DB allowlist, returns the entry's `name` if set.
     pub async fn find_user_for_caller(
         &self,
         phone: &str,
         fallback_user_id: Option<&str>,
         config_allowlist: &[String],
-    ) -> Option<String> {
+    ) -> Option<(String, Option<String>)> {
         let normalized = crate::tool::voice::normalize_phone(phone);
         if normalized.is_empty() || normalized == "+" {
             return None;
@@ -634,9 +662,16 @@ impl AppState {
                 continue;
             };
 
-            let list: Vec<String> = serde_json::from_str(value).unwrap_or_default();
-            if list.iter().any(|p| crate::tool::voice::normalize_phone(p) == normalized) {
-                return Some(user_id.to_string());
+            // Try new format (Vec<AllowlistEntry>) first, fall back to Vec<String>.
+            let entries: Vec<AllowlistEntry> = serde_json::from_str(value)
+                .unwrap_or_else(|_| {
+                    let phones: Vec<String> = serde_json::from_str(value).unwrap_or_default();
+                    phones.into_iter().map(|p| AllowlistEntry { phone: p, name: None }).collect()
+                });
+            for entry in &entries {
+                if crate::tool::voice::normalize_phone(&entry.phone) == normalized {
+                    return Some((user_id.to_string(), entry.name.clone()));
+                }
             }
         }
 
@@ -646,7 +681,7 @@ impl AppState {
                 .iter()
                 .any(|p| crate::tool::voice::normalize_phone(p) == normalized)
             {
-                return Some(uid.to_string());
+                return Some((uid.to_string(), None));
             }
         }
 

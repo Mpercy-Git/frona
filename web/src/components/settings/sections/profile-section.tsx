@@ -14,7 +14,9 @@ interface SystemInfo {
 export function ProfileSection() {
   const { user, revalidate } = useAuth();
   const [timezone, setTimezone] = useState(user?.timezone ?? "");
+  const [phone, setPhone] = useState(user?.phone ?? "");
   const [saving, setSaving] = useState(false);
+  const [savingPhone, setSavingPhone] = useState(false);
   const [timezones, setTimezones] = useState<string[]>([]);
   const [serverTimezone, setServerTimezone] = useState<string>("");
 
@@ -51,6 +53,17 @@ export function ProfileSection() {
     }
   };
 
+  const savePhone = async () => {
+    if (phone === (user?.phone ?? "")) return;
+    setSavingPhone(true);
+    try {
+      await api.put("/api/auth/profile", { phone: phone || null });
+      await revalidate();
+    } finally {
+      setSavingPhone(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <SectionHeader title="Profile" description="Your account information" icon={UserCircleIcon} />
@@ -69,6 +82,21 @@ export function ProfileSection() {
             <div>
               <label className="block text-xs font-medium text-text-tertiary mb-1">Email</label>
               <p className="text-sm text-text-primary">{user.email}</p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-text-tertiary mb-1">Phone</label>
+              <input
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                onBlur={savePhone}
+                onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                placeholder="+44 7xxx xxx xxx"
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+              />
+              {savingPhone && (
+                <p className="text-xs text-text-tertiary mt-1">Saving...</p>
+              )}
             </div>
           </div>
         </SectionPanel>

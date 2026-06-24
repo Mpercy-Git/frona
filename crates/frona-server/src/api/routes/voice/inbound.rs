@@ -202,7 +202,7 @@ pub(super) async fn twilio_inbound_handler(
     // ------------------------------------------------------------------
     // 4. Resolve call ownership from allowlists
     // ------------------------------------------------------------------
-    let user_id = match state
+    let (user_id, caller_name_from_allowlist) = match state
         .find_user_for_caller(
             &from,
             state.config.voice.inbound_user_id.as_deref(),
@@ -210,7 +210,7 @@ pub(super) async fn twilio_inbound_handler(
         )
         .await
     {
-        Some(uid) => uid,
+        Some((uid, name)) => (uid, name),
         None => {
             tracing::info!(
                 from = %from,
@@ -303,7 +303,11 @@ pub(super) async fn twilio_inbound_handler(
     // ------------------------------------------------------------------
     let contact = match state
         .contact_service
-        .find_or_create_by_phone(&user_id, &from, "Incoming caller")
+        .find_or_create_by_phone(
+            &user_id,
+            &from,
+            caller_name_from_allowlist.as_deref().unwrap_or("Incoming caller"),
+        )
         .await
     {
         Ok(c) => c,
@@ -371,7 +375,9 @@ pub(super) async fn twilio_inbound_handler(
         call_id: Some(call_id.clone()),
         direction: Some(CallDirection::Inbound),
         caller_phone: Some(from.clone()),
-        caller_name: Some(contact.name.clone()),
+        // Prefer the allowlist name (user-set) over the contact's stored
+        // name, which may be "Incoming caller" from a previous call.
+        caller_name: Some(caller_name_from_allowlist.unwrap_or_else(|| contact.name.clone())),
     }) {
         Ok(v) => v,
         Err(e) => {
@@ -390,6 +396,7 @@ pub(super) async fn twilio_inbound_handler(
         name: user.name.clone(),
         password_hash: String::new(),
         timezone: None,
+        phone: None,
         created_at: user.created_at,
         updated_at: user.updated_at,
     };

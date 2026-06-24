@@ -164,6 +164,7 @@ async fn twilio_callback(
         name: String::new(),
         password_hash: String::new(),
         timezone: None,
+        phone: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

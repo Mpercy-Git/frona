@@ -1,9 +1,13 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{FromRequest, Query, Request, State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::error::AppError;
@@ -14,6 +18,15 @@ use crate::tool::voice::VoiceSessionExtensions;
 
 use super::models::TokenQuery;
 use super::verify_voice_jwt;
+
+/// Default filler phrases used when `silence_fill_phrases` is empty.
+const DEFAULT_SILENCE_FILL_PHRASES: &[&str] = &[
+    "Just a moment, I'm working on that.",
+    "Let me look into that for you.",
+    "Still thinking — bear with me.",
+    "One moment please.",
+    "I'm still processing your request.",
+];
 
 pub(crate) async fn twilio_ws_handler(
     State(state): State<AppState>,
@@ -47,13 +60,15 @@ pub(crate) async fn twilio_ws_handler(
     let user_id = claims.sub.clone();
     let contact_id = ext.contact_id.clone();
     let call_id = ext.call_id.clone();
+    let caller_name = ext.caller_name.clone();
+    let caller_phone = ext.caller_phone.clone();
 
     let ws = match WebSocketUpgrade::from_request(req, &state).await {
         Ok(ws) => ws,
         Err(e) => return e.into_response(),
     };
 
-    ws.on_upgrade(move |socket| handle_voice_socket(socket, state, chat_id, user_id, contact_id, call_id))
+    ws.on_upgrade(move |socket| handle_voice_socket(socket, state, chat_id, user_id, contact_id, call_id, caller_name, caller_phone))
 }
 
 async fn handle_voice_socket(
@@ -63,11 +78,17 @@ async fn handle_voice_socket(
     user_id: String,
     contact_id: Option<String>,
     call_id: Option<String>,
+    caller_name: Option<String>,
+    caller_phone: Option<String>,
 ) {
     state.active_sessions.register(&chat_id).await;
     tracing::debug!(chat_id = %chat_id, "Voice WS session registered in active sessions");
-    let (mut ws_send, mut ws_recv) = socket.split();
+    let (ws_send, mut ws_recv) = socket.split();
+    // Wrap the send half in Arc<Mutex> so it can be shared between the agent
+    // turn task and the silence-filler task.
+    let ws_send = Arc::new(Mutex::new(ws_send));
     let mut last_response = String::new();
+    let mut first_prompt = true;
 
     loop {
         let msg = match ws_recv.next().await {
@@ -107,13 +128,58 @@ async fn handle_voice_socket(
 
                 tracing::info!(chat_id = %chat_id, prompt = %voice_prompt, "Voice turn starting");
                 let cancel_token = state.active_sessions.register(&chat_id).await;
+
+                // On the first prompt of an inbound call, prepend the caller
+                // identity so the agent knows who's calling.
+                let effective_prompt = if first_prompt {
+                    first_prompt = false;
+                    if let Some(ref name) = caller_name {
+                        let phone = caller_phone.as_deref().unwrap_or("unknown");
+                        format!("[INBOUND_CALL: Incoming call from {name} ({phone}).]\n{voice_prompt}")
+                    } else {
+                        voice_prompt
+                    }
+                } else {
+                    voice_prompt
+                };
+
+                // --- Silence filler ---
+                // Spawn a background task that periodically sends filler phrases
+                // to the caller while the agent is processing. The filler is
+                // cancelled when the turn completes (or errors).
+                let filler_cancel = CancellationToken::new();
+                let filler_handle = if state.config.voice.silence_fill_enabled {
+                    let ws = ws_send.clone();
+                    let fc = filler_cancel.clone();
+                    let cid = chat_id.clone();
+                    let initial = Duration::from_secs(
+                        state.config.voice.silence_fill_initial_delay_secs.max(1),
+                    );
+                    let interval = Duration::from_secs(
+                        state.config.voice.silence_fill_interval_secs.max(1),
+                    );
+                    let phrases = if state.config.voice.silence_fill_phrases.is_empty() {
+                        DEFAULT_SILENCE_FILL_PHRASES
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect()
+                    } else {
+                        state.config.voice.silence_fill_phrases.clone()
+                    };
+                    Some(tokio::spawn(silence_filler(
+                        ws, fc, initial, interval, phrases, cid,
+                    )))
+                } else {
+                    None
+                };
+
                 let (response_text, should_hang_up) = match handle_voice_turn(
                     &state,
                     &user_id,
                     &chat_id,
-                    &voice_prompt,
+                    &effective_prompt,
                     cancel_token,
-                    &mut ws_send,
+                    ws_send.clone(),
                     contact_id.as_deref(),
                     call_id.as_deref(),
                 )
@@ -122,9 +188,20 @@ async fn handle_voice_socket(
                     Ok(result) => result,
                     Err(e) => {
                         tracing::error!(error = %e, chat_id = %chat_id, "Voice turn failed");
+                        filler_cancel.cancel();
+                        if let Some(h) = filler_handle {
+                            let _ = h.await;
+                        }
                         continue;
                     }
                 };
+
+                // Stop the filler and wait for it to finish so it releases the
+                // ws_send lock before we send the final TTS response.
+                filler_cancel.cancel();
+                if let Some(h) = filler_handle {
+                    let _ = h.await;
+                }
 
                 tracing::info!(chat_id = %chat_id, response_len = %response_text.len(), should_hang_up = %should_hang_up, "Voice turn complete");
                 if !response_text.is_empty() {
@@ -135,13 +212,16 @@ async fn handle_voice_socket(
                         "token": response_text,
                         "last": true
                     });
-                    if ws_send
-                        .send(Message::Text(tts.to_string().into()))
-                        .await
-                        .is_err()
                     {
-                        tracing::warn!(chat_id = %chat_id, "Failed to send TTS response — closing");
-                        break;
+                        let mut send = ws_send.lock().await;
+                        if send
+                            .send(Message::Text(tts.to_string().into()))
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!(chat_id = %chat_id, "Failed to send TTS response — closing");
+                            break;
+                        }
                     }
                 }
 
@@ -149,10 +229,13 @@ async fn handle_voice_socket(
                     let word_count = response_text.split_whitespace().count();
                     let tts_secs = ((word_count as f64 / 2.5).ceil() as u64 + 1).clamp(2, 30);
                     tracing::info!(chat_id = %chat_id, tts_secs, "Waiting for TTS before hangup");
-                    tokio::time::sleep(std::time::Duration::from_secs(tts_secs)).await;
+                    tokio::time::sleep(Duration::from_secs(tts_secs)).await;
                     tracing::info!(chat_id = %chat_id, "Sending hangup signal to Twilio");
                     let end_msg = serde_json::json!({ "type": "end" });
-                    ws_send.send(Message::Text(end_msg.to_string().into())).await.ok();
+                    {
+                        let mut send = ws_send.lock().await;
+                        send.send(Message::Text(end_msg.to_string().into())).await.ok();
+                    }
                     break;
                 }
             }
@@ -189,6 +272,63 @@ async fn handle_voice_socket(
     }
 }
 
+/// Periodically sends filler phrases to the caller while the agent is
+/// processing a turn. Stops when `cancel` is triggered.
+///
+/// Each filler phrase is sent as `{"type":"text","token":"…","last":false}`
+/// so ConversationRelay does not end the turn — it just speaks the phrase
+/// and continues listening for the agent's real response.
+async fn silence_filler(
+    ws_send: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    cancel: CancellationToken,
+    initial_delay: Duration,
+    interval: Duration,
+    phrases: Vec<String>,
+    chat_id: String,
+) {
+    // Wait the initial silence period before sending the first filler.
+    tokio::select! {
+        _ = cancel.cancelled() => return,
+        _ = tokio::time::sleep(initial_delay) => {}
+    }
+
+    let mut idx: usize = 0;
+    loop {
+        // Pick a phrase — simple rotating index avoids extra dependencies.
+        let phrase = if phrases.is_empty() {
+            return;
+        } else {
+            let p = &phrases[idx % phrases.len()];
+            idx += 1;
+            p.clone()
+        };
+
+        let filler_msg = serde_json::json!({
+            "type": "text",
+            "token": phrase,
+            "last": false
+        });
+
+        {
+            let mut send = ws_send.lock().await;
+            if send
+                .send(Message::Text(filler_msg.to_string().into()))
+                .await
+                .is_err()
+            {
+                tracing::warn!(chat_id = %chat_id, "Silence filler: failed to send — stopping");
+                return;
+            }
+        }
+        tracing::debug!(chat_id = %chat_id, phrase = %phrase, "Silence filler sent");
+
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tokio::time::sleep(interval) => {}
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_voice_turn(
     state: &AppState,
@@ -196,7 +336,7 @@ async fn handle_voice_turn(
     chat_id: &str,
     content: &str,
     cancel_token: CancellationToken,
-    ws_send: &mut futures::stream::SplitSink<WebSocket, Message>,
+    ws_send: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     contact_id: Option<&str>,
     call_id: Option<&str>,
 ) -> Result<(String, bool), AppError> {
@@ -242,10 +382,10 @@ async fn handle_voice_turn(
                     "type": "sendDigits",
                     "digits": tool_call.result
                 });
-                ws_send
-                    .send(Message::Text(dtmf_msg.to_string().into()))
-                    .await
-                    .ok();
+                {
+                    let mut send = ws_send.lock().await;
+                    send.send(Message::Text(dtmf_msg.to_string().into())).await.ok();
+                }
 
                 let _ = state.chat_service
                     .resolve_tool_call(&tool_call.id, Some("DTMF sent".to_string()))

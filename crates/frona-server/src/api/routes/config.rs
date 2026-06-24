@@ -55,20 +55,29 @@ async fn update_config(
 
     deep_merge(&mut base, patch);
 
-    let _: Config = serde_json::from_value(base.clone())
+    // Validate the merged config and capture the fully-deserialised struct.
+    // Deserialising into `Config` fills in all default values (via
+    // `#[serde(default)]`), so the response we return to the frontend has
+    // every field present — matching the shape of GET /api/config.
+    let validated: Config = serde_json::from_value(base.clone())
         .map_err(|e| ApiError(crate::core::error::AppError::Validation(
             format!("Invalid config: {e}"),
         )))?;
 
+    // Strip defaults and persist to disk (mutates `base` in place).
     persist_config(&mut base, &path)
         .map_err(|e| ApiError(crate::core::error::AppError::Internal(e)))?;
 
     state.set_runtime_config("setup_completed", "true").await?;
 
-    redact_config_for_api(&mut base);
+    // Build the API response from the validated config (with all defaults
+    // filled in), NOT from the stripped `base` that was written to disk.
+    let mut response = serde_json::to_value(&validated)
+        .map_err(|e| ApiError(crate::core::error::AppError::Internal(e.to_string())))?;
+    redact_config_for_api(&mut response);
 
     Ok(Json(serde_json::json!({
-        "config": base,
+        "config": response,
         "restart_required": true,
     })))
 }

@@ -178,6 +178,7 @@ async fn me(
         email: user.email,
         name: user.name,
         timezone: user.timezone,
+        phone: user.phone,
         needs_setup,
         permissions: UserPermissions {
             list_users: list_users_decision.allowed,
