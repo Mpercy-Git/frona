@@ -366,7 +366,7 @@ function OpenAIParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: 
 }
 
 function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: (u: Partial<ModelGroupConfig>) => void }) {
-  const routing = (group.provider ?? null) as { order?: string[]; allow_fallbacks?: boolean; require_parameters?: boolean; ignore?: string[]; quantizations?: string[]; sort?: string } | null;
+  const routing = (group.provider_routing ?? null) as { order?: string[]; allow_fallbacks?: boolean; require_parameters?: boolean; ignore?: string[]; quantizations?: string[]; sort?: string } | null;
 
   return (
     <div className="space-y-4">
@@ -418,7 +418,7 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
             onChange={(raw) => {
               const order = raw.split(",").map(s => s.trim()).filter(Boolean);
               const existing = routing ?? {};
-              onUpdate({ provider: order.length > 0 ? { ...existing, order } : { ...existing, order: null } });
+              onUpdate({ provider_routing: order.length > 0 ? { ...existing, order } : { ...existing, order: null } } as any);
             }}
             placeholder="OpenAI, Anthropic"
           />
@@ -429,7 +429,7 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
               value={routing?.allow_fallbacks ?? true}
               onChange={(v) => {
                 const existing = routing ?? {};
-                onUpdate({ provider: { ...existing, allow_fallbacks: v } });
+                onUpdate({ provider_routing: { ...existing, allow_fallbacks: v } } as any);
               }}
             />
             <Toggle
@@ -438,7 +438,7 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
               value={routing?.require_parameters ?? false}
               onChange={(v) => {
                 const existing = routing ?? {};
-                onUpdate({ provider: { ...existing, require_parameters: v } });
+                onUpdate({ provider_routing: { ...existing, require_parameters: v } } as any);
               }}
             />
           </div>
@@ -450,7 +450,7 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
               onChange={(raw) => {
                 const ignore = raw.split(",").map(s => s.trim()).filter(Boolean);
                 const existing = routing ?? {};
-                onUpdate({ provider: { ...existing, ignore: ignore.length > 0 ? ignore : null } });
+                onUpdate({ provider_routing: { ...existing, ignore: ignore.length > 0 ? ignore : null } } as any);
               }}
               placeholder="Together, DeepSeek"
             />
@@ -461,7 +461,7 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
               onChange={(raw) => {
                 const quantizations = raw.split(",").map(s => s.trim()).filter(Boolean);
                 const existing = routing ?? {};
-                onUpdate({ provider: { ...existing, quantizations: quantizations.length > 0 ? quantizations : null } });
+                onUpdate({ provider_routing: { ...existing, quantizations: quantizations.length > 0 ? quantizations : null } } as any);
               }}
               placeholder="fp8, bf16"
             />
@@ -472,7 +472,7 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
               value={routing?.sort ?? ""}
               onChange={(e) => {
                 const existing = routing ?? {};
-                onUpdate({ provider: { ...existing, sort: e.target.value || null } });
+                onUpdate({ provider_routing: { ...existing, sort: e.target.value || null } } as any);
               }}
               className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
             >

@@ -508,9 +508,10 @@ pub struct OpenRouterParams {
     #[schemars(description = "Simple provider routing, e.g. 'openai' or 'anthropic'. Mutually exclusive with provider routing.")]
     pub route: Option<String>,
     /// Provider routing object. Sent as `provider` in the API request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Renamed to avoid collision with the `#[serde(tag = "provider")]` enum discriminant.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "provider_routing")]
     #[schemars(description = "Provider routing preferences (order, fallbacks, etc.). See https://openrouter.ai/docs/guides/routing/provider-selection")]
-    pub provider: Option<OpenRouterProviderRouting>,
+    pub provider_routing: Option<OpenRouterProviderRouting>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -700,6 +701,7 @@ impl ModelGroupConfig {
     /// Extract provider-specific params as JSON for Rig's additional_params.
     /// Serializes the whole config, strips common fields and the provider tag,
     /// returning only provider-specific params. Returns None if empty.
+    /// Also renames `provider_routing` to `provider` for OpenRouter API compat.
     pub fn additional_params(&self) -> Option<serde_json::Value> {
         const COMMON_KEYS: &[&str] = &[
             "provider", "model", "fallbacks", "max_tokens",
@@ -713,6 +715,13 @@ impl ModelGroupConfig {
 
         for key in COMMON_KEYS {
             map.remove(*key);
+        }
+
+        // Rename `provider_routing` -> `provider` for the OpenRouter API.
+        // We use `provider_routing` in the config to avoid colliding with
+        // the `#[serde(tag = "provider")]` enum discriminant.
+        if let Some(routing) = map.remove("provider_routing") {
+            map.insert("provider".to_string(), routing);
         }
 
         map.retain(|_, v| !v.is_null());
