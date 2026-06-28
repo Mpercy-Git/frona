@@ -102,9 +102,9 @@ impl SendMessageTool {
             content
         };
 
-        if let Ok(notification) = self
+        let _ = self
             .notification_service
-            .create(
+            .create_and_notify(
                 &ctx.user.id,
                 NotificationData::Agent {
                     agent_id: ctx.agent.id.clone(),
@@ -114,11 +114,7 @@ impl SendMessageTool {
                 ctx.agent.name.clone(),
                 truncated_body,
             )
-            .await
-        {
-            self.broadcast_service
-                .send_notification(&ctx.user.id, notification);
-        }
+            .await;
 
         Ok(ToolOutput::text(
             serde_json::json!({

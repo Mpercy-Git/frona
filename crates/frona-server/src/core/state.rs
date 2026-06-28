@@ -32,6 +32,9 @@ use crate::inference::ModelProviderRegistry;
 use crate::inference::config::ModelRegistryConfig;
 use crate::memory::service::MemoryService;
 use crate::notification::service::NotificationService;
+use crate::notification::push_sender::PushSender;
+use crate::notification::push_repository::PushSubscriptionRepository;
+use crate::db::repo::push_subscriptions::SurrealPushSubscriptionRepo;
 use crate::policy::service::PolicyService;
 use crate::tool::manager::ToolManager;
 use crate::agent::prompt::PromptLoader;
@@ -140,6 +143,8 @@ pub struct AppState {
     pub channel_service: Arc<crate::chat::channel::ChannelService>,
     pub http_client: reqwest::Client,
     pub harness: Arc<crate::agent::harness::Harness>,
+    pub push_subscription_repo: Arc<dyn PushSubscriptionRepository>,
+    pub push_sender: Option<Arc<PushSender>>,
 }
 
 impl AppState {
@@ -446,6 +451,12 @@ impl AppState {
             harness.clone(),
             task_executor.clone(),
         ));
+        let push_subscription_repo: Arc<dyn PushSubscriptionRepository> =
+            Arc::new(SurrealPushSubscriptionRepo::new(db.clone()));
+        let push_sender = PushSender::new(&config.push, push_subscription_repo.clone())
+            .ok()
+            .flatten()
+            .map(Arc::new);
         Self {
             db: db.clone(),
             auth_service: Arc::new(AuthService::new()),
@@ -462,7 +473,11 @@ impl AppState {
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions,
             memory_service,
-            notification_service: NotificationService::new(SurrealRepo::new(db.clone())),
+            notification_service: NotificationService::with_broadcast(
+                SurrealRepo::new(db.clone()),
+                broadcast_service.clone(),
+                push_sender.clone(),
+            ),
             policy_service: policy_service.clone(),
             tool_manager,
             sandbox_factory,
@@ -492,6 +507,8 @@ impl AppState {
             channel_service,
             http_client,
             harness,
+            push_subscription_repo,
+            push_sender,
         }
     }
 

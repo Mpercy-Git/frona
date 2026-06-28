@@ -389,6 +389,27 @@ impl Default for ShareConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
+pub struct PushConfig {
+    #[schemars(description = "VAPID public key (base64url-encoded, uncompressed P-256). Required for Web Push.")]
+    pub vapid_public_key: Option<String>,
+    #[schemars(description = "VAPID private key (base64url-encoded, uncompressed P-256). Required for Web Push.")]
+    pub vapid_private_key: Option<String>,
+    #[schemars(description = "VAPID subject — a mailto: URL or the site's HTTPS URL.")]
+    pub subject: String,
+}
+
+impl Default for PushConfig {
+    fn default() -> Self {
+        Self {
+            vapid_public_key: None,
+            vapid_private_key: None,
+            subject: "mailto:noreply@frona.local".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct ChannelConfig {
@@ -961,6 +982,8 @@ pub struct Config {
     pub channel: ChannelConfig,
     #[serde(default)]
     pub share: ShareConfig,
+    #[serde(default)]
+    pub push: PushConfig,
     #[serde(default)]
     pub signal: SignalConfig,
     #[serde(default)]

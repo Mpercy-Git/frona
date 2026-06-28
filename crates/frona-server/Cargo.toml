@@ -99,6 +99,7 @@ rmcp = { version = "1", features = ["client", "transport-child-process", "transp
 xz2 = "0.1"
 inventory = "0.3"
 jsonschema = { version = "0.18", default-features = false }
+web-push = "0.11"
 
 # Personal-WhatsApp adapter. Uses the stable-Rust `wa-rs` fork of
 # `whatsapp-rust` - the upstream requires nightly.

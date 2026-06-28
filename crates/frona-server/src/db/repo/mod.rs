@@ -12,6 +12,7 @@ pub mod memories;
 pub mod messages;
 pub mod notifications;
 pub mod policies;
+pub mod push_subscriptions;
 pub mod oauth;
 pub mod shares;
 pub mod spaces;

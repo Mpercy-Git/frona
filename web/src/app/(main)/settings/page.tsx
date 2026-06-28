@@ -27,11 +27,13 @@ import { SandboxSettingsSection } from "@/components/settings/sections/sandbox-s
 import { McpSection } from "@/components/settings/sections/mcp-section";
 import { ChannelsSection } from "@/components/settings/sections/channels-section";
 import { AboutSection } from "@/components/settings/sections/about-section";
+import { NotificationsSection } from "@/components/settings/sections/notifications-section";
 import { getConfig, updateConfig } from "@/lib/config-types";
 import type { Config } from "@/lib/config-types";
 
 const TABS = [
   { id: "profile", label: "Profile", group: "user", saveable: false },
+  { id: "notifications", label: "Notifications", group: "user", saveable: false },
   { id: "theme", label: "Theme", group: "user", saveable: false },
   { id: "users", label: "Users", group: "user", saveable: false },
   { id: "timezone", label: "Timezone", group: "config", saveable: true },
@@ -265,6 +267,7 @@ export default function SettingsPage() {
 
             <div className="min-h-[400px]">
               {activeTab === "profile" && <ProfileSection />}
+              {activeTab === "notifications" && <NotificationsSection />}
               {activeTab === "theme" && <ThemeSection />}
               {activeTab === "users" && <UsersSection />}
               {isConfigTab && configLoading && (

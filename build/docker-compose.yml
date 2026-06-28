@@ -78,6 +78,9 @@ services:
       - FRONA_VOICE_SILENCE_FILL_INITIAL_DELAY_SECS
       - FRONA_VOICE_SILENCE_FILL_INTERVAL_SECS
       - FRONA_VOICE_SILENCE_FILL_PHRASES
+      - FRONA_PUSH_VAPID_PUBLIC_KEY
+      - FRONA_PUSH_VAPID_PRIVATE_KEY
+      - FRONA_PUSH_SUBJECT
     depends_on: [browserless, searxng]
     restart: unless-stopped
 
@@ -118,6 +121,9 @@ services:
       - FRONA_VOICE_SILENCE_FILL_INITIAL_DELAY_SECS
       - FRONA_VOICE_SILENCE_FILL_INTERVAL_SECS
       - FRONA_VOICE_SILENCE_FILL_PHRASES
+      - FRONA_PUSH_VAPID_PUBLIC_KEY
+      - FRONA_PUSH_VAPID_PRIVATE_KEY
+      - FRONA_PUSH_SUBJECT
     depends_on: [browserless, searxng]
     restart: unless-stopped
 

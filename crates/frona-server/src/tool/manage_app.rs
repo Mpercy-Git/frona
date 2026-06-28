@@ -302,9 +302,9 @@ impl ManageAppTool {
         level: NotificationLevel,
         title: &str,
     ) {
-        if let Ok(notification) = self
+        let _ = self
             .notification_service
-            .create(
+            .create_and_notify(
                 &ctx.user.id,
                 NotificationData::App {
                     app_handle: app_handle.to_string(),
@@ -314,10 +314,7 @@ impl ManageAppTool {
                 title.to_string(),
                 String::new(),
             )
-            .await
-        {
-            self.broadcast_service.send_notification(&ctx.user.id, notification);
-        }
+            .await;
     }
 
     async fn resolve_app_id(
