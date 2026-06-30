@@ -90,6 +90,7 @@ impl McpManager {
             )
             .without_venv()
             .without_node()
+            .without_resource_monitor()
             .with_extra_env_vars(package_manager_env_vars(&server.workspace_dir))
     }
 

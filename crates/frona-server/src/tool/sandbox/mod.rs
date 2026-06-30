@@ -113,6 +113,7 @@ impl SandboxFactory {
             blocked_networks: Vec::new(),
             agent_id: agent_id.to_string(),
             resource_manager: Arc::clone(&self.resource_manager),
+            skip_resource_monitor: false,
             init_venv: true,
             init_node: true,
             token_guard: None,
@@ -378,6 +379,10 @@ pub struct Sandbox {
     blocked_networks: Vec<String>,
     agent_id: String,
     resource_manager: Arc<SystemResourceManager>,
+    /// When true, spawned processes are not registered with the resource
+    /// monitor. Used by the MCP install sandbox so package warm-up (which is
+    /// CPU-intensive) is not killed by per-agent CPU limits.
+    skip_resource_monitor: bool,
     init_venv: bool,
     init_node: bool,
     /// Holds the per-invocation ephemeral token so it lives as long as the
@@ -434,6 +439,14 @@ impl Sandbox {
 
     pub fn without_node(mut self) -> Self {
         self.init_node = false;
+        self
+    }
+
+    /// Skip resource monitor registration for spawned processes.
+    /// Used by the MCP install sandbox so package warm-up is not killed
+    /// by per-agent CPU limits.
+    pub fn without_resource_monitor(mut self) -> Self {
+        self.skip_resource_monitor = true;
         self
     }
 }
@@ -763,8 +776,10 @@ impl Sandbox {
             .spawn()
             .map_err(|e| AppError::Tool(format!("Failed to spawn process: {e}")))?;
 
-        if let Some(pid) = child.id() {
-            self.resource_manager.register(pid, &self.agent_id);
+        if !self.skip_resource_monitor {
+            if let Some(pid) = child.id() {
+                self.resource_manager.register(pid, &self.agent_id);
+            }
         }
 
         Ok(child)
@@ -882,6 +897,7 @@ mod tests {
             blocked_networks: Vec::new(),
             agent_id: "test".to_string(),
             resource_manager: Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
+            skip_resource_monitor: false,
             init_venv: true,
             init_node: true,
             token_guard: None,
@@ -932,6 +948,7 @@ mod tests {
             blocked_networks: Vec::new(),
             agent_id: "test".to_string(),
             resource_manager: Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
+            skip_resource_monitor: false,
             init_venv: true,
             init_node: true,
             token_guard: None,
