@@ -198,11 +198,12 @@ impl ChannelService {
 
         if channel.status == ChannelStatus::Setup {
             let missing = self.missing_required(&channel).await?;
-            channel.error_message = if missing.is_empty() {
-                None
+            if missing.is_empty() {
+                channel.status = ChannelStatus::Disconnected;
+                channel.error_message = None;
             } else {
-                Some(format!("missing required field(s): {}", missing.join(", ")))
-            };
+                channel.error_message = Some(format!("missing required field(s): {}", missing.join(", ")));
+            }
         }
 
         channel.updated_at = Utc::now();
@@ -251,6 +252,10 @@ impl ChannelService {
         let principal = Principal::channel(&channel.id);
         self.vault.delete_bindings_for_principal(user_id, &principal).await?;
         self.repo.delete(&channel.id).await?;
+
+        // Remove the space that was created for this channel.
+        let _ = state.space_service.delete(user_id, &channel.space_id).await;
+
         self.broadcast.broadcast_entity_updated(
             user_id,
             "channel",

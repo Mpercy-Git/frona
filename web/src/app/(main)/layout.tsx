@@ -23,7 +23,7 @@ export default function MainLayout({
         <NotificationProvider>
           <Suspense>
             <SessionProvider>
-              <div className="flex flex-col h-screen">
+              <div className="flex flex-col h-[100dvh]">
                 <TopBar />
                 <div className="flex-1 overflow-hidden">
                   {children}

@@ -1,6 +1,22 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* ── Mobile / PWA baseline ───────────────────────────────────────────────── */
+html,
+body {
+  /* Prevent pull-to-refresh and overscroll glow on the app shell */
+  overscroll-behavior: none;
+  /* Remove the blue tap-highlight flash on Android */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Safe-area utilities — apply to elements that sit near screen edges
+   (bottom nav, composer, top bar) when running as a standalone PWA */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+.pt-safe { padding-top:    env(safe-area-inset-top);    }
+.pl-safe { padding-left:   env(safe-area-inset-left);   }
+.pr-safe { padding-right:  env(safe-area-inset-right);  }
+
 @theme {
   --color-surface: var(--surface);
   --color-surface-secondary: var(--surface-secondary);

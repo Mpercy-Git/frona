@@ -162,6 +162,23 @@ export function FronaComposer({
     ? "Type your answer or click an option above..."
     : placeholder;
 
+  // On mobile, when the virtual keyboard opens the visualViewport shrinks.
+  // Scroll the thread viewport to bottom so the composer stays visible.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      // Find the nearest scroll container (the ThreadPrimitive.Viewport) and
+      // snap it to the bottom so the last message + composer are in view.
+      const scrollEl = document.querySelector("[data-radix-scroll-area-viewport], .overflow-y-auto");
+      if (scrollEl instanceof HTMLElement) {
+        scrollEl.scrollTop = scrollEl.scrollHeight;
+      }
+    };
+    vv.addEventListener("resize", onResize);
+    return () => vv.removeEventListener("resize", onResize);
+  }, []);
+
   useEffect(() => {
     if (!menuOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
@@ -274,7 +291,7 @@ export function FronaComposer({
               autoFocus
               placeholder={activePlaceholder}
               submitMode={submitMode}
-              className="aui-frona-composer-input w-full text-sm leading-5 text-text-primary"
+              className="aui-frona-composer-input w-full text-sm leading-5 text-text-primary [touch-action:manipulation]"
             />
           </div>
           <div className="flex items-center justify-between pt-2">

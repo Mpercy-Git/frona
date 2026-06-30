@@ -51,7 +51,7 @@ export function TopBar() {
 
   if (mobile) {
     return (
-      <div className="flex items-center h-14 px-3 bg-surface-nav border-b border-border shrink-0 gap-2">
+      <div className="flex items-center h-14 px-3 bg-surface-nav border-b border-border shrink-0 gap-2 pt-safe">
         <button
           onClick={() => {
             if (pathname.startsWith("/settings")) {

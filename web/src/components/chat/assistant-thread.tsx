@@ -92,7 +92,7 @@ export function AssistantThread() {
   return (
     <WizardAnswersContext value={wizard.answers}>
     <ThreadPrimitive.Root className="flex flex-1 flex-col min-h-0">
-      <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto min-h-0" onScroll={handleScroll}>
+      <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto min-h-0 overscroll-y-contain" onScroll={handleScroll}>
         <ThreadPrimitive.If empty>
           <div />
         </ThreadPrimitive.If>
