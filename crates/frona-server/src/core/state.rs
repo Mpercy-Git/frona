@@ -406,6 +406,22 @@ impl AppState {
             config_arc.clone(),
         ));
 
+        let push_subscription_repo: Arc<dyn PushSubscriptionRepository> =
+            Arc::new(SurrealPushSubscriptionRepo::new(db.clone()));
+        let push_sender = PushSender::new(&config.push, push_subscription_repo.clone())
+            .ok()
+            .flatten()
+            .map(Arc::new);
+        let notification_service = NotificationService::with_broadcast(
+            SurrealRepo::new(db.clone()),
+            broadcast_service.clone(),
+            push_sender.clone(),
+        );
+        match &push_sender {
+            Some(_) => tracing::info!("Push notifications enabled (VAPID configured)"),
+            None => tracing::info!("Push notifications disabled (no VAPID keys configured)"),
+        }
+
         let chat_service = ChatService::new(
             chat_repo,
             message_repo,
@@ -418,6 +434,7 @@ impl AppState {
             prompt_loader.clone(),
             broadcast_service.clone(),
             presign_service.clone(),
+            notification_service.clone(),
         );
         let shutdown_token = CancellationToken::new();
         let active_sessions = ActiveSessions::default();
@@ -451,12 +468,6 @@ impl AppState {
             harness.clone(),
             task_executor.clone(),
         ));
-        let push_subscription_repo: Arc<dyn PushSubscriptionRepository> =
-            Arc::new(SurrealPushSubscriptionRepo::new(db.clone()));
-        let push_sender = PushSender::new(&config.push, push_subscription_repo.clone())
-            .ok()
-            .flatten()
-            .map(Arc::new);
         Self {
             db: db.clone(),
             auth_service: Arc::new(AuthService::new()),
@@ -473,11 +484,7 @@ impl AppState {
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions,
             memory_service,
-            notification_service: NotificationService::with_broadcast(
-                SurrealRepo::new(db.clone()),
-                broadcast_service.clone(),
-                push_sender.clone(),
-            ),
+            notification_service,
             policy_service: policy_service.clone(),
             tool_manager,
             sandbox_factory,

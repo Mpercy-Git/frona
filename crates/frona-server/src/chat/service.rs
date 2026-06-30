@@ -15,6 +15,8 @@ use crate::inference::provider::ModelRef;
 use crate::memory::service::MemoryService;
 use crate::agent::prompt::PromptLoader;
 use crate::core::repository::Repository;
+use crate::notification::service::NotificationService;
+use crate::notification::models::{NotificationData, NotificationLevel};
 use rig_core::completion::Message as RigMessage;
 
 pub struct AgentConfig {
@@ -59,6 +61,7 @@ pub struct ChatService {
     prompts: PromptLoader,
     broadcast: crate::chat::broadcast::BroadcastService,
     presign: crate::credential::presign::PresignService,
+    notification_service: NotificationService,
 }
 
 impl ChatService {
@@ -75,6 +78,7 @@ impl ChatService {
         prompts: PromptLoader,
         broadcast: crate::chat::broadcast::BroadcastService,
         presign: crate::credential::presign::PresignService,
+        notification_service: NotificationService,
     ) -> Self {
         Self {
             chat_repo,
@@ -88,6 +92,7 @@ impl ChatService {
             prompts,
             broadcast,
             presign,
+            notification_service,
         }
     }
 
@@ -697,6 +702,46 @@ impl ChatService {
             space_id_owned,
             response.clone(),
         );
+
+        // Fire a Web Push notification for agent replies with content.
+        // Skip empty "Executing" placeholder messages, system events, and user messages.
+        if saved.role == crate::chat::message::models::MessageRole::Agent
+            && !saved.content.is_empty()
+            && saved.status.as_ref() != Some(&crate::chat::message::models::MessageStatus::Executing)
+        {
+            let agent_name = if let Some(ref agent_id) = saved.agent_id {
+                self.agent_service
+                    .find_by_id(agent_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name)
+                    .unwrap_or_else(|| "Frona".to_string())
+            } else {
+                "Frona".to_string()
+            };
+
+            let truncated = if saved.content.len() > 200 {
+                format!("{}…", &saved.content[..200])
+            } else {
+                saved.content.clone()
+            };
+
+            let _ = self
+                .notification_service
+                .create_and_notify(
+                    user_id,
+                    NotificationData::Agent {
+                        agent_id: saved.agent_id.clone().unwrap_or_default(),
+                        chat_id: saved.chat_id.clone(),
+                    },
+                    NotificationLevel::Info,
+                    agent_name,
+                    truncated,
+                )
+                .await;
+        }
+
         Ok(response)
     }
 
