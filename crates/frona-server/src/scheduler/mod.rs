@@ -532,7 +532,7 @@ async fn execute_heartbeat(
             }
             InferenceResponse::Cancelled(text) => {
                 response.content = text;
-                let _ = state.chat_service.complete_agent_message(response).await;
+                let _ = state.chat_service.cancel_agent_message(response).await;
             }
             InferenceResponse::ExternalToolPending { .. } => {
                 tracing::warn!(chat_id = %chat_id, "Heartbeat agent hit external tool pending — not supported");

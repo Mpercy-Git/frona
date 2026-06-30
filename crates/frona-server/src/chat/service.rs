@@ -722,7 +722,11 @@ impl ChatService {
             };
 
             let truncated = if saved.content.len() > 200 {
-                format!("{}…", &saved.content[..200])
+                let end = saved.content.char_indices()
+                    .nth(200)
+                    .map(|(i, _)| i)
+                    .unwrap_or(saved.content.len());
+                format!("{}…", &saved.content[..end])
             } else {
                 saved.content.clone()
             };
@@ -898,6 +902,48 @@ impl ChatService {
                     },
                 ),
             });
+
+            // Fire a Web Push notification for the completed agent reply.
+            // Mirrors the hook in save_message_and_broadcast() for the non-streaming path.
+            if updated.role == crate::chat::message::models::MessageRole::Agent
+                && !updated.content.is_empty()
+            {
+                let agent_name = if let Some(ref agent_id) = updated.agent_id {
+                    self.agent_service
+                        .find_by_id(agent_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|a| a.name)
+                        .unwrap_or_else(|| "Frona".to_string())
+                } else {
+                    "Frona".to_string()
+                };
+
+                let truncated = if updated.content.len() > 200 {
+                    let end = updated.content.char_indices()
+                        .nth(200)
+                        .map(|(i, _)| i)
+                        .unwrap_or(updated.content.len());
+                    format!("{}…", &updated.content[..end])
+                } else {
+                    updated.content.clone()
+                };
+
+                let _ = self
+                    .notification_service
+                    .create_and_notify(
+                        &chat.user_id,
+                        NotificationData::Agent {
+                            agent_id: updated.agent_id.clone().unwrap_or_default(),
+                            chat_id: chat.id.clone(),
+                        },
+                        NotificationLevel::Info,
+                        agent_name,
+                        truncated,
+                    )
+                    .await;
+            }
         }
         Ok(response)
     }

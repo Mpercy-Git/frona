@@ -182,7 +182,22 @@ fn init_provider(
                 RigProvider::new(client, counter.clone()).with_hook(hooks::ollama),
             ))
         }
-        "groq" => init_api_key_provider!(name, entry, groq, counter),
+        "groq" => {
+            let key = require_api_key(name, entry)?;
+            let client: groq::Client = if let Some(url) = &entry.base_url {
+                groq::Client::builder()
+                    .api_key(&key)
+                    .base_url(url)
+                    .build()
+                    .map_err(|e| InferenceError::ConfigError(format!("groq: {e}")))?
+            } else {
+                groq::Client::new(&key)
+                    .map_err(|e| InferenceError::ConfigError(format!("groq: {e}")))?
+            };
+            Ok(Arc::new(
+                RigProvider::new(client, counter.clone()).with_hook(hooks::groq),
+            ) as Arc<dyn ModelProvider>)
+        }
         "openrouter" => init_api_key_provider!(name, entry, openrouter, counter),
         "deepseek" => init_api_key_provider!(name, entry, deepseek, counter),
         "gemini" => init_api_key_provider!(name, entry, gemini, counter),

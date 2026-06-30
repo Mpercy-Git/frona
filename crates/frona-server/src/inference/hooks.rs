@@ -20,6 +20,25 @@ pub fn openai(mut p: RequestParams) -> RequestParams {
     p
 }
 
+/// Groq's API rejects `max_tokens` (not in the Groq completion request struct)
+/// and rejects OpenAI-specific params like `reasoning_effort` that leak through
+/// `GroqAdditionalParameters.extra`. Move `max_tokens` → `max_completion_tokens`
+/// and strip unsupported fields.
+pub fn groq(mut p: RequestParams) -> RequestParams {
+    if let Some(mt) = p.max_tokens.take() {
+        let mut root = take_object(&mut p.additional_params);
+        root.insert("max_completion_tokens".to_string(), Value::Number(mt.into()));
+        p.additional_params = Some(Value::Object(root));
+    }
+    // Strip OpenAI-specific params that Groq doesn't understand.
+    if let Some(Value::Object(ref mut root)) = p.additional_params {
+        root.remove("reasoning_effort");
+        root.remove("logprobs");
+        root.remove("top_logprobs");
+    }
+    p
+}
+
 /// Ollama silently ignores top-level `max_tokens` — the cap belongs in
 /// `options.num_predict`. Rig's Ollama provider doesn't do this rewrite.
 pub fn ollama(mut p: RequestParams) -> RequestParams {
