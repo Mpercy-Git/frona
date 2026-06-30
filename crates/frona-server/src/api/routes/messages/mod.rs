@@ -126,6 +126,13 @@ async fn resolve_tool_calls(
                 format!("Tool call not found: {}", resolution.tool_call_id),
             )))?;
 
+        // Verify the tool call belongs to the chat the caller is authorized for.
+        if te.chat_id != chat_id {
+            return Err(ApiError::from(crate::core::error::AppError::Forbidden(
+                "Tool call does not belong to this chat".into(),
+            )));
+        }
+
         // Typed HitlResponse routes through the resolve_hitl dispatcher, which
         // runs the tool's on_resume side-effect and synthesizes the result text.
         if let Some(typed) = resolution.hitl_response.clone() {

@@ -85,8 +85,13 @@ impl TaskRepository for SurrealRepo<Task> {
     }
 
     async fn find_by_source_chat_id(&self, source_chat_id: &str) -> Result<Vec<Task>, AppError> {
+        // Match any task kind that carries a source_chat_id, not just Delegation.
         let query = format!(
-            "{SELECT_CLAUSE} FROM task WHERE kind.Delegation.source_chat_id = $source_chat_id ORDER BY created_at ASC"
+            "{SELECT_CLAUSE} FROM task WHERE \
+             kind.Delegation.source_chat_id = $source_chat_id \
+             OR kind.Signal.source_chat_id = $source_chat_id \
+             OR kind.Direct.source_chat_id = $source_chat_id \
+             ORDER BY created_at ASC"
         );
         let mut result = self
             .db()

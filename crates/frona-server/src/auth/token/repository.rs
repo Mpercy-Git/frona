@@ -11,6 +11,8 @@ pub trait TokenRepository: Repository<ApiToken> {
     async fn find_by_refresh_pair(&self, pair_id: &str) -> Result<Vec<ApiToken>, AppError>;
     async fn update_last_used(&self, id: &str) -> Result<(), AppError>;
     async fn delete_expired(&self) -> Result<u64, AppError>;
-    async fn delete_by_refresh_pair(&self, pair_id: &str) -> Result<(), AppError>;
+    /// Delete the token pair and return `true` if any rows were actually removed.
+    /// Returns `false` when a concurrent request already consumed the pair.
+    async fn delete_by_refresh_pair(&self, pair_id: &str) -> Result<bool, AppError>;
     async fn delete_by_user_id(&self, user_id: &str) -> Result<(), AppError>;
 }

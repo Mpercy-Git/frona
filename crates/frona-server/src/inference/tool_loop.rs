@@ -571,6 +571,7 @@ pub async fn run_tool_loop(
                         error: "Max tool turns reached".to_string(),
                     },
                 });
+            return Err(AppError::Internal("Max tool turns reached".into()));
         }
     }
 

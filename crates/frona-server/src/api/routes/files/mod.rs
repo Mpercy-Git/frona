@@ -4,7 +4,7 @@ mod operations;
 mod upload;
 
 use axum::body::Body;
-use axum::extract::{FromRequestParts, Query};
+use axum::extract::{DefaultBodyLimit, FromRequestParts, Query};
 use axum::http::request::Parts;
 use axum::http::header;
 use axum::response::Response;
@@ -26,7 +26,11 @@ const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/files", post(upload::upload_file))
+        .route(
+            "/api/files",
+            post(upload::upload_file)
+                .layer(DefaultBodyLimit::max(MAX_FILE_SIZE)),
+        )
         .route("/api/files/presign", post(upload::presign_file))
         .route(
             "/api/files/user/{handle}/{*filename}",
@@ -108,11 +112,20 @@ pub(super) async fn serve_path(path: &std::path::Path) -> Result<Response, ApiEr
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
+    // SVG and other script-executable types must be served as attachments to
+    // prevent stored XSS via <script> tags executing at the app origin.
+    let disposition_type = match content_type {
+        "image/svg+xml" | "text/html" | "text/javascript" | "application/javascript" => {
+            "attachment"
+        }
+        _ => "inline",
+    };
+
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, content_type)
         .header(
             header::CONTENT_DISPOSITION,
-            format!("inline; filename=\"{filename}\""),
+            format!("{disposition_type}; filename=\"{filename}\""),
         )
         .body(body)
         .unwrap())

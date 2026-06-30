@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::core::error::AppError;
+use crate::storage::validate_relative_path;
 
 pub struct Workspace {
     layers: Vec<PathBuf>,
@@ -14,6 +15,9 @@ impl Workspace {
     }
 
     pub fn read(&self, path: &str) -> Option<String> {
+        if validate_relative_path(path).is_err() {
+            return None;
+        }
         for layer in &self.layers {
             let full = layer.join(path);
             if let Ok(content) = std::fs::read_to_string(&full) {
@@ -34,6 +38,7 @@ impl Workspace {
     }
 
     pub fn write_bytes(&self, path: &str, content: &[u8]) -> Result<(), AppError> {
+        validate_relative_path(path)?;
         let full = self.layers[0].join(path);
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -58,6 +63,9 @@ impl Workspace {
     }
 
     pub fn read_dir(&self, path: &str) -> Vec<String> {
+        if validate_relative_path(path).is_err() {
+            return Vec::new();
+        }
         let mut seen = HashSet::new();
 
         for layer in &self.layers {

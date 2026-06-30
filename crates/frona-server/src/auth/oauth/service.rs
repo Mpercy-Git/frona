@@ -25,7 +25,9 @@ pub struct OAuthService {
     scopes: Vec<String>,
     allow_unknown_email_verification: bool,
     signups_match_email: bool,
-    pending_states: Arc<Mutex<HashMap<String, (String, Nonce)>>>,
+    // Maps CSRF state → (nonce_secret, Nonce, expiry). Entries are pruned on
+    // insert to prevent unbounded growth from abandoned authorize flows.
+    pending_states: Arc<Mutex<HashMap<String, (String, Nonce, chrono::DateTime<Utc>)>>>,
     repo: Arc<dyn OAuthRepository>,
     redirect_uri: String,
     http: reqwest::Client,
@@ -72,7 +74,7 @@ impl OAuthService {
             scopes,
             allow_unknown_email_verification: config.sso.allow_unknown_email_verification,
             signups_match_email: config.sso.signups_match_email,
-            pending_states: Arc::new(Mutex::new(HashMap::new())),
+            pending_states: Arc::new(Mutex::new(HashMap::<String, (String, Nonce, chrono::DateTime<Utc>)>::new())),
             repo,
             redirect_uri,
             http,
@@ -122,10 +124,15 @@ impl OAuthService {
         let csrf_secret = csrf_state.secret().clone();
         let nonce_secret = nonce.secret().clone();
 
-        self.pending_states
-            .lock()
-            .await
-            .insert(csrf_secret.clone(), (nonce_secret.clone(), nonce));
+        const STATE_TTL_MINUTES: i64 = 10;
+        let expiry = Utc::now() + chrono::Duration::minutes(STATE_TTL_MINUTES);
+
+        let mut states = self.pending_states.lock().await;
+        // Prune expired entries so the map doesn't grow without bound.
+        let now = Utc::now();
+        states.retain(|_, (_, _, exp)| *exp > now);
+        states.insert(csrf_secret.clone(), (nonce_secret.clone(), nonce, expiry));
+        drop(states);
 
         Ok((auth_url.to_string(), csrf_secret, nonce_secret))
     }
@@ -138,7 +145,7 @@ impl OAuthService {
         _keypair_svc: &KeyPairService,
         _token_svc: &TokenService,
     ) -> Result<(User, bool), AppError> {
-        let (_nonce_secret, nonce) = self
+        let (_nonce_secret, nonce, _expiry) = self
             .pending_states
             .lock()
             .await

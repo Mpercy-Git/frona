@@ -193,13 +193,30 @@ impl TokenService {
             });
         }
 
-        if let Some(ref pair_id) = self
+        // Atomically consume the refresh pair. If delete_by_refresh_pair returns
+        // false, a concurrent request already consumed this token — reject to
+        // prevent replay.
+        match self
             .repo
             .find_active_by_id(&claims.token_id)
             .await?
             .and_then(|t| t.refresh_pair_id)
         {
-            self.repo.delete_by_refresh_pair(pair_id).await?;
+            None => {
+                return Err(AppError::Auth {
+                    message: "Refresh token already used or expired".into(),
+                    code: AuthErrorCode::TokenInvalid,
+                });
+            }
+            Some(ref pair_id) => {
+                let consumed = self.repo.delete_by_refresh_pair(pair_id).await?;
+                if !consumed {
+                    return Err(AppError::Auth {
+                        message: "Refresh token already used or expired".into(),
+                        code: AuthErrorCode::TokenInvalid,
+                    });
+                }
+            }
         }
 
         let user = self

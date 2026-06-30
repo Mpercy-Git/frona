@@ -536,9 +536,16 @@ impl TaskExecutor {
                         return Ok(());
                     }
                     InferenceResponse::Handled => {
-                        // Command dispatch already finalized the response.
-                        // Treat as a no-op turn end — let the task continue or wrap up.
-                        return Ok(());
+                        // Command dispatch already finalized the agent message.
+                        // Check if a lifecycle tool (complete_task/fail_task) wrote an
+                        // event; if so, honour it. Otherwise continue the retry loop so
+                        // the task can proceed to the next turn rather than staying
+                        // permanently InProgress.
+                        if let Some(action) = self.find_lifecycle_event(&chat_id).await {
+                            self.handle_lifecycle_action(&task, &chat_id, action).await?;
+                            return Ok(());
+                        }
+                        continue;
                     }
                 },
                 Err(e) => {

@@ -43,11 +43,32 @@ struct SubscriptionKeys {
     auth: String,
 }
 
+const MAX_SUBSCRIPTIONS_PER_USER: usize = 20;
+
 async fn subscribe(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<SubscribeRequest>,
 ) -> Result<(), ApiError> {
+    // Validate endpoint is an https:// URL to prevent SSRF.
+    let parsed = req.endpoint.parse::<axum::http::Uri>()
+        .map_err(|_| ApiError(crate::core::error::AppError::Validation("Invalid endpoint URL".into())))?;
+    if parsed.scheme_str() != Some("https") {
+        return Err(ApiError(crate::core::error::AppError::Validation(
+            "Push endpoint must use HTTPS".into(),
+        )));
+    }
+
+    // Enforce per-user subscription cap to prevent fan-out DoS.
+    let existing = state.push_subscription_repo.find_by_user_id(&auth.user_id).await?;
+    if existing.len() >= MAX_SUBSCRIPTIONS_PER_USER
+        && !existing.iter().any(|s| s.endpoint == req.endpoint)
+    {
+        return Err(ApiError(crate::core::error::AppError::Validation(
+            "Maximum number of push subscriptions reached".into(),
+        )));
+    }
+
     // Dedup: if a subscription with this endpoint already exists, delete it first.
     if state
         .push_subscription_repo

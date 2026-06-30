@@ -26,8 +26,10 @@ pub(crate) async fn download_user_file(
                 )));
             }
         }
-        FileAuth::Presigned { sub: _, owner, path } => {
-            if !owner.starts_with("user:") || path != filename {
+        FileAuth::Presigned { sub, owner, path } => {
+            // The token's owner must match the URL's {handle} and the sub (issuer).
+            let expected_owner = format!("user:{sub}");
+            if owner != expected_owner || path != filename {
                 return Err(ApiError(AppError::Forbidden(
                     "Presigned URL does not match requested file".into(),
                 )));
@@ -211,13 +213,19 @@ pub(crate) async fn search_files(
             let ws = state.storage_service.agent_workspace(&auth.handle, &agent.handle);
             let root = ws.base_path().to_path_buf();
             let dir = match subpath {
-                Some(sub) => root.join(sub),
+                Some(sub) => {
+                    validate_relative_path(sub)?;
+                    root.join(sub)
+                }
                 None => root.clone(),
             };
             targets.push(SearchTarget { dir, root, source: agent_seg.to_string() });
         }
         Some(scope) if scope.starts_with("user") => {
             let subpath = scope.strip_prefix("user:").unwrap_or("");
+            if !subpath.is_empty() {
+                validate_relative_path(subpath)?;
+            }
             let ws = state.storage_service.user_workspace(&auth.handle);
             let base = ws.base_path().to_path_buf();
             let dir = if subpath.is_empty() {
