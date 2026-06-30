@@ -26,7 +26,20 @@ async fn get_config(
     _auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let mut value = serde_json::to_value(state.config.as_ref())
+    // Always read from disk so the response reflects settings saved via PUT
+    // (state.config is the snapshot at startup and is never mutated in place).
+    let path = config_file_path();
+    let raw_yaml = std::fs::read_to_string(&path).unwrap_or_default();
+    let config: Config = if raw_yaml.is_empty() {
+        (*state.config).clone()
+    } else {
+        let base: serde_json::Value = serde_yaml::from_str::<serde_yaml::Value>(&raw_yaml)
+            .ok()
+            .and_then(|y| serde_json::to_value(y).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        serde_json::from_value(base).unwrap_or_else(|_| (*state.config).clone())
+    };
+    let mut value = serde_json::to_value(&config)
         .map_err(|e| ApiError(crate::core::error::AppError::Internal(e.to_string())))?;
     redact_config_for_api(&mut value);
     Ok(Json(value))
