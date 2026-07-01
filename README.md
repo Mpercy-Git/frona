@@ -19,6 +19,48 @@ You deploy Frona on your own infrastructure and keep full control of your data. 
 
 > Comparing Frona to other open-source agent platforms? See [Frona vs. OpenClaw vs. Hermes Agent](https://docs.frona.ai/platform/comparison.html).
 
+## ⭐ Fork Enhancements — Unique to This Repository
+
+> **This is a fork of [fronalabs/frona](https://github.com/fronalabs/frona).** Everything in this section is **exclusive to this fork** and is *not* present in upstream. Images are published to `ghcr.io/mpercy-git/frona`, not the upstream registry.
+
+The features and fixes below have been added on top of upstream. They are maintained here and do not exist in `fronalabs/frona`.
+
+### 📞 Inbound voice calls (upstream is outbound-only)
+
+Upstream Frona can only place **outbound** calls via Twilio. This fork adds full **inbound call answering**:
+
+- **Answer incoming calls** and route them to an agent, with a **per-user allowlist** that locks who can reach which agent (malformed rows are skipped gracefully, ownership is enforced)
+- **Plivo voice provider** alongside Twilio — pick `twilio`, `plivo`, or `none`
+- **ElevenLabs TTS** for Twilio ConversationRelay (in addition to the default Polly)
+- **Agent-narrated silence filling** — the agent speaks contextual filler during long tool calls instead of dead air, staying silent on outbound narration and narrating on inbound
+- **Caller resolution by handle or name**, not just user ID, with a username (handle) inbound fallback
+- **International number normalization** — `00`-prefixed UK/Europe numbers are handled correctly
+- **Reverse-proxy-aware Twilio signature validation** (tries multiple URL variants; optional skip for debugging)
+- Voice settings surfaced in the UI: inbound enable, silence-fill phrases/timing, caller allowlist, phone profile field
+
+### 🔔 Web Push notifications & PWA (net-new)
+
+- **Web Push with VAPID** — a service worker delivers OS-level push notifications for agent replies to subscribed devices, including mobile
+- **Smart suppression** — a push only fires when the relevant chat isn't already focused: an active, focused conversation stays quiet, while a backgrounded window, unfocused tab, or different page still alerts
+- **Installable PWA with an Android app-like feel** — web app manifest, generated app icons (standard + maskable + apple-touch), `viewport-fit=cover`, safe-area insets, dynamic viewport height (`100dvh`), no accidental pull-to-refresh, and virtual-keyboard-aware composer scrolling
+
+### 🧭 OpenRouter provider routing (net-new)
+
+- Expose OpenRouter's routing controls in the UI: `route`, explicit **provider order**, and **fallbacks** so you can steer which upstream backend serves each request
+
+### 🛡️ Security & correctness hardening (fork-only fixes)
+
+A dedicated review pass fixed issues not present upstream, including:
+
+- SSRF guard on push subscription endpoints; IDOR fixes on tool-call and MCP log endpoints; presigned-token subject validation; refresh-token replay race; OAuth CSRF state TTL; path-traversal guards on workspace and file routes; stored-XSS mitigation for served SVG/HTML
+- UTF-8 byte-index truncation panics fixed; cancelled-scheduler push state fix; config `GET /api/config` now reads from disk so saved settings don't silently revert; channel deletion now cleans up its space; a channel leaves `Setup` for `Disconnected` once required fields are provided
+- Chat file-upload robustness: friendlier over-size errors, no silent attachment drops, no leaked blob URLs
+
+### 🏗️ Build & release (fork-only)
+
+- Release workflow publishing multi-arch images to **this fork's GHCR** (`ghcr.io/mpercy-git/frona`)
+- Faster Docker builds: shared `rust-base` stage (installs toolchain once), persistent local BuildKit cache, and a `Makefile` for native-arch local builds — plus a `:next` image built on every push to `main`
+
 ## Security First
 
 AI agents are powerful. They can execute code, browse websites, and access your data. No platform can make LLMs perfectly safe. They will make mistakes. The goal is to isolate those mistakes and reduce the blast radius when they happen.
@@ -144,7 +186,7 @@ Frona auto-discovers providers from your configuration and routes different task
 
 **Search:** SearXNG (self-hosted), Tavily, Brave Search.
 
-**Voice:** Twilio.
+**Voice:** Twilio and Plivo, with ElevenLabs or Polly TTS — inbound *and* outbound calls (inbound answering is a [fork enhancement](#-fork-enhancements--unique-to-this-repository)).
 
 **Channels:** Telegram, SMS (more on the way).
 
