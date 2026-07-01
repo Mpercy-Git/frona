@@ -10,20 +10,9 @@ RUN npm ci
 COPY web/ .
 RUN npm run build
 
-# Stage 2: cargo-chef planner
-FROM rust:1.95-bookworm AS planner
-RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo.txt \
-  for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
-    crate=${line%%=*}; version=${line#*=}; \
-    cargo install "$crate" --version "$version" --locked; \
-  done
-WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
-COPY crates/ crates/
-RUN cargo chef prepare --recipe-path recipe.json
-
-# Stage 3: backend builder
-FROM rust:1.95-bookworm AS backend-builder
+# Stage 2: shared Rust base — apt packages + cargo tools installed once,
+# cached by Docker layer so both planner and backend-builder reuse it.
+FROM rust:1.95-bookworm AS rust-base
 RUN --mount=type=bind,source=build/pkgs/builder-rust-apt.txt,target=/tmp/packages.txt \
   apt-get update && apt-get install -y --no-install-recommends \
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
@@ -33,6 +22,16 @@ RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo
     crate=${line%%=*}; version=${line#*=}; \
     cargo install "$crate" --version "$version" --locked; \
   done
+
+# Stage 3: cargo-chef planner
+FROM rust-base AS planner
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Stage 4: backend builder
+FROM rust-base AS backend-builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
 COPY resources/ resources/

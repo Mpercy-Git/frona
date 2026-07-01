@@ -18,6 +18,7 @@ jobs:
   docker:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     outputs:
       tag: ${{ steps.tag.outputs.name }}
       is-prerelease: ${{ steps.check.outputs.is-prerelease }}
