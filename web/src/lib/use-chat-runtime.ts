@@ -391,19 +391,25 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
       .join("");
 
     const attachments: Attachment[] = [];
+    const missingAttachments: string[] = [];
     if ("attachments" in message && message.attachments) {
       for (const att of message.attachments) {
         const backend = backendAttachmentRegistry.get(att.id);
         if (backend) {
           attachments.push(backend);
         } else {
-          // Registry miss (e.g. page reload while a file was staged) — fail
-          // loudly rather than silently dropping the attachment so the user
-          // doesn't send a message believing their file is attached.
-          throw new Error(
-            `Attachment "${att.name ?? att.id}" is no longer available — please re-attach it and try again.`,
-          );
+          // Registry miss (e.g. page reload while a file was staged). Do NOT
+          // throw here: onNew is the runtime's append callback, and rejecting
+          // it makes assistant-ui roll back the optimistic message, which
+          // corrupts its internal tap client list ("Index out of bounds").
+          // Record the miss and surface it non-fatally instead of crashing.
+          missingAttachments.push(att.name ?? att.id);
         }
+      }
+      if (missingAttachments.length > 0) {
+        console.error(
+          `[chat] dropped unavailable attachment(s): ${missingAttachments.join(", ")} — re-attach and resend`,
+        );
       }
     }
 
