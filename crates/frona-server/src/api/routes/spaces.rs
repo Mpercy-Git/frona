@@ -16,10 +16,13 @@ use crate::core::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/spaces", get(list_spaces).post(create_space))
+        .route("/api/spaces/archived", get(list_archived_spaces))
         .route(
             "/api/spaces/{id}",
             axum::routing::put(update_space).delete(delete_space),
         )
+        .route("/api/spaces/{id}/archive", axum::routing::post(archive_space))
+        .route("/api/spaces/{id}/unarchive", axum::routing::post(unarchive_space))
         .route("/api/spaces/{id}/stream", get(space_stream))
 }
 
@@ -57,6 +60,32 @@ async fn delete_space(
 ) -> Result<(), ApiError> {
     state.space_service.delete(&auth.user_id, &id).await?;
     Ok(())
+}
+
+async fn list_archived_spaces(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<SpaceResponse>>, ApiError> {
+    let spaces = state.space_service.list_archived(&auth.user_id).await?;
+    Ok(Json(spaces))
+}
+
+async fn archive_space(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<SpaceResponse>, ApiError> {
+    let space = state.space_service.archive(&auth.user_id, &id).await?;
+    Ok(Json(space))
+}
+
+async fn unarchive_space(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<SpaceResponse>, ApiError> {
+    let space = state.space_service.unarchive(&auth.user_id, &id).await?;
+    Ok(Json(space))
 }
 
 async fn space_stream(

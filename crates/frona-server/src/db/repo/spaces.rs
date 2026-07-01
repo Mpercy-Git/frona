@@ -12,8 +12,27 @@ const SELECT_CLAUSE: &str = "SELECT *, meta::id(id) as id";
 #[async_trait]
 impl SpaceRepository for SurrealRepo<Space> {
     async fn find_by_user_id(&self, user_id: &str) -> Result<Vec<Space>, AppError> {
-        let query =
-            format!("{SELECT_CLAUSE} FROM space WHERE user_id = $user_id ORDER BY created_at DESC");
+        let query = format!(
+            "{SELECT_CLAUSE} FROM space WHERE user_id = $user_id AND archived_at IS NONE ORDER BY created_at DESC"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("user_id", user_id.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let spaces: Vec<Space> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(spaces)
+    }
+
+    async fn find_archived_by_user_id(&self, user_id: &str) -> Result<Vec<Space>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM space WHERE user_id = $user_id AND archived_at IS NOT NONE ORDER BY archived_at DESC"
+        );
         let mut result = self
             .db()
             .query(&query)

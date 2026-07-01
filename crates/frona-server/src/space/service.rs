@@ -43,6 +43,7 @@ impl SpaceService {
             user_id: user_id.to_string(),
             name: req.name,
             metadata: req.metadata.unwrap_or_default(),
+            archived_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -117,6 +118,37 @@ impl SpaceService {
         let saved = self.repo.update(&space).await?;
         self.broadcast_update(&saved, EntityAction::Updated);
         Ok(saved)
+    }
+
+    pub async fn archive(
+        &self,
+        user_id: &str,
+        space_id: &str,
+    ) -> Result<SpaceResponse, AppError> {
+        let mut space = self.get(user_id, space_id).await?;
+        space.archived_at = Some(chrono::Utc::now());
+        space.updated_at = chrono::Utc::now();
+        let space = self.repo.update(&space).await?;
+        self.broadcast_update(&space, EntityAction::Updated);
+        Ok(space.into())
+    }
+
+    pub async fn unarchive(
+        &self,
+        user_id: &str,
+        space_id: &str,
+    ) -> Result<SpaceResponse, AppError> {
+        let mut space = self.get(user_id, space_id).await?;
+        space.archived_at = None;
+        space.updated_at = chrono::Utc::now();
+        let space = self.repo.update(&space).await?;
+        self.broadcast_update(&space, EntityAction::Updated);
+        Ok(space.into())
+    }
+
+    pub async fn list_archived(&self, user_id: &str) -> Result<Vec<SpaceResponse>, AppError> {
+        let spaces = self.repo.find_archived_by_user_id(user_id).await?;
+        Ok(spaces.into_iter().map(Into::into).collect())
     }
 
     pub async fn delete(&self, user_id: &str, space_id: &str) -> Result<(), AppError> {

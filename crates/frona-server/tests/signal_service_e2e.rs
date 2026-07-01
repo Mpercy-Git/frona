@@ -438,6 +438,7 @@ async fn signal_extract_never_enters_tool_loop_or_streaming() {
         user_id: "user-q".into(),
         name: "Quarantine".into(),
         metadata: Default::default(),
+        archived_at: None,
         created_at: now,
         updated_at: now,
     };

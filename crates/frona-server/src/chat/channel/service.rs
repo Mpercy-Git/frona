@@ -253,8 +253,10 @@ impl ChannelService {
         self.vault.delete_bindings_for_principal(user_id, &principal).await?;
         self.repo.delete(&channel.id).await?;
 
-        // Remove the space that was created for this channel.
-        let _ = state.space_service.delete(user_id, &channel.space_id).await;
+        // Note: the space is intentionally left intact. Spaces are not owned by
+        // channels — they can hold chats and be reused — so deleting a channel
+        // must not delete its space. Use the space delete/archive endpoints for
+        // that.
 
         self.broadcast.broadcast_entity_updated(
             user_id,

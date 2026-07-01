@@ -53,7 +53,8 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 A dedicated review pass fixed issues not present upstream, including:
 
 - SSRF guard on push subscription endpoints; IDOR fixes on tool-call and MCP log endpoints; presigned-token subject validation; refresh-token replay race; OAuth CSRF state TTL; path-traversal guards on workspace and file routes; stored-XSS mitigation for served SVG/HTML
-- UTF-8 byte-index truncation panics fixed; cancelled-scheduler push state fix; config `GET /api/config` now reads from disk so saved settings don't silently revert; channel deletion now cleans up its space; a channel leaves `Setup` for `Disconnected` once required fields are provided
+- UTF-8 byte-index truncation panics fixed; cancelled-scheduler push state fix; config `GET /api/config` now reads from disk so saved settings don't silently revert; a channel leaves `Setup` for `Disconnected` once required fields are provided
+- **Space management:** spaces can be archived or deleted from the chat sidebar (mirroring chats); deleting a channel no longer deletes its space, since spaces are independent and can hold chats
 - Chat file-upload robustness: friendlier over-size errors, no silent attachment drops, no leaked blob URLs
 
 ### 🏗️ Build & release (fork-only)

@@ -11,8 +11,12 @@ pub const PROC_READ_PATHS: &[&str] = &[
     "/proc/stat",
     "/proc/filesystems",
     "/proc/version", "/proc/version_signature",
+    "/proc/sys/kernel/ostype",
+    "/proc/sys/kernel/osrelease",
+    "/proc/sys/vm/overcommit_memory",
     "/sys/fs/cgroup",
     "/sys/devices/system/cpu",
+    "/sys/kernel/mm/transparent_hugepage",
 ];
 
 pub const READ_WRITE_DIRS: &[&str] = &["/tmp"];

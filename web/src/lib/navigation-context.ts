@@ -8,7 +8,7 @@ import {
   useCallback,
   createElement,
 } from "react";
-import { api, archiveChat as apiArchiveChat, unarchiveChat as apiUnarchiveChat, deleteChat as apiDeleteChat, deleteAgent as apiDeleteAgent, deleteTask as apiDeleteTask, getArchivedChats, getContacts, getTask } from "./api-client";
+import { api, archiveChat as apiArchiveChat, unarchiveChat as apiUnarchiveChat, deleteChat as apiDeleteChat, archiveSpace as apiArchiveSpace, deleteSpace as apiDeleteSpace, deleteAgent as apiDeleteAgent, deleteTask as apiDeleteTask, getArchivedChats, getContacts, getTask } from "./api-client";
 import type {
   SpaceWithChats,
   ChatResponse,
@@ -47,6 +47,8 @@ interface NavigationContextRaw {
   archiveChat: (chatId: string) => Promise<void>;
   unarchiveChat: (chatId: string) => Promise<void>;
   deleteChat: (chatId: string) => Promise<void>;
+  archiveSpace: (spaceId: string) => Promise<void>;
+  deleteSpace: (spaceId: string) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
   updateTaskInList: (taskId: string, fields: Partial<TaskResponse>) => void;
 }
@@ -166,6 +168,16 @@ export function NavigationProvider({
     setArchivedChats((prev) => prev.filter((c) => c.id !== chatId));
   }, []);
 
+  const archiveSpaceAction = useCallback(async (spaceId: string) => {
+    await apiArchiveSpace(spaceId);
+    setSpaces((prev) => prev?.filter((s) => s.id !== spaceId));
+  }, []);
+
+  const deleteSpaceAction = useCallback(async (spaceId: string) => {
+    await apiDeleteSpace(spaceId);
+    setSpaces((prev) => prev?.filter((s) => s.id !== spaceId));
+  }, []);
+
   const deleteTaskAction = useCallback(async (taskId: string) => {
     const task = tasks?.find((t) => t.id === taskId);
     await apiDeleteTask(taskId);
@@ -253,6 +265,8 @@ export function NavigationProvider({
         archiveChat,
         unarchiveChat,
         deleteChat: deleteChatAction,
+        archiveSpace: archiveSpaceAction,
+        deleteSpace: deleteSpaceAction,
         deleteTask: deleteTaskAction,
         updateTaskInList,
       },

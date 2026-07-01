@@ -14,6 +14,8 @@ pub struct Space {
     pub name: String,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -40,6 +42,8 @@ pub struct SpaceResponse {
     pub id: String,
     pub name: String,
     pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -50,6 +54,7 @@ impl From<Space> for SpaceResponse {
             id: space.id,
             name: space.name,
             metadata: space.metadata,
+            archived_at: space.archived_at,
             created_at: space.created_at,
             updated_at: space.updated_at,
         }

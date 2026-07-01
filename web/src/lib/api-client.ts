@@ -334,6 +334,22 @@ export function deleteChat(chatId: string) {
   return request<void>(`/api/chats/${chatId}`, { method: "DELETE" });
 }
 
+export function archiveSpace(spaceId: string) {
+  return request<import("./types").SpaceResponse>(`/api/spaces/${spaceId}/archive`, { method: "POST" });
+}
+
+export function unarchiveSpace(spaceId: string) {
+  return request<import("./types").SpaceResponse>(`/api/spaces/${spaceId}/unarchive`, { method: "POST" });
+}
+
+export function deleteSpace(spaceId: string) {
+  return request<void>(`/api/spaces/${spaceId}`, { method: "DELETE" });
+}
+
+export function getArchivedSpaces() {
+  return request<import("./types").SpaceResponse[]>(`/api/spaces/archived`);
+}
+
 export function deleteAgent(agentId: string) {
   return request<void>(`/api/agents/${agentId}`, { method: "DELETE" });
 }

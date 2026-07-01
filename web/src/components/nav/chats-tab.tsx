@@ -28,6 +28,8 @@ export function ChatsTab() {
     archiveChat,
     unarchiveChat,
     deleteChat,
+    archiveSpace,
+    deleteSpace,
   } = useNavigation();
   const { activeChatId, activeChat, setActiveChat } = useSession();
   const selectedChatId = activeChatId ?? activeChat?.id ?? null;
@@ -40,6 +42,7 @@ export function ChatsTab() {
   const [creatingSpace, setCreatingSpace] = useState(false);
   const [spaceName, setSpaceName] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleteSpaceTarget, setDeleteSpaceTarget] = useState<string | null>(null);
 
   const handleNewChat = () => {
     setActiveChat(null);
@@ -80,6 +83,19 @@ export function ChatsTab() {
     }
   };
 
+  const handleArchiveSpace = async (spaceId: string) => {
+    await archiveSpace(spaceId);
+    if (activeSpaceId === spaceId) router.push("/chat");
+  };
+
+  const handleDeleteSpaceConfirm = async () => {
+    if (!deleteSpaceTarget) return;
+    const wasActive = activeSpaceId === deleteSpaceTarget;
+    await deleteSpace(deleteSpaceTarget);
+    setDeleteSpaceTarget(null);
+    if (wasActive) router.push("/chat");
+  };
+
   return (
     <div className="space-y-1 p-2">
       <div className="flex items-center justify-between px-2 pb-1">
@@ -111,21 +127,31 @@ export function ChatsTab() {
       )}
 
       {spaces.map((space) => (
-        <button
+        <div
           key={space.id}
-          onClick={() => router.push(`/space?id=${space.id}`)}
-          className={`flex w-full items-center gap-1 rounded-lg px-3 py-2 text-sm font-medium transition ${
+          className={`group flex w-full items-center gap-1 rounded-lg pr-1 transition ${
             activeSpaceId === space.id
               ? "bg-surface-tertiary text-text-primary"
               : "text-text-primary hover:bg-surface-secondary"
           }`}
         >
-          <FolderIcon className="h-4 w-4 shrink-0 text-text-tertiary" />
-          <span className="truncate">{space.name}</span>
-          <span className="ml-auto text-[10px] text-text-tertiary">
-            {space.chats.length}
-          </span>
-        </button>
+          <button
+            onClick={() => router.push(`/space?id=${space.id}`)}
+            className="flex flex-1 min-w-0 items-center gap-1 px-3 py-2 text-left text-sm font-medium"
+          >
+            <FolderIcon className="h-4 w-4 shrink-0 text-text-tertiary" />
+            <span className="truncate">{space.name}</span>
+            <span className="ml-auto text-[10px] text-text-tertiary">
+              {space.chats.length}
+            </span>
+          </button>
+          <ChatActions
+            isArchived={false}
+            onArchive={() => handleArchiveSpace(space.id)}
+            onUnarchive={() => {}}
+            onDelete={() => setDeleteSpaceTarget(space.id)}
+          />
+        </div>
       ))}
 
       {standaloneChats.length > 0 && (
@@ -222,6 +248,14 @@ export function ChatsTab() {
         open={deleteTarget !== null}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={handleDeleteConfirm}
+      />
+
+      <DeleteConfirmDialog
+        open={deleteSpaceTarget !== null}
+        onCancel={() => setDeleteSpaceTarget(null)}
+        onConfirm={handleDeleteSpaceConfirm}
+        title="Delete space?"
+        message="This permanently deletes the space. Chats inside it are not deleted, but they will no longer be grouped."
       />
     </div>
   );

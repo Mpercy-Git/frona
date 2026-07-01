@@ -174,6 +174,7 @@ async fn seed_space_and_chat(
         user_id: user_id.into(),
         name: "Telegram".into(),
         metadata: BTreeMap::new(),
+        archived_at: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
