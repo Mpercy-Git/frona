@@ -27,7 +27,9 @@ export function getBackendAttachment(id: string): Attachment | undefined {
 
 function convertBackendAttachment(att: Attachment): CompleteAttachment {
   const url = att.url ?? "";
-  const isImage = att.content_type.startsWith("image/");
+  // Only treat it as a renderable image if we actually have a URL — otherwise
+  // an empty src produces a broken <img>. Fall back to the file placeholder.
+  const isImage = att.content_type.startsWith("image/") && url !== "";
   registerBackendAttachment(att.path, att);
   return {
     id: att.path,
@@ -60,11 +62,15 @@ export const fronaAttachmentAdapter: AttachmentAdapter = {
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const isImage = attachment.contentType?.startsWith("image/");
+    // Prefer the presigned URL from the upload response over a blob URL: it
+    // needs no revoking (no leak) and matches what history reload will show.
+    const backend = backendAttachmentRegistry.get(attachment.id);
+    const imageUrl = backend?.url || (attachment.file ? URL.createObjectURL(attachment.file) : undefined);
     return {
       ...attachment,
       status: { type: "complete" },
-      content: isImage && attachment.file
-        ? [{ type: "image", image: URL.createObjectURL(attachment.file) }]
+      content: isImage && imageUrl
+        ? [{ type: "image", image: imageUrl }]
         : [{ type: "text", text: `[file: ${attachment.name}]` }],
     };
   },
@@ -388,7 +394,16 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     if ("attachments" in message && message.attachments) {
       for (const att of message.attachments) {
         const backend = backendAttachmentRegistry.get(att.id);
-        if (backend) attachments.push(backend);
+        if (backend) {
+          attachments.push(backend);
+        } else {
+          // Registry miss (e.g. page reload while a file was staged) — fail
+          // loudly rather than silently dropping the attachment so the user
+          // doesn't send a message believing their file is attached.
+          throw new Error(
+            `Attachment "${att.name ?? att.id}" is no longer available — please re-attach it and try again.`,
+          );
+        }
       }
     }
 

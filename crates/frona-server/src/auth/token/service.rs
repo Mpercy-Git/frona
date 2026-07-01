@@ -313,7 +313,10 @@ impl TokenService {
     }
 
     pub async fn revoke_session(&self, pair_id: &str) -> Result<(), AppError> {
-        self.repo.delete_by_refresh_pair(pair_id).await
+        // Bool return indicates whether a row was consumed; revoke is idempotent
+        // so we don't care either way here.
+        self.repo.delete_by_refresh_pair(pair_id).await?;
+        Ok(())
     }
 
     pub async fn list_pats(&self, user_id: &str) -> Result<Vec<PatListItem>, AppError> {

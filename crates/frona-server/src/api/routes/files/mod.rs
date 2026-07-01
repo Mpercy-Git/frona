@@ -23,13 +23,18 @@ use crate::core::state::AppState;
 use models::{FileAuth, PresignQuery};
 
 const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
+// Multipart requests carry boundary markers plus the optional `path` field on
+// top of the file bytes. Give the body limit headroom above MAX_FILE_SIZE so a
+// file right at the cap isn't rejected with a bare 413 before the handler can
+// return its friendly "File too large" message.
+const MAX_UPLOAD_BODY_SIZE: usize = MAX_FILE_SIZE + 1024 * 1024; // +1MB overhead
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
             "/api/files",
             post(upload::upload_file)
-                .layer(DefaultBodyLimit::max(MAX_FILE_SIZE)),
+                .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_SIZE)),
         )
         .route("/api/files/presign", post(upload::presign_file))
         .route(
