@@ -60,7 +60,7 @@ A dedicated review pass fixed issues not present upstream, including:
 ### 🏗️ Build & release (fork-only)
 
 - Release workflow publishing multi-arch images to **this fork's GHCR** (`ghcr.io/mpercy-git/frona`)
-- Faster Docker builds: shared `rust-base` stage (installs toolchain once), persistent local BuildKit cache, and a `Makefile` for native-arch local builds — plus a `:next` image built on every push to `main`
+- Faster Docker builds: shared `rust-base` stage (installs toolchain once), persistent local BuildKit cache, and a `Makefile` for native-arch local builds
 
 ## Security First
 

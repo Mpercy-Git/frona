@@ -9,8 +9,8 @@ CACHE_DIR := $(HOME)/.docker/buildx-cache/frona-$(ARCH)
 # ── Local build (native platform only, persistent local cache) ───────────────
 
 ## Build the prod image for the local platform and load it into Docker.
-## Usage: make build [TAG=next]
-TAG ?= next
+## Usage: make build TAG=v2026.6.12
+TAG ?= dev
 build:
 	docker buildx build \
 	  --file build/Dockerfile \
@@ -23,7 +23,7 @@ build:
 	  .
 
 ## Build and push to GHCR (native platform only — fast).
-## Usage: make push [TAG=next]
+## Usage: make push TAG=v2026.6.12
 push: build
 	docker push $(REGISTRY):$(TAG)
 
