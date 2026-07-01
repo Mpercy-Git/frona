@@ -97,6 +97,30 @@ impl PresignService {
         self.sign_with_expiry(owner, path, user_id, &handle, expiry_secs).await
     }
 
+    /// Sign a bare presign JWT scoped to an arbitrary `owner`/`path` resource
+    /// (not wrapped in a file URL). Used for navigable authenticated endpoints
+    /// like the browser debugger, where a plain browser navigation can't send
+    /// an `Authorization` header. The token is verified with [`verify`].
+    pub async fn sign_scoped_token(
+        &self,
+        owner: &str,
+        path: &str,
+        user_id: &str,
+        expiry_secs: u64,
+    ) -> Result<String, AppError> {
+        let keypair_owner = format!("user:{user_id}");
+        let (encoding_key, kid) = self.keypair_svc.get_signing_key(&keypair_owner).await?;
+
+        let exp = (chrono::Utc::now().timestamp() as u64 + expiry_secs) as usize;
+        let claims = PresignClaims {
+            sub: user_id.to_string(),
+            owner: owner.to_string(),
+            path: path.to_string(),
+            exp,
+        };
+        self.jwt_svc.sign(&claims, &encoding_key, &kid)
+    }
+
     pub async fn verify(&self, token: &str) -> Result<PresignClaims, AppError> {
         let header = self.jwt_svc.decode_unverified_header(token)?;
         let kid = header

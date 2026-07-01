@@ -52,22 +52,39 @@ export function QuestionContent({ te, onResolve, selectedAnswer }: ToolContentPr
 
 export function TakeoverContent({ te, onResolve }: ToolContentProps) {
   const hitl = te.hitl;
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
   if (!hitl || hitl.request.type !== "Takeover") return null;
   const { reason, debugger_url } = hitl.request.data;
+
+  // The debugger endpoint requires auth, and opening it as a plain link sends
+  // no Authorization header (→ "unauthenticated"). Instead, mint a short-lived
+  // presigned URL via an authenticated fetch, then open that in a new tab.
+  const openDebugger = async () => {
+    setOpenError(null);
+    setOpening(true);
+    try {
+      const { url } = await api.get<{ url: string }>(`${debugger_url}/link`);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      setOpenError(e instanceof Error ? e.message : "Failed to open debugger");
+    } finally {
+      setOpening(false);
+    }
+  };
 
   return (
     <div className="space-y-2">
       <p className="text-sm text-text-primary">{reason}</p>
       <div className="flex flex-wrap gap-1.5">
         {debugger_url && (
-          <a
-            href={debugger_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-text-secondary hover:border-accent hover:text-accent transition"
+          <button
+            onClick={openDebugger}
+            disabled={opening}
+            className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-text-secondary hover:border-accent hover:text-accent disabled:opacity-50 transition"
           >
-            Open Browser Debugger
-          </a>
+            {opening ? "Opening…" : "Open Browser Debugger"}
+          </button>
         )}
         <button
           onClick={() => onResolve({ type: "Choice", data: "Done" }, "Done")}
@@ -76,6 +93,7 @@ export function TakeoverContent({ te, onResolve }: ToolContentProps) {
           Resume Agent
         </button>
       </div>
+      {openError && <p className="text-xs text-error-text">{openError}</p>}
     </div>
   );
 }
