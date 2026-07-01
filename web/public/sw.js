@@ -10,19 +10,60 @@ self.addEventListener("push", (event) => {
   }
 
   const title = data.title || "Frona";
+  const url = data.url || "/";
   const options = {
     body: data.body || "",
     icon: "/icon-192.png",
     badge: "/badge-72.png",
     tag: data.id || undefined,
     data: {
-      url: data.url || "/",
+      url,
       id: data.id,
     },
   };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(
+    (async () => {
+      // Suppress the notification only when the user is already looking at the
+      // exact page it links to: a window that is focused/visible AND currently
+      // on the same URL (same path + same chat id). In every other case —
+      // window unfocused, a different chat open, or a different page — we show
+      // it, so an active conversation stays quiet while everything else alerts.
+      if (await isViewingTarget(url)) return;
+      await self.registration.showNotification(title, options);
+    })(),
+  );
 });
+
+/** True if a focused/visible window is already on `targetUrl`. */
+async function isViewingTarget(targetUrl) {
+  try {
+    const target = new URL(targetUrl, self.location.origin);
+    const allClients = await clients.matchAll({
+      type: "window",
+      includeUncontrolled: true,
+    });
+    for (const client of allClients) {
+      // Only an actively-focused (or at least visible) window counts as
+      // "active"; a backgrounded tab should still notify.
+      const active =
+        client.focused === true || client.visibilityState === "visible";
+      if (!active) continue;
+
+      const current = new URL(client.url);
+      if (current.origin !== target.origin) continue;
+      if (current.pathname !== target.pathname) continue;
+      // For chat deep-links, the conversation is identified by `?id=`.
+      if (current.searchParams.get("id") !== target.searchParams.get("id")) {
+        continue;
+      }
+      return true;
+    }
+  } catch {
+    // On any parsing/matching error, fall through and show the notification.
+  }
+  return false;
+}
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
