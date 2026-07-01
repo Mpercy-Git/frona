@@ -103,6 +103,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.memory_service.clone(),
         state.skill_service.clone(),
         state.task_service.clone(),
+        state.notification_service.clone(),
         state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),

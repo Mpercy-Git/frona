@@ -49,6 +49,7 @@ pub struct Harness {
     pub(crate) memory_service: MemoryService,
     pub(crate) skill_service: SkillService,
     pub(crate) task_service: TaskService,
+    pub(crate) notification_service: crate::notification::service::NotificationService,
     pub(crate) vault_service: VaultService,
     pub(crate) mcp_service: Arc<McpServerService>,
     pub(crate) tool_manager: Arc<ToolManager>,
@@ -71,6 +72,7 @@ impl Harness {
         memory_service: MemoryService,
         skill_service: SkillService,
         task_service: TaskService,
+        notification_service: crate::notification::service::NotificationService,
         vault_service: VaultService,
         mcp_service: Arc<McpServerService>,
         tool_manager: Arc<ToolManager>,
@@ -93,6 +95,7 @@ impl Harness {
             memory_service,
             skill_service,
             task_service,
+            notification_service,
             vault_service,
             mcp_service,
             tool_manager,
@@ -483,13 +486,17 @@ impl Harness {
                     let _ = self.chat_service.cancel_agent_message(response).await;
                 }
                 InferenceResponse::ExternalToolPending { tool_calls, .. } => {
+                    let chat_id = response.chat_id.clone();
+                    let agent_id = response.agent_id.clone();
                     let _ = self
                         .chat_service
                         .pause_agent_message(
                             response,
                             crate::inference::tool_loop::PauseReason::Hitl,
-                            tool_calls,
+                            tool_calls.clone(),
                         )
+                        .await;
+                    self.surface_pending_hitls(user_id, &chat_id, agent_id.as_deref(), &tool_calls)
                         .await;
                 }
                 InferenceResponse::Handled => {
@@ -508,4 +515,90 @@ impl Harness {
             }
         }
     }
+
+    /// When an agent pauses on a pending human-in-the-loop request (credential
+    /// grant, takeover, etc.), the human is the only one who can resolve it —
+    /// so make sure they actually find out:
+    ///   1. Fire a notification (feed + Web Push) deep-linked to the chat that
+    ///      needs attention.
+    ///   2. If this chat is a *delegated* sub-task, drop a status breadcrumb
+    ///      into the requesting (parent) chat so that conversation isn't a
+    ///      dead-end while the delegate silently waits.
+    ///
+    /// Best-effort throughout: failures here must never break the pause path.
+    async fn surface_pending_hitls(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        agent_id: Option<&str>,
+        tool_calls: &[crate::inference::tool_call::ToolCallResponse],
+    ) {
+        use crate::inference::tool_call::ToolStatus;
+        use crate::notification::models::{NotificationData, NotificationLevel};
+
+        let pending: Vec<&crate::inference::hitl::Hitl> = tool_calls
+            .iter()
+            .filter_map(|tc| tc.hitl.as_ref())
+            .filter(|h| h.status == ToolStatus::Pending)
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+
+        // Is this chat a delegated sub-task? If so, capture the parent chat so
+        // we can leave a breadcrumb there.
+        let parent_chat_id = match self.task_service.find_by_chat_id(chat_id).await {
+            Ok(Some(task)) => match task.kind {
+                crate::agent::task::models::TaskKind::Delegation { source_chat_id, .. } => {
+                    Some(source_chat_id)
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+
+        for h in pending {
+            let (title, body) = hitl_notification_text(h);
+
+            let _ = self
+                .notification_service
+                .create_and_notify(
+                    user_id,
+                    NotificationData::Agent {
+                        agent_id: agent_id.unwrap_or_default().to_string(),
+                        chat_id: chat_id.to_string(),
+                    },
+                    NotificationLevel::Warning,
+                    title,
+                    body,
+                )
+                .await;
+
+            if let Some(ref parent) = parent_chat_id {
+                let crumb = format!(
+                    "⏳ A delegated task is paused — it needs you to authorize: {}",
+                    h.prompt
+                );
+                let _ = self
+                    .chat_service
+                    .save_system_message(user_id, None, parent, crumb)
+                    .await;
+            }
+        }
+    }
+}
+
+/// Build a concise notification title/body from a pending HITL.
+fn hitl_notification_text(h: &crate::inference::hitl::Hitl) -> (String, String) {
+    use crate::inference::hitl::HitlRequest;
+    let title = match &h.request {
+        HitlRequest::Credential { .. } => "Credential access needed",
+        HitlRequest::Takeover { .. } => "Agent needs you to take over",
+        HitlRequest::App { .. } => "App deployment needs approval",
+        HitlRequest::Question { .. } => "Agent needs your input",
+    }
+    .to_string();
+    // The HITL prompt is the most useful body; trim it to a sane length.
+    let body: String = h.prompt.chars().take(200).collect();
+    (title, body)
 }

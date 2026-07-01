@@ -446,6 +446,7 @@ impl AppState {
             memory_service.clone(),
             skill_service.clone(),
             TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            notification_service.clone(),
             vault_service.clone(),
             mcp_service.clone(),
             tool_manager.clone(),

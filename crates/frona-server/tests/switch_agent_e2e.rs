@@ -118,6 +118,7 @@ async fn build_state(provider: Arc<dyn frona::inference::provider::ModelProvider
         state.memory_service.clone(),
         state.skill_service.clone(),
         state.task_service.clone(),
+        state.notification_service.clone(),
         state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
