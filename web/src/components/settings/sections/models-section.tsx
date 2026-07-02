@@ -524,7 +524,10 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
   const [paramsDialog, setParamsDialog] = useState<{ group: string; fallbackIndex?: number } | null>(null);
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
 
-  const groupNames = sortedGroupNames(Object.keys(models));
+  // Exclude groups marked for deletion (null value — see removeGroup).
+  const groupNames = sortedGroupNames(
+    Object.keys(models).filter((name) => models[name] != null),
+  );
 
   function toggleExpanded(name: string) {
     setExpandedGroups((prev) => {
@@ -556,9 +559,10 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
   }
 
   function removeGroup(name: string) {
-    const next = { ...models };
-    delete next[name];
-    onChange(next);
+    // Send an explicit `null` so the backend's deep_merge deletes this group.
+    // Omitting the key would leave the on-disk group intact — it would
+    // reappear on reload. Null entries are filtered from `groupNames` below.
+    onChange({ ...models, [name]: null as unknown as ModelGroupConfig });
     setConfirmingRemove(null);
   }
 
