@@ -1,6 +1,5 @@
 use axum::body::Body;
-use axum::extract::{FromRequestParts, Path, Query, State};
-use axum::http::request::Parts;
+use axum::extract::{Path, State};
 use axum::http::Request;
 use axum::response::Response;
 use axum::routing::get;
@@ -8,11 +7,10 @@ use axum::{Json, Router};
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use serde::Deserialize;
 
 use super::super::error::ApiError;
-use super::super::middleware::auth::AuthUser;
-use crate::core::error::{AppError, AuthErrorCode};
+use super::super::middleware::auth::{AuthUser, NavigableAuth};
+use crate::core::error::AppError;
 use crate::core::state::AppState;
 
 /// Presign tokens for the browser debugger are scoped with this owner prefix so
@@ -29,61 +27,6 @@ pub fn router() -> Router<AppState> {
             get(debugger_link),
         )
         .route("/api/browser/debugger/{credential_id}", get(debugger_proxy))
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenQuery {
-    token: Option<String>,
-}
-
-/// Auth for the debugger proxy: a plain browser navigation (new tab) can't send
-/// an `Authorization` header, so accept either the normal bearer token OR a
-/// short-lived presign token in the `?token=` query param (minted by
-/// `debugger_link`). Mirrors the presign fallback used for file downloads.
-enum DebuggerAuth {
-    User { user_id: String, handle: crate::core::Handle },
-    Presigned { user_id: String, credential_id: String },
-}
-
-impl FromRequestParts<AppState> for DebuggerAuth {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        if let Ok(auth) = AuthUser::from_request_parts(parts, state).await {
-            return Ok(DebuggerAuth::User {
-                user_id: auth.user_id,
-                handle: auth.handle,
-            });
-        }
-
-        let query: Query<TokenQuery> = Query::try_from_uri(&parts.uri).map_err(|_| {
-            ApiError(AppError::Auth {
-                message: "Missing authorization".into(),
-                code: AuthErrorCode::InvalidCredentials,
-            })
-        })?;
-        let token = query.token.as_deref().ok_or_else(|| {
-            ApiError(AppError::Auth {
-                message: "Missing authorization".into(),
-                code: AuthErrorCode::InvalidCredentials,
-            })
-        })?;
-
-        let claims = state.presign_service.verify(token).await?;
-        if claims.owner != DEBUGGER_OWNER {
-            return Err(ApiError(AppError::Auth {
-                message: "Token not valid for browser debugger".into(),
-                code: AuthErrorCode::TokenInvalid,
-            }));
-        }
-        Ok(DebuggerAuth::Presigned {
-            user_id: claims.sub,
-            credential_id: claims.path,
-        })
-    }
 }
 
 /// Mint a short-lived presigned debugger URL. Authenticated normally (called
@@ -120,10 +63,13 @@ async fn debugger_link(
 }
 
 async fn debugger_proxy(
-    debug_auth: DebuggerAuth,
+    auth: NavigableAuth,
     State(state): State<AppState>,
     Path(credential_id): Path<String>,
 ) -> Result<Response, ApiError> {
+    // A presign token must be scoped to *this* credential (owner + path).
+    auth.require_presign_scope(DEBUGGER_OWNER, &credential_id)?;
+
     let credential = state
         .vault_service
         .find_credential_by_id(&credential_id)
@@ -132,27 +78,17 @@ async fn debugger_proxy(
         .ok_or_else(|| ApiError::from(AppError::NotFound("Credential not found".into())))?;
 
     // Ownership: the authenticated user (or the presign token's subject) must
-    // own the credential, and a presign token must be for *this* credential.
-    let user_id = match &debug_auth {
-        DebuggerAuth::User { user_id, .. } => user_id.clone(),
-        DebuggerAuth::Presigned { user_id, credential_id: tok_cred } => {
-            if tok_cred != &credential_id {
-                return Err(ApiError::from(AppError::Forbidden(
-                    "Token does not match this credential".into(),
-                )));
-            }
-            user_id.clone()
-        }
-    };
+    // own the credential.
+    let user_id = auth.user_id().to_string();
     if credential.user_id != user_id {
         return Err(ApiError::from(AppError::Forbidden("Not your credential".into())));
     }
 
-    // Resolve the handle for the profile path — from the auth for a user
+    // Resolve the handle for the profile path — from the auth for a bearer
     // request, or looked up for a presign request.
-    let handle = match &debug_auth {
-        DebuggerAuth::User { handle, .. } => handle.clone(),
-        DebuggerAuth::Presigned { .. } => {
+    let handle = match &auth {
+        NavigableAuth::User { handle, .. } => handle.clone(),
+        NavigableAuth::Presigned(_) => {
             state.user_service.handle_of(&user_id).await.map_err(ApiError::from)?
         }
     };
