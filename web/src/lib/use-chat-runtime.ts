@@ -10,6 +10,7 @@ import { sendMessage as apiSendMessage, cancelGeneration, api, uploadFile } from
 import { computeTimeMarkers, useTimezone } from "./format-time";
 import type { MessageResponse, ChatResponse, Attachment } from "./types";
 import { renderMessageBody } from "./task-result-render";
+import { useToast } from "./toast";
 
 // ---------------------------------------------------------------------------
 // Attachment registry — shared between composer and message rendering
@@ -318,6 +319,7 @@ export interface ChatRuntimeOptions {
 }
 
 export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOptions) {
+  const toast = useToast();
   const currentChatIdRef = useRef<string | null>(chatId ?? null);
   currentChatIdRef.current = chatId ?? currentChatIdRef.current;
   const onChatCreatedRef = useRef(onChatCreated);
@@ -407,8 +409,8 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
         }
       }
       if (missingAttachments.length > 0) {
-        console.error(
-          `[chat] dropped unavailable attachment(s): ${missingAttachments.join(", ")} — re-attach and resend`,
+        toast.error(
+          `Couldn't attach ${missingAttachments.join(", ")} — please re-attach and resend.`,
         );
       }
     }
@@ -448,7 +450,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     } catch {
       store.clearStreaming();
     }
-  }, [agentId, store]);
+  }, [agentId, store, toast]);
 
   const onCancel = useCallback(async () => {
     const id = currentChatIdRef.current;
