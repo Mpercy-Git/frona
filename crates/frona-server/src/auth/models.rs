@@ -107,6 +107,12 @@ pub struct UpdateHandleRequest {
 pub struct UpdateProfileRequest {
     pub timezone: Option<String>,
     pub phone: Option<String>,
+    /// When present and non-empty, updates the user's email (must be unique).
+    #[serde(default)]
+    pub email: Option<String>,
+    /// When present and non-empty, updates the user's display name.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

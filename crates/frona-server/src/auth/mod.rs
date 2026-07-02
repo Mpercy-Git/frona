@@ -162,6 +162,22 @@ impl AuthService {
         Ok(())
     }
 
+    /// Lightweight email sanity check: a non-empty local part, a single `@`,
+    /// and a domain containing a dot. Deliberately permissive — real
+    /// verification is delivery, not regex.
+    fn is_valid_email(email: &str) -> bool {
+        let mut parts = email.split('@');
+        let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
+            return false;
+        };
+        !local.is_empty()
+            && domain.len() >= 3
+            && domain.contains('.')
+            && !domain.starts_with('.')
+            && !domain.ends_with('.')
+            && !email.chars().any(|c| c.is_whitespace())
+    }
+
     pub fn derive_handle_from_email(email: &str) -> String {
         let prefix = email.split('@').next().unwrap_or(email);
         prefix
@@ -306,6 +322,29 @@ impl AuthService {
                 "Invalid timezone '{}'. Use an IANA name like 'America/Los_Angeles', 'Asia/Tokyo', or 'UTC'.",
                 tz
             )));
+        }
+
+        // Email is user-managed: validate format and enforce uniqueness before
+        // applying. An empty string is treated as "no change" (email is
+        // required and can't be cleared).
+        if let Some(new_email) = req.email.as_ref().map(|e| e.trim()).filter(|e| !e.is_empty())
+            && new_email != user.email
+        {
+            if !Self::is_valid_email(new_email) {
+                return Err(AppError::Validation(
+                    "Enter a valid email address.".into(),
+                ));
+            }
+            if let Some(existing) = user_service.find_by_email(new_email).await?
+                && existing.id != user.id
+            {
+                return Err(AppError::Validation("Email already in use.".into()));
+            }
+            user.email = new_email.to_string();
+        }
+
+        if let Some(new_name) = req.name.as_ref().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+            user.name = new_name.to_string();
         }
 
         user.timezone = req.timezone.filter(|s| !s.is_empty());
