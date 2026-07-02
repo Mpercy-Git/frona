@@ -334,6 +334,19 @@ export function deleteChat(chatId: string) {
   return request<void>(`/api/chats/${chatId}`, { method: "DELETE" });
 }
 
+export interface DelegationInfo {
+  task_id: string;
+  agent_id: string;
+  agent_name: string | null;
+  status: "pending" | "inprogress" | "completed" | "failed" | "cancelled";
+  chat_id: string | null;
+  created_at: string;
+}
+
+export function getDelegations(chatId: string) {
+  return request<DelegationInfo[]>(`/api/chats/${chatId}/delegations`);
+}
+
 export function archiveSpace(spaceId: string) {
   return request<import("./types").SpaceResponse>(`/api/spaces/${spaceId}/archive`, { method: "POST" });
 }
