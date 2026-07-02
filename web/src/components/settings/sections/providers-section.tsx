@@ -72,7 +72,11 @@ function buildStates(
   prev: ProviderState[]
 ): ProviderState[] {
   const prevMap = new Map(prev.map((p) => [p.id, p]));
-  return Object.entries(providers).map(([id, cfg]) => {
+  return Object.entries(providers)
+    // A `null` value marks a provider queued for deletion (see disableProvider);
+    // treat it as unconfigured, not a card.
+    .filter(([, cfg]) => cfg != null)
+    .map(([id, cfg]) => {
     const existing = prevMap.get(id);
     return {
       id,
@@ -266,9 +270,9 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
    
   }, [providerStates]);
 
-  const configuredIds = Object.keys(providers);
+  const configuredIds = Object.keys(providers).filter((id) => providers[id] != null);
   const unconfiguredIds = KNOWN_PROVIDERS.filter((id) => !configuredIds.includes(id));
-  const sortedConfigured = KNOWN_PROVIDERS.filter((id) => id in providers);
+  const sortedConfigured = KNOWN_PROVIDERS.filter((id) => providers[id] != null);
 
   const updateProvider = (id: string, updated: ModelProviderConfig) => {
     setProviderStates((prev) =>
@@ -285,9 +289,12 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
   };
 
   const disableProvider = (id: string) => {
-    const next = { ...providers };
-    delete next[id];
-    onChange(next);
+    // Send an explicit `null` rather than omitting the key. The backend merges
+    // config with deep_merge, which only DELETES a key when its value is null;
+    // an omitted key leaves the on-disk provider intact, so it would reactivate
+    // on reload. Null entries are rendered as "unconfigured" (see buildStates /
+    // configuredIds filters).
+    onChange({ ...providers, [id]: null as unknown as ModelProviderConfig });
   };
 
   return (
