@@ -72,11 +72,7 @@ function buildStates(
   prev: ProviderState[]
 ): ProviderState[] {
   const prevMap = new Map(prev.map((p) => [p.id, p]));
-  return Object.entries(providers)
-    // A `null` value marks a provider queued for deletion (see disableProvider);
-    // treat it as unconfigured, not a card.
-    .filter(([, cfg]) => cfg != null)
-    .map(([id, cfg]) => {
+  return Object.entries(providers).map(([id, cfg]) => {
     const existing = prevMap.get(id);
     return {
       id,
@@ -163,10 +159,10 @@ export function TestStatusIcon({ status }: { status: TestStatus }) {
 interface ProviderCardProps {
   state: ProviderState;
   onChange: (updated: ModelProviderConfig) => void;
-  onDisable: () => void;
+  onToggle: (enabled: boolean) => void;
 }
 
-function ProviderCard({ state, onChange, onDisable }: ProviderCardProps) {
+function ProviderCard({ state, onChange, onToggle }: ProviderCardProps) {
   return (
     <div className="rounded-lg border border-border bg-surface-secondary p-4 space-y-4">
       <div className="flex items-center justify-between">
@@ -178,10 +174,17 @@ function ProviderCard({ state, onChange, onDisable }: ProviderCardProps) {
         </div>
         <button
           type="button"
-          onClick={onDisable}
-          className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors bg-accent"
+          onClick={() => onToggle(!state.enabled)}
+          title={state.enabled ? "Disable provider (keeps API key)" : "Enable provider"}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+            state.enabled ? "bg-accent" : "bg-surface-tertiary"
+          }`}
         >
-          <span className="pointer-events-none inline-block h-5 w-5 rounded-full bg-surface shadow transform transition-transform translate-x-5" />
+          <span
+            className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-surface shadow transform transition-transform ${
+              state.enabled ? "translate-x-5" : "translate-x-0"
+            }`}
+          />
         </button>
       </div>
 
@@ -270,9 +273,9 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
    
   }, [providerStates]);
 
-  const configuredIds = Object.keys(providers).filter((id) => providers[id] != null);
+  const configuredIds = Object.keys(providers);
   const unconfiguredIds = KNOWN_PROVIDERS.filter((id) => !configuredIds.includes(id));
-  const sortedConfigured = KNOWN_PROVIDERS.filter((id) => providers[id] != null);
+  const sortedConfigured = KNOWN_PROVIDERS.filter((id) => id in providers);
 
   const updateProvider = (id: string, updated: ModelProviderConfig) => {
     setProviderStates((prev) =>
@@ -288,13 +291,18 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
     });
   };
 
-  const disableProvider = (id: string) => {
-    // Send an explicit `null` rather than omitting the key. The backend merges
-    // config with deep_merge, which only DELETES a key when its value is null;
-    // an omitted key leaves the on-disk provider intact, so it would reactivate
-    // on reload. Null entries are rendered as "unconfigured" (see buildStates /
-    // configuredIds filters).
-    onChange({ ...providers, [id]: null as unknown as ModelProviderConfig });
+  // Toggle a provider on/off while KEEPING its api_key/base_url, so a disabled
+  // provider can be re-enabled without re-entering the key. We send enabled:
+  // false (not a deletion) — enabled defaults to true, so the false value is
+  // persisted by strip_defaults and survives the deep_merge round-trip.
+  const setProviderEnabled = (id: string, enabled: boolean) => {
+    const current = providers[id];
+    if (!current) return;
+    updateProvider(id, {
+      api_key: current.api_key,
+      base_url: current.base_url,
+      enabled,
+    });
   };
 
   return (
@@ -310,7 +318,7 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
                 key={id}
                 state={state}
                 onChange={(updated) => updateProvider(id, updated)}
-                onDisable={() => disableProvider(id)}
+                onToggle={(enabled) => setProviderEnabled(id, enabled)}
               />
             );
           })}
