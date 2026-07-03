@@ -23,6 +23,7 @@ interface PendingMessage {
 
 const sessionStore = {
   activeTaskId: null as string | null,
+  activeChatId: null as string | null,
   pendingMessage: null as PendingMessage | null,
 };
 
@@ -91,6 +92,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [taskIdParam]);
 
   useEffect(() => {
+    sessionStore.activeChatId = activeChatId;
+  }, [activeChatId]);
+
+  useEffect(() => {
     if (taskIdParam) {
       setActiveTab("tasks");
     }
@@ -148,9 +153,25 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         case "inference_count":
           setInferring(event.count > 0);
           break;
-        case "notification":
-          addNotification(event.notification);
+        case "notification": {
+          const notif = event.notification;
+          // Suppress the bell entry when the user is already actively viewing
+          // the chat it's for (window focused/visible). Mark it read server-
+          // side so it doesn't resurface as unread on reload, and skip adding
+          // it to the feed. Everything else (other chat, unfocused, non-Agent)
+          // still notifies.
+          const viewingActiveChat =
+            notif.data?.type === "Agent" &&
+            notif.data.chat_id === sessionStore.activeChatId &&
+            typeof document !== "undefined" &&
+            (document.visibilityState === "visible" || document.hasFocus());
+          if (viewingActiveChat) {
+            api.post(`/api/notifications/${notif.id}/read`, {}).catch(() => {});
+          } else {
+            addNotification(notif);
+          }
           break;
+        }
       }
     });
 
