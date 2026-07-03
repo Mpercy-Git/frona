@@ -1,6 +1,18 @@
 // Frona Service Worker — Web Push notifications
 // Handles push events, notification clicks, and subscription changes.
 
+// Take over immediately when a new version ships. Without this, an updated
+// worker sits in "waiting" until every tab closes, so behaviour changes (like
+// the active-chat notification suppression below) don't apply to existing
+// sessions — the old worker keeps running.
+self.addEventListener("install", () => {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
 self.addEventListener("push", (event) => {
   let data;
   try {
