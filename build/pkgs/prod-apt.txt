@@ -19,7 +19,7 @@ xz-utils=5.4.1-1
 zip=3.0-13
 
 # Image processing
-imagemagick-6.q16=8:6.9.11.60+dfsg-1.6+deb12u9
+imagemagick-6.q16=8:6.9.11.60+dfsg-1.6+deb12u11
 libjpeg62-turbo=1:2.1.5-2
 libopenjp2-7=2.5.0-2+deb12u3
 librsvg2-bin=2.54.7+dfsg-1~deb12u1
@@ -35,7 +35,7 @@ mariadb-common=1:10.11.14-0+deb12u2
 gnupg=2.2.40-1.1+deb12u2
 
 # Utilities
-jq=1.6-2.1+deb12u1
+jq=1.6-2.1+deb12u2
 file=1:5.44-3
 patch=2.7.6-7
 procps=2:4.0.2-3
@@ -45,4 +45,4 @@ smbclient=2:4.17.12+dfsg-0+deb12u4
 fd-find=8.6.0-3
 
 # Installed after NodeSource repo setup
-nodejs=22.22.2-1nodesource1
+nodejs=22.23.1-1nodesource1
