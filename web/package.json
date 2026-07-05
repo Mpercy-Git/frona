@@ -1,6 +1,6 @@
 {
   "name": "frona-frontend",
-  "version": "2026.6.1",
+  "version": "2026.7.0",
   "private": true,
   "scripts": {
     "dev": "next dev --port 3000 --hostname 0.0.0.0 --webpack",
