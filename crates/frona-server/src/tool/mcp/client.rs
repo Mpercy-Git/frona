@@ -130,7 +130,7 @@ impl McpClient {
     }
 
     pub fn peer_info(&self) -> Option<InitializeResult> {
-        self.running.peer_info().cloned()
+        self.running.peer_info().map(|info| (*info).clone())
     }
 
     pub async fn shutdown(self) -> Result<(), AppError> {
