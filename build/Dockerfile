@@ -3,7 +3,7 @@
 # ============================
 
 # Stage 1: frontend
-FROM node:22-slim AS frontend-builder
+FROM node:24-slim AS frontend-builder
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci
@@ -89,7 +89,7 @@ RUN --mount=type=bind,source=build/pkgs/dev-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
      $(grep -vE '^\s*(#|$)|^nodejs=' /tmp/packages.txt | tr '\n' ' ') \
-  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+  && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
   && apt-get install -y --no-install-recommends \
      $(grep '^nodejs=' /tmp/packages.txt) \
   && rm -rf /var/lib/apt/lists/*
@@ -133,7 +133,7 @@ RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
      $(grep -vE '^\s*(#|$)|^nodejs=' /tmp/packages.txt | tr '\n' ' ') \
-  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+  && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
   && apt-get install -y --no-install-recommends \
      $(grep '^nodejs=' /tmp/packages.txt) \
   && rm -rf /var/lib/apt/lists/*

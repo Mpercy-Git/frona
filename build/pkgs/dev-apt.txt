@@ -10,4 +10,4 @@ jq=1.6-2.1+deb12u2
 # Required by presage's transitive proto build-scripts.
 protobuf-compiler=3.21.12-3
 # Installed after NodeSource repo setup
-nodejs=22.23.1-1nodesource1
+nodejs=24.18.0-1nodesource1

@@ -1,6 +1,6 @@
 [tools]
 rust = "1.95.0"
-node = "22"
+node = "24"
 rust-analyzer = "latest"
 "cargo:cargo-watch" = "latest"
 
