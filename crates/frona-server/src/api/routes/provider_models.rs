@@ -319,6 +319,12 @@ async fn list_provider_models(
         if provider_id == "anthropic" {
             req = req.header("x-api-key", key);
             req = req.header("anthropic-version", "2023-06-01");
+        } else if provider_id == "gemini" {
+            // Gemini's native API (generativelanguage.googleapis.com) does NOT
+            // accept `Authorization: Bearer <key>` — it expects the key in the
+            // `x-goog-api-key` header. Bearer auth returns 401 UNAUTHENTICATED
+            // (API_KEY_SERVICE_BLOCKED), including for the new AQ. auth keys.
+            req = req.header("x-goog-api-key", key);
         } else {
             req = req.bearer_auth(key);
         }
