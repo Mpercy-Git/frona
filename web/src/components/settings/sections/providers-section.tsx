@@ -57,6 +57,8 @@ export interface ProviderState {
   base_url: string | null;
   enabled: boolean;
   testStatus: TestStatus;
+  /** Provider error message when testStatus === "error". */
+  testError?: string;
 }
 
 function hasKey(p: ProviderState): boolean {
@@ -80,6 +82,7 @@ function buildStates(
       base_url: cfg.base_url,
       enabled: cfg.enabled,
       testStatus: existing?.testStatus ?? "idle" as TestStatus,
+      testError: existing?.testError,
     };
   });
 }
@@ -110,7 +113,7 @@ export function computeBlockReason(states: ProviderState[]): string | null {
 /** Test all enabled providers that have keys and aren't already verified */
 async function testAllProviders(
   states: ProviderState[],
-  onUpdate: (id: string, status: TestStatus) => void
+  onUpdate: (id: string, status: TestStatus, error?: string) => void
 ): Promise<void> {
   const toTest = states.filter((p) => p.enabled && hasKey(p) && p.testStatus === "idle");
   await Promise.all(
@@ -123,11 +126,32 @@ async function testAllProviders(
           baseUrl: p.base_url ?? undefined,
         });
         onUpdate(p.id, "success");
-      } catch {
-        onUpdate(p.id, "error");
+      } catch (e) {
+        onUpdate(p.id, "error", cleanProviderError(e));
       }
     })
   );
+}
+
+/** Extract a concise, user-facing message from a provider test failure. */
+function cleanProviderError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : "Test failed";
+  // Surface the upstream provider's own error text when present. Try to pull a
+  // JSON `message` field out of the wrapped body; fall back to the raw string.
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart));
+      const msg = parsed?.error?.message ?? parsed?.message;
+      const reason = parsed?.error?.details?.[0]?.reason;
+      if (typeof msg === "string") {
+        return reason ? `${msg} (${reason})` : msg;
+      }
+    } catch {
+      // not JSON — fall through
+    }
+  }
+  return raw;
 }
 
 export function TestStatusIcon({ status }: { status: TestStatus }) {
@@ -201,6 +225,12 @@ function ProviderCard({ state, onChange, onToggle }: ProviderCardProps) {
         onChange={(value) => onChange({ api_key: state.api_key, base_url: value || null, enabled: state.enabled })}
         placeholder="Optional custom base URL"
       />
+
+      {state.testStatus === "error" && state.testError && (
+        <p className="rounded-lg bg-error-bg px-3 py-2 text-xs text-error-text break-words">
+          {state.testError}
+        </p>
+      )}
     </div>
   );
 }
@@ -258,9 +288,13 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
 
     debounceRef.current = setTimeout(() => {
       testingRef.current = true;
-      testAllProviders(providerStates, (id, status) => {
+      testAllProviders(providerStates, (id, status, error) => {
         setProviderStates((prev) =>
-          prev.map((p) => (p.id === id ? { ...p, testStatus: status } : p))
+          prev.map((p) =>
+            p.id === id
+              ? { ...p, testStatus: status, testError: status === "error" ? error : undefined }
+              : p,
+          ),
         );
       }).finally(() => {
         testingRef.current = false;
