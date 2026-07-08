@@ -2,15 +2,18 @@
 
 import { useState, useRef, useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { Bars3Icon, XMarkIcon, Cog6ToothIcon, ArrowRightStartOnRectangleIcon, CubeIcon, PuzzlePieceIcon, KeyIcon, CpuChipIcon } from "@heroicons/react/24/outline";
+import { Bars3Icon, XMarkIcon, Cog6ToothIcon, ArrowRightStartOnRectangleIcon, KeyIcon, CpuChipIcon, ChartBarIcon, InformationCircleIcon, PuzzlePieceIcon } from "@heroicons/react/24/outline";
 import { useAuth } from "@/lib/auth";
 import { useSession } from "@/lib/session-context";
 import { useNavigation } from "@/lib/navigation-context";
 import { useMobile } from "@/lib/use-mobile";
+import { useHashNavigate } from "@/lib/hash-navigate";
 import { Logo } from "../logo";
 import { NotificationDropdown } from "./notification-dropdown";
 import { AgentDropdown } from "./agent-dropdown";
 import { AppDropdown } from "./app-dropdown";
+import { ServerDropdown } from "./server-dropdown";
+import { AboutDialog } from "./about-dialog";
 
 const topTabs = [
   { id: "chat", label: "Assistant", href: "/chat" },
@@ -24,8 +27,10 @@ export function TopBar() {
   const { inferring, setActiveChat } = useSession();
   const { mobileNavOpen, setMobileNavOpen, mobileSubNavOpen, setMobileSubNavOpen } = useNavigation();
   const mobile = useMobile();
+  const hashNavigate = useHashNavigate();
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const isChatRelated = pathname.startsWith("/chat") || pathname.startsWith("/home") || pathname.startsWith("/space");
@@ -51,6 +56,8 @@ export function TopBar() {
 
   if (mobile) {
     return (
+      <>
+      <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
       <div className="flex items-center h-14 px-3 bg-surface-nav border-b border-border shrink-0 gap-2 pt-safe">
         <button
           onClick={() => {
@@ -84,6 +91,7 @@ export function TopBar() {
           <AgentDropdown />
           <AppDropdown />
           <NotificationDropdown />
+          <ServerDropdown />
           <button
             onClick={() => setMenuOpen(true)}
             className="relative flex items-center justify-center h-10 w-10 text-surface text-sm font-semibold cursor-pointer rounded-full bg-accent hover:bg-accent-hover transition"
@@ -114,28 +122,21 @@ export function TopBar() {
               )}
               <div className="py-2">
                 <button
-                  onClick={() => { router.push("/settings#models"); setMenuOpen(false); }}
-                  className="w-full flex items-center gap-3 px-5 py-3 text-base text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
-                >
-                  <CubeIcon className="h-5 w-5" />
-                  Models
-                </button>
-                <button
-                  onClick={() => { router.push("/settings#skills"); setMenuOpen(false); }}
+                  onClick={() => { hashNavigate("/settings#skills"); setMenuOpen(false); }}
                   className="w-full flex items-center gap-3 px-5 py-3 text-base text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
                 >
                   <PuzzlePieceIcon className="h-5 w-5" />
                   Skills
                 </button>
                 <button
-                  onClick={() => { router.push("/settings#mcp"); setMenuOpen(false); }}
+                  onClick={() => { hashNavigate("/settings#mcp"); setMenuOpen(false); }}
                   className="w-full flex items-center gap-3 px-5 py-3 text-base text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
                 >
                   <CpuChipIcon className="h-5 w-5" />
                   MCP
                 </button>
                 <button
-                  onClick={() => { router.push("/settings#vault"); setMenuOpen(false); }}
+                  onClick={() => { hashNavigate("/settings#vault"); setMenuOpen(false); }}
                   className="w-full flex items-center gap-3 px-5 py-3 text-base text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
                 >
                   <KeyIcon className="h-5 w-5" />
@@ -143,7 +144,14 @@ export function TopBar() {
                 </button>
                 <div className="border-t border-border my-1" />
                 <button
-                  onClick={() => { router.push("/settings"); setMenuOpen(false); }}
+                  onClick={() => { router.push("/usage"); setMenuOpen(false); }}
+                  className="w-full flex items-center gap-3 px-5 py-3 text-base text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
+                >
+                  <ChartBarIcon className="h-5 w-5" />
+                  Usage
+                </button>
+                <button
+                  onClick={() => { hashNavigate("/settings"); setMenuOpen(false); }}
                   className="w-full flex items-center gap-3 px-5 py-3 text-base text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
                 >
                   <Cog6ToothIcon className="h-5 w-5" />
@@ -156,16 +164,26 @@ export function TopBar() {
                   <ArrowRightStartOnRectangleIcon className="h-5 w-5" />
                   Logout
                 </button>
+                <button
+                  onClick={() => { setAboutOpen(true); setMenuOpen(false); }}
+                  className="w-full flex items-center gap-3 px-5 py-3 text-base text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
+                >
+                  <InformationCircleIcon className="h-5 w-5" />
+                  About
+                </button>
               </div>
             </div>
           </div>
           </>
         )}
       </div>
+      </>
     );
   }
 
   return (
+    <>
+    <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
     <div className="flex items-stretch h-20 pr-5 bg-surface-nav border-b border-border shrink-0">
       {/* Left: Logo + brand — matches nav panel width */}
       <div className="flex items-center justify-center shrink-0" style={{ width: 288 }}>
@@ -183,7 +201,6 @@ export function TopBar() {
         </button>
       </div>
 
-      {/* Top-level tabs — bottom-aligned with tab shape */}
       <div className="flex items-end self-end gap-1">
         {topTabs.map((tab) => (
           <button
@@ -200,14 +217,13 @@ export function TopBar() {
         ))}
       </div>
 
-      {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Right: Notifications + User profile */}
       <div className="flex items-center gap-2">
       <AgentDropdown />
       <AppDropdown />
       <NotificationDropdown />
+      <ServerDropdown />
       <div ref={menuRef} className="relative flex items-center">
         <button
           onClick={() => setMenuOpen((v) => !v)}
@@ -229,28 +245,21 @@ export function TopBar() {
                 </div>
               )}
               <button
-                onClick={() => { router.push("/settings#models"); setMenuOpen(false); }}
-                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
-              >
-                <CubeIcon className="h-4 w-4" />
-                Models
-              </button>
-              <button
-                onClick={() => { router.push("/settings#skills"); setMenuOpen(false); }}
+                onClick={() => { hashNavigate("/settings#skills"); setMenuOpen(false); }}
                 className="w-full flex items-center gap-2 px-4 py-2 text-sm text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
               >
                 <PuzzlePieceIcon className="h-4 w-4" />
                 Skills
               </button>
               <button
-                onClick={() => { router.push("/settings#mcp"); setMenuOpen(false); }}
+                onClick={() => { hashNavigate("/settings#mcp"); setMenuOpen(false); }}
                 className="w-full flex items-center gap-2 px-4 py-2 text-sm text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
               >
                 <CpuChipIcon className="h-4 w-4" />
                 MCP
               </button>
               <button
-                onClick={() => { router.push("/settings#vault"); setMenuOpen(false); }}
+                onClick={() => { hashNavigate("/settings#vault"); setMenuOpen(false); }}
                 className="w-full flex items-center gap-2 px-4 py-2 text-sm text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
               >
                 <KeyIcon className="h-4 w-4" />
@@ -258,7 +267,14 @@ export function TopBar() {
               </button>
               <div className="border-t border-border" />
               <button
-                onClick={() => { router.push("/settings"); setMenuOpen(false); }}
+                onClick={() => { router.push("/usage"); setMenuOpen(false); }}
+                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
+              >
+                <ChartBarIcon className="h-4 w-4" />
+                Usage
+              </button>
+              <button
+                onClick={() => { hashNavigate("/settings"); setMenuOpen(false); }}
                 className="w-full flex items-center gap-2 px-4 py-2 text-sm text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
               >
                 <Cog6ToothIcon className="h-4 w-4" />
@@ -271,11 +287,19 @@ export function TopBar() {
                 <ArrowRightStartOnRectangleIcon className="h-4 w-4" />
                 Logout
               </button>
+              <button
+                onClick={() => { setAboutOpen(true); setMenuOpen(false); }}
+                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
+              >
+                <InformationCircleIcon className="h-4 w-4" />
+                About
+              </button>
             </div>
           </div>
         )}
       </div>
       </div>
     </div>
+    </>
   );
 }

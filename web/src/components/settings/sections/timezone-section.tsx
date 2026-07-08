@@ -47,23 +47,20 @@ export function TimezoneSection({ server, onChange }: TimezoneSectionProps) {
       <div className="flex items-start gap-3 rounded-lg border border-accent/30 bg-accent/5 p-4 mb-4">
         <InformationCircleIcon className="h-5 w-5 text-accent shrink-0 mt-0.5" />
         <p className="text-sm text-text-secondary leading-relaxed">
-          Cron jobs, reminders, and natural-language times like &ldquo;8am tomorrow&rdquo; are
-          interpreted in this timezone whenever a user has not set their own profile timezone
-          and a task has not specified an override. Daylight saving transitions are handled
-          automatically by the IANA database.
+          Server default. Each user can override it in their profile, and individual tasks can specify a different zone.
+          Daylight saving transitions are handled automatically by the IANA database. Takes effect after restart.
         </p>
       </div>
       <SectionPanel>
         <ComboboxInput
           label="Default Timezone"
-          description="Leave on (auto-detect from server environment) to read the TZ env var or /etc/localtime at startup, falling back to UTC if neither is available. Takes effect after server restart."
+          description="Leave on auto-detect to read the TZ env var or /etc/localtime at startup, falling back to UTC."
           value={server.timezone}
           items={timezoneItems}
           onChange={(timezone) => onChange({ ...server, timezone })}
           placeholder={TIMEZONE_AUTO_DETECT}
           allowFreeText={false}
         />
-
         {browserTimezone && server.timezone !== browserTimezone && (
           <button
             type="button"

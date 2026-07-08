@@ -14,8 +14,10 @@ impl UserRepository for SurrealRepo<User> {
     async fn find_by_email(&self, email: &str) -> Result<Option<User>, AppError> {
         let mut result = self
             .db()
-            .query(format!("{SELECT_CLAUSE} FROM user WHERE email = $email LIMIT 1"))
-            .bind(("email", email.to_string()))
+            .query(format!(
+                "{SELECT_CLAUSE} FROM user WHERE string::lowercase(email) = $email LIMIT 1"
+            ))
+            .bind(("email", email.trim().to_lowercase()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 

@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
-version = "2026.6.0"
+version = "2026.7.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -27,8 +27,8 @@ moka = { version = "0.12", features = ["future", "sync"] }
 cedar-policy = { version = "4", features = ["partial-eval"] }
 # Git-only (crates.io stuck at 0.6.x). The pinned rev carries an unfixed
 # PNI-routing bug (PR #395); see signal/mod.rs for the user-visible impact.
-presage = { git = "https://github.com/whisperfish/presage", rev = "6793c3e8c30b807bddc7134c77049889bc57cf09" }
-presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "6793c3e8c30b807bddc7134c77049889bc57cf09" }
+presage = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8" }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8" }
 
 # Signal's fork of curve25519-dalek shares the upstream crate name, so
 # `[patch.crates-io]` is the only way to substitute it. Mirrors presage's

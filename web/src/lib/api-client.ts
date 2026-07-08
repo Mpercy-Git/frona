@@ -375,7 +375,8 @@ export function getContacts() {
   return request<import("./types").Contact[]>("/api/contacts");
 }
 
-export type SkillScope = "builtin" | "shared" | "agent";
+export type SkillScope = "builtin" | "shared" | "user" | "agent";
+export type InstallScope = "user" | "shared";
 
 export interface SkillSearchResult {
   name: string;
@@ -412,21 +413,32 @@ export async function previewSkill(repo: string, name: string): Promise<SkillPre
   return request<SkillPreview>(`/api/skills/preview?repo=${encodeURIComponent(repo)}&name=${encodeURIComponent(name)}`);
 }
 
-export async function installSkills(repo: string, skillNames: string[], agentId?: string): Promise<SkillListItem[]> {
+export async function installSkills(repo: string, skillNames: string[], opts?: { agentId?: string; scope?: InstallScope }): Promise<SkillListItem[]> {
   return request<SkillListItem[]>("/api/skills/install", {
     method: "POST",
-    body: JSON.stringify({ repo, skill_names: skillNames, agent_id: agentId }),
+    body: JSON.stringify({
+      repo,
+      skill_names: skillNames,
+      agent_id: opts?.agentId,
+      scope: opts?.scope,
+    }),
   });
 }
 
-export async function uninstallSkill(name: string, agentId?: string): Promise<void> {
-  let url = `/api/skills/${encodeURIComponent(name)}`;
-  if (agentId) url += `?agent_id=${encodeURIComponent(agentId)}`;
+export async function uninstallSkill(name: string, opts?: { agentId?: string; scope?: InstallScope }): Promise<void> {
+  const params = new URLSearchParams();
+  if (opts?.agentId) params.set("agent_id", opts.agentId);
+  if (opts?.scope) params.set("scope", opts.scope);
+  const qs = params.toString();
+  const url = `/api/skills/${encodeURIComponent(name)}${qs ? `?${qs}` : ""}`;
   return request<void>(url, { method: "DELETE" });
 }
 
-export async function listInstalledSkills(): Promise<SkillListItem[]> {
-  return request<SkillListItem[]>("/api/skills");
+export type ListSkillScope = "user" | "shared" | "builtin";
+
+export async function listInstalledSkills(scope?: ListSkillScope): Promise<SkillListItem[]> {
+  const qs = scope ? `?scope=${scope}` : "";
+  return request<SkillListItem[]>(`/api/skills${qs}`);
 }
 
 export async function listAgentSkills(agentId: string): Promise<SkillListItem[]> {
@@ -450,6 +462,51 @@ export interface RepoBrowseResult {
 
 export async function browseRepo(repo: string): Promise<RepoBrowseResult> {
   return request<RepoBrowseResult>(`/api/skills/browse?repo=${encodeURIComponent(repo)}`);
+}
+
+export type VaultProviderType = "local" | "one_password" | "bitwarden" | "hashicorp" | "kee_pass";
+
+export type VaultConnectionConfig =
+  | { type: "OnePassword"; service_account_token: string; default_vault_id: string | null }
+  | { type: "Bitwarden"; client_id: string; client_secret: string; master_password: string; server_url: string | null }
+  | { type: "Hashicorp"; address: string; token: string; mount_path: string | null }
+  | { type: "KeePass"; file_path: string; master_password: string };
+
+export interface VaultConnection {
+  id: string;
+  name: string;
+  provider: VaultProviderType;
+  enabled: boolean;
+  system_managed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listVaultConnections(): Promise<VaultConnection[]> {
+  return request<VaultConnection[]>("/api/vaults");
+}
+
+export async function createVaultConnection(req: {
+  name: string;
+  provider: VaultProviderType;
+  config: VaultConnectionConfig;
+}): Promise<VaultConnection> {
+  return request<VaultConnection>("/api/vaults", { method: "POST", body: JSON.stringify(req) });
+}
+
+export async function deleteVaultConnection(id: string): Promise<void> {
+  return request<void>(`/api/vaults/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function toggleVaultConnection(id: string, enabled: boolean): Promise<VaultConnection> {
+  return request<VaultConnection>(`/api/vaults/${encodeURIComponent(id)}/toggle`, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function testVaultConnection(id: string): Promise<void> {
+  return request<void>(`/api/vaults/${encodeURIComponent(id)}/test`, { method: "POST" });
 }
 
 export const api = {

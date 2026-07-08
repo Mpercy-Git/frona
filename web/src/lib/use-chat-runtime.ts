@@ -12,9 +12,6 @@ import type { MessageResponse, ChatResponse, Attachment } from "./types";
 import { renderMessageBody } from "./task-result-render";
 import { useToast } from "./toast";
 
-// ---------------------------------------------------------------------------
-// Attachment registry — shared between composer and message rendering
-// ---------------------------------------------------------------------------
 
 const backendAttachmentRegistry = new Map<string, Attachment>();
 
@@ -81,9 +78,6 @@ export const fronaAttachmentAdapter: AttachmentAdapter = {
   },
 };
 
-// ---------------------------------------------------------------------------
-// Message conversion: MessageResponse → assistant-ui format
-// ---------------------------------------------------------------------------
 
 export type AssistantContentPart =
   | { type: "text"; text: string }
@@ -308,9 +302,6 @@ export function convertMessage(msg: MessageResponse) {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// useChatRuntime hook
-// ---------------------------------------------------------------------------
 
 export interface ChatRuntimeOptions {
   chatId?: string;
@@ -358,7 +349,6 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
   useEffect(() => {
     if (!chatId) return;
 
-    // If onNew already started an eager subscription for this chat, adopt it.
     if (eagerSubRef.current) {
       const adopted = eagerSubRef.current;
       eagerSubRef.current = null;
@@ -377,7 +367,6 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     return () => controller.abort();
   }, [store, chatId]);
 
-  // Reload messages on SSE reconnect
   useEffect(() => {
     return sseBus.onReconnect(() => {
       const id = currentChatIdRef.current;
@@ -477,7 +466,6 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     });
   }, [storeSnapshot.messages, timeZone]);
 
-  // Build the external store adapter with MessageResponse as the source type
   const adapter: ExternalStoreAdapter<MessageResponse> = useMemo(() => ({
     messages: filteredMessages,
     isRunning: storeSnapshot.isRunning,
@@ -528,6 +516,10 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     hasMore: storeSnapshot.hasMore,
     loadingMore: storeSnapshot.loadingMore,
     loadOlder,
+    usagePerChat: storeSnapshot.usagePerChat,
+    lastFallbackIndex: storeSnapshot.lastFallbackIndex,
+    lastChatInputTokens: storeSnapshot.lastChatInputTokens,
+    totalToolCalls: storeSnapshot.totalToolCalls,
   };
 }
 

@@ -269,6 +269,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::signals::router())
         .merge(routes::skills::router())
         .merge(routes::tools::router())
+        .merge(routes::usage::router())
         .merge(routes::files::router())
         .merge(routes::share::router())
         .merge(routes::preview::router())

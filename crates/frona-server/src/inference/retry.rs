@@ -1,4 +1,6 @@
 use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use backon::Retryable;
@@ -8,33 +10,73 @@ use rig_core::completion::message::UserContent;
 use tokio::sync::mpsc;
 
 use crate::chat::broadcast::EventSender;
-use crate::core::metrics::{self, InferenceMetricsContext};
 
 use super::config::{ModelGroup, RetryConfig};
 use super::context::truncate_history;
 use super::error::InferenceError;
-use super::provider::{ModelRef, StreamToken};
+use super::usage::{UsageService, LatencyMetrics};
+use super::provider::{InferenceOutput, ModelRef, StreamToken};
 use super::registry::ModelProviderRegistry;
 use super::tool_loop::{InferenceEvent, InferenceEventKind};
+use super::usage::UsageContext;
+
+/// Result of a retried operation with retry instrumentation. `retry_count` is
+/// the number of failed attempts before the success; `retry_overhead_ms` is
+/// the wall time from the outer start to the start of the successful attempt
+/// (i.e. time spent in failed attempts + backoff sleeps).
+pub struct RetryOutcome<T> {
+    pub value: T,
+    pub retry_count: u32,
+    pub retry_overhead_ms: u64,
+}
 
 pub async fn retry_with_backoff<T, F, Fut>(
     retry_config: &RetryConfig,
     model_ref: &ModelRef,
     op: F,
-) -> Result<T, InferenceError>
+) -> Result<RetryOutcome<T>, InferenceError>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, InferenceError>>,
 {
     let model_str = model_ref.as_str();
-    (|| async { op().await })
-        .retry(retry_config.to_backoff())
-        .sleep(tokio::time::sleep)
-        .when(|e| e.is_retryable())
-        .notify(|e, dur| {
-            tracing::warn!(model = %model_str, error = %e, delay = ?dur, "Retryable error, backing off");
-        })
-        .await
+    let outer_start = Instant::now();
+    // ms-from-outer-start at which the LAST attempt began. After backon
+    // returns Ok, this is the start of the successful attempt — so it equals
+    // the time spent in failed attempts + backoff sleeps before success.
+    let last_attempt_start_ms = Arc::new(AtomicU64::new(0));
+    let retries = Arc::new(AtomicU32::new(0));
+
+    let lams_op = last_attempt_start_ms.clone();
+    let lams_notify = last_attempt_start_ms.clone();
+    let retries_notify = retries.clone();
+
+    let value = (|| {
+        let lams = lams_op.clone();
+        let fut = op();
+        async move {
+            lams.store(outer_start.elapsed().as_millis() as u64, Ordering::Relaxed);
+            fut.await
+        }
+    })
+    .retry(retry_config.to_backoff())
+    .sleep(tokio::time::sleep)
+    .when(|e| e.is_retryable())
+    .notify(move |e, dur| {
+        retries_notify.fetch_add(1, Ordering::Relaxed);
+        // Defensive: zero out so `last_attempt_start_ms` is set fresh by the
+        // next op() invocation. (Strictly redundant — op() always overwrites
+        // before any read — but keeps the invariant local to this helper.)
+        lams_notify.store(0, Ordering::Relaxed);
+        tracing::warn!(model = %model_str, error = %e, delay = ?dur, "Retryable error, backing off");
+    })
+    .await?;
+
+    Ok(RetryOutcome {
+        value,
+        retry_count: retries.load(Ordering::Relaxed),
+        retry_overhead_ms: last_attempt_start_ms.load(Ordering::Relaxed),
+    })
 }
 
 pub async fn inference_with_retry_and_fallback(
@@ -43,7 +85,8 @@ pub async fn inference_with_retry_and_fallback(
     system_prompt: &str,
     history: Vec<RigMessage>,
     tools: Vec<RigToolDefinition>,
-    metrics_ctx: &InferenceMetricsContext,
+    usage_service: &UsageService,
+    usage_ctx: &UsageContext,
 ) -> Result<(Vec<AssistantContent>, crate::inference::Usage), InferenceError> {
     let mut errors = Vec::new();
     let max_tokens = model_group.max_tokens;
@@ -54,7 +97,6 @@ pub async fn inference_with_retry_and_fallback(
     let truncated = truncate_history(
         history,
         system_prompt,
-        &model_group.main.model_id,
         model_group.context_window,
         max_output,
         truncation_pct,
@@ -78,40 +120,26 @@ pub async fn inference_with_retry_and_fallback(
     })
     .await
     {
-        Ok((contents, usage)) => {
-            let duration = start.elapsed();
+        Ok(RetryOutcome { value: InferenceOutput { content, usage, ttft_ms }, retry_count, retry_overhead_ms }) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
             tracing::info!(model = %ref_str, "Completion succeeded");
-            metrics::record_inference_request(
-                metrics_ctx,
-                &model_group.main.model_id,
-                &model_group.main.provider,
-                duration,
-                Some(&usage),
-                "success",
-            );
-            return Ok((contents, usage));
+            let latency = LatencyMetrics { duration_ms, ttft_ms, retry_overhead_ms, retry_count };
+            usage_service
+                .record(usage_ctx, &model_group.main, &usage, 0, latency)
+                .await;
+            return Ok((content, usage));
         }
         Err(e) => {
-            let duration = start.elapsed();
             tracing::warn!(model = %ref_str, error = %e, "Main model failed, trying fallbacks");
-            metrics::record_inference_request(
-                metrics_ctx,
-                &model_group.main.model_id,
-                &model_group.main.provider,
-                duration,
-                None,
-                "error",
-            );
             errors.push((ref_str, e.to_string()));
         }
     }
 
-    for fallback in &model_group.fallbacks {
+    for (idx, fallback) in model_group.fallbacks.iter().enumerate() {
         let ref_str = fallback.as_str();
         let truncated_fb = truncate_history(
             truncated.clone(),
             system_prompt,
-            &fallback.model_id,
             model_group.context_window,
             max_output,
             truncation_pct,
@@ -133,30 +161,17 @@ pub async fn inference_with_retry_and_fallback(
         })
         .await
         {
-            Ok((contents, usage)) => {
-                let duration = start.elapsed();
+            Ok(RetryOutcome { value: InferenceOutput { content, usage, ttft_ms }, retry_count, retry_overhead_ms }) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
                 tracing::info!(model = %ref_str, "Fallback succeeded");
-                metrics::record_inference_request(
-                    metrics_ctx,
-                    &fallback.model_id,
-                    &fallback.provider,
-                    duration,
-                    Some(&usage),
-                    "success",
-                );
-                return Ok((contents, usage));
+                let latency = LatencyMetrics { duration_ms, ttft_ms, retry_overhead_ms, retry_count };
+                usage_service
+                    .record(usage_ctx, fallback, &usage, (idx + 1) as u8, latency)
+                    .await;
+                return Ok((content, usage));
             }
             Err(e) => {
-                let duration = start.elapsed();
                 tracing::warn!(model = %ref_str, error = %e, "Fallback failed");
-                metrics::record_inference_request(
-                    metrics_ctx,
-                    &fallback.model_id,
-                    &fallback.provider,
-                    duration,
-                    None,
-                    "error",
-                );
                 errors.push((ref_str, e.to_string()));
             }
         }
@@ -171,7 +186,8 @@ pub async fn structured_inference_with_retry_and_fallback(
     system_prompt: &str,
     history: Vec<RigMessage>,
     schema: serde_json::Value,
-    metrics_ctx: &InferenceMetricsContext,
+    usage_service: &UsageService,
+    usage_ctx: &UsageContext,
 ) -> Result<serde_json::Value, InferenceError> {
     let mut errors = Vec::new();
     let max_tokens = model_group.max_tokens;
@@ -182,7 +198,6 @@ pub async fn structured_inference_with_retry_and_fallback(
     let truncated = truncate_history(
         history,
         system_prompt,
-        &model_group.main.model_id,
         model_group.context_window,
         max_output,
         truncation_pct,
@@ -206,40 +221,40 @@ pub async fn structured_inference_with_retry_and_fallback(
     })
     .await
     {
-        Ok(value) => {
-            let duration = start.elapsed();
+        Ok(RetryOutcome { value, retry_count, retry_overhead_ms }) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
             tracing::info!(model = %ref_str, "Structured extraction succeeded");
-            metrics::record_inference_request(
-                metrics_ctx,
-                &model_group.main.model_id,
-                &model_group.main.provider,
-                duration,
-                None,
-                "success",
-            );
+            // structured_inference at the rig layer doesn't surface a Usage —
+            // we record the call with zeros so the row + Prom counter still
+            // captures cost-irrelevant volume. ttft_ms is None: non-streaming.
+            let latency = LatencyMetrics {
+                duration_ms,
+                ttft_ms: None,
+                retry_overhead_ms,
+                retry_count,
+            };
+            usage_service
+                .record(
+                    usage_ctx,
+                    &model_group.main,
+                    &crate::inference::Usage::default(),
+                    0,
+                    latency,
+                )
+                .await;
             return Ok(value);
         }
         Err(e) => {
-            let duration = start.elapsed();
             tracing::warn!(model = %ref_str, error = %e, "Structured extraction failed on main, trying fallbacks");
-            metrics::record_inference_request(
-                metrics_ctx,
-                &model_group.main.model_id,
-                &model_group.main.provider,
-                duration,
-                None,
-                "error",
-            );
             errors.push((ref_str, e.to_string()));
         }
     }
 
-    for fallback in &model_group.fallbacks {
+    for (idx, fallback) in model_group.fallbacks.iter().enumerate() {
         let ref_str = fallback.as_str();
         let truncated_fb = truncate_history(
             truncated.clone(),
             system_prompt,
-            &fallback.model_id,
             model_group.context_window,
             max_output,
             truncation_pct,
@@ -261,30 +276,28 @@ pub async fn structured_inference_with_retry_and_fallback(
         })
         .await
         {
-            Ok(value) => {
-                let duration = start.elapsed();
+            Ok(RetryOutcome { value, retry_count, retry_overhead_ms }) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
                 tracing::info!(model = %ref_str, "Structured extraction fallback succeeded");
-                metrics::record_inference_request(
-                    metrics_ctx,
-                    &fallback.model_id,
-                    &fallback.provider,
-                    duration,
-                    None,
-                    "success",
-                );
+                let latency = LatencyMetrics {
+                    duration_ms,
+                    ttft_ms: None,
+                    retry_overhead_ms,
+                    retry_count,
+                };
+                usage_service
+                    .record(
+                        usage_ctx,
+                        fallback,
+                        &crate::inference::Usage::default(),
+                        (idx + 1) as u8,
+                        latency,
+                    )
+                    .await;
                 return Ok(value);
             }
             Err(e) => {
-                let duration = start.elapsed();
                 tracing::warn!(model = %ref_str, error = %e, "Structured extraction fallback failed");
-                metrics::record_inference_request(
-                    metrics_ctx,
-                    &fallback.model_id,
-                    &fallback.provider,
-                    duration,
-                    None,
-                    "error",
-                );
                 errors.push((ref_str, e.to_string()));
             }
         }
@@ -294,7 +307,7 @@ pub async fn structured_inference_with_retry_and_fallback(
 }
 
 pub enum StreamResult {
-    Contents(Vec<AssistantContent>),
+    Contents { content: Vec<AssistantContent>, usage: crate::inference::Usage },
     Cancelled,
 }
 
@@ -308,17 +321,27 @@ pub async fn stream_with_retry_and_fallback(
     event_tx: &EventSender,
     cancel_token: &tokio_util::sync::CancellationToken,
     accumulated_text: &mut String,
-    metrics_ctx: &InferenceMetricsContext,
+    usage_service: &UsageService,
+    usage_ctx: &UsageContext,
 ) -> Result<StreamResult, crate::core::error::AppError> {
     let provider = registry
         .get_provider(&model_group.main.provider)
         .map_err(|e| crate::core::error::AppError::Inference(e.to_string()))?;
 
     let model_id = &model_group.main.model_id;
-    let provider_name = &model_group.main.provider;
     let model_str = model_group.main.as_str();
 
+    // Track retry stats across the inline backon loop. Same idea as
+    // `retry_with_backoff`: count notify-fires for retries; track the start
+    // offset of the last attempt for overhead.
+    let outer_start = Instant::now();
+    let last_attempt_start_ms = Arc::new(AtomicU64::new(0));
+    let retries = Arc::new(AtomicU32::new(0));
+    let lams_notify = last_attempt_start_ms.clone();
+    let retries_notify = retries.clone();
+
     let result = (|| async {
+        last_attempt_start_ms.store(outer_start.elapsed().as_millis() as u64, Ordering::Relaxed);
         let (text_tx, text_rx) = mpsc::channel::<StreamToken>(64);
 
         let event_tx_clone = event_tx.clone();
@@ -343,7 +366,7 @@ pub async fn stream_with_retry_and_fallback(
             text
         });
 
-        let start = Instant::now();
+        let attempt_start = Instant::now();
         let contents_result = tokio::select! {
             result = provider.stream_inference(
                 model_id,
@@ -357,13 +380,13 @@ pub async fn stream_with_retry_and_fallback(
             ) => Some(result),
             _ = cancel_token.cancelled() => None,
         };
-        let duration = start.elapsed();
+        let duration_ms = attempt_start.elapsed().as_millis() as u64;
 
         let turn_text = forward_handle.await.unwrap_or_default();
 
         match contents_result {
             None => Err(InferenceError::Cancelled(turn_text)),
-            Some(Ok(contents)) if contents.is_empty() => {
+            Some(Ok(output)) if output.content.is_empty() => {
                 let last_is_tool_result = matches!(
                     chat_history.last(),
                     Some(RigMessage::User { content }) if content.iter().any(|c| matches!(c, UserContent::ToolResult(_)))
@@ -373,40 +396,43 @@ pub async fn stream_with_retry_and_fallback(
                     Some(RigMessage::Assistant { .. })
                 );
                 if last_is_tool_result || last_is_assistant {
-                    metrics::record_inference_request(
-                        metrics_ctx, model_id, provider_name, duration, None, "success",
-                    );
-                    Ok((contents, turn_text))
+                    let retry_overhead_ms = outer_start.elapsed().as_millis() as u64 - duration_ms;
+                    let latency = LatencyMetrics {
+                        duration_ms,
+                        ttft_ms: output.ttft_ms,
+                        retry_overhead_ms,
+                        retry_count: retries.load(Ordering::Relaxed),
+                    };
+                    usage_service
+                        .record(usage_ctx, &model_group.main, &output.usage, 0, latency)
+                        .await;
+                    Ok((output, turn_text))
                 } else {
-                    metrics::record_inference_request(
-                        metrics_ctx, model_id, provider_name, duration, None, "empty_response",
-                    );
                     Err(InferenceError::EmptyResponse)
                 }
             }
-            Some(Ok(contents)) => {
-                metrics::record_inference_request(
-                    metrics_ctx, model_id, provider_name, duration, None, "success",
-                );
-                Ok((contents, turn_text))
-            }
-            Some(Err(e)) => {
-                let status = if e.is_rate_limited() {
-                    "rate_limited"
-                } else {
-                    "error"
+            Some(Ok(output)) => {
+                let retry_overhead_ms = outer_start.elapsed().as_millis() as u64 - duration_ms;
+                let latency = LatencyMetrics {
+                    duration_ms,
+                    ttft_ms: output.ttft_ms,
+                    retry_overhead_ms,
+                    retry_count: retries.load(Ordering::Relaxed),
                 };
-                metrics::record_inference_request(
-                    metrics_ctx, model_id, provider_name, duration, None, status,
-                );
-                Err(e)
+                usage_service
+                    .record(usage_ctx, &model_group.main, &output.usage, 0, latency)
+                    .await;
+                Ok((output, turn_text))
             }
+            Some(Err(e)) => Err(e),
         }
     })
     .retry(model_group.retry.to_backoff())
     .sleep(tokio::time::sleep)
     .when(|e| e.is_retryable())
     .notify(|e, dur| {
+        retries_notify.fetch_add(1, Ordering::Relaxed);
+        lams_notify.store(0, Ordering::Relaxed);
         tracing::warn!(model = %model_str, error = %e, delay = ?dur, "Retryable error, backing off");
         event_tx.send(InferenceEvent {
             kind: InferenceEventKind::Retry {
@@ -418,9 +444,9 @@ pub async fn stream_with_retry_and_fallback(
     .await;
 
     match result {
-        Ok((contents, text)) => {
+        Ok((InferenceOutput { content, usage, .. }, text)) => {
             accumulated_text.push_str(&text);
-            Ok(StreamResult::Contents(contents))
+            Ok(StreamResult::Contents { content, usage })
         }
         Err(InferenceError::Cancelled(text)) => {
             accumulated_text.push_str(&text);
@@ -429,4 +455,3 @@ pub async fn stream_with_retry_and_fallback(
         Err(e) => Err(crate::core::error::AppError::from(e)),
     }
 }
-

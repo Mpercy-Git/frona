@@ -1,39 +1,10 @@
 use rig_core::completion::Message as RigMessage;
 
-const KNOWN_CONTEXT_WINDOWS: &[(&str, usize)] = &[
-    ("claude", 200_000),
-    ("gpt-4o", 128_000),
-    ("gpt-4.1", 128_000),
-    ("gpt-4.5", 128_000),
-    ("o1", 200_000),
-    ("o3", 200_000),
-    ("o4", 200_000),
-    ("gemini-2", 1_000_000),
-    ("gemini-1.5-pro", 1_000_000),
-    ("gemini", 128_000),
-    ("deepseek", 64_000),
-    ("llama", 128_000),
-    ("grok", 131_072),
-    ("mistral-large", 128_000),
-    ("command-r", 128_000),
-    ("qwen", 128_000),
-];
-
-pub fn known_context_window(model_id: &str) -> Option<usize> {
-    let id = model_id.to_lowercase();
-    KNOWN_CONTEXT_WINDOWS
-        .iter()
-        .find(|(pattern, _)| id.contains(pattern))
-        .map(|(_, window)| *window)
-}
-
-const DEFAULT_CONTEXT_WINDOW: usize = 128_000;
-
-pub fn resolve_context_window(model_id: &str, config_override: Option<usize>) -> usize {
-    config_override
-        .or_else(|| known_context_window(model_id))
-        .unwrap_or(DEFAULT_CONTEXT_WINDOW)
-}
+/// Last-resort context window when the model isn't in the catalog AND no
+/// config override is set. 128K is the floor most modern chat models meet.
+/// Used by `ProviderRegistry::resolve_model_group` when baking the window
+/// into `ModelGroup.context_window`.
+pub const DEFAULT_CONTEXT_WINDOW: usize = 128_000;
 
 pub fn estimate_tokens(text: &str) -> usize {
     text.len() / 4 + 4
@@ -80,29 +51,32 @@ pub fn estimate_messages_tokens(messages: &[RigMessage], system_prompt: &str) ->
     system_tokens + message_tokens
 }
 
+/// Operates on a resolved window budget (typically from
+/// `resolve_context_window`). Doesn't know about model identity.
 pub fn needs_compaction(
     messages: &[RigMessage],
     system_prompt: &str,
-    model_id: &str,
-    context_window: Option<usize>,
+    context_window: usize,
     max_output_tokens: usize,
     compaction_trigger_pct: usize,
 ) -> bool {
-    let window = resolve_context_window(model_id, context_window);
     let used = estimate_messages_tokens(messages, system_prompt);
-    let available = window.saturating_sub(max_output_tokens);
+    let available = context_window.saturating_sub(max_output_tokens);
     used > available * compaction_trigger_pct / 100
 }
 
+/// Trims `history` to fit `history_truncation_pct` of the budget left over
+/// after `max_output_tokens` and the system prompt. Newest messages are kept;
+/// older ones are dropped first. Operates on a resolved window budget
+/// (typically from `resolve_context_window`) — doesn't know about model identity.
 pub fn truncate_history(
     history: Vec<RigMessage>,
     system_prompt: &str,
-    model_id: &str,
-    context_window: Option<usize>,
+    context_window: usize,
     max_output_tokens: usize,
     history_truncation_pct: usize,
 ) -> Vec<RigMessage> {
-    let window = resolve_context_window(model_id, context_window);
+    let window = context_window;
     let system_tokens = estimate_tokens(system_prompt);
     let budget = window
         .saturating_sub(max_output_tokens)
@@ -135,22 +109,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_known_context_window() {
-        assert_eq!(known_context_window("claude-sonnet-4-5"), Some(200_000));
-        assert_eq!(known_context_window("gpt-4o"), Some(128_000));
-        assert_eq!(known_context_window("gemini-2.0-flash"), Some(1_000_000));
-        assert_eq!(known_context_window("deepseek-chat"), Some(64_000));
-        assert_eq!(known_context_window("unknown-model"), None);
-    }
-
-    #[test]
-    fn test_resolve_context_window() {
-        assert_eq!(resolve_context_window("claude-sonnet-4-5", None), 200_000);
-        assert_eq!(resolve_context_window("claude-sonnet-4-5", Some(100_000)), 100_000);
-        assert_eq!(resolve_context_window("unknown-model", None), 128_000);
-    }
-
-    #[test]
     fn test_estimate_tokens() {
         assert_eq!(estimate_tokens(""), 4);
         assert_eq!(estimate_tokens("hello world"), 6); // 11/4 + 4 = 6
@@ -159,25 +117,21 @@ mod tests {
     #[test]
     fn test_needs_compaction() {
         let short_msg = vec![RigMessage::user("hello")];
-        assert!(!needs_compaction(&short_msg, "system", "claude-sonnet-4-5", None, 8192, 80));
+        assert!(!needs_compaction(&short_msg, "system", 200_000, 8192, 80));
     }
 
     #[test]
     fn test_truncate_history_within_budget() {
         let msgs = vec![RigMessage::user("hello"), RigMessage::user("world")];
-        let result = truncate_history(msgs.clone(), "system", "claude-sonnet-4-5", None, 8192, 90);
+        let result = truncate_history(msgs.clone(), "system", 200_000, 8192, 90);
         assert_eq!(result.len(), 2);
     }
 
     #[test]
     fn test_truncate_history_exceeds_budget() {
         let long = "x".repeat(500_000);
-        let msgs = vec![
-            RigMessage::user(&long),
-            RigMessage::user("keep this"),
-        ];
-        let result = truncate_history(msgs, "system", "claude-sonnet-4-5", None, 8192, 90);
+        let msgs = vec![RigMessage::user(&long), RigMessage::user("keep this")];
+        let result = truncate_history(msgs, "system", 200_000, 8192, 90);
         assert!(result.len() <= 2);
     }
-
 }

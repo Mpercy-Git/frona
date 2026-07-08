@@ -151,7 +151,8 @@ export function FronaComposer({
       });
       wizard.setSubmitted(true);
       if (resolutions.length > 0) {
-        api.post(`/api/chats/${chatCtx.chatId}/tool-calls/resolve`, { resolutions });
+        api.post(`/api/chats/${chatCtx.chatId}/tool-calls/resolve`, { resolutions })
+          .catch((err) => console.error("Failed to resolve tool calls", err));
       }
     } else if (safeIndex < pendingTools.length - 1) {
       wizard.setCurrentIndex(safeIndex + 1);

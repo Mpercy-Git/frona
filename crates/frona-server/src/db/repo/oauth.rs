@@ -53,4 +53,5 @@ impl OAuthRepository for SurrealRepo<OAuthIdentity> {
 
         Ok(identities)
     }
+
 }

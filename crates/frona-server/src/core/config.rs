@@ -285,6 +285,7 @@ impl BrowserConfig {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
 pub struct SearchConfig {
     #[schemars(description = "Search provider (searxng, tavily, or brave).")]
     pub provider: Option<String>,
@@ -339,6 +340,7 @@ impl Default for SchedulerConfig {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, surrealdb::types::SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
+#[serde(default)]
 pub struct RetryConfig {
     #[schemars(description = "Maximum number of retry attempts. 0 disables retry.")]
     pub max_retries: u32,
@@ -431,6 +433,7 @@ impl Default for ChannelConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
 pub struct CommonModelFields {
     #[schemars(description = "Model ID (without provider prefix).")]
     pub model: String,
@@ -452,6 +455,7 @@ pub struct CommonModelFields {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
 pub struct AnthropicThinking {
     #[serde(rename = "type")]
     #[schemars(description = "'enabled' or 'disabled'.")]
@@ -752,6 +756,7 @@ impl ModelGroupConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
 pub struct ModelProviderConfig {
     #[schemars(description = "API key for this provider. Supports ${ENV_VAR} references.")]
     pub api_key: Option<String>,
@@ -993,6 +998,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
 pub struct SignalConfig {
     #[schemars(description = "Maximum number of pending signal watches per user.")]
     pub max_pending_per_user: usize,

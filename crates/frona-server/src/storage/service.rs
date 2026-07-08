@@ -66,6 +66,10 @@ impl StorageService {
         self.user_root(user_handle).join("vault")
     }
 
+    pub fn user_skills_path(&self, user_handle: &Handle) -> PathBuf {
+        self.user_root(user_handle).join("skills")
+    }
+
     pub fn user_tokens_path(&self, user_handle: &Handle) -> PathBuf {
         self.user_root(user_handle).join("tokens")
     }

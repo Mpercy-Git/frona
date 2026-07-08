@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
-use openidconnect::core::{CoreClient, CoreProviderMetadata};
+use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreUserInfoClaims};
 use openidconnect::{
-    AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
-    RedirectUrl, Scope,
+    AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce, OAuth2TokenResponse,
+    RedirectUrl, Scope, SubjectIdentifier,
 };
 use tokio::sync::Mutex;
 
@@ -185,11 +185,15 @@ impl OAuthService {
             .map_err(|e| AppError::Auth { message: format!("ID token validation failed: {e}"), code: AuthErrorCode::TokenInvalid })?;
 
         let external_sub = claims.subject().to_string();
-        let external_email = claims.email().map(|e| e.to_string());
-        let external_name = claims
-            .name()
-            .and_then(|n| n.get(None))
-            .map(|n| n.to_string());
+        let mut external_email = claims
+            .email()
+            .map(|e| AuthService::normalize_email(e.as_str()));
+        let mut external_name = pick_name(
+            claims.name().and_then(|n| n.get(None)).map(|n| n.as_str()),
+            claims.given_name().and_then(|n| n.get(None)).map(|n| n.as_str()),
+            claims.family_name().and_then(|n| n.get(None)).map(|n| n.as_str()),
+            claims.preferred_username().map(|n| n.as_str()),
+        );
 
         if !self.allow_unknown_email_verification
             && let Some(verified) = claims.email_verified()
@@ -202,23 +206,69 @@ impl OAuthService {
         }
 
         if let Some(identity) = self.repo.find_identity_by_sub(&external_sub).await? {
-            let user = user_service
-                .find_by_id(&identity.user_id)
-                .await?
-                .ok_or_else(|| AppError::Internal("Linked user not found".into()))?;
-            if user.deactivated_at.is_some() {
-                return Err(AppError::Auth {
-                    message: "Account deactivated".into(),
-                    code: AuthErrorCode::AccountDeactivated,
-                });
+            match user_service.find_by_id(&identity.user_id).await? {
+                Some(user) => {
+                    if user.deactivated_at.is_some() {
+                        return Err(AppError::Auth {
+                            message: "Account deactivated".into(),
+                            code: AuthErrorCode::AccountDeactivated,
+                        });
+                    }
+                    return Ok((user, false));
+                }
+                None => {
+                    tracing::warn!(
+                        identity_id = %identity.id,
+                        user_id = %identity.user_id,
+                        "Dropping orphaned SSO identity whose user no longer exists"
+                    );
+                    self.repo.delete(&identity.id).await?;
+                }
             }
-            return Ok((user, false));
         }
 
+        let mut matched_user: Option<User> = None;
         if self.signups_match_email
             && let Some(ref email) = external_email
-            && let Some(existing_user) = user_service.find_by_email(email).await?
         {
+            matched_user = user_service.find_by_email(email).await?;
+        }
+
+        // Fall back to the userinfo endpoint when the ID token alone didn't
+        // yield a mergeable email. Some IdPs (e.g. configurations that emit
+        // bare-sub ID tokens) only return email/name from userinfo.
+        if self.signups_match_email && matched_user.is_none() {
+            match fetch_userinfo(&client, &http_client, &token_response, &external_sub).await {
+                Ok(Some(info)) => {
+                    let info_email = info
+                        .email()
+                        .map(|e| AuthService::normalize_email(e.as_str()));
+                    let info_name = pick_name(
+                        info.name().and_then(|n| n.get(None)).map(|n| n.as_str()),
+                        info.given_name().and_then(|n| n.get(None)).map(|n| n.as_str()),
+                        info.family_name().and_then(|n| n.get(None)).map(|n| n.as_str()),
+                        info.preferred_username().map(|n| n.as_str()),
+                    );
+                    if external_name.is_none() {
+                        external_name = info_name;
+                    }
+                    if let Some(email) = info_email {
+                        if external_email.as_deref() != Some(email.as_str()) {
+                            matched_user = user_service.find_by_email(&email).await?;
+                        }
+                        if external_email.is_none() {
+                            external_email = Some(email);
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "UserInfo fetch failed, falling back to ID token claims only");
+                }
+            }
+        }
+
+        if let Some(existing_user) = matched_user {
             if existing_user.deactivated_at.is_some() {
                 return Err(AppError::Auth {
                     message: "Account deactivated".into(),
@@ -255,6 +305,12 @@ impl OAuthService {
                 .unwrap_or_else(|| format!("sso-{external_sub}@unknown")),
             name: external_name
                 .clone()
+                .or_else(|| {
+                    external_email
+                        .as_deref()
+                        .and_then(|e| e.split('@').next())
+                        .map(|s| s.to_string())
+                })
                 .unwrap_or_else(|| "SSO User".to_string()),
             password_hash: String::new(),
             timezone: None,
@@ -280,4 +336,61 @@ impl OAuthService {
 
         Ok((user, true))
     }
+}
+
+fn pick_name(
+    name: Option<&str>,
+    given_name: Option<&str>,
+    family_name: Option<&str>,
+    preferred_username: Option<&str>,
+) -> Option<String> {
+    fn trimmed(s: Option<&str>) -> Option<&str> {
+        s.map(str::trim).filter(|s| !s.is_empty())
+    }
+    if let Some(s) = trimmed(name) {
+        return Some(s.to_string());
+    }
+    let given = trimmed(given_name);
+    let family = trimmed(family_name);
+    if given.is_some() || family.is_some() {
+        let mut out = String::new();
+        if let Some(g) = given {
+            out.push_str(g);
+        }
+        if let Some(f) = family {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(f);
+        }
+        return Some(out);
+    }
+    trimmed(preferred_username).map(str::to_string)
+}
+
+async fn fetch_userinfo(
+    client: &CoreClient<
+        openidconnect::EndpointSet,
+        openidconnect::EndpointNotSet,
+        openidconnect::EndpointNotSet,
+        openidconnect::EndpointNotSet,
+        openidconnect::EndpointMaybeSet,
+        openidconnect::EndpointMaybeSet,
+    >,
+    http_client: &reqwest::Client,
+    token_response: &openidconnect::core::CoreTokenResponse,
+    expected_sub: &str,
+) -> Result<Option<CoreUserInfoClaims>, String> {
+    let request = match client.user_info(
+        token_response.access_token().to_owned(),
+        Some(SubjectIdentifier::new(expected_sub.to_string())),
+    ) {
+        Ok(req) => req,
+        Err(_) => return Ok(None),
+    };
+    request
+        .request_async(http_client)
+        .await
+        .map(Some)
+        .map_err(|e| e.to_string())
 }

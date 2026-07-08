@@ -43,6 +43,34 @@ pub enum BroadcastEventKind {
         space_id: Option<String>,
         fields: Option<serde_json::Value>,
     },
+    /// Per-inference-call usage event fired from `UsageService::record`.
+    /// Only dispatched when the row has a `chat_id` so we have somewhere to send it
+    /// — rootless rows (`Compaction::User`, `Compaction::Space`) still hit the DB
+    /// and Prometheus, they just don't broadcast.
+    UsageRecorded(UsageRecorded),
+}
+
+/// Payload for `BroadcastEventKind::UsageRecorded`. Carries the slim subset of
+/// the `InferenceUsage` row that frontends need to update the per-message
+/// footer and chat-header total pill.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageRecorded {
+    pub chat_id: String,
+    pub user_id: String,
+    pub agent_id: Option<String>,
+    pub message_id: Option<String>,
+    pub kind_tag: String,
+    pub model_ref: String,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: u64,
+    pub ttft_ms: Option<u64>,
+    pub output_tokens_per_second: Option<f64>,
+    pub retry_overhead_ms: u64,
+    pub retry_count: u32,
+    pub fallback_index: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -271,6 +299,7 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                 "fields": fields,
             }),
         )),
+        BroadcastEventKind::UsageRecorded(u) => Some(sse_event("usage_recorded", u)),
     }
 }
 
@@ -413,6 +442,19 @@ impl BroadcastService {
             chat_id: Some(chat_id.to_string()),
             space_id,
             kind: BroadcastEventKind::ChatMessage { message },
+        });
+    }
+
+    /// Dispatched by `UsageService::record` after persisting a row.
+    /// Always carries a `chat_id` — callers gate on `row.chat_id.is_some()`.
+    pub fn broadcast_usage_recorded(&self, usage: UsageRecorded) {
+        let user_id = usage.user_id.clone();
+        let chat_id = usage.chat_id.clone();
+        self.dispatch(BroadcastEvent {
+            user_id,
+            chat_id: Some(chat_id),
+            space_id: None,
+            kind: BroadcastEventKind::UsageRecorded(usage),
         });
     }
 

@@ -142,3 +142,104 @@ async fn test_runtime_config_operations() {
     let val = state.get_runtime_config("other_flag").await.unwrap();
     assert_eq!(val, Some("hello".to_string()));
 }
+
+/// Regression: https://github.com/fronalabs/frona/issues/27
+///
+/// `persist_config` strips fields equal to `Config::default()` for compactness.
+/// `Config::load()` then has to be able to reconstruct them — partial structs
+/// on disk must deserialize. Before fixing this, editing a single
+/// `RetryConfig` field through the GUI persisted a partial `retry: {...}` and
+/// crashed the server on next startup.
+#[test]
+fn retry_config_survives_strip_defaults_round_trip() {
+    use frona::core::config::persist_config;
+
+    let mut value = json!({
+        "auth": { "encryption_secret": "aaaa" },
+        "providers": { "openrouter": { "api_key": "sk-or-test" } },
+        "models": {
+            "primary": {
+                "provider": "openrouter",
+                "model": "google/gemma-4-31b-it:free",
+                "retry": {
+                    "max_retries": 3,
+                    "initial_backoff_ms": 1000,
+                    "backoff_multiplier": 2.0,
+                    "max_backoff_ms": 60000
+                }
+            }
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("config.yaml").to_string_lossy().into_owned();
+
+    persist_config(&mut value, &path).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+
+    // strip_defaults removes the three fields that match RetryConfig::default().
+    assert!(written.contains("max_retries: 3"));
+    assert!(!written.contains("initial_backoff_ms"));
+
+    let loaded: Config = ::config::Config::builder()
+        .add_source(::config::File::from_str(&written, ::config::FileFormat::Yaml))
+        .build()
+        .unwrap()
+        .try_deserialize()
+        .expect("load must succeed after persist trims retry fields");
+
+    let primary = loaded.models.get("primary").expect("primary model present");
+    let retry = match primary {
+        frona::core::config::ModelGroupConfig::OpenRouter { common, .. } => &common.retry,
+        other => panic!("unexpected variant: {other:?}"),
+    };
+    assert_eq!(retry.max_retries, 3);
+    assert_eq!(retry.initial_backoff_ms, 1000);
+    assert_eq!(retry.backoff_multiplier, 2.0);
+    assert_eq!(retry.max_backoff_ms, 60000);
+}
+
+/// Guards every persisted config struct against the same round-trip trap as
+/// `retry_config_survives_strip_defaults_round_trip`. The default Config is
+/// the worst case for `strip_defaults` — every field matches the default,
+/// so strip removes everything except map entries it can't compare. The
+/// stripped output must still load back into an equivalent Config.
+#[test]
+fn default_config_survives_strip_defaults_round_trip() {
+    use frona::core::config::persist_config;
+
+    // Set one non-default field per vulnerable struct so the entry survives
+    // strip_defaults and we exercise the deserializer with a partial shape
+    // (the other sibling fields get stripped).
+    let mut value = json!({
+        "search": { "provider": "tavily" },
+        "signal": { "max_pending_per_user": 99 },
+        "providers": {
+            "openrouter": { "api_key": "sk-or-x" }
+        },
+        "models": {
+            "primary": {
+                "provider": "anthropic",
+                "model": "claude-3-5-sonnet",
+                "thinking": { "type": "enabled", "budget_tokens": 1000 }
+            }
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("config.yaml").to_string_lossy().into_owned();
+    persist_config(&mut value, &path).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+
+    let loaded: Config = ::config::Config::builder()
+        .add_source(::config::File::from_str(&written, ::config::FileFormat::Yaml))
+        .build()
+        .unwrap()
+        .try_deserialize()
+        .unwrap_or_else(|e| panic!("load failed: {e}\n--- written ---\n{written}"));
+
+    assert_eq!(loaded.search.provider.as_deref(), Some("tavily"));
+    assert_eq!(loaded.signal.max_pending_per_user, 99);
+    assert!(loaded.providers.contains_key("openrouter"));
+    assert!(loaded.models.contains_key("primary"));
+}

@@ -1,6 +1,32 @@
-import type { ChatSSEEvent } from "./sse-event-bus";
+import type { ChatSSEEvent, UsageRecorded } from "./sse-event-bus";
 import type { MessageResponse, MessageStatus, Attachment, ToolCall } from "./types";
 import { api } from "./api-client";
+
+export interface RunningTotals {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  calls: number;
+}
+
+const ZERO_TOTALS: RunningTotals = {
+  inputTokens: 0,
+  cachedInputTokens: 0,
+  outputTokens: 0,
+  costUsd: 0,
+  calls: 0,
+};
+
+function addUsage(totals: RunningTotals, u: UsageRecorded): RunningTotals {
+  return {
+    inputTokens: totals.inputTokens + u.input_tokens,
+    cachedInputTokens: totals.cachedInputTokens + u.cached_input_tokens,
+    outputTokens: totals.outputTokens + u.output_tokens,
+    costUsd: totals.costUsd + (u.cost_usd ?? 0),
+    calls: totals.calls + 1,
+  };
+}
 
 // The "executing → completed" branch handles legacy rows where Executing
 // was used as an implicit paused indicator (server now sets Paused).
@@ -39,6 +65,13 @@ export interface StoreSnapshot {
   pendingTools: ToolCall[];
   hasMore: boolean;
   loadingMore: boolean;
+  usageByMessage: Map<string, RunningTotals>;
+  usagePerChat: RunningTotals;
+  lastFallbackIndex: number;
+  /** Input-token count of the most recent main-chat / tool-turn call.
+   *  Used as a proxy for current context-window saturation. */
+  lastChatInputTokens: number;
+  totalToolCalls: number;
 }
 
 /**
@@ -60,6 +93,14 @@ export class ChatStore {
   loaded = false;
   hasMore = false;
   loadingMore = false;
+  usageByMessage = new Map<string, RunningTotals>();
+  usagePerChat: RunningTotals = { ...ZERO_TOTALS };
+  lastFallbackIndex = 0;
+  /** Input tokens of the most recent main-chat / tool-turn call — proxy for
+   *  "how full is the model's context window right now." Title / Router /
+   *  Compaction events don't update this. */
+  lastChatInputTokens = 0;
+  totalToolCalls = 0;
 
   /** Tracks text position at the time of each tool call for turnText extraction. */
   private lastTextSnapshot = 0;
@@ -82,9 +123,63 @@ export class ChatStore {
         pendingTools: this.getPendingExternalTools(),
         hasMore: this.hasMore,
         loadingMore: this.loadingMore,
+        usageByMessage: this.usageByMessage,
+        usagePerChat: this.usagePerChat,
+        lastFallbackIndex: this.lastFallbackIndex,
+        lastChatInputTokens: this.lastChatInputTokens,
+        totalToolCalls: this.totalToolCalls,
       };
     }
     return this._snapshot;
+  }
+
+  /// Seed usage totals from the REST `/api/chats/{id}/usage` endpoint so the
+  /// chat-header pill is populated before any new SSE events arrive.
+  seedUsage(totals: RunningTotals, lastChatInputTokens: number, totalToolCalls: number) {
+    this.usagePerChat = totals;
+    this.lastChatInputTokens = lastChatInputTokens;
+    this.totalToolCalls = totalToolCalls;
+    this.notify();
+  }
+
+  /// Reset all accumulated usage to zero. Called on chat creation /
+  /// chat-id change so the header pill doesn't carry data over from a
+  /// previous chat that happened to share this ChatView slot.
+  resetUsage() {
+    this.usagePerChat = { ...ZERO_TOTALS };
+    this.lastChatInputTokens = 0;
+    this.totalToolCalls = 0;
+    this.lastFallbackIndex = 0;
+    this.notify();
+  }
+
+  async loadUsageSeed(chatId: string) {
+    try {
+      const data = await api.get<{
+        totals: {
+          input_tokens: number;
+          cached_input_tokens: number;
+          output_tokens: number;
+          cost_usd: number;
+          calls: number;
+        };
+        last_chat_input_tokens: number | null;
+        total_tool_calls: number;
+      }>(`/api/chats/${chatId}/usage`);
+      this.seedUsage(
+        {
+          inputTokens: data.totals.input_tokens,
+          cachedInputTokens: data.totals.cached_input_tokens,
+          outputTokens: data.totals.output_tokens,
+          costUsd: data.totals.cost_usd,
+          calls: data.totals.calls,
+        },
+        data.last_chat_input_tokens ?? 0,
+        data.total_tool_calls,
+      );
+    } catch {
+      // Non-fatal: SSE stream will catch up.
+    }
   }
 
   private notify() {
@@ -123,6 +218,9 @@ export class ChatStore {
   }
 
   async loadMessages(chatId: string) {
+    // Fire usage seed in parallel — failures are non-fatal (counter just
+    // starts from zero and SSE catches up).
+    void this.loadUsageSeed(chatId);
     try {
       const { messages, has_more } = await api.get<{ messages: MessageResponse[]; has_more: boolean }>(
         `/api/chats/${chatId}/messages`,
@@ -196,6 +294,7 @@ export class ChatStore {
 
       case "tool_call": {
         this.isRunning = true;
+        this.totalToolCalls += 1;
         const args = tryParseJson(event.arguments);
         if (event.description) args.description = event.description;
 
@@ -366,6 +465,22 @@ export class ChatStore {
       case "inference_error":
         this.clearStreaming();
         break;
+
+      case "usage_recorded": {
+        const u = event.usage;
+        // Chat-wide totals always update. Per-message totals only update for
+        // kinds that produce a user-visible turn (Chat, ToolTurn). Title,
+        // Compaction, Router, Signal are "background" — they update the chat
+        // total but not any single message footer.
+        this.usagePerChat = addUsage(this.usagePerChat, u);
+        if (u.message_id && (u.kind_tag === "Chat" || u.kind_tag === "ToolTurn")) {
+          const prev = this.usageByMessage.get(u.message_id) ?? ZERO_TOTALS;
+          this.usageByMessage.set(u.message_id, addUsage(prev, u));
+          this.lastChatInputTokens = u.input_tokens;
+        }
+        this.lastFallbackIndex = u.fallback_index;
+        break;
+      }
     }
     this.notify();
   }
@@ -520,10 +635,6 @@ export class ChatStore {
   }
 }
 
-/**
- * Merge consecutive agent messages from the same agent into a single message.
- * This prevents fragmentation when the backend sends multiple messages in sequence.
- */
 /**
  * Tag consecutive agent messages from the same agent so the UI can hide
  * repeated headers. No content merging — each message keeps its own order.

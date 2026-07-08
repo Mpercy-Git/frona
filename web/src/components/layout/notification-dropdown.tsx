@@ -117,10 +117,8 @@ function NotificationList({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-        <span className="text-base font-semibold text-text-primary">
-          Notifications
-        </span>
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border shrink-0">
+        <span className="text-sm font-medium text-text-secondary">Notifications</span>
         <div className="flex items-center gap-3">
           {unreadCount > 0 && (
             <button
@@ -132,7 +130,7 @@ function NotificationList({ onClose }: { onClose: () => void }) {
           )}
           <button
             onClick={onClose}
-            className="flex items-center justify-center h-10 w-10 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition"
+            className="flex items-center justify-center h-8 w-8 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition md:hidden"
           >
             <XMarkIcon className="h-5 w-5" />
           </button>

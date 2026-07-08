@@ -2,34 +2,42 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, RocksDb};
 use tracing::info;
 
-const USER_OWNED_RESOURCES: &[(&str, &str)] = &[
-    ("chat", "user_id"),
+/// Cascade-delete sources keyed by user_id. Order doesn't matter — none of
+/// these reference each other, and chat fans out to message/tool_call/binding
+/// through its own cascade events below.
+const USER_OWNED_TABLES: &[(&str, &str)] = &[
     ("agent", "user_id"),
+    ("space", "user_id"),
+    ("chat", "user_id"),
+    ("task", "user_id"),
+    ("contact", "user_id"),
+    ("credential", "user_id"),
+    ("vault_connection", "user_id"),
+    ("vault_grant", "user_id"),
+    ("vault_access_log", "user_id"),
+    ("principal_credential_binding", "user_id"),
+    ("share", "user_id"),
+    ("memory", "user_id"),
+    ("keypair", "user_id"),
+    ("notification", "user_id"),
+    ("policy", "user_id"),
+    ("oauth_identity", "user_id"),
+    ("api_token", "user_id"),
+    ("app", "user_id"),
+    ("mcp_server", "user_id"),
+    ("channel", "user_id"),
 ];
 
-fn build_refuse_user_delete_event() -> String {
-    let mut lets = String::new();
-    let mut conditions = Vec::new();
-    let mut payload_parts = Vec::new();
-    for (table, fk) in USER_OWNED_RESOURCES {
-        lets.push_str(&format!(
-            "            LET ${table}_count = (SELECT count() FROM {table} \
-              WHERE {fk} = meta::id($before.id) GROUP ALL)[0].count ?? 0;\n"
+fn build_cascade_user_delete_events() -> String {
+    let mut out = String::new();
+    for (table, fk) in USER_OWNED_TABLES {
+        out.push_str(&format!(
+            "DEFINE EVENT IF NOT EXISTS cascade_delete_user_owned_{table} ON TABLE user
+              WHEN $event = 'DELETE'
+              THEN (DELETE FROM {table} WHERE {fk} = meta::id($before.id));\n"
         ));
-        conditions.push(format!("${table}_count > 0"));
-        payload_parts.push(format!("'\"{table}\":' + <string>${table}_count"));
     }
-    format!(
-        "DEFINE EVENT IF NOT EXISTS refuse_user_delete_with_owned ON TABLE user
-          WHEN $event = 'DELETE'
-          THEN {{
-{lets}            IF {cond} {{
-              THROW 'owned_resources:{{' + {payload} + '}}';
-            }};
-          }};",
-        cond = conditions.join(" OR "),
-        payload = payload_parts.join(" + ',' + "),
-    )
+    out
 }
 
 pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
@@ -101,6 +109,15 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
 
         DEFINE TABLE IF NOT EXISTS call SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_call_chat ON TABLE call COLUMNS chat UNIQUE;
+
+        DEFINE TABLE IF NOT EXISTS inference_usage SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_iu_user_created ON TABLE inference_usage COLUMNS user_id, created_at;
+        DEFINE INDEX IF NOT EXISTS idx_iu_chat_created ON TABLE inference_usage COLUMNS chat_id, created_at;
+        DEFINE INDEX IF NOT EXISTS idx_iu_agent_created ON TABLE inference_usage COLUMNS agent_id, created_at;
+        DEFINE INDEX IF NOT EXISTS idx_iu_space_created ON TABLE inference_usage COLUMNS space_id, created_at;
+        DEFINE INDEX IF NOT EXISTS idx_iu_kind_created ON TABLE inference_usage COLUMNS kind_tag, created_at;
+        DEFINE INDEX IF NOT EXISTS idx_iu_model_created ON TABLE inference_usage COLUMNS model_ref, created_at;
+        DEFINE INDEX IF NOT EXISTS idx_iu_pricing_version ON TABLE inference_usage COLUMNS pricing_version;
 
         DEFINE TABLE IF NOT EXISTS app SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_app_agent ON TABLE app COLUMNS agent_id;
@@ -193,8 +210,8 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
           };
         ";
 
-    let owned_event = build_refuse_user_delete_event();
-    let schema = format!("{static_schema}\n{owned_event}");
+    let cascade_events = build_cascade_user_delete_events();
+    let schema = format!("{static_schema}\n{cascade_events}");
 
     db.query(schema).await?;
 

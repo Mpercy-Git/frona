@@ -177,7 +177,7 @@ function ModelParamsDialog({ group, groupName, onUpdate, onClose }: ModelParamsD
           <CollapsibleSection title="General" defaultOpen>
             <div className="grid grid-cols-2 gap-4">
               <NumberInput
-                label="Max Tokens"
+                label="Max Output Tokens"
                 value={group.max_tokens ?? null}
                 onChange={(v) => onUpdate({ max_tokens: v || null })}
                 min={1}
@@ -248,6 +248,16 @@ function ModelParamsDialog({ group, groupName, onUpdate, onClose }: ModelParamsD
               />
             </div>
           </CollapsibleSection>
+        </div>
+
+        <div className="pt-3 mt-2 border-t border-border flex justify-center -mx-4 px-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 transition"
+          >
+            Close
+          </button>
         </div>
       </div>
     </div>

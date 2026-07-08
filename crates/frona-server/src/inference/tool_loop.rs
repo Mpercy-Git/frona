@@ -2,7 +2,8 @@ use std::time::Instant;
 
 use base64::Engine;
 use rig_core::completion::message::{
-    DocumentSourceKind, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent,
+    DocumentSourceKind, ImageMediaType, MimeType, ToolCall, ToolFunction, ToolResult,
+    ToolResultContent, UserContent,
 };
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
@@ -12,7 +13,7 @@ use crate::chat::broadcast::EventSender;
 use crate::chat::message::models::{MessageResponse, Reasoning};
 
 use crate::core::error::AppError;
-use crate::core::metrics::{self, InferenceMetricsContext};
+use crate::core::metrics;
 use crate::tool::registry::AgentToolRegistry;
 use crate::tool::{InferenceContext, ToolDefinition};
 
@@ -28,7 +29,6 @@ pub struct InferenceEvent {
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum InferenceEventKind {
-    // ── Streaming within a turn ──────────────────────────────────────
     Text(String),
     Reasoning(String),
     ToolCall {
@@ -50,17 +50,11 @@ pub enum InferenceEventKind {
     },
     Retry { retry_after_ms: u64, reason: &'static str },
 
-    // ── Turn-lifecycle ───────────────────────────────────────────────
-    /// Inference turn is starting (initial submit or resume after HITL).
     /// Channel adapters use this to begin a "thinking/typing" affordance.
     Start,
-    /// Inference loop completed normally. `message` is the persisted final
-    /// state (content, reasoning, attachments).
+    /// `message` is the persisted final state.
     Done { message: MessageResponse },
-    /// Inference loop was cancelled (cancellation token fired, e.g. user
-    /// submitted a new message while a previous turn was running).
     Cancelled { reason: String },
-    /// Inference loop ended in error (provider failure, max turns, etc.).
     Failed { error: String },
     /// Loop is parked, waiting for something external (the human, a sibling
     /// task, a webhook) to resume it. The `reason` carries WHY; the message
@@ -172,10 +166,28 @@ async fn process_model_response(
     let mut assistant_content_items: Vec<AssistantContent> = Vec::new();
 
     for content in contents {
-        if let AssistantContent::ToolCall(_) = content {
-            has_tool_calls = true;
+        match content {
+            // The `description` arg is a UI-only field (added to every tool's
+            // schema by `tool::manager` so the model emits a status indicator).
+            // Strip it here so the assistant message we push into chat_history
+            // matches the persisted-then-rebuilt version — otherwise the
+            // first inference call sees args WITH description and any later
+            // rebuild-from-DB sees them WITHOUT, mutating an earlier message
+            // in the prefix and invalidating DeepSeek's prefix cache from
+            // that point on.
+            AssistantContent::ToolCall(tc) => {
+                has_tool_calls = true;
+                let mut args = tc.function.arguments.clone();
+                if let Some(obj) = args.as_object_mut() {
+                    obj.remove("description");
+                }
+                assistant_content_items.push(AssistantContent::ToolCall(ToolCall::new(
+                    tc.id.clone(),
+                    ToolFunction::new(tc.function.name.clone(), args),
+                )));
+            }
+            _ => assistant_content_items.push(content.clone()),
         }
-        assistant_content_items.push(content.clone());
     }
 
     let assistant_msg = RigMessage::Assistant {
@@ -232,7 +244,6 @@ async fn execute_tool_calls(
     tool_registry: &AgentToolRegistry,
     ctx: &InferenceContext,
     event_tx: &EventSender,
-    metrics_ctx: &InferenceMetricsContext,
     chat_history: &mut Vec<RigMessage>,
     all_attachments: &mut Vec<crate::storage::Attachment>,
     contents: &[AssistantContent],
@@ -312,8 +323,8 @@ async fn execute_tool_calls(
                 let duration = start.elapsed();
                 metrics::record_tool_call(
                     tool_name,
-                    &metrics_ctx.user_id,
-                    &metrics_ctx.agent_id,
+                    &ctx.user.id,
+                    &ctx.agent.id,
                     duration,
                     "success",
                 );
@@ -324,8 +335,8 @@ async fn execute_tool_calls(
                 let duration = start.elapsed();
                 metrics::record_tool_call(
                     tool_name,
-                    &metrics_ctx.user_id,
-                    &metrics_ctx.agent_id,
+                    &ctx.user.id,
+                    &ctx.agent.id,
                     duration,
                     "error",
                 );
@@ -346,7 +357,6 @@ async fn execute_tool_calls(
         let success = tool_output.as_ref().is_some_and(|o| o.is_success());
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        // Persist result AFTER execution
         chat_service
             .finish_tool_call(
                 &te_record.id,
@@ -357,7 +367,6 @@ async fn execute_tool_calls(
             )
             .await?;
 
-        // Persist the typed HITL / TaskEvent on the tool_call row.
         if let Some(ref h) = hitl_emitted {
             chat_service.set_hitl(&te_record.id, h.clone()).await?;
         }
@@ -430,7 +439,7 @@ pub async fn run_tool_loop(
     event_tx: EventSender,
     cancel_token: CancellationToken,
     ctx: &InferenceContext,
-    metrics_ctx: &InferenceMetricsContext,
+    usage_service: &crate::inference::usage::UsageService,
     chat_service: &crate::chat::service::ChatService,
     message_id: &str,
 ) -> Result<ToolLoopOutcome, AppError> {
@@ -454,7 +463,6 @@ pub async fn run_tool_loop(
         chat_history = crate::inference::context::truncate_history(
             chat_history,
             &current_system_prompt,
-            &model_group.main.model_id,
             model_group.context_window,
             max_output,
             model_group.inference.history_truncation_pct,
@@ -470,6 +478,20 @@ pub async fn run_tool_loop(
         }
 
         let mut turn_text = String::new();
+        // ToolTurn UsageContext for THIS iteration's LLM call. If this turn
+        // produces no tool_calls (the final text-only turn), it's still a
+        // ToolTurn from the row's perspective — the loop entry is the chat
+        // that aggregates them via shared message_id.
+        let turn_usage_ctx = crate::inference::usage::UsageContext::new(
+            crate::inference::usage::InferenceKind::ToolTurn {
+                agent_id: ctx.agent.id.clone(),
+                chat_id: ctx.chat.id.clone(),
+                message_id: message_id.to_string(),
+                turn_index: turn as u32,
+            },
+            ctx.user.id.clone(),
+            model_group.name.clone(),
+        );
         let contents = match stream_with_retry_and_fallback(
             registry,
             model_group,
@@ -479,11 +501,12 @@ pub async fn run_tool_loop(
             &event_tx,
             &cancel_token,
             &mut turn_text,
-            metrics_ctx,
+            usage_service,
+            &turn_usage_ctx,
         )
         .await?
         {
-            StreamResult::Contents(c) => c,
+            StreamResult::Contents { content, usage: _ } => content,
             StreamResult::Cancelled => {
                 return Ok(ToolLoopOutcome::Cancelled(turn_text));
             }
@@ -506,7 +529,6 @@ pub async fn run_tool_loop(
             tool_registry,
             ctx,
             &event_tx,
-            metrics_ctx,
             &mut chat_history,
             &mut all_attachments,
             &contents,

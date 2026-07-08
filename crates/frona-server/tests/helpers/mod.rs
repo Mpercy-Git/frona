@@ -1,8 +1,13 @@
+// Each integration test file compiles as its own binary and pulls in this
+// helpers module; helpers used only by other test files surface as dead-code
+// warnings in every binary that doesn't reference them. Silencing module-wide.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use frona::core::metrics::{self, InferenceMetricsContext};
+use frona::core::metrics;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::config::{ModelGroup, RetryConfig};
 use frona::inference::error::InferenceError;
@@ -14,6 +19,31 @@ use frona::tool::manager::ToolManager;
 use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
+
+/// Test-only UsageService — empty model catalog, fresh broadcast,
+/// real DB table. Sufficient to satisfy constructor signatures; in tests that
+/// don't assert against the inference_usage table this is a complete stub.
+pub fn test_usage_service(db: &Surreal<Db>) -> frona::inference::usage::UsageService {
+    frona::inference::usage::UsageService::new(
+        frona::inference::metadata::ModelCatalogStore::new(
+            frona::inference::metadata::ModelCatalogSnapshot::empty(),
+        ),
+        SurrealRepo::new(db.clone()),
+        frona::chat::broadcast::BroadcastService::new(),
+    )
+}
+
+/// Test-only UsageContext for fixtures that only need to satisfy a signature.
+pub fn test_usage_ctx() -> frona::inference::usage::UsageContext {
+    frona::inference::usage::UsageContext::new(
+        frona::inference::usage::InferenceKind::Title {
+            agent_id: "test-agent".to_string(),
+            chat_id: "test-chat".to_string(),
+        },
+        "test-user",
+        "primary".to_string(),
+    )
+}
 
 pub fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     let schema = frona::policy::schema::build_schema();
@@ -79,7 +109,7 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
         _additional_params: Option<serde_json::Value>,
-    ) -> Result<(Vec<AssistantContent>, Usage), InferenceError> {
+    ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
         let usage = Usage {
             input_tokens: 10,
             output_tokens: 5,
@@ -88,26 +118,21 @@ impl ModelProvider for MockModelProvider {
             cache_creation_input_tokens: 0,
             reasoning_tokens: 0,
         };
-        match self.next_response() {
-            MockResponse::Text(t) => Ok((vec![AssistantContent::text(&t)], usage)),
-            MockResponse::TextWithReasoning(text, reasoning) => {
-                let contents = vec![
-                    AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(&reasoning)),
-                    AssistantContent::text(&text),
-                ];
-                Ok((contents, usage))
-            }
-            MockResponse::ToolCalls(calls) => {
-                let contents = calls
-                    .into_iter()
-                    .map(|(id, name, args)| {
-                        AssistantContent::ToolCall(ToolCall::new(id, ToolFunction::new(name, args)))
-                    })
-                    .collect();
-                Ok((contents, usage))
-            }
-            MockResponse::Error(e) => Err(e),
-        }
+        let content = match self.next_response() {
+            MockResponse::Text(t) => vec![AssistantContent::text(&t)],
+            MockResponse::TextWithReasoning(text, reasoning) => vec![
+                AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(&reasoning)),
+                AssistantContent::text(&text),
+            ],
+            MockResponse::ToolCalls(calls) => calls
+                .into_iter()
+                .map(|(id, name, args)| {
+                    AssistantContent::ToolCall(ToolCall::new(id, ToolFunction::new(name, args)))
+                })
+                .collect(),
+            MockResponse::Error(e) => return Err(e),
+        };
+        Ok(frona::inference::provider::InferenceOutput::new(content, usage))
     }
 
     async fn stream_inference(
@@ -120,31 +145,37 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
         _additional_params: Option<serde_json::Value>,
-    ) -> Result<Vec<AssistantContent>, InferenceError> {
-        match self.next_response() {
+    ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_tokens: 0,
+        };
+        let content = match self.next_response() {
             MockResponse::Text(t) => {
                 let _ = token_tx.send(frona::inference::provider::StreamToken::Text(t.clone())).await;
-                Ok(vec![AssistantContent::text(t)])
+                vec![AssistantContent::text(t)]
             }
             MockResponse::TextWithReasoning(text, reasoning) => {
                 let _ = token_tx.send(frona::inference::provider::StreamToken::Reasoning(reasoning.clone())).await;
                 let _ = token_tx.send(frona::inference::provider::StreamToken::Text(text.clone())).await;
-                Ok(vec![
+                vec![
                     AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(&reasoning)),
                     AssistantContent::text(text),
-                ])
+                ]
             }
-            MockResponse::ToolCalls(calls) => {
-                let contents = calls
-                    .into_iter()
-                    .map(|(id, name, args)| {
-                        AssistantContent::ToolCall(ToolCall::new(id, ToolFunction::new(name, args)))
-                    })
-                    .collect();
-                Ok(contents)
-            }
-            MockResponse::Error(e) => Err(e),
-        }
+            MockResponse::ToolCalls(calls) => calls
+                .into_iter()
+                .map(|(id, name, args)| {
+                    AssistantContent::ToolCall(ToolCall::new(id, ToolFunction::new(name, args)))
+                })
+                .collect(),
+            MockResponse::Error(e) => return Err(e),
+        };
+        Ok(frona::inference::provider::InferenceOutput::new(content, usage))
     }
 
     async fn structured_inference(
@@ -393,7 +424,7 @@ pub fn test_model_group() -> ModelGroup {
         fallbacks: vec![],
         max_tokens: Some(4096),
         temperature: None,
-        context_window: Some(128_000),
+        context_window: 128_000,
         retry: RetryConfig {
             max_retries: 1,
             initial_backoff_ms: 1,
@@ -414,12 +445,33 @@ pub fn test_model_group_with_fallback(fallback_provider: &str, fallback_model: &
     group
 }
 
-pub fn test_metrics_ctx() -> InferenceMetricsContext {
-    InferenceMetricsContext {
-        user_id: "test-user".into(),
-        agent_id: "test-agent".into(),
-        model_group: "test".into(),
-    }
+/// Backwards-compatible name kept for the many call sites that pre-date the
+/// service refactor. Returns an `UsageService` backed by a
+/// process-wide in-memory DB so tests that don't assert on the table just work.
+///
+/// The DB is created on a **separate worker thread** so we don't trip
+/// tokio's "cannot start a runtime from within a runtime" guard — every
+/// `#[tokio::test]` call site already lives inside a runtime, and nested
+/// `block_on` panics there.
+pub fn test_metrics_ctx() -> frona::inference::usage::UsageService {
+    use std::sync::OnceLock;
+    static TEST_DB: OnceLock<Surreal<Db>> = OnceLock::new();
+    let db = TEST_DB.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("test runtime");
+            let db = rt.block_on(async {
+                let db = Surreal::new::<surrealdb::engine::local::Mem>(())
+                    .await
+                    .expect("test db");
+                frona::db::init::setup_schema(&db).await.expect("schema");
+                db
+            });
+            tx.send(db).expect("send db back");
+        });
+        rx.recv().expect("recv db")
+    });
+    test_usage_service(db)
 }
 
 pub fn test_registry_with_provider(
@@ -552,6 +604,7 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         HashMap::new(),
     );
 
+    let usage_service = test_usage_service(&db);
     let memory_service = frona::memory::service::MemoryService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -559,6 +612,7 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         std::sync::Arc::new(provider_registry.clone()),
         frona::agent::prompt::PromptLoader::new(&base),
         storage.clone(),
+        usage_service.clone(),
     );
 
     let keypair_repo: SurrealRepo<frona::credential::keypair::models::KeyPair> =
@@ -586,6 +640,7 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         frona::agent::prompt::PromptLoader::new(&base),
         frona::chat::broadcast::BroadcastService::new(),
         presign_service,
+        usage_service,
     )
 }
 

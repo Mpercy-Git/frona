@@ -11,12 +11,41 @@ use async_trait::async_trait;
 
 pub use self::models::User;
 pub use self::user_service::UserService;
-use self::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo, UserPermissions};
+use self::models::{ADMINS_GROUP, AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo, UserPermissions};
 use crate::auth::token::service::TokenService;
 use crate::core::config::Config;
 use crate::core::error::{AppError, AuthErrorCode};
 use crate::core::repository::Repository;
 use crate::credential::keypair::service::KeyPairService;
+use crate::policy::models::PolicyAction;
+use crate::policy::service::PolicyService;
+
+/// Every endpoint returning a `UserInfo` must go through here. Constructing
+/// one inline with `UserPermissions::default()` silently lies about admin
+/// status until the frontend re-fetches `/me`.
+pub async fn build_user_info(
+    user: User,
+    policy_service: &PolicyService,
+    needs_setup: Option<bool>,
+) -> Result<UserInfo, AppError> {
+    let list_users = policy_service
+        .authorize_user(&user, PolicyAction::ListUsers)
+        .await?;
+    let is_admin = user.groups.iter().any(|g| g == ADMINS_GROUP);
+    Ok(UserInfo {
+        id: user.id,
+        handle: user.handle,
+        email: user.email,
+        name: user.name,
+        timezone: user.timezone,
+        phone: user.phone.clone(),
+        needs_setup,
+        permissions: UserPermissions {
+            list_users: list_users.allowed,
+            is_admin,
+        },
+    })
+}
 
 #[async_trait]
 pub trait UserRepository: Repository<User> {
@@ -49,7 +78,8 @@ impl AuthService {
         let handle = crate::core::Handle::try_new(req.handle)?;
         Self::validate_password(&req.password)?;
 
-        if user_service.find_by_email(&req.email).await?.is_some() {
+        let email = Self::normalize_email(&req.email);
+        if user_service.find_by_email(&email).await?.is_some() {
             return Err(AppError::Validation("Email already registered".into()));
         }
         if user_service.find_by_handle(&handle).await?.is_some() {
@@ -61,7 +91,7 @@ impl AuthService {
         let user = User {
             id: crate::core::repository::new_id(),
             handle,
-            email: req.email,
+            email,
             name: req.name,
             password_hash,
             timezone: None,
@@ -82,6 +112,7 @@ impl AuthService {
         user_service: &UserService,
         keypair_svc: &KeyPairService,
         token_svc: &TokenService,
+        policy_service: &PolicyService,
         req: RegisterRequest,
     ) -> Result<(AuthResponse, String), AppError> {
         let user = self
@@ -92,16 +123,7 @@ impl AuthService {
 
         let response = AuthResponse {
             token: access_jwt,
-            user: UserInfo {
-                id: user.id,
-                handle: user.handle,
-                email: user.email,
-                name: user.name,
-                timezone: user.timezone,
-                phone: user.phone.clone(),
-                needs_setup: None,
-                permissions: UserPermissions::default(),
-            },
+            user: build_user_info(user, policy_service, None).await?,
         };
 
         Ok((response, refresh_jwt))
@@ -112,6 +134,7 @@ impl AuthService {
         user_service: &UserService,
         keypair_svc: &KeyPairService,
         token_svc: &TokenService,
+        policy_service: &PolicyService,
         req: LoginRequest,
     ) -> Result<(AuthResponse, String), AppError> {
         let user = if req.identifier.contains('@') {
@@ -138,16 +161,7 @@ impl AuthService {
 
         let response = AuthResponse {
             token: access_jwt,
-            user: UserInfo {
-                id: user.id,
-                handle: user.handle,
-                email: user.email,
-                name: user.name,
-                timezone: user.timezone,
-                phone: user.phone.clone(),
-                needs_setup: None,
-                permissions: UserPermissions::default(),
-            },
+            user: build_user_info(user, policy_service, None).await?,
         };
 
         Ok((response, refresh_jwt))
@@ -176,6 +190,10 @@ impl AuthService {
             && !domain.starts_with('.')
             && !domain.ends_with('.')
             && !email.chars().any(|c| c.is_whitespace())
+    }
+
+    pub fn normalize_email(email: &str) -> String {
+        email.trim().to_lowercase()
     }
 
     pub fn derive_handle_from_email(email: &str) -> String {
@@ -233,6 +251,7 @@ impl AuthService {
         user_service: &UserService,
         keypair_svc: &KeyPairService,
         token_svc: &TokenService,
+        policy_service: &PolicyService,
         storage: &crate::storage::service::StorageService,
         config: &Config,
         user_id: &str,
@@ -288,16 +307,7 @@ impl AuthService {
 
         let response = AuthResponse {
             token: access_jwt,
-            user: UserInfo {
-                id: user.id,
-                handle: user.handle,
-                email: user.email,
-                name: user.name,
-                timezone: user.timezone,
-                phone: user.phone.clone(),
-                needs_setup: None,
-                permissions: UserPermissions::default(),
-            },
+            user: build_user_info(user, policy_service, None).await?,
         };
 
         Ok((response, refresh_jwt))
@@ -306,6 +316,7 @@ impl AuthService {
     pub async fn update_profile(
         &self,
         user_service: &UserService,
+        policy_service: &PolicyService,
         user_id: &str,
         req: UpdateProfileRequest,
     ) -> Result<UserInfo, AppError> {
@@ -352,16 +363,7 @@ impl AuthService {
         user.updated_at = chrono::Utc::now();
         user_service.update(&user).await?;
 
-        Ok(UserInfo {
-            id: user.id,
-            handle: user.handle,
-            email: user.email,
-            name: user.name,
-            timezone: user.timezone,
-            phone: user.phone.clone(),
-            needs_setup: None,
-            permissions: UserPermissions::default(),
-        })
+        build_user_info(user, policy_service, None).await
     }
 
     fn hash_password(&self, password: &str) -> Result<String, AppError> {

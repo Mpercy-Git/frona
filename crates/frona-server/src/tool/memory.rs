@@ -58,18 +58,19 @@ impl StoreAgentMemoryTool {
         if let Some(ref group) = self.compaction_group {
             let ms = self.memory_service.clone();
             let aid = agent_id.clone();
+            let uid = ctx.user.id.clone();
             let group = group.clone();
             if overrides {
                 tracing::debug!(agent_id = %aid, "Spawning forced memory compaction (overrides=true)");
                 tokio::spawn(async move {
-                    if let Err(e) = ms.compact_entries_forced(&aid, &group).await {
+                    if let Err(e) = ms.compact_entries_forced(&uid, &aid, &group).await {
                         tracing::warn!(error = %e, agent_id = %aid, "Background forced memory compaction failed");
                     }
                 });
             } else {
                 tracing::debug!(agent_id = %aid, "Spawning background memory compaction");
                 tokio::spawn(async move {
-                    if let Err(e) = ms.compact_entries_if_needed(&aid, &group).await {
+                    if let Err(e) = ms.compact_entries_if_needed(&uid, &aid, &group).await {
                         tracing::warn!(error = %e, agent_id = %aid, "Background memory compaction failed");
                     }
                 });

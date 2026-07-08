@@ -341,7 +341,7 @@ async fn cannot_delete_last_admin() {
 }
 
 #[tokio::test]
-async fn cannot_delete_user_with_owned_chats_returns_409_with_count() {
+async fn delete_user_cascades_owned_chats_and_agents() {
     use chrono::Utc;
     use frona::chat::models::Chat;
     use frona::core::repository::{Repository, new_id};
@@ -350,8 +350,9 @@ async fn cannot_delete_user_with_owned_chats_returns_409_with_count() {
     let (state, _tmp, admin_token, _) = setup_admin().await;
     let (_, member_id) = register_member(&state, "alice").await;
 
-    // Seed a chat owned by the member directly through the repo so we don't
-    // need to drive the whole chat creation flow.
+    // Seed a chat directly through the repo so we don't have to drive the
+    // whole chat creation flow. Registration already auto-clones the built-in
+    // agents, so the member starts with 4 agent rows + 1 chat row.
     let chat_repo: SurrealRepo<Chat> = SurrealRepo::new(state.db.clone());
     let chat = Chat {
         id: new_id(),
@@ -369,37 +370,7 @@ async fn cannot_delete_user_with_owned_chats_returns_409_with_count() {
     };
     chat_repo.create(&chat).await.unwrap();
 
-    let app = build_app(state.clone());
-    let resp = app
-        .oneshot(auth_delete(
-            &format!("/api/admin/users/{member_id}"),
-            &admin_token,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let json = body_json(resp).await;
-    let err = json["error"].as_str().unwrap_or("");
-    assert!(err.contains("owned_resources"), "got: {err}");
-    // Body is JSON keyed by the SurrealDB table name (singular), per USER_OWNED_RESOURCES.
-    assert!(err.contains("\"chat\":1"), "got: {err}");
-}
-
-#[tokio::test]
-async fn can_delete_user_with_no_chats_or_agents() {
-    let (state, _tmp, admin_token, _) = setup_admin().await;
-    let (_, member_id) = register_member(&state, "alice").await;
-
-    // Registration auto-clones built-in agents (developer/researcher/...). For
-    // this "user has no remaining resources" scenario we have to wipe them
-    // first — admin user-delete refuses while owned rows exist.
-    for agent in state.agent_service.list(&member_id).await.unwrap() {
-        state
-            .agent_service
-            .delete(&member_id, &agent.id)
-            .await
-            .unwrap();
-    }
+    assert!(!state.agent_service.list(&member_id).await.unwrap().is_empty());
 
     let app = build_app(state.clone());
     let resp = app
@@ -411,8 +382,9 @@ async fn can_delete_user_with_no_chats_or_agents() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-    let target = state.user_service.find_by_id(&member_id).await.unwrap();
-    assert!(target.is_none(), "user row should be gone");
+    assert!(state.user_service.find_by_id(&member_id).await.unwrap().is_none());
+    assert!(state.agent_service.list(&member_id).await.unwrap().is_empty());
+    assert!(chat_repo.find_by_id(&chat.id).await.unwrap().is_none());
 }
 
 #[tokio::test]

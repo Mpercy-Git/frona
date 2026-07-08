@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -361,16 +361,27 @@ impl SkillService {
     }
 
     pub async fn install_batch(&self, repo: &str, skill_names: &[String], agent: Option<(&crate::core::Handle, &crate::core::Handle)>) -> Result<Vec<SkillListItem>, AppError> {
+        if let Some((user_handle, agent_handle)) = agent {
+            return self.install_to_agent(user_handle, agent_handle, repo, skill_names).await;
+        }
+        self.install_to_dir(&self.installed_dir, repo, skill_names, SkillScope::Shared).await
+    }
+
+    pub async fn install_batch_for_user(&self, user_handle: &crate::core::Handle, repo: &str, skill_names: &[String]) -> Result<Vec<SkillListItem>, AppError> {
+        let dir = self.storage.user_skills_path(user_handle);
+        self.install_to_dir(&dir, repo, skill_names, SkillScope::User).await
+    }
+
+    async fn install_to_agent(&self, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle, repo: &str, skill_names: &[String]) -> Result<Vec<SkillListItem>, AppError> {
         let browse = self.get_skills(repo).await?;
         let now = Utc::now();
         let mut items = Vec::new();
-        let mut lock = self.read_lock();
+        let ws = self.storage.agent_workspace(user_handle, agent_handle);
 
         for skill_name in skill_names {
             let skill = browse.skills.iter()
                 .find(|s| s.name == *skill_name)
                 .ok_or_else(|| AppError::NotFound(format!("Skill '{skill_name}' not found in {repo}")))?;
-
             let discovered = super::registry::DiscoveredSkill {
                 name: skill_name.clone(),
                 description: skill.description.clone(),
@@ -379,33 +390,10 @@ impl SkillService {
             };
             let fetched = self.registry.fetch_skill_from_cache(repo, &discovered).await?;
 
-            if let Some((user_handle, agent_handle)) = agent {
-                let ws = self.storage.agent_workspace(user_handle, agent_handle);
-                let skill_base = format!("skills/{}", &fetched.name);
-                ws.write(&format!("{skill_base}/SKILL.md"), &fetched.content)?;
-                for file in &fetched.files {
-                    ws.write_bytes(&format!("{skill_base}/{}", file.path), &file.content)?;
-                }
-            } else {
-                let skill_dir = self.installed_dir.join(&fetched.name);
-                std::fs::create_dir_all(&skill_dir)
-                    .map_err(|e| AppError::Internal(format!("Failed to create skill directory: {e}")))?;
-                std::fs::write(skill_dir.join("SKILL.md"), &fetched.content)
-                    .map_err(|e| AppError::Internal(format!("Failed to write SKILL.md: {e}")))?;
-                for file in &fetched.files {
-                    let file_path = skill_dir.join(&file.path);
-                    if let Some(parent) = file_path.parent() {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| AppError::Internal(format!("Failed to create directory: {e}")))?;
-                    }
-                    std::fs::write(&file_path, &file.content)
-                        .map_err(|e| AppError::Internal(format!("Failed to write {}: {e}", file.path)))?;
-                }
-                lock.skills.insert(fetched.name.clone(), SkillLockEntry {
-                    source: repo.to_string(),
-                    sha: fetched.sha,
-                    installed_at: now,
-                });
+            let skill_base = format!("skills/{}", &fetched.name);
+            ws.write(&format!("{skill_base}/SKILL.md"), &fetched.content)?;
+            for file in &fetched.files {
+                ws.write_bytes(&format!("{skill_base}/{}", file.path), &file.content)?;
             }
 
             items.push(SkillListItem {
@@ -413,23 +401,85 @@ impl SkillService {
                 description: fetched.description,
                 source: Some(repo.to_string()),
                 installed_at: Some(now),
-                scope: SkillScope::Shared,
+                scope: SkillScope::Agent,
             });
         }
 
-        if agent.is_none() {
-            self.write_lock(&lock)?;
-        }
         self.invalidate_caches().await;
+        Ok(items)
+    }
 
+    async fn install_to_dir(&self, dir: &Path, repo: &str, skill_names: &[String], scope: SkillScope) -> Result<Vec<SkillListItem>, AppError> {
+        let browse = self.get_skills(repo).await?;
+        let now = Utc::now();
+        let mut items = Vec::new();
+        let mut lock = self.read_lock_at(dir);
+
+        for skill_name in skill_names {
+            let skill = browse.skills.iter()
+                .find(|s| s.name == *skill_name)
+                .ok_or_else(|| AppError::NotFound(format!("Skill '{skill_name}' not found in {repo}")))?;
+            let discovered = super::registry::DiscoveredSkill {
+                name: skill_name.clone(),
+                description: skill.description.clone(),
+                dir_path: skill.dir_path.clone(),
+                sha: skill.sha.clone(),
+            };
+            let fetched = self.registry.fetch_skill_from_cache(repo, &discovered).await?;
+
+            let skill_dir = dir.join(&fetched.name);
+            std::fs::create_dir_all(&skill_dir)
+                .map_err(|e| AppError::Internal(format!("Failed to create skill directory: {e}")))?;
+            std::fs::write(skill_dir.join("SKILL.md"), &fetched.content)
+                .map_err(|e| AppError::Internal(format!("Failed to write SKILL.md: {e}")))?;
+            for file in &fetched.files {
+                let file_path = skill_dir.join(&file.path);
+                if let Some(parent) = file_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| AppError::Internal(format!("Failed to create directory: {e}")))?;
+                }
+                std::fs::write(&file_path, &file.content)
+                    .map_err(|e| AppError::Internal(format!("Failed to write {}: {e}", file.path)))?;
+            }
+            lock.skills.insert(fetched.name.clone(), SkillLockEntry {
+                source: repo.to_string(),
+                sha: fetched.sha,
+                installed_at: now,
+            });
+
+            items.push(SkillListItem {
+                name: fetched.name,
+                description: fetched.description,
+                source: Some(repo.to_string()),
+                installed_at: Some(now),
+                scope,
+            });
+        }
+
+        self.write_lock_at(dir, &lock)?;
+        self.invalidate_caches().await;
         Ok(items)
     }
 
     pub fn list_installed(&self) -> Result<Vec<SkillListItem>, AppError> {
-        let lock = self.read_lock();
+        self.list_installed_in(&self.installed_dir, SkillScope::Shared)
+    }
+
+    pub fn list_installed_for_user(&self, user_handle: &crate::core::Handle) -> Result<Vec<SkillListItem>, AppError> {
+        let dir = self.storage.user_skills_path(user_handle);
+        self.list_installed_in(&dir, SkillScope::User)
+    }
+
+    pub fn list_builtin(&self) -> Result<Vec<SkillListItem>, AppError> {
+        let dir = self.resolver.builtin_skills_dir();
+        self.list_installed_in(&dir, SkillScope::Builtin)
+    }
+
+    fn list_installed_in(&self, dir: &Path, scope: SkillScope) -> Result<Vec<SkillListItem>, AppError> {
+        let lock = self.read_lock_at(dir);
         let mut items = Vec::new();
 
-        let Ok(entries) = std::fs::read_dir(&self.installed_dir) else {
+        let Ok(entries) = std::fs::read_dir(dir) else {
             return Ok(items);
         };
 
@@ -451,7 +501,7 @@ impl SkillService {
                     description,
                     source: lock_entry.map(|e| e.source.clone()),
                     installed_at: lock_entry.map(|e| e.installed_at),
-                    scope: SkillScope::Shared,
+                    scope,
                 });
             }
         }
@@ -473,7 +523,16 @@ impl SkillService {
     }
 
     pub async fn uninstall(&self, name: &str) -> Result<(), AppError> {
-        let skill_dir = self.installed_dir.join(name);
+        self.uninstall_in(&self.installed_dir.clone(), name).await
+    }
+
+    pub async fn uninstall_for_user(&self, user_handle: &crate::core::Handle, name: &str) -> Result<(), AppError> {
+        let dir = self.storage.user_skills_path(user_handle);
+        self.uninstall_in(&dir, name).await
+    }
+
+    async fn uninstall_in(&self, dir: &Path, name: &str) -> Result<(), AppError> {
+        let skill_dir = dir.join(name);
         if !skill_dir.exists() {
             return Err(AppError::NotFound(format!("Skill '{name}' is not installed")));
         }
@@ -481,9 +540,9 @@ impl SkillService {
         std::fs::remove_dir_all(&skill_dir)
             .map_err(|e| AppError::Internal(format!("Failed to remove skill directory: {e}")))?;
 
-        let mut lock = self.read_lock();
+        let mut lock = self.read_lock_at(dir);
         lock.skills.remove(name);
-        self.write_lock(&lock)?;
+        self.write_lock_at(dir, &lock)?;
 
         self.invalidate_caches().await;
 
@@ -544,7 +603,11 @@ impl SkillService {
     }
 
     fn read_lock(&self) -> SkillsLock {
-        let lock_path = self.installed_dir.join("skills-lock.json");
+        self.read_lock_at(&self.installed_dir)
+    }
+
+    fn read_lock_at(&self, dir: &Path) -> SkillsLock {
+        let lock_path = dir.join("skills-lock.json");
         std::fs::read_to_string(&lock_path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -552,10 +615,14 @@ impl SkillService {
     }
 
     fn write_lock(&self, lock: &SkillsLock) -> Result<(), AppError> {
-        std::fs::create_dir_all(&self.installed_dir)
+        self.write_lock_at(&self.installed_dir.clone(), lock)
+    }
+
+    fn write_lock_at(&self, dir: &Path, lock: &SkillsLock) -> Result<(), AppError> {
+        std::fs::create_dir_all(dir)
             .map_err(|e| AppError::Internal(format!("Failed to create skills directory: {e}")))?;
 
-        let lock_path = self.installed_dir.join("skills-lock.json");
+        let lock_path = dir.join("skills-lock.json");
         let json = serde_json::to_string_pretty(lock)
             .map_err(|e| AppError::Internal(format!("Failed to serialize lock file: {e}")))?;
 

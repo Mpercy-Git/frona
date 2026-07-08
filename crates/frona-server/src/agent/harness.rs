@@ -60,6 +60,7 @@ pub struct Harness {
     pub(crate) prompts: PromptLoader,
     pub(crate) config: Arc<Config>,
     pub(crate) commands: Arc<CommandRegistry>,
+    pub(crate) usage_service: crate::inference::usage::UsageService,
 }
 
 impl Harness {
@@ -82,6 +83,7 @@ impl Harness {
         shutdown_token: CancellationToken,
         prompts: PromptLoader,
         config: Arc<Config>,
+        usage_service: crate::inference::usage::UsageService,
     ) -> Self {
         let mut registry = CommandRegistry::new();
         crate::chat::command::builtin::register_all(&mut registry);
@@ -106,6 +108,7 @@ impl Harness {
             prompts,
             config,
             commands,
+            usage_service,
         }
     }
 
@@ -300,6 +303,7 @@ impl Harness {
             cancel_token,
             chat_service: self.chat_service.clone(),
             message_id: message_id.to_string(),
+            usage_service: self.usage_service.clone(),
         })
         .await?;
 

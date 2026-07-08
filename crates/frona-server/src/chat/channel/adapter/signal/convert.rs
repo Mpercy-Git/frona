@@ -27,7 +27,7 @@ pub async fn handle<S: Store>(
     tracing::debug!(
         channel_id = %channel_id,
         sender = %content.metadata.sender.raw_uuid(),
-        timestamp = content.metadata.timestamp,
+        timestamp = %content.metadata.timestamp,
         body_kind = content_body_kind(&content.body),
         needs_receipt = content.metadata.needs_receipt,
         unidentified = content.metadata.unidentified_sender,
@@ -55,7 +55,9 @@ pub async fn handle<S: Store>(
 
     let quoted_id: Option<String> = dm.quote.as_ref().and_then(|q| q.id).map(|ts| ts.to_string());
     let sender = content.metadata.sender;
-    let inbound_ts = content.metadata.timestamp;
+    // libsignal-service now exposes `timestamp` as a DateTime<Utc>; Signal read
+    // receipts reference the original message's millis-since-epoch id.
+    let inbound_ts = content.metadata.timestamp.timestamp_millis() as u64;
 
     // Spawn the resolve + emit work off the worker loop. The Signal worker
     // runs on a single-threaded runtime; if resolve_hitl reaches back into
@@ -217,12 +219,14 @@ mod tests {
     }
 
     fn meta(sender: ServiceId, destination: ServiceId, ts: u64) -> Metadata {
+        let ts = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts as i64).unwrap();
         Metadata {
             sender,
             sender_device: presage::libsignal_service::protocol::DeviceId::new(1).unwrap(),
             destination,
             server_guid: None,
             timestamp: ts,
+            server_timestamp: ts,
             needs_receipt: false,
             unidentified_sender: false,
             was_plaintext: false,

@@ -3,9 +3,16 @@
 import { useState, useEffect, useMemo } from "react";
 import { UserCircleIcon } from "@heroicons/react/24/outline";
 import { useAuth } from "@/lib/auth";
+import { useTheme } from "@/lib/theme";
 import { api } from "@/lib/api-client";
-import { SectionHeader, SectionPanel } from "../field";
+import { Field, SectionHeader, SectionPanel } from "../field";
 import { ComboboxInput } from "../combobox";
+
+const themeModes = [
+  { value: "system" as const, label: "System" },
+  { value: "light" as const, label: "Light" },
+  { value: "dark" as const, label: "Dark" },
+];
 
 interface SystemInfo {
   server_timezone: string;
@@ -13,6 +20,7 @@ interface SystemInfo {
 
 export function ProfileSection() {
   const { user, revalidate } = useAuth();
+  const { mode, setMode } = useTheme();
   const [timezone, setTimezone] = useState(user?.timezone ?? "");
   const [phone, setPhone] = useState(user?.phone ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
@@ -183,34 +191,54 @@ export function ProfileSection() {
 
       {user && (
         <SectionPanel title="Preferences">
-          <div className="space-y-1">
-            <ComboboxInput
-              label="Timezone"
-              value={timezone}
-              items={timezoneItems}
-              onChange={saveTimezone}
-              placeholder="Select timezone..."
-              allowFreeText={false}
-            />
-            {effectiveTimezone && (
-              <p className="text-xs text-text-tertiary">
-                {usingServerDefault
-                  ? `Currently using server default: ${effectiveTimezone}`
-                  : `Currently using: ${effectiveTimezone}`}
-              </p>
-            )}
-            {detectedTimezone && timezone !== detectedTimezone && (
-              <button
-                type="button"
-                onClick={() => saveTimezone(detectedTimezone)}
-                className="text-xs text-accent hover:underline"
-              >
-                Use detected: {detectedTimezone}
-              </button>
-            )}
-            {saving && (
-              <p className="text-xs text-text-tertiary">Saving...</p>
-            )}
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <ComboboxInput
+                label="Timezone"
+                value={timezone}
+                items={timezoneItems}
+                onChange={saveTimezone}
+                placeholder="Select timezone..."
+                allowFreeText={false}
+              />
+              {effectiveTimezone && (
+                <p className="text-xs text-text-tertiary">
+                  {usingServerDefault
+                    ? `Currently using server default: ${effectiveTimezone}`
+                    : `Currently using: ${effectiveTimezone}`}
+                </p>
+              )}
+              {detectedTimezone && timezone !== detectedTimezone && (
+                <button
+                  type="button"
+                  onClick={() => saveTimezone(detectedTimezone)}
+                  className="text-xs text-accent hover:underline"
+                >
+                  Use detected: {detectedTimezone}
+                </button>
+              )}
+              {saving && (
+                <p className="text-xs text-text-tertiary">Saving...</p>
+              )}
+            </div>
+
+            <Field label="Theme" description="Applies to this browser only.">
+              <div className="flex gap-2">
+                {themeModes.map(({ value, label }) => (
+                  <button
+                    key={value}
+                    onClick={() => setMode(value)}
+                    className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                      mode === value
+                        ? "bg-accent text-surface"
+                        : "bg-surface text-text-secondary hover:bg-surface-tertiary"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </Field>
           </div>
         </SectionPanel>
       )}

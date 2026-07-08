@@ -88,6 +88,21 @@ async fn test_find_by_handle_not_found() {
 }
 
 #[tokio::test]
+async fn test_find_by_email_case_insensitive() {
+    let db = test_db().await;
+    let repo = SurrealUserRepo::new(db);
+    let user = test_user();
+
+    repo.create(&user).await.unwrap();
+
+    let upper = repo.find_by_email("TEST@example.com").await.unwrap().unwrap();
+    assert_eq!(upper.id, user.id);
+
+    let padded = repo.find_by_email("  Test@Example.COM  ").await.unwrap().unwrap();
+    assert_eq!(padded.id, user.id);
+}
+
+#[tokio::test]
 async fn test_find_by_email_not_found() {
     let db = test_db().await;
     let repo = SurrealUserRepo::new(db);

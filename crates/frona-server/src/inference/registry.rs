@@ -21,8 +21,13 @@ pub struct ModelProviderRegistry {
 }
 
 impl ModelProviderRegistry {
-    pub fn from_config(config: ModelRegistryConfig, broadcast: BroadcastService, inference: &InferenceConfig) -> Result<Self, InferenceError> {
-        let model_groups = config.parse_model_groups(inference)?;
+    pub fn from_config(
+        config: ModelRegistryConfig,
+        broadcast: BroadcastService,
+        inference: &InferenceConfig,
+        catalog: &crate::inference::metadata::ModelCatalogSnapshot,
+    ) -> Result<Self, InferenceError> {
+        let model_groups = config.parse_model_groups(inference, catalog)?;
         let mut providers: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
         let counter = InferenceCounter::new(broadcast);
 
@@ -76,7 +81,11 @@ impl ModelProviderRegistry {
                 fallbacks: vec![],
                 max_tokens: Some(self.inference.default_max_tokens),
                 temperature: None,
-                context_window: None,
+                // Ad-hoc model_ref (e.g. from a slash command). No catalog
+                // lookup at this layer — fall back to the conservative
+                // default. Callers that want a precise window should configure
+                // a proper ModelGroup.
+                context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
                 retry: RetryConfig::default(),
                 inference: self.inference.clone(),
             })

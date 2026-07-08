@@ -25,6 +25,7 @@ pub mod system;
 pub mod tasks;
 pub mod skills;
 pub mod tools;
+pub mod usage;
 pub mod vaults;
 pub mod voice;
 pub mod well_known;

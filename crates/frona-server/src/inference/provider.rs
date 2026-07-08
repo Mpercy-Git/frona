@@ -7,6 +7,7 @@ use rig_core::completion::{
     Message as RigMessage,
     message::{ToolCall, ToolChoice, ToolFunction},
 };
+use rig_core::completion::GetTokenUsage;
 use rig_core::completion::request::{ToolDefinition as RigToolDefinition, Usage};
 use tokio::sync::mpsc;
 
@@ -17,6 +18,31 @@ use super::error::InferenceError;
 pub enum StreamToken {
     Text(String),
     Reasoning(String),
+}
+
+/// Result of a single provider call. Returned by both streaming and non-streaming
+/// paths so the retry layer + tool loop can treat them uniformly. Usage defaults
+/// to zeros if the provider omitted it.
+///
+/// `ttft_ms` is the wall time from the start of `consume_tool_stream` to the
+/// first text/reasoning chunk arriving on the wire. `None` on the non-streaming
+/// path (no first-token concept — the whole response arrives at once).
+#[derive(Debug, Clone)]
+pub struct InferenceOutput {
+    pub content: Vec<AssistantContent>,
+    pub usage: Usage,
+    pub ttft_ms: Option<u64>,
+}
+
+impl InferenceOutput {
+    pub fn new(content: Vec<AssistantContent>, usage: Usage) -> Self {
+        Self { content, usage, ttft_ms: None }
+    }
+
+    pub fn with_ttft(mut self, ttft_ms: Option<u64>) -> Self {
+        self.ttft_ms = ttft_ms;
+        self
+    }
 }
 
 struct CompletionRequestBuilder<'a> {
@@ -173,7 +199,7 @@ pub trait ModelProvider: Send + Sync {
         max_tokens: Option<u64>,
         temperature: Option<f64>,
         additional_params: Option<serde_json::Value>,
-    ) -> Result<(Vec<AssistantContent>, Usage), InferenceError>;
+    ) -> Result<InferenceOutput, InferenceError>;
 
     async fn stream_inference(
         &self,
@@ -185,7 +211,7 @@ pub trait ModelProvider: Send + Sync {
         max_tokens: Option<u64>,
         temperature: Option<f64>,
         additional_params: Option<serde_json::Value>,
-    ) -> Result<Vec<AssistantContent>, InferenceError>;
+    ) -> Result<InferenceOutput, InferenceError>;
 
     /// For typed extraction use `inference::structured_inference<T>`.
     async fn structured_inference(
@@ -226,7 +252,7 @@ where
     C::CompletionModel: CompletionModel + Send + Sync + 'static,
     <C::CompletionModel as CompletionModel>::Response: Send + Sync,
     <C::CompletionModel as CompletionModel>::StreamingResponse:
-        Clone + Unpin + Send + Sync + 'static,
+        Clone + Unpin + Send + Sync + GetTokenUsage + 'static,
 {
     async fn inference(
         &self,
@@ -237,7 +263,7 @@ where
         max_tokens: Option<u64>,
         temperature: Option<f64>,
         additional_params: Option<serde_json::Value>,
-    ) -> Result<(Vec<AssistantContent>, Usage), InferenceError> {
+    ) -> Result<InferenceOutput, InferenceError> {
         use rig_core::completion::CompletionModel as _;
 
         let (max_tokens, temperature, additional_params) = match self.hook {
@@ -283,7 +309,7 @@ where
             "LLM response"
         );
 
-        Ok((contents, usage))
+        Ok(InferenceOutput::new(contents, usage))
     }
 
     async fn stream_inference(
@@ -296,7 +322,7 @@ where
         max_tokens: Option<u64>,
         temperature: Option<f64>,
         additional_params: Option<serde_json::Value>,
-    ) -> Result<Vec<AssistantContent>, InferenceError> {
+    ) -> Result<InferenceOutput, InferenceError> {
         use rig_core::completion::CompletionModel as _;
 
         let (max_tokens, temperature, additional_params) = match self.hook {
@@ -336,8 +362,13 @@ where
             .await
             .map_err(InferenceError::CompletionFailed)?;
 
-        let (mut accumulated_text, mut contents, still_buffering) =
-            consume_tool_stream(stream, &token_tx, &tool_names).await?;
+        let StreamConsumed {
+            mut accumulated_text,
+            mut contents,
+            still_buffering,
+            usage,
+            ttft_ms,
+        } = consume_tool_stream(stream, &token_tx, &tool_names).await?;
 
         let has_tool_calls = contents.iter().any(|c| matches!(c, AssistantContent::ToolCall(_)));
         if !has_tool_calls && !accumulated_text.is_empty() && still_buffering {
@@ -359,10 +390,12 @@ where
         tracing::debug!(
             model = %model_id,
             response = ?contents,
+            usage = ?usage,
+            ttft_ms = ?ttft_ms,
             "LLM streaming response"
         );
 
-        Ok(contents)
+        Ok(InferenceOutput::new(contents, usage).with_ttft(ttft_ms))
     }
 
     async fn structured_inference(
@@ -435,28 +468,43 @@ where
     }
 }
 
+struct StreamConsumed {
+    accumulated_text: String,
+    contents: Vec<AssistantContent>,
+    still_buffering: bool,
+    usage: Usage,
+    ttft_ms: Option<u64>,
+}
+
 async fn consume_tool_stream<S, R>(
     mut stream: S,
     token_tx: &mpsc::Sender<StreamToken>,
     tool_names: &[String],
-) -> Result<(String, Vec<AssistantContent>, bool), InferenceError>
+) -> Result<StreamConsumed, InferenceError>
 where
     S: futures::Stream<Item = Result<rig_core::streaming::StreamedAssistantContent<R>, rig_core::completion::CompletionError>>
         + Unpin,
-    R: Clone + Unpin,
+    R: Clone + Unpin + GetTokenUsage,
 {
     use futures::StreamExt;
+    use std::time::Instant;
 
+    let stream_start = Instant::now();
+    let mut ttft_ms: Option<u64> = None;
     let mut contents: Vec<AssistantContent> = Vec::new();
     let mut accumulated_text = String::new();
     let mut buffering = true;
     let mut accumulated_reasoning = String::new();
     let mut reasoning_id: Option<String> = None;
     let mut reasoning_signature: Option<String> = None;
+    let mut final_usage: Option<Usage> = None;
 
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(rig_core::streaming::StreamedAssistantContent::Text(text)) => {
+                if ttft_ms.is_none() {
+                    ttft_ms = Some(stream_start.elapsed().as_millis() as u64);
+                }
                 accumulated_text.push_str(&text.text);
                 if buffering {
                     if accumulated_text.len() >= 64 {
@@ -476,6 +524,9 @@ where
                 contents.push(AssistantContent::ToolCall(tool_call));
             }
             Ok(rig_core::streaming::StreamedAssistantContent::Reasoning(r)) => {
+                if ttft_ms.is_none() {
+                    ttft_ms = Some(stream_start.elapsed().as_millis() as u64);
+                }
                 let text = r.display_text();
                 accumulated_reasoning.push_str(&text);
                 reasoning_id = r.id.clone();
@@ -483,11 +534,17 @@ where
                 let _ = token_tx.send(StreamToken::Reasoning(text)).await;
             }
             Ok(rig_core::streaming::StreamedAssistantContent::ReasoningDelta { id, reasoning }) => {
+                if ttft_ms.is_none() {
+                    ttft_ms = Some(stream_start.elapsed().as_millis() as u64);
+                }
                 accumulated_reasoning.push_str(&reasoning);
                 if id.is_some() {
                     reasoning_id = id;
                 }
                 let _ = token_tx.send(StreamToken::Reasoning(reasoning)).await;
+            }
+            Ok(rig_core::streaming::StreamedAssistantContent::Final(r)) => {
+                final_usage = r.token_usage();
             }
             Ok(_) => {}
             Err(e) => {
@@ -508,7 +565,13 @@ where
         ));
     }
 
-    Ok((accumulated_text, contents, buffering))
+    Ok(StreamConsumed {
+        accumulated_text,
+        contents,
+        still_buffering: buffering,
+        usage: final_usage.unwrap_or_default(),
+        ttft_ms,
+    })
 }
 
 fn recover_tool_calls_from_text(
