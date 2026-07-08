@@ -27,6 +27,8 @@ import { SandboxSettingsSection } from "@/components/settings/sections/sandbox-s
 import { McpSection } from "@/components/settings/sections/mcp-section";
 import { ChannelsSection } from "@/components/settings/sections/channels-section";
 import { AboutSection } from "@/components/settings/sections/about-section";
+import { AgentsSection } from "@/components/settings/sections/agents-section";
+import { LogsSection } from "@/components/settings/sections/logs-section";
 import { NotificationsSection } from "@/components/settings/sections/notifications-section";
 import { getConfig, updateConfig } from "@/lib/config-types";
 import type { Config } from "@/lib/config-types";
@@ -39,6 +41,7 @@ const TABS = [
   { id: "timezone", label: "Timezone", group: "config", saveable: true },
   { id: "providers", label: "Providers", group: "config", saveable: true },
   { id: "models", label: "Models", group: "config", saveable: true },
+  { id: "agents", label: "Agents", group: "config", saveable: false },
   { id: "channels", label: "Channels", group: "config", saveable: false },
   { id: "skills", label: "Skills", group: "config", saveable: false },
   { id: "mcp", label: "MCP", group: "config", saveable: false },
@@ -51,6 +54,7 @@ const TABS = [
   { id: "sso", label: "Single Sign-On", group: "config", saveable: true },
   { id: "server", label: "Server", group: "config", saveable: true },
   { id: "advanced", label: "Advanced", group: "config", saveable: true },
+  { id: "logs", label: "Logs", group: "config", saveable: false },
   { id: "about", label: "About", group: "config", saveable: false },
 ] as const;
 
@@ -149,7 +153,9 @@ export default function SettingsPage() {
   const { user } = useAuth();
   const visibleTabs = useMemo(() => {
     const canListUsers = user?.permissions?.list_users === true;
-    return TABS.filter((t) => t.id !== "users" || canListUsers);
+    // Server logs may span every user, so restrict the Logs tab to admins —
+    // the same capability that gates the Users tab.
+    return TABS.filter((t) => (t.id !== "users" && t.id !== "logs") || canListUsers);
   }, [user]);
   const userTabs = visibleTabs.filter((t) => t.group === "user");
   const configTabs = visibleTabs.filter((t) => t.group === "config");
@@ -278,9 +284,11 @@ export default function SettingsPage() {
                 <p className="text-sm text-error-text">{error || "Failed to load configuration"}</p>
               )}
 
+              {activeTab === "agents" && <AgentsSection />}
               {activeTab === "skills" && <SkillsSection />}
               {activeTab === "mcp" && <McpSection />}
               {activeTab === "channels" && <ChannelsSection />}
+              {activeTab === "logs" && <LogsSection />}
 
               {config && (
                 <>
