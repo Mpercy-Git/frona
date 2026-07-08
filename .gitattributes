@@ -1,3 +1,7 @@
+# Normalize all text files to LF in the repository; binary files are
+# auto-detected and left untouched. Keeps the tree consistent with upstream.
+* text=auto eol=lf
+
 # Shell scripts must use LF line endings for Unix/WSL/macOS
 *.sh text eol=lf
 
