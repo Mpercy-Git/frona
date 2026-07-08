@@ -81,6 +81,7 @@ export function TopBar() {
         <div className="flex-1" />
 
         <div className="flex items-center gap-1">
+          <AgentDropdown />
           <AppDropdown />
           <NotificationDropdown />
           <button

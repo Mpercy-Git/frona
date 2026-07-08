@@ -1,12 +1,21 @@
+use std::convert::Infallible;
+
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
+use futures::stream::Stream;
 use serde_json::json;
+use tokio::sync::broadcast::error::RecvError;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
+use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
+use crate::core::error::AppError;
 use crate::core::state::AppState;
+use crate::policy::models::PolicyAction;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -15,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/system/info", get(info_handler))
         .route("/api/system/version", get(version_handler))
         .route("/api/system/timezones", get(timezones_handler))
+        .route("/api/system/logs/stream", get(logs_stream_handler))
         .route("/api/system/restart", post(restart_handler))
 }
 
@@ -60,6 +70,63 @@ fn list_iana_timezones() -> Vec<String> {
         .collect();
     zones.sort();
     zones
+}
+
+/// Stream the server's own log output (admin only) as SSE. On connect the most
+/// recent buffered lines are replayed, then new lines are pushed as they occur.
+/// Each `data:` frame is a JSON `LogLine` object.
+async fn logs_stream_handler(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    // Server logs may span every user, so gate on the same admin capability
+    // that guards the user-management surfaces.
+    let caller = state
+        .user_service
+        .find_by_id(&auth.user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("User not found".into()))?;
+    let decision = state
+        .policy_service
+        .authorize_user(&caller, PolicyAction::ListUsers)
+        .await?;
+    if !decision.allowed {
+        return Err(AppError::Forbidden("Not permitted".into()).into());
+    }
+
+    use crate::core::log_stream;
+    let mut rx = log_stream::subscribe();
+    let backlog = log_stream::recent();
+
+    let (tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+
+    // Replay recent history first so the viewer isn't blank on connect.
+    for line in backlog {
+        if let Ok(json) = serde_json::to_string(&line) {
+            let _ = tx.send(Ok(Event::default().data(json)));
+        }
+    }
+
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(line) => {
+                    let Ok(json) = serde_json::to_string(&line) else {
+                        continue;
+                    };
+                    if tx.send(Ok(Event::default().data(json))).is_err() {
+                        break; // client disconnected
+                    }
+                }
+                // A slow reader dropped some lines; keep going with the rest.
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+
+    let stream = UnboundedReceiverStream::new(out_rx);
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 async fn restart_handler(

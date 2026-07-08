@@ -12,6 +12,10 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+use frona::core::log_stream::LogStreamLayer;
 
 use frona::storage::StorageService;
 use frona::db::init as db;
@@ -33,8 +37,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let level = std::env::var("FRONA_LOG_LEVEL").unwrap_or_else(|_| "info".into());
         format!("frona={level},tower_http={level}")
     });
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(&log_filter))
+    // The `EnvFilter` sits at the registry level so both the console formatter
+    // and the in-memory `LogStreamLayer` (which feeds the live log viewer in
+    // Settings) observe exactly the same, already-filtered set of events.
+    tracing_subscriber::registry()
+        .with(EnvFilter::new(&log_filter))
+        .with(tracing_subscriber::fmt::layer())
+        .with(LogStreamLayer)
         .init();
 
     info!("Frona v{}", env!("CARGO_PKG_VERSION"));
