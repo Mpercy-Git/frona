@@ -91,25 +91,19 @@ impl ManageAppTool {
                     serde_json::from_value(manifest.clone()).map_err(|e| {
                         AppError::Validation(format!("Invalid persisted manifest: {e}"))
                     })?;
-                let existing = self
+                // Always re-deploy with the approved manifest (handles create AND update).
+                // Calling restart() on an existing row would use the stale saved command,
+                // which fails when kind or command changed since the previous deploy.
+                let app = self
                     .app_service
-                    .find_by_user_handle(&ctx.user.id, &manifest_parsed.handle)
+                    .deploy_and_await(
+                        &ctx.agent.id,
+                        &ctx.user.id,
+                        &ctx.chat.id,
+                        &manifest_parsed,
+                        Vec::new(),
+                    )
                     .await?;
-                let app = if let Some(existing) = existing {
-                    self.app_service
-                        .restart(&ctx.agent.id, &existing.id, &ctx.chat.id)
-                        .await?
-                } else {
-                    self.app_service
-                        .deploy_and_await(
-                            &ctx.agent.id,
-                            &ctx.user.id,
-                            &ctx.chat.id,
-                            &manifest_parsed,
-                            Vec::new(),
-                        )
-                        .await?
-                };
                 Ok(HitlOutcome::Resolved(
                     self.format_running_result(&format!("{action} completed"), &app),
                 ))

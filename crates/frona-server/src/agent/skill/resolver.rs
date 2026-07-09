@@ -6,11 +6,12 @@ use serde::Serialize;
 use crate::agent::config::parse_frontmatter;
 use crate::storage::StorageService;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillScope {
     Builtin,
     Shared,
+    User,
     Agent,
 }
 
@@ -95,10 +96,11 @@ impl SkillResolver {
         self.config_dir.join("skills")
     }
 
-    /// Resolution order:
+    /// Resolution order (first wins):
     /// 1. Agent Workspace FS
-    /// 2. Installed skills dir (data/skills/) — filtered by agent_skills when Some
-    /// 3. Built-in FS (resources/skills/) — filtered by agent_skills when Some
+    /// 2. Per-user installed skills dir (data/users/{user}/skills/)
+    /// 3. Server-wide installed skills dir (data/skills/) — filtered by agent_skills when Some
+    /// 4. Built-in FS (resources/skills/) — filtered by agent_skills when Some
     ///
     /// None = all enabled (default), Some([]) = none, Some([...]) = specific
     pub fn list(&self, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle, agent_skills: Option<&[String]>) -> Vec<Skill> {
@@ -136,6 +138,13 @@ impl SkillResolver {
                     arguments,
                 });
             }
+        }
+
+        let user_dir = self.storage.user_skills_path(user_handle);
+        for skill in self.scan_fs_skills(&user_dir, SkillScope::User) {
+            if let Some(allowed) = agent_skills
+                && !allowed.contains(&skill.name) { continue; }
+            seen.entry(skill.name.clone()).or_insert(skill);
         }
 
         if let Some(dir) = &self.installed_dir {

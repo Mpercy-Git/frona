@@ -12,9 +12,8 @@ use crate::db::repo::messages::SurrealMessageRepo;
 use crate::chat::message::models::Message;
 use crate::chat::message::repository::MessageRepository;
 use crate::core::error::AppError;
-use crate::core::metrics::InferenceMetricsContext;
 use crate::inference::config::ModelGroup;
-use crate::inference::context::{estimate_tokens, resolve_context_window};
+use crate::inference::context::estimate_tokens;
 use crate::inference::conversation::{
     convert_agent_message, format_files_block_simple,
 };
@@ -35,9 +34,11 @@ pub struct MemoryService {
     provider_registry: Arc<ModelProviderRegistry>,
     prompts: PromptLoader,
     storage: StorageService,
+    usage_service: crate::inference::usage::UsageService,
 }
 
 impl MemoryService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         memory_repo: SurrealMemoryRepo,
         memory_entry_repo: SurrealMemoryEntryRepo,
@@ -45,6 +46,7 @@ impl MemoryService {
         provider_registry: Arc<ModelProviderRegistry>,
         prompts: PromptLoader,
         storage: StorageService,
+        usage_service: crate::inference::usage::UsageService,
     ) -> Self {
         Self {
             memory_repo,
@@ -53,6 +55,7 @@ impl MemoryService {
             provider_registry,
             prompts,
             storage,
+            usage_service,
         }
     }
 
@@ -72,11 +75,11 @@ impl MemoryService {
     /// Returns a short status string suitable for an assistant message.
     pub async fn compact_chat_via_command(
         &self,
+        user_id: &str,
         chat_id: &str,
         chat_agent_id: &str,
         system_prompt: &str,
-        model_id: &str,
-        context_window: Option<usize>,
+        context_window: usize,
         max_output_tokens: usize,
     ) -> Result<&'static str, AppError> {
         let compaction_group = self
@@ -92,10 +95,10 @@ impl MemoryService {
             .map(|m| m.updated_at);
 
         self.compact_chat_if_needed(
+            user_id,
             chat_id,
             chat_agent_id,
             system_prompt,
-            model_id,
             context_window,
             max_output_tokens,
             compaction_group,
@@ -118,11 +121,11 @@ impl MemoryService {
     #[allow(clippy::too_many_arguments)]
     pub async fn compact_chat_if_needed(
         &self,
+        user_id: &str,
         chat_id: &str,
         chat_agent_id: &str,
         system_prompt: &str,
-        model_id: &str,
-        context_window: Option<usize>,
+        context_window: usize,
         max_output_tokens: usize,
         compaction_model_group: &ModelGroup,
     ) -> Result<(), AppError> {
@@ -150,8 +153,7 @@ impl MemoryService {
                 crate::chat::message::models::MessageRole::System => None,
             })
             .collect();
-        let window = resolve_context_window(model_id, context_window);
-        let available = window.saturating_sub(max_output_tokens);
+        let available = context_window.saturating_sub(max_output_tokens);
 
         let mut total_tokens = estimate_tokens(system_prompt);
         for msg in &rig_messages {
@@ -210,12 +212,23 @@ impl MemoryService {
 
         let prompt = self.load_prompt("CHAT_COMPACTION.md", None)
             .expect("built-in CHAT_COMPACTION.md missing");
+        let usage_ctx = crate::inference::usage::UsageContext::new(
+            crate::inference::usage::InferenceKind::Compaction {
+                target: crate::inference::usage::CompactionTarget::Chat {
+                    agent_id: chat_agent_id.to_string(),
+                    chat_id: chat_id.to_string(),
+                },
+            },
+            user_id,
+            compaction_model_group.name.clone(),
+        );
         let summary = text_inference(
             &self.provider_registry,
             compaction_model_group,
             &prompt,
             vec![RigMessage::user(&compaction_input)],
-            &InferenceMetricsContext::default(),
+            &self.usage_service,
+            &usage_ctx,
         )
         .await
         .map_err(|e| AppError::Internal(format!("Chat compaction failed: {e}")))?;
@@ -300,6 +313,7 @@ impl MemoryService {
 
     pub async fn compact_entries_if_needed(
         &self,
+        user_id: &str,
         agent_id: &str,
         compaction_model_group: &ModelGroup,
     ) -> Result<(), AppError> {
@@ -316,12 +330,13 @@ impl MemoryService {
             return Ok(());
         }
 
-        self.compact_entries(agent_id, MemorySourceType::Agent, entries, compaction_model_group)
+        self.compact_entries(user_id, agent_id, MemorySourceType::Agent, entries, compaction_model_group)
             .await
     }
 
     pub async fn compact_entries_forced(
         &self,
+        user_id: &str,
         agent_id: &str,
         compaction_model_group: &ModelGroup,
     ) -> Result<(), AppError> {
@@ -329,7 +344,7 @@ impl MemoryService {
         if entries.is_empty() {
             return Ok(());
         }
-        self.compact_entries(agent_id, MemorySourceType::Agent, entries, compaction_model_group)
+        self.compact_entries(user_id, agent_id, MemorySourceType::Agent, entries, compaction_model_group)
             .await
     }
 
@@ -399,12 +414,20 @@ impl MemoryService {
 
         let prompt = self.load_prompt("MEMORY_COMPACTION.md", None)
             .expect("built-in MEMORY_COMPACTION.md missing");
+        let usage_ctx = crate::inference::usage::UsageContext::new(
+            crate::inference::usage::InferenceKind::Compaction {
+                target: crate::inference::usage::CompactionTarget::User,
+            },
+            user_id,
+            compaction_model_group.name.clone(),
+        );
         let summary = text_inference(
             &self.provider_registry,
             compaction_model_group,
             &prompt,
             vec![RigMessage::user(&compaction_input)],
-            &InferenceMetricsContext::default(),
+            &self.usage_service,
+            &usage_ctx,
         )
         .await
         .map_err(|e| AppError::Internal(format!("User memory compaction failed: {e}")))?;
@@ -452,8 +475,10 @@ impl MemoryService {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn compact_entries(
         &self,
+        user_id: &str,
         source_id: &str,
         source_type: MemorySourceType,
         entries: Vec<MemoryEntry>,
@@ -484,12 +509,27 @@ impl MemoryService {
 
         let prompt = self.load_prompt("MEMORY_COMPACTION.md", None)
             .expect("built-in MEMORY_COMPACTION.md missing");
+        let target = match source_type {
+            MemorySourceType::Agent => crate::inference::usage::CompactionTarget::Agent {
+                agent_id: source_id.to_string(),
+            },
+            MemorySourceType::Space => crate::inference::usage::CompactionTarget::Space {
+                space_id: source_id.to_string(),
+            },
+            _ => crate::inference::usage::CompactionTarget::User,
+        };
+        let usage_ctx = crate::inference::usage::UsageContext::new(
+            crate::inference::usage::InferenceKind::Compaction { target },
+            user_id,
+            compaction_model_group.name.clone(),
+        );
         let summary = text_inference(
             &self.provider_registry,
             compaction_model_group,
             &prompt,
             vec![RigMessage::user(&compaction_input)],
-            &InferenceMetricsContext::default(),
+            &self.usage_service,
+            &usage_ctx,
         )
         .await
         .map_err(|e| AppError::Internal(format!("Memory compaction failed: {e}")))?;
@@ -539,6 +579,7 @@ impl MemoryService {
 
     pub async fn compact_space(
         &self,
+        user_id: &str,
         space_id: &str,
         chat_summaries: Vec<(String, String)>,
         compaction_model_group: &ModelGroup,
@@ -554,12 +595,22 @@ impl MemoryService {
 
         let prompt = self.load_prompt("SPACE_COMPACTION.md", None)
             .expect("built-in SPACE_COMPACTION.md missing");
+        let usage_ctx = crate::inference::usage::UsageContext::new(
+            crate::inference::usage::InferenceKind::Compaction {
+                target: crate::inference::usage::CompactionTarget::Space {
+                    space_id: space_id.to_string(),
+                },
+            },
+            user_id,
+            compaction_model_group.name.clone(),
+        );
         let summary = text_inference(
             &self.provider_registry,
             compaction_model_group,
             &prompt,
             vec![RigMessage::user(&input)],
-            &InferenceMetricsContext::default(),
+            &self.usage_service,
+            &usage_ctx,
         )
         .await
         .map_err(|e| AppError::Internal(format!("Space compaction failed: {e}")))?;

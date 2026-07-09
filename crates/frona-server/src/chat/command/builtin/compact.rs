@@ -27,10 +27,10 @@ impl Command for CompactCommand {
             .harness
             .memory_service
             .compact_chat_via_command(
+                &ctx.user.id,
                 &ctx.chat.id,
                 &ctx.chat.agent_id,
                 &ctx.session.system_prompt,
-                &ctx.session.model_group.main.model_id,
                 ctx.session.model_group.context_window,
                 DEFAULT_MAX_OUTPUT_TOKENS,
             )

@@ -5,7 +5,6 @@ use crate::storage::StorageService;
 use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
 use crate::core::error::AppError;
-use crate::core::metrics::InferenceMetricsContext;
 use crate::core::template::render_template;
 use crate::inference::ModelProviderRegistry;
 use crate::auth::UserService;
@@ -62,6 +61,7 @@ pub struct ChatService {
     broadcast: crate::chat::broadcast::BroadcastService,
     presign: crate::credential::presign::PresignService,
     notification_service: NotificationService,
+    usage_service: crate::inference::usage::UsageService,
 }
 
 impl ChatService {
@@ -79,6 +79,7 @@ impl ChatService {
         broadcast: crate::chat::broadcast::BroadcastService,
         presign: crate::credential::presign::PresignService,
         notification_service: NotificationService,
+        usage_service: crate::inference::usage::UsageService,
     ) -> Self {
         Self {
             chat_repo,
@@ -93,6 +94,7 @@ impl ChatService {
             broadcast,
             presign,
             notification_service,
+            usage_service,
         }
     }
 
@@ -132,6 +134,10 @@ impl ChatService {
 
     pub fn provider_registry(&self) -> &ModelProviderRegistry {
         &self.provider_registry
+    }
+
+    pub fn usage_service(&self) -> &crate::inference::usage::UsageService {
+        &self.usage_service
     }
 
     pub fn memory_service(&self) -> &MemoryService {
@@ -479,19 +485,33 @@ impl ChatService {
         let mut rig_history = conv_builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
 
         rig_history.push(RigMessage::user(&req.content));
+        // Pre-allocate the message id so the usage row's message_id matches
+        // the assistant Message that's about to be persisted.
+        let assistant_message_id = crate::core::repository::new_id();
+        let usage_ctx = crate::inference::usage::UsageContext::new(
+            crate::inference::usage::InferenceKind::Text {
+                agent_id: chat.agent_id.clone(),
+                chat_id: chat_id.to_string(),
+                message_id: assistant_message_id.clone(),
+            },
+            user_id,
+            model_group.name.clone(),
+        );
         let response_text = text_inference(
             &self.provider_registry,
             model_group,
             &system_prompt,
             rig_history,
-            &InferenceMetricsContext::default(),
+            &self.usage_service,
+            &usage_ctx,
         )
         .await?;
 
-        let assistant_message = Message::builder(chat_id, MessageRole::Agent, response_text)
+        let mut assistant_message = Message::builder(chat_id, MessageRole::Agent, response_text)
             .agent_id(chat.agent_id.clone())
             .status(MessageStatus::Completed)
             .build();
+        assistant_message.id = assistant_message_id;
         let assistant_message = self
             .save_message_and_broadcast(
                 assistant_message,
@@ -1497,12 +1517,21 @@ impl ChatService {
 
         let model_group = self.build_title_model_group(parsed.metadata.get("model").map(|s| s.as_str()))?;
 
+        let usage_ctx = crate::inference::usage::UsageContext::new(
+            crate::inference::usage::InferenceKind::Title {
+                agent_id: agent_id.to_string(),
+                chat_id: chat_id.to_string(),
+            },
+            agent.user_id.clone(),
+            model_group.name.clone(),
+        );
         let result = text_inference(
             &self.provider_registry,
             &model_group,
             &parsed.template,
             vec![RigMessage::user(user_content)],
-            &InferenceMetricsContext::default(),
+            &self.usage_service,
+            &usage_ctx,
         )
         .await?;
 
@@ -1522,7 +1551,7 @@ impl ChatService {
                     fallbacks: vec![],
                     max_tokens: Some(100),
                     temperature: None,
-                    context_window: None,
+                    context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
                     retry: Default::default(),
                     inference: Default::default(),
                 });
@@ -1538,7 +1567,7 @@ impl ChatService {
             fallbacks: base.fallbacks.clone(),
             max_tokens: Some(100),
             temperature: base.temperature,
-            context_window: None,
+            context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
             retry: base.retry.clone(),
             inference: base.inference.clone(),
         })

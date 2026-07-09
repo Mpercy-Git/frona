@@ -7,7 +7,6 @@ use crate::chat::broadcast::BroadcastService;
 use crate::chat::models::{Chat, CreateChatRequest};
 use crate::chat::service::ChatService;
 use crate::core::error::AppError;
-use crate::core::metrics::InferenceMetricsContext;
 use crate::inference;
 use crate::notification::models::{NotificationData, NotificationLevel};
 use crate::notification::service::NotificationService;
@@ -64,7 +63,7 @@ impl SendMessageTool {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
-        let _ = attachments; // TODO: resolve file paths to Attachment structs
+        let _ = attachments;
 
         let (resolved_chat, is_new_chat) =
             self.resolve_target_chat(ctx, &content).await?;
@@ -228,12 +227,21 @@ impl SendMessageTool {
         let model_group = registry.get_model_group("compaction")
             .or_else(|_| registry.get_model_group("primary"))?;
 
+        let usage_ctx = crate::inference::usage::UsageContext::new(
+            crate::inference::usage::InferenceKind::Router {
+                agent_id: ctx.agent.id.clone(),
+                chat_id: None, // routing decision happens BEFORE a chat is chosen
+            },
+            ctx.user.id.clone(),
+            model_group.name.clone(),
+        );
         let response = inference::text_inference(
             registry,
             model_group,
             &system_prompt,
             vec![RigMessage::user("Which chat should this message go to?")],
-            &InferenceMetricsContext::default(),
+            self.chat_service.usage_service(),
+            &usage_ctx,
         )
         .await
         .map_err(|e| AppError::Internal(format!("LLM chat resolution failed: {e}")))?;

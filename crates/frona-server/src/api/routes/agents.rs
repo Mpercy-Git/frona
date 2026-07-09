@@ -5,7 +5,9 @@ use axum::extract::{Multipart, Path, State};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use crate::agent::config::parse_frontmatter;
-use crate::agent::models::{Agent, AgentResponse, CreateAgentRequest, UpdateAgentRequest};
+use crate::agent::models::{
+    Agent, AgentResponse, CreateAgentRequest, Model, UpdateAgentRequest,
+};
 use crate::chat::broadcast::{BroadcastEvent, BroadcastEventKind};
 use crate::inference::tool_loop::InferenceEventKind;
 
@@ -13,6 +15,24 @@ use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
+
+/// Resolve `model_group` → live `ModelEntry`. Returns `None` when the group
+/// name doesn't match a configured group (config drift, agent referencing a
+/// removed group), in which case `AgentResponse.model` stays `None`.
+fn resolve_model(state: &AppState, model_group_name: &str) -> Option<Model> {
+    let group = state
+        .chat_service
+        .provider_registry()
+        .resolve_model_group(model_group_name)
+        .ok()?;
+    let entry = state.model_catalog.current().lookup(&group.main).cloned();
+    Some(Model {
+        provider: group.main.provider.clone(),
+        model_id: group.main.model_id.clone(),
+        context_window: group.context_window,
+        entry,
+    })
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -87,6 +107,7 @@ async fn to_response(state: &AppState, user_id: &str, user_handle: &crate::core:
         .clone();
     let agent_id = agent.id.clone();
     let mut response = AgentResponse::from_agent(agent, tools, sandbox_policy);
+    response.model = resolve_model(state, &response.model_group);
     if let Some(value) = response.identity.get("avatar")
         && !value.is_empty()
     {
@@ -246,7 +267,7 @@ async fn list_agent_skills(
     Ok(Json(items))
 }
 
-const MAX_AVATAR_SIZE: usize = 2 * 1024 * 1024; // 2MB
+const MAX_AVATAR_SIZE: usize = 2 * 1024 * 1024;
 
 async fn upload_avatar(
     auth: AuthUser,

@@ -14,7 +14,25 @@ export type ChatSSEEvent =
   | { type: "inference_cancelled"; reason: string }
   | { type: "inference_error"; error: string }
   | { type: "inference_paused"; reason: PauseReason; message: MessageResponse }
-  | { type: "inference_resume"; message: MessageResponse };
+  | { type: "inference_resume"; message: MessageResponse }
+  | { type: "usage_recorded"; usage: UsageRecorded };
+
+/// One row of inference accounting — fired per provider call, gated on
+/// chat_id. See `crates/frona-server/src/inference/metrics/service.rs`.
+export interface UsageRecorded {
+  chat_id: string;
+  user_id: string | null;
+  agent_id: string | null;
+  message_id: string | null;
+  kind_tag: string;
+  model_ref: string;
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  duration_ms: number;
+  fallback_index: number;
+}
 
 
 export type GlobalSSEEvent =
@@ -311,6 +329,12 @@ export class SSEEventBus {
         break;
       case "inference_resume":
         this.dispatchChat(chatId, { type: "inference_resume", message: parsed.message as MessageResponse });
+        break;
+      case "usage_recorded":
+        this.dispatchChat(chatId, {
+          type: "usage_recorded",
+          usage: parsed as unknown as UsageRecorded,
+        });
         break;
       case "title":
         this.dispatchGlobal({ type: "title", chatId, title: parsed.title as string });

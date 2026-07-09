@@ -8,14 +8,33 @@ import {
   ArchiveBoxXMarkIcon,
   TrashIcon,
 } from "@heroicons/react/24/outline";
-import { useSession } from "@/lib/session-context";
 import { useNavigation, neighborRoute } from "@/lib/navigation-context";
 import { agentDisplayName } from "@/lib/types";
+import type { RunningTotals } from "@/lib/chat-store";
 import { DeleteConfirmDialog } from "@/components/nav/delete-confirm-dialog";
+import { UsagePill } from "./usage-pill";
 
-export function ChatHeader() {
-  const { activeChat, agentId: sessionAgentId } = useSession();
-  const agentId = sessionAgentId ?? undefined;
+interface ChatHeaderProps {
+  /** This slot's chat id (`undefined` for a pending/unsaved slot) — drives
+   *  title, agent name, and menu actions. **Not** read from session because
+   *  session.activeChat is global and lags behind navigation in some paths;
+   *  each slot's header should reflect the slot's own chat. */
+  chatId?: string;
+  agentId: string;
+  totals: RunningTotals;
+  lastFallbackIndex: number;
+  lastChatInputTokens: number;
+  totalToolCalls: number;
+}
+
+export function ChatHeader({
+  chatId,
+  agentId,
+  totals,
+  lastFallbackIndex,
+  lastChatInputTokens,
+  totalToolCalls,
+}: ChatHeaderProps) {
   const { agents, standaloneChats, archivedChats, archiveChat, unarchiveChat, deleteChat } = useNavigation();
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -33,30 +52,35 @@ export function ChatHeader() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [menuOpen]);
 
+  const chat =
+    chatId == null
+      ? undefined
+      : standaloneChats.find((c) => c.id === chatId)
+        ?? archivedChats.find((c) => c.id === chatId);
   const agent = agents.find((a) => a.id === agentId);
   const agentName = agentDisplayName(agentId, agent?.name);
-  const isArchived = !!activeChat?.archived_at;
+  const isArchived = !!chat?.archived_at;
 
   const handleArchive = async () => {
-    if (!activeChat) return;
+    if (!chat) return;
     setMenuOpen(false);
-    await archiveChat(activeChat.id);
+    await archiveChat(chat.id);
     router.push("/chat");
   };
 
   const handleUnarchive = async () => {
-    if (!activeChat) return;
+    if (!chat) return;
     setMenuOpen(false);
-    await unarchiveChat(activeChat.id);
+    await unarchiveChat(chat.id);
   };
 
   const handleDelete = async () => {
-    if (!activeChat) return;
+    if (!chat) return;
     const next =
-      neighborRoute(standaloneChats, activeChat.id, (id) => `/chat?id=${id}`) ??
-      neighborRoute(archivedChats, activeChat.id, (id) => `/chat?id=${id}`);
+      neighborRoute(standaloneChats, chat.id, (id) => `/chat?id=${id}`) ??
+      neighborRoute(archivedChats, chat.id, (id) => `/chat?id=${id}`);
     setShowDeleteDialog(false);
-    await deleteChat(activeChat.id);
+    await deleteChat(chat.id);
     router.push(next ?? "/chat");
   };
 
@@ -64,11 +88,23 @@ export function ChatHeader() {
     <div className="flex items-center border-b border-border px-4 md:px-6 py-3">
       <div className="flex-1 min-w-0">
         <h2 className="text-base font-semibold text-text-primary">
-          {activeChat?.title ?? "New chat"}
+          {chat?.title ?? "New chat"}
         </h2>
-        <p className="text-sm text-text-tertiary">{agentName}</p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-text-tertiary">{agentName}</p>
+          {chat && totals.calls > 0 && (
+            <UsagePill
+              totals={totals}
+              fallbackIndex={lastFallbackIndex}
+              currentInputTokens={lastChatInputTokens}
+              contextWindow={agent?.model?.context_window}
+              totalToolCalls={totalToolCalls}
+            />
+          )}
+        </div>
       </div>
-      {activeChat && (
+
+      {chat && (
         <div ref={menuRef} className="relative ml-2">
           <button
             onClick={() => setMenuOpen((v) => !v)}

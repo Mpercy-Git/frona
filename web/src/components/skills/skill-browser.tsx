@@ -29,6 +29,7 @@ import {
   type RepoBrowseResult,
   type RepoBrowseSkill,
   type SkillScope,
+  type InstallScope,
 } from "@/lib/api-client";
 
 export interface SkillBrowserHandle {
@@ -38,6 +39,9 @@ export interface SkillBrowserHandle {
 
 interface SkillBrowserProps {
   agentId?: string;
+  /** Which install bucket this browser writes to when no agentId is set.
+   *  "user" → personal library (default). "shared" → server-wide (admin only). */
+  scope?: InstallScope;
   /** null = default (all enabled), [] = none, [...] = specific */
   enabledSkills?: string[] | null;
   onEnabledChange?: (skills: string[] | null) => void;
@@ -68,7 +72,7 @@ function MetadataTable({ meta }: { meta: Record<string, string> }) {
   );
 }
 
-export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(function SkillBrowser({ agentId, enabledSkills, onEnabledChange, onAgentRemovalsChange }, ref) {
+export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(function SkillBrowser({ agentId, scope = "user", enabledSkills, onEnabledChange, onAgentRemovalsChange }, ref) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkillSearchResult[]>([]);
   const [preview, setPreview] = useState<SkillPreview | null>(null);
@@ -154,32 +158,60 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
   }, [installed, enabledSet, onEnabledChange, normalizeEnabled]);
 
   const sortSkills = (items: SkillListItem[]) => {
-    const order: Record<SkillScope, number> = { agent: 0, shared: 1, builtin: 2 };
+    const order: Record<SkillScope, number> = { agent: 0, user: 1, shared: 2, builtin: 3 };
     return items.sort((a, b) => order[a.scope] - order[b.scope] || a.name.localeCompare(b.name));
   };
 
   const reload = useCallback(async () => {
     try {
       if (agentId) {
-        // Fetch agent skills + all installed to show everything
-        const [agentSkills, allInstalled] = await Promise.all([
+        const [agentSkills, userInstalled, sharedInstalled, builtinSkills] = await Promise.all([
           listAgentSkills(agentId),
-          listInstalledSkills(),
+          listInstalledSkills("user"),
+          listInstalledSkills("shared"),
+          listInstalledSkills("builtin"),
         ]);
-        // Merge: agent skills take priority, then add any shared/builtin not already present
         const seen = new Set(agentSkills.map((s) => s.name));
         const merged = [...agentSkills];
-        for (const s of allInstalled) {
+        for (const s of [...userInstalled, ...sharedInstalled, ...builtinSkills]) {
           if (!seen.has(s.name)) {
             merged.push(s);
+            seen.add(s.name);
+          }
+        }
+        setInstalled(sortSkills(merged));
+      } else if (scope === "shared") {
+        const [sharedInstalled, builtinSkills] = await Promise.all([
+          listInstalledSkills("shared"),
+          listInstalledSkills("builtin"),
+        ]);
+        const seen = new Set<string>();
+        const merged: SkillListItem[] = [];
+        for (const s of [...sharedInstalled, ...builtinSkills]) {
+          if (!seen.has(s.name)) {
+            merged.push(s);
+            seen.add(s.name);
           }
         }
         setInstalled(sortSkills(merged));
       } else {
-        setInstalled(sortSkills(await listInstalledSkills()));
+        const [userInstalled, sharedInstalled, builtinSkills] = await Promise.all([
+          listInstalledSkills("user"),
+          listInstalledSkills("shared"),
+          listInstalledSkills("builtin"),
+        ]);
+        const seen = new Set<string>();
+        const merged: SkillListItem[] = [];
+        for (const s of [...userInstalled, ...sharedInstalled, ...builtinSkills]) {
+          if (!seen.has(s.name)) {
+            merged.push(s);
+            seen.add(s.name);
+          }
+        }
+        setInstalled(sortSkills(merged));
       }
     } catch {}
-  }, [agentId]);
+  }, [agentId, scope]);
 
   useEffect(() => { reload(); }, [reload]);
 
@@ -242,7 +274,7 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     setInstallingAll(true);
     setError(null);
     try {
-      await installSkills(repo, toInstall.map((s) => s.name), agentId);
+      await installSkills(repo, toInstall.map((s) => s.name), { agentId, scope });
       setRepoBrowse((prev) => prev ? { ...prev, skills: prev.skills.map((s) => ({ ...s, installed: true })) } : prev);
       if (agentId && onEnabledChange) {
         const newNames = toInstall.map((s) => s.name).filter((n) => !enabledSet.has(n));
@@ -256,7 +288,7 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     } finally {
       setInstallingAll(false);
     }
-  }, [agentId, reload, onEnabledChange, enabledSet, normalizeEnabled]);
+  }, [agentId, scope, reload, onEnabledChange, enabledSet, normalizeEnabled]);
 
   const handleSearch = useCallback(async (q: string) => {
     setQuery(q);
@@ -306,7 +338,7 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     setInstalling(name);
     setError(null);
     try {
-      await installSkills(repo, [name], agentId);
+      await installSkills(repo, [name], { agentId, scope });
       setResults((prev) =>
         prev.map((r) => (r.name === name && r.repo === repo ? { ...r, installed: true } : r))
       );
@@ -324,13 +356,13 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     } finally {
       setInstalling(null);
     }
-  }, [agentId, preview, reload, onEnabledChange, enabledSet, normalizeEnabled]);
+  }, [agentId, scope, preview, reload, onEnabledChange, enabledSet, normalizeEnabled]);
 
   const handleUninstall = useCallback(async (name: string) => {
     setUninstalling(name);
     setError(null);
     try {
-      await uninstallSkill(name);
+      await uninstallSkill(name, { scope });
       setResults((prev) =>
         prev.map((r) => (r.name === name ? { ...r, installed: false } : r))
       );
@@ -343,7 +375,7 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     } finally {
       setUninstalling(null);
     }
-  }, [reload]);
+  }, [reload, scope]);
 
   const handleUninstallBatch = useCallback(async (names: string[]) => {
     if (names.length === 0) return;
@@ -351,7 +383,7 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     setError(null);
     try {
       for (const name of names) {
-        await uninstallSkill(name);
+        await uninstallSkill(name, { scope });
       }
       setSelected(new Set());
       reload();
@@ -360,7 +392,7 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     } finally {
       setUninstallingBatch(false);
     }
-  }, [reload]);
+  }, [reload, scope]);
 
   const handleBack = useCallback(() => {
     setSelectedName(null);
@@ -488,7 +520,7 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
                 pendingSaveRef.current = null;
                 (async () => {
                   for (const name of names) {
-                    await uninstallSkill(name, agentId);
+                    await uninstallSkill(name, { agentId });
                   }
                   setRemovedAgentSkills(new Set());
                   onConfirm();
@@ -568,14 +600,21 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
                   GitHub
                 </a>
                 {selectedInstalled ? (
-                  <button
-                    onClick={() => setConfirmUninstall([preview.name])}
-                    disabled={uninstalling === preview.name}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-danger hover:bg-surface-tertiary disabled:opacity-50 transition"
-                  >
-                    <TrashIcon className="h-4 w-4" />
-                    {uninstalling === preview.name ? "Removing..." : "Uninstall"}
-                  </button>
+                  (() => {
+                    const previewScope = installed.find((s) => s.name === preview.name)?.scope;
+                    const canUninstall = !agentId && previewScope === scope;
+                    if (!canUninstall) return null;
+                    return (
+                      <button
+                        onClick={() => setConfirmUninstall([preview.name])}
+                        disabled={uninstalling === preview.name}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-danger hover:bg-surface-tertiary disabled:opacity-50 transition"
+                      >
+                        <TrashIcon className="h-4 w-4" />
+                        {uninstalling === preview.name ? "Removing..." : "Uninstall"}
+                      </button>
+                    );
+                  })()
                 ) : (
                   <button
                     onClick={() => { setReviewed(false); setConfirmInstall({ repo: preview.repo, names: [preview.name] }); }}
@@ -790,9 +829,10 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
       )}
 
       {query.trim().length < 2 && installed.length > 0 && (() => {
-        const scopeLabels: Record<SkillScope, string> = { agent: "Agent", shared: "Shared", builtin: "Built-in" };
+        const scopeLabels: Record<SkillScope, string> = { agent: "Agent", user: "Personal", shared: "Shared", builtin: "Built-in" };
         const scopeColors: Record<SkillScope, string> = {
           agent: "bg-accent/15 text-accent",
+          user: "bg-accent/15 text-accent",
           shared: "bg-info-bg text-info-text",
           builtin: "bg-warning-bg text-warning-text",
         };
@@ -881,50 +921,68 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
               )}
             </div>
             <div className="rounded-xl border border-border bg-surface-secondary divide-y divide-border">
-              <div className="px-4 py-2 flex items-center gap-3 bg-surface-tertiary/30">
-                <Checkbox.Root
-                  checked={installed.length > 0 && installed.every((s) => selected.has(s.name)) ? true : installed.some((s) => selected.has(s.name)) ? "indeterminate" : false}
-                  onCheckedChange={() => toggleSelectAll(installed)}
-                  className="h-4 w-4 rounded border border-border bg-surface flex items-center justify-center data-[state=checked]:bg-accent data-[state=checked]:border-accent data-[state=indeterminate]:bg-accent data-[state=indeterminate]:border-accent transition shrink-0"
-                >
-                  <Checkbox.Indicator>
-                    {installed.every((s) => selected.has(s.name))
-                      ? <CheckIcon className="h-3 w-3 text-surface" />
-                      : <MinusIcon className="h-3 w-3 text-surface" />}
-                  </Checkbox.Indicator>
-                </Checkbox.Root>
-                <span className="text-xs text-text-secondary">
-                  {selected.size > 0 ? `${selected.size} selected` : "Select all"}
-                </span>
-              </div>
-              {installed.map((skill) => (
-                <div
-                  key={skill.name}
-                  className="px-4 py-3 flex items-center gap-3 transition hover:bg-surface-tertiary"
-                >
-                  <Checkbox.Root
-                    checked={selected.has(skill.name)}
-                    onCheckedChange={() => toggleSelect(skill.name)}
-                    className="h-4 w-4 rounded border border-border bg-surface flex items-center justify-center data-[state=checked]:bg-accent data-[state=checked]:border-accent transition shrink-0"
-                  >
-                    <Checkbox.Indicator>
-                      <CheckIcon className="h-3 w-3 text-surface" />
-                    </Checkbox.Indicator>
-                  </Checkbox.Root>
-                  <PuzzlePieceIcon className="h-8 w-8 text-text-tertiary shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-text-primary truncate">{skill.name}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${scopeColors[skill.scope]}`}>
-                        {scopeLabels[skill.scope]}
-                      </span>
-                    </div>
-                    {skill.description && (
-                      <div className="text-xs text-text-tertiary line-clamp-3">{skill.description}</div>
+              {(() => {
+                const manageable = installed.filter((s) => s.scope === scope);
+                const allSelected = manageable.length > 0 && manageable.every((s) => selected.has(s.name));
+                const someSelected = manageable.some((s) => selected.has(s.name));
+                return (
+                  <div className="px-4 py-2 flex items-center gap-3 bg-surface-tertiary/30">
+                    {manageable.length > 0 ? (
+                      <Checkbox.Root
+                        checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                        onCheckedChange={() => toggleSelectAll(manageable)}
+                        className="h-4 w-4 rounded border border-border bg-surface flex items-center justify-center data-[state=checked]:bg-accent data-[state=checked]:border-accent data-[state=indeterminate]:bg-accent data-[state=indeterminate]:border-accent transition shrink-0"
+                      >
+                        <Checkbox.Indicator>
+                          {allSelected
+                            ? <CheckIcon className="h-3 w-3 text-surface" />
+                            : <MinusIcon className="h-3 w-3 text-surface" />}
+                        </Checkbox.Indicator>
+                      </Checkbox.Root>
+                    ) : (
+                      <div className="h-4 w-4 shrink-0" />
                     )}
+                    <span className="text-xs text-text-secondary">
+                      {selected.size > 0 ? `${selected.size} selected` : `Select all ${scopeLabels[scope]}`}
+                    </span>
                   </div>
-                </div>
-              ))}
+                );
+              })()}
+              {installed.map((skill) => {
+                const canManage = skill.scope === scope;
+                return (
+                  <div
+                    key={skill.name}
+                    className={`px-4 py-3 flex items-center gap-3 transition ${canManage ? "hover:bg-surface-tertiary" : ""}`}
+                  >
+                    {canManage ? (
+                      <Checkbox.Root
+                        checked={selected.has(skill.name)}
+                        onCheckedChange={() => toggleSelect(skill.name)}
+                        className="h-4 w-4 rounded border border-border bg-surface flex items-center justify-center data-[state=checked]:bg-accent data-[state=checked]:border-accent transition shrink-0"
+                      >
+                        <Checkbox.Indicator>
+                          <CheckIcon className="h-3 w-3 text-surface" />
+                        </Checkbox.Indicator>
+                      </Checkbox.Root>
+                    ) : (
+                      <div className="h-4 w-4 shrink-0" />
+                    )}
+                    <PuzzlePieceIcon className="h-8 w-8 text-text-tertiary shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-text-primary truncate">{skill.name}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${scopeColors[skill.scope]}`}>
+                          {scopeLabels[skill.scope]}
+                        </span>
+                      </div>
+                      {skill.description && (
+                        <div className="text-xs text-text-tertiary line-clamp-3">{skill.description}</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         );

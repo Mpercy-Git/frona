@@ -13,8 +13,26 @@ use frona::auth::UserService;
 use frona::core::config::CacheConfig;
 use frona::core::repository::Repository;
 use frona::credential::keypair::service::KeyPairService;
+use frona::policy::service::PolicyService;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+
+async fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
+    let schema = frona::policy::schema::build_schema();
+    let repo: Arc<dyn frona::policy::repository::PolicyRepository> =
+        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+    let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
+    let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
+    let user_service = frona::auth::UserService::new(
+        SurrealRepo::new(db.clone()),
+        &frona::core::config::CacheConfig::default(),
+    );
+    let service = PolicyService::new(repo, schema, tool_manager, storage, user_service);
+    // Mirror production startup so the admins-group permission rule is
+    // present when we exercise UserInfo.permissions.list_users.
+    service.sync_base_policies().await.unwrap();
+    service
+}
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -278,6 +296,7 @@ async fn test_register_and_login_flow() {
     let db = test_db().await;
     let user_service = UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default());
     let (keypair_svc, token_svc) = setup_services(&db);
+    let policy_svc = test_policy_service(&db).await;
     let auth_svc = AuthService::new();
 
     let (register_resp, register_refresh) = auth_svc
@@ -285,6 +304,7 @@ async fn test_register_and_login_flow() {
             &user_service,
             &keypair_svc,
             &token_svc,
+            &policy_svc,
             frona::auth::models::RegisterRequest {
                 handle: "newuser".to_string(),
                 email: "new@example.com".to_string(),
@@ -298,6 +318,10 @@ async fn test_register_and_login_flow() {
     assert!(!register_resp.token.is_empty());
     assert!(!register_refresh.is_empty());
     assert_eq!(register_resp.user.email, "new@example.com");
+    assert!(
+        register_resp.user.permissions.list_users,
+        "first registered user should be auto-promoted to admin and see list_users=true",
+    );
 
     let claims = token_svc
         .validate(&keypair_svc, &register_resp.token)
@@ -310,6 +334,7 @@ async fn test_register_and_login_flow() {
             &user_service,
             &keypair_svc,
             &token_svc,
+            &policy_svc,
             frona::auth::models::LoginRequest {
                 identifier: "new@example.com".to_string(),
                 password: "password123".to_string(),
@@ -320,6 +345,10 @@ async fn test_register_and_login_flow() {
 
     assert!(!login_resp.token.is_empty());
     assert_eq!(login_resp.user.email, "new@example.com");
+    assert!(
+        login_resp.user.permissions.list_users,
+        "login response should carry the same Cedar-computed permissions as /me",
+    );
 }
 
 #[tokio::test]
@@ -327,6 +356,7 @@ async fn test_login_wrong_password() {
     let db = test_db().await;
     let user_service = UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default());
     let (keypair_svc, token_svc) = setup_services(&db);
+    let policy_svc = test_policy_service(&db).await;
     let auth_svc = AuthService::new();
 
     auth_svc
@@ -334,6 +364,7 @@ async fn test_login_wrong_password() {
             &user_service,
             &keypair_svc,
             &token_svc,
+            &policy_svc,
             frona::auth::models::RegisterRequest {
                 handle: "wrongpwtest".to_string(),
                 email: "test@example.com".to_string(),
@@ -349,6 +380,7 @@ async fn test_login_wrong_password() {
             &user_service,
             &keypair_svc,
             &token_svc,
+            &policy_svc,
             frona::auth::models::LoginRequest {
                 identifier: "test@example.com".to_string(),
                 password: "wrong".to_string(),
@@ -364,6 +396,7 @@ async fn test_duplicate_registration() {
     let db = test_db().await;
     let user_service = UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default());
     let (keypair_svc, token_svc) = setup_services(&db);
+    let policy_svc = test_policy_service(&db).await;
     let auth_svc = AuthService::new();
 
     let req = frona::auth::models::RegisterRequest {
@@ -374,7 +407,7 @@ async fn test_duplicate_registration() {
     };
 
     auth_svc
-        .register(&user_service, &keypair_svc, &token_svc, req)
+        .register(&user_service, &keypair_svc, &token_svc, &policy_svc, req)
         .await
         .unwrap();
 
@@ -386,7 +419,7 @@ async fn test_duplicate_registration() {
     };
 
     let result = auth_svc
-        .register(&user_service, &keypair_svc, &token_svc, req2)
+        .register(&user_service, &keypair_svc, &token_svc, &policy_svc, req2)
         .await;
 
     assert!(result.is_err());

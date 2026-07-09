@@ -59,6 +59,7 @@ impl Scheduler {
         let space = Duration::from_secs(cfg.scheduler.space_compaction_secs);
         let memory = Duration::from_secs(cfg.scheduler.memory_compaction_secs);
         let poll = Duration::from_secs(cfg.scheduler.poll_secs);
+        let model_metadata_refresh = Duration::from_secs(86400);
 
         let shutdown = self.app_state.shutdown_token.clone();
         spawn_periodic!(self, space, "space_compaction", run_space_compaction, shutdown);
@@ -66,8 +67,57 @@ impl Scheduler {
         spawn_periodic!(self, memory, "user_memory_compaction", run_user_memory_compaction, shutdown);
         spawn_periodic!(self, poll, "poll_tasks", run_poll_tasks, shutdown);
         spawn_periodic!(self, space, "token_cleanup", run_token_cleanup, shutdown);
+        spawn_periodic!(self, model_metadata_refresh, "model_metadata_refresh", run_model_metadata_refresh, shutdown);
         let share_cleanup = Duration::from_secs(cfg.share.cleanup_interval_secs);
         spawn_periodic!(self, share_cleanup, "share_cleanup", run_share_cleanup, shutdown);
+
+        // Skip the startup refresh if the cached catalog is younger than the
+        // periodic interval — restart shouldn't trigger another ~1.5 MB fetch.
+        // Missing/unreadable cache always falls through to a fresh fetch.
+        let cache_dir = std::path::Path::new(&self.app_state.config.storage.cache_dir).to_path_buf();
+        let fresh = crate::inference::metadata::loader::cache_age(&cache_dir)
+            .is_some_and(|age| age < model_metadata_refresh);
+        if fresh {
+            tracing::debug!("Skipping startup model-metadata refresh; cache is fresh");
+        } else {
+            let s = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = s.run_model_metadata_refresh().await {
+                    tracing::warn!(error = %e, "Initial model-metadata refresh failed; keeping loaded catalog");
+                }
+            });
+        }
+    }
+
+    /// Failures keep the previous table loaded.
+    async fn run_model_metadata_refresh(&self) -> Result<(), AppError> {
+        let raw = crate::inference::metadata::loader::fetch_metadata().await?;
+        let parsed = crate::inference::metadata::loader::parse(&raw)?;
+        let entries = parsed.entries.len() as f64;
+        let version = parsed.version.clone();
+        tracing::info!(
+            version = %version,
+            entries = entries as usize,
+            "Refreshed model metadata catalog"
+        );
+        // Persist to disk so the next boot has a head start if the network is
+        // unavailable. Failure is non-fatal — the in-memory swap below still
+        // wins for this process.
+        let cache_dir = std::path::Path::new(&self.app_state.config.storage.cache_dir);
+        if let Err(e) = crate::inference::metadata::loader::save_cache(cache_dir, &raw) {
+            tracing::warn!(error = %e, "Failed to persist model metadata cache");
+        }
+        // Swap the catalog directly — `model_catalog` is shared with
+        // `usage_service` via internal `ArcSwap`, so all readers see the
+        // new snapshot on next `current()`.
+        self.app_state.model_catalog.swap(parsed);
+        metrics::gauge!(
+            crate::inference::usage::service::MODEL_METADATA_ENTRIES,
+            "version" => version,
+        )
+        .set(entries);
+        metrics::gauge!(crate::inference::usage::service::MODEL_METADATA_REFRESH_AGE_SECONDS).set(0.0);
+        Ok(())
     }
 
     async fn run_poll_tasks(&self) -> Result<(), AppError> {
@@ -348,7 +398,7 @@ impl Scheduler {
             if let Err(e) = self
                 .app_state
                 .memory_service
-                .compact_space(&space.id, summaries, &self.compaction_model_group)
+                .compact_space(&space.user_id, &space.id, summaries, &self.compaction_model_group)
                 .await
             {
                 tracing::warn!(
@@ -384,10 +434,28 @@ impl Scheduler {
             tracing::info!(%id, kind = kind, "Running scheduled memory compaction");
             let result = match kind {
                 "agent" => {
-                    self.app_state
-                        .memory_service
-                        .compact_entries_if_needed(id, &self.compaction_model_group)
-                        .await
+                    // Resolve the agent's owning user_id so the InferenceUsage
+                    // row carries it. Skip the compaction if the agent record
+                    // is gone — happens after a user delete.
+                    match self.app_state.agent_service.find_by_id(id).await {
+                        Ok(Some(agent)) => self
+                            .app_state
+                            .memory_service
+                            .compact_entries_if_needed(
+                                &agent.user_id,
+                                id,
+                                &self.compaction_model_group,
+                            )
+                            .await,
+                        Ok(None) => {
+                            tracing::debug!(agent_id = %id, "Agent gone; skipping memory compaction");
+                            Ok(())
+                        }
+                        Err(e) => {
+                            tracing::warn!(agent_id = %id, error = %e, "Failed to load agent for compaction");
+                            Ok(())
+                        }
+                    }
                 }
                 "user" => {
                     self.app_state

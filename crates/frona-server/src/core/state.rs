@@ -106,6 +106,8 @@ pub struct AppState {
     pub agent_service: AgentService,
     pub space_service: SpaceService,
     pub call_service: CallService,
+    pub usage_service: crate::inference::usage::UsageService,
+    pub model_catalog: crate::inference::metadata::ModelCatalogStore,
     pub chat_service: ChatService,
     pub contact_service: ContactService,
     pub task_service: TaskService,
@@ -163,9 +165,24 @@ impl AppState {
         let http_client = crate::build_http_client();
 
         let broadcast_service = BroadcastService::with_pending_events_secs(config.server.sse_pending_events_secs);
+
+        // Load the catalog before the provider registry — `parse_model_groups`
+        // consults it to bake `context_window` into each `ModelGroup` at
+        // resolve time.
+        let model_catalog = crate::inference::metadata::ModelCatalogStore::new(
+            crate::inference::metadata::loader::load_cache_or_defaults(
+                std::path::Path::new(&config.storage.cache_dir),
+            ),
+        );
+
         let llm_config = load_models_config(models_config);
-        let provider_registry = ModelProviderRegistry::from_config(llm_config, broadcast_service.clone(), &config.inference)
-            .expect("Failed to initialize provider registry");
+        let provider_registry = ModelProviderRegistry::from_config(
+            llm_config,
+            broadcast_service.clone(),
+            &config.inference,
+            &model_catalog.current(),
+        )
+        .expect("Failed to initialize provider registry");
 
         let chat_repo = SurrealRepo::new(db.clone());
         let message_repo = SurrealRepo::new(db.clone());
@@ -197,6 +214,11 @@ impl AppState {
         let cli_tools_config = load_cli_tool_configs(&prompt_loader);
         let cli_tools_config = Arc::new(cli_tools_config);
 
+        let usage_service = crate::inference::usage::UsageService::new(
+            model_catalog.clone(),
+            SurrealRepo::new(db.clone()),
+            broadcast_service.clone(),
+        );
         let memory_service = MemoryService::new(
             SurrealRepo::new(db.clone()),
             SurrealRepo::new(db.clone()),
@@ -204,6 +226,7 @@ impl AppState {
             provider_registry_arc,
             prompt_loader.clone(),
             storage.clone(),
+            usage_service.clone(),
         );
 
         let skill_resolver = SkillResolver::new(&config.storage.shared_config_dir, storage.clone())
@@ -435,6 +458,7 @@ impl AppState {
             broadcast_service.clone(),
             presign_service.clone(),
             notification_service.clone(),
+            usage_service.clone(),
         );
         let shutdown_token = CancellationToken::new();
         let active_sessions = ActiveSessions::default();
@@ -456,6 +480,7 @@ impl AppState {
             shutdown_token.clone(),
             prompt_loader.clone(),
             config_arc.clone(),
+            usage_service.clone(),
         ));
         let task_executor = Arc::new(crate::agent::task::executor::TaskExecutor::new(
             harness.clone(),
@@ -478,6 +503,8 @@ impl AppState {
             agent_service: agent_service.clone(),
             space_service: SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             call_service: CallService::new(SurrealRepo::new(db.clone())),
+            usage_service,
+            model_catalog,
             contact_service: ContactService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             chat_service,
             task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
@@ -561,6 +588,7 @@ impl AppState {
             self.contact_service.clone(),
             self.policy_service.clone(),
             self.prompts.clone(),
+            self.usage_service.clone(),
         ));
         let _ = self.signal_service.set(svc.clone());
         svc

@@ -12,8 +12,7 @@ use crate::api::cookie::{
     make_clear_refresh_cookie, make_clear_sso_csrf_cookie, make_refresh_cookie,
     make_sso_csrf_cookie,
 };
-use crate::auth::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo, UserPermissions};
-use crate::policy::models::PolicyAction;
+use crate::auth::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo};
 use crate::auth::token::models::CreatePatRequest;
 use crate::core::error::{AppError, AuthErrorCode};
 
@@ -81,6 +80,7 @@ async fn register(
             &state.user_service,
             &state.keypair_service,
             &state.token_service,
+            &state.policy_service,
             req,
         )
         .await?;
@@ -129,6 +129,7 @@ async fn login(
             &state.user_service,
             &state.keypair_service,
             &state.token_service,
+            &state.policy_service,
             req,
         )
         .await;
@@ -167,23 +168,8 @@ async fn me(
     let setup_completed = state.get_runtime_config_bool("setup_completed").await;
     let needs_setup = if setup_completed { None } else { Some(true) };
 
-    let list_users_decision = state
-        .policy_service
-        .authorize_user(&user, PolicyAction::ListUsers)
-        .await?;
-
-    Ok(Json(UserInfo {
-        id: user.id,
-        handle: user.handle,
-        email: user.email,
-        name: user.name,
-        timezone: user.timezone,
-        phone: user.phone,
-        needs_setup,
-        permissions: UserPermissions {
-            list_users: list_users_decision.allowed,
-        },
-    }))
+    let info = crate::auth::build_user_info(user, &state.policy_service, needs_setup).await?;
+    Ok(Json(info))
 }
 
 async fn change_handle(
@@ -198,6 +184,7 @@ async fn change_handle(
             &state.user_service,
             &state.keypair_service,
             &state.token_service,
+            &state.policy_service,
             &state.storage_service,
             &state.config,
             &auth.user_id,
@@ -222,7 +209,7 @@ async fn update_profile(
 ) -> Result<Json<UserInfo>, ApiError> {
     let user_info = state
         .auth_service
-        .update_profile(&state.user_service, &auth.user_id, req)
+        .update_profile(&state.user_service, &state.policy_service, &auth.user_id, req)
         .await?;
     Ok(Json(user_info))
 }

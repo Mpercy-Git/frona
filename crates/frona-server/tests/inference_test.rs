@@ -612,6 +612,7 @@ async fn test_fallback_main_succeeds() {
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
+        &test_usage_ctx(),
     )
     .await
     .unwrap();
@@ -654,6 +655,7 @@ async fn test_fallback_main_fails_fallback_succeeds() {
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
+        &test_usage_ctx(),
     )
     .await
     .unwrap();
@@ -699,6 +701,7 @@ async fn test_fallback_all_fail() {
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
+        &test_usage_ctx(),
     )
     .await;
 
@@ -729,6 +732,7 @@ async fn test_fallback_retryable_error_retried() {
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
+        &test_usage_ctx(),
     )
     .await
     .unwrap();
@@ -771,6 +775,7 @@ async fn test_fallback_non_retryable_skips_retry() {
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
+        &test_usage_ctx(),
     )
     .await
     .unwrap();
@@ -833,6 +838,7 @@ async fn test_fallback_multiple_fallbacks_order() {
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
+        &test_usage_ctx(),
     )
     .await
     .unwrap();
@@ -870,7 +876,7 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
         _additional_params: Option<serde_json::Value>,
-    ) -> Result<(Vec<rig_core::completion::AssistantContent>, frona::inference::Usage), InferenceError> {
+    ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
         unreachable!("streaming test should not call non-streaming inference");
     }
 
@@ -884,7 +890,7 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
         _additional_params: Option<serde_json::Value>,
-    ) -> Result<Vec<rig_core::completion::AssistantContent>, InferenceError> {
+    ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
         *self.call_count.lock().unwrap() += 1;
         let mut full_text = String::new();
         for token in &self.tokens {
@@ -892,7 +898,10 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
             let _ = token_tx.send(frona::inference::provider::StreamToken::Text(token.clone())).await;
             tokio::time::sleep(self.delay_between).await;
         }
-        Ok(vec![rig_core::completion::AssistantContent::text(full_text)])
+        Ok(frona::inference::provider::InferenceOutput::new(
+            vec![rig_core::completion::AssistantContent::text(full_text)],
+            frona::inference::Usage::default(),
+        ))
     }
 
     async fn structured_inference(

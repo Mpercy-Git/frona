@@ -292,17 +292,31 @@ async fn delete_user(
         .await?
         .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
+    // Tear down running processes and side effects (workspace dirs, vault
+    // grants for non-user principals, sandbox policies) before the SurrealDB
+    // cascade event deletes the parent rows.
+    if let Ok(apps) = state.app_service.list_by_user(&target_id).await {
+        for app in apps {
+            let _ = state.app_service.destroy(&app.agent_id, &app.id).await;
+        }
+    }
+    if let Ok(servers) = state.mcp_service.list_for_user(&target_id).await {
+        for server in servers {
+            let _ = state.mcp_service.uninstall(&target_id, &server.id).await;
+        }
+    }
+    if let Ok(channels) = state.channel_service.list_for_user(&target_id).await {
+        for channel in channels {
+            let _ = state.channel_service.delete(&state, &target_id, &channel.id).await;
+        }
+    }
+
     state
         .user_service
         .delete(&target_id)
         .await
         .map_err(translate_invariant_violation)?;
 
-    let _ = state
-        .token_service
-        .repo()
-        .delete_by_user_id(&target_id)
-        .await;
     state.user_service.ensure_admin_invariant().await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -316,24 +330,6 @@ fn translate_invariant_violation(err: AppError) -> AppError {
     if msg.contains("'last_admin'") || msg.contains("\"last_admin\"") || msg.ends_with("last_admin")
     {
         return AppError::Conflict(json!({ "reason": "last_admin" }).to_string());
-    }
-    // Event throws `owned_resources:{"<table>":N,...}`.
-    if let Some(idx) = msg.find("owned_resources:{") {
-        let payload = &msg[idx + "owned_resources:".len()..];
-        if let Some(end) = payload.find('}') {
-            let json_slice = &payload[..=end];
-            if let Ok(counts) = serde_json::from_str::<serde_json::Value>(json_slice) {
-                let mut body = json!({ "reason": "owned_resources" });
-                if let Some(obj) = body.as_object_mut()
-                    && let Some(counts_obj) = counts.as_object()
-                {
-                    for (k, v) in counts_obj {
-                        obj.insert(k.clone(), v.clone());
-                    }
-                }
-                return AppError::Conflict(body.to_string());
-            }
-        }
     }
     err
 }

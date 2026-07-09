@@ -1,11 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { RequireAuth } from "@/components/require-auth";
 import { api } from "@/lib/api-client";
-import { CheckCircleIcon } from "@heroicons/react/24/outline";
-import { TimezoneSection } from "@/components/settings/sections/timezone-section";
+import { CheckCircleIcon, ClockIcon, InformationCircleIcon } from "@heroicons/react/24/outline";
+import { SectionHeader, SectionPanel } from "@/components/settings/field";
+import { ComboboxInput } from "@/components/settings/combobox";
+import type { ServerConfig } from "@/lib/config-types";
 import { ProvidersSection } from "@/components/settings/sections/providers-section";
 import { ModelsSection } from "@/components/settings/sections/models-section";
 import { ServerSection } from "@/components/settings/sections/server-section";
@@ -14,9 +16,7 @@ import { SsoSection } from "@/components/settings/sections/sso-section";
 import { BrowserSection } from "@/components/settings/sections/browser-section";
 import { SearchSection } from "@/components/settings/sections/search-section";
 import { VoiceSection } from "@/components/settings/sections/voice-section";
-import { VaultSection } from "@/components/settings/sections/vault-section";
 import { SandboxSettingsSection } from "@/components/settings/sections/sandbox-section";
-import { AdvancedSection } from "@/components/settings/sections/advanced-section";
 import { getConfig, updateConfig, isSensitiveSet } from "@/lib/config-types";
 import type { Config } from "@/lib/config-types";
 import { Logo } from "@/components/logo";
@@ -33,18 +33,78 @@ function generateStrongSecret(length: number): string {
 
 const STEPS = [
   { id: "timezone" },
+  { id: "server" },
   { id: "providers" },
   { id: "models" },
-  { id: "server" },
   { id: "auth" },
   { id: "sso" },
   { id: "sandbox" },
   { id: "browser" },
   { id: "search" },
   { id: "voice" },
-  { id: "vault" },
-  { id: "advanced" },
 ] as const;
+
+const TIMEZONE_AUTO_DETECT = "(auto-detect from server environment)";
+
+function TimezoneStep({ server, onChange }: { server: ServerConfig; onChange: (server: ServerConfig) => void }) {
+  const [timezones, setTimezones] = useState<string[]>([]);
+
+  useEffect(() => {
+    api.get<string[]>("/api/system/timezones").then(setTimezones).catch(() => {});
+  }, []);
+
+  const timezoneItems = useMemo(
+    () => [
+      { value: "", label: TIMEZONE_AUTO_DETECT },
+      ...timezones.map((tz) => ({ value: tz, label: tz.replace(/_/g, " ") })),
+    ],
+    [timezones],
+  );
+
+  const browserTimezone = useMemo(() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  return (
+    <div>
+      <SectionHeader
+        title="Timezone"
+        description="The default timezone used for scheduling, reminders, and the time context shown to agents."
+        icon={ClockIcon}
+      />
+      <div className="flex items-start gap-3 rounded-lg border border-accent/30 bg-accent/5 p-4 mb-4">
+        <InformationCircleIcon className="h-5 w-5 text-accent shrink-0 mt-0.5" />
+        <p className="text-sm text-text-secondary leading-relaxed">
+          This is the server default. Each user can override it in their own settings, and individual tasks can specify a different zone. Daylight saving transitions are handled automatically.
+        </p>
+      </div>
+      <SectionPanel>
+        <ComboboxInput
+          label="Default Timezone"
+          description="Leave on auto-detect to read the TZ env var or /etc/localtime at startup, falling back to UTC."
+          value={server.timezone}
+          items={timezoneItems}
+          onChange={(timezone) => onChange({ ...server, timezone })}
+          placeholder={TIMEZONE_AUTO_DETECT}
+          allowFreeText={false}
+        />
+        {browserTimezone && server.timezone !== browserTimezone && (
+          <button
+            type="button"
+            onClick={() => onChange({ ...server, timezone: browserTimezone })}
+            className="text-xs text-accent hover:underline"
+          >
+            Use browser timezone: {browserTimezone}
+          </button>
+        )}
+      </SectionPanel>
+    </div>
+  );
+}
 
 export default function SetupPage() {
   return (
@@ -223,7 +283,7 @@ function SetupWizard() {
 
           <div className="min-h-[300px]">
             {currentStep.id === "timezone" && (
-              <TimezoneSection
+              <TimezoneStep
                 server={config.server}
                 onChange={(v) => updatePatch("server", v)}
               />
@@ -284,24 +344,6 @@ function SetupWizard() {
               <VoiceSection
                 voice={config.voice}
                 onChange={(v) => updatePatch("voice", v)}
-              />
-            )}
-            {currentStep.id === "vault" && (
-              <VaultSection
-                vault={config.vault}
-                onChange={(v) => updatePatch("vault", v)}
-              />
-            )}
-            {currentStep.id === "advanced" && (
-              <AdvancedSection
-                inference={config.inference}
-                scheduler={config.scheduler}
-                app={config.app}
-                onChange={(update) => {
-                  if (update.inference) updatePatch("inference", update.inference);
-                  if (update.scheduler) updatePatch("scheduler", update.scheduler);
-                  if (update.app) updatePatch("app", update.app);
-                }}
               />
             )}
           </div>

@@ -4,12 +4,16 @@ pub mod config;
 pub mod context;
 pub mod conversation;
 pub mod error;
+pub mod metadata;
 pub mod provider;
 pub mod registry;
 pub mod request;
 pub mod retry;
 pub mod tool_call;
 pub mod tool_loop;
+pub mod usage;
+
+pub use usage::{CompactionTarget, InferenceKind, UsageContext};
 
 pub use error::InferenceError;
 pub use hitl::{
@@ -26,16 +30,23 @@ pub use tool_loop::{InferenceEvent, InferenceEventKind};
 use rig_core::completion::Message as RigMessage;
 
 use crate::core::error::AppError;
-use crate::core::metrics::InferenceMetricsContext;
 
 use self::config::ModelGroup;
+use self::usage::UsageService;
 
 pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, AppError> {
-    let metrics_ctx = InferenceMetricsContext {
-        user_id: request.ctx.user.id.clone(),
-        agent_id: request.ctx.agent.id.clone(),
-        model_group: request.model_group.name.clone(),
-    };
+    // For the no-tool path we record one Chat row. For the tool-loop path,
+    // tool_loop builds a fresh ToolTurn UsageContext per iteration and a
+    // final Chat row when it emits its last text turn.
+    let chat_usage_ctx = UsageContext::new(
+        InferenceKind::Text {
+            agent_id: request.ctx.agent.id.clone(),
+            chat_id: request.ctx.chat.id.clone(),
+            message_id: request.message_id.clone(),
+        },
+        request.ctx.user.id.clone(),
+        request.model_group.name.clone(),
+    );
 
     // Single source of truth: every inference turn (initial, resume, task
     // executor's inner runs) flows through this function, so emitting
@@ -54,7 +65,6 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
         let history = context::truncate_history(
             request.history,
             &request.system_prompt,
-            &request.model_group.main.model_id,
             request.model_group.context_window,
             max_output,
             request.model_group.inference.history_truncation_pct,
@@ -71,11 +81,12 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
             event_tx,
             &request.cancel_token,
             &mut response_text,
-            &metrics_ctx,
+            &request.usage_service,
+            &chat_usage_ctx,
         )
         .await?
         {
-            retry::StreamResult::Contents(contents) => {
+            retry::StreamResult::Contents { content: contents, usage: _ } => {
                 let reasoning = extract_reasoning(&contents);
                 Ok(InferenceResponse::Completed {
                     text: response_text,
@@ -99,7 +110,7 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
             event_tx,
             request.cancel_token,
             &request.ctx,
-            &metrics_ctx,
+            &request.usage_service,
             &request.chat_service,
             &request.message_id,
         )
@@ -128,7 +139,8 @@ pub async fn text_inference(
     model_group: &ModelGroup,
     system_prompt: &str,
     history: Vec<RigMessage>,
-    metrics_ctx: &InferenceMetricsContext,
+    usage_service: &UsageService,
+    usage_ctx: &UsageContext,
 ) -> Result<String, InferenceError> {
     let (contents, _usage) = retry::inference_with_retry_and_fallback(
         registry,
@@ -136,7 +148,8 @@ pub async fn text_inference(
         system_prompt,
         history,
         vec![],
-        metrics_ctx,
+        usage_service,
+        usage_ctx,
     )
     .await?;
     provider::extract_text_from_choice(&contents)
@@ -147,7 +160,8 @@ pub async fn structured_inference<T>(
     model_group: &ModelGroup,
     system_prompt: &str,
     history: Vec<RigMessage>,
-    metrics_ctx: &InferenceMetricsContext,
+    usage_service: &UsageService,
+    usage_ctx: &UsageContext,
 ) -> Result<T, InferenceError>
 where
     T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
@@ -160,7 +174,8 @@ where
         system_prompt,
         history,
         schema,
-        metrics_ctx,
+        usage_service,
+        usage_ctx,
     )
     .await?;
     serde_json::from_value::<T>(value).map_err(|e| {

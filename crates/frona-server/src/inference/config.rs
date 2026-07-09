@@ -14,7 +14,9 @@ pub struct ModelGroup {
     pub fallbacks: Vec<ModelRef>,
     pub max_tokens: Option<u64>,
     pub temperature: Option<f64>,
-    pub context_window: Option<usize>,
+    /// Resolved at load time by `parse_model_groups`: config override wins;
+    /// else catalog's `max_input_tokens` for `main`; else `DEFAULT_CONTEXT_WINDOW`.
+    pub context_window: usize,
     pub retry: RetryConfig,
     pub inference: InferenceConfig,
 }
@@ -97,7 +99,11 @@ impl ModelRegistryConfig {
         }
     }
 
-    pub fn parse_model_groups(&self, inference: &InferenceConfig) -> Result<HashMap<String, ModelGroup>, InferenceError> {
+    pub fn parse_model_groups(
+        &self,
+        inference: &InferenceConfig,
+        catalog: &crate::inference::metadata::ModelCatalogSnapshot,
+    ) -> Result<HashMap<String, ModelGroup>, InferenceError> {
         let mut groups = HashMap::new();
 
         for (name, config) in &self.models {
@@ -107,7 +113,7 @@ impl ModelRegistryConfig {
                 model_id: common.model.clone(),
                 additional_params: config.additional_params(),
             };
-            let fallbacks = common
+            let fallbacks: Vec<ModelRef> = common
                 .fallbacks
                 .iter()
                 .map(|fb| ModelRef {
@@ -117,6 +123,15 @@ impl ModelRegistryConfig {
                 })
                 .collect();
 
+            // Only the main model's window is resolved; a tighter fallback
+            // window surfaces as an inference error on its turn and falls over.
+            let context_window = common.context_window.unwrap_or_else(|| {
+                catalog
+                    .lookup(&main)
+                    .and_then(|e| e.max_input_tokens().map(|n| n as usize))
+                    .unwrap_or(crate::inference::context::DEFAULT_CONTEXT_WINDOW)
+            });
+
             groups.insert(
                 name.clone(),
                 ModelGroup {
@@ -125,7 +140,7 @@ impl ModelRegistryConfig {
                     fallbacks,
                     max_tokens: common.max_tokens,
                     temperature: common.temperature,
-                    context_window: common.context_window,
+                    context_window,
                     retry: common.retry.clone(),
                     inference: inference.clone(),
                 },

@@ -28,6 +28,7 @@ pub struct SignalService {
     contact_service: ContactService,
     policy_service: PolicyService,
     prompts: PromptLoader,
+    usage_service: crate::inference::usage::UsageService,
 }
 
 impl SignalService {
@@ -39,6 +40,7 @@ impl SignalService {
         contact_service: ContactService,
         policy_service: PolicyService,
         prompts: PromptLoader,
+        usage_service: crate::inference::usage::UsageService,
     ) -> Self {
         let matchers: Vec<Arc<dyn Matcher>> = vec![
             Arc::new(CategoryMatcher),
@@ -52,6 +54,7 @@ impl SignalService {
             contact_service,
             policy_service,
             prompts,
+            usage_service,
             matchers,
         )
     }
@@ -64,6 +67,7 @@ impl SignalService {
         contact_service: ContactService,
         policy_service: PolicyService,
         prompts: PromptLoader,
+        usage_service: crate::inference::usage::UsageService,
         matchers: Vec<Arc<dyn Matcher>>,
     ) -> Self {
         Self {
@@ -75,6 +79,7 @@ impl SignalService {
             contact_service,
             policy_service,
             prompts,
+            usage_service,
         }
     }
 
@@ -296,18 +301,23 @@ impl SignalService {
 
         let system_prompt = self.compose_signal_prompt(&channel.provider, &chat.id, awaiting);
         let history = vec![RigMessage::user(&msg.content)];
-        let metrics_ctx = crate::core::metrics::InferenceMetricsContext {
-            user_id: channel.user_id.clone(),
-            agent_id: chat.agent_id.clone(),
-            model_group: agent.model_group.clone(),
-        };
+        let usage_ctx = crate::inference::usage::UsageContext::new(
+            crate::inference::usage::InferenceKind::Signal {
+                agent_id: chat.agent_id.clone(),
+                chat_id: chat.id.clone(),
+                message_id: msg.id.clone(),
+            },
+            channel.user_id.clone(),
+            agent.model_group.clone(),
+        );
 
         let output: SignalOutput = match crate::inference::structured_inference::<SignalOutput>(
             registry,
             &model_group,
             &system_prompt,
             history,
-            &metrics_ctx,
+            &self.usage_service,
+            &usage_ctx,
         )
         .await
         {

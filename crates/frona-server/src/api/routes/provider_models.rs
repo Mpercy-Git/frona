@@ -4,6 +4,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 
 use crate::core::state::AppState;
+use crate::inference::metadata::ModelCatalogSnapshot;
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -74,6 +75,7 @@ fn extract_models(
     body: &serde_json::Value,
     format: ResponseFormat,
     provider: &str,
+    catalog: &ModelCatalogSnapshot,
 ) -> Vec<ModelInfo> {
     let mut models = match format {
         ResponseFormat::OpenAi => extract_openai(body),
@@ -84,13 +86,13 @@ fn extract_models(
 
     for model in &mut models {
         if (model.context_window.is_none() || model.max_tokens.is_none())
-            && let Some((ctx, max)) = hardcoded_limits(provider, &model.id)
+            && let Some(entry) = catalog.lookup_prefix(provider, &model.id)
         {
-            if model.context_window.is_none() {
-                model.context_window = Some(ctx);
+            if model.context_window.is_none() && entry.limit.context > 0 {
+                model.context_window = Some(entry.limit.context);
             }
-            if model.max_tokens.is_none() {
-                model.max_tokens = Some(max);
+            if model.max_tokens.is_none() && entry.limit.output > 0 {
+                model.max_tokens = Some(entry.limit.output);
             }
         }
     }
@@ -194,86 +196,6 @@ fn extract_ollama(body: &serde_json::Value) -> Vec<ModelInfo> {
         .unwrap_or_default()
 }
 
-fn hardcoded_limits(provider: &str, model_id: &str) -> Option<(u64, u64)> {
-    // Try exact match first, then prefix match.
-    // Order matters: more specific prefixes must come before shorter ones
-    // (e.g. "gpt-4o-mini" before "gpt-4o", "grok-3-mini" before "grok-3").
-    let table: &[(&str, &str, u64, u64)] = &[
-        // Anthropic
-        ("anthropic", "claude-opus-4", 200_000, 32_000),
-        ("anthropic", "claude-sonnet-4", 200_000, 64_000),
-        ("anthropic", "claude-haiku-4", 200_000, 64_000),
-        ("anthropic", "claude-3-5-sonnet", 200_000, 8_192),
-        ("anthropic", "claude-3-5-haiku", 200_000, 8_192),
-        ("anthropic", "claude-3-opus", 200_000, 4_096),
-        ("anthropic", "claude-3-sonnet", 200_000, 4_096),
-        ("anthropic", "claude-3-haiku", 200_000, 4_096),
-        // OpenAI
-        ("openai", "gpt-4.1-mini", 1_047_576, 32_768),
-        ("openai", "gpt-4.1-nano", 1_047_576, 32_768),
-        ("openai", "gpt-4.1", 1_047_576, 32_768),
-        ("openai", "gpt-4o-mini", 128_000, 16_384),
-        ("openai", "gpt-4o", 128_000, 16_384),
-        ("openai", "gpt-4-turbo", 128_000, 4_096),
-        ("openai", "gpt-4", 8_192, 8_192),
-        ("openai", "gpt-3.5-turbo", 16_385, 4_096),
-        ("openai", "o1-mini", 128_000, 65_536),
-        ("openai", "o1-preview", 128_000, 32_768),
-        ("openai", "o1", 200_000, 100_000),
-        ("openai", "o3-mini", 200_000, 100_000),
-        ("openai", "o3", 200_000, 100_000),
-        ("openai", "o4-mini", 200_000, 100_000),
-        // DeepSeek
-        ("deepseek", "deepseek-chat", 128_000, 8_192),
-        ("deepseek", "deepseek-reasoner", 128_000, 8_192),
-        // Groq
-        ("groq", "llama-3.3-70b-versatile", 128_000, 32_768),
-        ("groq", "llama-3.1-8b-instant", 131_072, 8_192),
-        ("groq", "gemma2-9b-it", 8_192, 8_192),
-        // Mistral
-        ("mistral", "mistral-large-latest", 128_000, 8_192),
-        ("mistral", "mistral-small-latest", 128_000, 8_192),
-        ("mistral", "codestral-latest", 256_000, 8_192),
-        ("mistral", "open-mistral-nemo", 128_000, 8_192),
-        ("mistral", "mistral-saba-latest", 32_000, 8_192),
-        ("mistral", "pixtral-large-latest", 128_000, 8_192),
-        // Cohere
-        ("cohere", "command-a", 256_000, 8_000),
-        ("cohere", "command-r-plus", 128_000, 4_096),
-        ("cohere", "command-r", 128_000, 4_096),
-        // xAI
-        ("xai", "grok-3-mini", 131_072, 16_384),
-        ("xai", "grok-3", 131_072, 16_384),
-        ("xai", "grok-2-mini", 131_072, 8_192),
-        ("xai", "grok-2", 131_072, 8_192),
-        // Perplexity
-        ("perplexity", "sonar-pro", 200_000, 8_192),
-        ("perplexity", "sonar-reasoning-pro", 127_072, 8_192),
-        ("perplexity", "sonar-reasoning", 127_072, 8_192),
-        ("perplexity", "sonar-deep-research", 127_072, 8_192),
-        ("perplexity", "sonar", 127_072, 8_192),
-        // Gemini (fallback for when API doesn't return limits)
-        ("gemini", "gemini-2.5-pro", 1_048_576, 65_536),
-        ("gemini", "gemini-2.5-flash", 1_048_576, 65_536),
-        ("gemini", "gemini-2.0-flash", 1_048_576, 8_192),
-        ("gemini", "gemini-1.5-pro", 2_097_152, 8_192),
-        ("gemini", "gemini-1.5-flash", 1_048_576, 8_192),
-        // Together (common models)
-        ("together", "meta-llama/Llama-3.3-70B-Instruct-Turbo", 128_000, 64_000),
-        ("together", "meta-llama/Llama-4-Scout", 10_000_000, 64_000),
-        ("together", "deepseek-ai/DeepSeek-V3", 128_000, 64_000),
-        ("together", "deepseek-ai/DeepSeek-R1", 128_000, 64_000),
-        ("together", "Qwen/Qwen3", 1_000_000, 64_000),
-    ];
-
-    for &(p, prefix, ctx, max) in table {
-        if p == provider && model_id.starts_with(prefix) {
-            return Some((ctx, max));
-        }
-    }
-    None
-}
-
 #[derive(serde::Deserialize)]
 struct ListModelsQuery {
     api_key: Option<String>,
@@ -354,7 +276,8 @@ async fn list_provider_models(
         )))
     })?;
 
-    let models = extract_models(&body, format, &provider_id);
+    let catalog = state.model_catalog.current();
+    let models = extract_models(&body, format, &provider_id, &catalog);
 
     Ok(Json(serde_json::json!({ "models": models })))
 }

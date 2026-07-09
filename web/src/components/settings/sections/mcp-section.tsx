@@ -210,17 +210,17 @@ export function McpSection() {
             <p className="text-sm text-text-secondary">
               This will stop the server, remove all its data and credential bindings. Agents will no longer have access to its tools.
             </p>
-            <div className="flex gap-2">
+            <div className="flex gap-2 pt-4">
               <button
                 onClick={() => uninstall(confirmUninstall)}
-                className="w-28 inline-flex items-center justify-center gap-1.5 rounded-lg border border-border py-2 text-sm font-medium text-danger hover:bg-surface-tertiary transition"
+                className="w-32 inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-danger hover:bg-surface-tertiary transition"
               >
                 <TrashIcon className="h-4 w-4" />
                 Uninstall
               </button>
               <button
                 onClick={() => setConfirmUninstall(null)}
-                className="w-28 inline-flex items-center justify-center gap-1.5 rounded-lg border border-border py-2 text-sm font-medium text-text-secondary hover:bg-surface-tertiary transition"
+                className="w-32 inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-tertiary transition"
               >
                 Cancel
               </button>
@@ -262,18 +262,18 @@ export function McpSection() {
               <p className="text-sm text-text-secondary">
                 This will download and install the MCP server. You can configure credentials and environment variables after installation.
               </p>
-              <div className="flex gap-2">
+              <div className="flex gap-2 pt-4">
                 <button
                   onClick={() => doInstall(entry)}
                   disabled={actionLoading === entry.name}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50 transition"
+                  className="w-32 inline-flex items-center justify-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50 transition"
                 >
                   <ArrowDownTrayIcon className="h-4 w-4" />
                   {actionLoading === entry.name ? "Installing..." : "Install"}
                 </button>
                 <button
                   onClick={() => setConfirmInstall(null)}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-tertiary transition"
+                  className="w-32 inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-tertiary transition"
                 >
                   Cancel
                 </button>

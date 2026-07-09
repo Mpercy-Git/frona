@@ -1,5 +1,6 @@
 export interface UserPermissions {
   list_users: boolean;
+  is_admin: boolean;
 }
 
 export interface UserInfo {
@@ -63,6 +64,9 @@ export interface Agent {
   name: string;
   description: string;
   model_group: string;
+  /** Resolved view of the active model_group — what's actually being used at
+   *  request time. Absent when the group name doesn't resolve. */
+  model?: Model;
   enabled: boolean;
   tools: string[];
   skills: string[];
@@ -76,6 +80,29 @@ export interface Agent {
   chat_count: number;
   created_at: string;
   updated_at: string;
+}
+
+/** Mirrors models.dev's flattened catalog entry plus the provider/model_id
+ *  identity. Only the fields the UI currently consumes are typed here; add
+ *  more as needed. */
+export interface Model {
+  provider: string;
+  model_id: string;
+  /** Resolved per-group context window: config override, else catalog
+   *  max_input_tokens, else default. Authoritative for saturation displays. */
+  context_window: number;
+  limit?: { context: number; output: number; input?: number };
+  cost?: {
+    input: number;
+    output: number;
+    cache_read?: number;
+    cache_write?: number;
+  };
+  attachment?: boolean;
+  reasoning?: boolean;
+  tool_call?: boolean;
+  structured_output?: boolean;
+  open_weights?: boolean;
 }
 
 export interface CreateAgentRequest {
@@ -239,14 +266,10 @@ export type TaskEvent =
   | { type: "Completion"; data: { task_id: string; chat_id: string | null; status: string; summary: string | null; deliverables: unknown[] } }
   | { type: "Deferred"; data: { task_id: string; delay_minutes: number; reason: string } };
 
-// ─── HITL accessor helpers ──────────────────────────────────────────────────
-
-/** True when the tool_call is a HITL pending human resolution. */
 export function isPendingHitl(te: { hitl?: Hitl | null }): boolean {
   return te.hitl?.status === "pending";
 }
 
-/** Extract the human-readable response text from a resolved HITL. */
 export function hitlResponseText(hitl: Hitl): string | null {
   if (!hitl.response) return null;
   switch (hitl.response.type) {

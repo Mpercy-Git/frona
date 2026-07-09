@@ -26,9 +26,17 @@ fn make_memory_service(db: Surreal<Db>) -> MemoryService {
         frona::inference::config::ModelRegistryConfig::auto_discover(),
         frona::chat::broadcast::BroadcastService::new(),
         &inference,
+        &frona::inference::metadata::ModelCatalogSnapshot::empty(),
     )
     .unwrap();
 
+    let usage_service = frona::inference::usage::UsageService::new(
+        frona::inference::metadata::ModelCatalogStore::new(
+            frona::inference::metadata::ModelCatalogSnapshot::empty(),
+        ),
+        SurrealRepo::new(db.clone()),
+        frona::chat::broadcast::BroadcastService::new(),
+    );
     MemoryService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -49,6 +57,7 @@ fn make_memory_service(db: Surreal<Db>) -> MemoryService {
             },
             ..Default::default()
         }),
+        usage_service,
     )
 }
 

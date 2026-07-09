@@ -113,6 +113,7 @@ async fn test_app_state_with_mock(
         provider_registry_arc,
         prompt_loader.clone(),
         storage.clone(),
+        helpers::test_usage_service(&db),
     );
 
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
@@ -133,6 +134,7 @@ async fn test_app_state_with_mock(
         prompt_loader.clone(),
         state.broadcast_service.clone(),
         state.presign_service.clone(),
+        state.usage_service.clone(),
     );
     // Replace the chat_service with our version that has the mock provider.
     state.chat_service = chat_service.clone();
@@ -157,6 +159,7 @@ async fn test_app_state_with_mock(
         state.shutdown_token.clone(),
         state.prompts.clone(),
         state.config.clone(),
+        state.usage_service.clone(),
     ));
     state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
 
@@ -310,10 +313,16 @@ async fn task_execution_emits_expected_sse_events() {
         "Token should carry the response text"
     );
 
+    assert_eq!(event_names[4], "usage_recorded", "Fifth event should be usage_recorded");
+    assert!(
+        frames[4].data["model_ref"].is_string(),
+        "usage_recorded should carry model_ref"
+    );
+
     // `complete_agent_message` no longer fires `chat_message` for streaming
     // completions - `inference_done` is the canonical signal.
-    assert_eq!(event_names[4], "inference_done", "Fifth event should be inference_done");
-    let message = &frames[4].data["message"];
+    assert_eq!(event_names[5], "inference_done", "Sixth event should be inference_done");
+    let message = &frames[5].data["message"];
     assert!(message.is_object(), "inference_done should carry a message object");
     assert_eq!(
         message["content"].as_str().unwrap(),

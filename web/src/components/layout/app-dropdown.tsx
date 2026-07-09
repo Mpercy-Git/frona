@@ -131,9 +131,13 @@ export function AppDropdown() {
 
   const handleAction = async (action: "stop" | "restart" | "delete", app: AppResponse) => {
     if (action === "delete" && !confirm(`Delete app "${app.name}"?`)) return;
-    if (action === "stop") await api.post(`/api/apps/${app.handle}/stop`, {});
-    else if (action === "restart") await api.post(`/api/apps/${app.handle}/restart`, {});
-    else if (action === "delete") await api.delete(`/api/apps/${app.handle}`);
+    try {
+      if (action === "stop") await api.post(`/api/apps/${app.handle}/stop`, {});
+      else if (action === "restart") await api.post(`/api/apps/${app.handle}/restart`, {});
+      else if (action === "delete") await api.delete(`/api/apps/${app.handle}`);
+    } catch (err) {
+      alert(`Failed to ${action} "${app.name}": ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
     fetchApps();
   };
 

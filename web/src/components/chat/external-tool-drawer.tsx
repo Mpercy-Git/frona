@@ -117,7 +117,8 @@ export function ExternalToolDrawer({ wizard }: { wizard: ToolWizardState }) {
       };
     });
     if (resolutions.length > 0) {
-      api.post(`/api/chats/${chatId}/tool-calls/resolve`, { resolutions });
+      api.post(`/api/chats/${chatId}/tool-calls/resolve`, { resolutions })
+        .catch((err) => console.error("Failed to resolve tool calls", err));
     }
   }, [chatId, pendingTools, total, setSubmitted]);
 
@@ -146,7 +147,7 @@ export function ExternalToolDrawer({ wizard }: { wizard: ToolWizardState }) {
         tool_call_id: te.id,
         hitl_response: skipResponse(te),
       })),
-    });
+    }).catch((err) => console.error("Failed to resolve tool calls", err));
   }, [chatId, pendingTools, total, setSubmitted]);
 
   if (!currentTool || submitted) return null;

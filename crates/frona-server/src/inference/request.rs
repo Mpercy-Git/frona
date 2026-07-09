@@ -12,6 +12,7 @@ use crate::auth::User;
 use crate::tool::registry::AgentToolRegistry;
 
 use super::config::ModelGroup;
+use super::usage::UsageService;
 use super::registry::ModelProviderRegistry;
 use super::tool_call::TaskEvent;
 
@@ -69,6 +70,7 @@ pub struct InferenceRequest {
     pub cancel_token: CancellationToken,
     pub chat_service: crate::chat::service::ChatService,
     pub message_id: String,
+    pub usage_service: UsageService,
 }
 
 #[derive(Debug)]

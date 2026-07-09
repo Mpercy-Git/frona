@@ -4,15 +4,26 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { VaultConfig, SensitiveField } from "@/lib/config-types";
 import { isSensitiveSet } from "@/lib/config-types";
 import { Field, TextInput, SensitiveInput, SectionHeader, HelpTip } from "@/components/settings/field";
-import { EllipsisVerticalIcon, LockClosedIcon, PlusIcon } from "@heroicons/react/24/outline";
+import { ChevronRightIcon, EllipsisVerticalIcon, LockClosedIcon, PlusIcon } from "@heroicons/react/24/outline";
+import { Dialog } from "@/components/dialog";
 import { api } from "@/lib/api-client";
+import {
+  listVaultConnections,
+  createVaultConnection,
+  deleteVaultConnection,
+  toggleVaultConnection,
+  testVaultConnection,
+  type VaultConnection,
+  type VaultProviderType,
+  type VaultConnectionConfig,
+} from "@/lib/api-client";
 import type { CredentialResponse } from "@/lib/types";
 
 import { useSettings } from "@/components/settings/settings-context";
 import type { TestStatus } from "@/components/settings/sections/providers-section";
 import { TestStatusIcon } from "@/components/settings/sections/providers-section";
 
-interface VaultSectionProps {
+interface ServerVaultSectionProps {
   vault: VaultConfig;
   onChange: (vault: VaultConfig) => void;
 }
@@ -547,7 +558,514 @@ const VAULT_CLEAR_FIELDS: Record<string, Partial<VaultConfig>> = {
   keepass: { keepass_path: null, keepass_password: { is_set: false } },
 };
 
-export function VaultSection({ vault, onChange }: VaultSectionProps) {
+type ProviderId = "onepassword" | "bitwarden" | "hashicorp" | "keepass";
+
+const PROVIDER_TYPE_TO_ID: Record<VaultProviderType, ProviderId | "local"> = {
+  one_password: "onepassword",
+  bitwarden: "bitwarden",
+  hashicorp: "hashicorp",
+  kee_pass: "keepass",
+  local: "local",
+};
+
+const PROVIDER_OPTIONS: { id: ProviderId; name: string; provider: VaultProviderType }[] = [
+  { id: "onepassword", name: "1Password", provider: "one_password" },
+  { id: "bitwarden", name: "Bitwarden", provider: "bitwarden" },
+  { id: "hashicorp", name: "HashiCorp Vault", provider: "hashicorp" },
+  { id: "keepass", name: "KeePass", provider: "kee_pass" },
+];
+
+interface DraftConnection {
+  providerId: ProviderId;
+  provider: VaultProviderType;
+  name: string;
+  onepassword_token?: string;
+  onepassword_vault_id?: string;
+  bitwarden_client_id?: string;
+  bitwarden_client_secret?: string;
+  bitwarden_master_password?: string;
+  bitwarden_server_url?: string;
+  hashicorp_address?: string;
+  hashicorp_token?: string;
+  hashicorp_mount?: string;
+  keepass_path?: string;
+  keepass_password?: string;
+}
+
+function buildDraftConfig(draft: DraftConnection): VaultConnectionConfig | null {
+  switch (draft.providerId) {
+    case "onepassword":
+      if (!draft.onepassword_token?.trim()) return null;
+      return {
+        type: "OnePassword",
+        service_account_token: draft.onepassword_token,
+        default_vault_id: draft.onepassword_vault_id?.trim() || null,
+      };
+    case "bitwarden":
+      if (!draft.bitwarden_client_id?.trim() || !draft.bitwarden_client_secret?.trim() || !draft.bitwarden_master_password?.trim()) return null;
+      return {
+        type: "Bitwarden",
+        client_id: draft.bitwarden_client_id,
+        client_secret: draft.bitwarden_client_secret,
+        master_password: draft.bitwarden_master_password,
+        server_url: draft.bitwarden_server_url?.trim() || null,
+      };
+    case "hashicorp":
+      if (!draft.hashicorp_address?.trim() || !draft.hashicorp_token?.trim()) return null;
+      return {
+        type: "Hashicorp",
+        address: draft.hashicorp_address,
+        token: draft.hashicorp_token,
+        mount_path: draft.hashicorp_mount?.trim() || null,
+      };
+    case "keepass":
+      if (!draft.keepass_path?.trim() || !draft.keepass_password?.trim()) return null;
+      return {
+        type: "KeePass",
+        file_path: draft.keepass_path,
+        master_password: draft.keepass_password,
+      };
+  }
+}
+
+function ConnectionRow({ connection, onDelete, onToggle, onTest }: {
+  connection: VaultConnection;
+  onDelete: () => void;
+  onToggle: (enabled: boolean) => void;
+  onTest: () => Promise<void>;
+}) {
+  const providerId = PROVIDER_TYPE_TO_ID[connection.provider];
+  const Logo = providerId !== "local" ? VAULT_LOGOS[providerId] : undefined;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [testStatus, setTestStatus] = useState<TestStatus>("idle");
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [menuOpen]);
+
+  const runTest = async () => {
+    setTestStatus("testing");
+    try {
+      await onTest();
+      setTestStatus("success");
+    } catch {
+      setTestStatus("error");
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-border bg-surface-secondary px-4 py-3">
+      <div className="flex flex-1 items-center gap-2.5">
+        {Logo && <Logo size={18} className="text-text-tertiary" />}
+        <span className="text-sm font-medium text-text-primary">{connection.name}</span>
+        {testStatus !== "idle" && <TestStatusIcon status={testStatus} />}
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onToggle(!connection.enabled)}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${connection.enabled ? "bg-accent" : "bg-surface-tertiary"}`}
+        >
+          <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-surface shadow transform transition-transform ${connection.enabled ? "translate-x-5" : "translate-x-0"}`} />
+        </button>
+        <div className="relative" ref={menuRef}>
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            className="p-1 rounded text-text-tertiary hover:text-text-primary hover:bg-surface-tertiary transition"
+          >
+            <EllipsisVerticalIcon className="h-4 w-4" />
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 top-full mt-1 w-32 bg-surface border border-border rounded-lg shadow-lg z-10">
+              <button
+                type="button"
+                onClick={() => { setMenuOpen(false); runTest(); }}
+                className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-surface-tertiary transition rounded-t-lg"
+              >
+                Test
+              </button>
+              <button
+                type="button"
+                onClick={() => { setMenuOpen(false); onDelete(); }}
+                className="w-full text-left px-3 py-2 text-sm text-danger hover:bg-surface-tertiary transition rounded-b-lg"
+              >
+                Delete
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function defaultNameFor(providerId: ProviderId): string {
+  return `My ${PROVIDER_OPTIONS.find((o) => o.id === providerId)!.name}`;
+}
+
+function AddConnectionDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
+  const [step, setStep] = useState<"pick" | "configure">("pick");
+  const [draft, setDraft] = useState<DraftConnection | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [testStatus, setTestStatus] = useState<TestStatus>("idle");
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setStep("pick");
+      setDraft(null);
+      setError(null);
+      setSubmitting(false);
+      setTestStatus("idle");
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!draft) {
+      setTestStatus("idle");
+      return;
+    }
+    const config = buildDraftConfig(draft);
+    if (!config) {
+      setTestStatus("idle");
+      return;
+    }
+    setTestStatus("testing");
+    debounceRef.current = setTimeout(async () => {
+      try {
+        await api.post("/api/vaults/test", { provider: draft.provider, config });
+        setTestStatus("success");
+      } catch {
+        setTestStatus("error");
+      }
+    }, 800);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [draft]);
+
+  const update = (patch: Partial<DraftConnection>) => setDraft((prev) => prev ? { ...prev, ...patch } : prev);
+
+  const pickProvider = (providerId: ProviderId) => {
+    const option = PROVIDER_OPTIONS.find((o) => o.id === providerId)!;
+    setDraft({ providerId, provider: option.provider, name: defaultNameFor(providerId) });
+    setStep("configure");
+    setError(null);
+  };
+
+  const canCreate = !!draft && draft.name.trim().length > 0 && testStatus === "success";
+
+  const handleCreate = async () => {
+    if (!draft) return;
+    const config = buildDraftConfig(draft);
+    if (!draft.name.trim()) {
+      setError("Name is required");
+      return;
+    }
+    if (!config) {
+      setError("All required fields must be filled in");
+      return;
+    }
+    if (testStatus !== "success") {
+      setError("The connection could not be verified — fix the credentials and try again.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await createVaultConnection({ name: draft.name, provider: draft.provider, config });
+      onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create connection");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const selectedOption = draft ? PROVIDER_OPTIONS.find((o) => o.id === draft.providerId) : undefined;
+  const title = step === "pick"
+    ? "Add connection"
+    : `New ${selectedOption?.name ?? ""} connection`;
+  const description = step === "pick"
+    ? "Choose a vault provider to connect."
+    : "Enter the credentials this connection should use.";
+  const headerIcon = step === "configure" && selectedOption
+    ? VAULT_LOGOS[selectedOption.id] as React.ComponentType<{ className?: string }> | undefined
+    : LockClosedIcon;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={title}
+      description={description}
+      icon={headerIcon}
+      onBack={step === "configure" ? () => { setStep("pick"); setError(null); } : undefined}
+    >
+      {step === "pick" && (
+        <div className="space-y-2">
+          {PROVIDER_OPTIONS.map((opt) => {
+            const Logo = VAULT_LOGOS[opt.id];
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => pickProvider(opt.id)}
+                className="w-full flex items-center gap-3 rounded-lg border border-border px-4 py-3 text-left transition hover:bg-surface-tertiary"
+              >
+                {Logo && <Logo size={22} className="text-text-secondary shrink-0" />}
+                <span className="text-sm font-medium text-text-primary flex-1">{opt.name}</span>
+                <ChevronRightIcon className="h-4 w-4 text-text-tertiary" />
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {step === "configure" && draft && (
+        <div className="space-y-3">
+              <TextInput
+                label="Name"
+                description="A label to recognize this connection"
+                value={draft.name}
+                onChange={(name) => update({ name })}
+                placeholder={defaultNameFor(draft.providerId)}
+              />
+
+              {draft.providerId === "onepassword" && (
+        <>
+          <TextInput
+            label="Service Account Token"
+            description="1Password service account token (used by the `op` CLI)"
+            value={draft.onepassword_token ?? ""}
+            onChange={(v) => update({ onepassword_token: v })}
+            placeholder="ops_..."
+            type="password"
+          />
+          <TextInput
+            label="Default Vault ID"
+            description="Default vault identifier — optional"
+            value={draft.onepassword_vault_id ?? ""}
+            onChange={(v) => update({ onepassword_vault_id: v })}
+            placeholder="Vault identifier"
+          />
+        </>
+      )}
+
+      {draft.providerId === "bitwarden" && (
+        <>
+          <TextInput
+            label="Client ID"
+            description="Personal API key client ID"
+            value={draft.bitwarden_client_id ?? ""}
+            onChange={(v) => update({ bitwarden_client_id: v })}
+            placeholder="Client ID"
+          />
+          <TextInput
+            label="Client Secret"
+            description="Personal API key client secret"
+            value={draft.bitwarden_client_secret ?? ""}
+            onChange={(v) => update({ bitwarden_client_secret: v })}
+            placeholder="Client secret"
+            type="password"
+          />
+          <TextInput
+            label="Master Password"
+            description="Vault unlock password"
+            value={draft.bitwarden_master_password ?? ""}
+            onChange={(v) => update({ bitwarden_master_password: v })}
+            placeholder="Master password"
+            type="password"
+          />
+          <TextInput
+            label="Server URL"
+            description="Leave empty for Bitwarden cloud"
+            value={draft.bitwarden_server_url ?? ""}
+            onChange={(v) => update({ bitwarden_server_url: v })}
+            placeholder="https://bitwarden.example.com"
+          />
+        </>
+      )}
+
+      {draft.providerId === "hashicorp" && (
+        <>
+          <TextInput
+            label="Address"
+            description="Vault server address"
+            value={draft.hashicorp_address ?? ""}
+            onChange={(v) => update({ hashicorp_address: v })}
+            placeholder="https://vault.example.com"
+          />
+          <TextInput
+            label="Token"
+            description="Vault authentication token"
+            value={draft.hashicorp_token ?? ""}
+            onChange={(v) => update({ hashicorp_token: v })}
+            placeholder="Authentication token"
+            type="password"
+          />
+          <TextInput
+            label="Mount Path"
+            description="Secrets engine mount path (e.g. secret)"
+            value={draft.hashicorp_mount ?? ""}
+            onChange={(v) => update({ hashicorp_mount: v })}
+            placeholder="secret"
+          />
+        </>
+      )}
+
+              {draft.providerId === "keepass" && (
+                <>
+                  <TextInput
+                    label="Database Path"
+                    description="Path to the KeePass database file"
+                    value={draft.keepass_path ?? ""}
+                    onChange={(v) => update({ keepass_path: v })}
+                    placeholder="/path/to/database.kdbx"
+                  />
+                  <TextInput
+                    label="Master Password"
+                    description="KeePass database master password"
+                    value={draft.keepass_password ?? ""}
+                    onChange={(v) => update({ keepass_password: v })}
+                    placeholder="Master password"
+                    type="password"
+                  />
+                </>
+              )}
+
+          {error && <p className="text-xs text-error-text">{error}</p>}
+
+          <div className="flex items-center gap-3 pt-4">
+            <button
+              type="button"
+              onClick={handleCreate}
+              disabled={submitting || !canCreate}
+              className="w-32 inline-flex items-center justify-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50 transition"
+            >
+              {submitting ? "Creating..." : "Create"}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-32 inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-tertiary transition"
+            >
+              Cancel
+            </button>
+            {testStatus !== "idle" && (
+              <div className="flex items-center gap-1.5 text-xs text-text-tertiary">
+                <TestStatusIcon status={testStatus} />
+                {testStatus === "testing" && "Testing…"}
+                {testStatus === "success" && "Verified"}
+                {testStatus === "error" && <span className="text-error-text">Could not connect</span>}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+function PersonalConnectionsPanel() {
+  const [connections, setConnections] = useState<VaultConnection[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
+
+  const reload = useCallback(async () => {
+    try {
+      const all = await listVaultConnections();
+      setConnections(all.filter((c) => !c.system_managed));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this connection?")) return;
+    try {
+      await deleteVaultConnection(id);
+      await reload();
+    } catch {}
+  };
+
+  const handleToggle = async (id: string, enabled: boolean) => {
+    try {
+      await toggleVaultConnection(id, enabled);
+      await reload();
+    } catch {}
+  };
+
+  return (
+    <div className="space-y-2">
+      {loading ? (
+        <div className="flex items-center justify-center py-4">
+          <svg className="h-4 w-4 animate-spin text-text-tertiary" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        </div>
+      ) : (
+        <>
+          {connections.length === 0 && (
+            <p className="text-sm text-text-tertiary px-2 py-3">No connections yet.</p>
+          )}
+          {connections.map((c) => (
+            <ConnectionRow
+              key={c.id}
+              connection={c}
+              onDelete={() => handleDelete(c.id)}
+              onToggle={(enabled) => handleToggle(c.id, enabled)}
+              onTest={() => testVaultConnection(c.id)}
+            />
+          ))}
+          <button
+            type="button"
+            onClick={() => setDialogOpen(true)}
+            className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-2 text-sm text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
+          >
+            <PlusIcon className="h-4 w-4" />
+            Add connection
+          </button>
+          <AddConnectionDialog
+            open={dialogOpen}
+            onClose={() => setDialogOpen(false)}
+            onCreated={() => { setDialogOpen(false); reload(); }}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+export function UserVaultSection() {
+  return (
+    <div className="space-y-6">
+      <SectionHeader title="Vault" description="Your personal credential store. Agents use these to log in, authenticate APIs, or access protected services on your behalf." icon={LockClosedIcon} />
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold text-text-primary px-1">Connections</h3>
+        <PersonalConnectionsPanel />
+      </div>
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold text-text-primary px-1">Local</h3>
+        <LocalVaultPanel expanded onToggle={() => {}} />
+      </div>
+    </div>
+  );
+}
+
+export function ServerVaultSection({ vault, onChange }: ServerVaultSectionProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [disabledProviders, setDisabledProviders] = useState<Record<string, boolean>>({});
   const [testStatuses, setTestStatuses] = useState<Record<string, TestStatus>>({});
@@ -645,7 +1163,7 @@ export function VaultSection({ vault, onChange }: VaultSectionProps) {
 
   return (
     <div className="space-y-4">
-      <SectionHeader title="Vault" description="Secret management provider integrations" icon={LockClosedIcon} />
+      <SectionHeader title="Vault" description="Server-wide credential providers. Connections configured here are available to every user. Changes take effect after restart." icon={LockClosedIcon} />
 
       <div className="space-y-2">
         <ProviderCard
@@ -659,17 +1177,17 @@ expanded={!!expanded.onepassword}
         >
           <SensitiveInput
             label="Service Account Token"
-            description="1Password service account token for the `op` CLI"
+            description="1Password service account token (used by the `op` CLI)"
             value={vault.onepassword_service_account_token}
             onChange={(onepassword_service_account_token) => onChange({ ...vault, onepassword_service_account_token })}
-            placeholder="Enter service account token"
+            placeholder="ops_..."
           />
           <TextInput
-            label="Vault ID"
-            description="Default vault identifier (optional)"
+            label="Default Vault ID"
+            description="Default vault identifier — optional"
             value={vault.onepassword_vault_id}
             onChange={(onepassword_vault_id) => onChange({ ...vault, onepassword_vault_id })}
-            placeholder="Enter vault ID"
+            placeholder="Vault identifier"
           />
         </ProviderCard>
 
@@ -687,21 +1205,21 @@ expanded={!!expanded.bitwarden}
             description="Personal API key client ID"
             value={vault.bitwarden_client_id}
             onChange={(bitwarden_client_id) => onChange({ ...vault, bitwarden_client_id })}
-            placeholder="Enter client ID"
+            placeholder="Client ID"
           />
           <SensitiveInput
             label="Client Secret"
             description="Personal API key client secret"
             value={vault.bitwarden_client_secret}
             onChange={(bitwarden_client_secret) => onChange({ ...vault, bitwarden_client_secret })}
-            placeholder="Enter client secret"
+            placeholder="Client secret"
           />
           <SensitiveInput
             label="Master Password"
-            description="Bitwarden master password for vault unlock"
+            description="Vault unlock password"
             value={vault.bitwarden_master_password}
             onChange={(bitwarden_master_password) => onChange({ ...vault, bitwarden_master_password })}
-            placeholder="Enter master password"
+            placeholder="Master password"
           />
           <TextInput
             label="Server URL"
@@ -733,11 +1251,11 @@ expanded={!!expanded.hashicorp}
             description="Vault authentication token"
             value={vault.hashicorp_token}
             onChange={(hashicorp_token) => onChange({ ...vault, hashicorp_token })}
-            placeholder="Enter token"
+            placeholder="Authentication token"
           />
           <TextInput
-            label="Mount"
-            description="Secrets engine mount path"
+            label="Mount Path"
+            description="Secrets engine mount path (e.g. secret)"
             value={vault.hashicorp_mount}
             onChange={(hashicorp_mount) => onChange({ ...vault, hashicorp_mount })}
             placeholder="secret"
@@ -761,15 +1279,14 @@ expanded={!!expanded.keepass}
             placeholder="/path/to/database.kdbx"
           />
           <SensitiveInput
-            label="Password"
+            label="Master Password"
             description="KeePass database master password"
             value={vault.keepass_password}
             onChange={(keepass_password) => onChange({ ...vault, keepass_password })}
-            placeholder="Enter password"
+            placeholder="Master password"
           />
         </ProviderCard>
 
-        <LocalVaultPanel expanded={!!expanded.local} onToggle={() => toggle("local")} />
       </div>
     </div>
   );
