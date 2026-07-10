@@ -54,7 +54,9 @@ interface Channel {
   agent_id: string;
   config: Record<string, string>;
   dispatch_mode: "message" | "signal";
-  status: "disconnected" | "connecting" | "connected" | "failed" | "pairing" | "setup";
+  // Connection status only; setup/pairing are overlays (`setup`, `user_address.pairing_code`).
+  status: "disconnected" | "connecting" | "connected" | "reconnecting" | "failed";
+  enabled: boolean;
   error_message: string | null;
   last_started_at: string | null;
   user_address: UserAddress | null;
@@ -147,14 +149,23 @@ const SECTIONS = [
 
 type SectionId = (typeof SECTIONS)[number]["id"];
 
+// Keyed by the *derived* badge label (connection status + overlays) — see `channelBadge`.
 const STATUS_BADGE: Record<string, string> = {
   disconnected: "bg-surface-tertiary text-text-secondary",
   connecting: "bg-blue-400/15 text-blue-400",
   connected: "bg-green-500/15 text-green-500",
+  reconnecting: "bg-amber-500/15 text-amber-400",
   failed: "bg-red-500/15 text-red-500",
   pairing: "bg-purple-500/15 text-purple-400",
-  setup: "bg-yellow-500/15 text-yellow-500",
+  linking: "bg-yellow-500/15 text-yellow-500",
 };
+
+/// Pending QR (setup) or pairing code takes visual priority over the connection status.
+function channelBadge(c: Channel): string {
+  if (c.setup) return "linking";
+  if (c.user_address?.pairing_code) return "pairing";
+  return c.status;
+}
 
 // Green is reserved for the `connected` status badge — keep it out of the
 // provider palette so the two don't collide visually on a row.
@@ -307,7 +318,7 @@ function ChannelDetailPage() {
   useEffect(() => {
     if (activeSection !== "config" || !channel || !manifest) return;
     const tabHidden = !configTabHasContent(manifest);
-    if (tabHidden || channel.status === "pairing") {
+    if (tabHidden || channel.user_address?.pairing_code != null) {
       setActiveSection("status");
     }
   }, [activeSection, channel, manifest, setActiveSection]);
@@ -430,11 +441,11 @@ function ChannelDetailPage() {
     return <p className="p-8 text-sm text-error-text">{error || "Channel not found"}</p>;
   }
 
-  const canStart =
-    channel.status === "disconnected"
-    || channel.status === "failed"
-    || channel.status === "setup";
-  const canStop = channel.status === "connected" || channel.status === "connecting";
+  // Intent-driven: ▶ enables (or retries a terminally-failed channel), ⏸ disables.
+  const canStart = !channel.enabled || channel.status === "failed";
+  const canStop = channel.enabled;
+  const startLabel = channel.enabled ? "Retry" : "Enable";
+  const statusBadge = channelBadge(channel);
   const displayName = space?.name ?? manifest?.display_name ?? channel.provider;
 
   return (
@@ -463,10 +474,10 @@ function ChannelDetailPage() {
               </span>
               <span
                 className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                  STATUS_BADGE[channel.status] ?? STATUS_BADGE.disconnected
+                  STATUS_BADGE[statusBadge] ?? STATUS_BADGE.disconnected
                 }`}
               >
-                {channel.status}
+                {statusBadge}
               </span>
             </div>
           </div>
@@ -501,7 +512,7 @@ function ChannelDetailPage() {
               <SectionPanel title={manifest.display_name}>
                 <ManifestInfo manifest={manifest} />
               </SectionPanel>
-              {channel.status === "setup" && manifest.setup_instructions && (
+              {channel.setup != null && manifest.setup_instructions && (
                 <SectionPanel title="Setup">
                   <MarkdownProse source={manifest.setup_instructions} />
                 </SectionPanel>
@@ -530,10 +541,10 @@ function ChannelDetailPage() {
                   <span className="text-sm text-text-tertiary">Status</span>
                   <span
                     className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                      STATUS_BADGE[channel.status] ?? STATUS_BADGE.disconnected
+                      STATUS_BADGE[statusBadge] ?? STATUS_BADGE.disconnected
                     }`}
                   >
-                    {channel.status}
+                    {statusBadge}
                   </span>
                 </div>
                 <div className="px-4 py-3 flex justify-between">
@@ -572,8 +583,7 @@ function ChannelDetailPage() {
                 )}
               </div>
 
-              {channel.status === "setup"
-                && channel.setup
+              {channel.setup
                 && (channel.setup.code || channel.setup.qr) && (
                 <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 p-4 space-y-4">
                   <div>
@@ -624,7 +634,7 @@ function ChannelDetailPage() {
                 </div>
               )}
 
-              {channel.status === "pairing" && channel.user_address?.pairing_code && (
+              {channel.user_address?.pairing_code && (
                 <div className="rounded-xl border border-purple-500/30 bg-purple-500/5 p-4 space-y-3">
                   <div>
                     <h4 className="text-sm font-semibold text-text-primary">
@@ -657,7 +667,7 @@ function ChannelDetailPage() {
                 </div>
               )}
 
-              {channel.user_address?.address && channel.status !== "pairing" && (
+              {channel.user_address?.address && !channel.user_address?.pairing_code && (
                 <div className="rounded-xl border border-border bg-surface-secondary px-4 py-3 flex items-center justify-between">
                   <div>
                     <span className="text-xs text-text-tertiary">Paired as</span>
@@ -683,7 +693,7 @@ function ChannelDetailPage() {
                     className="inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50 transition"
                   >
                     <PlayIcon className="h-4 w-4" />
-                    {actionLoading ? "Starting..." : "Start"}
+                    {actionLoading ? `${startLabel}...` : startLabel}
                   </button>
                 )}
                 {canStop && (
@@ -693,10 +703,10 @@ function ChannelDetailPage() {
                     className="inline-flex items-center gap-1.5 rounded-lg bg-yellow-600 px-4 py-2 text-sm font-medium text-white hover:bg-yellow-700 disabled:opacity-50 transition"
                   >
                     <StopIcon className="h-4 w-4" />
-                    {actionLoading ? "Stopping..." : "Stop"}
+                    {actionLoading ? "Disabling..." : "Disable"}
                   </button>
                 )}
-                {channel.status !== "pairing" && !channel.user_address?.address && (
+                {!channel.user_address?.pairing_code && !channel.user_address?.address && (
                   <button
                     onClick={initiatePairing}
                     disabled={actionLoading}
