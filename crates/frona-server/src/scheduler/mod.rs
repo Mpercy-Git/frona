@@ -145,7 +145,7 @@ impl Scheduler {
             return Ok(());
         }
         self.app_state
-            .channel_manager
+            .channel_supervisor
             .retry_due_deliveries()
             .await
             .map(|_count| ())

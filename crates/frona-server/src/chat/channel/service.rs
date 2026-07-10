@@ -6,6 +6,7 @@ use rand::Rng;
 use crate::chat::broadcast::{BroadcastService, EntityAction};
 use crate::core::config::Config;
 use crate::core::error::AppError;
+use crate::core::supervisor::Supervisor;
 use crate::core::principal::Principal;
 use crate::credential::vault::models::{BindingScope, CredentialTarget};
 use crate::credential::vault::service::{VaultService, project_target};
@@ -18,6 +19,10 @@ use super::models::{
 use super::registry::ChannelRegistry;
 use super::repository::ChannelRepository;
 
+const PAIRING_TTL: Duration = Duration::minutes(5);
+const PAIR_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const PAIR_CODE_LEN: usize = 6;
+
 pub fn resolve_config_default(config: &Config, r: &ConfigRef) -> Option<String> {
     let v = serde_json::to_value(config).ok()?;
     v.get(&r.section)?
@@ -26,6 +31,7 @@ pub fn resolve_config_default(config: &Config, r: &ConfigRef) -> Option<String> 
         .map(|s| s.to_string())
 }
 
+#[derive(Clone)]
 pub struct ChannelService {
     repo: Arc<dyn ChannelRepository>,
     registry: Arc<ChannelRegistry>,
@@ -121,13 +127,12 @@ impl ChannelService {
         }
 
         let missing = missing_required_fields(&manifest, &req.config, &req.credentials, &self.config);
-        let (initial_status, initial_error) = if missing.is_empty() {
-            (ChannelStatus::Disconnected, None)
+        // Created disabled + Disconnected; the operator enables via `start` (the
+        // enable-gate re-checks config). `error_message` is informational for the UI.
+        let initial_error = if missing.is_empty() {
+            None
         } else {
-            (
-                ChannelStatus::Setup,
-                Some(format!("missing required field(s): {}", missing.join(", "))),
-            )
+            Some(format!("missing required field(s): {}", missing.join(", ")))
         };
 
         let now = Utc::now();
@@ -141,12 +146,12 @@ impl ChannelService {
             agent_id: req.agent_id,
             config: req.config,
             dispatch_mode: req.dispatch_mode,
-            status: initial_status,
+            status: ChannelStatus::Disconnected,
+            enabled: false,
             error_message: initial_error,
             last_started_at: None,
             user_address: None,
             setup: None,
-            retry: req.retry,
             created_at: now,
             updated_at: now,
             webhook_url: None,
@@ -192,11 +197,8 @@ impl ChannelService {
             self.write_bindings(user_id, &channel.id, credentials.clone()).await?;
         }
 
-        if let Some(retry) = req.retry {
-            channel.retry = retry;
-        }
-
-        if channel.status == ChannelStatus::Setup {
+        // Refresh the informational missing-config message while disabled.
+        if !channel.enabled {
             let missing = self.missing_required(&channel).await?;
             channel.error_message = if missing.is_empty() {
                 None
@@ -228,10 +230,10 @@ impl ChannelService {
         let channel = self.find_owned(user_id, channel_id).await?;
 
         // Fire-and-forget: `run_outbound` runs `on_disconnect` on cancel.
-        state.channel_manager.stop_channel(&channel.id).await;
+        let _ = state.channel_supervisor.stop(&channel.id).await;
 
         if let Some(user) = state.user_service.find_by_id(&channel.user_id).await? {
-            let dir = super::manager::channel_data_dir(
+            let dir = super::supervisor::channel_data_dir(
                 &state.storage_service,
                 &user.handle,
                 &channel.handle,
@@ -262,33 +264,30 @@ impl ChannelService {
         Ok(())
     }
 
-    /// Flips the channel to Connecting and broadcasts; the watcher in
-    /// `ChannelManager` picks that up and owns the actual spawn.
+    /// Enable-gate: sets intent `enabled = true` (refusing while required config is
+    /// missing) and kicks the (idempotent) supervisor directly — so this doubles as
+    /// "retry" for a terminally-`Failed` channel whose supervisor has exited. The
+    /// supervisor owns all `status` writes from here.
     pub async fn start(
         &self,
+        state: &crate::core::state::AppState,
         user_id: &str,
         channel_id: &str,
     ) -> Result<Channel, AppError> {
         let channel = self.find_owned(user_id, channel_id).await?;
-        if channel.status == ChannelStatus::Connected {
-            return Ok(channel);
-        }
-        // Check missing fields before Connecting; start_channel doesn't revert status on Err.
         let missing = self.missing_required(&channel).await?;
         if !missing.is_empty() {
             let msg = format!("missing required field(s): {}", missing.join(", "));
-            if channel.status != ChannelStatus::Setup
-                || channel.error_message.as_deref() != Some(msg.as_str())
-            {
-                self.mark_status(channel_id, ChannelStatus::Setup, Some(msg.clone()))
-                    .await?;
-            }
+            self.set_enabled(channel_id, false, Some(msg.clone())).await?;
             return Err(AppError::Validation(msg));
         }
-        self.mark_status(channel_id, ChannelStatus::Connecting, None).await?;
+        self.set_enabled(channel_id, true, None).await?;
+        let _ = state.channel_supervisor.start(channel_id).await;
         self.find_by_id(channel_id).await
     }
 
+    /// Sets intent `enabled = false` and cancels the supervisor, which writes the
+    /// final `Disconnected` status and clears the QR overlay on its way out.
     pub async fn stop(
         &self,
         state: &crate::core::state::AppState,
@@ -296,12 +295,29 @@ impl ChannelService {
         channel_id: &str,
     ) -> Result<Channel, AppError> {
         let channel = self.find_owned(user_id, channel_id).await?;
-        if channel.status == ChannelStatus::Disconnected {
+        if !channel.enabled {
             return Ok(channel);
         }
-        state.channel_manager.stop_channel(channel_id).await;
-        self.mark_status(channel_id, ChannelStatus::Disconnected, None).await?;
+        self.set_enabled(channel_id, false, None).await?;
+        let _ = state.channel_supervisor.stop(channel_id).await;
         self.find_by_id(channel_id).await
+    }
+
+    /// Writes the intent axis (and an informational `error_message`) + broadcasts.
+    /// Never touches `status` — that is the supervisor's alone.
+    async fn set_enabled(
+        &self,
+        channel_id: &str,
+        enabled: bool,
+        error: Option<String>,
+    ) -> Result<(), AppError> {
+        let mut channel = self.find_by_id(channel_id).await?;
+        channel.enabled = enabled;
+        channel.error_message = error;
+        channel.updated_at = Utc::now();
+        self.repo.update(&channel).await?;
+        self.broadcast_update(&channel, EntityAction::Updated);
+        Ok(())
     }
 
     pub async fn mark_status(
@@ -508,7 +524,8 @@ impl ChannelService {
             pairing_initiated_at: Some(now),
             paired_at: channel.user_address.and_then(|ua| ua.paired_at),
         });
-        channel.status = ChannelStatus::Pairing;
+        // Pairing is an overlay on `user_address.pairing_code` — it does NOT touch
+        // the connection `status` (the socket stays live to receive the code).
         channel.updated_at = now;
         self.repo.update(&channel).await?;
         self.broadcast_update(&channel, EntityAction::Updated);
@@ -521,14 +538,15 @@ impl ChannelService {
         channel_id: &str,
     ) -> Result<(), AppError> {
         let channel = self.find_owned(user_id, channel_id).await?;
-        if channel.status != ChannelStatus::Pairing {
-            return Ok(());
+        if pairing_pending(&channel) {
+            self.revert_pairing(channel).await?;
         }
-        self.revert_pairing(channel).await?;
         Ok(())
     }
 
-    pub async fn begin_setup(
+    /// Supervisor-owned setup (QR) overlay write. No `status` change — the
+    /// supervisor drives connection status separately.
+    pub async fn set_setup(
         &self,
         channel_id: &str,
         mut setup: super::models::SetupConfig,
@@ -541,23 +559,24 @@ impl ChannelService {
         let now = Utc::now();
         setup.initiated_at = Some(now);
         channel.setup = Some(setup);
-        channel.status = ChannelStatus::Setup;
         channel.updated_at = now;
         self.repo.update(&channel).await?;
         self.broadcast_update(&channel, EntityAction::Updated);
         Ok(())
     }
 
-    pub async fn complete_setup(&self, channel_id: &str) -> Result<(), AppError> {
+    /// Clears the setup (QR) overlay. No `status` change.
+    pub async fn clear_setup(&self, channel_id: &str) -> Result<(), AppError> {
         let mut channel = self
             .repo
             .find_by_id(channel_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("channel {channel_id} not found")))?;
-        let now = Utc::now();
+        if channel.setup.is_none() {
+            return Ok(());
+        }
         channel.setup = None;
-        channel.status = ChannelStatus::Connected;
-        channel.updated_at = now;
+        channel.updated_at = Utc::now();
         self.repo.update(&channel).await?;
         self.broadcast_update(&channel, EntityAction::Updated);
         Ok(())
@@ -574,9 +593,6 @@ impl ChannelService {
             .find_by_id(channel_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("channel {channel_id} not found")))?;
-        if channel.status != ChannelStatus::Pairing {
-            return Ok(false);
-        }
         let Some(ua) = channel.user_address.as_ref() else {
             return Ok(false);
         };
@@ -587,13 +603,14 @@ impl ChannelService {
             return Ok(false);
         }
         let now = Utc::now();
+        // Redemption clears the pending overlay and records the durable binding.
+        // Connection `status` is untouched (owned by the supervisor).
         channel.user_address = Some(UserAddress {
             address: Some(sender_address.to_string()),
             pairing_code: None,
             pairing_initiated_at: None,
             paired_at: Some(now),
         });
-        channel.status = ChannelStatus::Connected;
         channel.updated_at = now;
         self.repo.update(&channel).await?;
         self.broadcast_update(&channel, EntityAction::Updated);
@@ -603,7 +620,7 @@ impl ChannelService {
     pub async fn revert_expired_pairings(&self) -> Result<u64, AppError> {
         let now = Utc::now();
         let cutoff = now - PAIRING_TTL;
-        let pending = self.repo.find_in_status(ChannelStatus::Pairing).await?;
+        let pending = self.repo.find_pairing_pending().await?;
         let mut reverted = 0u64;
         for channel in pending {
             let initiated = channel
@@ -619,7 +636,7 @@ impl ChannelService {
     }
 
     pub async fn revert_orphaned_pairings(&self) -> Result<u64, AppError> {
-        let pending = self.repo.find_in_status(ChannelStatus::Pairing).await?;
+        let pending = self.repo.find_pairing_pending().await?;
         let count = pending.len() as u64;
         for channel in pending {
             self.revert_pairing(channel).await?;
@@ -627,17 +644,14 @@ impl ChannelService {
         Ok(count)
     }
 
+    /// Clears the pending pairing overlay, preserving any already-bound address.
+    /// Does NOT touch connection `status` (owned by the supervisor).
     async fn revert_pairing(&self, mut channel: Channel) -> Result<(), AppError> {
         let prior_address = channel
             .user_address
             .as_ref()
             .and_then(|ua| ua.address.clone());
         let prior_paired_at = channel.user_address.as_ref().and_then(|ua| ua.paired_at);
-        channel.status = if prior_address.is_some() {
-            ChannelStatus::Connected
-        } else {
-            ChannelStatus::Disconnected
-        };
         channel.user_address = if prior_address.is_some() {
             Some(UserAddress {
                 address: prior_address,
@@ -666,10 +680,15 @@ impl ChannelService {
     }
 }
 
-const PAIRING_TTL: Duration = Duration::minutes(5);
-
-const PAIR_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-const PAIR_CODE_LEN: usize = 6;
+/// True while a pairing round-trip is in flight (overlay present), independent
+/// of connection status.
+fn pairing_pending(channel: &Channel) -> bool {
+    channel
+        .user_address
+        .as_ref()
+        .and_then(|ua| ua.pairing_code.as_ref())
+        .is_some()
+}
 
 fn generate_pair_code() -> String {
     let mut rng = rand::thread_rng();

@@ -19,6 +19,10 @@ pub enum NotificationData {
         agent_id: String,
         chat_id: String,
     },
+    Channel {
+        channel_id: String,
+        action: String,
+    },
     System {},
     Security {},
 }

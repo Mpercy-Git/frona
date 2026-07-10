@@ -8,7 +8,7 @@ use presage::store::Store;
 use presage::Manager;
 use tokio::sync::mpsc;
 
-use crate::chat::channel::ChannelManager;
+use crate::chat::channel::HitlDeliveryService;
 use crate::chat::channel::models::ExternalMessage;
 use crate::chat::service::ChatService;
 
@@ -22,7 +22,7 @@ pub async fn handle<S: Store>(
     content: Content,
     channel_id: &str,
     chat_service: &ChatService,
-    channel_manager: &Arc<ChannelManager>,
+    hitl: &Arc<HitlDeliveryService>,
 ) {
     tracing::debug!(
         channel_id = %channel_id,
@@ -68,7 +68,7 @@ pub async fn handle<S: Store>(
     let emit = emit.clone();
     let cmd_tx = cmd_tx.clone();
     let chat_service = chat_service.clone();
-    let channel_manager = channel_manager.clone();
+    let hitl = hitl.clone();
     let channel_id = channel_id.to_string();
     tokio::spawn(async move {
         let send_receipt = || async {
@@ -86,7 +86,7 @@ pub async fn handle<S: Store>(
         {
             match crate::chat::channel::hitl::try_resolve_inbound(
                 &chat_service,
-                &channel_manager,
+                &hitl,
                 &chat.id,
                 quoted_id.as_deref(),
                 &event.content,

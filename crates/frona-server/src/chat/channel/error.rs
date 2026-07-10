@@ -24,6 +24,26 @@ impl ChannelErrorKind {
     }
 }
 
+/// Connection-level failure taxonomy for the supervisor's reconnect policy.
+/// `Transient` → reconnect with backoff forever; `Terminal` → mark `Failed`,
+/// await the operator. Distinct from `ChannelErrorKind` (delivery-level), but
+/// derived from it via `is_terminal()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    Transient,
+    Terminal,
+}
+
+impl From<ChannelErrorKind> for FailureKind {
+    fn from(k: ChannelErrorKind) -> Self {
+        if k.is_terminal() {
+            Self::Terminal
+        } else {
+            Self::Transient
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ChannelError {
     pub message: String,

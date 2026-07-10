@@ -113,59 +113,35 @@ impl From<SignalConfig> for SignalAdapter {
 
 #[async_trait]
 impl ChannelAdapter for SignalAdapter {
-    async fn on_setup_begin(
-        &self,
-        ctx: &ChannelCtx,
-    ) -> Result<Option<SetupConfig>, ChannelError> {
-        // `link_secondary_device` would wipe the existing registration, so
-        // skip setup entirely when the store already has one.
-        let db_path = ctx.data_dir.join("store.db");
-        if worker::is_already_registered(&db_path).await {
-            tracing::info!(
-                channel_id = %ctx.channel.id,
-                db_path = %db_path.display(),
-                "Signal already linked - skipping setup, falling through to on_connect",
-            );
-            return Ok(None);
-        }
-
-        let device_name = super::resolve_device_label(ctx).await;
-        let (handle, qr) = worker::spawn(ctx, device_name, /* expect_setup */ true).await?;
-        *self.handle.lock().await = Some(handle);
-
-        let qr = qr.ok_or_else(|| {
-            AppError::Internal("Signal worker did not emit a link URL".into())
-        })?;
-        tracing::info!(
-            channel_id = %ctx.channel.id,
-            has_qr = true,
-            "Signal setup started - awaiting QR scan",
-        );
-        Ok(Some(SetupConfig {
-            qr: Some(qr),
-            code: None,
-            instructions: Some(
-                "Open Signal on your phone → Settings → Linked devices → Link new device, \
-                 then scan this QR. Linking completes automatically once Signal acknowledges \
-                 the scan."
-                    .into(),
-            ),
-            expires_at: Some(Utc::now() + chrono::Duration::seconds(120)),
-            initiated_at: None,
-        }))
-    }
-
-    async fn on_setup_complete(&self, _ctx: &ChannelCtx) -> Result<(), ChannelError> {
-        Ok(())
-    }
-
     async fn on_connect(&self, ctx: &ChannelCtx) -> Result<(), AppError> {
+        // Unregistered → link mode (emits a QR via `SetupReady`, and the worker
+        // fires `Linked`/`Connected` as it links + drains). Registered → load the
+        // persisted keys. `link_secondary_device` would wipe a healthy
+        // registration, so only link when genuinely unregistered.
+        let db_path = ctx.data_dir.join("store.db");
+        let registered = worker::is_already_registered(&db_path).await;
         let device_name = super::resolve_device_label(ctx).await;
-        let (handle, _) = worker::spawn(ctx, device_name, /* expect_setup */ false).await?;
+        let (handle, qr) = worker::spawn(ctx, device_name, /* expect_setup */ !registered).await?;
         *self.handle.lock().await = Some(handle);
+
+        if let Some(qr) = qr {
+            ctx.signals.setup_ready(SetupConfig {
+                qr: Some(qr),
+                code: None,
+                instructions: Some(
+                    "Open Signal on your phone → Settings → Linked devices → Link new device, \
+                     then scan this QR. Linking completes automatically once Signal acknowledges \
+                     the scan."
+                        .into(),
+                ),
+                expires_at: Some(Utc::now() + chrono::Duration::seconds(120)),
+                initiated_at: None,
+            });
+        }
         tracing::info!(
             channel_id = %ctx.channel.id,
-            "Signal connected (re-using persisted device keys)",
+            registered,
+            "Signal on_connect (readiness/QR arrive as signals)",
         );
         Ok(())
     }

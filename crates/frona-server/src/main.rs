@@ -92,8 +92,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     frona::chat::channel::spawn_inference_dispatcher(state.clone());
 
-    if let Err(e) = state.channel_manager.clone().start(state.clone()).await {
-        tracing::warn!(error = %e, "ChannelManager failed to start; channel adapters will not run");
+    if let Err(e) = state.channel_supervisor.clone().boot().await {
+        tracing::warn!(error = %e, "ChannelSupervisor failed to start; channel adapters will not run");
     }
 
     if state.config.sandbox.default_network_access {
@@ -173,6 +173,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let broadcast = state.broadcast_service.clone();
         tokio::spawn(async move {
             run(mcp_supervisor, shutdown, notif, broadcast, mcp_config).await;
+        });
+
+        // Channels: boot-restore + level-triggered re-arm of any enabled channel whose
+        // supervisor task is absent (replaces the old scheduler reconcile sweep). The
+        // per-channel event-driven reconnect loop is separate and unaffected.
+        let channel_config = SupervisorConfig {
+            health_check_interval: std::time::Duration::from_secs(60),
+            // Transient reconnects are handled forever by the inner loop; the outer loop
+            // only re-arms absent tasks, so it must never give up.
+            max_restart_attempts: u32::MAX,
+            hibernate_after: None,
+        };
+        let shutdown = state.shutdown_token.clone();
+        let notif = state.notification_service.clone();
+        let broadcast = state.broadcast_service.clone();
+        let channel_supervisor = state.channel_supervisor.clone();
+        tokio::spawn(async move {
+            run(channel_supervisor, shutdown, notif, broadcast, channel_config).await;
         });
     }
 

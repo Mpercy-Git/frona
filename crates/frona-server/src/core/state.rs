@@ -130,8 +130,8 @@ pub struct AppState {
     pub metrics_handle: PrometheusHandle,
     pub shutdown_token: CancellationToken,
     pub channel_registry: Arc<crate::chat::channel::ChannelRegistry>,
-    pub channel_manager: Arc<crate::chat::channel::ChannelManager>,
-    pub channel_service: Arc<crate::chat::channel::ChannelService>,
+    pub channel_supervisor: Arc<crate::chat::channel::ChannelSupervisor>,
+    pub channel_service: crate::chat::channel::ChannelService,
     pub http_client: reqwest::Client,
     pub harness: Arc<crate::agent::harness::Harness>,
 }
@@ -408,13 +408,13 @@ impl AppState {
         let channel_repo: Arc<dyn crate::chat::channel::repository::ChannelRepository> =
             Arc::new(SurrealRepo::<crate::chat::channel::Channel>::new(db.clone()));
         let config_arc = Arc::new(config.clone());
-        let channel_service = Arc::new(crate::chat::channel::ChannelService::new(
+        let channel_service = crate::chat::channel::ChannelService::new(
             channel_repo,
             channel_registry.clone(),
             Arc::new(vault_service.clone()),
             broadcast_service.clone(),
             config_arc.clone(),
-        ));
+        );
 
         let chat_service = ChatService::new(
             chat_repo,
@@ -456,10 +456,23 @@ impl AppState {
         ));
         let message_repo_for_channel: Arc<dyn crate::chat::message::repository::MessageRepository> =
             Arc::new(SurrealRepo::<crate::chat::message::models::Message>::new(db.clone()));
-        let channel_manager = Arc::new(crate::chat::channel::ChannelManager::new(
-            message_repo_for_channel,
-            chat_service.clone(),
+        let space_service = SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone());
+        let contact_service = ContactService::new(SurrealRepo::new(db.clone()), broadcast_service.clone());
+        let channel_supervisor = Arc::new(crate::chat::channel::ChannelSupervisor::new(
+            config_arc.clone(),
+            shutdown_token.clone(),
             channel_service.clone(),
+            channel_registry.clone(),
+            space_service.clone(),
+            user_service.clone(),
+            storage.clone(),
+            chat_service.clone(),
+            share_service.clone(),
+            broadcast_service.clone(),
+            message_repo_for_channel,
+            agent_service.clone(),
+            contact_service.clone(),
+            policy_service.clone(),
             harness.clone(),
             task_executor.clone(),
         ));
@@ -470,11 +483,11 @@ impl AppState {
             user_service: user_service.clone(),
             user_group_service: user_group_service.clone(),
             agent_service: agent_service.clone(),
-            space_service: SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            space_service,
             call_service: CallService::new(SurrealRepo::new(db.clone())),
             usage_service,
             model_catalog,
-            contact_service: ContactService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            contact_service,
             chat_service,
             task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             broadcast_service: broadcast_service.clone(),
@@ -507,7 +520,7 @@ impl AppState {
             metrics_handle,
             shutdown_token,
             channel_registry: channel_registry.clone(),
-            channel_manager,
+            channel_supervisor,
             channel_service,
             http_client,
             harness,
