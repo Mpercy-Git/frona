@@ -1,13 +1,11 @@
+# Extra packages layered on top of prod-apt.txt for the dev image: the Rust build
+# toolchain. Prod copies release binaries from backend-builder, so it needs none of
+# these; everything else the dev server needs at runtime comes from prod-apt.txt.
 build-essential=12.9
-gfortran=4:12.2.0-3
-libopenblas-dev=0.3.21+ds-4
+pkg-config=1.8.1-1
+# OpenSSL headers for openssl-sys + libsqlite3-sys (SQLCipher, -DSQLITE_HAS_CODEC).
+libssl-dev=3.0.20-1~deb12u2
+# bindgen for native -sys crates (e.g. libsqlite3-sys and Signal deps).
 libclang-dev=1:14.0-55.7~deb12u1
-python3=3.11.2-1+b1
-python3-pip=23.0.1+dfsg-1
-python3-venv=3.11.2-1+b1
-curl=7.88.1-10+deb12u14
-jq=1.6-2.1+deb12u2
-# Required by presage's transitive proto build-scripts.
+# presage's transitive proto build-scripts.
 protobuf-compiler=3.21.12-3
-# Installed after NodeSource repo setup
-nodejs=24.18.0-1nodesource1
