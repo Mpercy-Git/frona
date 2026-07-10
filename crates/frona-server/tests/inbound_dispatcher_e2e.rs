@@ -199,7 +199,7 @@ async fn seed_space_and_chat(
         last_started_at: None,
         user_address: None,
         setup: None,
-        retry: None,
+        enabled: true,
         created_at: now,
         updated_at: now,
         webhook_url: None,

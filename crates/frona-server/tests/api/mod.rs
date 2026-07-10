@@ -36,6 +36,8 @@ use frona::core::state::AppState;
 use surrealdb::engine::local::Mem;
 use surrealdb::Surreal;
 use tower::ServiceExt;
+use wiremock::matchers::{method, path_regex};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn workspace_resources() -> std::path::PathBuf {
     std::env::current_dir()
@@ -44,6 +46,52 @@ fn workspace_resources() -> std::path::PathBuf {
         .find(|p| p.join("resources/prompts").exists())
         .expect("workspace resources/ not found from cwd")
         .join("resources")
+}
+
+/// Generic mock provider API for adapters whose `on_connect` hits an HTTP API
+/// that can be redirected via an `api_url`/base-url config override. Start it,
+/// add provider-specific `stub_ok` responses, then set the channel's `api_url`
+/// config to `.uri()` so the *real* `on_connect` succeeds against the mock —
+/// letting the full connect→route→parse path run with no test-code in prod.
+/// Reusable across adapters (Telegram now; WhatsApp Cloud / SMS later).
+pub struct MockProviderApi {
+    pub server: MockServer,
+}
+
+impl MockProviderApi {
+    pub async fn start() -> Self {
+        Self { server: MockServer::start().await }
+    }
+
+    pub fn uri(&self) -> String {
+        self.server.uri()
+    }
+
+    /// Stub every POST whose path matches `path_re` (regex) with a 200 JSON body.
+    pub async fn stub_ok(&self, path_re: &str, body: serde_json::Value) {
+        Mock::given(method("POST"))
+            .and(path_regex(path_re))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&self.server)
+            .await;
+    }
+}
+
+/// Telegram connect stubs: `getWebhookInfo` (no existing webhook) + `setWebhook`
+/// (ok), so `on_connect` reaches Connected against the mock. Point the channel's
+/// `api_url` config at `.uri()`.
+pub async fn telegram_mock_api() -> MockProviderApi {
+    let m = MockProviderApi::start().await;
+    m.stub_ok(
+        r"(?i)getwebhookinfo",
+        serde_json::json!({
+            "ok": true,
+            "result": {"url": "", "has_custom_certificate": false, "pending_update_count": 0}
+        }),
+    )
+    .await;
+    m.stub_ok(r"(?i)setwebhook", serde_json::json!({"ok": true, "result": true})).await;
+    m
 }
 
 async fn test_app_state() -> (AppState, tempfile::TempDir) {
