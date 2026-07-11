@@ -41,11 +41,29 @@ function convertBackendAttachment(att: Attachment): CompleteAttachment {
   };
 }
 
-export const fronaAttachmentAdapter: AttachmentAdapter = {
-  accept: "*/*",
+export function createFronaAttachmentAdapter(
+  onError?: (message: string) => void,
+): AttachmentAdapter {
+  return {
+  // assistant-ui's fileMatchesAccept treats ONLY the exact string "*" as
+  // "accept anything". "*/*" fails the match for every real MIME type (e.g.
+  // image/jpeg), so the composer silently rejects the file with a swallowed
+  // "not-accepted" error — the user selects a file and nothing appears. This
+  // was most visible on mobile, where attaching a photo did nothing.
+  accept: "*",
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
-    const uploaded = await uploadFile(file);
+    let uploaded: Attachment;
+    try {
+      uploaded = await uploadFile(file);
+    } catch (e) {
+      // The runtime swallows adapter errors (only emitting an event), so
+      // without this the upload just vanishes — e.g. a phone photo over the
+      // 10MB cap. Surface it, then re-throw so the attachment isn't kept.
+      const detail = e instanceof Error ? e.message : "Upload failed";
+      onError?.(`Couldn't upload ${file.name}: ${detail}`);
+      throw e;
+    }
     backendAttachmentRegistry.set(uploaded.path, uploaded);
     return {
       id: uploaded.path,
@@ -80,7 +98,11 @@ export const fronaAttachmentAdapter: AttachmentAdapter = {
   async remove(attachment) {
     backendAttachmentRegistry.delete(attachment.id);
   },
-};
+  };
+}
+
+/** Default adapter with no error surfacing (kept for non-hook callers). */
+export const fronaAttachmentAdapter: AttachmentAdapter = createFronaAttachmentAdapter();
 
 
 export type AssistantContentPart =
@@ -470,6 +492,11 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     });
   }, [storeSnapshot.messages, timeZone]);
 
+  const attachmentAdapter = useMemo(
+    () => createFronaAttachmentAdapter((message) => toast.error(message)),
+    [toast],
+  );
+
   const adapter: ExternalStoreAdapter<MessageResponse> = useMemo(() => ({
     messages: filteredMessages,
     isRunning: storeSnapshot.isRunning,
@@ -486,9 +513,9 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
       store.resolveToolCall(toolCallId, String(result ?? ""));
     },
     adapters: {
-      attachments: fronaAttachmentAdapter,
+      attachments: attachmentAdapter,
     },
-  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store]);
+  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store, attachmentAdapter]);
 
   const runtime = useExternalStoreRuntime(adapter);
 
