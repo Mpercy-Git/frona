@@ -16,6 +16,7 @@ build:
 	  --file build/Dockerfile \
 	  --target prod \
 	  --platform linux/$(ARCH) \
+	  --build-arg VERSION=$(TAG) \
 	  --cache-from type=local,src=$(CACHE_DIR) \
 	  --cache-to   type=local,dest=$(CACHE_DIR),mode=max \
 	  --tag $(REGISTRY):$(TAG) \
@@ -34,6 +35,7 @@ release:
 	  --file build/Dockerfile \
 	  --target prod \
 	  --platform linux/amd64,linux/arm64 \
+	  --build-arg VERSION=$(TAG) \
 	  --cache-from type=local,src=$(HOME)/.docker/buildx-cache/frona-amd64 \
 	  --cache-from type=local,src=$(HOME)/.docker/buildx-cache/frona-arm64 \
 	  --tag $(REGISTRY):$(TAG) \

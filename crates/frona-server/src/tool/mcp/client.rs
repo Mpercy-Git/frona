@@ -145,7 +145,7 @@ impl McpClient {
 pub fn default_client_info() -> ClientInfo {
     ClientInfo::new(
         ClientCapabilities::default(),
-        Implementation::new("frona", env!("CARGO_PKG_VERSION")),
+        Implementation::new("frona", crate::core::app_version()),
     )
 }
 
