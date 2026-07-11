@@ -64,10 +64,14 @@ export const fronaAttachmentAdapter: AttachmentAdapter = {
     // needs no revoking (no leak) and matches what history reload will show.
     const backend = backendAttachmentRegistry.get(attachment.id);
     const imageUrl = backend?.url || (attachment.file ? URL.createObjectURL(attachment.file) : undefined);
+    const renderAsImage = isImage && imageUrl != null;
     return {
       ...attachment,
+      // Upgrade to "image" for renderable images so the completed attachment
+      // matches what convertBackendAttachment produces on history reload.
+      type: renderAsImage ? "image" : "file",
       status: { type: "complete" },
-      content: isImage && imageUrl
+      content: renderAsImage
         ? [{ type: "image", image: imageUrl }]
         : [{ type: "text", text: `[file: ${attachment.name}]` }],
     };
