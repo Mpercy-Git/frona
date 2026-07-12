@@ -232,9 +232,63 @@ impl ChatSessionContext {
             );
         }
 
-        let rig_history = builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
+        let mut rig_history = builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
 
         let registry = harness.chat_service.provider_registry().clone();
+
+        // Images can't go to a model that doesn't accept them — providers 404
+        // the whole request. Only act when the catalog positively reports no
+        // vision support (unknown models are left untouched to avoid regressing
+        // capable ones). Preferred handling: transcribe the images with a
+        // vision-capable model (an override "vision" group, else auto-selected)
+        // and inline the text so the agent still gets the content. If no vision
+        // model is available, strip the images so the turn still runs.
+        if harness.usage_service.model_supports_vision(&conv_ctx.model_ref) == Some(false) {
+            match crate::inference::vision::resolve_vision_model_group(
+                &registry,
+                &harness.usage_service,
+            ) {
+                Some(vision_group) => {
+                    let img_msg_id = stored_messages
+                        .iter()
+                        .rev()
+                        .find(|m| !m.attachments.is_empty())
+                        .map(|m| m.id.clone())
+                        .unwrap_or_default();
+                    let n = crate::inference::vision::transcribe_images_in_history(
+                        &mut rig_history,
+                        &vision_group,
+                        &registry,
+                        &harness.usage_service,
+                        user_id,
+                        &chat.agent_id,
+                        &chat.id,
+                        &img_msg_id,
+                    )
+                    .await;
+                    if n > 0 {
+                        tracing::info!(
+                            agent_model = %conv_ctx.model_ref.as_str(),
+                            vision_model = %vision_group.main.as_str(),
+                            images = n,
+                            "transcribed images for text-only agent model",
+                        );
+                    }
+                }
+                None => {
+                    let n = crate::inference::conversation::strip_images_from_history(
+                        &mut rig_history,
+                    );
+                    if n > 0 {
+                        tracing::info!(
+                            model = %conv_ctx.model_ref.as_str(),
+                            images = n,
+                            "stripped image attachments (no vision model available)",
+                        );
+                    }
+                }
+            }
+        }
 
         let mut file_paths = Vec::new();
         for msg in &stored_messages {

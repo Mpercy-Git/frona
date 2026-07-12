@@ -484,6 +484,36 @@ impl ChatService {
         let tool_calls = self.get_tool_calls(chat_id).await?;
         let mut rig_history = conv_builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
 
+        if self.usage_service.model_supports_vision(&conv_ctx.model_ref) == Some(false) {
+            match crate::inference::vision::resolve_vision_model_group(
+                &self.provider_registry,
+                &self.usage_service,
+            ) {
+                Some(vision_group) => {
+                    let img_msg_id = stored_messages
+                        .iter()
+                        .rev()
+                        .find(|m| !m.attachments.is_empty())
+                        .map(|m| m.id.clone())
+                        .unwrap_or_default();
+                    crate::inference::vision::transcribe_images_in_history(
+                        &mut rig_history,
+                        &vision_group,
+                        &self.provider_registry,
+                        &self.usage_service,
+                        user_id,
+                        &chat.agent_id,
+                        chat_id,
+                        &img_msg_id,
+                    )
+                    .await;
+                }
+                None => {
+                    crate::inference::conversation::strip_images_from_history(&mut rig_history);
+                }
+            }
+        }
+
         rig_history.push(RigMessage::user(&req.content));
         // Pre-allocate the message id so the usage row's message_id matches
         // the assistant Message that's about to be persisted.
@@ -1557,9 +1587,11 @@ impl ChatService {
                 });
             }
             Some(group) if !group.is_empty() => {
-                self.provider_registry.get_model_group(group)?
+                self.provider_registry.get_model_group(group)?.clone()
             }
-            _ => self.provider_registry.get_model_group("primary")?,
+            // No explicit override: honor a "title" model group if configured,
+            // else fall back to primary — same convention as other utilities.
+            _ => self.provider_registry.utility_model_group("title")?,
         };
         Ok(crate::inference::config::ModelGroup {
             name: "title".to_string(),

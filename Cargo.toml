@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
-version = "2026.7.5"
+version = "2026.7.6"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
