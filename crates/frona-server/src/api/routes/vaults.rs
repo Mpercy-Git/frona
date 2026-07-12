@@ -252,9 +252,24 @@ async fn create_local_item(
 async fn list_local_items(
     auth: AuthUser,
     State(state): State<AppState>,
+    Query(query): Query<SearchQuery>,
 ) -> Result<Json<Vec<CredentialResponse>>, ApiError> {
+    // The local vault's connection id is the literal "local", so the credential
+    // request dialog searches it via `/api/vaults/local/items?q=…`, which matches
+    // this route rather than the generic `/api/vaults/{id}/items` search. Honor
+    // `q` here so that search filters (mirrors the local provider's search on
+    // name + provider). An empty `q` matches everything, preserving the plain
+    // "list all" behavior used by the settings page.
     let credentials = state.vault_service.list_credentials(&auth.user_id).await?;
-    Ok(Json(credentials))
+    let q = query.q.to_lowercase();
+    let items: Vec<CredentialResponse> = credentials
+        .into_iter()
+        .filter(|c| {
+            c.name.to_lowercase().contains(&q) || c.provider.to_lowercase().contains(&q)
+        })
+        .take(query.max_results)
+        .collect();
+    Ok(Json(items))
 }
 
 async fn update_local_item(
