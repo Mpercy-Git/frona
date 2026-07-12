@@ -48,8 +48,27 @@ export default function SettingsPage() {
     return () => window.removeEventListener("hashchange", sync);
   }, []);
 
-  const [, setSectionModified] = useState(false);
-  const [, setSectionHandlers] = useState<Map<string, SectionHandlers>>(new Map());
+  const [sectionModified, setSectionModified] = useState(false);
+  const [sectionHandlers, setSectionHandlers] = useState<Map<string, SectionHandlers>>(new Map());
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = useCallback(async () => {
+    if (!sectionModified || saving) return;
+    setSaving(true);
+    try {
+      for (const handler of sectionHandlers.values()) {
+        await handler.save();
+      }
+    } finally {
+      setSaving(false);
+    }
+  }, [sectionModified, saving, sectionHandlers]);
+
+  const handleDiscard = useCallback(() => {
+    for (const handler of sectionHandlers.values()) {
+      handler.discard();
+    }
+  }, [sectionHandlers]);
 
   const mobile = useMobile();
   const { mobileSubNavOpen: sidebarOpen, setMobileSubNavOpen: setSidebarOpen } = useNavigation();
@@ -137,6 +156,25 @@ export default function SettingsPage() {
               {activeTab === "mcp" && <McpSection />}
               {activeTab === "vault" && <UserVaultSection />}
             </div>
+
+            {sectionModified && (
+              <div className="pt-4 pb-2 border-t border-border flex items-center justify-end gap-2">
+                <button
+                  onClick={handleDiscard}
+                  disabled={saving}
+                  className="w-28 rounded-lg border border-border py-2 text-sm font-medium text-text-secondary hover:bg-surface-tertiary disabled:opacity-50 transition"
+                >
+                  Discard
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="w-28 rounded-lg bg-accent py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50 transition"
+                >
+                  {saving ? "Saving..." : "Save"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
