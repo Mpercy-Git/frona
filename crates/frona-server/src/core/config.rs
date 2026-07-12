@@ -791,6 +791,8 @@ pub struct InferenceConfig {
     pub compaction_trigger_pct: usize,
     #[schemars(description = "Percentage of history to keep after truncation.")]
     pub history_truncation_pct: usize,
+    #[schemars(description = "Per-tool-call execution timeout in seconds. A hung tool (e.g. an unresponsive MCP server) fails after this instead of stalling the message forever. 0 disables the timeout.")]
+    pub tool_timeout_secs: u64,
 }
 
 impl Default for InferenceConfig {
@@ -800,6 +802,7 @@ impl Default for InferenceConfig {
             default_max_tokens: 8192,
             compaction_trigger_pct: 80,
             history_truncation_pct: 90,
+            tool_timeout_secs: 600,
         }
     }
 }

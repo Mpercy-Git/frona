@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use rig_core::completion::message::{
@@ -251,6 +251,7 @@ async fn execute_tool_calls(
     turn: u32,
     turn_text: Option<&str>,
     turn_reasoning: Option<&Reasoning>,
+    tool_timeout: Option<Duration>,
 ) -> Result<ToolCallExecutionResult, AppError> {
     let mut result = ToolCallExecutionResult {
         external_tools: Vec::new(),
@@ -316,7 +317,22 @@ async fn execute_tool_calls(
             .await?;
 
         let start = Instant::now();
-        let (text, tool_output) = match tool_registry.execute(tool_name, arguments, ctx).await {
+        // Backstop: a tool that never returns (e.g. an unresponsive MCP server)
+        // would leave the message stuck "executing" forever. Bound each call so
+        // a hang surfaces as an error the model can react to instead of a dead
+        // UI. `None` (config 0) keeps the previous unbounded behaviour.
+        let exec = tool_registry.execute(tool_name, arguments, ctx);
+        let exec_result = match tool_timeout {
+            Some(limit) => match tokio::time::timeout(limit, exec).await {
+                Ok(r) => r,
+                Err(_) => Err(AppError::Internal(format!(
+                    "Tool '{tool_name}' timed out after {}s",
+                    limit.as_secs()
+                ))),
+            },
+            None => exec.await,
+        };
+        let (text, tool_output) = match exec_result {
             Ok(output) => {
                 let text = output.text_content().to_string();
                 tracing::debug!(tool = %tool_name, result = %text, "Tool executed");
@@ -452,6 +468,10 @@ pub async fn run_tool_loop(
     let mut final_text = String::new();
 
     let max_tool_turns = model_group.inference.max_tool_turns;
+    let tool_timeout = match model_group.inference.tool_timeout_secs {
+        0 => None,
+        secs => Some(Duration::from_secs(secs)),
+    };
     for turn in 0..max_tool_turns {
         if let Some(outcome) = check_cancellation(&cancel_token, &event_tx, &final_text).await {
             return Ok(outcome);
@@ -536,6 +556,7 @@ pub async fn run_tool_loop(
             turn as u32,
             turn_text_opt,
             last_reasoning.as_ref(),
+            tool_timeout,
         )
         .await?;
 

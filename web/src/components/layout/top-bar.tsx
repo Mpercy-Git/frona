@@ -61,7 +61,11 @@ export function TopBar() {
       <div className="flex items-center h-14 px-3 bg-surface-nav border-b border-border shrink-0 gap-2 pt-safe">
         <button
           onClick={() => {
-            if (pathname.startsWith("/settings")) {
+            // Both the user settings (/settings) and server settings
+            // (/admin/settings) pages render their own sidebar bound to the
+            // sub-nav drawer. Toggle that drawer on either, otherwise the
+            // hamburger appears to do nothing on server settings.
+            if (pathname.startsWith("/settings") || pathname.startsWith("/admin/settings")) {
               setMobileSubNavOpen(!mobileSubNavOpen);
             } else {
               setMobileNavOpen(!mobileNavOpen);
