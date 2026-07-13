@@ -66,12 +66,13 @@ async fn validate_request_sandbox_paths(
 async fn sync_agent_tools(
     state: &AppState,
     user_id: &str,
-    agent_id: &str,
+    user_handle: &crate::core::Handle,
+    agent_handle: &crate::core::Handle,
     selected_tools: &[String],
 ) -> Result<(), crate::core::error::AppError> {
     state
         .policy_service
-        .reconcile_agent_tools(user_id, agent_id, selected_tools)
+        .reconcile_agent_tools(user_id, user_handle, agent_handle, selected_tools)
         .await
         .map(|_| ())
         .map_err(crate::core::error::AppError::from)
@@ -141,7 +142,7 @@ async fn create_agent(
     let agent = state.agent_service.create(&auth.user_id, req).await?;
 
     if let Some(tool_list) = tools {
-        sync_agent_tools(&state, &auth.user_id, &agent.id, &tool_list).await?;
+        sync_agent_tools(&state, &auth.user_id, &auth.handle, &agent.handle, &tool_list).await?;
         state.policy_service.invalidate_all_caches();
     }
 
@@ -210,7 +211,7 @@ async fn update_agent(
     let agent = state.agent_service.update(&auth.user_id, &id, req).await?;
 
     if let Some(tool_list) = tools {
-        sync_agent_tools(&state, &auth.user_id, &id, &tool_list).await?;
+        sync_agent_tools(&state, &auth.user_id, &auth.handle, &agent.handle, &tool_list).await?;
         // Force-invalidate all caches synchronously — moka's per-key
         // invalidate() is eventually-consistent and the stale decision
         // cache entries can survive long enough for to_response() below
