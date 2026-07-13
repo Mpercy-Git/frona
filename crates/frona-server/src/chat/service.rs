@@ -484,7 +484,13 @@ impl ChatService {
         let tool_calls = self.get_tool_calls(chat_id).await?;
         let mut rig_history = conv_builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
 
-        if self.usage_service.model_supports_vision(&conv_ctx.model_ref) == Some(false) {
+        let catalog_vision = self.usage_service.model_supports_vision(&conv_ctx.model_ref);
+        let effective_vision = crate::inference::vision::resolve_vision_capability(
+            &conv_ctx.model_ref,
+            &model_group.inference,
+            catalog_vision,
+        );
+        if effective_vision == Some(false) {
             match crate::inference::vision::resolve_vision_model_group(
                 &self.provider_registry,
                 &self.usage_service,

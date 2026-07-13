@@ -243,7 +243,13 @@ impl ChatSessionContext {
         // vision-capable model (an override "vision" group, else auto-selected)
         // and inline the text so the agent still gets the content. If no vision
         // model is available, strip the images so the turn still runs.
-        if harness.usage_service.model_supports_vision(&conv_ctx.model_ref) == Some(false) {
+        let catalog_vision = harness.usage_service.model_supports_vision(&conv_ctx.model_ref);
+        let effective_vision = crate::inference::vision::resolve_vision_capability(
+            &conv_ctx.model_ref,
+            &model_group.inference,
+            catalog_vision,
+        );
+        if effective_vision == Some(false) {
             match crate::inference::vision::resolve_vision_model_group(
                 &registry,
                 &harness.usage_service,

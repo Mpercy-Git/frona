@@ -11,10 +11,10 @@
 use rig_core::completion::Message as RigMessage;
 use rig_core::completion::message::UserContent;
 
-use super::config::ModelGroup;
+use super::config::{InferenceConfig, ModelGroup};
 use super::registry::ModelProviderRegistry;
 use super::usage::{UsageContext, UsageService};
-use super::InferenceKind;
+use super::{InferenceKind, ModelRef};
 
 const TRANSCRIBE_SYSTEM: &str =
     "You transcribe images for a downstream assistant that cannot see them. \
@@ -24,6 +24,47 @@ const TRANSCRIBE_INSTRUCTION: &str =
     "Transcribe all text in the image verbatim, preserving structure (headings, \
      lists, tables, reference numbers). Briefly describe any diagrams, photos, or \
      figures. Do not summarize or add commentary.";
+
+/// Effective vision capability for `model_ref`, letting explicit config
+/// overrides win over the catalog result (`catalog_says`).
+///
+/// Precedence: `text_only_models` → `vision_models` → catalog → unknown. When
+/// the catalog is silent and `transcribe_when_vision_unknown` is set, unknown
+/// resolves to `Some(false)` so images get handled rather than risking a 404.
+pub fn resolve_vision_capability(
+    model_ref: &ModelRef,
+    inference: &InferenceConfig,
+    catalog_says: Option<bool>,
+) -> Option<bool> {
+    if model_matches_any(model_ref, &inference.text_only_models) {
+        return Some(false);
+    }
+    if model_matches_any(model_ref, &inference.vision_models) {
+        return Some(true);
+    }
+    match catalog_says {
+        Some(v) => Some(v),
+        None if inference.transcribe_when_vision_unknown => Some(false),
+        None => None,
+    }
+}
+
+/// Match a model ref against a configured id list. An entry matches the bare
+/// model id, the "provider/model_id" pair, or the final path segment of the
+/// model id (handling vendor-prefixed ids like "deepseek/deepseek-v4-flash").
+fn model_matches_any(model_ref: &ModelRef, list: &[String]) -> bool {
+    let model_id = model_ref.model_id.as_str();
+    let composite = format!("{}/{}", model_ref.provider, model_id);
+    let last_segment = model_id.rsplit('/').next().unwrap_or(model_id);
+    list.iter()
+        .map(|e| e.trim())
+        .filter(|e| !e.is_empty())
+        .any(|e| {
+            model_id.eq_ignore_ascii_case(e)
+                || composite.eq_ignore_ascii_case(e)
+                || last_segment.eq_ignore_ascii_case(e)
+        })
+}
 
 /// Resolve a vision-capable model group for the transcription pre-pass.
 ///
@@ -146,4 +187,68 @@ pub async fn transcribe_images_in_history(
     }
 
     transcribed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mref(provider: &str, model_id: &str) -> ModelRef {
+        ModelRef {
+            provider: provider.into(),
+            model_id: model_id.into(),
+            additional_params: None,
+        }
+    }
+
+    #[test]
+    fn text_only_override_beats_catalog() {
+        let mut c = InferenceConfig::default();
+        c.text_only_models = vec!["deepseek-v4-flash".into()];
+        // catalog wrongly claims vision; override forces text-only
+        let m = mref("openrouter", "deepseek/deepseek-v4-flash");
+        assert_eq!(resolve_vision_capability(&m, &c, Some(true)), Some(false));
+    }
+
+    #[test]
+    fn vision_override_forces_true_over_unknown() {
+        let mut c = InferenceConfig::default();
+        c.vision_models = vec!["some-model".into()];
+        assert_eq!(resolve_vision_capability(&mref("x", "some-model"), &c, None), Some(true));
+    }
+
+    #[test]
+    fn text_only_wins_when_listed_in_both() {
+        let mut c = InferenceConfig::default();
+        c.vision_models = vec!["m".into()];
+        c.text_only_models = vec!["m".into()];
+        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c, None), Some(false));
+    }
+
+    #[test]
+    fn unknown_respects_toggle() {
+        let c = InferenceConfig::default();
+        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c, None), None);
+        let mut c2 = InferenceConfig::default();
+        c2.transcribe_when_vision_unknown = true;
+        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c2, None), Some(false));
+    }
+
+    #[test]
+    fn catalog_passes_through_without_overrides() {
+        let c = InferenceConfig::default();
+        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c, Some(true)), Some(true));
+        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c, Some(false)), Some(false));
+    }
+
+    #[test]
+    fn matching_handles_vendor_prefix_and_composite() {
+        let list = vec!["deepseek-v4-flash".to_string()];
+        assert!(model_matches_any(&mref("openrouter", "deepseek/deepseek-v4-flash"), &list));
+        assert!(model_matches_any(&mref("deepseek", "deepseek-v4-flash"), &list));
+        assert!(!model_matches_any(&mref("openai", "gpt-4o"), &list));
+
+        let composite = vec!["openai/gpt-4o".to_string()];
+        assert!(model_matches_any(&mref("openai", "gpt-4o"), &composite));
+    }
 }

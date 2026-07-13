@@ -793,6 +793,12 @@ pub struct InferenceConfig {
     pub history_truncation_pct: usize,
     #[schemars(description = "Per-tool-call execution timeout in seconds. A hung tool (e.g. an unresponsive MCP server) fails after this instead of stalling the message forever. 0 disables the timeout.")]
     pub tool_timeout_secs: u64,
+    #[schemars(description = "Model ids to force as vision-capable, overriding the catalog. Matches the model id (e.g. \"deepseek-v4-flash\"), a \"provider/model\" pair, or a vendor-prefixed suffix.")]
+    pub vision_models: Vec<String>,
+    #[schemars(description = "Model ids to force as text-only (no image input), overriding the catalog. Same matching as vision_models. Wins over the catalog and over vision_models.")]
+    pub text_only_models: Vec<String>,
+    #[schemars(description = "When a model's image support is unknown (absent from the catalog and both override lists), treat it as text-only so images are transcribed or stripped instead of risking a provider 404. Default false.")]
+    pub transcribe_when_vision_unknown: bool,
 }
 
 impl Default for InferenceConfig {
@@ -803,6 +809,9 @@ impl Default for InferenceConfig {
             compaction_trigger_pct: 80,
             history_truncation_pct: 90,
             tool_timeout_secs: 600,
+            vision_models: Vec::new(),
+            text_only_models: Vec::new(),
+            transcribe_when_vision_unknown: false,
         }
     }
 }
