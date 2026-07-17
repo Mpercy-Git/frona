@@ -24,6 +24,7 @@ function skipResponse(te: ToolCall): HitlResponse {
     case "App":
       return { type: "Approval", data: false };
     case "Credential":
+    case "Credentials":
       return { type: "Vault", data: { type: "Denied" } };
     case "Question":
     case "Takeover":
@@ -37,6 +38,7 @@ function toolIcon(te: ToolCall) {
     case "Question":
       return <QuestionMarkCircleIcon className="h-5 w-5 text-accent" />;
     case "Credential":
+    case "Credentials":
       return <KeyIcon className="h-5 w-5 text-warning" />;
     case "App":
       return <ServerIcon className="h-5 w-5 text-success" />;
@@ -50,6 +52,8 @@ function toolTitle(te: ToolCall): string {
     case "Question":
       return "Question";
     case "Credential":
+      return "Credential Request";
+    case "Credentials":
       return "Credential Request";
     case "App":
       return "App Deployment";

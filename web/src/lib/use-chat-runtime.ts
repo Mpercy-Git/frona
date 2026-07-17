@@ -205,7 +205,9 @@ export function convertMessage(msg: MessageResponse) {
                   ? te.hitl.response.data
                   : te.hitl.response.data.type === "Granted"
                     ? "Granted"
-                    : "Denied";
+                    : te.hitl.response.data.type === "GrantedMany"
+                      ? `Granted ${te.hitl.response.data.data.grants.length}`
+                      : "Denied";
           content.push({
             type: "tool-call",
             toolCallId: te.id,
