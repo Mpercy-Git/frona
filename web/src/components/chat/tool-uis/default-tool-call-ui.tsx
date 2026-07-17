@@ -9,8 +9,10 @@ import {
 import { AnimatePresence, motion } from "motion/react";
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { useToolTimeline } from "./tool-timeline-context";
 import { InlineCode } from "./inline-code";
+import { displayToolName } from "./views/default";
 import { pickView, TOOL_VIEWS_DEFAULT_EXPANDED } from "./views";
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
@@ -128,19 +130,25 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = (props) => {
             className="inline-block rounded-r-md bg-surface-tertiary pl-4 pr-3 py-1.5 text-xs text-text-secondary leading-none [&_p]:m-0"
             style={{ marginLeft: "11px" }}
           >
-            <ReactMarkdown
-              components={{
-                pre: ({ children }) => <>{children}</>,
-                code: ({ className, children }) => {
-                  const lang = className?.replace("language-", "");
-                  const code = String(children).replace(/\n$/, "");
-                  if (!className) return <code className="text-xs">{children}</code>;
-                  return <InlineCode code={code} language={lang} />;
-                },
-              }}
+            <ErrorBoundary
+              label="turn-text-markdown"
+              resetKeys={[turnText]}
+              fallback={() => <span className="whitespace-pre-wrap">{turnText}</span>}
             >
-              {turnText}
-            </ReactMarkdown>
+              <ReactMarkdown
+                components={{
+                  pre: ({ children }) => <>{children}</>,
+                  code: ({ className, children }) => {
+                    const lang = className?.replace("language-", "");
+                    const code = String(children).replace(/\n$/, "");
+                    if (!className) return <code className="text-xs">{children}</code>;
+                    return <InlineCode code={code} language={lang} />;
+                  },
+                }}
+              >
+                {turnText}
+              </ReactMarkdown>
+            </ErrorBoundary>
           </div>
         </div>
       )}
@@ -163,7 +171,23 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = (props) => {
           isCancelled={!!isCancelled}
           index={toolIndex}
         />
-        {createElement(pickView(toolName), viewProps)}
+        {/*
+          A tool view renders live, sometimes-partial streaming payloads. Isolate
+          it so a throw degrades to a small fallback row instead of unmounting the
+          whole conversation. resetKeys retries as the args/status advance, so a
+          crash on partial data self-heals once the call finalises.
+        */}
+        <ErrorBoundary
+          label={`tool-view:${toolName}`}
+          resetKeys={[statusType, viewProps.argsText]}
+          fallback={() => (
+            <div className="text-xs text-text-tertiary italic py-1">
+              {displayToolName(toolName)} — couldn&apos;t display this step
+            </div>
+          )}
+        >
+          {createElement(pickView(toolName), viewProps)}
+        </ErrorBoundary>
       </motion.div>
     </>
   );
