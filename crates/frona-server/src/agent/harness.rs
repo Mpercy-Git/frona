@@ -597,6 +597,7 @@ fn hitl_notification_text(h: &crate::inference::hitl::Hitl) -> (String, String) 
     use crate::inference::hitl::HitlRequest;
     let title = match &h.request {
         HitlRequest::Credential { .. } => "Credential access needed",
+        HitlRequest::Credentials { .. } => "Credential access needed",
         HitlRequest::Takeover { .. } => "Agent needs you to take over",
         HitlRequest::App { .. } => "App deployment needs approval",
         HitlRequest::Question { .. } => "Agent needs your input",

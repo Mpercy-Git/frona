@@ -47,6 +47,25 @@ pub enum HitlRequest {
         query: String,
         reason: String,
     },
+    /// Batched credential request: the agent needs several secrets at once
+    /// (e.g. an app key *and* a user key). Rendered as a single approval with
+    /// one slot per item so the user provides them all in one interaction
+    /// instead of the agent asking for one, resuming, then asking for the next.
+    Credentials {
+        items: Vec<CredentialRequest>,
+        reason: String,
+    },
+}
+
+/// One secret in a batched [`HitlRequest::Credentials`]. `label` is an optional
+/// human hint shown beside the slot so a user filling several at once can tell
+/// them apart (e.g. "App key" vs "User key").
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
+pub struct CredentialRequest {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Channels can only emit `Approval` or `Choice` — the shapes a button tap
@@ -70,7 +89,24 @@ pub enum VaultGrant {
         grant_duration: GrantDuration,
         target: crate::credential::vault::models::CredentialTarget,
     },
+    /// Resolution for a batched [`HitlRequest::Credentials`] — one grant per
+    /// item the user filled in. A single `Denied` still denies the whole batch.
+    GrantedMany {
+        grants: Vec<VaultItemGrant>,
+    },
     Denied,
+}
+
+/// One resolved item of a [`VaultGrant::GrantedMany`], tying a requested
+/// `query` to the vault item and binding the user chose for it.
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
+pub struct VaultItemGrant {
+    pub query: String,
+    pub connection_id: String,
+    pub vault_item_id: String,
+    pub grant_duration: GrantDuration,
+    pub target: crate::credential::vault::models::CredentialTarget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
@@ -168,6 +204,56 @@ mod tests {
             HitlRequest::Credential { query, reason } => {
                 assert_eq!(query, "postgres-prod");
                 assert_eq!(reason, "ETL job");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn hitl_request_credentials_round_trip() {
+        let req = HitlRequest::Credentials {
+            items: vec![
+                CredentialRequest { query: "acme app key".into(), label: Some("App key".into()) },
+                CredentialRequest { query: "acme user key".into(), label: None },
+            ],
+            reason: "Call the Acme API".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: HitlRequest = serde_json::from_str(&json).unwrap();
+        match back {
+            HitlRequest::Credentials { items, reason } => {
+                assert_eq!(reason, "Call the Acme API");
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].query, "acme app key");
+                assert_eq!(items[0].label.as_deref(), Some("App key"));
+                assert_eq!(items[1].label, None);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn hitl_response_vault_granted_many_round_trip() {
+        use crate::credential::vault::models::CredentialTarget;
+        let r = HitlResponse::Vault(VaultGrant::GrantedMany {
+            grants: vec![VaultItemGrant {
+                query: "acme app key".into(),
+                connection_id: "conn-1".into(),
+                vault_item_id: "item-1".into(),
+                grant_duration: GrantDuration::Once,
+                target: CredentialTarget::Single {
+                    env_var: "ACME_APP_KEY".into(),
+                    field: crate::credential::vault::models::VaultField::Password,
+                },
+            }],
+        });
+        let json = serde_json::to_string(&r).unwrap();
+        let back: HitlResponse = serde_json::from_str(&json).unwrap();
+        match back {
+            HitlResponse::Vault(VaultGrant::GrantedMany { grants }) => {
+                assert_eq!(grants.len(), 1);
+                assert_eq!(grants[0].query, "acme app key");
+                assert_eq!(grants[0].connection_id, "conn-1");
             }
             _ => panic!("wrong variant"),
         }

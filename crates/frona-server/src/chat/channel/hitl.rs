@@ -23,6 +23,7 @@ pub fn kind_for(req: &HitlRequest) -> HitlKind {
         },
         HitlRequest::App { .. } => HitlKind::Approval,
         HitlRequest::Credential { .. } => HitlKind::External,
+        HitlRequest::Credentials { .. } => HitlKind::External,
     }
 }
 
@@ -194,6 +195,9 @@ pub fn response_display(response: &HitlResponse) -> String {
         HitlResponse::Approval(false) => "❌ No".to_string(),
         HitlResponse::Choice(text) => text.clone(),
         HitlResponse::Vault(VaultGrant::Granted { .. }) => "🔑 Granted".to_string(),
+        HitlResponse::Vault(VaultGrant::GrantedMany { grants }) => {
+            format!("🔑 Granted ({})", grants.len())
+        }
         HitlResponse::Vault(VaultGrant::Denied) => "🚫 Denied".to_string(),
     }
 }
@@ -244,6 +248,19 @@ mod tests {
         let req = HitlRequest::Credential {
             query: "postgres".into(),
             reason: "ETL".into(),
+        };
+        assert_eq!(kind_for(&req), HitlKind::External);
+    }
+
+    #[test]
+    fn kind_for_credentials_batch_returns_external() {
+        use crate::inference::hitl::CredentialRequest;
+        let req = HitlRequest::Credentials {
+            items: vec![
+                CredentialRequest { query: "app key".into(), label: Some("App key".into()) },
+                CredentialRequest { query: "user key".into(), label: None },
+            ],
+            reason: "Acme API".into(),
         };
         assert_eq!(kind_for(&req), HitlKind::External);
     }
