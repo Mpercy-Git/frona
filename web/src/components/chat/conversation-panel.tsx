@@ -43,7 +43,7 @@ function ChatView({
     onChatPromoted?.(chat.id);
   }, [addStandaloneChat, setActiveChat, onChatPromoted]);
 
-  const { runtime, loaded, sendMessage, retryInfo, pendingTools, hasMore, loadingMore, loadOlder, usagePerChat, lastFallbackIndex, lastChatInputTokens, totalToolCalls } = useChatRuntime({ chatId, agentId, onChatCreated });
+  const { runtime, loaded, sendMessage, interrupt, retryInfo, pendingTools, hasMore, loadingMore, loadOlder, usagePerChat, lastFallbackIndex, lastChatInputTokens, totalToolCalls } = useChatRuntime({ chatId, agentId, onChatCreated });
   const pagination = useMemo(
     () => ({ hasMore, loadingMore, loadOlder }),
     [hasMore, loadingMore, loadOlder],
@@ -85,7 +85,7 @@ function ChatView({
       <ChatPaginationContext value={pagination}>
       <RetryContext value={retryInfo}>
         {currentChatId ? (
-          <ChatProvider chatId={currentChatId} agentId={agentId}>
+          <ChatProvider chatId={currentChatId} agentId={agentId} interrupt={interrupt}>
             {content}
           </ChatProvider>
         ) : (

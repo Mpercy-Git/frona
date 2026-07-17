@@ -565,7 +565,7 @@ async fn execute_heartbeat(
         chat.id
     };
 
-    let cancel_token = state.active_sessions.register(&chat_id).await;
+    let (session_id, cancel_token) = state.active_sessions.register(&chat_id).await;
 
     // No create_stream_user_message — heartbeats are transient. Persisting
     // shows them in the UI as if the user typed it, and they reinforce the
@@ -617,7 +617,7 @@ async fn execute_heartbeat(
         }
     }
 
-    state.active_sessions.remove(&chat_id).await;
+    state.active_sessions.remove(&chat_id, session_id).await;
     Ok(())
 }
 

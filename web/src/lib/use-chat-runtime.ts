@@ -476,6 +476,27 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     }
   }, []);
 
+  // Send a steering message *while the agent is running*. The backend registers
+  // a fresh cancellation token per turn, which cancels the in-flight turn and
+  // starts a new one that includes this message — so the agent keeps its full
+  // history but gets redirected. Used to nudge a run that's gone off on a
+  // tangent without losing the conversation.
+  const interrupt = useCallback(
+    (text: string, attachments: Attachment[] = []) => {
+      const id = currentChatIdRef.current;
+      const trimmed = text.trim();
+      if (!id || !trimmed) return;
+      store.addUserMessage(trimmed, attachments.length ? attachments : undefined);
+      const body = attachments.length
+        ? { content: trimmed, attachments }
+        : { content: trimmed };
+      apiSendMessage(id, body).catch(() => {
+        toast.error("Couldn't send your message — please try again.");
+      });
+    },
+    [store, toast],
+  );
+
   const timeZone = useTimezone();
 
   // Filter out messages that convertMessage returns null for (e.g. signal-only
@@ -544,6 +565,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     runtime,
     loaded: storeSnapshot.loaded,
     sendMessage,
+    interrupt,
     retryInfo: storeSnapshot.retryInfo,
     pendingTools: storeSnapshot.pendingTools,
     hasMore: storeSnapshot.hasMore,

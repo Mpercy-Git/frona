@@ -316,8 +316,34 @@ async fn execute_tool_calls(
             .await?;
 
         let start = Instant::now();
-        let (text, tool_output) = match tool_registry.execute(tool_name, arguments, ctx).await {
-            Ok(output) => {
+        // Race execution against cancellation so Stop (or an interrupting new
+        // message) takes effect *while a tool is running* — not only between
+        // turns. `biased` checks cancellation first so an already-cancelled
+        // token short-circuits without starting the tool.
+        let execution = tokio::select! {
+            biased;
+            _ = ctx.cancel_token.cancelled() => None,
+            res = tool_registry.execute(tool_name, arguments, ctx) => Some(res),
+        };
+        let (text, tool_output) = match execution {
+            None => {
+                // Interrupted mid-execution. Finalize the row so it isn't left
+                // dangling as "executing", then stop the loop; the post-exec
+                // cancellation check below turns this into a Cancelled outcome.
+                tracing::info!(tool = %tool_name, "Tool execution interrupted by cancellation");
+                let duration_ms = start.elapsed().as_millis() as u64;
+                let _ = chat_service
+                    .finish_tool_call(
+                        &te_record.id,
+                        "Interrupted".to_string(),
+                        false,
+                        duration_ms,
+                        None,
+                    )
+                    .await;
+                break;
+            }
+            Some(Ok(output)) => {
                 let text = output.text_content().to_string();
                 tracing::debug!(tool = %tool_name, result = %text, "Tool executed");
                 let duration = start.elapsed();
@@ -330,7 +356,7 @@ async fn execute_tool_calls(
                 );
                 (text, Some(output))
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 tracing::warn!(tool = %tool_name, error = %e, "Tool execution failed");
                 let duration = start.elapsed();
                 metrics::record_tool_call(
