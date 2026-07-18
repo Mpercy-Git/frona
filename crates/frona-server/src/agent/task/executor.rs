@@ -472,7 +472,7 @@ impl TaskExecutor {
                 }
             };
 
-            let session_token = self.harness.active_sessions.register(&chat_id).await;
+            let (session_id, session_token) = self.harness.active_sessions.register(&chat_id).await;
             let builder = Box::new(TaskConversationBuilder {
                 user_service: self.harness.user_service.clone(),
                 storage_service: self.harness.storage_service.clone(),
@@ -491,7 +491,7 @@ impl TaskExecutor {
             )
             .await;
             drop(session_token);
-            self.harness.active_sessions.remove(&chat_id).await;
+            self.harness.active_sessions.remove(&chat_id, session_id).await;
 
             match result {
                 Ok(crate::agent::harness::AgentLoopOutcome { inference, mut response }) => match inference {

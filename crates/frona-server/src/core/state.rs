@@ -63,23 +63,32 @@ pub struct AllowlistEntry {
 
 #[derive(Clone, Default)]
 pub struct ActiveSessions {
-    inner: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// Per-chat active run: a monotonic generation id plus its cancel token.
+    /// The id lets a finishing run clean up only its *own* entry — critical
+    /// when a new turn supersedes a running one (Stop, or an interrupting
+    /// message): the superseded task must not delete the successor's token.
+    inner: Arc<Mutex<HashMap<String, (u64, CancellationToken)>>>,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ActiveSessions {
-    pub async fn register(&self, chat_id: &str) -> CancellationToken {
+    /// Register a new run for `chat_id`, cancelling any run already active for
+    /// it. Returns the generation id (pass it to [`remove`](Self::remove)) and
+    /// the cancel token for the new run.
+    pub async fn register(&self, chat_id: &str) -> (u64, CancellationToken) {
         let mut map = self.inner.lock().await;
-        if let Some(existing) = map.get(chat_id) {
+        if let Some((_, existing)) = map.get(chat_id) {
             existing.cancel();
         }
+        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let token = CancellationToken::new();
-        map.insert(chat_id.to_string(), token.clone());
-        token
+        map.insert(chat_id.to_string(), (id, token.clone()));
+        (id, token)
     }
 
     pub async fn cancel(&self, chat_id: &str) -> bool {
         let map = self.inner.lock().await;
-        if let Some(token) = map.get(chat_id) {
+        if let Some((_, token)) = map.get(chat_id) {
             token.cancel();
             true
         } else {
@@ -87,8 +96,14 @@ impl ActiveSessions {
         }
     }
 
-    pub async fn remove(&self, chat_id: &str) {
-        self.inner.lock().await.remove(chat_id);
+    /// Remove the entry for `chat_id`, but only if it still holds generation
+    /// `id`. A superseded run passes its own (older) id here and is correctly
+    /// a no-op, leaving the current run's token in place.
+    pub async fn remove(&self, chat_id: &str, id: u64) {
+        let mut map = self.inner.lock().await;
+        if map.get(chat_id).is_some_and(|(cur, _)| *cur == id) {
+            map.remove(chat_id);
+        }
     }
 
     pub async fn count(&self) -> usize {
@@ -786,19 +801,33 @@ mod tests {
     #[tokio::test]
     async fn test_remove_decrements_count() {
         let sessions = ActiveSessions::default();
-        sessions.register("chat-1").await;
+        let (id1, _) = sessions.register("chat-1").await;
         sessions.register("chat-2").await;
-        sessions.remove("chat-1").await;
+        sessions.remove("chat-1", id1).await;
         assert_eq!(sessions.count().await, 1);
     }
 
     #[tokio::test]
     async fn test_register_cancels_previous() {
         let sessions = ActiveSessions::default();
-        let first = sessions.register("chat-1").await;
+        let (_, first) = sessions.register("chat-1").await;
         let _second = sessions.register("chat-1").await;
         assert!(first.is_cancelled());
         assert_eq!(sessions.count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_remove_with_stale_id_is_noop() {
+        // A superseded run must not delete the successor's token: when a new
+        // turn (id2) replaces an old one (id1) for the same chat, the old
+        // turn's cleanup `remove(chat, id1)` should leave id2 in place so Stop
+        // still targets the live run.
+        let sessions = ActiveSessions::default();
+        let (id1, _first) = sessions.register("chat-1").await;
+        let (_id2, _second) = sessions.register("chat-1").await;
+        sessions.remove("chat-1", id1).await; // stale — no-op
+        assert_eq!(sessions.count().await, 1);
+        assert!(sessions.cancel("chat-1").await, "successor token still present");
     }
 
     #[tokio::test]

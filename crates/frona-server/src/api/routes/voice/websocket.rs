@@ -81,7 +81,7 @@ async fn handle_voice_socket(
     caller_name: Option<String>,
     caller_phone: Option<String>,
 ) {
-    state.active_sessions.register(&chat_id).await;
+    let (mut session_id, _) = state.active_sessions.register(&chat_id).await;
     tracing::debug!(chat_id = %chat_id, "Voice WS session registered in active sessions");
     let (ws_send, mut ws_recv) = socket.split();
     // Wrap the send half in Arc<Mutex> so it can be shared between the agent
@@ -127,7 +127,8 @@ async fn handle_voice_socket(
                 };
 
                 tracing::info!(chat_id = %chat_id, prompt = %voice_prompt, "Voice turn starting");
-                let cancel_token = state.active_sessions.register(&chat_id).await;
+                let (turn_id, cancel_token) = state.active_sessions.register(&chat_id).await;
+                session_id = turn_id;
 
                 // On the first prompt of an inbound call, prepend the caller
                 // identity so the agent knows who's calling.
@@ -249,7 +250,7 @@ async fn handle_voice_socket(
     }
 
     tracing::info!(chat_id = %chat_id, "Voice WS session ended");
-    state.active_sessions.remove(&chat_id).await;
+    state.active_sessions.remove(&chat_id, session_id).await;
 
     if let Ok(Some(task)) = state.task_service.find_by_chat_id(&chat_id).await
         && matches!(task.status, crate::agent::task::models::TaskStatus::InProgress)
