@@ -220,13 +220,18 @@ export function ExternalToolDrawer({ wizard }: { wizard: ToolWizardState }) {
           </div>
         </div>
 
-        {/* Tool content */}
-        <ToolContentDispatch
-          te={currentTool}
-          chatId={chatId ?? ""}
-          onResolve={handleAnswer}
-          selectedAnswer={currentAnswer?.displayText}
-        />
+        {/* Tool content — scrolls internally on short viewports so the lower
+            controls (e.g. Approve/Deny) stay reachable and don't overflow the
+            sticky footer. The 1px inset padding keeps input focus rings from
+            being clipped by overflow-hidden. */}
+        <div className="max-h-[50vh] overflow-y-auto overscroll-contain -mx-1 px-1 py-0.5">
+          <ToolContentDispatch
+            te={currentTool}
+            chatId={chatId ?? ""}
+            onResolve={handleAnswer}
+            selectedAnswer={currentAnswer?.displayText}
+          />
+        </div>
 
       </div>
     </div>

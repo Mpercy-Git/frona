@@ -12,6 +12,7 @@ pub mod retry;
 pub mod tool_call;
 pub mod tool_loop;
 pub mod usage;
+pub mod vision;
 
 pub use usage::{CompactionTarget, InferenceKind, UsageContext};
 

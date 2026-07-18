@@ -101,6 +101,23 @@ impl ModelProviderRegistry {
         self.model_groups.contains_key(group_name)
     }
 
+    /// Resolve a named utility model group, falling back to `primary` when the
+    /// named group isn't configured. This is the override mechanism shared by
+    /// background utilities (title, compaction, …): define a model group with
+    /// the utility's name to override; otherwise the utility uses `primary`.
+    pub fn utility_model_group(&self, name: &str) -> Result<ModelGroup, InferenceError> {
+        match self.get_model_group(name) {
+            Ok(g) => Ok(g.clone()),
+            Err(_) => self.get_model_group("primary").cloned(),
+        }
+    }
+
+    /// Iterate every configured model group. Order is unspecified — callers that
+    /// need determinism should sort.
+    pub fn iter_model_groups(&self) -> impl Iterator<Item = &ModelGroup> {
+        self.model_groups.values()
+    }
+
     pub fn for_testing(
         providers: HashMap<String, Arc<dyn ModelProvider>>,
         model_groups: HashMap<String, ModelGroup>,

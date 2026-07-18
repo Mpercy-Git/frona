@@ -774,12 +774,18 @@ impl PolicyService {
     pub async fn reconcile_agent_tools(
         &self,
         user_id: &str,
-        agent_id: &str,
+        user_handle: &crate::core::Handle,
+        agent_handle: &crate::core::Handle,
         selected: &[String],
     ) -> Result<PolicyReconciliationResult, PolicyReconciliationError> {
         let universe = self.tool_manager.definitions(user_id).await;
         let selected_set: HashSet<&str> = selected.iter().map(String::as_str).collect();
-        let principal = EntityRef::Agent(agent_id.to_string());
+        // Must match the principal used at authorize time
+        // (`agent_entity_uid(user_handle, agent_handle)`), which is the
+        // "{user_handle}/{agent_handle}" handle path — NOT the agent's db id.
+        // Using the db id here wrote forbid policies for a principal that never
+        // gets authorized, so disabling a tool silently had no effect.
+        let principal = EntityRef::agent(user_handle, agent_handle);
         let overrides: Vec<AccessOverride> = universe
             .iter()
             .map(|tool| AccessOverride {

@@ -173,6 +173,10 @@ export interface InferenceConfig {
   default_max_tokens: number;
   compaction_trigger_pct: number;
   history_truncation_pct: number;
+  tool_timeout_secs: number;
+  vision_models: string[];
+  text_only_models: string[];
+  transcribe_when_vision_unknown: boolean;
 }
 
 export interface SchedulerConfig {

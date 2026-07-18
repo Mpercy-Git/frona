@@ -100,6 +100,16 @@ impl UsageService {
         self.dispatch_event(&row);
     }
 
+    /// Whether the catalog knows this model accepts image input. `None` when
+    /// the model isn't in the catalog (capability unknown) — callers should
+    /// treat unknown conservatively rather than assume support either way.
+    pub fn model_supports_vision(&self, model_ref: &ModelRef) -> Option<bool> {
+        self.catalog
+            .current()
+            .lookup_prefix(&model_ref.provider, &model_ref.model_id)
+            .map(|e| e.supports_vision())
+    }
+
     /// Called periodically (or on scrape) to keep the refresh-age gauge fresh.
     pub fn touch_refresh_age_gauge(&self) {
         gauge!(MODEL_METADATA_REFRESH_AGE_SECONDS).set(self.catalog.seconds_since_refresh() as f64);
