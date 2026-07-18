@@ -16,6 +16,7 @@ import { agentDisplayName } from "@/lib/types";
 import type { Attachment } from "@/lib/types";
 import { DefaultToolCallUI } from "./tool-uis/default-tool-call-ui";
 import { ToolTimelineProvider } from "./tool-uis/tool-timeline-context";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { ArrowDownTrayIcon, XMarkIcon, ClipboardDocumentListIcon, SparklesIcon } from "@heroicons/react/24/outline";
 import { useRouter } from "next/navigation";
 import * as Tooltip from "@radix-ui/react-tooltip";
@@ -385,5 +386,19 @@ function SmoothMarkdownText() {
 
   if (!text && isRunning) return <StreamingIndicator />;
   if (!text) return null;
-  return <span className="w-full"><MarkdownText smooth /></span>;
+  // Streaming delivers partial markdown (unterminated code fences, half-written
+  // tables) that can throw in the renderer. Isolate it and fall back to plain
+  // text; resetKeys retries as more tokens land, so it self-heals — a single
+  // bad frame never takes down the whole conversation.
+  return (
+    <span className="w-full">
+      <ErrorBoundary
+        label="message-markdown"
+        resetKeys={[text]}
+        fallback={() => <span className="whitespace-pre-wrap">{text}</span>}
+      >
+        <MarkdownText smooth />
+      </ErrorBoundary>
+    </span>
+  );
 }
