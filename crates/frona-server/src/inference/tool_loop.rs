@@ -22,6 +22,12 @@ use super::registry::ModelProviderRegistry;
 use super::retry::StreamResult;
 use super::retry::stream_with_retry_and_fallback;
 
+/// After a turn is cancelled, how long to let an in-flight tool observe the
+/// cancellation and return cleanly (e.g. the sandbox killing its subprocess and
+/// yielding partial output) before the loop abandons it. Kept short so Stop
+/// still feels immediate.
+const TOOL_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
 pub struct InferenceEvent {
     pub kind: InferenceEventKind,
 }
@@ -316,8 +322,46 @@ async fn execute_tool_calls(
             .await?;
 
         let start = Instant::now();
-        let (text, tool_output) = match tool_registry.execute(tool_name, arguments, ctx).await {
-            Ok(output) => {
+        // Run the tool, but stop waiting on it if the turn is cancelled (Stop,
+        // or an interrupting new message) *while it's still running* — not only
+        // between turns. Cancel-aware tools (the sandbox, which kills its
+        // process group) observe the same `ctx.cancel_token` and return partial
+        // output quickly, so on cancellation we give the future a short grace
+        // window to shut down cleanly rather than dropping it outright — a
+        // dropped `tokio::process::Child` is NOT killed, so abandoning it would
+        // orphan the subprocess. Only a tool that ignores cancellation entirely
+        // is force-abandoned once the grace period elapses.
+        let exec = tool_registry.execute(tool_name, arguments, ctx);
+        tokio::pin!(exec);
+        let execution = tokio::select! {
+            res = &mut exec => Some(res),
+            _ = ctx.cancel_token.cancelled() => {
+                match tokio::time::timeout(TOOL_CANCEL_GRACE, &mut exec).await {
+                    Ok(res) => Some(res),
+                    Err(_) => None,
+                }
+            }
+        };
+        let (text, tool_output) = match execution {
+            None => {
+                // The tool didn't honour cancellation within the grace window.
+                // Finalize the row so it isn't left dangling as "executing",
+                // then stop the loop; the post-exec cancellation check below
+                // turns this into a Cancelled outcome.
+                tracing::info!(tool = %tool_name, "Tool abandoned after cancellation grace period");
+                let duration_ms = start.elapsed().as_millis() as u64;
+                let _ = chat_service
+                    .finish_tool_call(
+                        &te_record.id,
+                        "Interrupted".to_string(),
+                        false,
+                        duration_ms,
+                        None,
+                    )
+                    .await;
+                break;
+            }
+            Some(Ok(output)) => {
                 let text = output.text_content().to_string();
                 tracing::debug!(tool = %tool_name, result = %text, "Tool executed");
                 let duration = start.elapsed();
@@ -330,7 +374,7 @@ async fn execute_tool_calls(
                 );
                 (text, Some(output))
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 tracing::warn!(tool = %tool_name, error = %e, "Tool execution failed");
                 let duration = start.elapsed();
                 metrics::record_tool_call(

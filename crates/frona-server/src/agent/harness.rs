@@ -316,7 +316,7 @@ impl Harness {
         chat_id: &str,
         message_id: &str,
     ) -> Result<(), AppError> {
-        let cancel_token = self.active_sessions.register(chat_id).await;
+        let (session_id, cancel_token) = self.active_sessions.register(chat_id).await;
         let builder = Box::new(DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
@@ -324,7 +324,7 @@ impl Harness {
         });
         self.run_turn(user_id, chat_id, message_id, cancel_token, builder, &[], None)
             .await;
-        self.active_sessions.remove(chat_id).await;
+        self.active_sessions.remove(chat_id, session_id).await;
         Ok(())
     }
 
