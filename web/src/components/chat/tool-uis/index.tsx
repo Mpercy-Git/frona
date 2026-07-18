@@ -2,7 +2,7 @@
 
 import { QuestionToolUI } from "./question-tool-ui";
 import { TakeoverToolUI } from "./human-in-the-loop-tool-ui";
-import { CredentialToolUI } from "./credential-tool-ui";
+import { CredentialToolUI, CredentialsToolUI } from "./credential-tool-ui";
 import { AppToolUI } from "./app-tool-ui";
 import { TaskCompletionToolUI } from "./task-completion-tool-ui";
 import { AttachmentsToolUI } from "./attachments-tool-ui";
@@ -13,6 +13,7 @@ export function ToolUIRegistry() {
       <QuestionToolUI />
       <TakeoverToolUI />
       <CredentialToolUI />
+      <CredentialsToolUI />
       <AppToolUI />
       <TaskCompletionToolUI />
       <AttachmentsToolUI />

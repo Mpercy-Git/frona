@@ -217,11 +217,17 @@ export type MessageTool =
 export type PauseReason =
   | { type: "Hitl" };
 
+export interface CredentialRequestItem {
+  query: string;
+  label?: string | null;
+}
+
 export type HitlRequest =
   | { type: "Question"; data: { options: string[] } }
   | { type: "Takeover"; data: { reason: string; debugger_url: string } }
   | { type: "App"; data: { action: string; manifest: Record<string, unknown>; previous_manifest: Record<string, unknown> | null } }
-  | { type: "Credential"; data: { query: string; reason: string } };
+  | { type: "Credential"; data: { query: string; reason: string } }
+  | { type: "Credentials"; data: { items: CredentialRequestItem[]; reason: string } };
 
 export type VaultField =
   | "Password"
@@ -238,8 +244,17 @@ export type GrantDuration =
   | { hours: number }
   | { days: number };
 
+export interface VaultItemGrant {
+  query: string;
+  connection_id: string;
+  vault_item_id: string;
+  grant_duration: GrantDuration;
+  target: CredentialTarget;
+}
+
 export type VaultGrant =
   | { type: "Granted"; data: { connection_id: string; vault_item_id: string; grant_duration: GrantDuration; target: CredentialTarget } }
+  | { type: "GrantedMany"; data: { grants: VaultItemGrant[] } }
   | { type: "Denied" };
 
 export type HitlResponse =

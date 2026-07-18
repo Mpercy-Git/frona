@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { api } from "@/lib/api-client";
-import type { CredentialTarget, GrantDuration, HitlResponse, ToolCall, VaultField } from "@/lib/types";
+import type { CredentialRequestItem, CredentialTarget, GrantDuration, HitlResponse, ToolCall, VaultField } from "@/lib/types";
 import { ApprovalButtons } from "./approval-parts";
 
 function Label({ children }: { children: React.ReactNode }) {
@@ -115,47 +115,68 @@ function defaultPrefix(query: string): string {
   return query.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
-export function CredentialContent({ te, onResolve }: ToolContentProps) {
-  const hitl = te.hitl;
-  const queryStr = hitl?.request.type === "Credential" ? hitl.request.data.query : "";
-  const reasonStr = hitl?.request.type === "Credential" ? hitl.request.data.reason : "";
+interface SlotGrant {
+  connection_id: string;
+  vault_item_id: string;
+  target: CredentialTarget;
+}
 
-  const [connections, setConnections] = useState<VaultConnection[]>([]);
+/**
+ * One credential in a (possibly batched) request: pick the vault, find the
+ * item, and choose how it's exposed as env vars. Reports the built grant (or
+ * `null` while incomplete) to the parent, which collects one per slot and
+ * submits them together.
+ */
+function CredentialSlot({
+  item,
+  index,
+  showHeader,
+  connections,
+  onChange,
+}: {
+  item: CredentialRequestItem;
+  index: number;
+  showHeader: boolean;
+  connections: VaultConnection[];
+  onChange: (index: number, grant: SlotGrant | null) => void;
+}) {
   const [selectedConnection, setSelectedConnection] = useState("");
   const [items, setItems] = useState<VaultItem[]>([]);
   const [selectedItem, setSelectedItem] = useState("");
-  const [duration, setDuration] = useState<GrantDuration>("once");
-  const [searchQuery, setSearchQuery] = useState(queryStr);
+  const [searchQuery, setSearchQuery] = useState(item.query);
   const [searching, setSearching] = useState(false);
   const [bindingMode, setBindingMode] = useState<"prefix" | "single">("prefix");
-  const [envVarPrefix, setEnvVarPrefix] = useState(defaultPrefix(queryStr));
+  const [envVarPrefix, setEnvVarPrefix] = useState(defaultPrefix(item.query));
   const [envVar, setEnvVar] = useState("");
   const [fieldKind, setFieldKind] = useState<"Password" | "Username" | "Custom">("Password");
   const [customFieldName, setCustomFieldName] = useState("");
 
   useEffect(() => {
-    api.get<VaultConnection[]>("/api/vaults").then((conns) => {
-      const enabled = conns.filter((c) => c.enabled);
-      setConnections(enabled);
-      if (enabled.length > 0) setSelectedConnection(enabled[0].id);
-    });
-  }, []);
+    if (!selectedConnection && connections.length > 0) {
+      setSelectedConnection(connections[0].id);
+    }
+  }, [connections, selectedConnection]);
 
   useEffect(() => {
     if (!selectedConnection || !searchQuery) return;
+    let cancelled = false;
     setSearching(true);
     api
       .get<VaultItem[]>(`/api/vaults/${selectedConnection}/items?q=${encodeURIComponent(searchQuery)}`)
       .then((results) => {
+        if (cancelled) return;
         setItems(results);
-        if (results.length > 0) setSelectedItem(results[0].id);
+        setSelectedItem(results.length > 0 ? results[0].id : "");
       })
-      .finally(() => setSearching(false));
+      .finally(() => {
+        if (!cancelled) setSearching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedConnection, searchQuery]);
 
-  if (!hitl || hitl.request.type !== "Credential") return null;
-
-  const buildTarget = (): CredentialTarget | null => {
+  const target = useMemo<CredentialTarget | null>(() => {
     if (bindingMode === "prefix") {
       const prefix = envVarPrefix.trim();
       if (!prefix) return null;
@@ -172,38 +193,23 @@ export function CredentialContent({ te, onResolve }: ToolContentProps) {
       field = fieldKind;
     }
     return { Single: { env_var: name, field } };
-  };
+  }, [bindingMode, envVarPrefix, envVar, fieldKind, customFieldName]);
 
-  const target = buildTarget();
-
-  const handleApprove = () => {
-    if (!selectedItem || !target) return;
-    onResolve(
-      {
-        type: "Vault",
-        data: {
-          type: "Granted",
-          data: {
-            connection_id: selectedConnection,
-            vault_item_id: selectedItem,
-            grant_duration: duration,
-            target,
-          },
-        },
-      },
-      "Approved",
-    );
-  };
-
-  const handleDeny = () => {
-    onResolve({ type: "Vault", data: { type: "Denied" } }, "Denied");
-  };
-
-  const durationValue = typeof duration === "string" ? duration : "hours" in duration ? "hours" : "days";
+  useEffect(() => {
+    if (!selectedConnection || !selectedItem || !target) {
+      onChange(index, null);
+    } else {
+      onChange(index, { connection_id: selectedConnection, vault_item_id: selectedItem, target });
+    }
+  }, [selectedConnection, selectedItem, target, index, onChange]);
 
   return (
-    <div className="space-y-3">
-      <p className="text-sm text-text-tertiary">{reasonStr}</p>
+    <div className={showHeader ? "space-y-3 rounded-lg border border-border p-3" : "space-y-3"}>
+      {showHeader && (
+        <p className="text-sm font-medium text-text-primary">
+          {index + 1}. {item.label ?? item.query}
+        </p>
+      )}
 
       <div>
         <Label>Vault</Label>
@@ -234,19 +240,19 @@ export function CredentialContent({ te, onResolve }: ToolContentProps) {
           <p className="text-xs text-text-tertiary py-1">Searching...</p>
         ) : items.length > 0 ? (
           <div className="space-y-1">
-            {items.map((item) => (
+            {items.map((vi) => (
               <button
-                key={item.id}
-                onClick={() => setSelectedItem(item.id)}
+                key={vi.id}
+                onClick={() => setSelectedItem(vi.id)}
                 className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-                  selectedItem === item.id
+                  selectedItem === vi.id
                     ? "border-accent bg-accent/10 text-accent"
                     : "border-border text-text-secondary hover:border-accent"
                 }`}
               >
-                <span className="font-medium">{item.name}</span>
-                {item.username && (
-                  <span className="ml-2 text-text-tertiary">({item.username})</span>
+                <span className="font-medium">{vi.name}</span>
+                {vi.username && (
+                  <span className="ml-2 text-text-tertiary">({vi.username})</span>
                 )}
               </button>
             ))}
@@ -315,6 +321,100 @@ export function CredentialContent({ te, onResolve }: ToolContentProps) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Credential approval. Handles both a single `Credential` request and a
+ * batched `Credentials` request — the batch renders one slot per key so the
+ * user provides every secret an API needs (app key, user key, …) in one go
+ * and a single Duration + Approve resolves them all together.
+ */
+export function CredentialContent({ te, onResolve }: ToolContentProps) {
+  const hitl = te.hitl;
+
+  const items = useMemo<CredentialRequestItem[]>(() => {
+    if (hitl?.request.type === "Credential") return [{ query: hitl.request.data.query }];
+    if (hitl?.request.type === "Credentials") return hitl.request.data.items;
+    return [];
+  }, [hitl]);
+
+  const reason =
+    hitl?.request.type === "Credential"
+      ? hitl.request.data.reason
+      : hitl?.request.type === "Credentials"
+        ? hitl.request.data.reason
+        : "";
+
+  const [connections, setConnections] = useState<VaultConnection[]>([]);
+  const [duration, setDuration] = useState<GrantDuration>("once");
+  const [grants, setGrants] = useState<(SlotGrant | null)[]>(() => items.map(() => null));
+
+  useEffect(() => {
+    api.get<VaultConnection[]>("/api/vaults").then((conns) => {
+      setConnections(conns.filter((c) => c.enabled));
+    });
+  }, []);
+
+  // Keep the grants array aligned with the requested items.
+  useEffect(() => {
+    setGrants((prev) => items.map((_, i) => prev[i] ?? null));
+  }, [items]);
+
+  const handleSlotChange = useCallback((index: number, grant: SlotGrant | null) => {
+    setGrants((prev) => {
+      const next = prev.slice();
+      next[index] = grant;
+      return next;
+    });
+  }, []);
+
+  if (!hitl || (hitl.request.type !== "Credential" && hitl.request.type !== "Credentials")) {
+    return null;
+  }
+
+  const multiple = items.length > 1;
+  const allReady = grants.length === items.length && grants.every((g) => g !== null);
+
+  const handleApprove = () => {
+    if (!allReady) return;
+    const built = items.map((item, i) => {
+      const g = grants[i] as SlotGrant;
+      return {
+        query: item.query,
+        connection_id: g.connection_id,
+        vault_item_id: g.vault_item_id,
+        grant_duration: duration,
+        target: g.target,
+      };
+    });
+    onResolve(
+      { type: "Vault", data: { type: "GrantedMany", data: { grants: built } } },
+      multiple ? `Granted ${built.length}` : "Approved",
+    );
+  };
+
+  const handleDeny = () => {
+    onResolve({ type: "Vault", data: { type: "Denied" } }, "Denied");
+  };
+
+  const durationValue = typeof duration === "string" ? duration : "hours" in duration ? "hours" : "days";
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-text-tertiary">{reason}</p>
+
+      {items.map((item, i) => (
+        <CredentialSlot
+          key={`${i}-${item.query}`}
+          item={item}
+          index={i}
+          showHeader={multiple}
+          connections={connections}
+          onChange={handleSlotChange}
+        />
+      ))}
 
       <div>
         <Label>Duration</Label>
@@ -336,7 +436,7 @@ export function CredentialContent({ te, onResolve }: ToolContentProps) {
         </select>
       </div>
 
-      <ApprovalButtons loading={false} onApprove={handleApprove} onDeny={handleDeny} approveDisabled={!selectedItem || !target} />
+      <ApprovalButtons loading={false} onApprove={handleApprove} onDeny={handleDeny} approveDisabled={!allReady} />
     </div>
   );
 }
@@ -383,6 +483,7 @@ export function ToolContentDispatch(props: ToolContentProps & { selectedAnswer?:
     case "Takeover":
       return <TakeoverContent {...props} />;
     case "Credential":
+    case "Credentials":
       return <CredentialContent {...props} />;
     case "App":
       return <AppContent {...props} />;

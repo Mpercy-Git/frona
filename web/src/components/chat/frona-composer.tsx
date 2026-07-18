@@ -130,7 +130,7 @@ export function FronaComposer({
       hitlResponse = { type: "Choice", data: text };
     } else if (kind === "App") {
       hitlResponse = { type: "Approval", data: false };
-    } else if (kind === "Credential") {
+    } else if (kind === "Credential" || kind === "Credentials") {
       hitlResponse = { type: "Vault", data: { type: "Denied" } };
     } else {
       hitlResponse = { type: "Choice", data: text };
