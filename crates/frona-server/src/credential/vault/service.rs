@@ -289,6 +289,31 @@ impl VaultService {
                 .await
             {
                 Ok(secret) => env_vars.extend(project_target(&secret, &binding.target)),
+                Err(AppError::NotFound(_)) => {
+                    // The credential was deleted out from under this binding.
+                    // Self-heal: prune the orphan so it stops failing every
+                    // hydration, and don't shout — it's an expected condition.
+                    tracing::debug!(
+                        vault_item_id = %binding.vault_item_id,
+                        "Pruning binding for missing credential"
+                    );
+                    if let Err(e) = self
+                        .binding_repo
+                        .delete_for_item(
+                            user_id,
+                            &binding.principal,
+                            &binding.connection_id,
+                            &binding.vault_item_id,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            vault_item_id = %binding.vault_item_id,
+                            error = %e,
+                            "Failed to prune orphaned binding"
+                        );
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(
                         vault_item_id = %binding.vault_item_id,
@@ -789,7 +814,16 @@ impl VaultService {
             return Err(AppError::Forbidden("Not your credential".into()));
         }
 
-        self.credential_repo.delete(credential_id).await
+        self.credential_repo.delete(credential_id).await?;
+
+        // Cascade: for the local vault a credential's id is its vault_item_id,
+        // so drop any bindings and grants that referenced it. Otherwise they
+        // dangle and fail every future hydration with "Credential not found".
+        self.binding_repo
+            .delete_by_item(user_id, credential_id)
+            .await?;
+        self.grant_repo.delete_by_item(user_id, credential_id).await?;
+        Ok(())
     }
 
     async fn get_provider(

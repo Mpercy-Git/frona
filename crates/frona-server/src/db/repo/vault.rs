@@ -230,6 +230,24 @@ impl VaultGrantRepository for SurrealRepo<VaultGrant> {
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }
+
+    async fn delete_by_item(
+        &self,
+        user_id: &str,
+        vault_item_id: &str,
+    ) -> Result<(), AppError> {
+        self.db()
+            .query(
+                "DELETE FROM vault_grant \
+                 WHERE user_id = $user_id \
+                 AND vault_item_id = $vault_item_id",
+            )
+            .bind(("user_id", user_id.to_string()))
+            .bind(("vault_item_id", vault_item_id.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -463,6 +481,24 @@ impl PrincipalCredentialBindingRepository for SurrealRepo<PrincipalCredentialBin
             .bind(("principal_kind", principal.kind))
             .bind(("principal_id", principal.id.clone()))
             .bind(("connection_id", connection_id.to_string()))
+            .bind(("vault_item_id", vault_item_id.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_by_item(
+        &self,
+        user_id: &str,
+        vault_item_id: &str,
+    ) -> Result<(), AppError> {
+        self.db()
+            .query(
+                "DELETE FROM principal_credential_binding \
+                 WHERE user_id = $user_id \
+                 AND vault_item_id = $vault_item_id",
+            )
+            .bind(("user_id", user_id.to_string()))
             .bind(("vault_item_id", vault_item_id.to_string()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
