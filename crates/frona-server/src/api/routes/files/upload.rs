@@ -1,6 +1,8 @@
 use std::path::Path;
 
+use axum::extract::multipart::MultipartError;
 use axum::extract::{Multipart, State};
+use axum::http::StatusCode;
 use axum::Json;
 use tokio::fs;
 
@@ -14,6 +16,22 @@ use crate::core::state::AppState;
 
 use super::MAX_FILE_SIZE;
 
+/// Map a multipart streaming error to an `ApiError`. When the request exceeds
+/// the body limit, axum aborts the stream mid-read and the resulting
+/// `MultipartError` carries a `413` status. Without this, that surfaces to the
+/// user as a cryptic "error parsing multipart form-data" instead of the real
+/// cause (an oversized file), so translate it into the same friendly message
+/// the explicit size check below produces.
+fn map_multipart_err(e: MultipartError) -> ApiError {
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        return ApiError(AppError::Validation(format!(
+            "File too large (max {}MB)",
+            MAX_FILE_SIZE / 1024 / 1024
+        )));
+    }
+    ApiError(AppError::Validation(e.to_string()))
+}
+
 pub(crate) async fn upload_file(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -25,7 +43,7 @@ pub(crate) async fn upload_file(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|e| ApiError(AppError::Validation(e.to_string())))?
+        .map_err(map_multipart_err)?
     {
         match field.name() {
             Some("path") => {
@@ -33,7 +51,7 @@ pub(crate) async fn upload_file(
                     field
                         .text()
                         .await
-                        .map_err(|e| ApiError(AppError::Validation(e.to_string())))?,
+                        .map_err(map_multipart_err)?,
                 );
             }
             Some("file") | Some("upload") => {
@@ -44,7 +62,7 @@ pub(crate) async fn upload_file(
                 let bytes = field
                     .bytes()
                     .await
-                    .map_err(|e| ApiError(AppError::Validation(e.to_string())))?;
+                    .map_err(map_multipart_err)?;
 
                 if bytes.len() > MAX_FILE_SIZE {
                     return Err(ApiError(AppError::Validation(
