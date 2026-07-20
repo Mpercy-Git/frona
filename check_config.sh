@@ -5,8 +5,7 @@ import sys, json
 c = json.load(sys.stdin)
 v = c.get('voice', {})
 print('inbound_enabled:', v.get('inbound_enabled'))
-print('inbound_user_id:', v.get('inbound_user_id'))
+print('inbound_welcome_greeting:', v.get('inbound_welcome_greeting'))
 print('callback_base_url:', v.get('callback_base_url'))
-print('inbound_allowlist:', v.get('inbound_allowlist'))
 print('provider:', v.get('provider'))
 "

@@ -843,14 +843,8 @@ pub struct VoiceConfig {
     pub callback_base_url: Option<String>,
     #[schemars(description = "Enable inbound call answering. Requires the voice provider to POST to the inbound webhook.")]
     pub inbound_enabled: bool,
-    #[schemars(description = "Fallback user ID or username that owns inbound calls when the caller matches the static inbound_allowlist (or when no per-user allowlist matches).")]
-    pub inbound_user_id: Option<String>,
-    #[schemars(description = "Agent ID, handle, or name that handles inbound calls. Defaults to 'receptionist'..")]
-    pub inbound_agent_id: Option<String>,
-    #[schemars(description = "Greeting spoken immediately when an inbound call connects.")]
+    #[schemars(description = "Server-level default greeting spoken when an inbound call connects, used when the owning user has not set their own via /api/voice/inbound-settings.")]
     pub inbound_welcome_greeting: Option<String>,
-    #[schemars(description = "Static E.164 phone numbers allowed to reach inbound_user_id. Dynamic per-user lists are managed via /api/voice/allowlist.")]
-    pub inbound_allowlist: Vec<String>,
     #[schemars(description = "Enable silence filling during agent processing — sends periodic filler phrases to the caller while the agent is thinking.")]
     pub silence_fill_enabled: bool,
     #[schemars(description = "Seconds of silence before the first filler phrase is sent. Defaults to 3.")]

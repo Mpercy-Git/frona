@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api::error::ApiError;
 use crate::api::middleware::auth::AuthUser;
@@ -17,6 +17,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/voice/allowlist/{phone}",
             axum::routing::delete(remove_from_allowlist),
+        )
+        .route(
+            "/api/voice/inbound-settings",
+            get(get_inbound_settings).put(set_inbound_settings),
         )
 }
 
@@ -62,6 +66,58 @@ async fn remove_from_allowlist(
     state.remove_from_allowlist(&auth.user_id, &phone).await?;
     let entries = state.get_allowlist(&auth.user_id).await;
     Ok(Json(entries))
+}
+
+// ---------------------------------------------------------------------------
+// Per-user inbound answering settings (agent + welcome greeting)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct InboundSettingsResponse {
+    /// The user's chosen inbound agent (ID, handle, or name), or `null` when
+    /// they haven't set one (calls fall back to their `receptionist`).
+    agent: Option<String>,
+    /// The user's inbound welcome greeting, or `null` when unset (the
+    /// server-level default greeting applies).
+    greeting: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct InboundSettingsRequest {
+    /// Agent ID, handle, or name. Blank clears the override.
+    #[serde(default)]
+    agent: String,
+    /// Welcome greeting spoken when a call connects. Blank clears it.
+    #[serde(default)]
+    greeting: String,
+}
+
+async fn read_inbound_settings(state: &AppState, user_id: &str) -> InboundSettingsResponse {
+    InboundSettingsResponse {
+        agent: state.get_inbound_agent(user_id).await,
+        greeting: state.get_inbound_greeting(user_id).await,
+    }
+}
+
+/// `GET /api/voice/inbound-settings` — return the authenticated user's inbound
+/// answering agent and welcome greeting (each `null` if unset).
+async fn get_inbound_settings(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<InboundSettingsResponse>, ApiError> {
+    Ok(Json(read_inbound_settings(&state, &auth.user_id).await))
+}
+
+/// `PUT /api/voice/inbound-settings` — set (or clear) the authenticated user's
+/// inbound answering agent and welcome greeting. Blank values clear each.
+async fn set_inbound_settings(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<InboundSettingsRequest>,
+) -> Result<Json<InboundSettingsResponse>, ApiError> {
+    state.set_inbound_agent(&auth.user_id, &req.agent).await?;
+    state.set_inbound_greeting(&auth.user_id, &req.greeting).await?;
+    Ok(Json(read_inbound_settings(&state, &auth.user_id).await))
 }
 
 #[cfg(test)]
