@@ -2,6 +2,7 @@
   "name": "Frona",
   "short_name": "Frona",
   "description": "AI Agentic Assistant",
+  "id": "/",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#222831",
