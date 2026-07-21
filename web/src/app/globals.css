@@ -17,6 +17,13 @@ body {
 .pl-safe { padding-left:   env(safe-area-inset-left);   }
 .pr-safe { padding-right:  env(safe-area-inset-right);  }
 
+/* List-row action buttons are hidden behind `opacity-0 group-hover:opacity-100`
+   for a clean look on desktop, but touch devices have no hover so they'd be
+   unreachable. Force them visible on any device without hover. */
+@media (hover: none) {
+  .reveal-on-touch { opacity: 1 !important; }
+}
+
 @theme {
   --color-surface: var(--surface);
   --color-surface-secondary: var(--surface-secondary);
