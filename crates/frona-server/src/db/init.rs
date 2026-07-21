@@ -7,6 +7,7 @@ use tracing::info;
 /// through its own cascade events below.
 const USER_OWNED_TABLES: &[(&str, &str)] = &[
     ("agent", "user_id"),
+    ("agent_share", "owner_id"),
     ("space", "user_id"),
     ("chat", "user_id"),
     ("task", "user_id"),
@@ -54,6 +55,12 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE TABLE IF NOT EXISTS agent SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_agent_user ON TABLE agent COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_agent_user_handle ON TABLE agent COLUMNS user_id, handle UNIQUE;
+
+        DEFINE TABLE IF NOT EXISTS agent_share SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_agent_share_agent ON TABLE agent_share COLUMNS agent_id;
+        DEFINE INDEX IF NOT EXISTS idx_agent_share_owner ON TABLE agent_share COLUMNS owner_id;
+        DEFINE INDEX IF NOT EXISTS idx_agent_share_recipient ON TABLE agent_share COLUMNS recipient_id;
+        DEFINE INDEX IF NOT EXISTS idx_agent_share_unique ON TABLE agent_share COLUMNS agent_id, recipient_id UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS space SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_space_user ON TABLE space COLUMNS user_id;
@@ -182,6 +189,14 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE EVENT IF NOT EXISTS cascade_delete_task_chat ON TABLE task
           WHEN $event = 'DELETE' AND $before.chat_id IS NOT NONE
           THEN (DELETE type::record('chat', $before.chat_id));
+
+        DEFINE EVENT IF NOT EXISTS cascade_delete_agent_shares ON TABLE agent
+          WHEN $event = 'DELETE'
+          THEN (DELETE FROM agent_share WHERE agent_id = meta::id($before.id));
+
+        DEFINE EVENT IF NOT EXISTS cascade_delete_agent_shares_recipient ON TABLE user
+          WHEN $event = 'DELETE'
+          THEN (DELETE FROM agent_share WHERE recipient_id = meta::id($before.id));
 
         DEFINE EVENT IF NOT EXISTS refuse_last_admin_loss_on_delete ON TABLE user
           WHEN $event = 'DELETE'

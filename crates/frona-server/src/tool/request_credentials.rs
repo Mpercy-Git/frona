@@ -137,6 +137,9 @@ impl RequestCredentialsTool {
         // so re-runs (or partially-granted batches) don't re-ask for secrets
         // the chat already has.
         let mut satisfied: Vec<(CredentialRequest, _)> = Vec::new();
+        // Owner-delegated items on a shared agent: (request, owner's binding,
+        // owner id). Loaded from the owner's vault, never prompted.
+        let mut delegated: Vec<(CredentialRequest, _, String)> = Vec::new();
         let mut pending: Vec<CredentialRequest> = Vec::new();
         for item in requested {
             let binding = if force {
@@ -146,10 +149,25 @@ impl RequestCredentialsTool {
                     .find_binding(&ctx.user.id, &principal, &item.query, Some(&ctx.chat.id))
                     .await?
             };
-            match binding {
-                Some(b) => satisfied.push((item, b)),
-                None => pending.push(item),
+            if let Some(b) = binding {
+                satisfied.push((item, b));
+                continue;
             }
+            // Shared agent with credential delegation: fall back to the owner's
+            // durable binding for the same agent principal.
+            if !force
+                && let Some(owner_id) = ctx.delegated_credential_owner.as_deref()
+            {
+                let owner_binding = self
+                    .vault_service
+                    .find_binding(owner_id, &principal, &item.query, None)
+                    .await?;
+                if let Some(ob) = owner_binding {
+                    delegated.push((item, ob, owner_id.to_string()));
+                    continue;
+                }
+            }
+            pending.push(item);
         }
 
         // When nothing needs approval, load every already-granted secret and
@@ -165,6 +183,35 @@ impl RequestCredentialsTool {
                 self.vault_service
                     .log_access(
                         &ctx.user.id,
+                        principal.clone(),
+                        &ctx.chat.id,
+                        &binding.connection_id,
+                        &binding.vault_item_id,
+                        None,
+                        &item.query,
+                        &reason,
+                    )
+                    .await?;
+
+                let env_vars =
+                    crate::credential::vault::service::project_target(&secret, &binding.target);
+                var_names.extend(env_vars.iter().map(|(k, _)| k.clone()));
+                let mut vault_vars = ctx.vault_env_vars.write().await;
+                vault_vars.extend(env_vars);
+            }
+
+            // Owner-delegated secrets are read from the OWNER's vault and logged
+            // under the owner (for their audit). No approval — the owner opted
+            // into delegation when sharing.
+            for (item, binding, owner_id) in delegated {
+                let secret = self
+                    .vault_service
+                    .get_secret(&owner_id, &binding.connection_id, &binding.vault_item_id)
+                    .await?;
+
+                self.vault_service
+                    .log_access(
+                        &owner_id,
                         principal.clone(),
                         &ctx.chat.id,
                         &binding.connection_id,

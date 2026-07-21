@@ -86,7 +86,9 @@ import { SkillsSection } from "@/components/agents/configure/skills-section";
 import type { SkillBrowserHandle } from "@/components/skills/skill-browser";
 import { SandboxSection } from "@/components/agents/configure/sandbox-section";
 import { CredsSection } from "@/components/agents/configure/creds-section";
+import { ShareSection } from "@/components/agents/configure/share-section";
 
+// Superset (includes "share", owner-only) — used for typing + URL validation.
 const SECTIONS = [
   { id: "profile", label: "Profile" },
   { id: "model", label: "Model" },
@@ -95,6 +97,7 @@ const SECTIONS = [
   { id: "skills", label: "Skills" },
   { id: "sandbox", label: "Sandbox" },
   { id: "creds", label: "Credentials" },
+  { id: "share", label: "Share" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -213,6 +216,12 @@ function AgentSettings() {
     );
   }
 
+  // Agents shared *with* you are use-only: no editing, no re-sharing.
+  const isShared = agent.is_shared;
+  const visibleSections = isShared
+    ? SECTIONS.filter((s) => s.id !== "share")
+    : SECTIONS;
+
   return (
     <div className="flex h-full bg-surface">
       {/* Sidebar */}
@@ -231,7 +240,7 @@ function AgentSettings() {
           {agentDisplayName(agent.id, agent.name)}
         </h2>
         <nav className="space-y-1 flex-1">
-          {SECTIONS.map((s) => (
+          {visibleSections.map((s) => (
             <button
               key={s.id}
               onClick={() => setActiveSection(s.id)}
@@ -252,6 +261,14 @@ function AgentSettings() {
         <div className={`max-w-2xl mx-auto p-8 space-y-6 ${activeSection === "prompt" ? "flex-1 flex flex-col" : ""}`}>
           {error && (
             <div className="rounded-lg bg-error-bg p-3 text-sm text-error-text">{error}</div>
+          )}
+
+          {isShared && (
+            <div className="rounded-lg border border-border bg-surface-secondary p-3 text-sm text-text-secondary">
+              {agent.shared_by
+                ? `Shared with you by @${agent.shared_by}. You can use this agent but not edit it.`
+                : "Shared with you. You can use this agent but not edit it."}
+            </div>
           )}
 
           <div className={activeSection === "prompt" ? "flex-1 flex flex-col" : ""}>
@@ -301,10 +318,12 @@ function AgentSettings() {
               />
             )}
             {activeSection === "creds" && <CredsSection principalKind="agent" principalId={agentId} />}
+            {activeSection === "share" && <ShareSection agentId={agentId} />}
           </div>
 
-          {/* Save bar */}
-          {activeSection !== "creds" && (
+          {/* Save bar — hidden for the self-managing sections and for shared
+              (use-only) agents, which can't be edited. */}
+          {activeSection !== "creds" && activeSection !== "share" && !isShared && (
             <div className="pt-4 pb-2 border-t border-border flex items-center justify-end gap-2">
               <button
                 onClick={handleDiscard}
