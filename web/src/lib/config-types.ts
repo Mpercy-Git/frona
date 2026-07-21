@@ -75,10 +75,6 @@ export interface VoiceConfig {
   plivo_from_number: string | null;
   callback_base_url: string | null;
   inbound_enabled: boolean;
-  inbound_user_id: string | null;
-  inbound_agent_id: string | null;
-  inbound_welcome_greeting: string | null;
-  inbound_allowlist: string[];
   silence_fill_enabled: boolean;
   silence_fill_initial_delay_secs: number;
   silence_fill_interval_secs: number;

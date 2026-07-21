@@ -63,11 +63,9 @@ fn twiml_reject(reason: Option<&str>) -> Response {
 ///
 /// 1. Validates the Twilio signature (when `voice.twilio_auth_token` is set).
 /// 2. Rejects the call when `voice.inbound_enabled` is `false`.
-/// 3. Resolves which platform user "owns" the call by checking:
-///    a. Every user's per-user DB allowlist
-///    b. The static `voice.inbound_allowlist` config (falls back to
-///       `voice.inbound_user_id`)
-///    Calls from numbers not on any allowlist receive a `<Reject reason="busy"/>`.
+/// 3. Resolves which platform user "owns" the call by scanning every user's
+///    per-user DB allowlist (first match wins). Calls from numbers not on any
+///    user's allowlist receive a `<Reject reason="busy"/>`.
 /// 4. Creates a contact, chat, and call record under the owning user's account.
 /// 5. Issues a short-lived voice-session JWT and returns the
 ///    `<ConversationRelay>` TwiML that connects Twilio to the agent's
@@ -203,11 +201,7 @@ pub(super) async fn twilio_inbound_handler(
     // 4. Resolve call ownership from allowlists
     // ------------------------------------------------------------------
     let (user_id, caller_name_from_allowlist) = match state
-        .find_user_for_caller(
-            &from,
-            state.config.voice.inbound_user_id.as_deref(),
-            &state.config.voice.inbound_allowlist,
-        )
+        .find_user_for_caller(&from)
         .await
     {
         Some((uid, name)) => (uid, name),
@@ -254,14 +248,12 @@ pub(super) async fn twilio_inbound_handler(
 
     // ------------------------------------------------------------------
     // 6. Resolve answering agent
+    //    The owning user's own choice wins; otherwise their "receptionist".
     //    Try by ID first, then by handle (username), then by name.
-    //    Defaults to "receptionist" handle.
     // ------------------------------------------------------------------
     let agent_query = state
-        .config
-        .voice
-        .inbound_agent_id
-        .clone()
+        .get_inbound_agent(&user_id)
+        .await
         .unwrap_or_else(|| "receptionist".to_string());
 
     // Try by ID (UUID) first
@@ -440,9 +432,15 @@ pub(super) async fn twilio_inbound_handler(
         .replace("http://", "ws://");
     let ws_url = format!("{ws_base}/api/voice/twilio/ws?token={}", created.jwt);
 
+    // Per-user greeting wins; otherwise the server-level default.
+    let greeting = state
+        .get_inbound_greeting(&user_id)
+        .await
+        .or_else(|| state.config.voice.inbound_welcome_greeting.clone());
+
     let twiml = build_twiml(
         &ws_url,
-        state.config.voice.inbound_welcome_greeting.as_deref(),
+        greeting.as_deref(),
         None, // hints — not applicable for inbound
         state.config.voice.twilio_voice_id.as_deref(),
         state.config.voice.twilio_speech_model.as_deref(),
