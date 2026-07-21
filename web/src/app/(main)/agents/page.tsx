@@ -87,6 +87,7 @@ import type { SkillBrowserHandle } from "@/components/skills/skill-browser";
 import { SandboxSection } from "@/components/agents/configure/sandbox-section";
 import { CredsSection } from "@/components/agents/configure/creds-section";
 import { ShareSection } from "@/components/agents/configure/share-section";
+import { ConfigSidebar } from "@/components/layout/config-sidebar";
 
 // Superset (includes "share", owner-only) — used for typing + URL validation.
 const SECTIONS = [
@@ -224,37 +225,26 @@ function AgentSettings() {
 
   return (
     <div className="flex h-full bg-surface">
-      {/* Sidebar */}
-      <div
-        className="border-r border-border bg-surface-nav p-4 flex flex-col"
-        style={{ width: 289 }}
-      >
-        <button
-          onClick={() => router.push("/chat")}
-          className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition mb-4"
-        >
-          <ArrowLeftIcon className="h-4 w-4" />
-          Back
-        </button>
-        <h2 className="text-lg font-semibold text-text-primary mb-4 truncate">
-          {agentDisplayName(agent.id, agent.name)}
-        </h2>
-        <nav className="space-y-1 flex-1">
-          {visibleSections.map((s) => (
+      {/* Sidebar — fixed column on desktop, drawer on mobile */}
+      <ConfigSidebar
+        header={
+          <>
             <button
-              key={s.id}
-              onClick={() => setActiveSection(s.id)}
-              className={`w-full text-left rounded-lg px-3 py-2 text-sm transition ${
-                activeSection === s.id
-                  ? "bg-accent/10 text-accent font-medium"
-                  : "text-text-secondary hover:bg-surface-tertiary hover:text-text-primary"
-              }`}
+              onClick={() => router.push("/chat")}
+              className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition mb-4"
             >
-              {s.label}
+              <ArrowLeftIcon className="h-4 w-4" />
+              Back
             </button>
-          ))}
-        </nav>
-      </div>
+            <h2 className="text-lg font-semibold text-text-primary mb-4 truncate">
+              {agentDisplayName(agent.id, agent.name)}
+            </h2>
+          </>
+        }
+        sections={visibleSections}
+        activeSection={activeSection}
+        onSelect={(id) => setActiveSection(id as SectionId)}
+      />
 
       {/* Content */}
       <div className={`flex-1 ${activeSection === "prompt" ? "flex flex-col" : "overflow-y-auto"}`}>

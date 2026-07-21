@@ -62,7 +62,7 @@ function AppList({ apps, onAction, onClose }: {
             {app.status === "running" ? (
               <button
                 onClick={(e) => { e.stopPropagation(); onAction("stop", app); }}
-                className="p-1 rounded text-text-tertiary hover:text-text-primary transition opacity-0 group-hover:opacity-100"
+                className="p-1 rounded text-text-tertiary hover:text-text-primary transition opacity-0 group-hover:opacity-100 reveal-on-touch"
                 title="Stop"
               >
                 <StopIcon className="h-4 w-4" />
@@ -70,7 +70,7 @@ function AppList({ apps, onAction, onClose }: {
             ) : (app.status === "stopped" || app.status === "failed" || app.status === "hibernated") && app.kind !== "static" ? (
               <button
                 onClick={(e) => { e.stopPropagation(); onAction("restart", app); }}
-                className="p-1 rounded text-text-tertiary hover:text-text-primary transition opacity-0 group-hover:opacity-100"
+                className="p-1 rounded text-text-tertiary hover:text-text-primary transition opacity-0 group-hover:opacity-100 reveal-on-touch"
                 title="Start"
               >
                 <PlayIcon className="h-4 w-4" />
@@ -78,7 +78,7 @@ function AppList({ apps, onAction, onClose }: {
             ) : null}
             <button
               onClick={(e) => { e.stopPropagation(); onAction("delete", app); }}
-              className="p-1 rounded text-text-tertiary hover:text-error-text transition opacity-0 group-hover:opacity-100"
+              className="p-1 rounded text-text-tertiary hover:text-error-text transition opacity-0 group-hover:opacity-100 reveal-on-touch"
               title="Delete"
             >
               <TrashIcon className="h-4 w-4" />
