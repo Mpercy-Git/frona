@@ -76,7 +76,10 @@ export interface Agent {
   sandbox_limits: SandboxLimits | null;
   prompt: string | null;
   default_prompt: string;
+  /** True when this agent was shared with you (use-only). Editing is disabled. */
   is_shared: boolean;
+  /** Owner's handle when `is_shared` — shown as "Shared by …". */
+  shared_by?: string | null;
   chat_count: number;
   created_at: string;
   updated_at: string;

@@ -119,6 +119,7 @@ pub struct AppState {
     pub user_service: UserService,
     pub user_group_service: crate::auth::group_service::UserGroupService,
     pub agent_service: AgentService,
+    pub agent_share_service: crate::agent::share::service::AgentShareService,
     pub space_service: SpaceService,
     pub call_service: CallService,
     pub usage_service: crate::inference::usage::UsageService,
@@ -358,13 +359,19 @@ impl AppState {
             config.server.timezone.clone(),
         ));
 
-        let agent_service = AgentService::new(
+        let agent_share_service = crate::agent::share::service::AgentShareService::new(
+            SurrealRepo::new(db.clone()),
+            user_service.clone(),
+        );
+
+        let mut agent_service = AgentService::new(
             SurrealRepo::new(db.clone()),
             &config.cache,
             resource_manager.clone(),
             policy_service.clone(),
             user_service.clone(),
         );
+        agent_service.set_share_service(agent_share_service.clone());
 
         let app_manager = Arc::new(AppManager::new(
             sandbox_manager.clone(),
@@ -516,6 +523,7 @@ impl AppState {
             user_service: user_service.clone(),
             user_group_service: user_group_service.clone(),
             agent_service: agent_service.clone(),
+            agent_share_service: agent_share_service.clone(),
             space_service: SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             call_service: CallService::new(SurrealRepo::new(db.clone())),
             usage_service,

@@ -55,9 +55,26 @@ impl ChatSessionContext {
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
+        // For a shared agent (runner ≠ owner), definition-scoped lookups must
+        // resolve under the OWNER: skills, agent workspace, sandbox policy.
+        // For an owned agent this is just the runner's own handle.
+        let agent_owner_handle = if agent.user_id == user_id {
+            user.handle.clone()
+        } else {
+            harness.user_service.handle_of(&agent.user_id).await?
+        };
+
+        // If this is a shared agent whose owner opted into credential
+        // delegation, the recipient's run may use the owner's agent credentials.
+        let delegated_credential_owner = harness
+            .agent_service
+            .credential_delegation_owner(&agent, user_id)
+            .await
+            .unwrap_or(None);
+
         let skills = harness
             .skill_service
-            .list(&user.handle, &agent.handle, agent_config.skills.as_deref())
+            .list(&agent_owner_handle, &agent.handle, agent_config.skills.as_deref())
             .await;
 
         // Load task early so `build_agent_registry` can register
@@ -306,15 +323,26 @@ impl ChatSessionContext {
             }
         }
 
-        let mut tool_ctx = InferenceContext::new(user, agent, chat.clone(), event_sender, harness.shutdown_token.clone(), cancel_token.clone());
+        let mut tool_ctx = InferenceContext::new(user, agent, chat.clone(), event_sender, harness.shutdown_token.clone(), cancel_token.clone())
+            .with_agent_owner_handle(agent_owner_handle)
+            .with_delegated_credential_owner(delegated_credential_owner.clone());
         tool_ctx.file_paths = file_paths;
         tool_ctx.task = task;
 
-        let vault_env = harness
+        let mut vault_env = harness
             .vault_service
             .hydrate_chat_env_vars(user_id, &chat.id, &chat.agent_id)
             .await
             .unwrap_or_default();
+        // Credential delegation: also load the owner's durable agent credentials.
+        if let Some(ref owner_id) = delegated_credential_owner {
+            let delegated = harness
+                .vault_service
+                .hydrate_delegated_env_vars(owner_id, &chat.agent_id, &chat.id)
+                .await
+                .unwrap_or_default();
+            vault_env.extend(delegated);
+        }
         if !vault_env.is_empty() {
             let mut vault_vars = tool_ctx.vault_env_vars.write().await;
             vault_vars.extend(vault_env);
