@@ -56,6 +56,25 @@ pub fn ollama(mut p: RequestParams) -> RequestParams {
     p
 }
 
+/// Enable Anthropic's automatic prompt caching. rig flattens `additional_params`
+/// into the request body, so adding a top-level `cache_control: {"type":"ephemeral"}`
+/// is equivalent to rig's `with_automatic_caching()`: the API places a cache
+/// breakpoint on the last cacheable block (tools + system + history) and advances
+/// it as the conversation grows. This avoids reprocessing the (large, stable)
+/// system prompt and tool definitions on every turn and every delegated hop.
+///
+/// Uses the default 5-minute TTL (no `ttl` field), so no beta header is needed.
+/// The API silently skips caching when the prefix is below the model's minimum
+/// cacheable length, so it's safe to send unconditionally. Respects a
+/// `cache_control` already supplied upstream.
+pub fn anthropic(mut p: RequestParams) -> RequestParams {
+    let mut root = take_object(&mut p.additional_params);
+    root.entry("cache_control".to_string())
+        .or_insert_with(|| serde_json::json!({ "type": "ephemeral" }));
+    p.additional_params = Some(Value::Object(root));
+    p
+}
+
 fn take_object(slot: &mut Option<Value>) -> Map<String, Value> {
     match slot.take() {
         Some(Value::Object(m)) => m,
@@ -158,6 +177,42 @@ mod tests {
         assert_eq!(
             p.additional_params,
             Some(json!({"options": {"num_predict": 4096}})),
+        );
+    }
+
+    #[test]
+    fn anthropic_adds_cache_control_when_absent() {
+        let p = anthropic(params(Some(64000), None));
+        assert_eq!(
+            p.additional_params,
+            Some(json!({"cache_control": {"type": "ephemeral"}})),
+        );
+    }
+
+    #[test]
+    fn anthropic_merges_with_existing_additional_params() {
+        let p = anthropic(params(
+            Some(64000),
+            Some(json!({"thinking": {"type": "enabled", "budget_tokens": 16000}})),
+        ));
+        assert_eq!(
+            p.additional_params,
+            Some(json!({
+                "thinking": {"type": "enabled", "budget_tokens": 16000},
+                "cache_control": {"type": "ephemeral"},
+            })),
+        );
+    }
+
+    #[test]
+    fn anthropic_preserves_user_supplied_cache_control() {
+        let p = anthropic(params(
+            None,
+            Some(json!({"cache_control": {"type": "ephemeral", "ttl": "1h"}})),
+        ));
+        assert_eq!(
+            p.additional_params,
+            Some(json!({"cache_control": {"type": "ephemeral", "ttl": "1h"}})),
         );
     }
 }

@@ -192,7 +192,26 @@ fn init_provider(
                 RigProvider::new(client, counter.clone()).with_hook(hooks::openai),
             ) as Arc<dyn ModelProvider>)
         }
-        "anthropic" => init_builder_provider!(name, entry, anthropic, counter),
+        // Not via init_builder_provider! because Anthropic needs a request hook
+        // (prompt caching) attached to the provider.
+        "anthropic" => {
+            let key = require_api_key(name, entry)?;
+            let client: anthropic::Client = if let Some(url) = &entry.base_url {
+                anthropic::Client::builder()
+                    .api_key(&key)
+                    .base_url(url)
+                    .build()
+                    .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?
+            } else {
+                anthropic::Client::builder()
+                    .api_key(&key)
+                    .build()
+                    .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?
+            };
+            Ok(Arc::new(
+                RigProvider::new(client, counter.clone()).with_hook(hooks::anthropic),
+            ) as Arc<dyn ModelProvider>)
+        }
         "ollama" => {
             let client: ollama::Client = if let Some(url) = &entry.base_url {
                 ollama::Client::builder()

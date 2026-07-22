@@ -123,6 +123,7 @@ impl Scheduler {
     async fn run_poll_tasks(&self) -> Result<(), AppError> {
         self.run_cron_tasks().await?;
         self.run_deferred_tasks().await?;
+        self.run_pending_tasks().await?;
         self.run_signal_timeouts().await?;
         self.run_delivery_retries().await?;
         self.run_pair_expiry_sweep().await?;
@@ -278,6 +279,34 @@ impl Scheduler {
             tokio::spawn(async move {
                 if let Err(e) = exec.run_task(task).await {
                     tracing::warn!(error = %e, "Failed to run deferred task");
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Re-drives immediate Pending tasks that `run_task` previously skipped
+    /// because a concurrency limit was full. Without this, such a task would
+    /// stay Pending until the next server restart. `run_task` re-checks the
+    /// caps and the in-flight set, so already-running or still-capped tasks are
+    /// harmlessly skipped again.
+    async fn run_pending_tasks(&self) -> Result<(), AppError> {
+        if self.app_state.is_shutting_down() {
+            return Ok(());
+        }
+        let tasks = self.app_state.task_service.find_pending_immediate().await?;
+        if tasks.is_empty() {
+            return Ok(());
+        }
+
+        let executor = self.app_state.task_executor.clone();
+
+        for task in tasks {
+            let exec = executor.clone();
+            tokio::spawn(async move {
+                if let Err(e) = exec.run_task(task).await {
+                    tracing::warn!(error = %e, "Failed to run pending task from sweep");
                 }
             });
         }
