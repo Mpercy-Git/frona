@@ -25,8 +25,11 @@ function setCookie(name: string, value: string, days = 365) {
 }
 
 function NavigationContent({ activeTab }: { activeTab: string }) {
+  // `min-h-0` is required so this flex child can shrink below its content
+  // height and become a proper top-anchored scroll region; without it the
+  // list overflows its parent and opens scrolled mid-list.
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 min-h-0 overflow-y-auto">
       {activeTab === "chat" && <ChatsTab />}
       {activeTab === "tasks" && <TasksTab />}
     </div>

@@ -17,6 +17,11 @@ pub trait TaskRepository: Repository<Task> {
     async fn find_active_runs_by_cron(&self, cron_id: &str) -> Result<Vec<Task>, AppError>;
     async fn find_orphaned_cron_runs(&self) -> Result<Vec<Task>, AppError>;
     async fn find_deferred_due(&self, now: DateTime<Utc>) -> Result<Vec<Task>, AppError>;
+    /// Immediate (non-deferred) Pending tasks that run via `run_task`: Delegation,
+    /// Direct and CronRun kinds with no `run_at`. Excludes Cron templates (fired
+    /// by cron sweep) and Signal tasks (matched by the signal matcher). Used by
+    /// the scheduler to re-attempt tasks that were skipped by the concurrency cap.
+    async fn find_pending_immediate(&self) -> Result<Vec<Task>, AppError>;
     async fn find_pending_signal_tasks(&self) -> Result<Vec<Task>, AppError>;
     async fn find_expired_signal_tasks(&self, now: DateTime<Utc>) -> Result<Vec<Task>, AppError>;
 }

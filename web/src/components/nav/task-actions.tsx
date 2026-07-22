@@ -43,7 +43,7 @@ export function TaskActions({
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className="rounded p-0.5 text-text-tertiary hover:text-text-primary transition opacity-0 group-hover:opacity-100 focus:opacity-100"
+        className="rounded p-0.5 text-text-tertiary hover:text-text-primary transition opacity-0 group-hover:opacity-100 focus:opacity-100 reveal-on-touch"
       >
         <EllipsisVerticalIcon className="h-5 w-5" />
       </button>

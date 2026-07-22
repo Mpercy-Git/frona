@@ -11,6 +11,7 @@ use twilio_async::{TwilioJson, TwilioRequest};
 
 use crate::agent::prompt::PromptLoader;
 use crate::auth::User;
+use crate::auth::UserService;
 use crate::auth::token::models::TokenType;
 use crate::auth::token::service::{CreateTokenRequest, TokenService};
 use crate::call::models::CallDirection;
@@ -55,6 +56,28 @@ pub fn normalize_phone(phone: &str) -> String {
         }
     }
     out
+}
+
+/// Find the active (non-deactivated) user whose phone number matches `phone`,
+/// compared in the canonical form from [`normalize_phone`] so that formatting
+/// differences (spaces, `+`/`00` prefixes, punctuation) don't cause a miss.
+///
+/// Returns `None` when there is no match, when the caller has no usable number,
+/// or when the lookup fails — callers treat a `None` as "not one of our users".
+pub async fn find_user_by_phone(user_service: &UserService, phone: &str) -> Option<User> {
+    let target = normalize_phone(phone);
+    if target.is_empty() {
+        return None;
+    }
+    match user_service.list_all(false).await {
+        Ok(users) => users
+            .into_iter()
+            .find(|u| u.phone.as_deref().is_some_and(|p| normalize_phone(p) == target)),
+        Err(e) => {
+            tracing::warn!(error = %e, "find_user_by_phone: user lookup failed");
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

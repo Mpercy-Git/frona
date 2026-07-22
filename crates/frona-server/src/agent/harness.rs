@@ -375,6 +375,13 @@ impl Harness {
             .find_by_id(&chat.agent_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("agent {}", chat.agent_id)))?;
+        // Owner handle for a shared agent (runner ≠ owner) so a resumed tool's
+        // sandbox resolves the owner's workspace/policy; runner's own otherwise.
+        let agent_owner_handle = if agent.user_id == user.id {
+            user.handle.clone()
+        } else {
+            self.user_service.handle_of(&agent.user_id).await?
+        };
         let event_tx = self.broadcast_service.create_event_sender(
             &user.id,
             &te.chat_id,
@@ -387,7 +394,8 @@ impl Harness {
             event_tx,
             self.shutdown_token.clone(),
             CancellationToken::new(),
-        );
+        )
+        .with_agent_owner_handle(agent_owner_handle);
 
         let request = hitl.request.clone();
         let outcome = tool

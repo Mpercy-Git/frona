@@ -452,6 +452,12 @@ impl TaskService {
         self.repo.find_deferred_due(chrono::Utc::now()).await
     }
 
+    /// Immediate Pending tasks eligible to run via `run_task`. The scheduler uses
+    /// this to re-drive tasks that were left Pending by the concurrency cap.
+    pub async fn find_pending_immediate(&self) -> Result<Vec<Task>, AppError> {
+        self.repo.find_pending_immediate().await
+    }
+
     pub async fn find_due_cron_templates(&self) -> Result<Vec<Task>, AppError> {
         self.repo.find_due_cron_templates(chrono::Utc::now()).await
     }

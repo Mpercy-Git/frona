@@ -18,6 +18,7 @@ import { api } from "@/lib/api-client";
 import { sseBus } from "@/lib/sse-event-bus";
 import { SectionHeader, SectionPanel } from "@/components/settings/field";
 import { AddCredentialForm } from "@/components/agents/configure/creds-section";
+import { ConfigSidebar } from "@/components/layout/config-sidebar";
 import type { VaultGrant, VaultConnection, PendingCredential } from "@/components/agents/configure/creds-section";
 import { ManifestInfo, MarkdownProse, type ExternalLink } from "@/components/channels/manifest-info";
 import { QRCodeSVG } from "qrcode.react";
@@ -439,55 +440,43 @@ function ChannelDetailPage() {
 
   return (
     <div className="flex h-full bg-surface">
-      <div
-        className="border-r border-border bg-surface-nav p-4 flex flex-col"
-        style={{ width: 289 }}
-      >
-        <button
-          onClick={() => router.push("/settings#channels")}
-          className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition mb-4"
-        >
-          <ArrowLeftIcon className="h-4 w-4" />
-          Back to Channels
-        </button>
-
-        <div className="flex items-center gap-2 mb-4">
-          <ChatBubbleLeftRightIcon className="h-8 w-8 text-text-tertiary shrink-0" />
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-text-primary truncate">{displayName}</h2>
-            <div className="flex items-center gap-1 flex-wrap mt-0.5">
-              <span
-                className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${providerBadgeClass(channel.provider, allManifests)}`}
-              >
-                {manifest?.display_name ?? channel.provider}
-              </span>
-              <span
-                className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                  STATUS_BADGE[channel.status] ?? STATUS_BADGE.disconnected
-                }`}
-              >
-                {channel.status}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <nav className="space-y-1 flex-1">
-          {visibleSections.map((s) => (
+      <ConfigSidebar
+        header={
+          <>
             <button
-              key={s.id}
-              onClick={() => setActiveSection(s.id)}
-              className={`w-full text-left rounded-lg px-3 py-2 text-sm transition ${
-                activeSection === s.id
-                  ? "bg-accent/10 text-accent font-medium"
-                  : "text-text-secondary hover:bg-surface-tertiary hover:text-text-primary"
-              }`}
+              onClick={() => router.push("/settings#channels")}
+              className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition mb-4"
             >
-              {s.label}
+              <ArrowLeftIcon className="h-4 w-4" />
+              Back to Channels
             </button>
-          ))}
-        </nav>
-      </div>
+
+            <div className="flex items-center gap-2 mb-4">
+              <ChatBubbleLeftRightIcon className="h-8 w-8 text-text-tertiary shrink-0" />
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold text-text-primary truncate">{displayName}</h2>
+                <div className="flex items-center gap-1 flex-wrap mt-0.5">
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${providerBadgeClass(channel.provider, allManifests)}`}
+                  >
+                    {manifest?.display_name ?? channel.provider}
+                  </span>
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                      STATUS_BADGE[channel.status] ?? STATUS_BADGE.disconnected
+                    }`}
+                  >
+                    {channel.status}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </>
+        }
+        sections={visibleSections}
+        activeSection={activeSection}
+        onSelect={(id) => setActiveSection(id as SectionId)}
+      />
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto p-8 space-y-6">

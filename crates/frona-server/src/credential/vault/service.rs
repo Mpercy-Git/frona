@@ -326,6 +326,59 @@ impl VaultService {
         Ok(env_vars)
     }
 
+    /// Load the *owner's* durable credential bindings for an agent into env
+    /// vars, for a recipient's run of a shared agent (credential delegation).
+    /// Only durable grants delegate; the owner's chat-scoped bindings (their
+    /// other conversations) are skipped. Best-effort — missing secrets are
+    /// logged and skipped, never fatal. Access is logged under the owner.
+    pub async fn hydrate_delegated_env_vars(
+        &self,
+        owner_id: &str,
+        agent_id: &str,
+        chat_id: &str,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let principal = Principal::agent(agent_id);
+        let bindings = self
+            .binding_repo
+            .find_for_principal(owner_id, &principal)
+            .await?;
+        let mut env_vars = Vec::new();
+        for binding in bindings {
+            if !matches!(binding.scope, BindingScope::Durable) {
+                continue;
+            }
+            match self
+                .get_secret(owner_id, &binding.connection_id, &binding.vault_item_id)
+                .await
+            {
+                Ok(secret) => {
+                    env_vars.extend(project_target(&secret, &binding.target));
+                    // Audit under the owner so delegated use is visible to them.
+                    let _ = self
+                        .log_access(
+                            owner_id,
+                            principal.clone(),
+                            chat_id,
+                            &binding.connection_id,
+                            &binding.vault_item_id,
+                            None,
+                            &binding.query,
+                            "Shared-agent credential delegation",
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        vault_item_id = %binding.vault_item_id,
+                        error = %e,
+                        "Failed to fetch delegated secret for shared agent"
+                    );
+                }
+            }
+        }
+        Ok(env_vars)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn has_grant_for_item(
         &self,

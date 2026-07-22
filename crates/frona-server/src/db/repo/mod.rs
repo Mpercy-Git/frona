@@ -1,3 +1,4 @@
+pub mod agent_shares;
 pub mod agents;
 pub mod apps;
 pub mod calls;

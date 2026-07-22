@@ -52,7 +52,7 @@ export function AgentsSection() {
                 </span>
                 {agent.is_shared && (
                   <span className="shrink-0 rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-tertiary">
-                    Shared
+                    {agent.shared_by ? `Shared by @${agent.shared_by}` : "Shared"}
                   </span>
                 )}
                 {!agent.enabled && (

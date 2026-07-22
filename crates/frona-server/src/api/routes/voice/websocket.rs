@@ -14,7 +14,7 @@ use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::inference::InferenceResponse;
 use crate::inference::conversation::DefaultConversationBuilder;
-use crate::tool::voice::VoiceSessionExtensions;
+use crate::tool::voice::{VoiceSessionExtensions, find_user_by_phone};
 
 use super::models::TokenQuery;
 use super::verify_voice_jwt;
@@ -71,6 +71,7 @@ pub(crate) async fn twilio_ws_handler(
     ws.on_upgrade(move |socket| handle_voice_socket(socket, state, chat_id, user_id, contact_id, call_id, caller_name, caller_phone))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_voice_socket(
     socket: WebSocket,
     state: AppState,
@@ -83,6 +84,19 @@ async fn handle_voice_socket(
 ) {
     let (mut session_id, _) = state.active_sessions.register(&chat_id).await;
     tracing::debug!(chat_id = %chat_id, "Voice WS session registered in active sessions");
+
+    // The timer-based silence filler speaks generic canned phrases, which are
+    // appropriate only when the other party is one of our own users — e.g. the
+    // agent is calling a user, or a user is calling in. On a call with an
+    // arbitrary third party the agent narrates its own progress instead (see
+    // active_call.md), so canned fillers would just sound robotic. Decide once
+    // per call from the remote party's phone number.
+    let remote_is_user = match caller_phone.as_deref() {
+        Some(phone) => find_user_by_phone(&state.user_service, phone).await.is_some(),
+        None => false,
+    };
+    tracing::debug!(chat_id = %chat_id, remote_is_user, "Silence-fill gating resolved");
+
     let (ws_send, mut ws_recv) = socket.split();
     // Wrap the send half in Arc<Mutex> so it can be shared between the agent
     // turn task and the silence-filler task.
@@ -149,7 +163,7 @@ async fn handle_voice_socket(
                 // to the caller while the agent is processing. The filler is
                 // cancelled when the turn completes (or errors).
                 let filler_cancel = CancellationToken::new();
-                let filler_handle = if state.config.voice.silence_fill_enabled {
+                let filler_handle = if remote_is_user && state.config.voice.silence_fill_enabled {
                     let ws = ws_send.clone();
                     let fc = filler_cancel.clone();
                     let cid = chat_id.clone();

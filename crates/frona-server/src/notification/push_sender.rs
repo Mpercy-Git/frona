@@ -78,9 +78,16 @@ impl PushSender {
                 &sub.auth_secret,
             );
 
-            // Build VAPID signature (needs per-subscription info).
+            // Build VAPID signature (needs per-subscription info). The `sub`
+            // claim is REQUIRED by FCM (Android/Chrome): without it the push is
+            // rejected and no system notification appears, even though more
+            // lenient push services (e.g. Mozilla autopush) still deliver.
             let sig = match VapidSignatureBuilder::from_base64_no_sub(&self.vapid_private_key) {
-                Ok(builder) => builder.add_sub_info(&subscription_info).build(),
+                Ok(builder) => {
+                    let mut builder = builder.add_sub_info(&subscription_info);
+                    builder.add_claim("sub", self.vapid_subject.as_str());
+                    builder.build()
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "VAPID signature build failed");
                     continue;

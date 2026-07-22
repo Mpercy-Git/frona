@@ -150,16 +150,12 @@ impl ChatService {
         req: CreateChatRequest,
     ) -> Result<ChatResponse, AppError> {
         // Fail eagerly on bad `agent_id` — first /messages/stream would silently 404.
-        let agent = self
+        // Access-checked: the user must own the agent OR have it shared with
+        // them (use-only). `get_accessible` returns Forbidden/NotFound otherwise.
+        let (_agent, _access) = self
             .agent_service
-            .find_by_id(&req.agent_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!("Agent '{}' not found", req.agent_id))
-            })?;
-        if agent.user_id != user_id {
-            return Err(AppError::Forbidden("Not your agent".into()));
-        }
+            .get_accessible(user_id, &req.agent_id)
+            .await?;
 
         let now = chrono::Utc::now();
         let chat = Chat {

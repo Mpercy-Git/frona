@@ -119,6 +119,7 @@ pub struct AppState {
     pub user_service: UserService,
     pub user_group_service: crate::auth::group_service::UserGroupService,
     pub agent_service: AgentService,
+    pub agent_share_service: crate::agent::share::service::AgentShareService,
     pub space_service: SpaceService,
     pub call_service: CallService,
     pub usage_service: crate::inference::usage::UsageService,
@@ -358,13 +359,19 @@ impl AppState {
             config.server.timezone.clone(),
         ));
 
-        let agent_service = AgentService::new(
+        let agent_share_service = crate::agent::share::service::AgentShareService::new(
+            SurrealRepo::new(db.clone()),
+            user_service.clone(),
+        );
+
+        let mut agent_service = AgentService::new(
             SurrealRepo::new(db.clone()),
             &config.cache,
             resource_manager.clone(),
             policy_service.clone(),
             user_service.clone(),
         );
+        agent_service.set_share_service(agent_share_service.clone());
 
         let app_manager = Arc::new(AppManager::new(
             sandbox_manager.clone(),
@@ -516,6 +523,7 @@ impl AppState {
             user_service: user_service.clone(),
             user_group_service: user_group_service.clone(),
             agent_service: agent_service.clone(),
+            agent_share_service: agent_share_service.clone(),
             space_service: SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             call_service: CallService::new(SurrealRepo::new(db.clone())),
             usage_service,
@@ -621,6 +629,58 @@ impl AppState {
         format!("voice.inbound_allowlist.{user_id}")
     }
 
+    fn inbound_agent_key(user_id: &str) -> String {
+        format!("voice.inbound_agent.{user_id}")
+    }
+
+    /// Return the user's preferred inbound answering agent (ID, handle, or
+    /// name), if they have set one. Blank values are treated as unset.
+    pub async fn get_inbound_agent(&self, user_id: &str) -> Option<String> {
+        self.get_runtime_config(&Self::inbound_agent_key(user_id))
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Set the user's preferred inbound answering agent. A blank value clears
+    /// the override, so inbound calls fall back to the user's `receptionist`.
+    pub async fn set_inbound_agent(
+        &self,
+        user_id: &str,
+        agent: &str,
+    ) -> Result<(), crate::core::error::AppError> {
+        self.set_runtime_config(&Self::inbound_agent_key(user_id), agent.trim())
+            .await
+    }
+
+    fn inbound_greeting_key(user_id: &str) -> String {
+        format!("voice.inbound_greeting.{user_id}")
+    }
+
+    /// Return the user's inbound welcome greeting, if they have set one. Blank
+    /// values are treated as unset.
+    pub async fn get_inbound_greeting(&self, user_id: &str) -> Option<String> {
+        self.get_runtime_config(&Self::inbound_greeting_key(user_id))
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Set the user's inbound welcome greeting. A blank value clears it, so the
+    /// server-level default (`voice.inbound_welcome_greeting`) applies instead.
+    pub async fn set_inbound_greeting(
+        &self,
+        user_id: &str,
+        greeting: &str,
+    ) -> Result<(), crate::core::error::AppError> {
+        self.set_runtime_config(&Self::inbound_greeting_key(user_id), greeting.trim())
+            .await
+    }
+
     /// Return the allowlist entries on a user's allowlist (DB-stored).
     pub async fn get_allowlist(&self, user_id: &str) -> Vec<AllowlistEntry> {
         let key = Self::allowlist_key(user_id);
@@ -688,25 +748,22 @@ impl AppState {
 
     /// Resolve which platform user "owns" an inbound call from `phone`.
     ///
-    /// Look-up order:
-    /// 1. Per-user DB allowlists (key prefix `voice.inbound_allowlist.{user_id}`)
-    ///    — first match wins.
-    /// 2. Static `config_allowlist` (owned by `fallback_user_id`).
+    /// Scans every user's DB allowlist (key prefix
+    /// `voice.inbound_allowlist.{user_id}`); the first match wins. Ownership is
+    /// entirely per-user — there is no global/static fallback list.
     ///
-    /// Returns `None` when the caller is not on any allowlist.
-    /// When matched via a DB allowlist, returns the entry's `name` if set.
+    /// Returns `None` when the caller is not on any user's allowlist.
+    /// When matched, returns the entry's `name` if set.
     pub async fn find_user_for_caller(
         &self,
         phone: &str,
-        fallback_user_id: Option<&str>,
-        config_allowlist: &[String],
     ) -> Option<(String, Option<String>)> {
         let normalized = crate::tool::voice::normalize_phone(phone);
         if normalized.is_empty() || normalized == "+" {
             return None;
         }
 
-        // --- 1. Check all per-user DB allowlists ---
+        // Check every per-user DB allowlist.
         let mut result = self
             .db
             .query(
@@ -740,16 +797,6 @@ impl AppState {
                 if crate::tool::voice::normalize_phone(&entry.phone) == normalized {
                     return Some((user_id.to_string(), entry.name.clone()));
                 }
-            }
-        }
-
-        // --- 2. Fall back to the static config allowlist ---
-        if let Some(uid) = fallback_user_id {
-            if config_allowlist
-                .iter()
-                .any(|p| crate::tool::voice::normalize_phone(p) == normalized)
-            {
-                return Some((uid.to_string(), None));
             }
         }
 
