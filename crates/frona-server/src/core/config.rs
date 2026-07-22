@@ -845,14 +845,24 @@ pub struct VoiceConfig {
     pub inbound_enabled: bool,
     #[schemars(description = "Server-level default greeting spoken when an inbound call connects, used when the owning user has not set their own via /api/voice/inbound-settings.")]
     pub inbound_welcome_greeting: Option<String>,
-    #[schemars(description = "Enable silence filling during agent processing — sends periodic filler phrases to the caller while the agent is thinking.")]
+    #[schemars(description = "Enable silence filling during agent processing — sends periodic filler phrases while the agent is thinking. Only applies when the remote party's number matches a registered user (a user calling in, or the agent calling one of its users); calls with third parties are unaffected, as the agent narrates its own progress there per the active-call prompt.")]
     pub silence_fill_enabled: bool,
     #[schemars(description = "Seconds of silence before the first filler phrase is sent. Defaults to 3.")]
+    #[serde(default = "default_silence_fill_initial_delay_secs")]
     pub silence_fill_initial_delay_secs: u64,
     #[schemars(description = "Seconds between successive filler phrases. Defaults to 7.")]
+    #[serde(default = "default_silence_fill_interval_secs")]
     pub silence_fill_interval_secs: u64,
-    #[schemars(description = "Filler phrases spoken to the caller while the agent is processing. One is chosen at random each interval. If empty, uses built-in defaults.")]
+    #[schemars(description = "Filler phrases spoken to the caller while the agent is processing. Each interval advances to the next phrase in order (rotating). If empty, uses built-in defaults.")]
     pub silence_fill_phrases: Vec<String>,
+}
+
+fn default_silence_fill_initial_delay_secs() -> u64 {
+    3
+}
+
+fn default_silence_fill_interval_secs() -> u64 {
+    7
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]

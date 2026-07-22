@@ -112,7 +112,7 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
 
           <Toggle
             label="Silence Filling"
-            description="Send periodic filler phrases to the caller while the agent is processing"
+            description="Send periodic filler phrases while the agent is processing, but only when the other party is a registered user (a user calling in, or the agent calling a user). Calls with third parties narrate their own progress and are unaffected."
             value={voice.silence_fill_enabled}
             onChange={(silence_fill_enabled) => onChange({ ...voice, silence_fill_enabled })}
           />
@@ -141,7 +141,7 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
               />
               <TextInput
                 label="Filler Phrases"
-                description="Comma- or newline-separated phrases. One is chosen at random each interval. Leave empty for defaults."
+                description="Comma- or newline-separated phrases. Each interval advances to the next phrase in order. Leave empty for defaults."
                 value={voice.silence_fill_phrases?.join(", ") ?? ""}
                 onChange={(raw) => {
                   const phrases = raw.split(/[,\n]/).map(s => s.trim()).filter(s => s.length > 0);

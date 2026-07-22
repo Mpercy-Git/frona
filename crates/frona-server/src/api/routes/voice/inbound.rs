@@ -12,7 +12,7 @@ use crate::call::models::CallDirection;
 use crate::chat::models::CreateChatRequest;
 use crate::core::Principal;
 use crate::core::state::AppState;
-use crate::tool::voice::{VoiceSessionExtensions, validate_twilio_signature};
+use crate::tool::voice::{VoiceSessionExtensions, find_user_by_phone, validate_twilio_signature};
 
 use super::build_twiml;
 
@@ -291,14 +291,29 @@ pub(super) async fn twilio_inbound_handler(
     let agent_id = agent.id.clone();
 
     // ------------------------------------------------------------------
-    // 7. Find or create the caller's contact record
+    // 7. Resolve a human-friendly display name for the caller
+    //    Priority: an explicit allowlist name the owner set, otherwise the
+    //    name on the registered user whose number matches the caller (an
+    //    inbound caller is one of our users). Falls back to the raw number so
+    //    labels are never empty.
+    // ------------------------------------------------------------------
+    let caller_display_name = match &caller_name_from_allowlist {
+        Some(n) if !n.trim().is_empty() => Some(n.clone()),
+        _ => find_user_by_phone(&state.user_service, &from)
+            .await
+            .map(|u| u.name)
+            .filter(|n| !n.trim().is_empty()),
+    };
+
+    // ------------------------------------------------------------------
+    // 8. Find or create the caller's contact record
     // ------------------------------------------------------------------
     let contact = match state
         .contact_service
         .find_or_create_by_phone(
             &user_id,
             &from,
-            caller_name_from_allowlist.as_deref().unwrap_or("Incoming caller"),
+            caller_display_name.as_deref().unwrap_or("Incoming caller"),
         )
         .await
     {
@@ -310,8 +325,12 @@ pub(super) async fn twilio_inbound_handler(
     };
 
     // ------------------------------------------------------------------
-    // 8. Create a new chat for this call
+    // 9. Create a new chat for this call
     // ------------------------------------------------------------------
+    let chat_title = match &caller_display_name {
+        Some(name) => format!("Inbound call from {name}"),
+        None => format!("Inbound call from {from}"),
+    };
     let chat = match state
         .chat_service
         .create_chat(
@@ -320,7 +339,7 @@ pub(super) async fn twilio_inbound_handler(
                 space_id: None,
                 task_id: None,
                 agent_id: agent_id.clone(),
-                title: Some(format!("Inbound call from {from}")),
+                title: Some(chat_title),
                 metadata: None,
             },
         )
@@ -334,7 +353,7 @@ pub(super) async fn twilio_inbound_handler(
     };
 
     // ------------------------------------------------------------------
-    // 9. Record the call (Ringing → Active immediately for inbound)
+    // 10. Record the call (Ringing → Active immediately for inbound)
     // ------------------------------------------------------------------
     let call = match state
         .call_service
@@ -358,7 +377,7 @@ pub(super) async fn twilio_inbound_handler(
     };
 
     // ------------------------------------------------------------------
-    // 10. Issue a voice-session JWT (goes directly to the WS handler;
+    // 11. Issue a voice-session JWT (goes directly to the WS handler;
     //     no intermediate callback token needed for inbound calls)
     // ------------------------------------------------------------------
     let ws_ext = match serde_json::to_value(VoiceSessionExtensions {
@@ -367,9 +386,9 @@ pub(super) async fn twilio_inbound_handler(
         call_id: Some(call_id.clone()),
         direction: Some(CallDirection::Inbound),
         caller_phone: Some(from.clone()),
-        // Prefer the allowlist name (user-set) over the contact's stored
-        // name, which may be "Incoming caller" from a previous call.
-        caller_name: Some(caller_name_from_allowlist.unwrap_or_else(|| contact.name.clone())),
+        // Prefer the resolved display name (allowlist or matched user) over the
+        // contact's stored name, which may be "Incoming caller" from a prior call.
+        caller_name: Some(caller_display_name.unwrap_or_else(|| contact.name.clone())),
     }) {
         Ok(v) => v,
         Err(e) => {
