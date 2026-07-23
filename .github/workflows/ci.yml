@@ -14,6 +14,11 @@ jobs:
   backend:
     name: Backend (cargo test)
     runs-on: ubuntu-latest
+    # The repo's .cargo/config.toml pins build.target-dir to a Windows path
+    # (C:/temp/...). On Linux the "C:" colon makes cargo assemble an invalid
+    # dynamic-library path and fail before compiling anything. Override it.
+    env:
+      CARGO_TARGET_DIR: target
     steps:
       - uses: actions/checkout@v4
 
@@ -38,22 +43,17 @@ jobs:
       # Windows — the sandbox code uses Unix-only APIs — so it's the main reason
       # the workflow exists. Kept separate so a compile break reads distinctly
       # from a test failure.
-      # `unset LD_LIBRARY_PATH`: the toolchain setup exports an LD_LIBRARY_PATH
-      # value that cargo's internal `join_paths` rejects ("failed to join paths
-      # from $LD_LIBRARY_PATH together"). Clearing it lets cargo build the linker
-      # path from the sysroot itself, which is the normal case.
+      # Compile every crate's tests — the check that can't run on Windows (the
+      # sandbox's Unix-only APIs). Kept separate so a compile break reads
+      # distinctly from a test failure.
       - name: Compile all tests
-        run: |
-          unset LD_LIBRARY_PATH
-          cargo test --workspace --locked --no-run
+        run: cargo test --workspace --locked --no-run
 
       # Run the frona-server suite (channels, tasks, inference, policy, …).
       # The other crates are only compiled above: frona-browser's tests need a
       # real browser, and mcp_e2e is #[ignore]d (needs an external binary).
       - name: Run server tests
-        run: |
-          unset LD_LIBRARY_PATH
-          cargo test -p frona-server --locked
+        run: cargo test -p frona-server --locked
 
   web:
     name: Web (typecheck, lint, test)
