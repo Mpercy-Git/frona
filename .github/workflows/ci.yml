@@ -14,29 +14,25 @@ jobs:
   backend:
     name: Backend (cargo test)
     runs-on: ubuntu-latest
-    # Same base as build/Dockerfile's rust-base stage, so the toolchain matches
-    # what the release image is built with.
-    container: rust:1.95-bookworm
     steps:
       - uses: actions/checkout@v4
 
       - name: Install native build deps
         # Mirrors build/pkgs/builder-rust-apt.txt (libclang for bindgen-based
-        # -sys crates; protobuf-compiler for presage's build scripts).
+        # -sys crates; protobuf-compiler for presage's build scripts). The
+        # ubuntu runner already provides build-essential, pkg-config and libssl.
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends libclang-dev protobuf-compiler
-          rm -rf /var/lib/apt/lists/*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev protobuf-compiler
 
-      - name: Cache cargo registry and target
-        uses: actions/cache@v4
+      # Native toolchain (not a rust: container) to avoid the GitHub Actions
+      # "failed to join paths from $LD_LIBRARY_PATH" breakage that the rust
+      # Docker image hits inside container jobs. Pinned to match build/Dockerfile.
+      # This action also caches ~/.cargo and target keyed on Cargo.lock.
+      - name: Install Rust 1.95
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          path: |
-            /usr/local/cargo/registry
-            /usr/local/cargo/git
-            target
-          key: cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-
+          toolchain: "1.95.0"
 
       # Compile every crate's tests. This is the check that cannot run on
       # Windows — the sandbox code uses Unix-only APIs — so it's the main reason
