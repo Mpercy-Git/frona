@@ -472,7 +472,16 @@ impl TaskExecutor {
                 }
             };
 
-            let (session_id, session_token) = self.harness.active_sessions.register(&chat_id).await;
+            // Register the task's own cancel token as the chat's active session
+            // so the chat-level stop (`active_sessions.cancel`, used by the chat
+            // UI's stop button) reaches this running turn — not only
+            // `executor.cancel_task`. Passing a throwaway token here left the
+            // chat-view stop firing a token wired to nothing, so it was ignored.
+            let session_id = self
+                .harness
+                .active_sessions
+                .register_token(&chat_id, cancel_token.clone())
+                .await;
             let builder = Box::new(TaskConversationBuilder {
                 user_service: self.harness.user_service.clone(),
                 storage_service: self.harness.storage_service.clone(),
@@ -490,7 +499,6 @@ impl TaskExecutor {
                 None,
             )
             .await;
-            drop(session_token);
             self.harness.active_sessions.remove(&chat_id, session_id).await;
 
             match result {

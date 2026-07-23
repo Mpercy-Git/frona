@@ -86,6 +86,22 @@ impl ActiveSessions {
         (id, token)
     }
 
+    /// Register a run for `chat_id` using a caller-supplied cancel token,
+    /// instead of minting a fresh one. This is for callers (e.g. the task
+    /// executor) whose run is already driven by their own token: registering
+    /// that same token here means the generic chat-level [`cancel`](Self::cancel)
+    /// fires the token the run is actually listening on. Cancels any run already
+    /// active for the chat, and returns the generation id for [`remove`](Self::remove).
+    pub async fn register_token(&self, chat_id: &str, token: CancellationToken) -> u64 {
+        let mut map = self.inner.lock().await;
+        if let Some((_, existing)) = map.get(chat_id) {
+            existing.cancel();
+        }
+        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        map.insert(chat_id.to_string(), (id, token));
+        id
+    }
+
     pub async fn cancel(&self, chat_id: &str) -> bool {
         let map = self.inner.lock().await;
         if let Some((_, token)) = map.get(chat_id) {
@@ -888,6 +904,31 @@ mod tests {
     async fn test_cancel_returns_false_for_missing() {
         let sessions = ActiveSessions::default();
         assert!(!sessions.cancel("nonexistent").await);
+    }
+
+    #[tokio::test]
+    async fn test_register_token_makes_cancel_fire_the_supplied_token() {
+        // Regression: a task run drives its own cancel token. Registering that
+        // same token means the chat-level `cancel` fires the token the run is
+        // actually listening on. Previously a throwaway token was registered,
+        // so stopping a task from the chat view was silently ignored.
+        let sessions = ActiveSessions::default();
+        let token = CancellationToken::new();
+        let _id = sessions.register_token("chat-1", token.clone()).await;
+        assert!(!token.is_cancelled());
+        assert!(sessions.cancel("chat-1").await);
+        assert!(token.is_cancelled(), "cancel() must fire the caller's token");
+    }
+
+    #[tokio::test]
+    async fn test_register_token_cancels_previous() {
+        let sessions = ActiveSessions::default();
+        let (_, first) = sessions.register("chat-1").await;
+        let _id = sessions
+            .register_token("chat-1", CancellationToken::new())
+            .await;
+        assert!(first.is_cancelled(), "register_token supersedes the prior run");
+        assert_eq!(sessions.count().await, 1);
     }
 
     #[test]
