@@ -53,9 +53,10 @@ jobs:
       # sandbox's Unix-only APIs). Kept separate so a compile break reads
       # distinctly from a test failure.
       - name: Compile all tests
-        # --keep-going so one failing test crate doesn't mask errors in the
+        # `cargo build --tests` (not `cargo test --no-run`, which rejects
+        # --keep-going) so one failing test crate doesn't mask errors in the
         # others — we get the full picture in a single run.
-        run: cargo test --workspace --locked --no-run --keep-going
+        run: cargo build --workspace --tests --keep-going --locked
 
       # Run the frona-server suite (channels, tasks, inference, policy, …).
       # The other crates are only compiled above: frona-browser's tests need a
