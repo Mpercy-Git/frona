@@ -134,6 +134,7 @@ async fn test_app_state_with_mock(
         prompt_loader.clone(),
         state.broadcast_service.clone(),
         state.presign_service.clone(),
+        state.notification_service.clone(),
         state.usage_service.clone(),
     );
     // Replace the chat_service with our version that has the mock provider.

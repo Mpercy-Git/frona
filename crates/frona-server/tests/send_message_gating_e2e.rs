@@ -116,6 +116,7 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.prompts.clone(),
         state.broadcast_service.clone(),
             state.presign_service.clone(),
+            state.notification_service.clone(),
             state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();

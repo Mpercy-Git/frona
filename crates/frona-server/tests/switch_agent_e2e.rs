@@ -108,6 +108,7 @@ async fn build_state(provider: Arc<dyn frona::inference::provider::ModelProvider
         state.prompts.clone(),
         state.broadcast_service.clone(),
         state.presign_service.clone(),
+        state.notification_service.clone(),
         state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();

@@ -641,6 +641,7 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         frona::agent::prompt::PromptLoader::new(&base),
         frona::chat::broadcast::BroadcastService::new(),
         presign_service,
+        frona::notification::service::NotificationService::new(SurrealRepo::new(db.clone())),
         usage_service,
     )
 }
