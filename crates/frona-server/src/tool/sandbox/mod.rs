@@ -1139,7 +1139,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
-        let outside = tmp.path().join("outside.txt"); // sibling of workspace
+        // NOT a sibling under the OS temp dir: `/tmp` is a hardcoded R+W dir, so
+        // a sibling there is legitimately writable. Use a system path that is
+        // outside the workspace and every read-write dir.
+        let outside = std::path::PathBuf::from("/usr/frona_outside_test.txt");
 
         let mut ws = temp_sandbox(&format!("outside_{}", uuid::Uuid::new_v4()));
         ws.path = workspace;

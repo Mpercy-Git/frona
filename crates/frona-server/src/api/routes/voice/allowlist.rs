@@ -126,13 +126,13 @@ mod tests {
 
     #[test]
     fn normalize_strips_formatting() {
-        assert_eq!(normalize_phone("+1 (555) 555-1234"), "+155****1234");
-        assert_eq!(normalize_phone("+44 20 7946 0958"), "+442****0958");
+        assert_eq!(normalize_phone("+1 (555) 555-1234"), "+15555551234");
+        assert_eq!(normalize_phone("+44 20 7946 0958"), "+442079460958");
     }
 
     #[test]
     fn normalize_preserves_plain_e164() {
-        assert_eq!(normalize_phone("+155****1234"), "+155****1234");
+        assert_eq!(normalize_phone("+15555551234"), "+15555551234");
     }
 
     #[test]
@@ -148,8 +148,8 @@ mod tests {
     #[test]
     fn normalize_00_prefix_uk() {
         // UK international dialling prefix "00" should produce same result as "+".
-        assert_eq!(normalize_phone("00442079460958"), "+442****0958");
-        assert_eq!(normalize_phone("0044 20 7946 0958"), "+442****0958");
+        assert_eq!(normalize_phone("00442079460958"), "+442079460958");
+        assert_eq!(normalize_phone("0044 20 7946 0958"), "+442079460958");
     }
 
     #[test]
@@ -163,6 +163,6 @@ mod tests {
 
     #[test]
     fn normalize_trims_whitespace() {
-        assert_eq!(normalize_phone("  +44 20 7946 0958  "), "+442****0958");
+        assert_eq!(normalize_phone("  +44 20 7946 0958  "), "+442079460958");
     }
 }

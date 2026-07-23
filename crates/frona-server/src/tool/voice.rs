@@ -29,11 +29,11 @@ use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_
 
 /// Normalise a phone number to a canonical E.164-ish form for comparison:
 /// keep the leading `+` and strip everything that is not an ASCII digit.
-/// "+1 (555) 555-1234" and "+155****1234" both normalise to "+155****1234".
+/// "+1 (555) 555-1234" normalises to "+15555551234".
 ///
 /// The `00` international dialling prefix (common in the UK and Europe) is
-/// treated as equivalent to `+`, so "0044 20 7946 0958" becomes "+442****0958"
-/// and will match a stored entry of "+442****0958".
+/// treated as equivalent to `+`, so "0044 20 7946 0958" becomes "+442079460958"
+/// and will match a stored entry of "+442079460958".
 pub fn normalize_phone(phone: &str) -> String {
     let trimmed = phone.trim();
     // Determine whether this is an international number and strip any prefix.
