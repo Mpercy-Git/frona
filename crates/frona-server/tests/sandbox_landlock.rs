@@ -371,19 +371,23 @@ async fn test_sandbox_blocks_read_etc_shadow() {
 }
 
 #[tokio::test]
-async fn test_sandbox_blocks_read_etc_passwd() {
+async fn test_sandbox_allows_read_etc_passwd() {
     let mgr = test_manager();
     let ws = mgr.get_sandbox(test_ws(), "landlock-etc-passwd", false, vec![]);
 
+    // /etc/passwd is world-readable and on the sandbox read allowlist
+    // (getpwnam/getgrnam need it). Only /etc/shadow is blocked — see the
+    // shadow test above.
     let output = ws
         .execute("cat", &["/etc/passwd"], 10, None, None, None)
         .await
         .unwrap();
 
-    assert_ne!(
+    assert_eq!(
         output.exit_code,
         Some(0),
-        "should NOT be able to read /etc/passwd"
+        "should be able to read /etc/passwd (world-readable, allowlisted): stderr={}",
+        output.stderr
     );
 
     let _ = std::fs::remove_dir_all(ws.path());
