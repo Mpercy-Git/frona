@@ -135,6 +135,7 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })

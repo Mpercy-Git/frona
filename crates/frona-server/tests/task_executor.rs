@@ -84,6 +84,7 @@ async fn seed_user_and_agent(state: &AppState) {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: now,
             updated_at: now,
         })

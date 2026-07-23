@@ -374,6 +374,7 @@ pub fn mock_context() -> InferenceContext {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         },

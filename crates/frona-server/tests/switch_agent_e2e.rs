@@ -152,6 +152,7 @@ async fn seed_user_and_two_agents(state: &AppState) -> (String, String) {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: now,
             updated_at: now,
         })

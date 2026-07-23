@@ -88,6 +88,7 @@ async fn setup_with_extra_tools(
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         })
@@ -1335,6 +1336,7 @@ fn test_user(id: &str, groups: Vec<&str>) -> UserModel {
         timezone: None,
         groups: groups.into_iter().map(String::from).collect(),
         deactivated_at: None,
+        phone: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     }
@@ -1530,6 +1532,7 @@ mod decision_cache {
                 timezone: None,
                 groups: Vec::new(),
                 deactivated_at: None,
+                phone: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             })

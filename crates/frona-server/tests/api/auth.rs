@@ -885,6 +885,7 @@ async fn startup_promotes_oldest_active_user_when_no_admin() {
         timezone: None,
         groups: Vec::new(),
         deactivated_at: None,
+        phone: None,
         created_at: now,
         updated_at: now,
     };
@@ -897,6 +898,7 @@ async fn startup_promotes_oldest_active_user_when_no_admin() {
         timezone: None,
         groups: Vec::new(),
         deactivated_at: None,
+        phone: None,
         created_at: now + chrono::Duration::seconds(1),
         updated_at: now + chrono::Duration::seconds(1),
     };

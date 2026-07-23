@@ -227,6 +227,7 @@ async fn seed_user(db: &Surreal<Db>) {
         timezone: None,
         groups: Vec::new(),
         deactivated_at: None,
+        phone: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };

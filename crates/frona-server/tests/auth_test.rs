@@ -51,6 +51,7 @@ fn test_user() -> User {
         timezone: None,
         groups: Vec::new(),
         deactivated_at: None,
+        phone: None,
         created_at: now,
         updated_at: now,
     }
