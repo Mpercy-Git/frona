@@ -38,6 +38,11 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: "1.95.0"
+          # This action defaults RUSTFLAGS to "-D warnings"; the codebase (and
+          # the Docker release build) don't treat warnings as errors, so clear
+          # it. CI is here to catch compile errors and test failures, not to
+          # enforce a zero-warning policy the project hasn't adopted.
+          rustflags: ""
 
       # Compile every crate's tests. This is the check that cannot run on
       # Windows — the sandbox code uses Unix-only APIs — so it's the main reason
