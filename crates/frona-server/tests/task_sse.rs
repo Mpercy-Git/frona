@@ -279,7 +279,10 @@ async fn task_execution_emits_expected_sse_events() {
     // flow this test asserts against.
     let frames: Vec<SseFrame> = frames
         .into_iter()
-        .filter(|f| f.event != "entity_updated")
+        // entity_updated and notification are orthogonal broadcasts whose
+        // timing relative to the inference events isn't deterministic; drop
+        // them so the assertions below check the core task-execution sequence.
+        .filter(|f| f.event != "entity_updated" && f.event != "notification")
         .collect();
     let event_names: Vec<&str> = frames.iter().map(|f| f.event.as_str()).collect();
 

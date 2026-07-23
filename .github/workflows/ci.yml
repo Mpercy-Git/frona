@@ -62,7 +62,9 @@ jobs:
       # The other crates are only compiled above: frona-browser's tests need a
       # real browser, and mcp_e2e is #[ignore]d (needs an external binary).
       - name: Run server tests
-        run: cargo test -p frona-server --locked
+        # --no-fail-fast so one failing test crate doesn't hide failures in the
+        # others; we see every failure in a single run.
+        run: cargo test -p frona-server --locked --no-fail-fast
 
   web:
     name: Web (typecheck, lint, test)
