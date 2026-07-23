@@ -84,8 +84,10 @@ RUN pip install --no-cache-dir --prefix=/install -r builder-python-pip.txt
 # DEV TARGET
 # ============================
 
-FROM rust:1.95-bookworm AS dev
-RUN --mount=type=bind,source=build/pkgs/dev-apt.txt,target=/tmp/packages.txt \
+# Same base as prod so dev and prod share the exact Python 3.12 interpreter and the
+# same runtime deps; dev only layers on the Rust build toolchain (dev-apt.txt).
+FROM python:3.12-slim-bookworm AS dev
+RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
     $(grep -vE '^\s*(#|$)|^nodejs($|=)' /tmp/packages.txt | tr '\n' ' ') \
@@ -93,8 +95,27 @@ RUN --mount=type=bind,source=build/pkgs/dev-apt.txt,target=/tmp/packages.txt \
   && apt-get install -y --no-install-recommends \
     $(grep -E '^nodejs($|=)' /tmp/packages.txt | cut -d= -f1) \
   && rm -rf /var/lib/apt/lists/*
-COPY build/pkgs/builder-python-pip.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
+RUN --mount=type=bind,source=build/pkgs/dev-apt.txt,target=/tmp/packages.txt \
+  apt-get update \
+  && apt-get install -y --no-install-recommends \
+     $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
+  && rm -rf /var/lib/apt/lists/*
+
+# Rust toolchain via rustup (dev compiles live via cargo-watch; prod copies release
+# binaries from backend-builder).
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+  | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.95.0 \
+  && rustup component add clippy rustfmt
+
+# Python packages: same source as prod, built once in `python-builder`.
+COPY --from=python-builder /install /usr/local
+# Pre-compile .pyc so Python needs no write access to system dirs at runtime
+# (syd sandbox blocks writes outside the agent workspace) — matches prod.
+RUN python3 -m compileall -q /usr/local/lib/python3.12
+
 RUN --mount=type=bind,source=build/pkgs/dev-rust-cargo.txt,target=/tmp/cargo.txt \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \

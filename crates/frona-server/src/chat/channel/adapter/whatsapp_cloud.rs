@@ -116,6 +116,7 @@ impl ChannelAdapter for WhatsAppCloudAdapter {
             webhook_url = %ctx.webhook_url,
             "WhatsApp Cloud channel registered (paste webhook_url into Meta dashboard if not done already)",
         );
+        ctx.signals.connected();
         Ok(())
     }
 
@@ -741,7 +742,7 @@ impl WhatsAppCloudAdapter {
             }
         };
         let answer_label = crate::chat::channel::hitl::response_display(&response);
-        match ctx.channel_manager.resolve_hitl(&tool_call_id, response).await {
+        match ctx.hitl.resolve(&tool_call_id, response).await {
             Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) => {
                 tracing::info!(
                     channel_id = %ctx.channel.id,

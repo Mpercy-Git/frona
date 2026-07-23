@@ -6,6 +6,12 @@ use serde_json::Value;
 
 use crate::chat::message::models::{Message, MessageEvent};
 
+/// Top-level object is "complex" when any of its values is itself an object
+/// or contains objects (array of objects). Complex schemas must include a
+/// top-level `summary` string property; the renderer surfaces only that
+/// field, treating everything else as machine-readable for the parent agent.
+const COMPLEX_RENDER_KEY: &str = "summary";
+
 pub fn render_message_body(msg: &Message) -> String {
     let Some(MessageEvent::TaskCompletion { schema: Some(schema), .. }) = &msg.event else {
         return msg.content.clone();
@@ -81,12 +87,6 @@ pub fn render_result_markdown(schema: &Value, value: &Value) -> Option<String> {
         _ => Some(render_value_md(value)),
     }
 }
-
-/// Top-level object is "complex" when any of its values is itself an object
-/// or contains objects (array of objects). Complex schemas must include a
-/// top-level `summary` string property; the renderer surfaces only that
-/// field, treating everything else as machine-readable for the parent agent.
-const COMPLEX_RENDER_KEY: &str = "summary";
 
 fn is_complex_object(obj: &serde_json::Map<String, Value>) -> bool {
     obj.values().any(value_is_non_scalar)

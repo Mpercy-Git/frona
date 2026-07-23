@@ -83,7 +83,7 @@ impl ChannelAdapter for DiscordAdapter {
             emit: ctx.emit.clone(),
             channel_id_log: ctx.channel.id.clone(),
             self_id: self.self_id.clone(),
-            channel_manager: ctx.channel_manager.clone(),
+            hitl: ctx.hitl.clone(),
             chat_service: ctx.chat_service.clone(),
         };
         let intents = GatewayIntents::GUILDS
@@ -98,7 +98,7 @@ impl ChannelAdapter for DiscordAdapter {
 
         let cancel = ctx.cancel.clone();
         let channel_id = ctx.channel.id.clone();
-        let channel_manager = ctx.channel_manager.clone();
+        let signals = ctx.signals.clone();
         tokio::spawn(async move {
             let outcome = tokio::select! {
                 res = client.start() => GatewayOutcome::Stopped(res),
@@ -106,9 +106,8 @@ impl ChannelAdapter for DiscordAdapter {
             };
             match outcome {
                 GatewayOutcome::Stopped(Err(e)) => {
-                    let reason = format!("Discord gateway failed: {e}");
                     tracing::warn!(channel_id = %channel_id, error = %e, "Discord gateway terminated");
-                    channel_manager.report_failure(&channel_id, reason).await;
+                    signals.disconnected_transient(format!("Discord gateway failed: {e}"));
                 }
                 GatewayOutcome::Stopped(Ok(())) => {
                     tracing::info!(channel_id = %channel_id, "Discord gateway stopped cleanly");
@@ -123,6 +122,8 @@ impl ChannelAdapter for DiscordAdapter {
             }
         });
 
+        // Auth succeeded above; the gateway is coming up — report readiness.
+        ctx.signals.connected();
         Ok(())
     }
 
@@ -381,7 +382,7 @@ struct DiscordEventHandler {
     emit: tokio::sync::mpsc::Sender<ExternalMessage>,
     channel_id_log: String,
     self_id: Arc<OnceLock<UserId>>,
-    channel_manager: Arc<super::super::ChannelManager>,
+    hitl: Arc<super::super::HitlDeliveryService>,
     chat_service: crate::chat::service::ChatService,
 }
 
@@ -435,8 +436,8 @@ impl EventHandler for DiscordEventHandler {
 
         let answer_label = crate::chat::channel::hitl::response_display(&response);
         let outcome = self
-            .channel_manager
-            .resolve_hitl(&tool_call_id, response)
+            .hitl
+            .resolve(&tool_call_id, response)
             .await;
 
         let summary = match &outcome {

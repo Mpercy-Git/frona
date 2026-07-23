@@ -18,7 +18,7 @@ pub struct AnnotateTool {
     pub chat_service: ChatService,
     pub space_service: SpaceService,
     pub contact_service: ContactService,
-    pub channel_service: Arc<crate::chat::channel::ChannelService>,
+    pub channel_service: crate::chat::channel::ChannelService,
     pub prompts: PromptLoader,
 }
 
@@ -28,7 +28,7 @@ impl AnnotateTool {
         chat_service: ChatService,
         space_service: SpaceService,
         contact_service: ContactService,
-        channel_service: Arc<crate::chat::channel::ChannelService>,
+        channel_service: crate::chat::channel::ChannelService,
         prompts: PromptLoader,
     ) -> Self {
         Self {

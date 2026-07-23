@@ -8,7 +8,7 @@ use serde::Deserialize;
 use sha1::Sha1;
 
 use crate::chat::channel::adapter::markdown;
-use crate::chat::channel::manager::CarrierStatus;
+use crate::chat::channel::CarrierStatus;
 use crate::chat::message::models::Message;
 use crate::chat::models::Chat;
 use crate::core::error::AppError;
@@ -92,6 +92,7 @@ impl ChannelAdapter for SmsAdapter {
             url = %ctx.webhook_url,
             "SMS channel registered Twilio Messaging webhook",
         );
+        ctx.signals.connected();
         Ok(())
     }
 
@@ -564,7 +565,7 @@ impl TwilioWebhook {
             "delivered" => {
                 if let Some(id) = our_msg_id.as_deref() {
                     let _ = ctx
-                        .channel_manager
+                        .outbound
                         .record_carrier_status(id, CarrierStatus::Delivered)
                         .await;
                 }
@@ -579,7 +580,7 @@ impl TwilioWebhook {
                 let error = self.format_carrier_error();
                 if let Some(id) = our_msg_id.as_deref() {
                     let _ = ctx
-                        .channel_manager
+                        .outbound
                         .record_carrier_status(id, CarrierStatus::Failed { error: error.clone() })
                         .await;
                 }
