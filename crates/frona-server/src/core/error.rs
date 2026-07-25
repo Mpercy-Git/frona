@@ -10,6 +10,9 @@ pub enum AuthErrorCode {
     SsoDisabled,
     ServerError,
     AccountDeactivated,
+    /// Too many failed logins for this identifier. Carries the remaining
+    /// lockout so the response can set `Retry-After`.
+    AccountLocked { retry_after_secs: u64 },
 }
 
 impl AuthErrorCode {
@@ -23,6 +26,7 @@ impl AuthErrorCode {
             Self::SsoDisabled => "sso_disabled",
             Self::ServerError => "server_error",
             Self::AccountDeactivated => "account_deactivated",
+            Self::AccountLocked { .. } => "account_locked",
         }
     }
 }

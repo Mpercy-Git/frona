@@ -98,6 +98,10 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_api_token_user ON TABLE api_token COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_api_token_pair ON TABLE api_token COLUMNS refresh_pair_id;
 
+        DEFINE TABLE IF NOT EXISTS password_reset_token SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_password_reset_hash ON TABLE password_reset_token COLUMNS token_hash UNIQUE;
+        DEFINE INDEX IF NOT EXISTS idx_password_reset_user ON TABLE password_reset_token COLUMNS user_id;
+
         DEFINE TABLE IF NOT EXISTS contact SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_contact_user ON TABLE contact COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_contact_phone ON TABLE contact COLUMNS user_id, phone;

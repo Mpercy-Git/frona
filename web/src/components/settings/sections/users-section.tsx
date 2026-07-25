@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { UsersIcon, UserCircleIcon, TrashIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
+import { UsersIcon, UserCircleIcon, TrashIcon, ExclamationTriangleIcon, KeyIcon, LockOpenIcon } from "@heroicons/react/24/outline";
 import { api } from "@/lib/api-client";
 import { SectionHeader } from "@/components/settings/field";
 
@@ -80,6 +80,7 @@ export function UsersSection() {
   const [showCreate, setShowCreate] = useState(false);
   const [pending, setPending] = useState<PendingConfirm | null>(null);
   const [running, setRunning] = useState(false);
+  const [resetTarget, setResetTarget] = useState<AdminUser | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -129,6 +130,18 @@ export function UsersSection() {
       run: async () => {
         const path = makeActive ? "reactivate" : "deactivate";
         await api.post(`/api/admin/users/${u.id}/${path}`, {});
+      },
+    });
+  };
+
+  const requestUnlock = (u: AdminUser) => {
+    setPending({
+      title: "Clear login lockout?",
+      body: `${displayName(u)} will be able to attempt signing in again immediately. Their password is unchanged.`,
+      confirmLabel: "Unlock",
+      context: "generic",
+      run: async () => {
+        await api.post(`/api/admin/users/${u.id}/unlock`, {});
       },
     });
   };
@@ -248,6 +261,24 @@ export function UsersSection() {
                 </label>
                 <button
                   type="button"
+                  onClick={() => setResetTarget(u)}
+                  aria-label="Reset password"
+                  title="Reset password"
+                  className="shrink-0 inline-flex items-center rounded-lg border border-border px-2 py-1 text-text-secondary hover:bg-surface-tertiary transition"
+                >
+                  <KeyIcon className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => requestUnlock(u)}
+                  aria-label="Clear login lockout"
+                  title="Clear login lockout"
+                  className="shrink-0 inline-flex items-center rounded-lg border border-border px-2 py-1 text-text-secondary hover:bg-surface-tertiary transition"
+                >
+                  <LockOpenIcon className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
                   onClick={() => requestDelete(u)}
                   aria-label="Delete user"
                   className="shrink-0 inline-flex items-center rounded-lg border border-border px-2 py-1 text-danger hover:bg-surface-tertiary transition"
@@ -269,6 +300,14 @@ export function UsersSection() {
           running={running}
           onConfirm={runPending}
           onCancel={() => setPending(null)}
+        />
+      )}
+
+      {resetTarget && (
+        <SetPasswordModal
+          user={resetTarget}
+          onClose={() => setResetTarget(null)}
+          onDone={() => setResetTarget(null)}
         />
       )}
 
@@ -333,6 +372,91 @@ function ConfirmDialog({
             Cancel
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SetPasswordModal({
+  user,
+  onClose,
+  onDone,
+}: {
+  user: AdminUser;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password !== confirm) {
+      setError("Passwords don't match.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.put(`/api/admin/users/${user.id}/password`, { password });
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to reset password");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative rounded-xl border border-border bg-surface-secondary p-5 space-y-4 max-w-sm w-full mx-4 shadow-xl">
+        <div className="pb-3 border-b border-border">
+          <h3 className="text-lg font-semibold text-text-primary">Reset password</h3>
+          <p className="text-sm text-text-tertiary mt-1">
+            Set a new password for {user.name || user.handle}. They will be signed out
+            everywhere, and any lockout is cleared. Share the password out of band.
+          </p>
+        </div>
+        {error && (
+          <div className="rounded-lg bg-error-bg p-3 text-sm text-error-text break-all">{error}</div>
+        )}
+        <form onSubmit={submit} className="space-y-3">
+          <input
+            type="password"
+            required
+            placeholder="New password (min 8 chars)"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+          />
+          <input
+            type="password"
+            required
+            placeholder="Confirm new password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+          />
+          <div className="flex gap-2 justify-end pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-28 inline-flex items-center justify-center rounded-lg border border-border py-2 text-sm font-medium text-text-secondary hover:bg-surface-tertiary transition"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-28 inline-flex items-center justify-center rounded-lg bg-accent py-2 text-sm font-medium text-surface shadow-sm hover:bg-accent-hover disabled:opacity-50 transition"
+            >
+              {submitting ? "Saving…" : "Reset"}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

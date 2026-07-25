@@ -164,6 +164,12 @@ pub struct AuthConfig {
     pub ephemeral_token_expiry_secs: u64,
     #[schemars(description = "Allow anyone to sign up from the registration page. When off, only admins can add users.")]
     pub allow_registration: bool,
+    #[schemars(description = "Consecutive failed login attempts before an account is temporarily locked. 0 disables lockout.")]
+    pub max_login_attempts: u32,
+    #[schemars(description = "How long an account stays locked after too many failed logins, in minutes.")]
+    pub lockout_minutes: u64,
+    #[schemars(description = "Lifetime of an emailed password-reset link, in minutes.")]
+    pub password_reset_expiry_minutes: u64,
 }
 
 impl Default for AuthConfig {
@@ -175,6 +181,9 @@ impl Default for AuthConfig {
             presign_expiry_secs: 86400,
             ephemeral_token_expiry_secs: 300,
             allow_registration: true,
+            max_login_attempts: 5,
+            lockout_minutes: 15,
+            password_reset_expiry_minutes: 30,
         }
     }
 }
@@ -409,6 +418,59 @@ impl Default for PushConfig {
             vapid_private_key: None,
             subject: "mailto:noreply@frona.local".into(),
         }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTls {
+    /// STARTTLS upgrade on the submission port (587). The usual choice.
+    #[default]
+    Starttls,
+    /// TLS from the first byte (465).
+    Implicit,
+    /// Plaintext. Only sane for a relay on localhost or a dev mail catcher.
+    None,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
+pub struct MailConfig {
+    #[schemars(description = "SMTP server hostname. Leave empty to disable outbound email (and with it, password reset).")]
+    pub smtp_host: String,
+    #[schemars(description = "SMTP server port.")]
+    pub smtp_port: u16,
+    #[schemars(description = "SMTP username. Leave empty for an unauthenticated relay.")]
+    pub smtp_username: Option<String>,
+    #[schemars(description = "SMTP password.")]
+    pub smtp_password: Option<String>,
+    #[schemars(description = "Transport security: starttls (587), implicit (465), or none.")]
+    pub tls: SmtpTls,
+    #[schemars(description = "Envelope sender address for outbound mail.")]
+    pub from_address: String,
+    #[schemars(description = "Display name shown alongside the sender address.")]
+    pub from_name: String,
+}
+
+impl Default for MailConfig {
+    fn default() -> Self {
+        Self {
+            smtp_host: String::new(),
+            smtp_port: 587,
+            smtp_username: None,
+            smtp_password: None,
+            tls: SmtpTls::Starttls,
+            from_address: "noreply@frona.local".into(),
+            from_name: "Frona".into(),
+        }
+    }
+}
+
+impl MailConfig {
+    /// Outbound mail is opt-in: an empty host means the feature is off, rather
+    /// than a misconfiguration to fail startup over.
+    pub fn is_configured(&self) -> bool {
+        !self.smtp_host.trim().is_empty()
     }
 }
 
@@ -1005,6 +1067,8 @@ pub struct Config {
     pub share: ShareConfig,
     #[serde(default)]
     pub push: PushConfig,
+    #[serde(default)]
+    pub mail: MailConfig,
     #[serde(default)]
     pub signal: SignalConfig,
     #[serde(default)]

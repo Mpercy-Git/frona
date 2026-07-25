@@ -15,6 +15,8 @@ pub const INFERENCE_CACHED_INPUT_TOKENS_TOTAL: &str = "frona_inference_cached_in
 pub const INFERENCE_ACTIVE_REQUESTS: &str = "frona_inference_active_requests";
 pub const TOOL_CALLS_TOTAL: &str = "frona_tool_calls_total";
 pub const TOOL_CALL_DURATION_SECONDS: &str = "frona_tool_call_duration_seconds";
+pub const AUTH_LOGIN_FAILURES_TOTAL: &str = "frona_auth_login_failures_total";
+pub const AUTH_LOCKOUTS_TOTAL: &str = "frona_auth_lockouts_total";
 pub const POLICY_EVALUATIONS_TOTAL: &str = "frona_policy_evaluations_total";
 pub const POLICY_EVALUATION_DURATION_SECONDS: &str = "frona_policy_evaluation_duration_seconds";
 
@@ -102,6 +104,18 @@ pub fn record_policy_evaluation(
 
     counter!(POLICY_EVALUATIONS_TOTAL, &labels).increment(1);
     histogram!(POLICY_EVALUATION_DURATION_SECONDS, &labels).record(duration.as_secs_f64());
+}
+
+/// `reason` is deliberately a `&'static str` from a small fixed set — labelling
+/// this by submitted identifier would make the series unbounded, and would put
+/// attacker-controlled strings into the metrics endpoint.
+pub fn record_login_failure(reason: &'static str) {
+    let labels = [("reason", reason.to_string())];
+    counter!(AUTH_LOGIN_FAILURES_TOTAL, &labels).increment(1);
+}
+
+pub fn record_account_lockout() {
+    counter!(AUTH_LOCKOUTS_TOTAL).increment(1);
 }
 
 pub fn set_active_inference_requests(count: usize) {
