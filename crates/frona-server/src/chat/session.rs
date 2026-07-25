@@ -25,6 +25,12 @@ pub struct ChatSessionContext {
     pub tool_registry: AgentToolRegistry,
     pub tool_ctx: InferenceContext,
     pub cancel_token: CancellationToken,
+    /// The most recent user message as stored, captured while the history was
+    /// loaded here. Callers that need it (slash-command dispatch in
+    /// `Harness::run_loop`) would otherwise re-read every message in the chat
+    /// just to look at the last one. Raw — before the skill/command rewrites
+    /// applied to `rig_history` — because the caller persists edits to it.
+    pub last_user_message: Option<Message>,
 }
 
 impl ChatSessionContext {
@@ -184,6 +190,12 @@ impl ChatSessionContext {
             .resolve_model_group(&agent_config.model_group)?;
 
         let stored_messages = harness.chat_service.get_stored_messages(&chat.id).await?;
+        // Captured before the rewrites below, which the caller must not see.
+        let last_user_message = stored_messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::User))
+            .cloned();
         let tool_calls = harness.chat_service
             .get_tool_calls(&chat.id)
             .await
@@ -358,6 +370,7 @@ impl ChatSessionContext {
             tool_registry,
             tool_ctx,
             cancel_token,
+            last_user_message,
         })
     }
 }

@@ -4,6 +4,7 @@ use std::path::Path as StdPath;
 use axum::extract::{Multipart, Path, State};
 use axum::routing::{get, put};
 use axum::{Json, Router};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use crate::agent::config::parse_frontmatter;
 use crate::agent::models::{
@@ -16,6 +17,11 @@ use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
+
+/// How many agents to build responses for at once when listing. Bounded so a
+/// user with many agents doesn't fan out an unbounded burst of policy
+/// evaluations and file reads at the database.
+const AGENT_LIST_CONCURRENCY: usize = 8;
 
 /// Resolve `model_group` → live `ModelEntry`. Returns `None` when the group
 /// name doesn't match a configured group (config drift, agent referencing a
@@ -200,33 +206,42 @@ async fn list_agents(
         })
         .collect();
 
-    let mut responses = Vec::new();
-    for agent in agents {
-        let id = agent.id.clone();
-        let mut response = to_response(&state, &auth.user_id, agent).await?;
-
-        if let Some(&count) = count_map.get(id.as_str()) {
-            response.chat_count = count;
-        }
-        responses.push(response);
-    }
-
-    // Append agents shared with this user (use-only, read-only view). Skip any
-    // whose backing agent has since been deleted.
+    // Agents shared with this user (use-only, read-only view). Backing agents
+    // that have since been deleted are skipped.
     let shares = state
         .agent_share_service
         .list_shared_with(&auth.user_id)
         .await?;
-    for share in shares {
-        let Some(agent) = state.agent_service.find_by_id(&share.agent_id).await? else {
-            continue;
-        };
-        let id = agent.id.clone();
-        let mut response = to_response(&state, &auth.user_id, agent).await?;
-        if let Some(&count) = count_map.get(id.as_str()) {
+    let shared_agents: Vec<Agent> = stream::iter(shares)
+        .map(|share| {
+            let state = &state;
+            async move { state.agent_service.find_by_id(&share.agent_id).await }
+        })
+        .buffered(AGENT_LIST_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?
+        .into_iter()
+        .flatten()
+        .collect();
+
+    // `to_response` is expensive per agent — it builds the tool registry,
+    // evaluates the sandbox policy and reads the default prompt from disk.
+    // Run a bounded number concurrently instead of strictly one at a time;
+    // `buffered` preserves order, so owned agents still precede shared ones.
+    let mut responses: Vec<AgentResponse> = stream::iter(agents.into_iter().chain(shared_agents))
+        .map(|agent| {
+            let state = &state;
+            let user_id = auth.user_id.as_str();
+            async move { to_response(state, user_id, agent).await }
+        })
+        .buffered(AGENT_LIST_CONCURRENCY)
+        .try_collect()
+        .await?;
+
+    for response in &mut responses {
+        if let Some(&count) = count_map.get(response.id.as_str()) {
             response.chat_count = count;
         }
-        responses.push(response);
     }
 
     Ok(Json(responses))

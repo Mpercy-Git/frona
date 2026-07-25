@@ -602,12 +602,16 @@ impl TaskExecutor {
             }
         };
 
-        let deliverables = {
+        // Deliverables are only needed for a Completion, which is rare relative
+        // to how often this runs (every turn of every task). Loading the chat's
+        // tool calls eagerly meant paying for them on every turn that finds no
+        // lifecycle event at all, so it's deferred to the branch that uses it.
+        let load_deliverables = || async {
             let tool_calls = match self.harness.chat_service.get_tool_calls(chat_id).await {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!(chat_id, error = %e, "find_lifecycle_event: failed to load tool calls");
-                    return None;
+                    Vec::new()
                 }
             };
             tool_calls.into_iter().rev().find_map(|te| {
@@ -631,7 +635,7 @@ impl TaskExecutor {
                     return Some(LifecycleAction::Complete {
                         status: status.clone(),
                         summary: summary.clone(),
-                        attachments: deliverables,
+                        attachments: load_deliverables().await,
                     });
                 }
                 Some(MessageEvent::TaskDeferred {

@@ -154,17 +154,6 @@ impl Harness {
             .await?
             .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
 
-        // `message_id` is the AGENT response placeholder. The user message is
-        // separate. Signal/system-only chats may have no user-role message at
-        // all — then there's nothing to dispatch and we go straight to inference.
-        let request = self
-            .chat_service
-            .get_stored_messages(chat_id)
-            .await?
-            .into_iter()
-            .rev()
-            .find(|m| matches!(m.role, MessageRole::User));
-
         let mut response = self.chat_service.get_message(user_id, message_id).await?;
 
         let builder_system_prompt = builder.system_prompt();
@@ -177,6 +166,14 @@ impl Harness {
             builder,
         )
         .await?;
+
+        // `message_id` is the AGENT response placeholder; the user message is
+        // separate. `build` already read the chat history, so take the user
+        // message from there rather than loading every message again just to
+        // inspect the last one. Signal/system-only chats may have no user-role
+        // message at all — then there's nothing to dispatch and we go straight
+        // to inference.
+        let request = session.last_user_message.clone();
 
         let mut prompt_override: Option<String> = None;
         if let Some(mut request) = request
