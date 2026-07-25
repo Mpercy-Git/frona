@@ -30,3 +30,8 @@ mise.local.toml
 # OS
 .DS_Store
 Thumbs.db
+
+# Local cargo overrides (e.g. build.target-dir). Machine-specific: a Windows
+# path here makes cargo build an invalid library path on Linux/macOS and every
+# build fails before compiling. Keep it local, never commit it.
+/.cargo/config.toml

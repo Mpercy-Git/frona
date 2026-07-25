@@ -338,7 +338,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         )),
         Arc::new(super::send_message::SendMessageTool::new(
             state.chat_service.clone(), state.notification_service.clone(),
-            state.broadcast_service.clone(), state.agent_service.clone(),
+            state.agent_service.clone(),
             state.task_service.clone(), prompts.clone(),
         )),
         Arc::new(ProduceFileTool::new(
@@ -377,7 +377,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         )),
         Arc::new(super::manage_app::ManageAppTool::new(
             state.app_service.clone(), prompts.clone(),
-            state.notification_service.clone(), state.broadcast_service.clone(),
+            state.notification_service.clone(),
             state.storage_service.clone(),
             state.config.server.external_or_local_base_url(),
         )),
