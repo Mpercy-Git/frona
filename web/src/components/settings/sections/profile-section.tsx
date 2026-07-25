@@ -19,7 +19,7 @@ interface SystemInfo {
 }
 
 export function ProfileSection() {
-  const { user, revalidate } = useAuth();
+  const { user, revalidate, authConfig, changePassword } = useAuth();
   const { mode, setMode } = useTheme();
   const [timezone, setTimezone] = useState(user?.timezone ?? "");
   const [phone, setPhone] = useState(user?.phone ?? "");
@@ -32,6 +32,34 @@ export function ProfileSection() {
   const [profileError, setProfileError] = useState<string | null>(null);
   const [timezones, setTimezones] = useState<string[]>([]);
   const [serverTimezone, setServerTimezone] = useState<string>("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordDone, setPasswordDone] = useState(false);
+
+  const submitPasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordDone(false);
+    if (newPassword !== confirmPassword) {
+      setPasswordError("New passwords don't match.");
+      return;
+    }
+    setPasswordError(null);
+    setSavingPassword(true);
+    try {
+      await changePassword(currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordDone(true);
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : "Failed to change password");
+    } finally {
+      setSavingPassword(false);
+    }
+  };
 
   useEffect(() => {
     api.get<string[]>("/api/system/timezones").then(setTimezones).catch(() => {});
@@ -186,6 +214,64 @@ export function ProfileSection() {
               )}
             </div>
           </div>
+        </SectionPanel>
+      )}
+
+      {user && !authConfig?.sso.disable_local_auth && (
+        <SectionPanel title="Password">
+          <form onSubmit={submitPasswordChange} className="space-y-3">
+            <div>
+              <label className="block text-xs font-medium text-text-tertiary mb-1">
+                Current password
+              </label>
+              <input
+                type="password"
+                required
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-text-tertiary mb-1">
+                New password
+              </label>
+              <input
+                type="password"
+                required
+                minLength={8}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-text-tertiary mb-1">
+                Confirm new password
+              </label>
+              <input
+                type="password"
+                required
+                minLength={8}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+              />
+            </div>
+            {passwordError && <p className="text-xs text-error-text">{passwordError}</p>}
+            {passwordDone && (
+              <p className="text-xs text-text-tertiary">
+                Password changed. Your other sessions have been signed out.
+              </p>
+            )}
+            <button
+              type="submit"
+              disabled={savingPassword}
+              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-surface shadow-sm hover:bg-accent-hover disabled:opacity-50 transition"
+            >
+              {savingPassword ? "Saving…" : "Change password"}
+            </button>
+          </form>
         </SectionPanel>
       )}
 

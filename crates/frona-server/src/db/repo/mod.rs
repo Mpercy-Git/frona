@@ -16,6 +16,7 @@ pub mod notifications;
 pub mod policies;
 pub mod push_subscriptions;
 pub mod oauth;
+pub mod password_reset_tokens;
 pub mod shares;
 pub mod spaces;
 pub mod tasks;

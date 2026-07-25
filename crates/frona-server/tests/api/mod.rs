@@ -258,6 +258,16 @@ fn with_connect_info(req: &mut Request<Body>) {
         .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
 }
 
+/// Same, but from a caller-chosen address. The auth routes sit behind a per-IP
+/// governor with a burst of 5. Today each `build_app` builds a fresh limiter,
+/// so a sequence of one-request apps can't trip it — but a lockout test that
+/// relies on that is testing the harness, not the feature. Spreading attempts
+/// across addresses keeps identifier lockout the thing under test either way.
+fn with_connect_info_from(req: &mut Request<Body>, last_octet: u8) {
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([10, 0, 0, last_octet], 0))));
+}
+
 async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
         .await

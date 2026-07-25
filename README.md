@@ -57,6 +57,19 @@ A dedicated review pass fixed issues not present upstream, including:
 - **Space management:** spaces can be archived or deleted from the chat sidebar (mirroring chats); deleting a channel no longer deletes its space, since spaces are independent and can hold chats
 - Chat file-upload robustness: friendlier over-size errors, no silent attachment drops, no leaked blob URLs
 
+### 🔑 Account recovery & login lockout (net-new)
+
+Local-auth accounts previously had no way back in: no password reset, no
+self-service change, and no admin override — a forgotten password meant
+deleting and recreating the account.
+
+- **Failed-login lockout** that can't be sidestepped by re-casing the identifier, runs for its full duration from the moment it engages, and counts only genuine credential rejections (a server error or a deactivated account no longer burns a user's budget). Configurable via `auth.max_login_attempts` and `auth.lockout_minutes`; `0` disables it. A locked identifier answers `429` with `Retry-After`
+- **Forgot-password over SMTP** — single-use, hash-at-rest reset tokens with a short TTL, sent via `mail.*` config. The request endpoint answers identically for registered and unregistered addresses, so it can't be used to enumerate accounts
+- **Self-service password change** (`PUT /api/auth/password`) requiring the current password, which revokes every other session
+- **Admin reset and unlock** (`PUT /api/admin/users/{id}/password`, `POST /api/admin/users/{id}/unlock`), surfaced in Settings → Users
+- **Break-glass CLI** (`frona reset-password --handle <h>`) for when the sole admin is locked out and no authenticated caller exists
+- Failed logins and lockouts are now logged and exported as `frona_auth_login_failures_total` / `frona_auth_lockouts_total`
+
 ### 🏗️ Build & release (fork-only)
 
 - Release workflow publishing multi-arch images to **this fork's GHCR** (`ghcr.io/mpercy-git/frona`)

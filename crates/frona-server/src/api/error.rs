@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use crate::core::error::{AppError, AuthErrorCode};
 use serde_json::json;
@@ -23,6 +23,16 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match &self.0 {
             AppError::Auth { message, code } => {
+                // Lockout carries a deadline, so it answers with `Retry-After`
+                // rather than falling through to the plain (status, body) path.
+                if let AuthErrorCode::AccountLocked { retry_after_secs } = code {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [(header::RETRY_AFTER, retry_after_secs.to_string())],
+                        Json(json!({ "error": message })),
+                    )
+                        .into_response();
+                }
                 let status = match code {
                     AuthErrorCode::AccountDeactivated => StatusCode::FORBIDDEN,
                     _ => StatusCode::UNAUTHORIZED,
