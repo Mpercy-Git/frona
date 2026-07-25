@@ -75,8 +75,8 @@ mise run release stable                   # 2026.5.1-RC1 → 2026.5.1
 
 ## Docker Tagging
 
-- **Stable** `2026.5.0` → `ghcr.io/fronalabs/frona:v2026.5.0` + `:latest`
-- **Pre-release** `2026.5.0-ALPHA1` → `ghcr.io/fronalabs/frona:v2026.5.0-ALPHA1` only (no `:latest`)
+- **Stable** `2026.5.0` → `ghcr.io/mpercy-git/frona:v2026.5.0` + `:latest`
+- **Pre-release** `2026.5.0-ALPHA1` → `ghcr.io/mpercy-git/frona:v2026.5.0-ALPHA1` only (no `:latest`)
 
 ## Version Sources
 

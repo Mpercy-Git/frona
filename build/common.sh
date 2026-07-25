@@ -1,7 +1,7 @@
 # Shared constants and helpers for build scripts.
 # Source after cd-ing to the repo root.
 
-IMAGE="ghcr.io/fronalabs/frona"
+IMAGE="ghcr.io/mpercy-git/frona"
 DOCKERFILE="build/Dockerfile"
 TARGET="prod"
 PLATFORMS="${PLATFORM:-linux/amd64,linux/arm64}"
@@ -26,7 +26,7 @@ set_image_meta_args() {
     --build-arg "VERSION=$version"
     --build-arg "REVISION=$revision"
     --build-arg "CREATED=$created"
-    --annotation "index:org.opencontainers.image.source=https://github.com/fronalabs/frona"
+    --annotation "index:org.opencontainers.image.source=https://github.com/Mpercy-Git/frona"
     --annotation "index:org.opencontainers.image.description=Frona — personal AI assistant"
     --annotation "index:org.opencontainers.image.licenses=BSL-1.1"
     --annotation "index:org.opencontainers.image.title=frona"

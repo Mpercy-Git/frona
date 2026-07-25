@@ -113,7 +113,7 @@ description = "Build prod image and push to your personal preview registry (set 
 run = '''
 : "${FRONA_PREVIEW_IMAGE:?Set FRONA_PREVIEW_IMAGE in mise.local.toml}"
 : "${FRONA_PREVIEW_TAG:?Set FRONA_PREVIEW_TAG in mise.local.toml}"
-if [ "$FRONA_PREVIEW_IMAGE" = "ghcr.io/fronalabs/frona" ] && [ "$FRONA_PREVIEW_TAG" != "nightly" ]; then
+if [ "$FRONA_PREVIEW_IMAGE" = "ghcr.io/mpercy-git/frona" ] && [ "$FRONA_PREVIEW_TAG" != "nightly" ]; then
   echo "FRONA_PREVIEW_IMAGE may only target the prod registry with tag 'nightly'" >&2
   exit 1
 fi

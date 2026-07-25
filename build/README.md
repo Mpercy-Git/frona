@@ -64,7 +64,7 @@ Each node must be constrained to its native platform with `--platform`. Without 
 mise run docker:publish
 ```
 
-This builds for both platforms and pushes to `ghcr.io/fronalabs/frona:latest`. See `publish.sh` for details.
+This builds for both platforms and pushes to `ghcr.io/mpercy-git/frona:latest`. See `publish.sh` for details.
 
 ## Releasing
 

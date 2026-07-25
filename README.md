@@ -9,7 +9,7 @@
     <img src="https://img.shields.io/badge/built_with-Rust-dea584?style=flat-square&logo=rust" alt="Built with Rust">
     <a href="https://github.com/fronalabs/frona/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-BSL_1.1-blue?style=flat-square" alt="License"></a>
     <a href="https://github.com/fronalabs/frona/stargazers"><img src="https://img.shields.io/github/stars/fronalabs/frona?style=flat-square&logo=github" alt="GitHub stars"></a>
-    <a href="https://github.com/fronalabs/frona/pkgs/container/frona"><img src="https://img.shields.io/badge/ghcr.io-fronalabs%2Ffrona-2496ed?style=flat-square&logo=docker&logoColor=white" alt="Container image"></a>
+    <a href="https://github.com/Mpercy-Git/frona/pkgs/container/frona"><img src="https://img.shields.io/badge/ghcr.io-mpercy--git%2Ffrona-2496ed?style=flat-square&logo=docker&logoColor=white" alt="Container image"></a>
     <a href="https://docs.frona.ai/"><img src="https://img.shields.io/badge/docs-frona.ai-8a3ffc?style=flat-square" alt="Documentation"></a>
 </p>
 
@@ -116,7 +116,7 @@ You'll need an OCI runtime with Compose v2 support, such as [Docker](https://doc
 # docker-compose.yml
 services:
   frona:
-    image: ghcr.io/fronalabs/frona:latest
+    image: ghcr.io/mpercy-git/frona:latest
     ports:
       - "3001:3001"
     volumes:
