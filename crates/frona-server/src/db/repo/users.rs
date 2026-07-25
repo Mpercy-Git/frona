@@ -43,6 +43,22 @@ impl UserRepository for SurrealRepo<User> {
         Ok(user)
     }
 
+    async fn find_all_with_phone(&self) -> Result<Vec<User>, AppError> {
+        let mut result = self
+            .db()
+            .query(format!(
+                "{SELECT_CLAUSE} FROM user WHERE phone IS NOT NONE AND phone != '' AND deactivated_at IS NONE"
+            ))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let users: Vec<User> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(users)
+    }
+
     async fn has_users(&self) -> Result<bool, AppError> {
         let mut result = self
             .db()

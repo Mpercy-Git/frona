@@ -69,7 +69,9 @@ pub async fn find_user_by_phone(user_service: &UserService, phone: &str) -> Opti
     if target.is_empty() {
         return None;
     }
-    match user_service.list_all(false).await {
+    // Narrowed to rows that actually carry a phone; the format-insensitive
+    // comparison still has to happen here rather than in SQL.
+    match user_service.find_all_with_phone().await {
         Ok(users) => users
             .into_iter()
             .find(|u| u.phone.as_deref().is_some_and(|p| normalize_phone(p) == target)),

@@ -73,6 +73,12 @@ impl UserService {
         self.repo.list_all(include_deactivated).await
     }
 
+    /// Active users with a phone number set — the candidate set for matching a
+    /// caller's number (see `tool::voice::find_user_by_phone`).
+    pub async fn find_all_with_phone(&self) -> Result<Vec<User>, AppError> {
+        self.repo.find_all_with_phone().await
+    }
+
     /// If no active admin exists, promote the oldest active user.
     pub async fn ensure_admin_invariant(&self) -> Result<(), AppError> {
         if self.repo.find_any_active_admin().await?.is_some() {

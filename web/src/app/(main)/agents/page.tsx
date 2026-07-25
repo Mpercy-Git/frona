@@ -282,6 +282,7 @@ function AgentSettings() {
             {activeSection === "prompt" && (
               <InstructionsSection
                 prompt={((merged.prompt as string) ?? agent.default_prompt)}
+                defaultPrompt={agent.default_prompt}
                 onPromptChange={(v) => update({ prompt: v })}
               />
             )}

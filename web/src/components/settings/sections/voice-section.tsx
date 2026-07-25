@@ -122,12 +122,12 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
               <TextInput
                 label="Initial Silence Delay (seconds)"
                 description="Seconds of silence before the first filler phrase is sent"
-                value={String(voice.silence_fill_initial_delay_secs ?? 3)}
+                value={String(voice.silence_fill_initial_delay_secs ?? 2)}
                 onChange={(raw) => {
                   const n = parseInt(raw, 10);
-                  onChange({ ...voice, silence_fill_initial_delay_secs: isNaN(n) ? 3 : Math.max(1, n) });
+                  onChange({ ...voice, silence_fill_initial_delay_secs: isNaN(n) ? 2 : Math.max(1, n) });
                 }}
-                placeholder="3"
+                placeholder="2"
               />
               <TextInput
                 label="Filler Interval (seconds)"

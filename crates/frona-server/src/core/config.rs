@@ -847,7 +847,7 @@ pub struct VoiceConfig {
     pub inbound_welcome_greeting: Option<String>,
     #[schemars(description = "Enable silence filling during agent processing — sends periodic filler phrases while the agent is thinking. Only applies when the remote party's number matches a registered user (a user calling in, or the agent calling one of its users); calls with third parties are unaffected, as the agent narrates its own progress there per the active-call prompt.")]
     pub silence_fill_enabled: bool,
-    #[schemars(description = "Seconds of silence before the first filler phrase is sent. Defaults to 3.")]
+    #[schemars(description = "Seconds of silence before the first filler phrase is sent. Defaults to 2 — longer feels like dead air on a phone call.")]
     #[serde(default = "default_silence_fill_initial_delay_secs")]
     pub silence_fill_initial_delay_secs: u64,
     #[schemars(description = "Seconds between successive filler phrases. Defaults to 7.")]
@@ -858,7 +858,7 @@ pub struct VoiceConfig {
 }
 
 fn default_silence_fill_initial_delay_secs() -> u64 {
-    3
+    2
 }
 
 fn default_silence_fill_interval_secs() -> u64 {

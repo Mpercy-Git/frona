@@ -16,6 +16,13 @@ use crate::tool::voice::{VoiceSessionExtensions, find_user_by_phone, validate_tw
 
 use super::build_twiml;
 
+/// Whether `s` could be an agent id (ids are UUIDs — see `core::repository::new_id`).
+/// Handles and display names never parse as one, so this lets the inbound path
+/// skip a guaranteed-miss lookup on the latency-sensitive answer path.
+fn looks_like_agent_id(s: &str) -> bool {
+    uuid::Uuid::parse_str(s).is_ok()
+}
+
 // ---------------------------------------------------------------------------
 // TwiML helpers
 // ---------------------------------------------------------------------------
@@ -249,20 +256,23 @@ pub(super) async fn twilio_inbound_handler(
     // ------------------------------------------------------------------
     // 6. Resolve answering agent
     //    The owning user's own choice wins; otherwise their "receptionist".
-    //    Try by ID first, then by handle (username), then by name.
+    //    Resolved by ID, handle, or name — but the ID lookup is skipped unless
+    //    the value actually looks like one. The common case ("receptionist",
+    //    or any handle the user picked) would otherwise pay a guaranteed-miss
+    //    round-trip on every inbound call, before the caller hears anything.
     // ------------------------------------------------------------------
     let agent_query = state
         .get_inbound_agent(&user_id)
         .await
         .unwrap_or_else(|| "receptionist".to_string());
 
-    // Try by ID (UUID) first
-    let agent = match state.agent_service.find_by_id(&agent_query).await {
-        Ok(Some(a)) => Some(a),
-        _ => None,
+    let agent = if looks_like_agent_id(&agent_query) {
+        state.agent_service.find_by_id(&agent_query).await.ok().flatten()
+    } else {
+        None
     };
 
-    // If not found by ID, try by handle
+    // Handle (username) is the common case for a configured inbound agent.
     let agent = match agent {
         Some(a) => Some(a),
         None => match state.agent_service.find_by_handle(&user_id, &agent_query).await {
@@ -271,7 +281,7 @@ pub(super) async fn twilio_inbound_handler(
         },
     };
 
-    // If still not found, try by name
+    // If still not found, try by display name.
     let agent = match agent {
         Some(a) => Some(a),
         None => match state.agent_service.find_by_name(&user_id, &agent_query).await {
@@ -544,5 +554,16 @@ mod tests {
         let expected_sig = base64::engine::general_purpose::STANDARD.encode(result);
 
         assert!(validate_twilio_signature(auth_token, url, &params, &expected_sig));
+    }
+
+    #[test]
+    fn looks_like_agent_id_only_matches_uuids() {
+        // Real ids are UUIDs; handles/names must not trigger the id lookup.
+        assert!(super::looks_like_agent_id(
+            &uuid::Uuid::new_v4().to_string()
+        ));
+        assert!(!super::looks_like_agent_id("receptionist"));
+        assert!(!super::looks_like_agent_id("my-agent_2"));
+        assert!(!super::looks_like_agent_id(""));
     }
 }

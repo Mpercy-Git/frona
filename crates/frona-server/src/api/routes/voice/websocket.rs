@@ -10,6 +10,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::call::models::CallDirection;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::inference::InferenceResponse;
@@ -18,6 +19,10 @@ use crate::tool::voice::{VoiceSessionExtensions, find_user_by_phone};
 
 use super::models::TokenQuery;
 use super::verify_voice_jwt;
+
+/// Spoken before hanging up when the agent called `hangup_call` without a
+/// closing line of its own, so the call never ends on abrupt silence.
+const DEFAULT_HANGUP_SIGN_OFF: &str = "Thanks for calling. Goodbye.";
 
 /// Default filler phrases used when `silence_fill_phrases` is empty.
 const DEFAULT_SILENCE_FILL_PHRASES: &[&str] = &[
@@ -62,13 +67,15 @@ pub(crate) async fn twilio_ws_handler(
     let call_id = ext.call_id.clone();
     let caller_name = ext.caller_name.clone();
     let caller_phone = ext.caller_phone.clone();
+    // `direction` is only set for inbound calls (see VoiceSessionExtensions).
+    let is_inbound = matches!(ext.direction, Some(CallDirection::Inbound));
 
     let ws = match WebSocketUpgrade::from_request(req, &state).await {
         Ok(ws) => ws,
         Err(e) => return e.into_response(),
     };
 
-    ws.on_upgrade(move |socket| handle_voice_socket(socket, state, chat_id, user_id, contact_id, call_id, caller_name, caller_phone))
+    ws.on_upgrade(move |socket| handle_voice_socket(socket, state, chat_id, user_id, contact_id, call_id, caller_name, caller_phone, is_inbound))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -81,21 +88,29 @@ async fn handle_voice_socket(
     call_id: Option<String>,
     caller_name: Option<String>,
     caller_phone: Option<String>,
+    is_inbound: bool,
 ) {
     let (mut session_id, _) = state.active_sessions.register(&chat_id).await;
     tracing::debug!(chat_id = %chat_id, "Voice WS session registered in active sessions");
 
     // The timer-based silence filler speaks generic canned phrases, which are
-    // appropriate only when the other party is one of our own users — e.g. the
-    // agent is calling a user, or a user is calling in. On a call with an
-    // arbitrary third party the agent narrates its own progress instead (see
-    // active_call.md), so canned fillers would just sound robotic. Decide once
-    // per call from the remote party's phone number.
-    let remote_is_user = match caller_phone.as_deref() {
-        Some(phone) => find_user_by_phone(&state.user_service, phone).await.is_some(),
-        None => false,
+    // appropriate only when the other party is someone we know — not an
+    // arbitrary third party, where the agent narrates its own progress instead
+    // (see active_call.md) and canned phrases would sound robotic.
+    //
+    // Inbound callers already cleared the per-user allowlist before the call
+    // was answered, so they are known by definition — an allowlisted friend or
+    // colleague need not also be a registered user. Only outbound calls need
+    // the number lookup, which also keeps it off the inbound answer path.
+    let remote_is_known = if is_inbound {
+        true
+    } else {
+        match caller_phone.as_deref() {
+            Some(phone) => find_user_by_phone(&state.user_service, phone).await.is_some(),
+            None => false,
+        }
     };
-    tracing::debug!(chat_id = %chat_id, remote_is_user, "Silence-fill gating resolved");
+    tracing::debug!(chat_id = %chat_id, is_inbound, remote_is_known, "Silence-fill gating resolved");
 
     let (ws_send, mut ws_recv) = socket.split();
     // Wrap the send half in Arc<Mutex> so it can be shared between the agent
@@ -163,7 +178,7 @@ async fn handle_voice_socket(
                 // to the caller while the agent is processing. The filler is
                 // cancelled when the turn completes (or errors).
                 let filler_cancel = CancellationToken::new();
-                let filler_handle = if remote_is_user && state.config.voice.silence_fill_enabled {
+                let filler_handle = if remote_is_known && state.config.voice.silence_fill_enabled {
                     let ws = ws_send.clone();
                     let fc = filler_cancel.clone();
                     let cid = chat_id.clone();
@@ -219,12 +234,30 @@ async fn handle_voice_socket(
                 }
 
                 tracing::info!(chat_id = %chat_id, response_len = %response_text.len(), should_hang_up = %should_hang_up, "Voice turn complete");
+
+                // Remember the agent's own words for the task summary — never the
+                // canned sign-off below, which would otherwise overwrite the last
+                // meaningful thing the agent said.
                 if !response_text.is_empty() {
                     last_response = response_text.clone();
-                    tracing::debug!(chat_id = %chat_id, response = %response_text, "Sending TTS response");
+                }
+
+                // The sign-off is whatever the agent said alongside `hangup_call`
+                // (see tools/hangup_call.md). The prompt asks for one, but the
+                // model can still omit it — without a fallback the caller would
+                // just hear the line go dead, so speak a default instead.
+                let spoken_text = if should_hang_up && response_text.trim().is_empty() {
+                    tracing::info!(chat_id = %chat_id, "Hangup with no closing line — using default sign-off");
+                    DEFAULT_HANGUP_SIGN_OFF
+                } else {
+                    response_text.as_str()
+                };
+
+                if !spoken_text.is_empty() {
+                    tracing::debug!(chat_id = %chat_id, response = %spoken_text, "Sending TTS response");
                     let tts = serde_json::json!({
                         "type": "text",
-                        "token": response_text,
+                        "token": spoken_text,
                         "last": true
                     });
                     {
@@ -241,7 +274,9 @@ async fn handle_voice_socket(
                 }
 
                 if should_hang_up {
-                    let word_count = response_text.split_whitespace().count();
+                    // Wait on what was actually spoken, so the fallback sign-off
+                    // isn't cut off by hanging up too early.
+                    let word_count = spoken_text.split_whitespace().count();
                     let tts_secs = ((word_count as f64 / 2.5).ceil() as u64 + 1).clamp(2, 30);
                     tracing::info!(chat_id = %chat_id, tts_secs, "Waiting for TTS before hangup");
                     tokio::time::sleep(Duration::from_secs(tts_secs)).await;
@@ -269,7 +304,12 @@ async fn handle_voice_socket(
     if let Ok(Some(task)) = state.task_service.find_by_chat_id(&chat_id).await
         && matches!(task.status, crate::agent::task::models::TaskStatus::InProgress)
     {
-        let summary = last_response;
+        // The last thing spoken is a sign-off ("Thanks, goodbye"), not a useful
+        // report of what the call achieved. Summarise the transcript instead,
+        // falling back to the last utterance if that isn't possible.
+        let summary = summarise_call(&state, &chat_id, &task.agent_id, &task.user_id)
+            .await
+            .unwrap_or(last_response);
 
         if let Ok(task) = state.task_service.mark_completed(&task.id, Some(summary.clone())).await {
             crate::agent::task::executor::deliver_event_to_source(
@@ -283,6 +323,87 @@ async fn handle_voice_socket(
             )
             .await;
             state.task_executor.resume_parent_if_requested(&task).await;
+        }
+    }
+}
+
+/// Build the transcript of a call chat as alternating speaker lines. Returns
+/// `None` when there is nothing worth summarising.
+fn render_call_transcript(messages: &[crate::chat::message::models::Message]) -> Option<String> {
+    use crate::chat::message::models::MessageRole;
+
+    let mut lines = Vec::new();
+    for m in messages {
+        let speaker = match m.role {
+            // What the other party said, and the agent's spoken replies.
+            MessageRole::LiveCall | MessageRole::User | MessageRole::Contact => "Other party",
+            MessageRole::Agent => "Assistant",
+            // Task/system bookkeeping isn't part of the conversation.
+            MessageRole::System | MessageRole::TaskCompletion => continue,
+        };
+        let text = m.content.trim();
+        if !text.is_empty() {
+            lines.push(format!("{speaker}: {text}"));
+        }
+    }
+
+    // A single line is just the greeting or the sign-off — nothing to condense.
+    if lines.len() < 2 {
+        return None;
+    }
+    Some(lines.join("\n"))
+}
+
+/// Summarise a finished call for the user, who wasn't on it. Returns `None` on
+/// any failure so the caller can fall back to the last thing spoken — a call
+/// that happened must never be lost because summarising it failed.
+async fn summarise_call(
+    state: &AppState,
+    chat_id: &str,
+    agent_id: &str,
+    user_id: &str,
+) -> Option<String> {
+    use crate::inference::usage::models::{CompactionTarget, InferenceKind, UsageContext};
+
+    let messages = state.chat_service.get_stored_messages(chat_id).await.ok()?;
+    let transcript = render_call_transcript(&messages)?;
+
+    let prompt = state.prompts.read("CALL_SUMMARY.md")?;
+    let model_group = state
+        .chat_service
+        .provider_registry()
+        .utility_model_group("call_summary")
+        .ok()?;
+
+    let usage_ctx = UsageContext::new(
+        InferenceKind::Compaction {
+            target: CompactionTarget::Chat {
+                agent_id: agent_id.to_string(),
+                chat_id: chat_id.to_string(),
+            },
+        },
+        user_id,
+        model_group.name.clone(),
+    );
+
+    match crate::inference::text_inference(
+        state.chat_service.provider_registry(),
+        &model_group,
+        &prompt,
+        vec![rig_core::completion::Message::user(transcript)],
+        &state.usage_service,
+        &usage_ctx,
+    )
+    .await
+    {
+        Ok(summary) if !summary.trim().is_empty() => {
+            tracing::info!(chat_id = %chat_id, "Call summarised for task completion");
+            Some(summary.trim().to_string())
+        }
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, chat_id = %chat_id, "Call summarisation failed; using last utterance");
+            None
         }
     }
 }

@@ -55,6 +55,11 @@ pub trait UserRepository: Repository<User> {
     async fn find_any_active_admin(&self) -> Result<Option<User>, AppError>;
     async fn find_oldest_active(&self) -> Result<Option<User>, AppError>;
     async fn list_all(&self, include_deactivated: bool) -> Result<Vec<User>, AppError>;
+    /// Active users that have a phone number set. Phone numbers are stored in
+    /// whatever format the user typed, so an exact SQL match is unreliable —
+    /// callers still compare via `normalize_phone`. This narrows the candidate
+    /// set to rows that can possibly match instead of scanning every user.
+    async fn find_all_with_phone(&self) -> Result<Vec<User>, AppError>;
 }
 
 pub fn can_create_users(config: &Config) -> bool {
