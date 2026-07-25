@@ -19,6 +19,10 @@ export const viewport: Viewport = {
   userScalable: false,
   viewportFit: "cover",
   themeColor: "#222831",
+  // Shrink the layout when the soft keyboard opens instead of letting it cover
+  // the page. The app is a full-height flex column (`h-[100dvh]`), so without
+  // this the composer ends up hidden behind the keyboard on Android.
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({
