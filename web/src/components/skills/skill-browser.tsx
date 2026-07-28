@@ -12,6 +12,7 @@ import {
   ExclamationTriangleIcon,
   TrashIcon,
   PuzzlePieceIcon,
+  PlusIcon,
 } from "@heroicons/react/24/outline";
 import * as Checkbox from "@radix-ui/react-checkbox";
 import { CheckIcon, MinusIcon } from "@heroicons/react/16/solid";
@@ -19,6 +20,7 @@ import {
   searchSkills,
   previewSkill,
   installSkills,
+  addManualSkill,
   uninstallSkill,
   listInstalledSkills,
   listAgentSkills,
@@ -72,6 +74,16 @@ function MetadataTable({ meta }: { meta: Record<string, string> }) {
   );
 }
 
+const MANUAL_TEMPLATE = `---
+name: my-skill
+description: What this skill does, and when the agent should reach for it.
+---
+
+# My skill
+
+Instructions for the agent.
+`;
+
 export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(function SkillBrowser({ agentId, scope = "user", enabledSkills, onEnabledChange, onAgentRemovalsChange }, ref) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkillSearchResult[]>([]);
@@ -91,6 +103,10 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
   const [installingAll, setInstallingAll] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [agentOnly, setAgentOnly] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualContent, setManualContent] = useState("");
+  const [manualSaving, setManualSaving] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // For shared+builtin: enabledSet tracks which are active (driven by enabledSkills prop)
@@ -399,6 +415,78 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     setPreview(null);
   }, []);
 
+  const openManual = useCallback(() => {
+    setManualError(null);
+    if (!manualContent.trim()) setManualContent(MANUAL_TEMPLATE);
+    setManualOpen(true);
+  }, [manualContent]);
+
+  const handleManualSave = useCallback(async () => {
+    setManualSaving(true);
+    setManualError(null);
+    try {
+      await addManualSkill(manualContent, { agentId, scope: agentId ? undefined : scope });
+      setManualOpen(false);
+      setManualContent("");
+      await reload();
+    } catch (err) {
+      // Keep the editor open and the draft intact — the message says what to fix.
+      setManualError(err instanceof Error ? err.message : "Failed to add skill");
+    } finally {
+      setManualSaving(false);
+    }
+  }, [manualContent, agentId, scope, reload]);
+
+  const manualDialog = manualOpen && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={() => setManualOpen(false)} />
+      <div className="relative rounded-xl border border-border bg-surface-secondary p-4 space-y-4 max-w-2xl w-full mx-4 shadow-xl">
+        <div className="mb-5 pb-3 border-b border-border flex items-end justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-semibold text-text-primary">Add a skill</h3>
+              <span className="rounded-full bg-surface-tertiary px-2.5 py-0.5 text-[11px] font-medium text-text-secondary uppercase tracking-wide">manual</span>
+            </div>
+            <p className="text-sm text-text-tertiary mt-1">
+              Paste a SKILL.md. The name comes from the frontmatter.
+            </p>
+          </div>
+          <PuzzlePieceIcon className="h-10 w-10 text-text-tertiary shrink-0" />
+        </div>
+
+        <textarea
+          value={manualContent}
+          onChange={(e) => setManualContent(e.target.value)}
+          spellCheck={false}
+          rows={16}
+          className="w-full rounded-lg border border-border bg-surface px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none resize-y"
+          placeholder={MANUAL_TEMPLATE}
+        />
+
+        {manualError && (
+          <div className="rounded-lg bg-error-bg p-3 text-sm text-error-text whitespace-pre-wrap">{manualError}</div>
+        )}
+
+        <div className="flex gap-2">
+          <button
+            onClick={handleManualSave}
+            disabled={manualSaving || !manualContent.trim()}
+            className="w-28 inline-flex items-center justify-center gap-1.5 rounded-lg bg-accent py-2 text-sm font-medium text-surface shadow-sm hover:bg-accent-hover transition disabled:opacity-50"
+          >
+            <PlusIcon className="h-4 w-4" />
+            {manualSaving ? "Saving..." : "Add"}
+          </button>
+          <button
+            onClick={() => setManualOpen(false)}
+            className="w-28 inline-flex items-center justify-center gap-1.5 rounded-lg border border-border py-2 text-sm font-medium text-text-secondary shadow-sm hover:bg-surface-tertiary transition"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   const confirmDialog = confirmInstall && (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/50" onClick={() => setConfirmInstall(null)} />
@@ -673,20 +761,31 @@ export const SkillBrowser = forwardRef<SkillBrowserHandle, SkillBrowserProps>(fu
     <div className="space-y-4">
       {confirmDialog}
       {uninstallDialog}
-      <div className="relative">
-        <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-tertiary" />
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => handleSearch(e.target.value)}
-          placeholder="Search skills or enter owner/repo..."
-          className="w-full rounded-lg border border-border bg-surface pl-9 pr-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-        />
-        {searching && (
-          <div className="absolute right-3 top-1/2 -translate-y-1/2">
-            <div className="h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-          </div>
-        )}
+      {manualDialog}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-tertiary" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => handleSearch(e.target.value)}
+            placeholder="Search skills or enter owner/repo..."
+            className="w-full rounded-lg border border-border bg-surface pl-9 pr-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+          />
+          {searching && (
+            <div className="absolute right-3 top-1/2 -translate-y-1/2">
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+            </div>
+          )}
+        </div>
+        <button
+          onClick={openManual}
+          title="Write a skill by hand instead of installing one from a repo"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-text-secondary shadow-sm hover:bg-surface-tertiary transition shrink-0"
+        >
+          <PlusIcon className="h-4 w-4" />
+          Add manually
+        </button>
       </div>
 
       {error && (

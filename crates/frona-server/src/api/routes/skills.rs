@@ -19,6 +19,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/skills/browse", get(browse_repo))
         .route("/api/skills/preview", get(preview_skill))
         .route("/api/skills/install", post(install_skill))
+        .route("/api/skills/manual", post(add_manual_skill))
         .route("/api/skills/check", get(check_updates))
         .route("/api/skills/{name}", delete(uninstall_skill))
 }
@@ -155,6 +156,44 @@ async fn install_skill(
                 .install_batch(&req.repo, &req.skill_names, None)
                 .await?;
             Ok(Json(items))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ManualSkillRequest {
+    content: String,
+    agent_id: Option<String>,
+    #[serde(default)]
+    scope: InstallScope,
+}
+
+async fn add_manual_skill(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<ManualSkillRequest>,
+) -> Result<Json<SkillListItem>, ApiError> {
+    if let Some(agent_id) = req.agent_id.as_deref() {
+        let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
+        let item = state
+            .skill_service
+            .add_manual_for_agent(&auth.handle, &agent.handle, &req.content)
+            .await?;
+        return Ok(Json(item));
+    }
+
+    match req.scope {
+        InstallScope::User => {
+            let item = state
+                .skill_service
+                .add_manual_for_user(&auth.handle, &req.content)
+                .await?;
+            Ok(Json(item))
+        }
+        InstallScope::Shared => {
+            require_admin(&state, &auth).await?;
+            let item = state.skill_service.add_manual_shared(&req.content).await?;
+            Ok(Json(item))
         }
     }
 }
