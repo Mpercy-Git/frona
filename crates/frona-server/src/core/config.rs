@@ -1191,6 +1191,7 @@ pub const SENSITIVE_PATHS: &[&[&str]] = &[
     &["vault", "bitwarden_master_password"],
     &["vault", "hashicorp_token"],
     &["vault", "keepass_password"],
+    &["mail", "smtp_password"],
 ];
 
 /// Provider fields that are sensitive (applied to each provider in the map).
@@ -1746,4 +1747,38 @@ mod tests {
         assert!(!path.exists());
     }
 
+    /// Every credential in the config must be redacted on the way out. The SMTP
+    /// password is the one most recently added, and `GET /api/config` is
+    /// reachable by any authenticated user — not just admins.
+    #[test]
+    fn smtp_password_is_redacted_for_api_and_logs() {
+        let mut config = Config::default();
+        config.mail.smtp_password = Some("hunter2-smtp".into());
+
+        let mut api_value = serde_json::to_value(&config).unwrap();
+        redact_config_for_api(&mut api_value);
+        let rendered = serde_json::to_string(&api_value).unwrap();
+        assert!(!rendered.contains("hunter2-smtp"), "API response leaked the SMTP password");
+        assert_eq!(
+            api_value.pointer("/mail/smtp_password/is_set"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        let mut log_value = serde_json::to_value(&config).unwrap();
+        redact_config_for_log(&mut log_value);
+        let rendered = serde_json::to_string(&log_value).unwrap();
+        assert!(!rendered.contains("hunter2-smtp"), "log dump leaked the SMTP password");
+    }
+
+    #[test]
+    fn unset_smtp_password_reports_as_not_set() {
+        let config = Config::default();
+        let mut api_value = serde_json::to_value(&config).unwrap();
+        redact_config_for_api(&mut api_value);
+        // Absent secrets must not masquerade as configured ones.
+        assert_ne!(
+            api_value.pointer("/mail/smtp_password/is_set"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
 }

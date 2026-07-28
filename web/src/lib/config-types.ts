@@ -37,6 +37,21 @@ export interface AuthConfig {
   refresh_token_expiry_secs: number;
   presign_expiry_secs: number;
   allow_registration: boolean;
+  max_login_attempts: number;
+  lockout_minutes: number;
+  password_reset_expiry_minutes: number;
+}
+
+export type SmtpTls = "starttls" | "implicit" | "none";
+
+export interface MailConfig {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string | null;
+  smtp_password: SensitiveField;
+  tls: SmtpTls;
+  from_address: string;
+  from_name: string;
 }
 
 export interface SsoConfig {
@@ -194,6 +209,7 @@ export interface Config {
   sandbox: SandboxConfig;
   auth: AuthConfig;
   sso: SsoConfig;
+  mail: MailConfig;
   browser: BrowserConfig | null;
   search: SearchConfig;
   voice: VoiceConfig;
