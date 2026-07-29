@@ -1,5 +1,5 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{FromRequest, Query, Request, State, WebSocketUpgrade};
@@ -11,14 +11,19 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::call::models::CallDirection;
+use crate::chat::broadcast::BroadcastEventKind;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
-use crate::inference::InferenceResponse;
 use crate::inference::conversation::DefaultConversationBuilder;
+use crate::inference::{InferenceEventKind, InferenceResponse};
 use crate::tool::voice::{VoiceSessionExtensions, find_user_by_phone};
 
 use super::models::TokenQuery;
 use super::verify_voice_jwt;
+
+/// Shorthand for the write half of the ConversationRelay socket. Shared
+/// between the turn, the token streamer, and the silence filler.
+type WsSend = Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>;
 
 /// Spoken before hanging up when the agent called `hangup_call` without a
 /// closing line of its own, so the call never ends on abrupt silence.
@@ -173,6 +178,22 @@ async fn handle_voice_socket(
                     voice_prompt
                 };
 
+                // --- Token streaming ---
+                // Subscribe before the turn starts so the first delta can't be
+                // published before we're listening. Everything the agent says
+                // reaches the caller through this task; the turn itself only
+                // closes it out below.
+                let bus_rx = state.broadcast_service.subscribe_raw();
+                let stream_stop = CancellationToken::new();
+                let last_activity = Arc::new(StdMutex::new(Instant::now()));
+                let stream_handle = spawn_turn_streamer(
+                    bus_rx,
+                    ws_send.clone(),
+                    stream_stop.clone(),
+                    last_activity.clone(),
+                    chat_id.clone(),
+                );
+
                 // --- Silence filler ---
                 // Spawn a background task that periodically sends filler phrases
                 // to the caller while the agent is processing. The filler is
@@ -197,7 +218,13 @@ async fn handle_voice_socket(
                         state.config.voice.silence_fill_phrases.clone()
                     };
                     Some(tokio::spawn(silence_filler(
-                        ws, fc, initial, interval, phrases, cid,
+                        ws,
+                        fc,
+                        initial,
+                        interval,
+                        phrases,
+                        last_activity.clone(),
+                        cid,
                     )))
                 } else {
                     None
@@ -222,18 +249,35 @@ async fn handle_voice_socket(
                         if let Some(h) = filler_handle {
                             let _ = h.await;
                         }
+                        // Close out anything already streamed so the relay
+                        // isn't left waiting on a turn that will never end.
+                        stream_stop.cancel();
+                        let streamed = stream_handle.await.unwrap_or(StreamedTurn {
+                            text: String::new(),
+                            first_token_at: None,
+                            replay: None,
+                        });
+                        if !streamed.text.is_empty() {
+                            end_turn(&ws_send, &chat_id).await;
+                        }
                         continue;
                     }
                 };
 
-                // Stop the filler and wait for it to finish so it releases the
-                // ws_send lock before we send the final TTS response.
+                // Stop the filler and the streamer, and wait for both to finish
+                // so they release the ws_send lock before we close the turn.
                 filler_cancel.cancel();
                 if let Some(h) = filler_handle {
                     let _ = h.await;
                 }
+                stream_stop.cancel();
+                let streamed = stream_handle.await.unwrap_or(StreamedTurn {
+                    text: String::new(),
+                    first_token_at: None,
+                    replay: None,
+                });
 
-                tracing::info!(chat_id = %chat_id, response_len = %response_text.len(), should_hang_up = %should_hang_up, "Voice turn complete");
+                tracing::info!(chat_id = %chat_id, response_len = %response_text.len(), streamed_len = %streamed.text.len(), should_hang_up = %should_hang_up, "Voice turn complete");
 
                 // Remember the agent's own words for the task summary — never the
                 // canned sign-off below, which would otherwise overwrite the last
@@ -242,22 +286,29 @@ async fn handle_voice_socket(
                     last_response = response_text.clone();
                 }
 
-                // The sign-off is whatever the agent said alongside `hangup_call`
-                // (see tools/hangup_call.md). The prompt asks for one, but the
-                // model can still omit it — without a fallback the caller would
-                // just hear the line go dead, so speak a default instead.
-                let spoken_text = if should_hang_up && response_text.trim().is_empty() {
+                // Whatever streamed has already reached the caller, so the only
+                // thing left is to close the turn. Text still lands here when
+                // nothing streamed — a provider that returned without emitting
+                // deltas, or a hangup whose sign-off the model omitted, which
+                // would otherwise leave the caller hearing the line go dead.
+                let unspoken = if !streamed.text.is_empty() {
+                    ""
+                } else if !response_text.trim().is_empty() {
+                    response_text.as_str()
+                } else if should_hang_up {
                     tracing::info!(chat_id = %chat_id, "Hangup with no closing line — using default sign-off");
                     DEFAULT_HANGUP_SIGN_OFF
                 } else {
-                    response_text.as_str()
+                    ""
                 };
 
-                if !spoken_text.is_empty() {
-                    tracing::debug!(chat_id = %chat_id, response = %spoken_text, "Sending TTS response");
+                if !unspoken.is_empty() || !streamed.text.is_empty() {
+                    if !unspoken.is_empty() {
+                        tracing::debug!(chat_id = %chat_id, response = %unspoken, "Sending unstreamed TTS response");
+                    }
                     let tts = serde_json::json!({
                         "type": "text",
-                        "token": spoken_text,
+                        "token": unspoken,
                         "last": true
                     });
                     {
@@ -274,11 +325,23 @@ async fn handle_voice_socket(
                 }
 
                 if should_hang_up {
-                    // Wait on what was actually spoken, so the fallback sign-off
-                    // isn't cut off by hanging up too early.
+                    // Wait on what was actually spoken, so the sign-off isn't
+                    // cut off by hanging up too early. Streamed speech has been
+                    // playing since the first token, so discount the time the
+                    // caller has already spent listening to it.
+                    let spoken_text = if streamed.text.is_empty() {
+                        unspoken
+                    } else {
+                        streamed.text.as_str()
+                    };
                     let word_count = spoken_text.split_whitespace().count();
                     let tts_secs = ((word_count as f64 / 2.5).ceil() as u64 + 1).clamp(2, 30);
-                    tracing::info!(chat_id = %chat_id, tts_secs, "Waiting for TTS before hangup");
+                    let already_played = streamed
+                        .first_token_at
+                        .map(|t| t.elapsed().as_secs())
+                        .unwrap_or(0);
+                    let tts_secs = tts_secs.saturating_sub(already_played).max(1);
+                    tracing::info!(chat_id = %chat_id, tts_secs, already_played, "Waiting for TTS before hangup");
                     tokio::time::sleep(Duration::from_secs(tts_secs)).await;
                     tracing::info!(chat_id = %chat_id, "Sending hangup signal to Twilio");
                     let end_msg = serde_json::json!({ "type": "end" });
@@ -408,20 +471,232 @@ async fn summarise_call(
     }
 }
 
+/// What the caller actually heard during a turn, as streamed by
+/// [`spawn_turn_streamer`].
+struct StreamedTurn {
+    /// Concatenation of every text delta forwarded to the relay. Equal to the
+    /// turn's final text, since the deltas are what the text is built from.
+    text: String,
+    /// When the first delta went out — i.e. when the caller started hearing
+    /// speech. Used to avoid over-waiting for TTS before a hangup.
+    first_token_at: Option<Instant>,
+    /// Set while a retried attempt is re-streaming text the caller has already
+    /// heard. `None` during normal streaming.
+    replay: Option<Replay>,
+}
+
+/// Tracks a retried attempt so its re-streamed prefix isn't spoken twice.
+///
+/// A retry restarts the turn's text from the beginning, so everything up to
+/// what the caller already heard is dropped and only the excess is forwarded.
+struct Replay {
+    /// How much of the turn the caller heard before the retry began. Counted in
+    /// chars so slicing the replayed text can't split a UTF-8 boundary.
+    spoken_chars: usize,
+    /// Text accumulated since the retry began.
+    attempt: String,
+}
+
+/// A bus event the streamer acts on.
+enum TurnEvent {
+    /// A text delta to speak.
+    Text(String),
+    /// Inference is retrying — whatever follows re-streams the turn from the
+    /// start (see `inference::retry::stream_with_retry_and_fallback`).
+    Retry,
+}
+
+/// Forward the agent's text deltas to ConversationRelay as they are produced,
+/// so TTS starts on the first words instead of after the whole agent loop
+/// (tool rounds included) has finished.
+///
+/// Inference publishes each delta on the broadcast bus as
+/// `InferenceEventKind::Text` (see `inference::retry`); concatenating them
+/// reproduces the turn text exactly, so the caller hears the reply once and
+/// only once. Each delta goes out as `last: false` — the caller closes the
+/// turn with a single `last: true` when the agent loop is done.
+///
+/// The bus is subscribed by the caller *before* the turn starts so no early
+/// delta is missed, and drained on stop so no late one is dropped.
+fn spawn_turn_streamer(
+    mut bus_rx: tokio::sync::mpsc::UnboundedReceiver<crate::chat::broadcast::BroadcastEvent>,
+    ws_send: WsSend,
+    stop: CancellationToken,
+    last_activity: Arc<StdMutex<Instant>>,
+    chat_id: String,
+) -> tokio::task::JoinHandle<StreamedTurn> {
+    tokio::spawn(async move {
+        let mut turn = StreamedTurn {
+            text: String::new(),
+            first_token_at: None,
+            replay: None,
+        };
+
+        // Classify a bus event, if it is one of ours. Reasoning deltas are
+        // deliberately ignored — the caller must never hear the agent's
+        // private thinking.
+        let classify = |event: crate::chat::broadcast::BroadcastEvent| -> Option<TurnEvent> {
+            if event.chat_id.as_deref() != Some(chat_id.as_str()) {
+                return None;
+            }
+            match event.kind {
+                BroadcastEventKind::Inference(InferenceEventKind::Text(t)) if !t.is_empty() => {
+                    Some(TurnEvent::Text(t))
+                }
+                BroadcastEventKind::Inference(InferenceEventKind::Retry { .. }) => {
+                    Some(TurnEvent::Retry)
+                }
+                _ => None,
+            }
+        };
+
+        loop {
+            let event = tokio::select! {
+                _ = stop.cancelled() => break,
+                ev = bus_rx.recv() => match ev {
+                    Some(ev) => ev,
+                    None => break,
+                },
+            };
+            if let Some(event) = classify(event)
+                && !handle_event(&ws_send, &mut turn, &last_activity, &chat_id, event).await
+            {
+                tracing::warn!(chat_id = %chat_id, "Token stream: send failed — stopping");
+                return turn;
+            }
+        }
+
+        // The turn is over, but deltas published just before the stop may still
+        // be queued. Publishing is synchronous into this unbounded channel, so
+        // everything the turn produced is already here — draining it is what
+        // keeps the tail of the reply from being cut off.
+        while let Ok(event) = bus_rx.try_recv() {
+            if let Some(event) = classify(event)
+                && !handle_event(&ws_send, &mut turn, &last_activity, &chat_id, event).await
+            {
+                break;
+            }
+        }
+
+        tracing::debug!(chat_id = %chat_id, streamed_len = turn.text.len(), "Token stream complete");
+        turn
+    })
+}
+
+/// Apply one classified bus event. Returns whether the socket is still
+/// writable.
+async fn handle_event(
+    ws_send: &WsSend,
+    turn: &mut StreamedTurn,
+    last_activity: &StdMutex<Instant>,
+    chat_id: &str,
+    event: TurnEvent,
+) -> bool {
+    let delta = match event {
+        TurnEvent::Retry => {
+            // The next attempt starts the turn's text over. Anything the caller
+            // already heard must not be spoken a second time.
+            let spoken_chars = turn.text.chars().count();
+            tracing::info!(chat_id = %chat_id, spoken_chars, "Inference retry — suppressing replayed speech");
+            turn.replay = Some(Replay {
+                spoken_chars,
+                attempt: String::new(),
+            });
+            return true;
+        }
+        TurnEvent::Text(delta) => delta,
+    };
+
+    match next_utterance(turn, delta) {
+        Some(text) => send_delta(ws_send, turn, last_activity, text).await,
+        // Wholly inside what the caller already heard — say nothing.
+        None => true,
+    }
+}
+
+/// Decide what a text delta should actually put on the wire, given whether a
+/// retried attempt is currently replaying text the caller already heard.
+///
+/// Returns `None` when the delta is entirely a replay and must stay silent.
+fn next_utterance(turn: &mut StreamedTurn, delta: String) -> Option<String> {
+    // Not replaying — the delta goes out as-is.
+    let Some(replay) = turn.replay.as_mut() else {
+        return Some(delta);
+    };
+
+    replay.attempt.push_str(&delta);
+    if replay.attempt.chars().count() <= replay.spoken_chars {
+        return None;
+    }
+
+    // The retry has caught up to where the caller was left. Speak the excess
+    // and resume normal streaming. A retry that diverges from the first attempt
+    // resumes mid-thought rather than repeating the opening, which is the
+    // lesser of the two artefacts.
+    let excess: String = replay.attempt.chars().skip(replay.spoken_chars).collect();
+    turn.replay = None;
+    Some(excess)
+}
+
+/// Close the open TTS turn with an empty final token, telling the relay no more
+/// tokens are coming for it.
+async fn end_turn(ws_send: &WsSend, chat_id: &str) {
+    let tts = serde_json::json!({
+        "type": "text",
+        "token": "",
+        "last": true
+    });
+    let mut send = ws_send.lock().await;
+    if send.send(Message::Text(tts.to_string().into())).await.is_err() {
+        tracing::warn!(chat_id = %chat_id, "Failed to close TTS turn");
+    }
+}
+
+/// Send one text delta to the relay as a non-final token. Returns whether the
+/// socket is still writable.
+async fn send_delta(
+    ws_send: &WsSend,
+    turn: &mut StreamedTurn,
+    last_activity: &StdMutex<Instant>,
+    delta: String,
+) -> bool {
+    if turn.first_token_at.is_none() {
+        turn.first_token_at = Some(Instant::now());
+    }
+    turn.text.push_str(&delta);
+    if let Ok(mut at) = last_activity.lock() {
+        *at = Instant::now();
+    }
+
+    let msg = serde_json::json!({
+        "type": "text",
+        "token": delta,
+        "last": false
+    });
+    let mut send = ws_send.lock().await;
+    send.send(Message::Text(msg.to_string().into()))
+        .await
+        .is_ok()
+}
+
 /// Periodically sends filler phrases to the caller while the agent is
 /// processing a turn. Stops when `cancel` is triggered.
 ///
 /// Each filler phrase is sent as `{"type":"text","token":"…","last":true}`
-/// so ConversationRelay speaks it immediately. The agent's real response
-/// is sent later as another `last: true` message — ConversationRelay
-/// handles multiple `last: true` messages in a single turn by queuing
-/// them sequentially.
+/// so ConversationRelay speaks it immediately, closing whatever turn is open.
+///
+/// Since the agent's own words now stream out token by token, canned filler is
+/// only wanted for genuine dead air — a long tool call, say. `last_activity`
+/// tracks when a real token last went out, and a cycle that lands inside that
+/// quiet window is skipped rather than spoken, so filler never talks over the
+/// agent mid-sentence.
 async fn silence_filler(
-    ws_send: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
+    ws_send: WsSend,
     cancel: CancellationToken,
     initial_delay: Duration,
     interval: Duration,
     phrases: Vec<String>,
+    last_activity: Arc<StdMutex<Instant>>,
     chat_id: String,
 ) {
     // Wait the initial silence period before sending the first filler.
@@ -432,6 +707,19 @@ async fn silence_filler(
 
     let mut idx: usize = 0;
     loop {
+        // Real speech went out recently — the caller isn't sitting in silence,
+        // so say nothing this cycle and re-check after the interval.
+        let quiet_for = last_activity
+            .lock()
+            .map(|at| at.elapsed())
+            .unwrap_or(initial_delay);
+        if quiet_for < initial_delay {
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = tokio::time::sleep(interval) => continue,
+            }
+        }
+
         // Pick a phrase — simple rotating index avoids extra dependencies.
         let phrase = if phrases.is_empty() {
             return;
@@ -569,9 +857,10 @@ async fn handle_voice_turn(
             InferenceResponse::ExternalToolPending {
                 ref tool_calls, ref turn_text, ..
             } => {
-                // The agent called a non-voice tool (search, browser, etc.)
-                // and produced `turn_text` alongside the tool call. Send it
-                // to the caller as TTS so they know what the agent is doing.
+                // The agent called a non-voice tool (search, browser, etc.) and
+                // produced `turn_text` alongside the tool call. The streamer
+                // has already sent that narration to the caller token by token,
+                // so re-sending it here would say it twice.
                 //
                 // NOTE: We intentionally do NOT cancel the timer-based filler
                 // here. Cancelling it on the first tool call killed it for
@@ -580,16 +869,7 @@ async fn handle_voice_turn(
                 // and the filler's own interval provides natural spacing
                 // between phrases.
                 if !turn_text.is_empty() {
-                    let tts = serde_json::json!({
-                        "type": "text",
-                        "token": turn_text,
-                        "last": true
-                    });
-                    {
-                        let mut send = ws_send.lock().await;
-                        send.send(Message::Text(tts.to_string().into())).await.ok();
-                    }
-                    tracing::info!(chat_id = %chat_id, text = %turn_text, "Agent narration sent to caller");
+                    tracing::info!(chat_id = %chat_id, text = %turn_text, "Agent narration streamed to caller");
                 }
 
                 // Resolve tool calls and continue the loop for the next
@@ -612,5 +892,95 @@ async fn handle_voice_turn(
                 return Ok((String::new(), false));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A turn that has already spoken `spoken` to the caller.
+    fn turn_after(spoken: &str) -> StreamedTurn {
+        StreamedTurn {
+            text: spoken.to_string(),
+            first_token_at: None,
+            replay: None,
+        }
+    }
+
+    /// Mark the turn as retrying, as `handle_event` does on a Retry event.
+    fn begin_replay(turn: &mut StreamedTurn) {
+        turn.replay = Some(Replay {
+            spoken_chars: turn.text.chars().count(),
+            attempt: String::new(),
+        });
+    }
+
+    #[test]
+    fn deltas_pass_through_when_not_replaying() {
+        let mut turn = turn_after("Hello");
+        assert_eq!(
+            next_utterance(&mut turn, " there".into()),
+            Some(" there".to_string())
+        );
+    }
+
+    #[test]
+    fn replayed_prefix_is_not_spoken_twice() {
+        let mut turn = turn_after("Your balance is");
+        begin_replay(&mut turn);
+
+        // The retry re-streams the same opening — none of it reaches the caller.
+        assert_eq!(next_utterance(&mut turn, "Your ".into()), None);
+        assert_eq!(next_utterance(&mut turn, "balance ".into()), None);
+        assert_eq!(next_utterance(&mut turn, "is".into()), None);
+
+        // Past what was spoken, only the excess goes out.
+        assert_eq!(
+            next_utterance(&mut turn, " forty pounds.".into()),
+            Some(" forty pounds.".to_string())
+        );
+        // Replay is over — later deltas stream normally again.
+        assert!(turn.replay.is_none());
+        assert_eq!(
+            next_utterance(&mut turn, " Anything else?".into()),
+            Some(" Anything else?".to_string())
+        );
+    }
+
+    #[test]
+    fn delta_straddling_the_replay_boundary_speaks_only_the_excess() {
+        let mut turn = turn_after("Your balance");
+        begin_replay(&mut turn);
+
+        // One delta carries both the replayed opening and new text.
+        assert_eq!(
+            next_utterance(&mut turn, "Your balance is forty.".into()),
+            Some(" is forty.".to_string())
+        );
+    }
+
+    #[test]
+    fn replay_boundary_does_not_split_a_multibyte_char() {
+        // "£" is multi-byte: slicing by bytes here would panic or corrupt.
+        let mut turn = turn_after("Balance: £");
+        begin_replay(&mut turn);
+
+        assert_eq!(
+            next_utterance(&mut turn, "Balance: £40".into()),
+            Some("40".to_string())
+        );
+    }
+
+    #[test]
+    fn diverging_retry_resumes_instead_of_repeating() {
+        let mut turn = turn_after("Let me check that");
+        begin_replay(&mut turn);
+
+        // The retry says something different. The caller hears the tail rather
+        // than the opening a second time — resuming mid-phrase, but never
+        // repeating what they already heard.
+        let spoken = next_utterance(&mut turn, "One moment while I look it up.".into());
+        assert_eq!(spoken, Some("I look it up.".to_string()));
     }
 }

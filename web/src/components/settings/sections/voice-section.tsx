@@ -22,6 +22,12 @@ const voiceProviders = [
   { value: "plivo", label: "Plivo" },
 ];
 
+const interruptSensitivities = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
+
 function inferProvider(voice: VoiceConfig): string | null {
   if (voice.provider) return voice.provider;
   if (isSensitiveSet(voice.twilio_account_sid)) return "twilio";
@@ -81,10 +87,18 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
 
           <TextInput
             label="Speech Model"
-            description="Speech recognition model"
+            description="Speech recognition model. Conversational models such as deepgram-flux end the turn on meaning rather than on silence, so the agent replies without waiting out a pause."
             value={voice.twilio_speech_model}
             onChange={(twilio_speech_model) => onChange({ ...voice, twilio_speech_model })}
             placeholder="phone_call"
+          />
+
+          <SelectInput
+            label="Interruption Sensitivity"
+            description="How readily the agent stops talking when the caller speaks. Higher yields sooner but can false-trigger on background noise."
+            value={voice.twilio_interrupt_sensitivity ?? "medium"}
+            onChange={(twilio_interrupt_sensitivity) => onChange({ ...voice, twilio_interrupt_sensitivity })}
+            options={interruptSensitivities}
           />
 
           <TextInput

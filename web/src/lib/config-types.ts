@@ -85,6 +85,7 @@ export interface VoiceConfig {
   twilio_voice_id: string | null;
   twilio_speech_model: string | null;
   twilio_tts_provider: string | null;
+  twilio_interrupt_sensitivity: string | null;
   plivo_auth_id: SensitiveField;
   plivo_auth_token: SensitiveField;
   plivo_from_number: string | null;
