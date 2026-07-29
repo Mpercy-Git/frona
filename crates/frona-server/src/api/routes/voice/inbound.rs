@@ -471,9 +471,7 @@ pub(super) async fn twilio_inbound_handler(
         &ws_url,
         greeting.as_deref(),
         None, // hints — not applicable for inbound
-        state.config.voice.twilio_voice_id.as_deref(),
-        state.config.voice.twilio_speech_model.as_deref(),
-        state.config.voice.twilio_tts_provider.as_deref(),
+        &state.config.voice,
     );
 
     tracing::info!(

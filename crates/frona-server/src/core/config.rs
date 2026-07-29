@@ -895,6 +895,8 @@ pub struct VoiceConfig {
     pub twilio_speech_model: Option<String>,
     #[schemars(description = "TTS provider for ConversationRelay (e.g. elevenlabs, polly). Defaults to polly when not set.")]
     pub twilio_tts_provider: Option<String>,
+    #[schemars(description = "How readily the agent yields when the caller starts speaking: low, medium, or high. Higher cuts the agent off sooner but false-triggers on background noise. Defaults to medium.")]
+    pub twilio_interrupt_sensitivity: Option<String>,
     #[schemars(description = "Plivo auth ID.")]
     pub plivo_auth_id: Option<String>,
     #[schemars(description = "Plivo auth token.")]

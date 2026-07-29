@@ -14,19 +14,22 @@ use crate::auth::token::models::TokenType;
 use crate::auth::token::service::CreateTokenRequest;
 use crate::auth::User;
 use crate::core::Principal;
+use crate::core::config::VoiceConfig;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::tool::voice::{VoiceCallbackExtensions, VoiceSessionExtensions};
 
 use models::TokenQuery;
 
+/// Build the `<ConversationRelay>` TwiML that connects the call to our
+/// WebSocket. Takes the whole `VoiceConfig` rather than one argument per
+/// attribute — every relay knob is config-driven, so this stays a 4-argument
+/// call as more of them are exposed.
 pub(super) fn build_twiml(
     ws_url: &str,
     welcome_greeting: Option<&str>,
     hints: Option<&str>,
-    voice_id: Option<&str>,
-    speech_model: Option<&str>,
-    tts_provider: Option<&str>,
+    voice: &VoiceConfig,
 ) -> String {
     use xml::writer::{EmitterConfig, XmlEvent};
 
@@ -36,23 +39,31 @@ pub(super) fn build_twiml(
         .write_document_declaration(true)
         .create_writer(&mut buf);
 
+    // How eagerly the relay treats caller speech as a barge-in. Tuning this is
+    // the main lever against either talking over the caller (too low) or
+    // yielding to background noise on a bad line (too high).
+    let interrupt_sensitivity = voice
+        .twilio_interrupt_sensitivity
+        .as_deref()
+        .unwrap_or("medium");
+
     let mut relay = XmlEvent::start_element("ConversationRelay")
         .attr("url", ws_url)
         .attr("language", "en-US")
         .attr("interruptible", "any")
-        .attr("interruptSensitivity", "medium")
+        .attr("interruptSensitivity", interrupt_sensitivity)
         .attr("welcomeGreetingInterruptible", "any");
 
     if let Some(g) = welcome_greeting {
         relay = relay.attr("welcomeGreeting", g);
     }
-    if let Some(v) = voice_id {
+    if let Some(v) = voice.twilio_voice_id.as_deref() {
         relay = relay.attr("voice", v);
     }
-    if let Some(m) = speech_model {
+    if let Some(m) = voice.twilio_speech_model.as_deref() {
         relay = relay.attr("speechModel", m);
     }
-    if let Some(tp) = tts_provider {
+    if let Some(tp) = voice.twilio_tts_provider.as_deref() {
         relay = relay.attr("ttsProvider", tp);
     }
     if let Some(h) = hints {
@@ -219,9 +230,7 @@ async fn twilio_callback(
         &ws_url,
         ext.welcome_greeting.as_deref(),
         ext.hints.as_deref(),
-        state.config.voice.twilio_voice_id.as_deref(),
-        state.config.voice.twilio_speech_model.as_deref(),
-        state.config.voice.twilio_tts_provider.as_deref(),
+        &state.config.voice,
     );
 
     tracing::info!(chat_id = %chat_id, user_id = %user_id, ws_url = %ws_url, "Voice callback: issuing TwiML with ConversationRelay");
