@@ -1,17 +1,21 @@
 mod browse;
 mod models;
 mod operations;
+mod range;
 mod upload;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, FromRequestParts, Query};
 use axum::http::request::Parts;
-use axum::http::header;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
+
+use range::RangeSpec;
 
 use crate::storage::{VirtualPath, detect_content_type};
 
@@ -94,30 +98,36 @@ impl FromRequestParts<AppState> for FileAuth {
     }
 }
 
-pub(super) async fn serve_file(vpath: &VirtualPath, state: &AppState) -> Result<Response, ApiError> {
+pub(super) async fn serve_file(
+    vpath: &VirtualPath,
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
     let resolved = state.storage_service.resolve_virtual_path(vpath)?;
-    serve_path(&resolved).await
+    serve_path(&resolved, headers).await
 }
 
 /// Caller is responsible for path traversal / ownership checks.
-pub(super) async fn serve_path(path: &std::path::Path) -> Result<Response, ApiError> {
-    if !path.exists() {
-        return Err(ApiError(AppError::NotFound(
-            "File not found".into(),
-        )));
+///
+/// Honours a single `Range` request so browsers can seek in audio and video
+/// served from here; `headers` is the request's header map.
+pub(super) async fn serve_path(
+    path: &std::path::Path,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let metadata = fs::metadata(path)
+        .await
+        .map_err(|_| ApiError(AppError::NotFound("File not found".into())))?;
+    if !metadata.is_file() {
+        return Err(ApiError(AppError::NotFound("File not found".into())));
     }
+    let file_len = metadata.len();
 
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("download");
     let content_type = detect_content_type(filename);
-
-    let file = fs::File::open(path)
-        .await
-        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
 
     // SVG and other script-executable types must be served as attachments to
     // prevent stored XSS via <script> tags executing at the app origin.
@@ -128,12 +138,56 @@ pub(super) async fn serve_path(path: &std::path::Path) -> Result<Response, ApiEr
         _ => "inline",
     };
 
-    Ok(Response::builder()
-        .header(header::CONTENT_TYPE, content_type)
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("{disposition_type}; filename=\"{filename}\""),
-        )
-        .body(body)
-        .unwrap())
+    // `Accept-Ranges` on every response, including the full-file one: it's how
+    // a media element learns it may seek at all.
+    let base = || {
+        Response::builder()
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(
+                header::CONTENT_DISPOSITION,
+                format!("{disposition_type}; filename=\"{filename}\""),
+            )
+    };
+
+    let requested = range::parse(
+        headers.get(header::RANGE).and_then(|v| v.to_str().ok()),
+        file_len,
+    );
+
+    if requested == RangeSpec::Unsatisfiable {
+        return Ok(base()
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .header(header::CONTENT_RANGE, format!("bytes */{file_len}"))
+            .body(Body::empty())
+            .unwrap());
+    }
+
+    let mut file = fs::File::open(path)
+        .await
+        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+
+    let response = match requested {
+        RangeSpec::Partial(range) => {
+            file.seek(std::io::SeekFrom::Start(range.start))
+                .await
+                .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+            let body = Body::from_stream(ReaderStream::new(file.take(range.len())));
+            base()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(
+                    header::CONTENT_RANGE,
+                    format!("bytes {}-{}/{file_len}", range.start, range.end),
+                )
+                .header(header::CONTENT_LENGTH, range.len())
+                .body(body)
+        }
+        // `Content-Length` matters even without a range: media elements use it
+        // to compute duration and to decide whether seeking is worth trying.
+        _ => base()
+            .header(header::CONTENT_LENGTH, file_len)
+            .body(Body::from_stream(ReaderStream::new(file))),
+    };
+
+    Ok(response.unwrap())
 }

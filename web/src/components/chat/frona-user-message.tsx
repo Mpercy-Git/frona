@@ -10,6 +10,8 @@ import { useNavigation } from "@/lib/navigation-context";
 import type { MessageCommand } from "@/lib/types";
 import { MarkdownText } from "./markdown-text";
 import { TimeMarkers } from "./time-markers";
+import { MediaAttachment } from "./media-attachment";
+import { mediaKind } from "@/lib/media-utils";
 
 function InvocationChip({ command, prefix }: { command: MessageCommand; prefix: string }) {
   const { agents } = useNavigation();
@@ -68,6 +70,7 @@ function usePresignedUrl(attachmentId: string) {
 
 function UserAttachment({ attachment }: { attachment: CompleteAttachment }) {
   const isImage = attachment.type === "image" || attachment.contentType?.startsWith("image/");
+  const media = mediaKind(attachment.contentType, attachment.name);
   const presignedUrl = usePresignedUrl(attachment.id);
 
   const handleClick = useCallback(() => {
@@ -93,6 +96,16 @@ function UserAttachment({ attachment }: { attachment: CompleteAttachment }) {
     return (
       <AttachmentPrimitive.Root className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-tertiary px-3 py-2 text-xs text-text-secondary">
         <AttachmentPrimitive.Name />
+      </AttachmentPrimitive.Root>
+    );
+  }
+
+  // Until the presign lands there's no URL to play; fall through to the chip,
+  // same as an image does.
+  if (media && presignedUrl) {
+    return (
+      <AttachmentPrimitive.Root>
+        <MediaAttachment url={presignedUrl} filename={attachment.name} kind={media} />
       </AttachmentPrimitive.Root>
     );
   }

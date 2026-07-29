@@ -14,6 +14,8 @@ import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/components/ui/code-block";
 import { agentDisplayName } from "@/lib/types";
 import type { Attachment } from "@/lib/types";
+import { MediaAttachment } from "./media-attachment";
+import { mediaKind } from "@/lib/media-utils";
 import { DefaultToolCallUI } from "./tool-uis/default-tool-call-ui";
 import { ToolTimelineProvider } from "./tool-uis/tool-timeline-context";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
@@ -233,6 +235,7 @@ function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onC
 function AttachmentItem({ attachment }: { attachment: Attachment }) {
   const url = attachment.url;
   const isImage = attachment.content_type.startsWith("image/");
+  const media = mediaKind(attachment.content_type, attachment.filename);
   const canPreview = isPreviewable(attachment.content_type);
   const [showPreview, setShowPreview] = useState(false);
 
@@ -248,6 +251,10 @@ function AttachmentItem({ attachment }: { attachment: Attachment }) {
         />
       </a>
     );
+  }
+
+  if (media) {
+    return <MediaAttachment url={url} filename={attachment.filename} kind={media} />;
   }
 
   return (
