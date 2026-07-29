@@ -255,6 +255,7 @@ async fn handle_voice_socket(
                         let streamed = stream_handle.await.unwrap_or(StreamedTurn {
                             text: String::new(),
                             first_token_at: None,
+                            replay: None,
                         });
                         if !streamed.text.is_empty() {
                             end_turn(&ws_send, &chat_id).await;
@@ -273,6 +274,7 @@ async fn handle_voice_socket(
                 let streamed = stream_handle.await.unwrap_or(StreamedTurn {
                     text: String::new(),
                     first_token_at: None,
+                    replay: None,
                 });
 
                 tracing::info!(chat_id = %chat_id, response_len = %response_text.len(), streamed_len = %streamed.text.len(), should_hang_up = %should_hang_up, "Voice turn complete");
@@ -478,6 +480,30 @@ struct StreamedTurn {
     /// When the first delta went out — i.e. when the caller started hearing
     /// speech. Used to avoid over-waiting for TTS before a hangup.
     first_token_at: Option<Instant>,
+    /// Set while a retried attempt is re-streaming text the caller has already
+    /// heard. `None` during normal streaming.
+    replay: Option<Replay>,
+}
+
+/// Tracks a retried attempt so its re-streamed prefix isn't spoken twice.
+///
+/// A retry restarts the turn's text from the beginning, so everything up to
+/// what the caller already heard is dropped and only the excess is forwarded.
+struct Replay {
+    /// How much of the turn the caller heard before the retry began. Counted in
+    /// chars so slicing the replayed text can't split a UTF-8 boundary.
+    spoken_chars: usize,
+    /// Text accumulated since the retry began.
+    attempt: String,
+}
+
+/// A bus event the streamer acts on.
+enum TurnEvent {
+    /// A text delta to speak.
+    Text(String),
+    /// Inference is retrying — whatever follows re-streams the turn from the
+    /// start (see `inference::retry::stream_with_retry_and_fallback`).
+    Retry,
 }
 
 /// Forward the agent's text deltas to ConversationRelay as they are produced,
@@ -503,18 +529,22 @@ fn spawn_turn_streamer(
         let mut turn = StreamedTurn {
             text: String::new(),
             first_token_at: None,
+            replay: None,
         };
 
-        // Pull the text out of a bus event, if it is one of ours. Reasoning
-        // deltas are deliberately ignored — the caller must never hear the
-        // agent's private thinking.
-        let delta_of = |event: crate::chat::broadcast::BroadcastEvent| -> Option<String> {
+        // Classify a bus event, if it is one of ours. Reasoning deltas are
+        // deliberately ignored — the caller must never hear the agent's
+        // private thinking.
+        let classify = |event: crate::chat::broadcast::BroadcastEvent| -> Option<TurnEvent> {
             if event.chat_id.as_deref() != Some(chat_id.as_str()) {
                 return None;
             }
             match event.kind {
                 BroadcastEventKind::Inference(InferenceEventKind::Text(t)) if !t.is_empty() => {
-                    Some(t)
+                    Some(TurnEvent::Text(t))
+                }
+                BroadcastEventKind::Inference(InferenceEventKind::Retry { .. }) => {
+                    Some(TurnEvent::Retry)
                 }
                 _ => None,
             }
@@ -528,8 +558,8 @@ fn spawn_turn_streamer(
                     None => break,
                 },
             };
-            if let Some(delta) = delta_of(event)
-                && !send_delta(&ws_send, &mut turn, &last_activity, delta).await
+            if let Some(event) = classify(event)
+                && !handle_event(&ws_send, &mut turn, &last_activity, &chat_id, event).await
             {
                 tracing::warn!(chat_id = %chat_id, "Token stream: send failed — stopping");
                 return turn;
@@ -541,8 +571,8 @@ fn spawn_turn_streamer(
         // everything the turn produced is already here — draining it is what
         // keeps the tail of the reply from being cut off.
         while let Ok(event) = bus_rx.try_recv() {
-            if let Some(delta) = delta_of(event)
-                && !send_delta(&ws_send, &mut turn, &last_activity, delta).await
+            if let Some(event) = classify(event)
+                && !handle_event(&ws_send, &mut turn, &last_activity, &chat_id, event).await
             {
                 break;
             }
@@ -551,6 +581,61 @@ fn spawn_turn_streamer(
         tracing::debug!(chat_id = %chat_id, streamed_len = turn.text.len(), "Token stream complete");
         turn
     })
+}
+
+/// Apply one classified bus event. Returns whether the socket is still
+/// writable.
+async fn handle_event(
+    ws_send: &WsSend,
+    turn: &mut StreamedTurn,
+    last_activity: &StdMutex<Instant>,
+    chat_id: &str,
+    event: TurnEvent,
+) -> bool {
+    let delta = match event {
+        TurnEvent::Retry => {
+            // The next attempt starts the turn's text over. Anything the caller
+            // already heard must not be spoken a second time.
+            let spoken_chars = turn.text.chars().count();
+            tracing::info!(chat_id = %chat_id, spoken_chars, "Inference retry — suppressing replayed speech");
+            turn.replay = Some(Replay {
+                spoken_chars,
+                attempt: String::new(),
+            });
+            return true;
+        }
+        TurnEvent::Text(delta) => delta,
+    };
+
+    match next_utterance(turn, delta) {
+        Some(text) => send_delta(ws_send, turn, last_activity, text).await,
+        // Wholly inside what the caller already heard — say nothing.
+        None => true,
+    }
+}
+
+/// Decide what a text delta should actually put on the wire, given whether a
+/// retried attempt is currently replaying text the caller already heard.
+///
+/// Returns `None` when the delta is entirely a replay and must stay silent.
+fn next_utterance(turn: &mut StreamedTurn, delta: String) -> Option<String> {
+    // Not replaying — the delta goes out as-is.
+    let Some(replay) = turn.replay.as_mut() else {
+        return Some(delta);
+    };
+
+    replay.attempt.push_str(&delta);
+    if replay.attempt.chars().count() <= replay.spoken_chars {
+        return None;
+    }
+
+    // The retry has caught up to where the caller was left. Speak the excess
+    // and resume normal streaming. A retry that diverges from the first attempt
+    // resumes mid-thought rather than repeating the opening, which is the
+    // lesser of the two artefacts.
+    let excess: String = replay.attempt.chars().skip(replay.spoken_chars).collect();
+    turn.replay = None;
+    Some(excess)
 }
 
 /// Close the open TTS turn with an empty final token, telling the relay no more
@@ -807,5 +892,95 @@ async fn handle_voice_turn(
                 return Ok((String::new(), false));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A turn that has already spoken `spoken` to the caller.
+    fn turn_after(spoken: &str) -> StreamedTurn {
+        StreamedTurn {
+            text: spoken.to_string(),
+            first_token_at: None,
+            replay: None,
+        }
+    }
+
+    /// Mark the turn as retrying, as `handle_event` does on a Retry event.
+    fn begin_replay(turn: &mut StreamedTurn) {
+        turn.replay = Some(Replay {
+            spoken_chars: turn.text.chars().count(),
+            attempt: String::new(),
+        });
+    }
+
+    #[test]
+    fn deltas_pass_through_when_not_replaying() {
+        let mut turn = turn_after("Hello");
+        assert_eq!(
+            next_utterance(&mut turn, " there".into()),
+            Some(" there".to_string())
+        );
+    }
+
+    #[test]
+    fn replayed_prefix_is_not_spoken_twice() {
+        let mut turn = turn_after("Your balance is");
+        begin_replay(&mut turn);
+
+        // The retry re-streams the same opening — none of it reaches the caller.
+        assert_eq!(next_utterance(&mut turn, "Your ".into()), None);
+        assert_eq!(next_utterance(&mut turn, "balance ".into()), None);
+        assert_eq!(next_utterance(&mut turn, "is".into()), None);
+
+        // Past what was spoken, only the excess goes out.
+        assert_eq!(
+            next_utterance(&mut turn, " forty pounds.".into()),
+            Some(" forty pounds.".to_string())
+        );
+        // Replay is over — later deltas stream normally again.
+        assert!(turn.replay.is_none());
+        assert_eq!(
+            next_utterance(&mut turn, " Anything else?".into()),
+            Some(" Anything else?".to_string())
+        );
+    }
+
+    #[test]
+    fn delta_straddling_the_replay_boundary_speaks_only_the_excess() {
+        let mut turn = turn_after("Your balance");
+        begin_replay(&mut turn);
+
+        // One delta carries both the replayed opening and new text.
+        assert_eq!(
+            next_utterance(&mut turn, "Your balance is forty.".into()),
+            Some(" is forty.".to_string())
+        );
+    }
+
+    #[test]
+    fn replay_boundary_does_not_split_a_multibyte_char() {
+        // "£" is multi-byte: slicing by bytes here would panic or corrupt.
+        let mut turn = turn_after("Balance: £");
+        begin_replay(&mut turn);
+
+        assert_eq!(
+            next_utterance(&mut turn, "Balance: £40".into()),
+            Some("40".to_string())
+        );
+    }
+
+    #[test]
+    fn diverging_retry_resumes_instead_of_repeating() {
+        let mut turn = turn_after("Let me check that");
+        begin_replay(&mut turn);
+
+        // The retry says something different. The caller hears the tail rather
+        // than the opening a second time — resuming mid-phrase, but never
+        // repeating what they already heard.
+        let spoken = next_utterance(&mut turn, "One moment while I look it up.".into());
+        assert_eq!(spoken, Some("I look it up.".to_string()));
     }
 }
