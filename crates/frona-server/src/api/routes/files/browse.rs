@@ -1,4 +1,5 @@
 use axum::extract::{Path as AxumPath, Query, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::Json;
 use tokio::fs;
@@ -14,6 +15,7 @@ use crate::core::state::AppState;
 pub(crate) async fn download_user_file(
     file_auth: FileAuth,
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath((handle_raw, filename)): AxumPath<(String, String)>,
 ) -> Result<Response, ApiError> {
     let handle = crate::core::Handle::try_new(handle_raw)
@@ -38,12 +40,13 @@ pub(crate) async fn download_user_file(
     }
 
     let vpath = VirtualPath::user(&handle, &filename);
-    super::serve_file(&vpath, &state).await
+    super::serve_file(&vpath, &state, &headers).await
 }
 
 pub(crate) async fn download_agent_file(
     file_auth: FileAuth,
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath((agent_seg, filepath)): AxumPath<(String, String)>,
 ) -> Result<Response, ApiError> {
     let (user_id, user_handle) = match &file_auth {
@@ -79,7 +82,7 @@ pub(crate) async fn download_agent_file(
         .agent_workspace_path(&user_handle, &agent.handle)
         .join(&filepath);
 
-    super::serve_path(&path).await
+    super::serve_path(&path, &headers).await
 }
 
 pub(crate) async fn delete_user_file(
