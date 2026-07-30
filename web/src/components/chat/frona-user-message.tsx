@@ -10,7 +10,7 @@ import { useNavigation } from "@/lib/navigation-context";
 import type { MessageCommand } from "@/lib/types";
 import { MarkdownText } from "./markdown-text";
 import { TimeMarkers } from "./time-markers";
-import { MediaAttachment } from "./media-attachment";
+import { MediaAttachment } from "@/components/preview/media-attachment";
 import { mediaKind } from "@/lib/media-utils";
 
 function InvocationChip({ command, prefix }: { command: MessageCommand; prefix: string }) {

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { makeAssistantToolUI, useMessage } from "@assistant-ui/react";
 import { ArrowDownTrayIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { FilePreviewContent, canPreviewFile, languageFromFilename } from "@/components/preview/file-preview-content";
-import { MediaAttachment } from "@/components/chat/media-attachment";
+import { MediaAttachment } from "@/components/preview/media-attachment";
 import { mediaKind } from "@/lib/media-utils";
 import type { Attachment } from "@/lib/types";
 

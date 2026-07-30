@@ -255,6 +255,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .allow_headers([
                 HeaderName::from_static("content-type"),
                 HeaderName::from_static("authorization"),
+                // Range requests are how the browser seeks in audio/video and
+                // how the file preview reads just the head of a large file.
+                // Without this the preflight fails cross-origin.
+                HeaderName::from_static("range"),
+            ])
+            // Neither is CORS-safelisted, so JS can't see them cross-origin
+            // unless they're exposed: the preview needs Content-Range to tell
+            // a truncated read from a whole file.
+            .expose_headers([
+                HeaderName::from_static("accept-ranges"),
+                HeaderName::from_static("content-range"),
             ])
             .allow_credentials(true)
     });
