@@ -20,21 +20,26 @@ function DownloadChip({ url, filename }: { url: string; filename: string }) {
 }
 
 /**
- * Inline `<audio>` / `<video>` player for a media attachment.
+ * Inline `<audio>` / `<video>` player for a media file.
  *
  * `preload="metadata"` only yields a duration (and seekable timeline) because
  * `/api/files` answers `Range` requests with 206 — see the files route's
  * `range` module. Containers the browser can't decode fire `error` on the
  * element, which swaps in a download link.
+ *
+ * `variant` picks the sizing: `"inline"` fits a chat bubble, `"full"` fills a
+ * preview dialog.
  */
 export function MediaAttachment({
   url,
   filename,
   kind,
+  variant = "inline",
 }: {
   url: string;
   filename: string;
   kind: MediaKind;
+  variant?: "inline" | "full";
 }) {
   const [failed, setFailed] = useState(false);
 
@@ -42,7 +47,11 @@ export function MediaAttachment({
 
   if (kind === "audio") {
     return (
-      <div className="flex w-full max-w-xs flex-col gap-1.5 rounded-lg border border-border bg-surface-tertiary px-3 py-2">
+      <div
+        className={`flex flex-col gap-1.5 rounded-lg border border-border bg-surface-tertiary px-3 py-2 ${
+          variant === "full" ? "w-full" : "w-full max-w-xs"
+        }`}
+      >
         <span className="truncate text-xs text-text-secondary">{filename}</span>
         <audio
           controls
@@ -61,7 +70,11 @@ export function MediaAttachment({
       preload="metadata"
       src={url}
       onError={() => setFailed(true)}
-      className="max-w-xs max-h-48 rounded-md border border-border bg-black"
+      className={
+        variant === "full"
+          ? "max-h-[70vh] w-full rounded-md bg-black"
+          : "max-w-xs max-h-48 rounded-md border border-border bg-black"
+      }
     />
   );
 }

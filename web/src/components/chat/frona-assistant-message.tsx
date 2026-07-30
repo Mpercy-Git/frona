@@ -14,7 +14,7 @@ import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/components/ui/code-block";
 import { agentDisplayName } from "@/lib/types";
 import type { Attachment } from "@/lib/types";
-import { MediaAttachment } from "./media-attachment";
+import { MediaAttachment } from "@/components/preview/media-attachment";
 import { mediaKind } from "@/lib/media-utils";
 import { DefaultToolCallUI } from "./tool-uis/default-tool-call-ui";
 import { ToolTimelineProvider } from "./tool-uis/tool-timeline-context";
