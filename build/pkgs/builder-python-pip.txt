@@ -1,10 +1,10 @@
 beautifulsoup4==4.15.0
-matplotlib==3.11.0
+matplotlib==3.11.1
 numpy==2.5.1
-pandas==3.0.3
+pandas==3.0.5
 reportlab==5.0.0
 requests==2.34.2
 scikit-learn==1.9.0
 scipy==1.18.0
 seaborn==0.13.2
-uv==0.11.26
+uv==0.11.32

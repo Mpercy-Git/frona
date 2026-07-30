@@ -8,4 +8,4 @@ libssl-dev=3.0.20-1~deb12u2
 # bindgen for native -sys crates (e.g. libsqlite3-sys and Signal deps).
 libclang-dev=1:14.0-55.7~deb12u1
 # presage's transitive proto build-scripts.
-protobuf-compiler=3.21.12-3
+protobuf-compiler=3.21.12-3+deb12u1
