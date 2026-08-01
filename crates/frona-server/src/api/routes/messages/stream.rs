@@ -142,7 +142,7 @@ pub(crate) async fn stream_message(
         let active_sessions = state.active_sessions.clone();
         tokio::spawn(async move {
             harness
-                .run_turn(&user_id, &chat_id_clone, &agent_msg_id, cancel_token, builder, &[], None)
+                .run_turn(&user_id, &chat_id_clone, &agent_msg_id, cancel_token, builder, &[], None, Some(session_id))
                 .await;
             active_sessions.remove(&chat_id_clone, session_id).await;
         });

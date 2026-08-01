@@ -263,6 +263,7 @@ async fn switch_agent_command_reattributes_response() {
             builder,
             &[],
             None,
+            None,
         )
         .await;
 

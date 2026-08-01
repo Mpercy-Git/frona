@@ -1001,9 +1001,17 @@ impl ChatService {
     }
 
     /// Mark `msg` as cancelled. Caller pre-fills any fields it wants set.
+    /// `notify` gates the live "cancelled" broadcast (the one that tells the
+    /// UI to stop showing a running turn). Pass `false` when this generation
+    /// has already been superseded by a newer one (e.g. an interrupting
+    /// message) — the DB row still gets marked Cancelled, but the client
+    /// isn't told, since the successor turn's own events already own the
+    /// running/streaming state and a stray cancellation broadcast would reset
+    /// it prematurely.
     pub async fn cancel_agent_message(
         &self,
         mut msg: Message,
+        notify: bool,
     ) -> Result<MessageResponse, AppError> {
         msg.status = Some(MessageStatus::Cancelled);
         let updated = self.message_repo.update(&msg).await?;
@@ -1016,16 +1024,18 @@ impl ChatService {
                 chat.space_id.clone(),
                 None,
             );
-            self.broadcast.send(crate::chat::broadcast::BroadcastEvent {
-                user_id: chat.user_id.clone(),
-                chat_id: Some(chat.id.clone()),
-                space_id: chat.space_id.clone(),
-                kind: crate::chat::broadcast::BroadcastEventKind::Inference(
-                    crate::inference::tool_loop::InferenceEventKind::Cancelled {
-                        reason: "Cancelled".to_string(),
-                    },
-                ),
-            });
+            if notify {
+                self.broadcast.send(crate::chat::broadcast::BroadcastEvent {
+                    user_id: chat.user_id.clone(),
+                    chat_id: Some(chat.id.clone()),
+                    space_id: chat.space_id.clone(),
+                    kind: crate::chat::broadcast::BroadcastEventKind::Inference(
+                        crate::inference::tool_loop::InferenceEventKind::Cancelled {
+                            reason: "Cancelled".to_string(),
+                        },
+                    ),
+                });
+            }
         }
         Ok(updated.into())
     }

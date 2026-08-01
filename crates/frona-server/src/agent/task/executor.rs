@@ -499,6 +499,10 @@ impl TaskExecutor {
                 None,
             )
             .await;
+            // Captured before `remove` so a genuine (not superseded) Stop
+            // still reads as current — `remove` would otherwise delete this
+            // same generation first and make the peek below always false.
+            let notify_cancel = self.harness.active_sessions.is_current(&chat_id, session_id).await;
             self.harness.active_sessions.remove(&chat_id, session_id).await;
 
             match result {
@@ -539,7 +543,7 @@ impl TaskExecutor {
                     InferenceResponse::Cancelled(text) => {
                         response.content = text;
                         let _ = self.harness.chat_service
-                            .cancel_agent_message(response).await;
+                            .cancel_agent_message(response, notify_cancel).await;
                         self.handle_cancelled(&task).await?;
                         return Ok(());
                     }
