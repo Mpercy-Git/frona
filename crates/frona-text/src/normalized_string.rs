@@ -1,20 +1,21 @@
-//! `NormalizedString` — alignment-tracked text normalisation.
+//! `NormalizedString` - alignment-tracked text normalisation.
 //!
 //! Holds an immutable `original` string plus a `normalized` form. Every byte
 //! of `normalized` has a corresponding `(src_start, src_end)` byte range in
-//! `original` — the source bytes "owned" by that normalised byte, INCLUDING
+//! `original` - the source bytes "owned" by that normalised byte, INCLUDING
 //! any source bytes that were absorbed by neighbouring transforms (e.g.
 //! whitespace collapse, NFKC composition).
 //!
 //! This is the load-bearing property for Edit's "byte-identical outside the
 //! edit" guarantee: when a needle matches normalised bytes `[a..b)`,
 //! `splice_range_original(a..b)` returns the original-buffer range to
-//! replace — including any absorbed neighbours that have no normalised byte
+//! replace - including any absorbed neighbours that have no normalised byte
 //! of their own.
 //!
 //! Spans are `(u32, u32)` per byte → 4 GiB file-size ceiling.
 
 use unicode_normalization_alignments::UnicodeNormalization;
+use unicode_casefold::UnicodeCaseFold;
 
 /// A `(src_start, src_end)` byte range in the original buffer, stored
 /// per-byte of the normalised buffer. `src_end` includes any source bytes
@@ -190,14 +191,14 @@ impl NormalizedString {
 
     /// Per-char 1:1 map. Allocates a new normalised buffer (byte count
     /// can change). Span for each emitted byte = span of the source char
-    /// (no absorption — every char maps to exactly one output char).
+    /// (no absorption - every char maps to exactly one output char).
     fn map_chars<F: Fn(char) -> char>(&mut self, f: F) -> &mut Self {
         let mut new_normalized = String::with_capacity(self.normalized.len());
         let mut new_spans: Vec<Span> = Vec::with_capacity(self.spans.len());
 
         let mut byte_pos = 0usize;
         for c in self.normalized.chars() {
-            // All bytes of one char share the same span — pick the first.
+            // All bytes of one char share the same span - pick the first.
             let span = self.spans[byte_pos];
             let mut buf = [0u8; 4];
             let s = f(c).encode_utf8(&mut buf);
@@ -213,9 +214,55 @@ impl NormalizedString {
         self
     }
 
+    /// Apply Unicode full, locale-independent case folding while retaining source
+    /// alignment. Expanded output characters such as `ss` from `ß` inherit the source
+    /// character's complete byte span.
+    pub fn case_fold(&mut self) -> &mut Self {
+        self.flat_map_chars(|c| c.case_fold())
+    }
+
+    /// Keep only characters accepted by `predicate`, preserving their original spans.
+    pub fn retain_chars<F: Fn(char) -> bool>(&mut self, predicate: F) -> &mut Self {
+        let mut normalized = String::with_capacity(self.normalized.len());
+        let mut spans = Vec::with_capacity(self.spans.len());
+        let mut byte_pos = 0usize;
+        for c in self.normalized.chars() {
+            let span = self.spans[byte_pos];
+            if predicate(c) {
+                normalized.push(c);
+                spans.extend(std::iter::repeat_n(span, c.len_utf8()));
+            }
+            byte_pos += c.len_utf8();
+        }
+        self.normalized = normalized;
+        self.spans = spans;
+        self
+    }
+
+    fn flat_map_chars<I, F>(&mut self, f: F) -> &mut Self
+    where
+        I: Iterator<Item = char>,
+        F: Fn(char) -> I,
+    {
+        let mut normalized = String::with_capacity(self.normalized.len());
+        let mut spans = Vec::with_capacity(self.spans.len());
+        let mut byte_pos = 0usize;
+        for c in self.normalized.chars() {
+            let span = self.spans[byte_pos];
+            for mapped in f(c) {
+                normalized.push(mapped);
+                spans.extend(std::iter::repeat_n(span, mapped.len_utf8()));
+            }
+            byte_pos += c.len_utf8();
+        }
+        self.normalized = normalized;
+        self.spans = spans;
+        self
+    }
+
     /// Collapse runs of whitespace (any `char::is_whitespace`) into a
     /// single ASCII `' '`. Absorbed source bytes extend the surviving
-    /// space's span end — so a splice on the collapsed space covers the
+    /// space's span end - so a splice on the collapsed space covers the
     /// whole original run.
     pub fn collapse_whitespace_runs(&mut self) -> &mut Self {
         let mut new_normalized = String::with_capacity(self.normalized.len());
@@ -283,8 +330,6 @@ impl From<String> for NormalizedString {
 mod tests {
     use super::*;
 
-    // ===== construction / basic round-trip =====
-
     #[test]
     fn from_round_trips() {
         let n = NormalizedString::from("hello");
@@ -303,8 +348,6 @@ mod tests {
         assert_eq!(n.get_original(), "");
         assert_eq!(n.len(), 0);
     }
-
-    // ===== splice_range_original — exhaustive boundary coverage =====
 
     #[test]
     fn splice_range_empty_at_start() {
@@ -345,7 +388,7 @@ mod tests {
     #[test]
     fn splice_range_reverse_returns_none() {
         let n = NormalizedString::from("hello");
-        // Explicit construction — `3..1` literal trips
+        // Explicit construction - `3..1` literal trips
         // `clippy::reversed_empty_ranges` because in idiomatic code such a
         // range is a programmer error. Here we're testing the function's
         // defensive guard against that exact mistake.
@@ -442,7 +485,7 @@ mod tests {
     fn splice_range_returns_char_boundary_in_original() {
         // Invariant: for an in-bounds range with both ends on normalised
         // char boundaries, the returned original range MUST also be on
-        // char boundaries — otherwise `original[range]` panics.
+        // char boundaries - otherwise `original[range]` panics.
         let original = "a\u{4E2D}b\u{4E2D}c";
         let mut n = NormalizedString::from(original);
         n.ascii_quotes(); // no-op on these chars but rebuilds spans
@@ -469,8 +512,6 @@ mod tests {
         }
     }
 
-    // ===== NFKC =====
-
     #[test]
     fn nfkc_recomposes_decomposed() {
         // "e\u{0301}" (NFD) → "é" (NFC/NFKC composed).
@@ -479,7 +520,7 @@ mod tests {
         assert_eq!(n.get(), "égant");
         assert_eq!(n.get_original(), "e\u{0301}gant");
         // For splicing: a match covering "é" (norm bytes 0..2) covers the
-        // original 'e' + combining accent (bytes 0..3) — the absorbed
+        // original 'e' + combining accent (bytes 0..3) - the absorbed
         // combining accent is included so the splice doesn't leave it
         // behind.
         let splice = n.splice_range_original(0..2).unwrap();
@@ -508,8 +549,6 @@ mod tests {
         assert_eq!(splice, 0..n.get_original().len());
     }
 
-    // ===== ASCII fold byte-count change =====
-
     #[test]
     fn ascii_quotes_3byte_to_1byte_preserves_alignment() {
         // Smart quote is 3 bytes; ASCII '"' is 1 byte. The new 1-byte
@@ -528,8 +567,6 @@ mod tests {
         assert_eq!(splice, 4..7);
     }
 
-    // ===== chained transforms =====
-
     #[test]
     fn chain_nfkc_then_ascii_quotes() {
         // "ﬀ" (U+FB00 ff ligature, 3 bytes) → NFKC → "ff" (2 bytes).
@@ -541,7 +578,7 @@ mod tests {
         let splice = n.splice_range_original(0..1).unwrap();
         assert_eq!(splice, 0..3);
         // Splice the second 'f' (the inserted one) should also cover the
-        // original ligature region — it shares the span with the first.
+        // original ligature region - it shares the span with the first.
         let splice = n.splice_range_original(0..2).unwrap();
         assert_eq!(splice, 0..3);
     }
@@ -587,7 +624,7 @@ mod tests {
         assert_eq!(n.get(), "a b");
         assert_eq!(n.get_original(), "a    b");
         // splice_range_original on the collapsed space MUST cover the
-        // entire absorbed run — otherwise an Edit splice would leave the
+        // entire absorbed run - otherwise an Edit splice would leave the
         // extra whitespace in the file.
         let splice = n.splice_range_original(1..2).unwrap();
         assert_eq!(splice, 1..5);
