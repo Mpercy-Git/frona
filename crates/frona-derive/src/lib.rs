@@ -7,7 +7,7 @@ use syn::spanned::Spanned;
 
 mod migration;
 
-/// `#[channel(id = "...", from = ConfigType)]` — `from` is optional; when
+/// `#[channel(id = "...", from = ConfigType)]` - `from` is optional; when
 /// omitted, the adapter struct itself is the deserialisation target.
 #[proc_macro_derive(ChannelFactory, attributes(channel))]
 pub fn derive_channel_factory(input: TokenStream) -> TokenStream {
@@ -166,12 +166,16 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 struct AgentToolArgs {
     name: Option<String>,
     files: Option<Vec<String>>,
+    /// Subdirectory under `tools/` holding the definition `.md`(s). Lets a tool
+    /// keep its prompt in `tools/<dir>/<name>.md` without restating the filename.
+    dir: Option<String>,
 }
 
 impl Parse for AgentToolArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut name = None;
         let mut files = None;
+        let mut dir = None;
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
@@ -180,6 +184,11 @@ impl Parse for AgentToolArgs {
                     let _eq: Token![=] = input.parse()?;
                     let lit: syn::LitStr = input.parse()?;
                     name = Some(lit.value());
+                }
+                "dir" => {
+                    let _eq: Token![=] = input.parse()?;
+                    let lit: syn::LitStr = input.parse()?;
+                    dir = Some(lit.value());
                 }
                 "files" => {
                     let content;
@@ -204,7 +213,7 @@ impl Parse for AgentToolArgs {
             }
         }
 
-        Ok(AgentToolArgs { name, files })
+        Ok(AgentToolArgs { name, files, dir })
     }
 }
 
@@ -225,8 +234,16 @@ pub fn agent_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let file_names = args.files.unwrap_or_else(|| vec![tool_name.clone()]);
 
+    // Optional `tools/<dir>/` prefix; defaults to `tools/` (backwards-compatible).
+    let dir_prefix = args
+        .dir
+        .map(|d| d.trim_matches('/').to_string())
+        .filter(|d| !d.is_empty())
+        .map(|d| format!("{d}/"))
+        .unwrap_or_default();
+
     let definitions_body = if file_names.len() == 1 {
-        let path = format!("tools/{}.md", file_names[0]);
+        let path = format!("tools/{dir_prefix}{}.md", file_names[0]);
         quote! {
             crate::tool::load_tool_definition_with_vars(&self.prompts, #path, &self.definition_vars())
                 .into_iter()
@@ -234,7 +251,7 @@ pub fn agent_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     } else {
         let stmts = file_names.iter().map(|f| {
-            let path = format!("tools/{f}.md");
+            let path = format!("tools/{dir_prefix}{f}.md");
             quote! {
                 if let Some(d) = crate::tool::load_tool_definition_with_vars(&self.prompts, #path, &self.definition_vars()) {
                     defs.push(d);
