@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use rig_core::completion::request::Usage;
 use serde::Deserialize;
 
+use crate::core::config::{OpenAiApi, ProviderModel};
 use crate::inference::provider::ModelRef;
 
 /// Required-vs-optional matches the upstream Zod schema in
@@ -25,7 +26,7 @@ pub struct ModelEntry {
     pub limit: Limit,
     pub modalities: Modalities,
 
-    /// Optional upstream — open-weights models without hosted pricing.
+    /// Optional upstream - open-weights models without hosted pricing.
     #[serde(default)]
     pub cost: Option<Cost>,
 
@@ -70,15 +71,15 @@ pub struct Modalities {
 
 const PER_MILLION_TO_PER_TOKEN: f64 = 1.0 / 1_000_000.0;
 
-/// Normalize a rig `Usage` to our canonical convention — `input_tokens` is
+/// Normalize a rig `Usage` to our canonical convention - `input_tokens` is
 /// the FRESH input only (cache reads are additive in `cached_input_tokens`).
 ///
 /// rig fills `usage.input_tokens` inconsistently across providers:
-/// - DeepSeek / OpenAI / Gemini / Groq / xAI / Mistral / etc. — `prompt_tokens`
+/// - DeepSeek / OpenAI / Gemini / Groq / xAI / Mistral / etc. - `prompt_tokens`
 ///   from the OpenAI-shaped response, which is **total** prompt tokens (cached
 ///   is a labelled subset of this number). We subtract the cached portion to
 ///   get the fresh count.
-/// - Anthropic — `input_tokens` from Anthropic's response, which excludes
+/// - Anthropic - `input_tokens` from Anthropic's response, which excludes
 ///   cache reads already. No adjustment needed.
 fn normalize_usage(provider: &str, u: &Usage) -> Usage {
     match provider {
@@ -92,7 +93,7 @@ fn normalize_usage(provider: &str, u: &Usage) -> Usage {
 
 impl ModelEntry {
     /// **Convention:** `usage.input_tokens` is the FRESH input only;
-    /// `cached_input_tokens` is additive. Callers must normalize first —
+    /// `cached_input_tokens` is additive. Callers must normalize first -
     /// see `ModelCatalogStore::compute`, which handles per-provider rig
     /// inconsistencies.
     pub fn cost_for(&self, u: &Usage) -> Option<f64> {
@@ -114,7 +115,7 @@ impl ModelEntry {
         Some(self.limit.context.saturating_sub(self.limit.output))
     }
 
-    /// Zero is the `Default::default()` sentinel — real models always
+    /// Zero is the `Default::default()` sentinel - real models always
     /// publish a positive output limit, so we map zero to `None`.
     pub fn max_output_tokens(&self) -> Option<u64> {
         if self.limit.output == 0 {
@@ -160,6 +161,7 @@ pub struct ModelCatalogSnapshot {
     pub version: String,
     pub fetched_at: DateTime<Utc>,
     pub entries: HashMap<String, ModelEntry>,
+    pub protocol_defaults: HashMap<String, OpenAiApi>,
 }
 
 impl ModelCatalogSnapshot {
@@ -169,11 +171,12 @@ impl ModelCatalogSnapshot {
             version: "empty".to_string(),
             fetched_at: Utc::now(),
             entries: HashMap::new(),
+            protocol_defaults: HashMap::new(),
         }
     }
 
     /// Hardcoded fallback for the no-cache first-boot path. Carries context
-    /// windows + capability flags only — pricing is `None` until the
+    /// windows + capability flags only - pricing is `None` until the
     /// scheduler's first refresh fills in live models.dev data.
     pub fn defaults() -> Self {
         let mut entries = HashMap::new();
@@ -320,16 +323,17 @@ impl ModelCatalogSnapshot {
             version: "defaults".to_string(),
             fetched_at: Utc::now(),
             entries,
+            protocol_defaults: HashMap::new(),
         }
     }
 
     /// Resolution order:
-    /// 1. `"{provider}/{model_id}"` — the canonical key shape for the fetched
+    /// 1. `"{provider}/{model_id}"` - the canonical key shape for the fetched
     ///    models.dev catalog.
-    /// 2. Bare `model_id` — fallback for the hardcoded `defaults()` snapshot
+    /// 2. Bare `model_id` - fallback for the hardcoded `defaults()` snapshot
     ///    used pre-fetch, where entries are keyed by bare model id only.
     pub fn lookup(&self, m: &ModelRef) -> Option<&ModelEntry> {
-        let composite = format!("{}/{}", m.provider, m.model_id);
+        let composite = format!("{}/{}", m.provider_name(), m.model_id);
         if let Some(p) = self.entries.get(&composite) {
             return Some(p);
         }
@@ -344,9 +348,8 @@ impl ModelCatalogSnapshot {
     /// against the underlying vendor's catalog section.
     pub fn lookup_prefix(&self, provider: &str, model_id: &str) -> Option<&ModelEntry> {
         let mref = ModelRef {
-            provider: provider.to_string(),
             model_id: model_id.to_string(),
-            additional_params: None,
+            provider: ProviderModel::from_name(provider),
         };
         if let Some(e) = self.lookup(&mref) {
             return Some(e);
@@ -354,9 +357,8 @@ impl ModelCatalogSnapshot {
 
         if let Some((vendor, rest)) = model_id.split_once('/') {
             let mref = ModelRef {
-                provider: vendor.to_string(),
                 model_id: rest.to_string(),
-                additional_params: None,
+                provider: ProviderModel::from_name(vendor),
             };
             if let Some(e) = self.lookup(&mref) {
                 return Some(e);
@@ -365,6 +367,12 @@ impl ModelCatalogSnapshot {
         }
 
         self.prefix_walk(provider, model_id)
+    }
+
+    pub fn protocol_default(&self, provider: &str, model_id: &str) -> Option<OpenAiApi> {
+        self.protocol_defaults
+            .get(&format!("{provider}/{model_id}"))
+            .copied()
     }
 
     fn prefix_walk(&self, provider: &str, model_id: &str) -> Option<&ModelEntry> {
@@ -391,7 +399,7 @@ impl ModelCatalogSnapshot {
 
 /// Hot-swappable wrapper around `Arc<ModelCatalogSnapshot>`. Readers call
 /// `current()` for a cheap `Arc<…>`; the scheduler `swap()`s atomically.
-/// Internal `Arc`s make clones cheap — `AppState` holds a bare
+/// Internal `Arc`s make clones cheap - `AppState` holds a bare
 /// `ModelCatalogStore`, not an `Arc<ModelCatalogStore>`.
 #[derive(Clone)]
 pub struct ModelCatalogStore {
@@ -413,7 +421,7 @@ impl ModelCatalogStore {
 
     pub fn compute(&self, m: &ModelRef, u: &Usage) -> (Option<f64>, String) {
         let p = self.current();
-        let normalized = normalize_usage(&m.provider, u);
+        let normalized = normalize_usage(m.provider_name(), u);
         (
             p.lookup(m).and_then(|e| e.cost_for(&normalized)),
             p.version.clone(),
@@ -458,6 +466,7 @@ mod tests {
             version: "test".into(),
             fetched_at: Utc::now(),
             entries,
+            protocol_defaults: HashMap::new(),
         };
         let entry = snap
             .lookup_prefix("openai", "gpt-4o-mini-2024-07-18")
@@ -476,6 +485,7 @@ mod tests {
             version: "test".into(),
             fetched_at: Utc::now(),
             entries,
+            protocol_defaults: HashMap::new(),
         };
         let entry = snap
             .lookup_prefix("openrouter", "qwen/qwen3-coder-plus")
@@ -494,6 +504,7 @@ mod tests {
             version: "test".into(),
             fetched_at: Utc::now(),
             entries,
+            protocol_defaults: HashMap::new(),
         };
         assert!(snap.lookup_prefix("anthropic", "gpt-4o-mini").is_none());
     }
