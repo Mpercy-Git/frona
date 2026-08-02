@@ -304,6 +304,10 @@ pub struct StorageConfig {
     pub skills_dir: String,
     #[schemars(description = "Path for system cache directory.")]
     pub cache_dir: String,
+    #[schemars(description = "Path for your own ontologies. Loaded alongside the bundled \
+        ones and trusted the same, so a file here can retype or untype pages. Need not \
+        exist.")]
+    pub ontology_dir: String,
 }
 
 impl Default for StorageConfig {
@@ -313,6 +317,28 @@ impl Default for StorageConfig {
             shared_config_dir: "resources".into(),
             skills_dir: "data/skills".into(),
             cache_dir: "data/system/cache".into(),
+            ontology_dir: "data/ontology".into(),
+        }
+    }
+}
+
+impl StorageConfig {
+    /// The two directories the ontology catalogue is assembled from.
+    ///
+    /// The bundled half is derived from `shared_config_dir` rather than configurable:
+    /// it is image content, read-only, and replaced wholesale by an upgrade. In a
+    /// container it is a layer, so nothing may be written there - it would vanish on
+    /// restart. Anything fetched at runtime belongs in `ontology_dir`, which sits on
+    /// the data volume and persists.
+    ///
+    /// They stay separate rather than merging into one because source attribution is
+    /// assigned on first sight, and "gone because a newer image replaced it" has to
+    /// remain distinguishable from "the user deleted it" - one is an upgrade, the other
+    /// is intent.
+    pub fn ontology_roots(&self) -> crate::memory::pkm::ontology::Roots {
+        crate::memory::pkm::ontology::Roots {
+            release: PathBuf::from(&self.shared_config_dir).join("ontology"),
+            user: PathBuf::from(&self.ontology_dir),
         }
     }
 }
@@ -320,21 +346,13 @@ impl Default for StorageConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct SchedulerConfig {
-    #[schemars(description = "Interval in seconds between space memory compaction runs.")]
-    pub space_compaction_secs: u64,
-    #[schemars(description = "Interval in seconds between memory compaction runs.")]
-    pub memory_compaction_secs: u64,
     #[schemars(description = "Scheduler poll interval in seconds.")]
     pub poll_secs: u64,
 }
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        Self {
-            space_compaction_secs: 3600,
-            memory_compaction_secs: 7200,
-            poll_secs: 60,
-        }
+        Self { poll_secs: 60 }
     }
 }
 
@@ -444,200 +462,179 @@ pub struct AnthropicThinking {
     pub budget_tokens: Option<u64>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct OpenAICompatParams {
-    #[serde(default)]
     pub top_p: Option<f64>,
-    #[serde(default)]
     pub min_p: Option<f64>,
-    #[serde(default)]
     pub frequency_penalty: Option<f64>,
-    #[serde(default)]
     pub presence_penalty: Option<f64>,
-    #[serde(default)]
     pub seed: Option<i64>,
-    #[serde(default)]
     pub max_completion_tokens: Option<u64>,
-    #[serde(default)]
     #[schemars(description = "Reasoning effort level (e.g. 'low', 'medium', 'high').")]
     pub reasoning_effort: Option<String>,
-    #[serde(default)]
     pub logprobs: Option<bool>,
-    #[serde(default)]
     pub top_logprobs: Option<u64>,
-    #[serde(default)]
     pub stop: Option<Vec<String>>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct GeminiThinkingConfig {
     pub thinking_budget: u64,
-    #[serde(default)]
     pub include_thoughts: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct AnthropicParams {
+    pub thinking: Option<AnthropicThinking>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<u64>,
+    pub stop_sequences: Option<Vec<String>>,
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct OllamaParams {
+    pub think: Option<bool>,
+    pub num_ctx: Option<u64>,
+    pub num_predict: Option<u64>,
+    pub num_batch: Option<u64>,
+    pub num_keep: Option<i64>,
+    pub num_thread: Option<u64>,
+    pub num_gpu: Option<u64>,
+    pub top_k: Option<u64>,
+    pub top_p: Option<f64>,
+    pub min_p: Option<f64>,
+    pub repeat_penalty: Option<f64>,
+    pub repeat_last_n: Option<i64>,
+    pub frequency_penalty: Option<f64>,
+    pub presence_penalty: Option<f64>,
+    pub mirostat: Option<u64>,
+    pub mirostat_eta: Option<f64>,
+    pub mirostat_tau: Option<f64>,
+    pub tfs_z: Option<f64>,
+    pub seed: Option<i64>,
+    pub stop: Option<Vec<String>>,
+    pub use_mmap: Option<bool>,
+    pub use_mlock: Option<bool>,
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct GeminiParams {
+    pub thinking_config: Option<GeminiThinkingConfig>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<u64>,
+    pub stop_sequences: Option<Vec<String>>,
+    pub candidate_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiApi {
+    #[default]
+    ChatCompletions,
+    Responses,
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "provider")]
-pub enum ModelGroupConfig {
+pub enum ProviderModel {
     #[serde(rename = "anthropic")]
     Anthropic {
         #[serde(flatten)]
-        common: CommonModelFields,
-        #[serde(default)]
-        thinking: Option<AnthropicThinking>,
-        #[serde(default)]
-        top_p: Option<f64>,
-        #[serde(default)]
-        top_k: Option<u64>,
-        #[serde(default)]
-        stop_sequences: Option<Vec<String>>,
+        params: AnthropicParams,
     },
     #[serde(rename = "ollama")]
     Ollama {
         #[serde(flatten)]
-        common: CommonModelFields,
-        #[serde(default)]
-        think: Option<bool>,
-        #[serde(default)]
-        num_ctx: Option<u64>,
-        #[serde(default)]
-        num_predict: Option<u64>,
-        #[serde(default)]
-        num_batch: Option<u64>,
-        #[serde(default)]
-        num_keep: Option<i64>,
-        #[serde(default)]
-        num_thread: Option<u64>,
-        #[serde(default)]
-        num_gpu: Option<u64>,
-        #[serde(default)]
-        top_k: Option<u64>,
-        #[serde(default)]
-        top_p: Option<f64>,
-        #[serde(default)]
-        min_p: Option<f64>,
-        #[serde(default)]
-        repeat_penalty: Option<f64>,
-        #[serde(default)]
-        repeat_last_n: Option<i64>,
-        #[serde(default)]
-        frequency_penalty: Option<f64>,
-        #[serde(default)]
-        presence_penalty: Option<f64>,
-        #[serde(default)]
-        mirostat: Option<u64>,
-        #[serde(default)]
-        mirostat_eta: Option<f64>,
-        #[serde(default)]
-        mirostat_tau: Option<f64>,
-        #[serde(default)]
-        tfs_z: Option<f64>,
-        #[serde(default)]
-        seed: Option<i64>,
-        #[serde(default)]
-        stop: Option<Vec<String>>,
-        #[serde(default)]
-        use_mmap: Option<bool>,
-        #[serde(default)]
-        use_mlock: Option<bool>,
+        params: OllamaParams,
     },
     #[serde(rename = "openai")]
     OpenAI {
-        #[serde(flatten)]
-        common: CommonModelFields,
+        api: Option<OpenAiApi>,
         #[serde(flatten)]
         params: OpenAICompatParams,
     },
     #[serde(rename = "groq")]
     Groq {
         #[serde(flatten)]
-        common: CommonModelFields,
-        #[serde(flatten)]
         params: OpenAICompatParams,
     },
     #[serde(rename = "openrouter")]
     OpenRouter {
-        #[serde(flatten)]
-        common: CommonModelFields,
         #[serde(flatten)]
         params: OpenAICompatParams,
     },
     #[serde(rename = "deepseek")]
     DeepSeek {
         #[serde(flatten)]
-        common: CommonModelFields,
-        #[serde(flatten)]
         params: OpenAICompatParams,
     },
     #[serde(rename = "xai")]
     XAI {
-        #[serde(flatten)]
-        common: CommonModelFields,
         #[serde(flatten)]
         params: OpenAICompatParams,
     },
     #[serde(rename = "together")]
     Together {
         #[serde(flatten)]
-        common: CommonModelFields,
-        #[serde(flatten)]
         params: OpenAICompatParams,
     },
     #[serde(rename = "hyperbolic")]
     Hyperbolic {
-        #[serde(flatten)]
-        common: CommonModelFields,
         #[serde(flatten)]
         params: OpenAICompatParams,
     },
     #[serde(rename = "gemini")]
     Gemini {
         #[serde(flatten)]
-        common: CommonModelFields,
-        #[serde(default)]
-        thinking_config: Option<GeminiThinkingConfig>,
-        #[serde(default)]
-        top_p: Option<f64>,
-        #[serde(default)]
-        top_k: Option<u64>,
-        #[serde(default)]
-        stop_sequences: Option<Vec<String>>,
-        #[serde(default)]
-        candidate_count: Option<u64>,
+        params: GeminiParams,
     },
     #[serde(rename = "generic")]
-    Generic {
-        #[serde(flatten)]
-        common: CommonModelFields,
+    #[default]
+    Generic,
+    #[serde(skip)]
+    #[schemars(skip)]
+    Custom {
+        name: String,
     },
 }
 
-impl Default for ModelGroupConfig {
-    fn default() -> Self {
-        ModelGroupConfig::Generic {
-            common: CommonModelFields::default(),
-        }
+impl From<&str> for ProviderModel {
+    fn from(name: &str) -> Self {
+        Self::from_name(name)
     }
 }
 
-impl ModelGroupConfig {
-    pub fn common(&self) -> &CommonModelFields {
-        match self {
-            Self::Anthropic { common, .. }
-            | Self::Ollama { common, .. }
-            | Self::OpenAI { common, .. }
-            | Self::Groq { common, .. }
-            | Self::OpenRouter { common, .. }
-            | Self::DeepSeek { common, .. }
-            | Self::XAI { common, .. }
-            | Self::Together { common, .. }
-            | Self::Hyperbolic { common, .. }
-            | Self::Gemini { common, .. }
-            | Self::Generic { common, .. } => common,
+impl From<String> for ProviderModel {
+    fn from(name: String) -> Self {
+        Self::from_name(&name)
+    }
+}
+
+impl ProviderModel {
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "anthropic" => Self::Anthropic { params: Default::default() },
+            "ollama" => Self::Ollama { params: Default::default() },
+            "openai" => Self::OpenAI { api: None, params: Default::default() },
+            "groq" => Self::Groq { params: Default::default() },
+            "openrouter" => Self::OpenRouter { params: Default::default() },
+            "deepseek" => Self::DeepSeek { params: Default::default() },
+            "xai" => Self::XAI { params: Default::default() },
+            "together" => Self::Together { params: Default::default() },
+            "hyperbolic" => Self::Hyperbolic { params: Default::default() },
+            "gemini" => Self::Gemini { params: Default::default() },
+            "generic" => Self::Generic,
+            name => Self::Custom { name: name.to_string() },
         }
     }
 
-    pub fn provider_name(&self) -> &str {
+    pub fn name(&self) -> &str {
         match self {
             Self::Anthropic { .. } => "anthropic",
             Self::Ollama { .. } => "ollama",
@@ -649,31 +646,27 @@ impl ModelGroupConfig {
             Self::Together { .. } => "together",
             Self::Hyperbolic { .. } => "hyperbolic",
             Self::Gemini { .. } => "gemini",
-            Self::Generic { .. } => "generic",
+            Self::Generic => "generic",
+            Self::Custom { name } => name,
         }
     }
+}
 
-    /// Extract provider-specific params as JSON for Rig's additional_params.
-    /// Serializes the whole config, strips common fields and the provider tag,
-    /// returning only provider-specific params. Returns None if empty.
-    pub fn additional_params(&self) -> Option<serde_json::Value> {
-        const COMMON_KEYS: &[&str] = &[
-            "provider", "model", "fallbacks", "max_tokens",
-            "temperature", "context_window", "retry",
-        ];
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct ModelGroupConfig {
+    #[serde(flatten)]
+    pub common: CommonModelFields,
+    #[serde(flatten)]
+    pub provider: ProviderModel,
+}
 
-        let mut map = match serde_json::to_value(self) {
-            Ok(serde_json::Value::Object(m)) => m,
-            _ => return None,
-        };
+impl ModelGroupConfig {
+    pub fn common(&self) -> &CommonModelFields {
+        &self.common
+    }
 
-        for key in COMMON_KEYS {
-            map.remove(*key);
-        }
-
-        map.retain(|_, v| !v.is_null());
-
-        if map.is_empty() { None } else { Some(serde_json::Value::Object(map)) }
+    pub fn provider_name(&self) -> &str {
+        self.provider.name()
     }
 }
 
@@ -873,6 +866,7 @@ pub struct Config {
     pub storage: StorageConfig,
     pub scheduler: SchedulerConfig,
     pub inference: InferenceConfig,
+    pub memory: MemoryConfig,
     pub voice: VoiceConfig,
     pub app: AppConfig,
     pub cache: CacheConfig,
@@ -910,6 +904,132 @@ impl Default for SignalConfig {
     }
 }
 
+/// Which memory backend runs. `basic` rolls loose
+/// `memory_entry` rows into compacted summaries; `pkm` builds a knowledge base
+/// of pages from background consolidation.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryBackend {
+    #[default]
+    Basic,
+    Pkm,
+}
+
+/// Memory subsystem configuration. Flat (single level under `memory`) so every
+/// knob is reachable via `FRONA_MEMORY_*` env overrides, not just YAML.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
+pub struct MemoryConfig {
+    #[schemars(description = "Which memory backend to run: `basic` or `pkm`. Unset (null) \
+        resolves to `basic` at boot; the setup wizard writes `pkm` for fresh installs and \
+        existing installs opt in explicitly, so upgrades stay on `basic` unless changed.")]
+    pub backend: Option<MemoryBackend>,
+    #[schemars(description = "Model group for memory background work (basic compaction / pkm consolidation). Falls back to `primary` if undefined.")]
+    pub model_group: String,
+    #[schemars(description = "basic: skip user/agent memory compaction below this many tokens.")]
+    pub basic_compaction_token_threshold: usize,
+    #[schemars(description = "basic: interval in seconds between user/agent memory compaction runs.")]
+    pub basic_compaction_secs: u64,
+    #[schemars(description = "basic: interval in seconds between space memory compaction runs.")]
+    pub basic_space_compaction_secs: u64,
+    #[schemars(description = "pkm: max hits returned by `memory_search`.")]
+    pub pkm_search_top_k: i64,
+    #[schemars(description = "pkm: recency-decay half-life (seconds) for short memory.")]
+    pub pkm_short_memory_half_life_secs: u64,
+    #[schemars(description = "pkm: drop short memory once its decay score falls below this.")]
+    pub pkm_short_memory_demote_threshold: f32,
+    #[schemars(description = "pkm: max short-memory lines injected into `<short_memory>`.")]
+    pub pkm_short_memory_top_n: usize,
+    #[schemars(description = "pkm: token budget for the `<short_memory>` block.")]
+    pub pkm_short_memory_token_cap: usize,
+    #[schemars(description = "pkm: token budget for the `<available_playbooks>` index; playbooks past the cap (lowest use_count first) are dropped.")]
+    pub pkm_playbook_index_token_cap: usize,
+    #[schemars(description = "pkm: how often (seconds) the consolidation sweep scans for idle chats.")]
+    pub pkm_consolidate_secs: u64,
+    #[schemars(description = "pkm: how long (seconds) a chat must be quiet before it's consolidated.")]
+    pub pkm_consolidate_idle_secs: u64,
+    #[schemars(
+        description = "pkm: how many consolidation model calls run at once — chats being \
+        mined by the sweep, and pages being authored. Bounded so a first run over a long \
+        history does not open one request per chat/page simultaneously."
+    )]
+    pub pkm_consolidation_concurrency: usize,
+    #[schemars(description = "pkm classify and resolve: maximum exploration-tool turns per structured conversation.")]
+    pub pkm_consolidation_max_tool_turns: usize,
+    #[schemars(description = "pkm classify, resolve, and reconcile: maximum structured submission attempts per conversation.")]
+    pub pkm_consolidation_max_submissions: usize,
+    #[schemars(description = "pkm playbook resolve and author: maximum exploration-tool turns per structured conversation.")]
+    pub pkm_playbook_max_tool_turns: usize,
+    #[schemars(description = "pkm playbook resolve and author: maximum structured submission attempts per conversation.")]
+    pub pkm_playbook_max_submissions: usize,
+    #[schemars(description = "pkm: maximum estimated transcript tokens sent to extract in one request.")]
+    pub pkm_extract_max_tokens: usize,
+    #[schemars(description = "pkm: maximum messages consumed by one extract request.")]
+    pub pkm_extract_max_messages: usize,
+    #[schemars(description = "pkm extract: number of same-chat Agent messages searched backward for successful tool evidence supporting an Agent-sourced memory.")]
+    pub pkm_extract_agent_evidence_lookback_messages: usize,
+    #[schemars(description = "pkm extract: token cap returned by each scoped tool-evidence search or read.")]
+    pub pkm_extract_agent_evidence_result_token_cap: usize,
+    #[schemars(
+        description = "pkm: how many times a consolidation stage may fail before its pass \
+        is abandoned. Attempts count the CURRENT stage and reset when the pass advances, \
+        so a long pass that hiccups at several stages is not dropped for making progress."
+    )]
+    pub pkm_consolidation_max_attempts: u32,
+    #[schemars(
+        description = "pkm adjudication: maximum model submission attempts for each \
+        adjudication batch, including the initial submission and guardrail revisions."
+    )]
+    pub pkm_adjudication_max_attempts_per_batch: usize,
+    #[schemars(description = "pkm: fatal post-extraction checkpoint resets allowed before the pass is marked Failed. With 2, the first fatal failure restarts at Classify and the second fails terminally.")]
+    pub pkm_consolidation_checkpoint_failure_cap: u32,
+    #[schemars(
+        description = "pkm: base backoff (seconds) between retries of a failed \
+        consolidation pass; doubles per attempt. Retries are quantised by the sweep tick, \
+        so a value below `pkm_consolidate_secs` buys nothing."
+    )]
+    pub pkm_consolidation_retry_base_secs: u64,
+    #[schemars(
+        description = "pkm: how many finished consolidation passes to keep per user as a \
+        log. Older ones are dropped by the cleanup stage."
+    )]
+    pub pkm_consolidation_keep_records: usize,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            backend: None,
+            model_group: "memory".into(),
+            basic_compaction_token_threshold: 3_000,
+            basic_compaction_secs: 7200,
+            basic_space_compaction_secs: 3600,
+            pkm_search_top_k: 8,
+            pkm_short_memory_half_life_secs: 14 * 24 * 3600,
+            pkm_short_memory_demote_threshold: 0.1,
+            pkm_short_memory_top_n: 16,
+            pkm_short_memory_token_cap: 3_000,
+            pkm_playbook_index_token_cap: 1_500,
+            pkm_consolidate_secs: 60,
+            pkm_consolidate_idle_secs: 300,
+            pkm_consolidation_concurrency: 4,
+            pkm_consolidation_max_tool_turns: 8,
+            pkm_consolidation_max_submissions: 8,
+            pkm_playbook_max_tool_turns: 20,
+            pkm_playbook_max_submissions: 20,
+            pkm_extract_max_tokens: 10_000,
+            pkm_extract_max_messages: 300,
+            pkm_extract_agent_evidence_lookback_messages: 10,
+            pkm_extract_agent_evidence_result_token_cap: 4_000,
+            pkm_consolidation_max_attempts: 3,
+            pkm_adjudication_max_attempts_per_batch: 40,
+            pkm_consolidation_checkpoint_failure_cap: 2,
+            pkm_consolidation_retry_base_secs: 120,
+            pkm_consolidation_keep_records: 20,
+        }
+    }
+}
+
 pub struct LoadedConfig {
     pub config: Config,
     pub models: Option<crate::inference::config::ModelRegistryConfig>,
@@ -928,7 +1048,8 @@ impl Config {
             .set_default("database.path", format!("{data_dir}/db")).unwrap()
             .set_default("storage.data_dir", data_dir.clone()).unwrap()
             .set_default("storage.skills_dir", format!("{data_dir}/skills")).unwrap()
-            .set_default("storage.cache_dir", format!("{data_dir}/system/cache")).unwrap();
+            .set_default("storage.cache_dir", format!("{data_dir}/system/cache")).unwrap()
+            .set_default("storage.ontology_dir", format!("{data_dir}/ontology")).unwrap();
 
         if let Some(ref content) = yaml_content {
             let expanded = expand_env_vars(content);
@@ -1296,7 +1417,11 @@ mod tests {
         assert_eq!(config.database.path, "data/db");
         assert_eq!(config.storage.data_dir, "data");
         assert_eq!(config.storage.skills_dir, "data/skills");
-        assert_eq!(config.scheduler.space_compaction_secs, 3600);
+        assert_eq!(config.memory.basic_space_compaction_secs, 3600);
+        assert_eq!(config.memory.pkm_consolidation_max_tool_turns, 8);
+        assert_eq!(config.memory.pkm_consolidation_max_submissions, 8);
+        assert_eq!(config.memory.pkm_playbook_max_tool_turns, 20);
+        assert_eq!(config.memory.pkm_playbook_max_submissions, 20);
         assert!(!config.sso.enabled);
         assert!(config.sso.signups_match_email);
         assert!(config.browser.is_none());
@@ -1309,6 +1434,64 @@ mod tests {
         assert_eq!(config.inference.default_max_tokens, 8192);
         assert_eq!(config.inference.compaction_trigger_pct, 80);
         assert_eq!(config.inference.history_truncation_pct, 90);
+    }
+
+    #[test]
+    fn provider_option_serialization_omits_none_values() {
+        let cases = [
+            (
+                "OpenAICompatParams",
+                serde_json::to_value(OpenAICompatParams {
+                    top_p: Some(0.8),
+                    ..Default::default()
+                }).unwrap(),
+                serde_json::json!({ "top_p": 0.8 }),
+            ),
+            (
+                "GeminiThinkingConfig",
+                serde_json::to_value(GeminiThinkingConfig {
+                    thinking_budget: 1024,
+                    include_thoughts: None,
+                }).unwrap(),
+                serde_json::json!({ "thinking_budget": 1024 }),
+            ),
+            (
+                "AnthropicParams",
+                serde_json::to_value(AnthropicParams {
+                    top_k: Some(40),
+                    ..Default::default()
+                }).unwrap(),
+                serde_json::json!({ "top_k": 40 }),
+            ),
+            (
+                "OllamaParams",
+                serde_json::to_value(OllamaParams {
+                    num_ctx: Some(8192),
+                    ..Default::default()
+                }).unwrap(),
+                serde_json::json!({ "num_ctx": 8192 }),
+            ),
+            (
+                "GeminiParams",
+                serde_json::to_value(GeminiParams {
+                    candidate_count: Some(1),
+                    ..Default::default()
+                }).unwrap(),
+                serde_json::json!({ "candidate_count": 1 }),
+            ),
+            (
+                "ProviderModel::OpenAI",
+                serde_json::to_value(ProviderModel::OpenAI {
+                    api: None,
+                    params: OpenAICompatParams::default(),
+                }).unwrap(),
+                serde_json::json!({ "provider": "openai" }),
+            ),
+        ];
+
+        for (name, actual, expected) in cases {
+            assert_eq!(actual, expected, "{name}");
+        }
     }
 
     #[test]
