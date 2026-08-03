@@ -822,12 +822,10 @@ async fn test_fallback_multiple_fallbacks_order() {
         frona::inference::ModelRef {
             provider: "fb1".into(),
             model_id: "fb1-model".into(),
-            additional_params: None,
         },
         frona::inference::ModelRef {
             provider: "fb2".into(),
             model_id: "fb2-model".into(),
-            additional_params: None,
         },
     ];
     let metrics = test_metrics_ctx();
@@ -869,27 +867,25 @@ impl StreamingMockProvider {
 impl frona::inference::provider::ModelProvider for StreamingMockProvider {
     async fn inference(
         &self,
-        _model_id: &str,
+        _model: &frona::inference::ModelRef,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-        _additional_params: Option<serde_json::Value>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
         unreachable!("streaming test should not call non-streaming inference");
     }
 
     async fn stream_inference(
         &self,
-        _model_id: &str,
+        _model: &frona::inference::ModelRef,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
         token_tx: mpsc::Sender<frona::inference::provider::StreamToken>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-        _additional_params: Option<serde_json::Value>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
         *self.call_count.lock().unwrap() += 1;
         let mut full_text = String::new();
@@ -906,13 +902,12 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
 
     async fn structured_inference(
         &self,
-        _model_id: &str,
+        _model: &frona::inference::ModelRef,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _schema: serde_json::Value,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-        _additional_params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, InferenceError> {
         unreachable!("streaming test should not call structured_inference");
     }
@@ -1012,7 +1007,6 @@ async fn test_streaming_tokens_arrive_individually() {
         total_elapsed,
     );
 
-    // Fail if more than 30% of tokens arrive in bursts
     assert!(
         burst_pct < 30.0,
         "{burst_pct:.0}% of tokens arrived in bursts — channel pipeline is batching"

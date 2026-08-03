@@ -42,7 +42,7 @@ where
     let model_str = model_ref.as_str();
     let outer_start = Instant::now();
     // ms-from-outer-start at which the LAST attempt began. After backon
-    // returns Ok, this is the start of the successful attempt — so it equals
+    // returns Ok, this is the start of the successful attempt - so it equals
     // the time spent in failed attempts + backoff sleeps before success.
     let last_attempt_start_ms = Arc::new(AtomicU64::new(0));
     let retries = Arc::new(AtomicU32::new(0));
@@ -65,8 +65,8 @@ where
     .notify(move |e, dur| {
         retries_notify.fetch_add(1, Ordering::Relaxed);
         // Defensive: zero out so `last_attempt_start_ms` is set fresh by the
-        // next op() invocation. (Strictly redundant — op() always overwrites
-        // before any read — but keeps the invariant local to this helper.)
+        // next op() invocation. (Strictly redundant - op() always overwrites
+        // before any read - but keeps the invariant local to this helper.)
         lams_notify.store(0, Ordering::Relaxed);
         tracing::warn!(model = %model_str, error = %e, delay = ?dur, "Retryable error, backing off");
     })
@@ -105,16 +105,15 @@ pub async fn inference_with_retry_and_fallback(
     let ref_str = model_group.main.as_str();
     let start = Instant::now();
     match retry_with_backoff(&model_group.retry, &model_group.main, || async {
-        let provider = registry.get_provider(&model_group.main.provider)?;
+        let provider = registry.get_provider(model_group.main.provider_name())?;
         provider
             .inference(
-                &model_group.main.model_id,
+                &model_group.main,
                 system_prompt,
                 truncated.clone(),
                 tools.clone(),
                 max_tokens,
                 temperature,
-                model_group.main.additional_params.clone(),
             )
             .await
     })
@@ -122,7 +121,7 @@ pub async fn inference_with_retry_and_fallback(
     {
         Ok(RetryOutcome { value: InferenceOutput { content, usage, ttft_ms }, retry_count, retry_overhead_ms }) => {
             let duration_ms = start.elapsed().as_millis() as u64;
-            tracing::info!(model = %ref_str, "Completion succeeded");
+            tracing::debug!(model = %ref_str, "Completion succeeded");
             let latency = LatencyMetrics { duration_ms, ttft_ms, retry_overhead_ms, retry_count };
             usage_service
                 .record(usage_ctx, &model_group.main, &usage, 0, latency)
@@ -146,16 +145,15 @@ pub async fn inference_with_retry_and_fallback(
         );
         let start = Instant::now();
         match retry_with_backoff(&model_group.retry, fallback, || async {
-            let provider = registry.get_provider(&fallback.provider)?;
+            let provider = registry.get_provider(fallback.provider_name())?;
             provider
                 .inference(
-                    &fallback.model_id,
+                    fallback,
                     system_prompt,
                     truncated_fb.clone(),
                     tools.clone(),
                     max_tokens,
                     temperature,
-                    fallback.additional_params.clone(),
                 )
                 .await
         })
@@ -206,16 +204,15 @@ pub async fn structured_inference_with_retry_and_fallback(
     let ref_str = model_group.main.as_str();
     let start = Instant::now();
     match retry_with_backoff(&model_group.retry, &model_group.main, || async {
-        let provider = registry.get_provider(&model_group.main.provider)?;
+        let provider = registry.get_provider(model_group.main.provider_name())?;
         provider
             .structured_inference(
-                &model_group.main.model_id,
+                &model_group.main,
                 system_prompt,
                 truncated.clone(),
                 schema.clone(),
                 max_tokens,
                 temperature,
-                model_group.main.additional_params.clone(),
             )
             .await
     })
@@ -224,7 +221,7 @@ pub async fn structured_inference_with_retry_and_fallback(
         Ok(RetryOutcome { value, retry_count, retry_overhead_ms }) => {
             let duration_ms = start.elapsed().as_millis() as u64;
             tracing::info!(model = %ref_str, "Structured extraction succeeded");
-            // structured_inference at the rig layer doesn't surface a Usage —
+            // structured_inference at the rig layer doesn't surface a Usage -
             // we record the call with zeros so the row + Prom counter still
             // captures cost-irrelevant volume. ttft_ms is None: non-streaming.
             let latency = LatencyMetrics {
@@ -261,16 +258,15 @@ pub async fn structured_inference_with_retry_and_fallback(
         );
         let start = Instant::now();
         match retry_with_backoff(&model_group.retry, fallback, || async {
-            let provider = registry.get_provider(&fallback.provider)?;
+            let provider = registry.get_provider(fallback.provider_name())?;
             provider
                 .structured_inference(
-                    &fallback.model_id,
+                    fallback,
                     system_prompt,
                     truncated_fb.clone(),
                     schema.clone(),
                     max_tokens,
                     temperature,
-                    fallback.additional_params.clone(),
                 )
                 .await
         })
@@ -325,10 +321,9 @@ pub async fn stream_with_retry_and_fallback(
     usage_ctx: &UsageContext,
 ) -> Result<StreamResult, crate::core::error::AppError> {
     let provider = registry
-        .get_provider(&model_group.main.provider)
+        .get_provider(model_group.main.provider_name())
         .map_err(|e| crate::core::error::AppError::Inference(e.to_string()))?;
 
-    let model_id = &model_group.main.model_id;
     let model_str = model_group.main.as_str();
 
     // Track retry stats across the inline backon loop. Same idea as
@@ -369,14 +364,13 @@ pub async fn stream_with_retry_and_fallback(
         let attempt_start = Instant::now();
         let contents_result = tokio::select! {
             result = provider.stream_inference(
-                model_id,
+                &model_group.main,
                 system_prompt,
                 chat_history.to_vec(),
                 tools.to_vec(),
                 text_tx,
                 model_group.max_tokens,
                 model_group.temperature,
-                model_group.main.additional_params.clone(),
             ) => Some(result),
             _ = cancel_token.cancelled() => None,
         };
