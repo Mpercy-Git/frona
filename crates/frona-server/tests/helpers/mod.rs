@@ -566,6 +566,12 @@ pub async fn drain_sse_frames(
 
 /// Create a minimal ChatService backed by an in-memory SurrealDB for tool loop tests.
 pub async fn test_chat_service() -> frona::chat::service::ChatService {
+    test_chat_service_with_db().await.0
+}
+
+/// Same as [`test_chat_service`] but also returns the backing DB handle, for
+/// tests that need to seed rows (chats, shares, …) directly.
+pub async fn test_chat_service_with_db() -> (frona::chat::service::ChatService, surrealdb::Surreal<surrealdb::engine::local::Db>) {
     use frona::db::repo::generic::SurrealRepo;
     use surrealdb::engine::local::Mem;
     use surrealdb::Surreal;
@@ -629,7 +635,7 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         300,
     );
 
-    frona::chat::service::ChatService::new(
+    let chat_service = frona::chat::service::ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -643,7 +649,8 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         presign_service,
         frona::notification::service::NotificationService::new(SurrealRepo::new(db.clone())),
         usage_service,
-    )
+    );
+    (chat_service, db)
 }
 
 /// Create an `EventSender` backed by a real `BroadcastService` with a

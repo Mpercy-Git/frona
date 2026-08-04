@@ -60,6 +60,14 @@ pub struct ChatResponse {
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// True when the requester isn't the owner but was granted read-only
+    /// access. Set by the route layer, which knows the requester; always
+    /// `false` on this bare conversion.
+    #[serde(default)]
+    pub is_shared: bool,
+    /// The owner's handle, set alongside `is_shared`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_by: Option<String>,
 }
 
 impl From<Chat> for ChatResponse {
@@ -76,6 +84,8 @@ impl From<Chat> for ChatResponse {
             metadata: chat.metadata,
             created_at: chat.created_at,
             updated_at: chat.updated_at,
+            is_shared: false,
+            shared_by: None,
         }
     }
 }

@@ -143,6 +143,7 @@ pub struct AppState {
     pub usage_service: crate::inference::usage::UsageService,
     pub model_catalog: crate::inference::metadata::ModelCatalogStore,
     pub chat_service: ChatService,
+    pub chat_share_service: crate::chat::share::service::ChatShareService,
     pub contact_service: ContactService,
     pub task_service: TaskService,
     pub broadcast_service: BroadcastService,
@@ -512,7 +513,12 @@ impl AppState {
             None => tracing::info!("Push notifications disabled (no VAPID keys configured)"),
         }
 
-        let chat_service = ChatService::new(
+        let chat_share_service = crate::chat::share::service::ChatShareService::new(
+            SurrealRepo::new(db.clone()),
+            user_service.clone(),
+        );
+
+        let mut chat_service = ChatService::new(
             chat_repo,
             message_repo,
             tool_call_repo,
@@ -527,6 +533,7 @@ impl AppState {
             notification_service.clone(),
             usage_service.clone(),
         );
+        chat_service.set_share_service(chat_share_service.clone());
         let shutdown_token = CancellationToken::new();
         let active_sessions = ActiveSessions::default();
         let harness = Arc::new(crate::agent::harness::Harness::new(
@@ -588,6 +595,7 @@ impl AppState {
             model_catalog,
             contact_service,
             chat_service,
+            chat_share_service: chat_share_service.clone(),
             task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
