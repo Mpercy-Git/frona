@@ -80,6 +80,8 @@ jobs:
           target: prod
           platforms: linux/amd64
           push: true
+          build-args: |
+            VERSION=${{ steps.tag.outputs.name }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

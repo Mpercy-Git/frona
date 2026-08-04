@@ -46,7 +46,7 @@ async fn info_handler(_auth: AuthUser, State(state): State<AppState>) -> axum::J
     let cpus = System::physical_core_count().unwrap_or(0);
 
     axum::Json(json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::core::app_version(),
         "cpus": cpus,
         "total_memory_bytes": total_memory,
         "sandbox_driver": state.sandbox_factory.driver_id(),
@@ -55,7 +55,7 @@ async fn info_handler(_auth: AuthUser, State(state): State<AppState>) -> axum::J
 }
 
 async fn version_handler(_auth: AuthUser) -> axum::Json<serde_json::Value> {
-    axum::Json(json!({"version": env!("CARGO_PKG_VERSION")}))
+    axum::Json(json!({"version": crate::core::app_version()}))
 }
 
 async fn timezones_handler(_auth: AuthUser) -> axum::Json<Vec<String>> {
@@ -143,11 +143,26 @@ async fn restart_handler(
 }
 
 fn re_exec_self() -> ! {
-    use std::os::unix::process::CommandExt;
-
     let exe = std::env::current_exe().expect("failed to get current executable path");
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let err = std::process::Command::new(&exe).args(&args).exec();
-    panic!("exec failed: {err}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Replace the current process image so the PID and supervisor handle
+        // are preserved across the restart.
+        let err = std::process::Command::new(&exe).args(&args).exec();
+        panic!("exec failed: {err}");
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Windows has no exec(); spawn a fresh copy and exit so the caller
+        // still observes a restart. (Frona runs on Linux in production; this
+        // arm only exists so the crate compiles for local checks on Windows.)
+        match std::process::Command::new(&exe).args(&args).spawn() {
+            Ok(_) => std::process::exit(0),
+            Err(e) => panic!("failed to spawn replacement process: {e}"),
+        }
+    }
 }

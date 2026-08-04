@@ -31,15 +31,29 @@ COPY crates/ crates/
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 4: backend builder
+#
+# The cargo target dir and registry are BuildKit cache mounts so incremental
+# compilation and downloaded crates persist across builds — a small backend
+# change then recompiles only what changed instead of the whole workspace.
+# Cache mounts aren't part of the committed layer, so the built binaries are
+# copied out to /app before the RUN ends for the prod stage to COPY.
 FROM rust-base AS backend-builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
 COPY resources/ resources/
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN --mount=type=cache,target=/app/target,id=frona-target \
+    --mount=type=cache,target=/usr/local/cargo/registry,id=frona-cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=frona-cargo-git \
+    cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY resources/ resources/
-RUN cargo build --release -p frona-server -p frona-cli-mcp
+RUN --mount=type=cache,target=/app/target,id=frona-target \
+    --mount=type=cache,target=/usr/local/cargo/registry,id=frona-cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=frona-cargo-git \
+    cargo build --release -p frona-server -p frona-cli-mcp \
+    && cp target/release/frona /app/frona \
+    && cp target/release/mcpctl /app/mcpctl
 
 # Stage 4: CLI tools (op, bw, syd)
 FROM debian:bookworm-slim AS cli-tools
@@ -169,12 +183,16 @@ COPY --from=python-builder /install /usr/local
 # Pre-compile .pyc files so Python doesn't need write access to system dirs
 # at runtime (syd sandbox blocks writes outside the agent workspace).
 RUN python3 -m compileall -q /usr/local/lib/python3.12
-COPY --chown=frona:frona --from=backend-builder /app/target/release/frona /app/bin/frona
-COPY --chown=frona:frona --from=backend-builder /app/target/release/mcpctl /app/bin/mcpctl
+COPY --chown=frona:frona --from=backend-builder /app/frona /app/bin/frona
+COPY --chown=frona:frona --from=backend-builder /app/mcpctl /app/bin/mcpctl
 COPY --chown=frona:frona --from=frontend-builder /app/web/out /app/static
 COPY --chown=frona:frona resources /app/share
 
 ENV PATH="/app/bin:${PATH}"
+# Version reported at runtime (see core::app_version). Set from the VERSION
+# build-arg so releases don't need a Cargo.toml bump — which would invalidate
+# the cached Rust build and force a full recompile. Defaults to "dev".
+ENV FRONA_VERSION=$VERSION
 ENV FRONA_SERVER_STATIC_DIR=/app/static
 ENV FRONA_SERVER_DATA_DIR=/app/data
 ENV FRONA_SERVER_PORT=3001
