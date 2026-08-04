@@ -300,6 +300,7 @@ async fn lifecycle_complete_event_detected() {
                 status: TaskStatus::Completed,
                 summary: Some("Research findings here".to_string()),
                 schema: None,
+                citations: Vec::new(),
             },
         )
         .await
@@ -690,6 +691,7 @@ async fn lifecycle_event_saved_after_assistant_message() {
                 status: TaskStatus::Completed,
                 summary: None,
                 schema: None,
+                citations: Vec::new(),
             },
         )
         .await
