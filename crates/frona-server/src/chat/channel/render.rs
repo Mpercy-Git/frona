@@ -4,6 +4,7 @@
 
 use serde_json::Value;
 
+use crate::agent::task::models::Citation;
 use crate::chat::message::models::{Message, MessageEvent};
 
 /// Top-level object is "complex" when any of its values is itself an object
@@ -13,14 +14,33 @@ use crate::chat::message::models::{Message, MessageEvent};
 const COMPLEX_RENDER_KEY: &str = "summary";
 
 pub fn render_message_body(msg: &Message) -> String {
-    let Some(MessageEvent::TaskCompletion { schema: Some(schema), .. }) = &msg.event else {
+    let Some(MessageEvent::TaskCompletion { schema, citations, .. }) = &msg.event else {
         return msg.content.clone();
     };
-    let parsed: Value = match serde_json::from_str(&msg.content) {
-        Ok(v) => v,
-        Err(_) => return msg.content.clone(),
+    let body = match schema {
+        Some(schema) => {
+            let parsed: Value = match serde_json::from_str(&msg.content) {
+                Ok(v) => v,
+                Err(_) => return msg.content.clone(),
+            };
+            render_result_markdown(schema, &parsed).unwrap_or_else(|| msg.content.clone())
+        }
+        None => msg.content.clone(),
     };
-    render_result_markdown(schema, &parsed).unwrap_or_else(|| msg.content.clone())
+    append_citations(body, citations)
+}
+
+/// Appends a "Sources" markdown list. No-op when there's nothing rendered to
+/// attach sources to (e.g. a suppressed/empty completion body).
+fn append_citations(body: String, citations: &[Citation]) -> String {
+    if body.is_empty() || citations.is_empty() {
+        return body;
+    }
+    let lines: Vec<String> = citations
+        .iter()
+        .map(|c| format!("- [{}]({})", c.title.as_deref().unwrap_or(&c.url), c.url))
+        .collect();
+    format!("{body}\n\n**Sources**\n{}", lines.join("\n"))
 }
 
 /// Returns `None` for null / empty obj / empty array — i.e. no delivery.
@@ -147,6 +167,14 @@ mod tests {
     use serde_json::json;
 
     fn task_completion(content: &str, schema: Option<Value>) -> Message {
+        task_completion_with_citations(content, schema, Vec::new())
+    }
+
+    fn task_completion_with_citations(
+        content: &str,
+        schema: Option<Value>,
+        citations: Vec<Citation>,
+    ) -> Message {
         let mut msg = Message::builder("c1", MessageRole::TaskCompletion, content.to_string()).build();
         msg.event = Some(MessageEvent::TaskCompletion {
             task_id: "t1".into(),
@@ -154,6 +182,7 @@ mod tests {
             status: TaskStatus::Completed,
             summary: Some(content.to_string()),
             schema,
+            citations,
         });
         msg
     }
@@ -191,6 +220,40 @@ mod tests {
         let schema = json!({"type": "object"});
         let msg = task_completion("not json", Some(schema));
         assert_eq!(render_message_body(&msg), "not json");
+    }
+
+    #[test]
+    fn task_completion_appends_sources_section() {
+        let msg = task_completion_with_citations(
+            "raw text",
+            None,
+            vec![
+                Citation { title: Some("Rust Programming".into()), url: "https://rust-lang.org".into() },
+                Citation { title: None, url: "https://doc.rust-lang.org/book/".into() },
+            ],
+        );
+        assert_eq!(
+            render_message_body(&msg),
+            "raw text\n\n**Sources**\n\
+             - [Rust Programming](https://rust-lang.org)\n\
+             - [https://doc.rust-lang.org/book/](https://doc.rust-lang.org/book/)"
+        );
+    }
+
+    #[test]
+    fn task_completion_without_citations_has_no_sources_section() {
+        let msg = task_completion("raw text", None);
+        assert_eq!(render_message_body(&msg), "raw text");
+    }
+
+    #[test]
+    fn task_completion_empty_body_does_not_attach_sources() {
+        let msg = task_completion_with_citations(
+            "",
+            None,
+            vec![Citation { title: None, url: "https://example.com".into() }],
+        );
+        assert_eq!(render_message_body(&msg), "");
     }
 
     #[test]

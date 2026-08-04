@@ -65,6 +65,10 @@ pub enum MessageEvent {
         /// JSON) to format the result for humans.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         schema: Option<serde_json::Value>,
+        /// Websites consulted (`web_search`/`web_fetch`) while working the
+        /// task, derived from tool-call history rather than model prose.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        citations: Vec<crate::agent::task::models::Citation>,
     },
     TaskMatch {
         task_id: String,

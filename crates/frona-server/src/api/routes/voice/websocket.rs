@@ -381,6 +381,7 @@ async fn handle_voice_socket(
                 crate::agent::task::executor::TaskLifecycleEvent::Completion {
                     status: crate::agent::task::models::TaskStatus::Completed,
                     summary: Some(summary),
+                    citations: Vec::new(),
                 },
                 vec![],
             )

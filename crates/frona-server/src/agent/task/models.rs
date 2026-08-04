@@ -3,6 +3,16 @@ use crate::Entity;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
+/// A website consulted (`web_search`/`web_fetch`) while working a task,
+/// surfaced alongside the task's completion summary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
+pub struct Citation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub url: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[serde(rename_all = "lowercase")]
 #[surreal(crate = "surrealdb::types", lowercase)]
