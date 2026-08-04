@@ -84,17 +84,22 @@ pub struct Channel {
     pub config: BTreeMap<String, String>,
     #[serde(default)]
     pub dispatch_mode: DispatchMode,
+    /// Observed connection state, written **only** by the supervisor.
     pub status: ChannelStatus,
+    /// Operator intent (should this channel run), written **only** by the service/API.
+    #[serde(default)]
+    pub enabled: bool,
     #[serde(default)]
     pub error_message: Option<String>,
     #[serde(default)]
     pub last_started_at: Option<DateTime<Utc>>,
+    /// Pairing overlay lives in `user_address.pairing_code`; owned by the pairing
+    /// subsystem, never touched by the connection lifecycle.
     #[serde(default)]
     pub user_address: Option<UserAddress>,
+    /// Device-link (QR) overlay; written by the supervisor via `SetupReady`/`Linked`.
     #[serde(default)]
     pub setup: Option<SetupConfig>,
-    #[serde(default)]
-    pub retry: Option<crate::core::config::RetryConfig>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(skip_deserializing, default, skip_serializing_if = "Option::is_none")]
@@ -108,9 +113,10 @@ pub enum ChannelStatus {
     Disconnected,
     Connecting,
     Connected,
+    /// Transient failure; the supervisor is backing off and will retry.
+    Reconnecting,
+    /// Terminal failure; awaits operator action (▶ retry / fix config).
     Failed,
-    Setup,
-    Pairing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
@@ -155,8 +161,6 @@ pub struct CreateChannelRequest {
     pub credentials: Vec<CredentialBinding>,
     #[serde(default)]
     pub dispatch_mode: DispatchMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry: Option<crate::core::config::RetryConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -189,23 +193,26 @@ pub struct ChannelCtx {
     pub space: Space,
     pub channel: Channel,
     pub emit: tokio::sync::mpsc::Sender<ExternalMessage>,
-    pub channel_manager: std::sync::Arc<super::ChannelManager>,
-    pub webhook_url: String,
-    pub storage_service: crate::storage::StorageService,
-    pub user_service: crate::auth::UserService,
+    pub hitl: std::sync::Arc<super::hitl::HitlDeliveryService>,
+    pub outbound: std::sync::Arc<super::outbound::OutboundDeliveryService>,
     pub chat_service: crate::chat::service::ChatService,
+    pub user_service: crate::auth::UserService,
+    pub storage_service: crate::storage::StorageService,
+    pub share_service: crate::credential::share::service::ShareService,
+    pub webhook_url: String,
     pub data_dir: std::path::PathBuf,
     /// External-or-local base URL used to build canonical `/api/files/...`
     /// URLs for button channels (TG/Discord/Slack/WA Cloud). Inline channels
     /// (SMS/Signal/WA User) get full `/s/{id}` URLs from `share_service`
     /// directly and do not touch this field.
     pub base_url: String,
-    /// Issues `/s/{id}` short links for inline channels (SMS/Signal/WA User).
-    pub share_service: crate::credential::share::service::ShareService,
-    /// TTL in seconds applied to `share_service.issue_file` calls.
+    /// TTL in seconds applied to `env.share_service.issue_file` calls.
     pub share_ttl_secs: u64,
     /// Adapters with long-running tasks MUST observe this — sole `stop_channel` signal.
     pub cancel: tokio_util::sync::CancellationToken,
+    /// Adapter → supervisor lifecycle signal stream (per-attempt, buffered,
+    /// non-blocking). Adapters report `connected`/`disconnected`/setup here.
+    pub signals: super::signal::ChannelSignalSink,
 }
 
 #[async_trait]
@@ -213,22 +220,6 @@ pub trait ChannelAdapter: Send + Sync {
     async fn on_connect(&self, ctx: &ChannelCtx) -> Result<(), AppError>;
 
     async fn on_disconnect(&self, ctx: &ChannelCtx) -> Result<(), AppError>;
-
-    /// Adapters overriding this MUST check persisted state — returning `Some`
-    /// for an already-paired channel causes duplicate sessions.
-    async fn on_setup_begin(
-        &self,
-        _ctx: &ChannelCtx,
-    ) -> Result<Option<SetupConfig>, super::ChannelError> {
-        Ok(None)
-    }
-
-    async fn on_setup_complete(
-        &self,
-        _ctx: &ChannelCtx,
-    ) -> Result<(), super::ChannelError> {
-        Ok(())
-    }
 
     async fn on_tool(
         &self,
@@ -454,12 +445,10 @@ mod tests {
         assert_eq!(v, "\"connecting\"");
         let v = serde_json::to_string(&ChannelStatus::Connected).unwrap();
         assert_eq!(v, "\"connected\"");
+        let v = serde_json::to_string(&ChannelStatus::Reconnecting).unwrap();
+        assert_eq!(v, "\"reconnecting\"");
         let v = serde_json::to_string(&ChannelStatus::Failed).unwrap();
         assert_eq!(v, "\"failed\"");
-        let v = serde_json::to_string(&ChannelStatus::Setup).unwrap();
-        assert_eq!(v, "\"setup\"");
-        let v = serde_json::to_string(&ChannelStatus::Pairing).unwrap();
-        assert_eq!(v, "\"pairing\"");
     }
 
 

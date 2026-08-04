@@ -14,8 +14,11 @@ import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/components/ui/code-block";
 import { agentDisplayName } from "@/lib/types";
 import type { Attachment } from "@/lib/types";
+import { MediaAttachment } from "@/components/preview/media-attachment";
+import { mediaKind } from "@/lib/media-utils";
 import { DefaultToolCallUI } from "./tool-uis/default-tool-call-ui";
 import { ToolTimelineProvider } from "./tool-uis/tool-timeline-context";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { ArrowDownTrayIcon, XMarkIcon, ClipboardDocumentListIcon, SparklesIcon } from "@heroicons/react/24/outline";
 import { useRouter } from "next/navigation";
 import * as Tooltip from "@radix-ui/react-tooltip";
@@ -232,6 +235,7 @@ function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onC
 function AttachmentItem({ attachment }: { attachment: Attachment }) {
   const url = attachment.url;
   const isImage = attachment.content_type.startsWith("image/");
+  const media = mediaKind(attachment.content_type, attachment.filename);
   const canPreview = isPreviewable(attachment.content_type);
   const [showPreview, setShowPreview] = useState(false);
 
@@ -247,6 +251,10 @@ function AttachmentItem({ attachment }: { attachment: Attachment }) {
         />
       </a>
     );
+  }
+
+  if (media) {
+    return <MediaAttachment url={url} filename={attachment.filename} kind={media} />;
   }
 
   return (
@@ -385,5 +393,19 @@ function SmoothMarkdownText() {
 
   if (!text && isRunning) return <StreamingIndicator />;
   if (!text) return null;
-  return <span className="w-full"><MarkdownText smooth /></span>;
+  // Streaming delivers partial markdown (unterminated code fences, half-written
+  // tables) that can throw in the renderer. Isolate it and fall back to plain
+  // text; resetKeys retries as more tokens land, so it self-heals — a single
+  // bad frame never takes down the whole conversation.
+  return (
+    <span className="w-full">
+      <ErrorBoundary
+        label="message-markdown"
+        resetKeys={[text]}
+        fallback={() => <span className="whitespace-pre-wrap">{text}</span>}
+      >
+        <MarkdownText smooth />
+      </ErrorBoundary>
+    </span>
+  );
 }

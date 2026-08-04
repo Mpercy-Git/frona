@@ -3,7 +3,6 @@ use serde_json::Value;
 use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::task::service::TaskService;
-use crate::chat::broadcast::BroadcastService;
 use crate::chat::models::{Chat, CreateChatRequest};
 use crate::chat::service::ChatService;
 use crate::core::error::AppError;
@@ -18,7 +17,6 @@ use super::{InferenceContext, ToolOutput};
 pub struct SendMessageTool {
     chat_service: ChatService,
     notification_service: NotificationService,
-    broadcast_service: BroadcastService,
     agent_service: AgentService,
     task_service: TaskService,
     prompts: PromptLoader,
@@ -28,15 +26,13 @@ impl SendMessageTool {
     pub fn new(
         chat_service: ChatService,
         notification_service: NotificationService,
-        broadcast_service: BroadcastService,
-        agent_service: AgentService,
+            agent_service: AgentService,
         task_service: TaskService,
         prompts: PromptLoader,
     ) -> Self {
         Self {
             chat_service,
             notification_service,
-            broadcast_service,
             agent_service,
             task_service,
             prompts,

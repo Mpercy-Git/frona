@@ -4,6 +4,8 @@ import { useState } from "react";
 import { makeAssistantToolUI, useMessage } from "@assistant-ui/react";
 import { ArrowDownTrayIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { FilePreviewContent, canPreviewFile, languageFromFilename } from "@/components/preview/file-preview-content";
+import { MediaAttachment } from "@/components/preview/media-attachment";
+import { mediaKind } from "@/lib/media-utils";
 import type { Attachment } from "@/lib/types";
 
 function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onClose: () => void }) {
@@ -61,6 +63,7 @@ function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onC
 function AttachmentItem({ attachment }: { attachment: Attachment }) {
   const url = attachment.url;
   const isImage = attachment.content_type.startsWith("image/");
+  const media = mediaKind(attachment.content_type, attachment.filename);
   const canPreview = canPreviewFile(attachment.content_type, attachment.filename);
   const [showPreview, setShowPreview] = useState(false);
 
@@ -72,6 +75,10 @@ function AttachmentItem({ attachment }: { attachment: Attachment }) {
         <img src={url} alt={attachment.filename} className="max-w-xs max-h-48 rounded-md border border-border" />
       </a>
     );
+  }
+
+  if (media) {
+    return <MediaAttachment url={url} filename={attachment.filename} kind={media} />;
   }
 
   if (canPreview) {

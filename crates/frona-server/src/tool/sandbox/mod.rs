@@ -190,12 +190,17 @@ impl SandboxManager {
     ) -> Result<Sandbox, AppError> {
         let agent_id = &ctx.agent.id;
 
+        // Definition/execution-scoped lookups resolve under the agent OWNER
+        // (`ctx.agent.user_id` / `ctx.agent_owner_handle`), so a shared agent
+        // runs with its owner's sandbox policy, skills, and workspace even when
+        // a different user drives it. Owned-agent runs are unaffected (owner ==
+        // runner). The ephemeral token below stays runner-scoped on purpose.
         let policy = self
             .policy_service
             .evaluate_sandbox_policy(
                 crate::policy::service::SandboxPrincipalRef::agent(
-                    &ctx.user.id,
-                    &ctx.user.handle,
+                    &ctx.agent.user_id,
+                    &ctx.agent_owner_handle,
                     &ctx.agent.handle,
                 ),
                 true,
@@ -204,7 +209,7 @@ impl SandboxManager {
 
         let skill_read_paths: Vec<String> = self
             .skill_service
-            .list(&ctx.user.handle, &ctx.agent.handle, ctx.agent.skills.as_deref())
+            .list(&ctx.agent_owner_handle, &ctx.agent.handle, ctx.agent.skills.as_deref())
             .await
             .into_iter()
             .map(|s| s.path)
@@ -212,7 +217,7 @@ impl SandboxManager {
 
         let workspace = self
             .storage_service
-            .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
+            .agent_workspace_path(&ctx.agent_owner_handle, &ctx.agent.handle);
 
         let mut sandbox = self
             .factory
@@ -1134,7 +1139,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
-        let outside = tmp.path().join("outside.txt"); // sibling of workspace
+        // NOT a sibling under the OS temp dir: `/tmp` is a hardcoded R+W dir, so
+        // a sibling there is legitimately writable. Use a system path that is
+        // outside the workspace and every read-write dir.
+        let outside = std::path::PathBuf::from("/usr/frona_outside_test.txt");
 
         let mut ws = temp_sandbox(&format!("outside_{}", uuid::Uuid::new_v4()));
         ws.path = workspace;

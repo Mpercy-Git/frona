@@ -69,6 +69,10 @@ pub struct UpdateCheckResult {
     pub latest_sha: String,
 }
 
+/// Lock-file `source` for skills authored in the UI rather than installed from a
+/// repo. These have no upstream to diff against, so `check_updates` skips them.
+pub const MANUAL_SOURCE: &str = "manual";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SkillsLock {
     version: u32,
@@ -461,6 +465,77 @@ impl SkillService {
         Ok(items)
     }
 
+    /// Write a hand-authored SKILL.md straight into a skill bucket, no repo involved.
+    ///
+    /// The frontmatter is parsed with the same strict parser used for repo installs, so
+    /// a malformed file is rejected here with the reason rather than half-installed and
+    /// silently ignored at resolve time. The validated name doubles as the directory
+    /// name — `SkillName` only permits `[a-z0-9-]`, so it can't escape the bucket.
+    pub async fn add_manual_for_user(&self, user_handle: &crate::core::Handle, content: &str) -> Result<SkillListItem, AppError> {
+        let dir = self.storage.user_skills_path(user_handle);
+        self.add_manual_to_dir(&dir, content, SkillScope::User).await
+    }
+
+    pub async fn add_manual_shared(&self, content: &str) -> Result<SkillListItem, AppError> {
+        self.add_manual_to_dir(&self.installed_dir.clone(), content, SkillScope::Shared).await
+    }
+
+    pub async fn add_manual_for_agent(&self, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle, content: &str) -> Result<SkillListItem, AppError> {
+        let (name, description) = parse_manual_skill(content)?;
+        let ws = self.storage.agent_workspace(user_handle, agent_handle);
+        ws.write(&format!("skills/{name}/SKILL.md"), content)?;
+        self.invalidate_caches().await;
+
+        Ok(SkillListItem {
+            name,
+            description,
+            source: Some(MANUAL_SOURCE.to_string()),
+            installed_at: Some(Utc::now()),
+            scope: SkillScope::Agent,
+        })
+    }
+
+    async fn add_manual_to_dir(&self, dir: &Path, content: &str, scope: SkillScope) -> Result<SkillListItem, AppError> {
+        let (name, description) = parse_manual_skill(content)?;
+        let mut lock = self.read_lock_at(dir);
+
+        // Re-saving a manual skill is an edit; anything else on that name is someone
+        // else's install and must not be clobbered.
+        let skill_dir = dir.join(&name);
+        let is_manual = lock.skills.get(&name).is_some_and(|e| e.source == MANUAL_SOURCE);
+        if skill_dir.exists() && !is_manual {
+            let from = lock.skills.get(&name).map_or_else(
+                || " already exists".to_string(),
+                |e| format!(" is already installed from {}", e.source),
+            );
+            return Err(AppError::Validation(format!(
+                "A skill named '{name}'{from}. Uninstall it before adding a manual skill with the same name."
+            )));
+        }
+
+        std::fs::create_dir_all(&skill_dir)
+            .map_err(|e| AppError::Internal(format!("Failed to create skill directory: {e}")))?;
+        std::fs::write(skill_dir.join("SKILL.md"), content)
+            .map_err(|e| AppError::Internal(format!("Failed to write SKILL.md: {e}")))?;
+
+        let now = Utc::now();
+        lock.skills.insert(name.clone(), SkillLockEntry {
+            source: MANUAL_SOURCE.to_string(),
+            sha: String::new(),
+            installed_at: now,
+        });
+        self.write_lock_at(dir, &lock)?;
+        self.invalidate_caches().await;
+
+        Ok(SkillListItem {
+            name,
+            description,
+            source: Some(MANUAL_SOURCE.to_string()),
+            installed_at: Some(now),
+            scope,
+        })
+    }
+
     pub fn list_installed(&self) -> Result<Vec<SkillListItem>, AppError> {
         self.list_installed_in(&self.installed_dir, SkillScope::Shared)
     }
@@ -554,6 +629,9 @@ impl SkillService {
 
         let mut repos: HashMap<String, Vec<(String, String)>> = HashMap::new();
         for (name, entry) in &lock.skills {
+            if entry.source == MANUAL_SOURCE {
+                continue;
+            }
             repos.entry(entry.source.clone())
                 .or_default()
                 .push((name.clone(), entry.sha.clone()));
@@ -631,6 +709,16 @@ impl SkillService {
 
         Ok(())
     }
+}
+
+/// Validates a hand-written SKILL.md and returns its `(name, description)`.
+fn parse_manual_skill(content: &str) -> Result<(String, String), AppError> {
+    let parsed = agent_skills::Skill::parse(content)
+        .map_err(|e| AppError::Validation(format!("Invalid SKILL.md: {e}")))?;
+    Ok((
+        parsed.name().as_str().to_string(),
+        parsed.description().as_str().to_string(),
+    ))
 }
 
 fn skills_hash(skills: Option<&[String]>) -> u64 {
@@ -757,6 +845,108 @@ mod tests {
         );
         let result = service.uninstall("nonexistent").await;
         assert!(result.is_err());
+    }
+
+    fn test_service(dir: &Path) -> SkillService {
+        let storage = StorageService::new(&crate::core::config::Config::default());
+        let resolver = SkillResolver::new("/tmp/test_config", storage.clone());
+        SkillService::new(
+            SkillRegistryClient::default(),
+            resolver,
+            storage,
+            dir,
+            &CacheConfig::default(),
+        )
+    }
+
+    const MANUAL_SKILL: &str = "---\nname: my-skill\ndescription: Does a thing.\n---\nBody text\n";
+
+    #[tokio::test]
+    async fn test_add_manual_writes_skill_and_lock_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+
+        let item = service.add_manual_shared(MANUAL_SKILL).await.unwrap();
+
+        assert_eq!(item.name, "my-skill");
+        assert_eq!(item.description, "Does a thing.");
+        assert_eq!(item.source.as_deref(), Some(MANUAL_SOURCE));
+
+        let written = std::fs::read_to_string(tmp.path().join("my-skill/SKILL.md")).unwrap();
+        assert_eq!(written, MANUAL_SKILL);
+        assert_eq!(service.read_lock().skills["my-skill"].source, MANUAL_SOURCE);
+    }
+
+    #[tokio::test]
+    async fn test_add_manual_rejects_invalid_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+
+        // `tags` as a YAML sequence — Metadata is HashMap<String, String>.
+        let bad = "---\nname: my-skill\ndescription: Does a thing.\nmetadata:\n  tags: [a, b]\n---\nBody\n";
+        let err = service.add_manual_shared(bad).await.unwrap_err();
+
+        assert!(matches!(err, AppError::Validation(_)), "expected validation error, got {err:?}");
+        assert!(err.to_string().contains("Invalid SKILL.md"), "unhelpful message: {err}");
+        assert!(!tmp.path().join("my-skill").exists(), "nothing should be written on a parse failure");
+    }
+
+    #[tokio::test]
+    async fn test_add_manual_missing_required_field_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+
+        let err = service.add_manual_shared("---\nname: my-skill\n---\nNo description\n").await.unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn test_add_manual_overwrites_previous_manual_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+
+        service.add_manual_shared(MANUAL_SKILL).await.unwrap();
+        let edited = "---\nname: my-skill\ndescription: Does a different thing.\n---\nNew body\n";
+        let item = service.add_manual_shared(edited).await.unwrap();
+
+        assert_eq!(item.description, "Does a different thing.");
+        let written = std::fs::read_to_string(tmp.path().join("my-skill/SKILL.md")).unwrap();
+        assert_eq!(written, edited);
+    }
+
+    #[tokio::test]
+    async fn test_add_manual_refuses_to_clobber_repo_installed_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+
+        let skill_dir = tmp.path().join("my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: my-skill\ndescription: From a repo.\n---\n").unwrap();
+        let mut lock = SkillsLock::default();
+        lock.skills.insert("my-skill".to_string(), SkillLockEntry {
+            source: "owner/repo".to_string(),
+            sha: "abc".to_string(),
+            installed_at: Utc::now(),
+        });
+        service.write_lock(&lock).unwrap();
+
+        let err = service.add_manual_shared(MANUAL_SKILL).await.unwrap_err();
+        assert!(err.to_string().contains("owner/repo"), "error should name the conflicting source: {err}");
+
+        let untouched = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(untouched.contains("From a repo."), "repo skill must not be overwritten");
+    }
+
+    #[tokio::test]
+    async fn test_manual_skills_are_skipped_by_update_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+
+        service.add_manual_shared(MANUAL_SKILL).await.unwrap();
+
+        // No network call is made for a manual entry, so this resolves without a registry.
+        let results = service.check_updates().await.unwrap();
+        assert!(results.is_empty(), "manual skills have no upstream to check");
     }
 
     #[test]

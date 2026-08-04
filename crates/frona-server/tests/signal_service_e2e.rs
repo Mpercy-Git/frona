@@ -92,6 +92,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.prompts.clone(),
         state.broadcast_service.clone(),
             state.presign_service.clone(),
+            state.notification_service.clone(),
             state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
@@ -137,6 +138,7 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })
@@ -251,7 +253,7 @@ fn make_candidate(
         last_started_at: None,
         user_address: None,
         setup: None,
-        retry: None,
+        enabled: true,
         created_at: now,
         updated_at: now,
         webhook_url: None,
@@ -397,6 +399,7 @@ async fn build_state_with_dyn(
         state.prompts.clone(),
         state.broadcast_service.clone(),
             state.presign_service.clone(),
+            state.notification_service.clone(),
             state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
@@ -467,7 +470,7 @@ async fn signal_extract_never_enters_tool_loop_or_streaming() {
         last_started_at: None,
         user_address: None,
         setup: None,
-        retry: None,
+        enabled: true,
         created_at: now,
         updated_at: now,
         webhook_url: None,

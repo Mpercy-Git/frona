@@ -24,6 +24,7 @@ function skipResponse(te: ToolCall): HitlResponse {
     case "App":
       return { type: "Approval", data: false };
     case "Credential":
+    case "Credentials":
       return { type: "Vault", data: { type: "Denied" } };
     case "Question":
     case "Takeover":
@@ -37,6 +38,7 @@ function toolIcon(te: ToolCall) {
     case "Question":
       return <QuestionMarkCircleIcon className="h-5 w-5 text-accent" />;
     case "Credential":
+    case "Credentials":
       return <KeyIcon className="h-5 w-5 text-warning" />;
     case "App":
       return <ServerIcon className="h-5 w-5 text-success" />;
@@ -50,6 +52,8 @@ function toolTitle(te: ToolCall): string {
     case "Question":
       return "Question";
     case "Credential":
+      return "Credential Request";
+    case "Credentials":
       return "Credential Request";
     case "App":
       return "App Deployment";
@@ -216,13 +220,18 @@ export function ExternalToolDrawer({ wizard }: { wizard: ToolWizardState }) {
           </div>
         </div>
 
-        {/* Tool content */}
-        <ToolContentDispatch
-          te={currentTool}
-          chatId={chatId ?? ""}
-          onResolve={handleAnswer}
-          selectedAnswer={currentAnswer?.displayText}
-        />
+        {/* Tool content — scrolls internally on short viewports so the lower
+            controls (e.g. Approve/Deny) stay reachable and don't overflow the
+            sticky footer. The 1px inset padding keeps input focus rings from
+            being clipped by overflow-hidden. */}
+        <div className="max-h-[50vh] overflow-y-auto overscroll-contain -mx-1 px-1 py-0.5">
+          <ToolContentDispatch
+            te={currentTool}
+            chatId={chatId ?? ""}
+            onResolve={handleAnswer}
+            selectedAnswer={currentAnswer?.displayText}
+          />
+        </div>
 
       </div>
     </div>

@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api::error::ApiError;
 use crate::api::middleware::auth::AuthUser;
@@ -17,6 +17,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/voice/allowlist/{phone}",
             axum::routing::delete(remove_from_allowlist),
+        )
+        .route(
+            "/api/voice/inbound-settings",
+            get(get_inbound_settings).put(set_inbound_settings),
         )
 }
 
@@ -64,19 +68,71 @@ async fn remove_from_allowlist(
     Ok(Json(entries))
 }
 
+// ---------------------------------------------------------------------------
+// Per-user inbound answering settings (agent + welcome greeting)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct InboundSettingsResponse {
+    /// The user's chosen inbound agent (ID, handle, or name), or `null` when
+    /// they haven't set one (calls fall back to their `receptionist`).
+    agent: Option<String>,
+    /// The user's inbound welcome greeting, or `null` when unset (the
+    /// server-level default greeting applies).
+    greeting: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct InboundSettingsRequest {
+    /// Agent ID, handle, or name. Blank clears the override.
+    #[serde(default)]
+    agent: String,
+    /// Welcome greeting spoken when a call connects. Blank clears it.
+    #[serde(default)]
+    greeting: String,
+}
+
+async fn read_inbound_settings(state: &AppState, user_id: &str) -> InboundSettingsResponse {
+    InboundSettingsResponse {
+        agent: state.get_inbound_agent(user_id).await,
+        greeting: state.get_inbound_greeting(user_id).await,
+    }
+}
+
+/// `GET /api/voice/inbound-settings` — return the authenticated user's inbound
+/// answering agent and welcome greeting (each `null` if unset).
+async fn get_inbound_settings(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<InboundSettingsResponse>, ApiError> {
+    Ok(Json(read_inbound_settings(&state, &auth.user_id).await))
+}
+
+/// `PUT /api/voice/inbound-settings` — set (or clear) the authenticated user's
+/// inbound answering agent and welcome greeting. Blank values clear each.
+async fn set_inbound_settings(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<InboundSettingsRequest>,
+) -> Result<Json<InboundSettingsResponse>, ApiError> {
+    state.set_inbound_agent(&auth.user_id, &req.agent).await?;
+    state.set_inbound_greeting(&auth.user_id, &req.greeting).await?;
+    Ok(Json(read_inbound_settings(&state, &auth.user_id).await))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::tool::voice::normalize_phone;
 
     #[test]
     fn normalize_strips_formatting() {
-        assert_eq!(normalize_phone("+1 (555) 555-1234"), "+155****1234");
-        assert_eq!(normalize_phone("+44 20 7946 0958"), "+442****0958");
+        assert_eq!(normalize_phone("+1 (555) 555-1234"), "+15555551234");
+        assert_eq!(normalize_phone("+44 20 7946 0958"), "+442079460958");
     }
 
     #[test]
     fn normalize_preserves_plain_e164() {
-        assert_eq!(normalize_phone("+155****1234"), "+155****1234");
+        assert_eq!(normalize_phone("+15555551234"), "+15555551234");
     }
 
     #[test]
@@ -92,8 +148,8 @@ mod tests {
     #[test]
     fn normalize_00_prefix_uk() {
         // UK international dialling prefix "00" should produce same result as "+".
-        assert_eq!(normalize_phone("00442079460958"), "+442****0958");
-        assert_eq!(normalize_phone("0044 20 7946 0958"), "+442****0958");
+        assert_eq!(normalize_phone("00442079460958"), "+442079460958");
+        assert_eq!(normalize_phone("0044 20 7946 0958"), "+442079460958");
     }
 
     #[test]
@@ -107,6 +163,6 @@ mod tests {
 
     #[test]
     fn normalize_trims_whitespace() {
-        assert_eq!(normalize_phone("  +44 20 7946 0958  "), "+442****0958");
+        assert_eq!(normalize_phone("  +44 20 7946 0958  "), "+442079460958");
     }
 }

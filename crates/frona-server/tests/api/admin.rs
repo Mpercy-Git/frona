@@ -404,3 +404,237 @@ async fn list_groups_includes_seeded_admins() {
         .expect("admins group present");
     assert_eq!(admins["built_in"], true);
 }
+
+fn auth_put_json(uri: &str, token: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+async fn login_attempt(state: &AppState, identifier: &str, password: &str, from_ip: u8) -> StatusCode {
+    let app = build_app(state.clone());
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "identifier": identifier, "password": password }).to_string(),
+        ))
+        .unwrap();
+    with_connect_info_from(&mut req, from_ip);
+    app.oneshot(req).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn admin_can_reset_a_user_password() {
+    let (state, _tmp, admin_token, _) = setup_admin().await;
+    let (_, member_id) = register_member(&state, "forgot").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_put_json(
+            &format!("/api/admin/users/{member_id}/password"),
+            &admin_token,
+            serde_json::json!({ "password": "issuedbyadmin" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        login_attempt(&state, "forgot@example.com", "password123", 1).await,
+        StatusCode::UNAUTHORIZED,
+        "the old password must stop working"
+    );
+    assert_eq!(
+        login_attempt(&state, "forgot@example.com", "issuedbyadmin", 2).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn admin_password_reset_revokes_target_sessions() {
+    let (state, _tmp, admin_token, _) = setup_admin().await;
+    let (member_token, member_id) = register_member(&state, "kicked").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_put_json(
+            &format!("/api/admin/users/{member_id}/password"),
+            &admin_token,
+            serde_json::json!({ "password": "issuedbyadmin" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/auth/me")
+                .header("authorization", format!("Bearer {member_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_password_reset_clears_a_lockout() {
+    let (state, _tmp, admin_token, _) = setup_admin().await;
+    let (_, member_id) = register_member(&state, "stuck").await;
+
+    for i in 0..5 {
+        login_attempt(&state, "stuck@example.com", "wrong", i + 1).await;
+    }
+    assert_eq!(
+        login_attempt(&state, "stuck@example.com", "password123", 6).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_put_json(
+            &format!("/api/admin/users/{member_id}/password"),
+            &admin_token,
+            serde_json::json!({ "password": "issuedbyadmin" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        login_attempt(&state, "stuck@example.com", "issuedbyadmin", 7).await,
+        StatusCode::OK,
+        "resetting the password must also lift the lockout"
+    );
+}
+
+#[tokio::test]
+async fn admin_can_unlock_without_touching_the_password() {
+    let (state, _tmp, admin_token, _) = setup_admin().await;
+    let (_, member_id) = register_member(&state, "locked").await;
+
+    for i in 0..5 {
+        login_attempt(&state, "locked@example.com", "wrong", i + 1).await;
+    }
+    assert_eq!(
+        login_attempt(&state, "locked@example.com", "password123", 6).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            &format!("/api/admin/users/{member_id}/unlock"),
+            &admin_token,
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        login_attempt(&state, "locked@example.com", "password123", 7).await,
+        StatusCode::OK,
+        "the original password must still be the right one"
+    );
+}
+
+#[tokio::test]
+async fn unlock_by_handle_clears_the_handle_bucket() {
+    let (state, _tmp, admin_token, _) = setup_admin().await;
+    let (_, member_id) = register_member(&state, "handly").await;
+
+    // Lock via the handle rather than the email address.
+    for i in 0..5 {
+        login_attempt(&state, "handly", "wrong", i + 1).await;
+    }
+    assert_eq!(
+        login_attempt(&state, "handly", "password123", 6).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            &format!("/api/admin/users/{member_id}/unlock"),
+            &admin_token,
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        login_attempt(&state, "handly", "password123", 7).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn non_admin_cannot_reset_another_users_password() {
+    let (state, _tmp, _admin_token, _) = setup_admin().await;
+    let (member_token, _) = register_member(&state, "meddler").await;
+    let (_, victim_id) = register_member(&state, "victim").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_put_json(
+            &format!("/api/admin/users/{victim_id}/password"),
+            &member_token,
+            serde_json::json!({ "password": "takenover" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    assert_eq!(
+        login_attempt(&state, "victim@example.com", "password123", 1).await,
+        StatusCode::OK,
+        "the victim's password must be untouched"
+    );
+}
+
+#[tokio::test]
+async fn non_admin_cannot_unlock_another_user() {
+    let (state, _tmp, _admin_token, _) = setup_admin().await;
+    let (member_token, _) = register_member(&state, "nosy").await;
+    let (_, other_id) = register_member(&state, "other").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            &format!("/api/admin/users/{other_id}/unlock"),
+            &member_token,
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admin_password_reset_rejects_a_short_password() {
+    let (state, _tmp, admin_token, _) = setup_admin().await;
+    let (_, member_id) = register_member(&state, "tooshort").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_put_json(
+            &format!("/api/admin/users/{member_id}/password"),
+            &admin_token,
+            serde_json::json!({ "password": "abc" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

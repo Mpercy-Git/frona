@@ -84,6 +84,7 @@ async fn seed_user_and_agent(state: &AppState) {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: now,
             updated_at: now,
         })
@@ -299,6 +300,7 @@ async fn lifecycle_complete_event_detected() {
                 status: TaskStatus::Completed,
                 summary: Some("Research findings here".to_string()),
                 schema: None,
+                citations: Vec::new(),
             },
         )
         .await
@@ -401,6 +403,7 @@ async fn deliver_to_source_skips_direct_tasks() {
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
                 summary: Some("result".to_string()),
+                citations: Vec::new(),
             },
             vec![],
         )
@@ -439,6 +442,7 @@ async fn deliver_to_source_sends_to_delegation() {
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
                 summary: Some("All done".to_string()),
+                citations: Vec::new(),
             },
             vec![],
         )
@@ -482,6 +486,7 @@ async fn deliver_to_source_sends_to_direct_with_source_chat() {
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
                 summary: Some("Self-task result".to_string()),
+                citations: Vec::new(),
             },
             vec![],
         )
@@ -586,6 +591,7 @@ async fn deliver_to_source_signal_only_sends_empty_content() {
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
                 summary: None,
+                citations: Vec::new(),
             },
             vec![],
         )
@@ -636,6 +642,7 @@ async fn deliver_to_source_saves_message_to_user_chat() {
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
                 summary: Some("Done".to_string()),
+                citations: Vec::new(),
             },
             vec![],
         )
@@ -689,6 +696,7 @@ async fn lifecycle_event_saved_after_assistant_message() {
                 status: TaskStatus::Completed,
                 summary: None,
                 schema: None,
+                citations: Vec::new(),
             },
         )
         .await
@@ -771,6 +779,7 @@ async fn deliver_to_source_cron_run_posts_regardless_of_process_result() {
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
                 summary: Some("Result body".to_string()),
+                citations: Vec::new(),
             },
             vec![],
         )
@@ -817,6 +826,7 @@ async fn deliver_to_source_cron_run_posts_when_process_result_true() {
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
                 summary: Some("Result body".to_string()),
+                citations: Vec::new(),
             },
             vec![],
         )
@@ -851,6 +861,7 @@ async fn deliver_to_source_cron_run_skips_when_no_source_chat() {
             frona::agent::task::executor::TaskLifecycleEvent::Completion {
                 status: TaskStatus::Completed,
                 summary: Some("Result body".to_string()),
+                citations: Vec::new(),
             },
             vec![],
         )

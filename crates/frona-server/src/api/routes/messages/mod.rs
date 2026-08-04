@@ -10,7 +10,7 @@ use futures::stream::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::chat::message::models::{MessageQuery, MessageResponse, PaginatedMessagesResponse, ResolveToolRequest, SendMessageRequest, UpdateMessageRequest};
-use crate::credential::presign::presign_response;
+use crate::credential::presign::presign_response_by_user_id;
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -73,13 +73,18 @@ async fn list_messages(
     Path(chat_id): Path<String>,
     Query(query): Query<MessageQuery>,
 ) -> Result<Json<PaginatedMessagesResponse>, ApiError> {
+    // Owner or shared-recipient may read; resolve the chat's owner up front
+    // since attachments must always be presigned under the *owner's*
+    // identity — a shared (non-owner) viewer has no access to the owner's
+    // files under their own account.
+    let (chat, _is_owner) = state.chat_service.get_accessible(&auth.user_id, &chat_id).await?;
     let mut result = state
         .chat_service
         .list_messages_paginated(&auth.user_id, &chat_id, query.before, query.after, query.limit)
         .await?;
 
     for msg in &mut result.messages {
-        presign_response(&state.presign_service, msg, &auth.user_id, &auth.handle).await;
+        presign_response_by_user_id(&state.presign_service, msg, &chat.user_id).await;
     }
 
     Ok(Json(result))

@@ -88,6 +88,7 @@ async fn setup_with_extra_tools(
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         })
@@ -657,6 +658,12 @@ mod reconcile {
 
     use super::setup;
 
+    /// Build a `Handle` from a test string; `reconcile_agent_tools` now takes
+    /// the user and agent handles as `&Handle`.
+    fn h(s: &str) -> frona::core::Handle {
+        frona::core::Handle::try_new(s).unwrap()
+    }
+
     fn group(
         principal_id: &str,
         action: &str,
@@ -930,7 +937,7 @@ mod reconcile {
     async fn sync_agent_tools_emits_forbid_for_unselected() {
         let (_db, service) = setup().await;
         let result = service
-            .reconcile_agent_tools("user-1", "agent-1", &["web_search".into()])
+            .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-1"), &["web_search".into()])
             .await
             .unwrap();
         // browser, voice → all-deny → 2 ToolGroup forbids
@@ -944,7 +951,7 @@ mod reconcile {
             "web_search".into(),
         ];
         let result2 = service
-            .reconcile_agent_tools("user-1", "agent-1", &all)
+            .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-1"), &all)
             .await
             .unwrap();
         assert_eq!(result2.deleted, 2, "the two ToolGroup forbids get cleared");
@@ -961,7 +968,7 @@ mod reconcile {
             super::setup_with_extra_tools(&[("agent_mgmt", "manage_agent", "agent")]).await;
 
         let r1 = service
-            .reconcile_agent_tools("user-1", "agent-x", &[])
+            .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-x"), &[])
             .await
             .unwrap();
         // browser, voice, search → 3 ToolGroup forbids (collapsed)
@@ -969,7 +976,7 @@ mod reconcile {
         assert_eq!(r1.created, 3, "three ToolGroup forbids; agent group already baseline-deny");
 
         let r2 = service
-            .reconcile_agent_tools("user-1", "agent-x", &["manage_agent".into()])
+            .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-x"), &["manage_agent".into()])
             .await
             .unwrap();
         // browser/voice/search forbids stay (still all-deny in their groups → collapse → forbid).
@@ -994,8 +1001,8 @@ mod reconcile {
         // Allow everything except the entire voice provider.
         service
             .reconcile_agent_tools(
-                "user-1",
-                "agent-z",
+                "user-1", &h("user-1"),
+                &h("agent-z"),
                 &["browser_navigate".into(), "web_search".into()],
             )
             .await
@@ -1017,7 +1024,7 @@ mod reconcile {
         let (_db, service) = setup().await;
         // Voice provider: make_voice_call selected, hangup_call not.
         service
-            .reconcile_agent_tools("user-1", "agent-m", &["make_voice_call".into()])
+            .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-m"), &["make_voice_call".into()])
             .await
             .unwrap();
         let policies = service.list_policies("user-1").await.unwrap();
@@ -1046,8 +1053,8 @@ mod reconcile {
         // mixed intent, falls back to per-tool forbid for hangup_call.
         let r1 = service
             .reconcile_agent_tools(
-                "user-1",
-                "agent-i",
+                "user-1", &h("user-1"),
+                &h("agent-i"),
                 &[
                     "browser_navigate".into(),
                     "web_search".into(),
@@ -1062,8 +1069,8 @@ mod reconcile {
         // per-tool) + 1 create (ToolGroup::voice).
         let r2 = service
             .reconcile_agent_tools(
-                "user-1",
-                "agent-i",
+                "user-1", &h("user-1"),
+                &h("agent-i"),
                 &["browser_navigate".into(), "web_search".into()],
             )
             .await
@@ -1087,10 +1094,10 @@ mod reconcile {
     async fn collapse_re_reconcile_is_noop() {
         let (_db, service) = setup().await;
         let selected = vec!["browser_navigate".into(), "web_search".into()];
-        let r1 = service.reconcile_agent_tools("user-1", "agent-r", &selected).await.unwrap();
+        let r1 = service.reconcile_agent_tools("user-1", &h("user-1"), &h("agent-r"), &selected).await.unwrap();
         assert_eq!(r1.created, 1, "voice ToolGroup forbid emitted");
 
-        let r2 = service.reconcile_agent_tools("user-1", "agent-r", &selected).await.unwrap();
+        let r2 = service.reconcile_agent_tools("user-1", &h("user-1"), &h("agent-r"), &selected).await.unwrap();
         assert_eq!(r2.created, 0, "no churn on re-reconcile");
         assert_eq!(r2.deleted, 0);
     }
@@ -1102,8 +1109,8 @@ mod reconcile {
         let (_db, service) = setup().await;
         service
             .reconcile_agent_tools(
-                "user-1",
-                "agent-s",
+                "user-1", &h("user-1"),
+                &h("agent-s"),
                 &["browser_navigate".into(), "web_search".into()],
             )
             .await
@@ -1112,8 +1119,8 @@ mod reconcile {
         // collapse breaks; emit per-tool forbid for hangup_call.
         let r = service
             .reconcile_agent_tools(
-                "user-1",
-                "agent-s",
+                "user-1", &h("user-1"),
+                &h("agent-s"),
                 &[
                     "browser_navigate".into(),
                     "web_search".into(),
@@ -1335,6 +1342,7 @@ fn test_user(id: &str, groups: Vec<&str>) -> UserModel {
         timezone: None,
         groups: groups.into_iter().map(String::from).collect(),
         deactivated_at: None,
+        phone: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     }
@@ -1530,6 +1538,7 @@ mod decision_cache {
                 timezone: None,
                 groups: Vec::new(),
                 deactivated_at: None,
+                phone: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             })

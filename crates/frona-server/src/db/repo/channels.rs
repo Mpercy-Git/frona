@@ -44,19 +44,15 @@ impl ChannelRepository for SurrealRepo<Channel> {
     }
 
     async fn find_active(&self) -> Result<Vec<Channel>, AppError> {
-        // Pairing handled by revert_orphaned_pairings.  Setup needs manual start.
+        // Intent-keyed: everything the operator enabled that isn't terminally
+        // failed. The supervisor rebuilds runtime status from here on boot/reconcile.
         let query = format!(
-            "{SELECT_CLAUSE} FROM channel \
-             WHERE status != $disconnected \
-               AND status != $pairing \
-               AND status != $setup"
+            "{SELECT_CLAUSE} FROM channel WHERE enabled = true AND status != $failed"
         );
         let mut result = self
             .db()
             .query(&query)
-            .bind(("disconnected", ChannelStatus::Disconnected))
-            .bind(("pairing", ChannelStatus::Pairing))
-            .bind(("setup", ChannelStatus::Setup))
+            .bind(("failed", ChannelStatus::Failed))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
         result
@@ -64,12 +60,13 @@ impl ChannelRepository for SurrealRepo<Channel> {
             .map_err(|e| AppError::Database(e.to_string()))
     }
 
-    async fn find_in_status(&self, status: ChannelStatus) -> Result<Vec<Channel>, AppError> {
-        let query = format!("{SELECT_CLAUSE} FROM channel WHERE status = $status");
+    async fn find_pairing_pending(&self) -> Result<Vec<Channel>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM channel WHERE user_address.pairing_code != NONE"
+        );
         let mut result = self
             .db()
             .query(&query)
-            .bind(("status", status))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
         result

@@ -653,6 +653,147 @@ async fn browse_path_traversal_returns_400() {
 }
 
 
+/// Writes `media.mp3` into a fresh user's files dir and returns the app, that
+/// user's token, and the TempDir the caller must keep alive. The bytes aren't
+/// real MP3 frames — nothing here decodes them, the Range plumbing is what's
+/// under test.
+async fn media_app(handle: &str, body: &[u8]) -> (Router, String, tempfile::TempDir) {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        handle,
+        &format!("{handle}@example.com"),
+        "password123",
+    )
+    .await;
+
+    let user_dir = tmp.path().join("users").join(handle).join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("media.mp3"), body).await.unwrap();
+
+    (build_app(state), token, tmp)
+}
+
+fn range_get(uri: &str, token: &str, range: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("range", range)
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn download_advertises_ranges_and_length() {
+    let (app, token, _tmp) = media_app("rangefull", b"0123456789").await;
+
+    let resp = app
+        .oneshot(auth_get("/api/files/user/rangefull/media.mp3", &token))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    // Without these two a browser won't offer a seekable timeline.
+    assert_eq!(resp.headers()["accept-ranges"], "bytes");
+    assert_eq!(resp.headers()["content-length"], "10");
+    // The extended codec table types .mp3 so the media element accepts it.
+    assert_eq!(resp.headers()["content-type"], "audio/mpeg");
+}
+
+#[tokio::test]
+async fn download_serves_requested_byte_range() {
+    let (app, token, _tmp) = media_app("rangepart", b"0123456789").await;
+
+    let resp = app
+        .oneshot(range_get(
+            "/api/files/user/rangepart/media.mp3",
+            &token,
+            "bytes=2-5",
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(resp.headers()["content-range"], "bytes 2-5/10");
+    assert_eq!(resp.headers()["content-length"], "4");
+
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(&bytes[..], b"2345");
+}
+
+#[tokio::test]
+async fn download_serves_open_ended_and_suffix_ranges() {
+    let (app, token, _tmp) = media_app("rangeopen", b"0123456789").await;
+
+    // "from byte 7 to the end" — how a seek forward is expressed.
+    let resp = app
+        .clone()
+        .oneshot(range_get(
+            "/api/files/user/rangeopen/media.mp3",
+            &token,
+            "bytes=7-",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(resp.headers()["content-range"], "bytes 7-9/10");
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(&bytes[..], b"789");
+
+    // "the last 3 bytes" — how players read a trailing metadata atom.
+    let resp = app
+        .oneshot(range_get(
+            "/api/files/user/rangeopen/media.mp3",
+            &token,
+            "bytes=-3",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(resp.headers()["content-range"], "bytes 7-9/10");
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(&bytes[..], b"789");
+}
+
+#[tokio::test]
+async fn download_rejects_range_past_end_with_416() {
+    let (app, token, _tmp) = media_app("rangebad", b"0123456789").await;
+
+    let resp = app
+        .oneshot(range_get(
+            "/api/files/user/rangebad/media.mp3",
+            &token,
+            "bytes=50-60",
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    // Tells the client the real size so it can retry correctly.
+    assert_eq!(resp.headers()["content-range"], "bytes */10");
+}
+
+#[tokio::test]
+async fn download_ignores_unsupported_range_forms() {
+    let (app, token, _tmp) = media_app("rangemulti", b"0123456789").await;
+
+    // Multi-range would need a multipart/byteranges body; serving the whole
+    // file is a valid response and keeps playback working.
+    let resp = app
+        .oneshot(range_get(
+            "/api/files/user/rangemulti/media.mp3",
+            &token,
+            "bytes=0-1,4-5",
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(&bytes[..], b"0123456789");
+}
+
 #[tokio::test]
 async fn file_endpoints_reject_no_auth() {
     let (state, _tmp) = test_app_state().await;

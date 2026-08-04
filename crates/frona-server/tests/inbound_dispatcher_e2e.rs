@@ -93,6 +93,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         prompts,
         state.broadcast_service.clone(),
             state.presign_service.clone(),
+            state.notification_service.clone(),
             state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
@@ -135,6 +136,7 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })
@@ -201,7 +203,7 @@ async fn seed_space_and_chat(
         last_started_at: None,
         user_address: None,
         setup: None,
-        retry: None,
+        enabled: true,
         created_at: now,
         updated_at: now,
         webhook_url: None,

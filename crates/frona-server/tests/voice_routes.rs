@@ -127,6 +127,7 @@ async fn twilio_callback_valid_token_returns_xml() {
         timezone: None,
         groups: Vec::new(),
         deactivated_at: None,
+        phone: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

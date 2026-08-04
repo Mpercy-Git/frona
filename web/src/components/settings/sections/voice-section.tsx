@@ -22,18 +22,17 @@ const voiceProviders = [
   { value: "plivo", label: "Plivo" },
 ];
 
+const interruptSensitivities = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
+
 function inferProvider(voice: VoiceConfig): string | null {
   if (voice.provider) return voice.provider;
   if (isSensitiveSet(voice.twilio_account_sid)) return "twilio";
   if (isSensitiveSet(voice.plivo_auth_id)) return "plivo";
   return null;
-}
-
-function parseAllowlist(raw: string): string[] {
-  return raw
-    .split(/[,\n]/)
-    .map((p) => p.trim())
-    .filter(Boolean);
 }
 
 export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
@@ -88,10 +87,18 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
 
           <TextInput
             label="Speech Model"
-            description="Speech recognition model"
+            description="Speech recognition model. Conversational models such as deepgram-flux end the turn on meaning rather than on silence, so the agent replies without waiting out a pause."
             value={voice.twilio_speech_model}
             onChange={(twilio_speech_model) => onChange({ ...voice, twilio_speech_model })}
             placeholder="phone_call"
+          />
+
+          <SelectInput
+            label="Interruption Sensitivity"
+            description="How readily the agent stops talking when the caller speaks. Higher yields sooner but can false-trigger on background noise."
+            value={voice.twilio_interrupt_sensitivity ?? "medium"}
+            onChange={(twilio_interrupt_sensitivity) => onChange({ ...voice, twilio_interrupt_sensitivity })}
+            options={interruptSensitivities}
           />
 
           <TextInput
@@ -117,41 +124,9 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
             onChange={(inbound_enabled) => onChange({ ...voice, inbound_enabled })}
           />
 
-          <TextInput
-            label="Inbound Fallback User"
-            description="User ID or username that owns calls matching the static inbound allowlist"
-            value={voice.inbound_user_id}
-            onChange={(inbound_user_id) => onChange({ ...voice, inbound_user_id })}
-            placeholder="user-id or username"
-          />
-
-          <TextInput
-            label="Inbound Agent"
-            description="Agent ID, handle, or name that answers inbound calls (defaults to receptionist)"
-            value={voice.inbound_agent_id}
-            onChange={(inbound_agent_id) => onChange({ ...voice, inbound_agent_id })}
-            placeholder="receptionist (handle or name)"
-          />
-
-          <TextInput
-            label="Inbound Welcome Greeting"
-            description="Greeting spoken when an inbound call connects"
-            value={voice.inbound_welcome_greeting}
-            onChange={(inbound_welcome_greeting) => onChange({ ...voice, inbound_welcome_greeting })}
-            placeholder="Hi, thanks for calling..."
-          />
-
-          <TextInput
-            label="Inbound Static Allowlist"
-            description="Comma- or newline-separated E.164 phone numbers allowed for inbound answering"
-            value={voice.inbound_allowlist?.join(", ") ?? ""}
-            onChange={(raw) => onChange({ ...voice, inbound_allowlist: parseAllowlist(raw) })}
-            placeholder="+155****4567, +447****0123"
-          />
-
           <Toggle
             label="Silence Filling"
-            description="Send periodic filler phrases to the caller while the agent is processing"
+            description="Send periodic filler phrases while the agent is processing, but only when the other party is a registered user (a user calling in, or the agent calling a user). Calls with third parties narrate their own progress and are unaffected."
             value={voice.silence_fill_enabled}
             onChange={(silence_fill_enabled) => onChange({ ...voice, silence_fill_enabled })}
           />
@@ -161,12 +136,12 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
               <TextInput
                 label="Initial Silence Delay (seconds)"
                 description="Seconds of silence before the first filler phrase is sent"
-                value={String(voice.silence_fill_initial_delay_secs ?? 3)}
+                value={String(voice.silence_fill_initial_delay_secs ?? 2)}
                 onChange={(raw) => {
                   const n = parseInt(raw, 10);
-                  onChange({ ...voice, silence_fill_initial_delay_secs: isNaN(n) ? 3 : Math.max(1, n) });
+                  onChange({ ...voice, silence_fill_initial_delay_secs: isNaN(n) ? 2 : Math.max(1, n) });
                 }}
-                placeholder="3"
+                placeholder="2"
               />
               <TextInput
                 label="Filler Interval (seconds)"
@@ -180,7 +155,7 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
               />
               <TextInput
                 label="Filler Phrases"
-                description="Comma- or newline-separated phrases. One is chosen at random each interval. Leave empty for defaults."
+                description="Comma- or newline-separated phrases. Each interval advances to the next phrase in order. Leave empty for defaults."
                 value={voice.silence_fill_phrases?.join(", ") ?? ""}
                 onChange={(raw) => {
                   const phrases = raw.split(/[,\n]/).map(s => s.trim()).filter(s => s.length > 0);
@@ -231,8 +206,108 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
       )}
       </SectionPanel>
 
-      {voice.inbound_enabled && <CallerAllowlist />}
+      {voice.inbound_enabled && (
+        <>
+          <InboundSettings />
+          <CallerAllowlist />
+        </>
+      )}
     </div>
+  );
+}
+
+interface InboundSettingsData {
+  agent: string | null;
+  greeting: string | null;
+}
+
+function InboundSettings() {
+  const [agent, setAgent] = useState("");
+  const [greeting, setGreeting] = useState("");
+  const [saved, setSaved] = useState<InboundSettingsData>({ agent: null, greeting: null });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const apply = (data: InboundSettingsData) => {
+    setAgent(data.agent ?? "");
+    setGreeting(data.greeting ?? "");
+    setSaved(data);
+  };
+
+  const load = useCallback(async () => {
+    try {
+      apply(await api.get<InboundSettingsData>("/api/voice/inbound-settings"));
+    } catch {
+      setError("Failed to load inbound settings");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    setError(null);
+    try {
+      apply(await api.put<InboundSettingsData>("/api/voice/inbound-settings", {
+        agent: agent.trim(),
+        greeting: greeting.trim(),
+      }));
+    } catch {
+      setError("Failed to save inbound settings");
+    }
+  };
+
+  const dirty =
+    agent.trim() !== (saved.agent ?? "") || greeting.trim() !== (saved.greeting ?? "");
+
+  return (
+    <SectionPanel title="Inbound Answering">
+      <p className="text-xs text-text-tertiary mb-3">
+        Settings for how your inbound calls are answered.
+      </p>
+      {loading && <p className="text-sm text-text-tertiary">Loading...</p>}
+      {error && <p className="text-sm text-error-text mb-2">{error}</p>}
+      {!loading && (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-text-tertiary mb-1">Answering Agent</label>
+            <input
+              type="text"
+              value={agent}
+              onChange={(e) => setAgent(e.target.value)}
+              placeholder="receptionist (handle or name)"
+              className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+            />
+            <p className="text-xs text-text-tertiary mt-1">
+              One of your agents by handle or name. Leave empty to use your receptionist.
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-text-tertiary mb-1">Welcome Greeting</label>
+            <input
+              type="text"
+              value={greeting}
+              onChange={(e) => setGreeting(e.target.value)}
+              placeholder="Hi, thanks for calling..."
+              className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+            />
+            <p className="text-xs text-text-tertiary mt-1">
+              Spoken when a call connects. Leave empty to use the server default.
+            </p>
+          </div>
+          <div className="flex justify-end">
+            <button
+              onClick={save}
+              disabled={!dirty}
+              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50 transition"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+    </SectionPanel>
   );
 }
 

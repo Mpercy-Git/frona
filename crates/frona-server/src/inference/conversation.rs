@@ -687,12 +687,89 @@ pub async fn build_user_message(
     }
 }
 
+/// Remove embedded image blocks from user messages, replacing each affected
+/// message's images with a short text marker. Used when the target model has no
+/// vision support: sending images to a text-only model makes providers (e.g.
+/// OpenRouter) reject the whole request with a 404, so the turn fails entirely.
+/// Stripping lets the model still answer the text and tell the user it can't see
+/// the image. Returns the number of images removed.
+pub fn strip_images_from_history(history: &mut [RigMessage]) -> usize {
+    let mut stripped = 0;
+    for msg in history.iter_mut() {
+        let RigMessage::User { content } = msg else {
+            continue;
+        };
+        let image_count = content
+            .iter()
+            .filter(|c| matches!(c, UserContent::Image(_)))
+            .count();
+        if image_count == 0 {
+            continue;
+        }
+        let mut kept: Vec<UserContent> = content
+            .iter()
+            .filter(|c| !matches!(c, UserContent::Image(_)))
+            .cloned()
+            .collect();
+        // A message that was image-only would become empty, which providers
+        // reject — the marker also doubles as the "kept" content in that case.
+        kept.push(UserContent::text(
+            "[Attachment omitted: the selected model does not support image input.]",
+        ));
+        if let Ok(new_content) = rig_core::OneOrMany::many(kept) {
+            *content = new_content;
+            stripped += image_count;
+        }
+    }
+    stripped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
     use crate::agent::task::models::TaskStatus;
     use crate::chat::message::models::{MessageRole, MessageEvent};
+
+    fn image_block() -> UserContent {
+        UserContent::Image(rig_core::completion::message::Image {
+            data: DocumentSourceKind::Base64("Zm9v".into()),
+            media_type: ImageMediaType::from_mime_type("image/png"),
+            detail: None,
+            additional_params: None,
+        })
+    }
+
+    #[test]
+    fn strip_images_replaces_image_with_marker() {
+        let content =
+            rig_core::OneOrMany::many(vec![UserContent::text("hello"), image_block()]).unwrap();
+        let mut history = vec![RigMessage::User { content }];
+        let n = strip_images_from_history(&mut history);
+        assert_eq!(n, 1);
+        let RigMessage::User { content } = &history[0] else { panic!("expected user msg") };
+        assert!(content.iter().all(|c| !matches!(c, UserContent::Image(_))));
+        // original text kept + one marker text block
+        assert_eq!(content.iter().count(), 2);
+    }
+
+    #[test]
+    fn strip_images_handles_image_only_message() {
+        let content = rig_core::OneOrMany::one(image_block());
+        let mut history = vec![RigMessage::User { content }];
+        let n = strip_images_from_history(&mut history);
+        assert_eq!(n, 1);
+        let RigMessage::User { content } = &history[0] else { panic!("expected user msg") };
+        // must not be left empty (providers reject empty content)
+        assert_eq!(content.iter().count(), 1);
+        assert!(content.iter().all(|c| !matches!(c, UserContent::Image(_))));
+    }
+
+    #[test]
+    fn strip_images_noop_without_images() {
+        let mut history = vec![RigMessage::user("just text")];
+        assert_eq!(strip_images_from_history(&mut history), 0);
+    }
 
     fn make_message(role: MessageRole, content: &str) -> Message {
         Message {
@@ -841,6 +918,7 @@ mod tests {
                 status: TaskStatus::Completed,
                 summary: None,
                 schema: None,
+                citations: Vec::new(),
             }),
             ..make_message(MessageRole::TaskCompletion, "Task 'research' completed.")
         };
@@ -858,6 +936,7 @@ mod tests {
                 status: TaskStatus::Completed,
                 summary: None,
                 schema: None,
+                citations: Vec::new(),
             }),
             attachments: vec![Attachment {
                 filename: "output.csv".to_string(),

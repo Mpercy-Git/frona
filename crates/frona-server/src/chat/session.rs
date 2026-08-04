@@ -25,6 +25,12 @@ pub struct ChatSessionContext {
     pub tool_registry: AgentToolRegistry,
     pub tool_ctx: InferenceContext,
     pub cancel_token: CancellationToken,
+    /// The most recent user message as stored, captured while the history was
+    /// loaded here. Callers that need it (slash-command dispatch in
+    /// `Harness::run_loop`) would otherwise re-read every message in the chat
+    /// just to look at the last one. Raw — before the skill/command rewrites
+    /// applied to `rig_history` — because the caller persists edits to it.
+    pub last_user_message: Option<Message>,
 }
 
 impl ChatSessionContext {
@@ -55,9 +61,26 @@ impl ChatSessionContext {
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
+        // For a shared agent (runner ≠ owner), definition-scoped lookups must
+        // resolve under the OWNER: skills, agent workspace, sandbox policy.
+        // For an owned agent this is just the runner's own handle.
+        let agent_owner_handle = if agent.user_id == user_id {
+            user.handle.clone()
+        } else {
+            harness.user_service.handle_of(&agent.user_id).await?
+        };
+
+        // If this is a shared agent whose owner opted into credential
+        // delegation, the recipient's run may use the owner's agent credentials.
+        let delegated_credential_owner = harness
+            .agent_service
+            .credential_delegation_owner(&agent, user_id)
+            .await
+            .unwrap_or(None);
+
         let skills = harness
             .skill_service
-            .list(&user.handle, &agent.handle, agent_config.skills.as_deref())
+            .list(&agent_owner_handle, &agent.handle, agent_config.skills.as_deref())
             .await;
 
         // Load task early so `build_agent_registry` can register
@@ -167,6 +190,12 @@ impl ChatSessionContext {
             .resolve_model_group(&agent_config.model_group)?;
 
         let stored_messages = harness.chat_service.get_stored_messages(&chat.id).await?;
+        // Captured before the rewrites below, which the caller must not see.
+        let last_user_message = stored_messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::User))
+            .cloned();
         let tool_calls = harness.chat_service
             .get_tool_calls(&chat.id)
             .await
@@ -232,9 +261,69 @@ impl ChatSessionContext {
             );
         }
 
-        let rig_history = builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
+        let mut rig_history = builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
 
         let registry = harness.chat_service.provider_registry().clone();
+
+        // Images can't go to a model that doesn't accept them — providers 404
+        // the whole request. Only act when the catalog positively reports no
+        // vision support (unknown models are left untouched to avoid regressing
+        // capable ones). Preferred handling: transcribe the images with a
+        // vision-capable model (an override "vision" group, else auto-selected)
+        // and inline the text so the agent still gets the content. If no vision
+        // model is available, strip the images so the turn still runs.
+        let catalog_vision = harness.usage_service.model_supports_vision(&conv_ctx.model_ref);
+        let effective_vision = crate::inference::vision::resolve_vision_capability(
+            &conv_ctx.model_ref,
+            &model_group.inference,
+            catalog_vision,
+        );
+        if effective_vision == Some(false) {
+            match crate::inference::vision::resolve_vision_model_group(
+                &registry,
+                &harness.usage_service,
+            ) {
+                Some(vision_group) => {
+                    let img_msg_id = stored_messages
+                        .iter()
+                        .rev()
+                        .find(|m| !m.attachments.is_empty())
+                        .map(|m| m.id.clone())
+                        .unwrap_or_default();
+                    let n = crate::inference::vision::transcribe_images_in_history(
+                        &mut rig_history,
+                        &vision_group,
+                        &registry,
+                        &harness.usage_service,
+                        user_id,
+                        &chat.agent_id,
+                        &chat.id,
+                        &img_msg_id,
+                    )
+                    .await;
+                    if n > 0 {
+                        tracing::info!(
+                            agent_model = %conv_ctx.model_ref.as_str(),
+                            vision_model = %vision_group.main.as_str(),
+                            images = n,
+                            "transcribed images for text-only agent model",
+                        );
+                    }
+                }
+                None => {
+                    let n = crate::inference::conversation::strip_images_from_history(
+                        &mut rig_history,
+                    );
+                    if n > 0 {
+                        tracing::info!(
+                            model = %conv_ctx.model_ref.as_str(),
+                            images = n,
+                            "stripped image attachments (no vision model available)",
+                        );
+                    }
+                }
+            }
+        }
 
         let mut file_paths = Vec::new();
         for msg in &stored_messages {
@@ -246,15 +335,26 @@ impl ChatSessionContext {
             }
         }
 
-        let mut tool_ctx = InferenceContext::new(user, agent, chat.clone(), event_sender, harness.shutdown_token.clone(), cancel_token.clone());
+        let mut tool_ctx = InferenceContext::new(user, agent, chat.clone(), event_sender, harness.shutdown_token.clone(), cancel_token.clone())
+            .with_agent_owner_handle(agent_owner_handle)
+            .with_delegated_credential_owner(delegated_credential_owner.clone());
         tool_ctx.file_paths = file_paths;
         tool_ctx.task = task;
 
-        let vault_env = harness
+        let mut vault_env = harness
             .vault_service
             .hydrate_chat_env_vars(user_id, &chat.id, &chat.agent_id)
             .await
             .unwrap_or_default();
+        // Credential delegation: also load the owner's durable agent credentials.
+        if let Some(ref owner_id) = delegated_credential_owner {
+            let delegated = harness
+                .vault_service
+                .hydrate_delegated_env_vars(owner_id, &chat.agent_id, &chat.id)
+                .await
+                .unwrap_or_default();
+            vault_env.extend(delegated);
+        }
         if !vault_env.is_empty() {
             let mut vault_vars = tool_ctx.vault_env_vars.write().await;
             vault_vars.extend(vault_env);
@@ -270,6 +370,7 @@ impl ChatSessionContext {
             tool_registry,
             tool_ctx,
             cancel_token,
+            last_user_message,
         })
     }
 }

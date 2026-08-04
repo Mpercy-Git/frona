@@ -89,7 +89,7 @@ export function AgentDropdown() {
                     router.push(`/agents?id=${agent.id}`);
                     setOpen(false);
                   }}
-                  className="p-1 rounded text-text-tertiary hover:text-text-primary transition opacity-0 group-hover:opacity-100"
+                  className="p-1 rounded text-text-tertiary hover:text-text-primary transition opacity-0 group-hover:opacity-100 reveal-on-touch"
                   title="Configure"
                 >
                   <Cog6ToothIcon className="h-4 w-4" />
@@ -97,7 +97,7 @@ export function AgentDropdown() {
                 {!agent.is_shared && (
                   <button
                     onClick={(e) => handleDelete(e, agent)}
-                    className="p-1 rounded text-text-tertiary hover:text-error-text transition opacity-0 group-hover:opacity-100"
+                    className="p-1 rounded text-text-tertiary hover:text-error-text transition opacity-0 group-hover:opacity-100 reveal-on-touch"
                     title="Delete"
                   >
                     <TrashIcon className="h-4 w-4" />

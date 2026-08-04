@@ -25,6 +25,13 @@ interface UserAddress {
   paired_at: string | null;
 }
 
+interface SetupConfig {
+  qr: string | null;
+  code: string | null;
+  instructions: string | null;
+  expires_at: string | null;
+}
+
 interface Channel {
   id: string;
   user_id: string;
@@ -33,10 +40,14 @@ interface Channel {
   agent_id: string;
   config: Record<string, string>;
   dispatch_mode: "message" | "signal";
-  status: "disconnected" | "connecting" | "connected" | "failed" | "pairing" | "setup";
+  // Connection status only — supervisor-owned. Setup/pairing are overlays below.
+  status: "disconnected" | "connecting" | "connected" | "reconnecting" | "failed";
+  // Operator intent, independent of runtime status.
+  enabled: boolean;
   error_message: string | null;
   last_started_at: string | null;
   user_address: UserAddress | null;
+  setup: SetupConfig | null;
   created_at: string;
   updated_at: string;
 }
@@ -60,14 +71,26 @@ interface ChannelManifest {
   external_links?: ExternalLink[];
 }
 
+// Keyed by the *derived* badge label (connection status + overlays), not the
+// raw status — see `channelBadge` below.
 const STATUS_BADGE: Record<string, string> = {
   disconnected: "bg-surface-tertiary text-text-secondary",
   connecting: "bg-blue-400/15 text-blue-400",
   connected: "bg-green-500/15 text-green-500",
+  reconnecting: "bg-amber-500/15 text-amber-400",
   failed: "bg-red-500/15 text-red-500",
   pairing: "bg-purple-500/15 text-purple-400",
-  setup: "bg-yellow-500/15 text-yellow-500",
+  linking: "bg-yellow-500/15 text-yellow-500",
 };
+
+/// Derives the display badge from the three independent axes: a pending QR
+/// (setup overlay) or pairing code takes visual priority over the connection
+/// status, which is otherwise shown as-is.
+function channelBadge(c: Channel): { label: string; key: string } {
+  if (c.setup) return { label: "linking", key: "linking" };
+  if (c.user_address?.pairing_code) return { label: "pairing", key: "pairing" };
+  return { label: c.status, key: c.status };
+}
 
 // Green is reserved for the `connected` status badge — keep it out of the
 // provider palette so the two don't collide visually on a row.
@@ -266,8 +289,12 @@ export function ChannelsSection() {
           <div className="rounded-xl border border-border bg-surface-secondary divide-y divide-border overflow-hidden">
             {channels.map((c) => {
               const isLoading = actionLoading === c.id;
-              const canStart = c.status === "disconnected" || c.status === "failed";
-              const canStop = c.status === "connected" || c.status === "connecting";
+              const badge = channelBadge(c);
+              // Buttons follow intent, not runtime status. ▶ enables (or retries a
+              // terminally-failed channel); ⏸ disables. Both hit /start, /stop.
+              const showStart = !c.enabled || c.status === "failed";
+              const showStop = c.enabled;
+              const startTitle = c.enabled ? "Retry" : "Enable";
               const manifest = manifests.find((m) => m.id === c.provider);
               const space = spaces.find((s) => s.id === c.space_id);
               const title = space?.name ?? manifest?.display_name ?? c.provider;
@@ -294,10 +321,10 @@ export function ChannelsSection() {
                       </span>
                       <span
                         className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                          STATUS_BADGE[c.status] ?? "bg-surface-tertiary text-text-secondary"
+                          STATUS_BADGE[badge.key] ?? "bg-surface-tertiary text-text-secondary"
                         }`}
                       >
-                        {c.status}
+                        {badge.label}
                       </span>
                       <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-tertiary">
                         {c.dispatch_mode}
@@ -310,21 +337,21 @@ export function ChannelsSection() {
                     )}
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    {canStart && (
+                    {showStart && (
                       <button
                         onClick={() => start(c.id)}
                         disabled={isLoading}
-                        title="Start"
+                        title={startTitle}
                         className="rounded-lg p-1.5 text-green-500 hover:bg-green-500/10 disabled:opacity-50 transition"
                       >
                         <PlayIcon className="h-5 w-5" />
                       </button>
                     )}
-                    {canStop && (
+                    {showStop && (
                       <button
                         onClick={() => stop(c.id)}
                         disabled={isLoading}
-                        title="Stop"
+                        title="Disable"
                         className="rounded-lg p-1.5 text-yellow-500 hover:bg-yellow-500/10 disabled:opacity-50 transition"
                       >
                         <StopIcon className="h-5 w-5" />

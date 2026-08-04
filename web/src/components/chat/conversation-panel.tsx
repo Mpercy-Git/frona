@@ -33,8 +33,19 @@ function ChatView({
   hideHeader?: boolean;
 }) {
   const { setActiveChat, getPendingMessage } = useSession();
-  const { addStandaloneChat } = useNavigation();
+  const { addStandaloneChat, standaloneChats, spaces } = useNavigation();
   const [currentChatId, setCurrentChatId] = useState<string | null>(chatId ?? null);
+
+  // Look up sharing status from the boot-loaded chat lists rather than
+  // threading it through props — every mounted slot (not just the active
+  // one) needs it to gate its own composer/HITL controls.
+  const isReadOnly = useMemo(() => {
+    if (!currentChatId) return false;
+    const found =
+      standaloneChats.find((c) => c.id === currentChatId) ??
+      spaces.flatMap((s) => s.chats).find((c) => c.id === currentChatId);
+    return found?.is_shared ?? false;
+  }, [standaloneChats, spaces, currentChatId]);
 
   const onChatCreated = useCallback((chat: ChatResponse) => {
     setCurrentChatId(chat.id);
@@ -43,7 +54,7 @@ function ChatView({
     onChatPromoted?.(chat.id);
   }, [addStandaloneChat, setActiveChat, onChatPromoted]);
 
-  const { runtime, loaded, sendMessage, retryInfo, pendingTools, hasMore, loadingMore, loadOlder, usagePerChat, lastFallbackIndex, lastChatInputTokens, totalToolCalls } = useChatRuntime({ chatId, agentId, onChatCreated });
+  const { runtime, loaded, sendMessage, interrupt, retryInfo, pendingTools, hasMore, loadingMore, loadOlder, usagePerChat, lastFallbackIndex, lastChatInputTokens, totalToolCalls } = useChatRuntime({ chatId, agentId, onChatCreated });
   const pagination = useMemo(
     () => ({ hasMore, loadingMore, loadOlder }),
     [hasMore, loadingMore, loadOlder],
@@ -85,7 +96,7 @@ function ChatView({
       <ChatPaginationContext value={pagination}>
       <RetryContext value={retryInfo}>
         {currentChatId ? (
-          <ChatProvider chatId={currentChatId} agentId={agentId}>
+          <ChatProvider chatId={currentChatId} agentId={agentId} interrupt={interrupt} isReadOnly={isReadOnly}>
             {content}
           </ChatProvider>
         ) : (

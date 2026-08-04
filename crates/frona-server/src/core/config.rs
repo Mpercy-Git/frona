@@ -164,6 +164,12 @@ pub struct AuthConfig {
     pub ephemeral_token_expiry_secs: u64,
     #[schemars(description = "Allow anyone to sign up from the registration page. When off, only admins can add users.")]
     pub allow_registration: bool,
+    #[schemars(description = "Consecutive failed login attempts before an account is temporarily locked. 0 disables lockout.")]
+    pub max_login_attempts: u32,
+    #[schemars(description = "How long an account stays locked after too many failed logins, in minutes.")]
+    pub lockout_minutes: u64,
+    #[schemars(description = "Lifetime of an emailed password-reset link, in minutes.")]
+    pub password_reset_expiry_minutes: u64,
 }
 
 impl Default for AuthConfig {
@@ -175,6 +181,9 @@ impl Default for AuthConfig {
             presign_expiry_secs: 86400,
             ephemeral_token_expiry_secs: 300,
             allow_registration: true,
+            max_login_attempts: 5,
+            lockout_minutes: 15,
+            password_reset_expiry_minutes: 30,
         }
     }
 }
@@ -409,6 +418,59 @@ impl Default for PushConfig {
             vapid_private_key: None,
             subject: "mailto:noreply@frona.local".into(),
         }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTls {
+    /// STARTTLS upgrade on the submission port (587). The usual choice.
+    #[default]
+    Starttls,
+    /// TLS from the first byte (465).
+    Implicit,
+    /// Plaintext. Only sane for a relay on localhost or a dev mail catcher.
+    None,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
+pub struct MailConfig {
+    #[schemars(description = "SMTP server hostname. Leave empty to disable outbound email (and with it, password reset).")]
+    pub smtp_host: String,
+    #[schemars(description = "SMTP server port.")]
+    pub smtp_port: u16,
+    #[schemars(description = "SMTP username. Leave empty for an unauthenticated relay.")]
+    pub smtp_username: Option<String>,
+    #[schemars(description = "SMTP password.")]
+    pub smtp_password: Option<String>,
+    #[schemars(description = "Transport security: starttls (587), implicit (465), or none.")]
+    pub tls: SmtpTls,
+    #[schemars(description = "Envelope sender address for outbound mail.")]
+    pub from_address: String,
+    #[schemars(description = "Display name shown alongside the sender address.")]
+    pub from_name: String,
+}
+
+impl Default for MailConfig {
+    fn default() -> Self {
+        Self {
+            smtp_host: String::new(),
+            smtp_port: 587,
+            smtp_username: None,
+            smtp_password: None,
+            tls: SmtpTls::Starttls,
+            from_address: "noreply@frona.local".into(),
+            from_name: "Frona".into(),
+        }
+    }
+}
+
+impl MailConfig {
+    /// Outbound mail is opt-in: an empty host means the feature is off, rather
+    /// than a misconfiguration to fail startup over.
+    pub fn is_configured(&self) -> bool {
+        !self.smtp_host.trim().is_empty()
     }
 }
 
@@ -791,6 +853,14 @@ pub struct InferenceConfig {
     pub compaction_trigger_pct: usize,
     #[schemars(description = "Percentage of history to keep after truncation.")]
     pub history_truncation_pct: usize,
+    #[schemars(description = "Per-tool-call execution timeout in seconds. A hung tool (e.g. an unresponsive MCP server) fails after this instead of stalling the message forever. 0 disables the timeout.")]
+    pub tool_timeout_secs: u64,
+    #[schemars(description = "Model ids to force as vision-capable, overriding the catalog. Matches the model id (e.g. \"deepseek-v4-flash\"), a \"provider/model\" pair, or a vendor-prefixed suffix.")]
+    pub vision_models: Vec<String>,
+    #[schemars(description = "Model ids to force as text-only (no image input), overriding the catalog. Same matching as vision_models. Wins over the catalog and over vision_models.")]
+    pub text_only_models: Vec<String>,
+    #[schemars(description = "When a model's image support is unknown (absent from the catalog and both override lists), treat it as text-only so images are transcribed or stripped instead of risking a provider 404. Default false.")]
+    pub transcribe_when_vision_unknown: bool,
 }
 
 impl Default for InferenceConfig {
@@ -800,6 +870,10 @@ impl Default for InferenceConfig {
             default_max_tokens: 8192,
             compaction_trigger_pct: 80,
             history_truncation_pct: 90,
+            tool_timeout_secs: 600,
+            vision_models: Vec::new(),
+            text_only_models: Vec::new(),
+            transcribe_when_vision_unknown: false,
         }
     }
 }
@@ -821,6 +895,8 @@ pub struct VoiceConfig {
     pub twilio_speech_model: Option<String>,
     #[schemars(description = "TTS provider for ConversationRelay (e.g. elevenlabs, polly). Defaults to polly when not set.")]
     pub twilio_tts_provider: Option<String>,
+    #[schemars(description = "How readily the agent yields when the caller starts speaking: low, medium, or high. Higher cuts the agent off sooner but false-triggers on background noise. Defaults to medium.")]
+    pub twilio_interrupt_sensitivity: Option<String>,
     #[schemars(description = "Plivo auth ID.")]
     pub plivo_auth_id: Option<String>,
     #[schemars(description = "Plivo auth token.")]
@@ -831,22 +907,26 @@ pub struct VoiceConfig {
     pub callback_base_url: Option<String>,
     #[schemars(description = "Enable inbound call answering. Requires the voice provider to POST to the inbound webhook.")]
     pub inbound_enabled: bool,
-    #[schemars(description = "Fallback user ID or username that owns inbound calls when the caller matches the static inbound_allowlist (or when no per-user allowlist matches).")]
-    pub inbound_user_id: Option<String>,
-    #[schemars(description = "Agent ID, handle, or name that handles inbound calls. Defaults to 'receptionist'..")]
-    pub inbound_agent_id: Option<String>,
-    #[schemars(description = "Greeting spoken immediately when an inbound call connects.")]
+    #[schemars(description = "Server-level default greeting spoken when an inbound call connects, used when the owning user has not set their own via /api/voice/inbound-settings.")]
     pub inbound_welcome_greeting: Option<String>,
-    #[schemars(description = "Static E.164 phone numbers allowed to reach inbound_user_id. Dynamic per-user lists are managed via /api/voice/allowlist.")]
-    pub inbound_allowlist: Vec<String>,
-    #[schemars(description = "Enable silence filling during agent processing — sends periodic filler phrases to the caller while the agent is thinking.")]
+    #[schemars(description = "Enable silence filling during agent processing — sends periodic filler phrases while the agent is thinking. Only applies when the remote party's number matches a registered user (a user calling in, or the agent calling one of its users); calls with third parties are unaffected, as the agent narrates its own progress there per the active-call prompt.")]
     pub silence_fill_enabled: bool,
-    #[schemars(description = "Seconds of silence before the first filler phrase is sent. Defaults to 3.")]
+    #[schemars(description = "Seconds of silence before the first filler phrase is sent. Defaults to 2 — longer feels like dead air on a phone call.")]
+    #[serde(default = "default_silence_fill_initial_delay_secs")]
     pub silence_fill_initial_delay_secs: u64,
     #[schemars(description = "Seconds between successive filler phrases. Defaults to 7.")]
+    #[serde(default = "default_silence_fill_interval_secs")]
     pub silence_fill_interval_secs: u64,
-    #[schemars(description = "Filler phrases spoken to the caller while the agent is processing. One is chosen at random each interval. If empty, uses built-in defaults.")]
+    #[schemars(description = "Filler phrases spoken to the caller while the agent is processing. Each interval advances to the next phrase in order (rotating). If empty, uses built-in defaults.")]
     pub silence_fill_phrases: Vec<String>,
+}
+
+fn default_silence_fill_initial_delay_secs() -> u64 {
+    2
+}
+
+fn default_silence_fill_interval_secs() -> u64 {
+    7
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -990,6 +1070,8 @@ pub struct Config {
     #[serde(default)]
     pub push: PushConfig,
     #[serde(default)]
+    pub mail: MailConfig,
+    #[serde(default)]
     pub signal: SignalConfig,
     #[serde(default)]
     pub models: HashMap<String, ModelGroupConfig>,
@@ -1111,6 +1193,7 @@ pub const SENSITIVE_PATHS: &[&[&str]] = &[
     &["vault", "bitwarden_master_password"],
     &["vault", "hashicorp_token"],
     &["vault", "keepass_password"],
+    &["mail", "smtp_password"],
 ];
 
 /// Provider fields that are sensitive (applied to each provider in the map).
@@ -1666,4 +1749,38 @@ mod tests {
         assert!(!path.exists());
     }
 
+    /// Every credential in the config must be redacted on the way out. The SMTP
+    /// password is the one most recently added, and `GET /api/config` is
+    /// reachable by any authenticated user — not just admins.
+    #[test]
+    fn smtp_password_is_redacted_for_api_and_logs() {
+        let mut config = Config::default();
+        config.mail.smtp_password = Some("hunter2-smtp".into());
+
+        let mut api_value = serde_json::to_value(&config).unwrap();
+        redact_config_for_api(&mut api_value);
+        let rendered = serde_json::to_string(&api_value).unwrap();
+        assert!(!rendered.contains("hunter2-smtp"), "API response leaked the SMTP password");
+        assert_eq!(
+            api_value.pointer("/mail/smtp_password/is_set"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        let mut log_value = serde_json::to_value(&config).unwrap();
+        redact_config_for_log(&mut log_value);
+        let rendered = serde_json::to_string(&log_value).unwrap();
+        assert!(!rendered.contains("hunter2-smtp"), "log dump leaked the SMTP password");
+    }
+
+    #[test]
+    fn unset_smtp_password_reports_as_not_set() {
+        let config = Config::default();
+        let mut api_value = serde_json::to_value(&config).unwrap();
+        redact_config_for_api(&mut api_value);
+        // Absent secrets must not masquerade as configured ones.
+        assert_ne!(
+            api_value.pointer("/mail/smtp_password/is_set"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
 }

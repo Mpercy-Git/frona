@@ -1,7 +1,12 @@
 "use client";
 
 import type { InferenceConfig, SchedulerConfig, AppConfig } from "@/lib/config-types";
-import { NumberInput, SectionHeader, SectionPanel } from "@/components/settings/field";
+import { NumberInput, TextInput, Toggle, SectionHeader, SectionPanel } from "@/components/settings/field";
+
+/** Parse a comma-separated list into trimmed, non-empty entries. */
+function parseList(value: string): string[] {
+  return value.split(",").map((s) => s.trim()).filter(Boolean);
+}
 import { AdjustmentsHorizontalIcon, CpuChipIcon, ClockIcon, Square3Stack3DIcon } from "@heroicons/react/24/outline";
 
 interface AdvancedSectionProps {
@@ -54,6 +59,38 @@ export function AdvancedSection({ inference, scheduler, app, onChange }: Advance
           min={1}
           max={100}
           placeholder="90"
+        />
+
+        <NumberInput
+          label="Tool Timeout (seconds)"
+          description="Per-tool-call execution timeout. A hung tool (e.g. an unresponsive MCP server) fails after this instead of stalling the message. 0 disables."
+          value={inference.tool_timeout_secs}
+          onChange={(tool_timeout_secs) => onChange({ inference: { ...inference, tool_timeout_secs } })}
+          min={0}
+          placeholder="600"
+        />
+
+        <TextInput
+          label="Vision Models"
+          description="Model ids to force as vision-capable (comma-separated), overriding the catalog. Matches a bare id, provider/model, or vendor-prefixed suffix."
+          value={(inference.vision_models ?? []).join(", ")}
+          onChange={(v) => onChange({ inference: { ...inference, vision_models: parseList(v) } })}
+          placeholder="provider/model, ..."
+        />
+
+        <TextInput
+          label="Text-Only Models"
+          description="Model ids to force as text-only (comma-separated). Images sent to these are transcribed by a vision model, or stripped. Wins over the catalog and Vision Models."
+          value={(inference.text_only_models ?? []).join(", ")}
+          onChange={(v) => onChange({ inference: { ...inference, text_only_models: parseList(v) } })}
+          placeholder="deepseek-v4-flash, ..."
+        />
+
+        <Toggle
+          label="Transcribe When Vision Unknown"
+          description="When a model's image support is unknown (absent from the catalog and both lists), treat it as text-only so images are transcribed or stripped instead of risking a provider 404."
+          value={inference.transcribe_when_vision_unknown ?? false}
+          onChange={(transcribe_when_vision_unknown) => onChange({ inference: { ...inference, transcribe_when_vision_unknown } })}
         />
       </SectionPanel>
 

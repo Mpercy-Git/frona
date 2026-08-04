@@ -125,6 +125,7 @@ async fn test_email_matching_flow() {
         timezone: None,
         groups: Vec::new(),
         deactivated_at: None,
+        phone: None,
         created_at: now,
         updated_at: now,
     };

@@ -5,7 +5,8 @@ import { usePushNotifications } from "@/lib/use-push-notifications";
 import { SectionHeader, SectionPanel } from "../field";
 
 export function NotificationsSection() {
-  const { permission, subscribed, loading, enable, disable } = usePushNotifications();
+  const { permission, subscribed, loading, installRequired, enable, disable } =
+    usePushNotifications();
 
   return (
     <div className="space-y-6">
@@ -19,7 +20,19 @@ export function NotificationsSection() {
             Edge, and Android Chrome. iOS requires installing as a PWA.
           </p>
 
-          {permission === "unsupported" && (
+          {permission === "unsupported" && installRequired && (
+            <p className="text-sm text-text-secondary">
+              To get notifications on iPhone or iPad, add frona to your home
+              screen first: tap the Share button, then{" "}
+              <span className="font-medium text-text-primary">
+                Add to Home Screen
+              </span>
+              , and open it from there. iOS only delivers notifications to
+              installed apps.
+            </p>
+          )}
+
+          {permission === "unsupported" && !installRequired && (
             <p className="text-sm text-error">
               Push notifications are not supported in this browser.
             </p>

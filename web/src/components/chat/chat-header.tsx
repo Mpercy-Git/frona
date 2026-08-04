@@ -7,12 +7,14 @@ import {
   ArchiveBoxIcon,
   ArchiveBoxXMarkIcon,
   TrashIcon,
+  ShareIcon,
 } from "@heroicons/react/24/outline";
 import { useNavigation, neighborRoute } from "@/lib/navigation-context";
 import { agentDisplayName } from "@/lib/types";
 import type { RunningTotals } from "@/lib/chat-store";
 import { DeleteConfirmDialog } from "@/components/nav/delete-confirm-dialog";
 import { UsagePill } from "./usage-pill";
+import { ShareChatModal } from "./share-chat-modal";
 
 interface ChatHeaderProps {
   /** This slot's chat id (`undefined` for a pending/unsaved slot) — drives
@@ -39,6 +41,7 @@ export function ChatHeader({
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -91,7 +94,14 @@ export function ChatHeader({
           {chat?.title ?? "New chat"}
         </h2>
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm text-text-tertiary">{agentName}</p>
+          <p className="text-sm text-text-tertiary">
+            {agentName}
+            {chat?.is_shared && chat.shared_by && (
+              <span className="ml-2 rounded-full bg-surface-tertiary px-2 py-0.5 text-xs text-text-tertiary">
+                Shared by @{chat.shared_by}
+              </span>
+            )}
+          </p>
           {chat && totals.calls > 0 && (
             <UsagePill
               totals={totals}
@@ -104,7 +114,7 @@ export function ChatHeader({
         </div>
       </div>
 
-      {chat && (
+      {chat && !chat.is_shared && (
         <div ref={menuRef} className="relative ml-2">
           <button
             onClick={() => setMenuOpen((v) => !v)}
@@ -114,6 +124,16 @@ export function ChatHeader({
           </button>
           {menuOpen && (
             <div className="absolute right-0 top-full z-50 mt-1 w-36 rounded-lg border border-border bg-surface shadow-lg py-1">
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  setShowShareModal(true);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-secondary transition"
+              >
+                <ShareIcon className="h-4 w-4" />
+                Share
+              </button>
               {isArchived ? (
                 <button
                   onClick={handleUnarchive}
@@ -150,6 +170,9 @@ export function ChatHeader({
         onCancel={() => setShowDeleteDialog(false)}
         onConfirm={handleDelete}
       />
+      {showShareModal && chat && (
+        <ShareChatModal chatId={chat.id} onClose={() => setShowShareModal(false)} />
+      )}
     </div>
   );
 }

@@ -108,6 +108,7 @@ async fn build_state(provider: Arc<dyn frona::inference::provider::ModelProvider
         state.prompts.clone(),
         state.broadcast_service.clone(),
         state.presign_service.clone(),
+        state.notification_service.clone(),
         state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
@@ -152,6 +153,7 @@ async fn seed_user_and_two_agents(state: &AppState) -> (String, String) {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: now,
             updated_at: now,
         })
@@ -260,6 +262,7 @@ async fn switch_agent_command_reattributes_response() {
             CancellationToken::new(),
             builder,
             &[],
+            None,
             None,
         )
         .await;

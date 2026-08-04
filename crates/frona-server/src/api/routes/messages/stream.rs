@@ -133,7 +133,7 @@ pub(crate) async fn stream_message(
         let harness = state.harness.clone();
         let user_id = auth.user_id.clone();
         let chat_id_clone = chat_id.clone();
-        let cancel_token = state.active_sessions.register(&chat_id).await;
+        let (session_id, cancel_token) = state.active_sessions.register(&chat_id).await;
         let builder = Box::new(DefaultConversationBuilder {
             user_service: state.user_service.clone(),
             storage_service: state.storage_service.clone(),
@@ -142,9 +142,9 @@ pub(crate) async fn stream_message(
         let active_sessions = state.active_sessions.clone();
         tokio::spawn(async move {
             harness
-                .run_turn(&user_id, &chat_id_clone, &agent_msg_id, cancel_token, builder, &[], None)
+                .run_turn(&user_id, &chat_id_clone, &agent_msg_id, cancel_token, builder, &[], None, Some(session_id))
                 .await;
-            active_sessions.remove(&chat_id_clone).await;
+            active_sessions.remove(&chat_id_clone, session_id).await;
         });
 
         Ok(Json(user_response))

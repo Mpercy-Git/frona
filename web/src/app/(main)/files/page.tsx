@@ -40,6 +40,7 @@ import {
   resolveAgentId as resolveAgentIdUtil,
   getFileOwnerPath as getFileOwnerPathUtil,
 } from "@/lib/file-manager-utils";
+import { FilePreviewDialog, type PreviewTarget } from "@/components/preview/file-preview-dialog";
 
 export default function FilesPage() {
   const { user } = useAuth();
@@ -58,6 +59,7 @@ export default function FilesPage() {
 
   const [showMenu, setShowMenu] = useState(false);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
 
   function getCurrentUploadPath(): { currentPath: string; parentSub: string } {
     const state = fmApiRef.current?.getState();
@@ -228,6 +230,16 @@ export default function FilesPage() {
     return getFileOwnerPathUtil(fileId, user.id, agentsRef.current);
   }, [user]);
 
+  const openPreview = useCallback((fileId: string) => {
+    const info = getFileOwnerPath(fileId);
+    if (!info) return;
+    setPreviewTarget({
+      filename: fileId.split("/").pop() || fileId,
+      owner: info.owner,
+      path: info.path,
+    });
+  }, [getFileOwnerPath]);
+
   const handleInit = useCallback(
     (fmApi: IApi) => {
       fmApiRef.current = fmApi;
@@ -299,6 +311,9 @@ export default function FilesPage() {
         const parentId = file.parent as string;
         fmApi.exec("set-mode", { mode: "table" });
         fmApi.exec("set-path", { id: parentId, selected: [id] });
+        // Suppress the file manager's own open handling and show our preview,
+        // which knows how to render images, media, and text.
+        openPreview(id);
         return false;
       });
 
@@ -447,7 +462,7 @@ export default function FilesPage() {
         }
       });
     },
-    [user, getFileOwnerPath],
+    [user, getFileOwnerPath, openPreview],
   );
 
   const ThemeWrapper = resolved === "dark" ? WillowDark : Willow;
@@ -557,7 +572,11 @@ export default function FilesPage() {
                     const fileId = item.id;
                     const extra = [
                       {
-                        icon: "wxi-eye", text: "Open", hotkey: "", id: "open-file-url",
+                        icon: "wxi-eye", text: "Preview", hotkey: "", id: "preview-file",
+                        handler: () => { openPreview(fileId); },
+                      },
+                      {
+                        icon: "wxi-external-link", text: "Open", hotkey: "", id: "open-file-url",
                         handler: () => {
                           const info = getFileOwnerPath(fileId);
                           if (info) presignFile(info.owner, info.path).then((url) => window.open(url, "_blank"));
@@ -595,6 +614,12 @@ export default function FilesPage() {
           </div>
         )}
       </div>
+      {previewTarget && (
+        <FilePreviewDialog
+          target={previewTarget}
+          onClose={() => setPreviewTarget(null)}
+        />
+      )}
       {shareUrl && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setShareUrl(null)}>
           <div className="bg-surface border border-border rounded-lg p-6 shadow-lg w-full max-w-md" onClick={(e) => e.stopPropagation()}>

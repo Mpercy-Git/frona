@@ -76,6 +76,7 @@ async fn setup() -> (Surreal<Db>, PolicyService) {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         })

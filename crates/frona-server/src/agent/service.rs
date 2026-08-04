@@ -18,6 +18,16 @@ use crate::auth::UserService;
 use crate::core::Handle;
 use crate::storage::StorageService;
 
+/// How a user may access a given agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentAccess {
+    /// The requesting user owns the agent — full read/write.
+    Owner,
+    /// The agent was shared with the requesting user as use-only — they may
+    /// view it and chat with it, but not edit or delete it.
+    SharedUse,
+}
+
 #[derive(Clone)]
 pub struct AgentService {
     repo: SurrealAgentRepo,
@@ -25,6 +35,10 @@ pub struct AgentService {
     resource_manager: Arc<SystemResourceManager>,
     policy_service: PolicyService,
     user_service: UserService,
+    /// Set once at startup via [`AgentService::set_share_service`]. Optional so
+    /// test constructions (and the two services' construction order) stay
+    /// simple; when absent, access is owner-only.
+    share_service: Option<crate::agent::share::service::AgentShareService>,
 }
 
 impl AgentService {
@@ -45,7 +59,67 @@ impl AgentService {
             resource_manager,
             policy_service,
             user_service,
+            share_service: None,
         }
+    }
+
+    /// Attach the share service so [`AgentService::get_accessible`] can honor
+    /// use-only shares. Call once at startup before the service is cloned.
+    pub fn set_share_service(
+        &mut self,
+        share_service: crate::agent::share::service::AgentShareService,
+    ) {
+        self.share_service = Some(share_service);
+    }
+
+    /// Resolve an agent the user is allowed to *view or use* — either they own
+    /// it or it was shared with them. Returns `Forbidden` otherwise. Use this
+    /// for read/chat paths; keep [`AgentService::get`]/`update`/`delete`
+    /// (owner-only) for mutations.
+    pub async fn get_accessible(
+        &self,
+        user_id: &str,
+        agent_id: &str,
+    ) -> Result<(Agent, AgentAccess), AppError> {
+        let agent = self
+            .repo
+            .find_by_id(agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
+
+        if agent.user_id == user_id {
+            return Ok((agent, AgentAccess::Owner));
+        }
+
+        if let Some(share) = &self.share_service
+            && share.find_level(agent_id, user_id).await?.is_some()
+        {
+            return Ok((agent, AgentAccess::SharedUse));
+        }
+
+        Err(AppError::Forbidden("Not your agent".into()))
+    }
+
+    /// If `agent` was shared with `runner_id` *and* the share delegates
+    /// credentials, returns the owner's user id — the account whose agent
+    /// credential bindings the runner's session may use. `None` for owned
+    /// agents, non-shared users, or shares without delegation.
+    pub async fn credential_delegation_owner(
+        &self,
+        agent: &Agent,
+        runner_id: &str,
+    ) -> Result<Option<String>, AppError> {
+        if agent.user_id == runner_id {
+            return Ok(None);
+        }
+        let Some(share) = &self.share_service else {
+            return Ok(None);
+        };
+        let delegated = share
+            .find_share(&agent.id, runner_id)
+            .await?
+            .is_some_and(|s| s.delegate_credentials);
+        Ok(delegated.then(|| agent.user_id.clone()))
     }
 
     pub async fn sync_agent_limits(&self) -> Result<(), AppError> {

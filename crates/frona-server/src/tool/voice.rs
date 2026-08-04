@@ -11,6 +11,7 @@ use twilio_async::{TwilioJson, TwilioRequest};
 
 use crate::agent::prompt::PromptLoader;
 use crate::auth::User;
+use crate::auth::UserService;
 use crate::auth::token::models::TokenType;
 use crate::auth::token::service::{CreateTokenRequest, TokenService};
 use crate::call::models::CallDirection;
@@ -28,11 +29,11 @@ use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_
 
 /// Normalise a phone number to a canonical E.164-ish form for comparison:
 /// keep the leading `+` and strip everything that is not an ASCII digit.
-/// "+1 (555) 555-1234" and "+155****1234" both normalise to "+155****1234".
+/// "+1 (555) 555-1234" normalises to "+15555551234".
 ///
 /// The `00` international dialling prefix (common in the UK and Europe) is
-/// treated as equivalent to `+`, so "0044 20 7946 0958" becomes "+442****0958"
-/// and will match a stored entry of "+442****0958".
+/// treated as equivalent to `+`, so "0044 20 7946 0958" becomes "+442079460958"
+/// and will match a stored entry of "+442079460958".
 pub fn normalize_phone(phone: &str) -> String {
     let trimmed = phone.trim();
     // Determine whether this is an international number and strip any prefix.
@@ -55,6 +56,30 @@ pub fn normalize_phone(phone: &str) -> String {
         }
     }
     out
+}
+
+/// Find the active (non-deactivated) user whose phone number matches `phone`,
+/// compared in the canonical form from [`normalize_phone`] so that formatting
+/// differences (spaces, `+`/`00` prefixes, punctuation) don't cause a miss.
+///
+/// Returns `None` when there is no match, when the caller has no usable number,
+/// or when the lookup fails — callers treat a `None` as "not one of our users".
+pub async fn find_user_by_phone(user_service: &UserService, phone: &str) -> Option<User> {
+    let target = normalize_phone(phone);
+    if target.is_empty() {
+        return None;
+    }
+    // Narrowed to rows that actually carry a phone; the format-insensitive
+    // comparison still has to happen here rather than in SQL.
+    match user_service.find_all_with_phone().await {
+        Ok(users) => users
+            .into_iter()
+            .find(|u| u.phone.as_deref().is_some_and(|p| normalize_phone(p) == target)),
+        Err(e) => {
+            tracing::warn!(error = %e, "find_user_by_phone: user lookup failed");
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -60,54 +60,17 @@ impl From<WhatsAppUserConfig> for WhatsAppUserAdapter {
 
 #[async_trait]
 impl ChannelAdapter for WhatsAppUserAdapter {
-    async fn on_setup_begin(
-        &self,
-        ctx: &ChannelCtx,
-    ) -> Result<Option<SetupConfig>, ChannelError> {
-        // Building a bot when paired makes WhatsApp kick one of the sessions
-        // with `conflict=replaced`, breaking delivery.
-        if is_already_paired(&ctx.data_dir).await {
-            tracing::info!(
-                channel_id = %ctx.channel.id,
-                "WhatsApp Personal already paired - skipping setup, falling through to on_connect",
-            );
-            return Ok(None);
-        }
-        let (client, qr) = build_and_run_bot(ctx, /* expect_setup */ true).await?;
-        *self.client.lock().await = Some(client);
-        tracing::info!(
-            channel_id = %ctx.channel.id,
-            has_qr = %qr.is_some(),
-            "WhatsApp Personal setup started - awaiting QR scan",
-        );
-        Ok(Some(SetupConfig {
-            qr,
-            code: None,
-            instructions: Some(
-                "Open WhatsApp on your phone, go to Settings → Linked Devices → \
-                 Link a Device, and scan the QR code shown above."
-                    .into(),
-            ),
-            expires_at: Some(Utc::now() + chrono::Duration::seconds(60)),
-            initiated_at: None,
-        }))
-    }
-
-    async fn on_setup_complete(&self, ctx: &ChannelCtx) -> Result<(), ChannelError> {
-        // wa-rs has already persisted device keys; nothing else to do.
-        tracing::info!(
-            channel_id = %ctx.channel.id,
-            "WhatsApp Personal device linked - wa-rs keys persisted",
-        );
-        Ok(())
-    }
-
     async fn on_connect(&self, ctx: &ChannelCtx) -> Result<(), AppError> {
-        let (client, _qr) = build_and_run_bot(ctx, /* expect_setup */ false).await?;
+        // Unpaired → link mode (emits a QR via `SetupReady`); paired → reuse keys.
+        // Building a bot when paired makes WhatsApp kick one of the sessions
+        // with `conflict=replaced`, so only link when genuinely unpaired.
+        let expect_setup = !is_already_paired(&ctx.data_dir).await;
+        let (client, _qr) = build_and_run_bot(ctx, expect_setup).await?;
         *self.client.lock().await = Some(client);
         tracing::info!(
             channel_id = %ctx.channel.id,
-            "WhatsApp Personal connected (re-using persisted device keys)",
+            expect_setup,
+            "WhatsApp Personal on_connect (readiness/QR arrive as signals)",
         );
         Ok(())
     }
@@ -370,7 +333,8 @@ async fn build_and_run_bot(
     };
 
     let channel_id = ctx.channel.id.clone();
-    let channel_manager = ctx.channel_manager.clone();
+    let signals = ctx.signals.clone();
+    let hitl = ctx.hitl.clone();
     let chat_service = ctx.chat_service.clone();
     let emit = ctx.emit.clone();
 
@@ -390,7 +354,8 @@ async fn build_and_run_bot(
         .on_event(move |event, _client| {
             let qr_tx = qr_tx.clone();
             let channel_id = channel_id.clone();
-            let channel_manager = channel_manager.clone();
+            let signals = signals.clone();
+            let hitl = hitl.clone();
             let chat_service = chat_service.clone();
             let emit = emit.clone();
             async move {
@@ -400,12 +365,24 @@ async fn build_and_run_bot(
                             channel_id = %channel_id,
                             "WhatsApp Personal WebSocket connected (handshake complete)",
                         );
+                        signals.connected();
                     }
                     Event::PairingQrCode { code, .. } => {
                         tracing::info!(
                             channel_id = %channel_id,
                             "WhatsApp Personal QR code emitted from wa-rs",
                         );
+                        signals.setup_ready(SetupConfig {
+                            qr: Some(code.clone()),
+                            code: None,
+                            instructions: Some(
+                                "Open WhatsApp on your phone, go to Settings → Linked Devices → \
+                                 Link a Device, and scan the QR code shown above."
+                                    .into(),
+                            ),
+                            expires_at: Some(Utc::now() + chrono::Duration::seconds(60)),
+                            initiated_at: None,
+                        });
                         if let Some(slot) = qr_tx
                             && let Some(tx) = slot.lock().await.take()
                         {
@@ -417,7 +394,7 @@ async fn build_and_run_bot(
                             channel_id = %channel_id,
                             "WhatsApp Personal pair-success received from wa-rs",
                         );
-                        channel_manager.report_setup_complete(&channel_id).await;
+                        signals.linked();
                     }
                     Event::Message(msg, info) => {
                         // WhatsApp echoes our own sends back on the same
@@ -461,7 +438,7 @@ async fn build_and_run_bot(
                         {
                             match crate::chat::channel::hitl::try_resolve_inbound(
                                 &chat_service,
-                                &channel_manager,
+                                &hitl,
                                 &chat.id,
                                 quoted_id.as_deref(),
                                 text,

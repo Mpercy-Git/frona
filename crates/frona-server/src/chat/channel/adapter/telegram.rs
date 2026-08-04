@@ -40,6 +40,10 @@ const TYPING_REFRESH_INTERVAL: Duration = Duration::from_secs(4);
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelegramConfig {
     pub bot_token: String,
+    /// Override the Bot API base URL (self-hosted Bot API server, or a test
+    /// mock). Defaults to Telegram's public endpoint when unset.
+    #[serde(default)]
+    pub api_url: Option<String>,
 }
 
 #[derive(crate::ChannelFactory)]
@@ -56,8 +60,14 @@ const TELEGRAM_MAX_MESSAGE_LEN: usize = 4096;
 
 impl From<TelegramConfig> for TelegramAdapter {
     fn from(cfg: TelegramConfig) -> Self {
+        let mut bot = Bot::new(cfg.bot_token);
+        if let Some(api_url) = cfg.api_url.as_deref()
+            && let Ok(url) = Url::parse(api_url)
+        {
+            bot = bot.set_api_url(url);
+        }
         Self {
-            bot: Bot::new(cfg.bot_token),
+            bot,
             typing: TypingIndicator::new(),
             splitter: super::split::TelegramMarkdownV2Splitter::new(
                 TELEGRAM_MAX_MESSAGE_LEN,
@@ -229,6 +239,7 @@ impl ChannelAdapter for TelegramAdapter {
                 url = %ctx.webhook_url,
                 "Telegram webhook already registered correctly, skipping setWebhook",
             );
+            ctx.signals.connected();
             return Ok(());
         }
 
@@ -266,6 +277,7 @@ impl ChannelAdapter for TelegramAdapter {
             url = %ctx.webhook_url,
             "Telegram channel registered setWebhook",
         );
+        ctx.signals.connected();
         Ok(())
     }
 
@@ -657,8 +669,8 @@ impl TelegramAdapter {
         let answer_label = crate::chat::channel::hitl::response_display(&response);
 
         let outcome = ctx
-            .channel_manager
-            .resolve_hitl(&tool_call_id, response)
+            .hitl
+            .resolve(&tool_call_id, response)
             .await;
 
         let toast = match &outcome {

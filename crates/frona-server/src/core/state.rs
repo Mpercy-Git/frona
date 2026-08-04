@@ -20,6 +20,8 @@ use crate::auth::AuthService;
 use crate::auth::jwt::JwtService;
 use crate::auth::lockout::LoginAttemptTracker;
 use crate::auth::oauth::service::OAuthService;
+use crate::auth::password_reset::service::PasswordResetService;
+use crate::mail::MailService;
 use crate::auth::token::service::TokenService;
 use crate::call::CallService;
 use crate::chat::broadcast::BroadcastService;
@@ -63,23 +65,48 @@ pub struct AllowlistEntry {
 
 #[derive(Clone, Default)]
 pub struct ActiveSessions {
-    inner: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// Per-chat active run: a monotonic generation id plus its cancel token.
+    /// The id lets a finishing run clean up only its *own* entry — critical
+    /// when a new turn supersedes a running one (Stop, or an interrupting
+    /// message): the superseded task must not delete the successor's token.
+    inner: Arc<Mutex<HashMap<String, (u64, CancellationToken)>>>,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ActiveSessions {
-    pub async fn register(&self, chat_id: &str) -> CancellationToken {
+    /// Register a new run for `chat_id`, cancelling any run already active for
+    /// it. Returns the generation id (pass it to [`remove`](Self::remove)) and
+    /// the cancel token for the new run.
+    pub async fn register(&self, chat_id: &str) -> (u64, CancellationToken) {
         let mut map = self.inner.lock().await;
-        if let Some(existing) = map.get(chat_id) {
+        if let Some((_, existing)) = map.get(chat_id) {
             existing.cancel();
         }
+        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let token = CancellationToken::new();
-        map.insert(chat_id.to_string(), token.clone());
-        token
+        map.insert(chat_id.to_string(), (id, token.clone()));
+        (id, token)
+    }
+
+    /// Register a run for `chat_id` using a caller-supplied cancel token,
+    /// instead of minting a fresh one. This is for callers (e.g. the task
+    /// executor) whose run is already driven by their own token: registering
+    /// that same token here means the generic chat-level [`cancel`](Self::cancel)
+    /// fires the token the run is actually listening on. Cancels any run already
+    /// active for the chat, and returns the generation id for [`remove`](Self::remove).
+    pub async fn register_token(&self, chat_id: &str, token: CancellationToken) -> u64 {
+        let mut map = self.inner.lock().await;
+        if let Some((_, existing)) = map.get(chat_id) {
+            existing.cancel();
+        }
+        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        map.insert(chat_id.to_string(), (id, token));
+        id
     }
 
     pub async fn cancel(&self, chat_id: &str) -> bool {
         let map = self.inner.lock().await;
-        if let Some(token) = map.get(chat_id) {
+        if let Some((_, token)) = map.get(chat_id) {
             token.cancel();
             true
         } else {
@@ -87,8 +114,27 @@ impl ActiveSessions {
         }
     }
 
-    pub async fn remove(&self, chat_id: &str) {
-        self.inner.lock().await.remove(chat_id);
+    /// Remove the entry for `chat_id`, but only if it still holds generation
+    /// `id`. A superseded run passes its own (older) id here and is correctly
+    /// a no-op, leaving the current run's token in place.
+    pub async fn remove(&self, chat_id: &str, id: u64) {
+        let mut map = self.inner.lock().await;
+        if map.get(chat_id).is_some_and(|(cur, _)| *cur == id) {
+            map.remove(chat_id);
+        }
+    }
+
+    /// True if `id` is still the current generation registered for
+    /// `chat_id` — i.e. this run has not been superseded by a newer
+    /// `register`/`register_token` call. A cancelled run uses this to tell
+    /// a genuine Stop (broadcast the cancellation) apart from losing a race
+    /// against an interrupting message (stay quiet — the superseding run's
+    /// own lifecycle events already carry the UI forward, and a stray
+    /// "cancelled" broadcast for the old generation would otherwise reset
+    /// the client's running/streaming state out from under the new turn).
+    pub async fn is_current(&self, chat_id: &str, id: u64) -> bool {
+        let map = self.inner.lock().await;
+        map.get(chat_id).is_some_and(|(cur, _)| *cur == id)
     }
 
     pub async fn count(&self) -> usize {
@@ -104,11 +150,13 @@ pub struct AppState {
     pub user_service: UserService,
     pub user_group_service: crate::auth::group_service::UserGroupService,
     pub agent_service: AgentService,
+    pub agent_share_service: crate::agent::share::service::AgentShareService,
     pub space_service: SpaceService,
     pub call_service: CallService,
     pub usage_service: crate::inference::usage::UsageService,
     pub model_catalog: crate::inference::metadata::ModelCatalogStore,
     pub chat_service: ChatService,
+    pub chat_share_service: crate::chat::share::service::ChatShareService,
     pub contact_service: ContactService,
     pub task_service: TaskService,
     pub broadcast_service: BroadcastService,
@@ -137,12 +185,14 @@ pub struct AppState {
     pub share_service: crate::credential::share::service::ShareService,
     pub token_service: TokenService,
     pub oauth_service: Option<OAuthService>,
+    pub password_reset_service: PasswordResetService,
+    pub mail_service: Option<MailService>,
     pub login_tracker: LoginAttemptTracker,
     pub metrics_handle: PrometheusHandle,
     pub shutdown_token: CancellationToken,
     pub channel_registry: Arc<crate::chat::channel::ChannelRegistry>,
-    pub channel_manager: Arc<crate::chat::channel::ChannelManager>,
-    pub channel_service: Arc<crate::chat::channel::ChannelService>,
+    pub channel_supervisor: Arc<crate::chat::channel::ChannelSupervisor>,
+    pub channel_service: crate::chat::channel::ChannelService,
     pub http_client: reqwest::Client,
     pub harness: Arc<crate::agent::harness::Harness>,
     pub push_subscription_repo: Arc<dyn PushSubscriptionRepository>,
@@ -272,6 +322,31 @@ impl AppState {
             config.auth.refresh_token_expiry_secs,
         );
 
+        let password_reset_repo: SurrealRepo<
+            crate::auth::password_reset::models::PasswordResetToken,
+        > = SurrealRepo::new(db.clone());
+        let password_reset_service = PasswordResetService::new(
+            Arc::new(password_reset_repo),
+            config.auth.password_reset_expiry_minutes,
+        );
+
+        // A bad mail config disables email rather than taking the server down —
+        // everything except password reset works fine without it.
+        let mail_service = match MailService::from_config(&config.mail) {
+            Ok(Some(svc)) => {
+                tracing::info!(host = %config.mail.smtp_host, "Outbound email enabled");
+                Some(svc)
+            }
+            Ok(None) => {
+                tracing::info!("Outbound email disabled (no mail.smtp_host configured)");
+                None
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Outbound email disabled: invalid mail configuration");
+                None
+            }
+        };
+
         let voice_provider = create_voice_provider(
             &config.voice,
             &voice_base_url,
@@ -343,13 +418,19 @@ impl AppState {
             config.server.timezone.clone(),
         ));
 
-        let agent_service = AgentService::new(
+        let agent_share_service = crate::agent::share::service::AgentShareService::new(
+            SurrealRepo::new(db.clone()),
+            user_service.clone(),
+        );
+
+        let mut agent_service = AgentService::new(
             SurrealRepo::new(db.clone()),
             &config.cache,
             resource_manager.clone(),
             policy_service.clone(),
             user_service.clone(),
         );
+        agent_service.set_share_service(agent_share_service.clone());
 
         let app_manager = Arc::new(AppManager::new(
             sandbox_manager.clone(),
@@ -421,13 +502,13 @@ impl AppState {
         let channel_repo: Arc<dyn crate::chat::channel::repository::ChannelRepository> =
             Arc::new(SurrealRepo::<crate::chat::channel::Channel>::new(db.clone()));
         let config_arc = Arc::new(config.clone());
-        let channel_service = Arc::new(crate::chat::channel::ChannelService::new(
+        let channel_service = crate::chat::channel::ChannelService::new(
             channel_repo,
             channel_registry.clone(),
             Arc::new(vault_service.clone()),
             broadcast_service.clone(),
             config_arc.clone(),
-        ));
+        );
 
         let push_subscription_repo: Arc<dyn PushSubscriptionRepository> =
             Arc::new(SurrealPushSubscriptionRepo::new(db.clone()));
@@ -445,7 +526,12 @@ impl AppState {
             None => tracing::info!("Push notifications disabled (no VAPID keys configured)"),
         }
 
-        let chat_service = ChatService::new(
+        let chat_share_service = crate::chat::share::service::ChatShareService::new(
+            SurrealRepo::new(db.clone()),
+            user_service.clone(),
+        );
+
+        let mut chat_service = ChatService::new(
             chat_repo,
             message_repo,
             tool_call_repo,
@@ -460,6 +546,7 @@ impl AppState {
             notification_service.clone(),
             usage_service.clone(),
         );
+        chat_service.set_share_service(chat_share_service.clone());
         let shutdown_token = CancellationToken::new();
         let active_sessions = ActiveSessions::default();
         let harness = Arc::new(crate::agent::harness::Harness::new(
@@ -487,10 +574,23 @@ impl AppState {
         ));
         let message_repo_for_channel: Arc<dyn crate::chat::message::repository::MessageRepository> =
             Arc::new(SurrealRepo::<crate::chat::message::models::Message>::new(db.clone()));
-        let channel_manager = Arc::new(crate::chat::channel::ChannelManager::new(
-            message_repo_for_channel,
-            chat_service.clone(),
+        let space_service = SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone());
+        let contact_service = ContactService::new(SurrealRepo::new(db.clone()), broadcast_service.clone());
+        let channel_supervisor = Arc::new(crate::chat::channel::ChannelSupervisor::new(
+            config_arc.clone(),
+            shutdown_token.clone(),
             channel_service.clone(),
+            channel_registry.clone(),
+            space_service.clone(),
+            user_service.clone(),
+            storage.clone(),
+            chat_service.clone(),
+            share_service.clone(),
+            broadcast_service.clone(),
+            message_repo_for_channel,
+            agent_service.clone(),
+            contact_service.clone(),
+            policy_service.clone(),
             harness.clone(),
             task_executor.clone(),
         ));
@@ -501,12 +601,14 @@ impl AppState {
             user_service: user_service.clone(),
             user_group_service: user_group_service.clone(),
             agent_service: agent_service.clone(),
-            space_service: SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            agent_share_service: agent_share_service.clone(),
+            space_service,
             call_service: CallService::new(SurrealRepo::new(db.clone())),
             usage_service,
             model_catalog,
-            contact_service: ContactService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            contact_service,
             chat_service,
+            chat_share_service: chat_share_service.clone(),
             task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
@@ -534,11 +636,16 @@ impl AppState {
             share_service,
             token_service,
             oauth_service,
-            login_tracker: LoginAttemptTracker::new(5, 15),
+            password_reset_service,
+            mail_service,
+            login_tracker: LoginAttemptTracker::new(
+                config.auth.max_login_attempts,
+                config.auth.lockout_minutes,
+            ),
             metrics_handle,
             shutdown_token,
             channel_registry: channel_registry.clone(),
-            channel_manager,
+            channel_supervisor,
             channel_service,
             http_client,
             harness,
@@ -604,6 +711,58 @@ impl AppState {
 
     fn allowlist_key(user_id: &str) -> String {
         format!("voice.inbound_allowlist.{user_id}")
+    }
+
+    fn inbound_agent_key(user_id: &str) -> String {
+        format!("voice.inbound_agent.{user_id}")
+    }
+
+    /// Return the user's preferred inbound answering agent (ID, handle, or
+    /// name), if they have set one. Blank values are treated as unset.
+    pub async fn get_inbound_agent(&self, user_id: &str) -> Option<String> {
+        self.get_runtime_config(&Self::inbound_agent_key(user_id))
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Set the user's preferred inbound answering agent. A blank value clears
+    /// the override, so inbound calls fall back to the user's `receptionist`.
+    pub async fn set_inbound_agent(
+        &self,
+        user_id: &str,
+        agent: &str,
+    ) -> Result<(), crate::core::error::AppError> {
+        self.set_runtime_config(&Self::inbound_agent_key(user_id), agent.trim())
+            .await
+    }
+
+    fn inbound_greeting_key(user_id: &str) -> String {
+        format!("voice.inbound_greeting.{user_id}")
+    }
+
+    /// Return the user's inbound welcome greeting, if they have set one. Blank
+    /// values are treated as unset.
+    pub async fn get_inbound_greeting(&self, user_id: &str) -> Option<String> {
+        self.get_runtime_config(&Self::inbound_greeting_key(user_id))
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Set the user's inbound welcome greeting. A blank value clears it, so the
+    /// server-level default (`voice.inbound_welcome_greeting`) applies instead.
+    pub async fn set_inbound_greeting(
+        &self,
+        user_id: &str,
+        greeting: &str,
+    ) -> Result<(), crate::core::error::AppError> {
+        self.set_runtime_config(&Self::inbound_greeting_key(user_id), greeting.trim())
+            .await
     }
 
     /// Return the allowlist entries on a user's allowlist (DB-stored).
@@ -673,25 +832,22 @@ impl AppState {
 
     /// Resolve which platform user "owns" an inbound call from `phone`.
     ///
-    /// Look-up order:
-    /// 1. Per-user DB allowlists (key prefix `voice.inbound_allowlist.{user_id}`)
-    ///    — first match wins.
-    /// 2. Static `config_allowlist` (owned by `fallback_user_id`).
+    /// Scans every user's DB allowlist (key prefix
+    /// `voice.inbound_allowlist.{user_id}`); the first match wins. Ownership is
+    /// entirely per-user — there is no global/static fallback list.
     ///
-    /// Returns `None` when the caller is not on any allowlist.
-    /// When matched via a DB allowlist, returns the entry's `name` if set.
+    /// Returns `None` when the caller is not on any user's allowlist.
+    /// When matched, returns the entry's `name` if set.
     pub async fn find_user_for_caller(
         &self,
         phone: &str,
-        fallback_user_id: Option<&str>,
-        config_allowlist: &[String],
     ) -> Option<(String, Option<String>)> {
         let normalized = crate::tool::voice::normalize_phone(phone);
         if normalized.is_empty() || normalized == "+" {
             return None;
         }
 
-        // --- 1. Check all per-user DB allowlists ---
+        // Check every per-user DB allowlist.
         let mut result = self
             .db
             .query(
@@ -725,16 +881,6 @@ impl AppState {
                 if crate::tool::voice::normalize_phone(&entry.phone) == normalized {
                     return Some((user_id.to_string(), entry.name.clone()));
                 }
-            }
-        }
-
-        // --- 2. Fall back to the static config allowlist ---
-        if let Some(uid) = fallback_user_id {
-            if config_allowlist
-                .iter()
-                .any(|p| crate::tool::voice::normalize_phone(p) == normalized)
-            {
-                return Some((uid.to_string(), None));
             }
         }
 
@@ -786,19 +932,57 @@ mod tests {
     #[tokio::test]
     async fn test_remove_decrements_count() {
         let sessions = ActiveSessions::default();
-        sessions.register("chat-1").await;
+        let (id1, _) = sessions.register("chat-1").await;
         sessions.register("chat-2").await;
-        sessions.remove("chat-1").await;
+        sessions.remove("chat-1", id1).await;
         assert_eq!(sessions.count().await, 1);
     }
 
     #[tokio::test]
     async fn test_register_cancels_previous() {
         let sessions = ActiveSessions::default();
-        let first = sessions.register("chat-1").await;
+        let (_, first) = sessions.register("chat-1").await;
         let _second = sessions.register("chat-1").await;
         assert!(first.is_cancelled());
         assert_eq!(sessions.count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_remove_with_stale_id_is_noop() {
+        // A superseded run must not delete the successor's token: when a new
+        // turn (id2) replaces an old one (id1) for the same chat, the old
+        // turn's cleanup `remove(chat, id1)` should leave id2 in place so Stop
+        // still targets the live run.
+        let sessions = ActiveSessions::default();
+        let (id1, _first) = sessions.register("chat-1").await;
+        let (_id2, _second) = sessions.register("chat-1").await;
+        sessions.remove("chat-1", id1).await; // stale — no-op
+        assert_eq!(sessions.count().await, 1);
+        assert!(sessions.cancel("chat-1").await, "successor token still present");
+    }
+
+    #[tokio::test]
+    async fn test_is_current_true_for_the_registered_generation() {
+        let sessions = ActiveSessions::default();
+        let (id, _) = sessions.register("chat-1").await;
+        assert!(sessions.is_current("chat-1", id).await);
+    }
+
+    #[tokio::test]
+    async fn test_is_current_false_once_superseded() {
+        // The old generation (id1) is no longer current once a new run (id2)
+        // registers for the same chat — this is what lets a cancelled run
+        // tell "the user hit Stop" apart from "an interrupt superseded me".
+        let sessions = ActiveSessions::default();
+        let (id1, _) = sessions.register("chat-1").await;
+        let (_id2, _) = sessions.register("chat-1").await;
+        assert!(!sessions.is_current("chat-1", id1).await);
+    }
+
+    #[tokio::test]
+    async fn test_is_current_false_for_unknown_chat() {
+        let sessions = ActiveSessions::default();
+        assert!(!sessions.is_current("nonexistent", 0).await);
     }
 
     #[tokio::test]
@@ -812,6 +996,31 @@ mod tests {
     async fn test_cancel_returns_false_for_missing() {
         let sessions = ActiveSessions::default();
         assert!(!sessions.cancel("nonexistent").await);
+    }
+
+    #[tokio::test]
+    async fn test_register_token_makes_cancel_fire_the_supplied_token() {
+        // Regression: a task run drives its own cancel token. Registering that
+        // same token means the chat-level `cancel` fires the token the run is
+        // actually listening on. Previously a throwaway token was registered,
+        // so stopping a task from the chat view was silently ignored.
+        let sessions = ActiveSessions::default();
+        let token = CancellationToken::new();
+        let _id = sessions.register_token("chat-1", token.clone()).await;
+        assert!(!token.is_cancelled());
+        assert!(sessions.cancel("chat-1").await);
+        assert!(token.is_cancelled(), "cancel() must fire the caller's token");
+    }
+
+    #[tokio::test]
+    async fn test_register_token_cancels_previous() {
+        let sessions = ActiveSessions::default();
+        let (_, first) = sessions.register("chat-1").await;
+        let _id = sessions
+            .register_token("chat-1", CancellationToken::new())
+            .await;
+        assert!(first.is_cancelled(), "register_token supersedes the prior run");
+        assert_eq!(sessions.count().await, 1);
     }
 
     #[test]

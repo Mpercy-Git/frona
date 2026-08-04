@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::chat::channel::ChannelManager;
+use crate::chat::channel::HitlDeliveryService;
 use crate::chat::channel::models::{ChannelCtx, ExternalMessage};
 use crate::core::error::AppError;
 
@@ -82,8 +82,9 @@ pub async fn spawn(
     let emit = ctx.emit.clone();
     let cancel = ctx.cancel.clone();
     let channel_id = ctx.channel.id.clone();
-    let channel_manager = ctx.channel_manager.clone();
+    let hitl = ctx.hitl.clone();
     let chat_service = ctx.chat_service.clone();
+    let signals = ctx.signals.clone();
     let cmd_tx_inner = cmd_tx.clone();
 
     let thread = std::thread::Builder::new()
@@ -114,8 +115,9 @@ pub async fn spawn(
                 emit,
                 cancel,
                 channel_id,
-                channel_manager,
+                hitl,
                 chat_service,
+                signals,
             ));
         })
         .map_err(|e| AppError::Internal(format!("Signal worker thread spawn: {e}")))?;
@@ -156,22 +158,21 @@ async fn run(
     emit: mpsc::Sender<ExternalMessage>,
     cancel: CancellationToken,
     channel_id: String,
-    cm: Arc<ChannelManager>,
+    hitl: Arc<HitlDeliveryService>,
     chat_service: crate::chat::service::ChatService,
+    signals: crate::chat::channel::ChannelSignalSink,
 ) {
     let db_str = match db_path.to_str() {
         Some(s) => s.to_string(),
         None => {
-            cm.report_failure(&channel_id, "Signal data_dir path is not UTF-8".into())
-                .await;
+            signals.disconnected_terminal("Signal data_dir path is not UTF-8");
             return;
         }
     };
     if let Some(parent) = db_path.parent()
         && let Err(e) = tokio::fs::create_dir_all(parent).await
     {
-        cm.report_failure(&channel_id, format!("Signal create data_dir: {e}"))
-            .await;
+        signals.disconnected_terminal(format!("Signal create data_dir: {e}"));
         return;
     }
 
@@ -185,8 +186,7 @@ async fn run(
     let store = match SqliteStore::open(&url, OnNewIdentity::Trust).await {
         Ok(s) => s,
         Err(e) => {
-            cm.report_failure(&channel_id, format!("Signal SqliteStore open ({url}): {e}"))
-                .await;
+            signals.disconnected_terminal(format!("Signal SqliteStore open ({url}): {e}"));
             return;
         }
     };
@@ -213,15 +213,11 @@ async fn run(
                     db_path = %db_path.display(),
                     "Signal device linked - presage keys persisted",
                 );
-                cm.report_setup_complete(&channel_id).await;
+                signals.linked();
                 m
             }
             (Err(e), _) => {
-                cm.report_failure(
-                    &channel_id,
-                    format!("Signal link_secondary_device failed: {e}"),
-                )
-                .await;
+                signals.disconnected_terminal(format!("Signal link_secondary_device failed: {e}"));
                 return;
             }
         }
@@ -236,11 +232,9 @@ async fn run(
                 m
             }
             Err(e) => {
-                cm.report_failure(
-                    &channel_id,
-                    format!("Signal load_registered failed: {e} (was the data dir wiped?)"),
-                )
-                .await;
+                signals.disconnected_terminal(format!(
+                    "Signal load_registered failed: {e} (was the data dir wiped?)"
+                ));
                 return;
             }
         }
@@ -249,8 +243,7 @@ async fn run(
     let stream = match Box::pin(manager.receive_messages()).await {
         Ok(s) => s,
         Err(e) => {
-            cm.report_failure(&channel_id, format!("Signal receive_messages init: {e}"))
-                .await;
+            signals.disconnected_transient(format!("Signal receive_messages init: {e}"));
             return;
         }
     };
@@ -270,11 +263,12 @@ async fn run(
             rcv = stream.next() => {
                 match rcv {
                     None => {
-                        cm.report_failure(&channel_id, "Signal receive stream ended (websocket interrupted)".into()).await;
+                        signals.disconnected_transient("Signal receive stream ended (websocket interrupted)");
                         break;
                     }
                     Some(Received::QueueEmpty) => {
                         ready = true;
+                        signals.connected();
                         tracing::info!(channel_id = %channel_id, "Signal backlog drained - ready to send");
                     }
                     Some(Received::Contacts) => {
@@ -288,7 +282,7 @@ async fn run(
                             *content,
                             &channel_id,
                             &chat_service,
-                            &cm,
+                            &hitl,
                         )
                         .await;
                     }

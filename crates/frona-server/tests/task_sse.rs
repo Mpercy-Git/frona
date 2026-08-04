@@ -134,6 +134,7 @@ async fn test_app_state_with_mock(
         prompt_loader.clone(),
         state.broadcast_service.clone(),
         state.presign_service.clone(),
+        state.notification_service.clone(),
         state.usage_service.clone(),
     );
     // Replace the chat_service with our version that has the mock provider.
@@ -227,6 +228,7 @@ async fn seed_user(db: &Surreal<Db>) {
         timezone: None,
         groups: Vec::new(),
         deactivated_at: None,
+        phone: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
@@ -277,7 +279,10 @@ async fn task_execution_emits_expected_sse_events() {
     // flow this test asserts against.
     let frames: Vec<SseFrame> = frames
         .into_iter()
-        .filter(|f| f.event != "entity_updated")
+        // entity_updated and notification are orthogonal broadcasts whose
+        // timing relative to the inference events isn't deterministic; drop
+        // them so the assertions below check the core task-execution sequence.
+        .filter(|f| f.event != "entity_updated" && f.event != "notification")
         .collect();
     let event_names: Vec<&str> = frames.iter().map(|f| f.event.as_str()).collect();
 

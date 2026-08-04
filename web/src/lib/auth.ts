@@ -31,6 +31,7 @@ interface AuthContextValue {
   authConfig: AuthConfig | null;
   login: (req: LoginRequest) => Promise<void>;
   register: (req: RegisterRequest) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   logout: () => void;
   revalidate: () => Promise<void>;
   initiateSso: () => void;
@@ -124,6 +125,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  /// The server revokes every session and mints a fresh pair, so the reply
+  /// carries a new access token this tab must adopt or its next call 401s.
+  const changePassword = useCallback(
+    async (currentPassword: string, newPassword: string) => {
+      const res = await api.put<AuthResponse>("/api/auth/password", {
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      if (res.token) {
+        setAccessToken(res.token);
+      }
+      setUser(res.user);
+    },
+    [],
+  );
+
   const logout = useCallback(async () => {
     await api.post("/api/auth/logout", {}).catch(() => {});
     setAccessToken(null);
@@ -149,6 +166,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         authConfig,
         login,
         register,
+        changePassword,
         logout,
         revalidate,
         initiateSso,

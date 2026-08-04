@@ -61,7 +61,12 @@ export function TopBar() {
       <div className="flex items-center h-14 px-3 bg-surface-nav border-b border-border shrink-0 gap-2 pt-safe">
         <button
           onClick={() => {
-            if (pathname.startsWith("/settings")) {
+            // These pages render their own left sidebar bound to the sub-nav
+            // drawer (settings, server settings, and the agent/channel/MCP
+            // detail pages). Toggle that drawer on them; elsewhere the
+            // hamburger opens the main navigation drawer.
+            const SUB_NAV_ROUTES = ["/settings", "/admin/settings", "/agents", "/channels", "/mcp"];
+            if (SUB_NAV_ROUTES.some((r) => pathname.startsWith(r))) {
               setMobileSubNavOpen(!mobileSubNavOpen);
             } else {
               setMobileNavOpen(!mobileNavOpen);

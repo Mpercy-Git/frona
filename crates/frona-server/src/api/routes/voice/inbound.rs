@@ -12,9 +12,16 @@ use crate::call::models::CallDirection;
 use crate::chat::models::CreateChatRequest;
 use crate::core::Principal;
 use crate::core::state::AppState;
-use crate::tool::voice::{VoiceSessionExtensions, validate_twilio_signature};
+use crate::tool::voice::{VoiceSessionExtensions, find_user_by_phone, validate_twilio_signature};
 
 use super::build_twiml;
+
+/// Whether `s` could be an agent id (ids are UUIDs — see `core::repository::new_id`).
+/// Handles and display names never parse as one, so this lets the inbound path
+/// skip a guaranteed-miss lookup on the latency-sensitive answer path.
+fn looks_like_agent_id(s: &str) -> bool {
+    uuid::Uuid::parse_str(s).is_ok()
+}
 
 // ---------------------------------------------------------------------------
 // TwiML helpers
@@ -63,11 +70,9 @@ fn twiml_reject(reason: Option<&str>) -> Response {
 ///
 /// 1. Validates the Twilio signature (when `voice.twilio_auth_token` is set).
 /// 2. Rejects the call when `voice.inbound_enabled` is `false`.
-/// 3. Resolves which platform user "owns" the call by checking:
-///    a. Every user's per-user DB allowlist
-///    b. The static `voice.inbound_allowlist` config (falls back to
-///       `voice.inbound_user_id`)
-///    Calls from numbers not on any allowlist receive a `<Reject reason="busy"/>`.
+/// 3. Resolves which platform user "owns" the call by scanning every user's
+///    per-user DB allowlist (first match wins). Calls from numbers not on any
+///    user's allowlist receive a `<Reject reason="busy"/>`.
 /// 4. Creates a contact, chat, and call record under the owning user's account.
 /// 5. Issues a short-lived voice-session JWT and returns the
 ///    `<ConversationRelay>` TwiML that connects Twilio to the agent's
@@ -203,11 +208,7 @@ pub(super) async fn twilio_inbound_handler(
     // 4. Resolve call ownership from allowlists
     // ------------------------------------------------------------------
     let (user_id, caller_name_from_allowlist) = match state
-        .find_user_for_caller(
-            &from,
-            state.config.voice.inbound_user_id.as_deref(),
-            &state.config.voice.inbound_allowlist,
-        )
+        .find_user_for_caller(&from)
         .await
     {
         Some((uid, name)) => (uid, name),
@@ -254,23 +255,24 @@ pub(super) async fn twilio_inbound_handler(
 
     // ------------------------------------------------------------------
     // 6. Resolve answering agent
-    //    Try by ID first, then by handle (username), then by name.
-    //    Defaults to "receptionist" handle.
+    //    The owning user's own choice wins; otherwise their "receptionist".
+    //    Resolved by ID, handle, or name — but the ID lookup is skipped unless
+    //    the value actually looks like one. The common case ("receptionist",
+    //    or any handle the user picked) would otherwise pay a guaranteed-miss
+    //    round-trip on every inbound call, before the caller hears anything.
     // ------------------------------------------------------------------
     let agent_query = state
-        .config
-        .voice
-        .inbound_agent_id
-        .clone()
+        .get_inbound_agent(&user_id)
+        .await
         .unwrap_or_else(|| "receptionist".to_string());
 
-    // Try by ID (UUID) first
-    let agent = match state.agent_service.find_by_id(&agent_query).await {
-        Ok(Some(a)) => Some(a),
-        _ => None,
+    let agent = if looks_like_agent_id(&agent_query) {
+        state.agent_service.find_by_id(&agent_query).await.ok().flatten()
+    } else {
+        None
     };
 
-    // If not found by ID, try by handle
+    // Handle (username) is the common case for a configured inbound agent.
     let agent = match agent {
         Some(a) => Some(a),
         None => match state.agent_service.find_by_handle(&user_id, &agent_query).await {
@@ -279,7 +281,7 @@ pub(super) async fn twilio_inbound_handler(
         },
     };
 
-    // If still not found, try by name
+    // If still not found, try by display name.
     let agent = match agent {
         Some(a) => Some(a),
         None => match state.agent_service.find_by_name(&user_id, &agent_query).await {
@@ -299,14 +301,29 @@ pub(super) async fn twilio_inbound_handler(
     let agent_id = agent.id.clone();
 
     // ------------------------------------------------------------------
-    // 7. Find or create the caller's contact record
+    // 7. Resolve a human-friendly display name for the caller
+    //    Priority: an explicit allowlist name the owner set, otherwise the
+    //    name on the registered user whose number matches the caller (an
+    //    inbound caller is one of our users). Falls back to the raw number so
+    //    labels are never empty.
+    // ------------------------------------------------------------------
+    let caller_display_name = match &caller_name_from_allowlist {
+        Some(n) if !n.trim().is_empty() => Some(n.clone()),
+        _ => find_user_by_phone(&state.user_service, &from)
+            .await
+            .map(|u| u.name)
+            .filter(|n| !n.trim().is_empty()),
+    };
+
+    // ------------------------------------------------------------------
+    // 8. Find or create the caller's contact record
     // ------------------------------------------------------------------
     let contact = match state
         .contact_service
         .find_or_create_by_phone(
             &user_id,
             &from,
-            caller_name_from_allowlist.as_deref().unwrap_or("Incoming caller"),
+            caller_display_name.as_deref().unwrap_or("Incoming caller"),
         )
         .await
     {
@@ -318,8 +335,12 @@ pub(super) async fn twilio_inbound_handler(
     };
 
     // ------------------------------------------------------------------
-    // 8. Create a new chat for this call
+    // 9. Create a new chat for this call
     // ------------------------------------------------------------------
+    let chat_title = match &caller_display_name {
+        Some(name) => format!("Inbound call from {name}"),
+        None => format!("Inbound call from {from}"),
+    };
     let chat = match state
         .chat_service
         .create_chat(
@@ -328,7 +349,7 @@ pub(super) async fn twilio_inbound_handler(
                 space_id: None,
                 task_id: None,
                 agent_id: agent_id.clone(),
-                title: Some(format!("Inbound call from {from}")),
+                title: Some(chat_title),
                 metadata: None,
             },
         )
@@ -342,7 +363,7 @@ pub(super) async fn twilio_inbound_handler(
     };
 
     // ------------------------------------------------------------------
-    // 9. Record the call (Ringing → Active immediately for inbound)
+    // 10. Record the call (Ringing → Active immediately for inbound)
     // ------------------------------------------------------------------
     let call = match state
         .call_service
@@ -366,7 +387,7 @@ pub(super) async fn twilio_inbound_handler(
     };
 
     // ------------------------------------------------------------------
-    // 10. Issue a voice-session JWT (goes directly to the WS handler;
+    // 11. Issue a voice-session JWT (goes directly to the WS handler;
     //     no intermediate callback token needed for inbound calls)
     // ------------------------------------------------------------------
     let ws_ext = match serde_json::to_value(VoiceSessionExtensions {
@@ -375,9 +396,9 @@ pub(super) async fn twilio_inbound_handler(
         call_id: Some(call_id.clone()),
         direction: Some(CallDirection::Inbound),
         caller_phone: Some(from.clone()),
-        // Prefer the allowlist name (user-set) over the contact's stored
-        // name, which may be "Incoming caller" from a previous call.
-        caller_name: Some(caller_name_from_allowlist.unwrap_or_else(|| contact.name.clone())),
+        // Prefer the resolved display name (allowlist or matched user) over the
+        // contact's stored name, which may be "Incoming caller" from a prior call.
+        caller_name: Some(caller_display_name.unwrap_or_else(|| contact.name.clone())),
     }) {
         Ok(v) => v,
         Err(e) => {
@@ -440,13 +461,17 @@ pub(super) async fn twilio_inbound_handler(
         .replace("http://", "ws://");
     let ws_url = format!("{ws_base}/api/voice/twilio/ws?token={}", created.jwt);
 
+    // Per-user greeting wins; otherwise the server-level default.
+    let greeting = state
+        .get_inbound_greeting(&user_id)
+        .await
+        .or_else(|| state.config.voice.inbound_welcome_greeting.clone());
+
     let twiml = build_twiml(
         &ws_url,
-        state.config.voice.inbound_welcome_greeting.as_deref(),
+        greeting.as_deref(),
         None, // hints — not applicable for inbound
-        state.config.voice.twilio_voice_id.as_deref(),
-        state.config.voice.twilio_speech_model.as_deref(),
-        state.config.voice.twilio_tts_provider.as_deref(),
+        &state.config.voice,
     );
 
     tracing::info!(
@@ -527,5 +552,16 @@ mod tests {
         let expected_sig = base64::engine::general_purpose::STANDARD.encode(result);
 
         assert!(validate_twilio_signature(auth_token, url, &params, &expected_sig));
+    }
+
+    #[test]
+    fn looks_like_agent_id_only_matches_uuids() {
+        // Real ids are UUIDs; handles/names must not trigger the id lookup.
+        assert!(super::looks_like_agent_id(
+            &uuid::Uuid::new_v4().to_string()
+        ));
+        assert!(!super::looks_like_agent_id("receptionist"));
+        assert!(!super::looks_like_agent_id("my-agent_2"));
+        assert!(!super::looks_like_agent_id(""));
     }
 }

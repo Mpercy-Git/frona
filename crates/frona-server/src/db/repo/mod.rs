@@ -1,7 +1,9 @@
+pub mod agent_shares;
 pub mod agents;
 pub mod apps;
 pub mod calls;
 pub mod channels;
+pub mod chat_shares;
 pub mod chats;
 pub mod contacts;
 pub mod memory_entries;
@@ -15,6 +17,7 @@ pub mod notifications;
 pub mod policies;
 pub mod push_subscriptions;
 pub mod oauth;
+pub mod password_reset_tokens;
 pub mod shares;
 pub mod spaces;
 pub mod tasks;

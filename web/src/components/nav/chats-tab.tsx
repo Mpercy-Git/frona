@@ -180,15 +180,21 @@ export function ChatsTab() {
               <button
                 onClick={() => router.push(`/chat?id=${chat.id}`)}
                 className="flex-1 min-w-0 px-3 py-2 text-left text-sm truncate"
+                title={chat.is_shared && chat.shared_by ? `Shared by @${chat.shared_by}` : undefined}
               >
                 {chat.title ?? "New chat"}
+                {chat.is_shared && (
+                  <span className="ml-1.5 text-[10px] text-text-tertiary">(shared)</span>
+                )}
               </button>
-              <ChatActions
-                isArchived={false}
-                onArchive={() => handleArchive(chat.id)}
-                onUnarchive={() => {}}
-                onDelete={() => setDeleteTarget(chat.id)}
-              />
+              {!chat.is_shared && (
+                <ChatActions
+                  isArchived={false}
+                  onArchive={() => handleArchive(chat.id)}
+                  onUnarchive={() => {}}
+                  onDelete={() => setDeleteTarget(chat.id)}
+                />
+              )}
             </div>
           ))}
         </div>

@@ -16,6 +16,13 @@ export function renderMessageBody(msg: MessageResponse): string {
   if (event?.type !== "TaskCompletion") {
     return msg.content || "";
   }
+  return appendCitations(renderTaskCompletionBody(msg, event), event.data.citations);
+}
+
+function renderTaskCompletionBody(
+  msg: MessageResponse,
+  event: Extract<MessageEvent, { type: "TaskCompletion" }>,
+): string {
   const schema = event.data.schema;
   if (!schema) {
     return msg.content || "";
@@ -29,6 +36,17 @@ export function renderMessageBody(msg: MessageResponse): string {
   // No fallback to msg.content on null — that's the signal to suppress the
   // bubble for complex schemas without a summary field.
   return renderResultMarkdown(schema as JsonValue, parsed) ?? "";
+}
+
+/** Appends a "Sources" markdown list. No-op when there's nothing rendered to
+ * attach sources to (e.g. a suppressed/empty completion body). */
+function appendCitations(
+  body: string,
+  citations: { title?: string; url: string }[] | undefined,
+): string {
+  if (!body || !citations || citations.length === 0) return body;
+  const lines = citations.map((c) => `- [${c.title || c.url}](${c.url})`);
+  return `${body}\n\n**Sources**\n${lines.join("\n")}`;
 }
 
 export function renderResultMarkdown(

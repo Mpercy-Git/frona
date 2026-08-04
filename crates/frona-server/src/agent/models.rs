@@ -96,6 +96,14 @@ pub struct AgentResponse {
     pub prompt: Option<String>,
     pub default_prompt: String,
     pub is_builtin: bool,
+    /// True when this agent was shared with the requesting user rather than
+    /// owned by them — the UI treats it as read-only (use-only). The server is
+    /// the real enforcement point (edit/delete stay owner-only).
+    pub is_shared: bool,
+    /// The owner's handle for display ("Shared by …") when `is_shared`. `None`
+    /// for owned agents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_by: Option<String>,
     pub chat_count: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -135,6 +143,8 @@ impl AgentResponse {
             prompt: agent.prompt,
             default_prompt: String::new(),
             is_builtin,
+            is_shared: false,
+            shared_by: None,
             chat_count: 0,
             created_at: agent.created_at,
             updated_at: agent.updated_at,

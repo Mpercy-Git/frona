@@ -4,6 +4,7 @@ pub mod jwt;
 pub mod lockout;
 pub mod models;
 pub mod oauth;
+pub mod password_reset;
 pub mod token;
 pub mod user_service;
 
@@ -11,7 +12,7 @@ use async_trait::async_trait;
 
 pub use self::models::User;
 pub use self::user_service::UserService;
-use self::models::{ADMINS_GROUP, AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo, UserPermissions};
+use self::models::{ADMINS_GROUP, AuthResponse, ChangePasswordRequest, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo, UserPermissions};
 use crate::auth::token::service::TokenService;
 use crate::core::config::Config;
 use crate::core::error::{AppError, AuthErrorCode};
@@ -55,6 +56,11 @@ pub trait UserRepository: Repository<User> {
     async fn find_any_active_admin(&self) -> Result<Option<User>, AppError>;
     async fn find_oldest_active(&self) -> Result<Option<User>, AppError>;
     async fn list_all(&self, include_deactivated: bool) -> Result<Vec<User>, AppError>;
+    /// Active users that have a phone number set. Phone numbers are stored in
+    /// whatever format the user typed, so an exact SQL match is unreliable —
+    /// callers still compare via `normalize_phone`. This narrows the candidate
+    /// set to rows that can possibly match instead of scanning every user.
+    async fn find_all_with_phone(&self) -> Result<Vec<User>, AppError>;
 }
 
 pub fn can_create_users(config: &Config) -> bool {
@@ -165,6 +171,76 @@ impl AuthService {
         };
 
         Ok((response, refresh_jwt))
+    }
+
+    /// Overwrites a user's password unconditionally. Authorization, session
+    /// revocation, and lockout clearing are the caller's responsibility — this
+    /// is the shared credential-writing primitive behind the admin reset, the
+    /// self-service change, and the emailed reset flow.
+    pub async fn set_password(
+        &self,
+        user_service: &UserService,
+        user_id: &str,
+        new_password: &str,
+    ) -> Result<User, AppError> {
+        Self::validate_password(new_password)?;
+        let mut user = user_service
+            .find_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("User not found".into()))?;
+        user.password_hash = self.hash_password(new_password)?;
+        user.updated_at = chrono::Utc::now();
+        user_service.update(&user).await
+    }
+
+    /// Self-service password change. Requires the current password, then
+    /// invalidates every existing session and issues a fresh pair, so the
+    /// device that made the change stays signed in and all others are kicked.
+    pub async fn change_password(
+        &self,
+        user_service: &UserService,
+        keypair_svc: &KeyPairService,
+        token_svc: &TokenService,
+        policy_service: &PolicyService,
+        user_id: &str,
+        req: ChangePasswordRequest,
+    ) -> Result<(AuthResponse, String), AppError> {
+        let user = user_service
+            .find_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("User not found".into()))?;
+
+        self.verify_password(&req.current_password, &user.password_hash)
+            .map_err(|_| AppError::Auth {
+                message: "Current password is incorrect".into(),
+                code: AuthErrorCode::InvalidCredentials,
+            })?;
+
+        if req.current_password == req.new_password {
+            return Err(AppError::Validation(
+                "New password must be different from the current one".into(),
+            ));
+        }
+
+        let user = self
+            .set_password(user_service, user_id, &req.new_password)
+            .await?;
+
+        let tokens = token_svc.repo().find_by_user_id(user_id).await?;
+        for token in &tokens {
+            let _ = token_svc.repo().delete(&token.id).await;
+        }
+
+        let (access_jwt, refresh_jwt) =
+            token_svc.create_session_pair(keypair_svc, &user).await?;
+
+        Ok((
+            AuthResponse {
+                token: access_jwt,
+                user: build_user_info(user, policy_service, None).await?,
+            },
+            refresh_jwt,
+        ))
     }
 
     pub fn validate_password(password: &str) -> Result<(), AppError> {

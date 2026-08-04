@@ -46,6 +46,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(LogStreamLayer)
         .init();
 
+    // Subcommands run instead of the server, not alongside it — they need the
+    // database lock the server would otherwise hold.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        None => {}
+        Some("reset-password") => return frona::cli::run_reset_password(&args[1..]).await,
+        Some("--help" | "-h" | "help") => {
+            println!("{}", frona::cli::USAGE);
+            return Ok(());
+        }
+        Some(other) => {
+            eprintln!("Unknown command '{other}'\n\n{}", frona::cli::USAGE);
+            std::process::exit(2);
+        }
+    }
+
     info!("Frona v{}", frona::core::app_version());
 
     let loaded = Config::load();
@@ -101,8 +117,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     frona::chat::channel::spawn_inference_dispatcher(state.clone());
 
-    if let Err(e) = state.channel_manager.clone().start(state.clone()).await {
-        tracing::warn!(error = %e, "ChannelManager failed to start; channel adapters will not run");
+    if let Err(e) = state.channel_supervisor.clone().boot().await {
+        tracing::warn!(error = %e, "ChannelSupervisor failed to start; channel adapters will not run");
     }
 
     if state.config.sandbox.default_network_access {
@@ -183,6 +199,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             run(mcp_supervisor, shutdown, notif, broadcast, mcp_config).await;
         });
+
+        // Channels: boot-restore + level-triggered re-arm of any enabled channel whose
+        // supervisor task is absent (replaces the old scheduler reconcile sweep). The
+        // per-channel event-driven reconnect loop is separate and unaffected.
+        let channel_config = SupervisorConfig {
+            health_check_interval: std::time::Duration::from_secs(60),
+            // Transient reconnects are handled forever by the inner loop; the outer loop
+            // only re-arms absent tasks, so it must never give up.
+            max_restart_attempts: u32::MAX,
+            hibernate_after: None,
+        };
+        let shutdown = state.shutdown_token.clone();
+        let notif = state.notification_service.clone();
+        let broadcast = state.broadcast_service.clone();
+        let channel_supervisor = state.channel_supervisor.clone();
+        tokio::spawn(async move {
+            run(channel_supervisor, shutdown, notif, broadcast, channel_config).await;
+        });
     }
 
     if let Ok(compaction_group) = state.chat_service.provider_registry()
@@ -221,6 +255,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .allow_headers([
                 HeaderName::from_static("content-type"),
                 HeaderName::from_static("authorization"),
+                // Range requests are how the browser seeks in audio/video and
+                // how the file preview reads just the head of a large file.
+                // Without this the preflight fails cross-origin.
+                HeaderName::from_static("range"),
+            ])
+            // Neither is CORS-safelisted, so JS can't see them cross-origin
+            // unless they're exposed: the preview needs Content-Range to tell
+            // a truncated read from a whole file.
+            .expose_headers([
+                HeaderName::from_static("accept-ranges"),
+                HeaderName::from_static("content-range"),
             ])
             .allow_credentials(true)
     });

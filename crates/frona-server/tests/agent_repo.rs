@@ -45,6 +45,7 @@ async fn seed_user(user_service: &frona::auth::UserService, id: &str) {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })
@@ -198,6 +199,7 @@ async fn test_clone_all_builtins_materializes_per_user_rows() {
             timezone: None,
             groups: Vec::new(),
             deactivated_at: None,
+            phone: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         })

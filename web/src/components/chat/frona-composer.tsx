@@ -130,7 +130,7 @@ export function FronaComposer({
       hitlResponse = { type: "Choice", data: text };
     } else if (kind === "App") {
       hitlResponse = { type: "Approval", data: false };
-    } else if (kind === "Credential") {
+    } else if (kind === "Credential" || kind === "Credentials") {
       hitlResponse = { type: "Vault", data: { type: "Denied" } };
     } else {
       hitlResponse = { type: "Choice", data: text };
@@ -159,9 +159,27 @@ export function FronaComposer({
     }
   }, [currentPendingTool, wizard, composerRuntime, pendingTools, safeIndex, chatCtx?.chatId]);
 
+  // Steer a running agent: send the composer text as a guidance message that
+  // interrupts + redirects the current turn. Only meaningful for the main chat
+  // composer (not the home/space `onSend` composer or the HITL wizard).
+  const canInterrupt = !!chatCtx?.interrupt && !onSend && !currentPendingTool;
+  const handleInterrupt = useCallback(() => {
+    if (!chatCtx?.interrupt) return;
+    const state = composerRuntime.getState();
+    const text = state.text.trim();
+    if (!text) return;
+    const backendAttachments = state.attachments
+      .map((a) => getBackendAttachment(a.id))
+      .filter((a): a is Attachment => a != null);
+    composerRuntime.setText("");
+    chatCtx.interrupt(text, backendAttachments.length ? backendAttachments : undefined);
+  }, [chatCtx, composerRuntime]);
+
   const activePlaceholder = currentPendingTool
     ? "Type your answer or click an option above..."
-    : placeholder;
+    : threadRunning && canInterrupt
+      ? "Send guidance to steer the agent…"
+      : placeholder;
 
   // On mobile, when the virtual keyboard opens the visualViewport shrinks.
   // Scroll the thread viewport to bottom so the composer stays visible.
@@ -228,6 +246,23 @@ export function FronaComposer({
     el.addEventListener("keydown", handler);
     return () => el.removeEventListener("keydown", handler);
   }, [onSend]);
+
+  // While the agent is running, Enter would otherwise no-op (the runtime blocks
+  // send). Intercept it in the capture phase and route to interrupt instead, so
+  // the user can steer without first hitting Stop.
+  useEffect(() => {
+    if (!threadRunning || !canInterrupt) return;
+    const el = editorBridgeRef.current;
+    if (!el) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || e.shiftKey || (e as KeyboardEvent).isComposing) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handleInterrupt();
+    };
+    el.addEventListener("keydown", handler, true);
+    return () => el.removeEventListener("keydown", handler, true);
+  }, [threadRunning, canInterrupt, handleInterrupt]);
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
@@ -356,9 +391,20 @@ export function FronaComposer({
               ) : (
               <>
               <ThreadPrimitive.If running>
+                {canInterrupt && (
+                  <button
+                    type="button"
+                    onClick={handleInterrupt}
+                    title="Send guidance to steer the agent"
+                    className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
+                  >
+                    <PaperAirplaneIcon className="h-5 w-5" />
+                  </button>
+                )}
                 <ComposerPrimitive.Cancel asChild>
                   <button
                     type="button"
+                    title="Stop"
                     className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
                   >
                     <StopIcon className="h-5 w-5" />

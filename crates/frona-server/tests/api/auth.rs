@@ -885,6 +885,7 @@ async fn startup_promotes_oldest_active_user_when_no_admin() {
         timezone: None,
         groups: Vec::new(),
         deactivated_at: None,
+        phone: None,
         created_at: now,
         updated_at: now,
     };
@@ -897,6 +898,7 @@ async fn startup_promotes_oldest_active_user_when_no_admin() {
         timezone: None,
         groups: Vec::new(),
         deactivated_at: None,
+        phone: None,
         created_at: now + chrono::Duration::seconds(1),
         updated_at: now + chrono::Duration::seconds(1),
     };
@@ -994,4 +996,498 @@ async fn refresh_refuses_deactivated_user() {
     with_connect_info(&mut req);
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+// ---------------------------------------------------------------------------
+// Login lockout
+// ---------------------------------------------------------------------------
+
+/// The tracker is built from config inside `AppState::new`, so swapping the
+/// config alone wouldn't change it — the tracker has to be replaced too.
+fn build_state_with_lockout(state: &AppState, max_attempts: u32, minutes: u64) -> AppState {
+    let mut new_state = state.clone();
+    let mut config = (*new_state.config).clone();
+    config.auth.max_login_attempts = max_attempts;
+    config.auth.lockout_minutes = minutes;
+    new_state.config = std::sync::Arc::new(config);
+    new_state.login_tracker =
+        frona::auth::lockout::LoginAttemptTracker::new(max_attempts, minutes);
+    new_state
+}
+
+/// One login attempt from a distinct source address, so the per-IP governor
+/// never fires and the identifier lockout is what's actually under test.
+async fn attempt_login(
+    state: &AppState,
+    identifier: &str,
+    password: &str,
+    from_ip: u8,
+) -> axum::http::Response<Body> {
+    let app = build_app(state.clone());
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "identifier": identifier, "password": password }).to_string(),
+        ))
+        .unwrap();
+    with_connect_info_from(&mut req, from_ip);
+    app.oneshot(req).await.unwrap()
+}
+
+#[tokio::test]
+async fn login_locks_out_after_max_attempts() {
+    let (state, _tmp) = test_app_state().await;
+    register_user(&state, "locky", "locky@example.com", "password123").await;
+
+    for i in 0..5 {
+        let resp = attempt_login(&state, "locky@example.com", "wrong", i + 1).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "attempt {i} should be a plain rejection"
+        );
+    }
+
+    let resp = attempt_login(&state, "locky@example.com", "wrong", 6).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .expect("Retry-After header")
+        .to_str()
+        .unwrap()
+        .parse::<u64>()
+        .expect("Retry-After is a number");
+    assert!(retry_after > 0 && retry_after <= 15 * 60 + 1);
+}
+
+#[tokio::test]
+async fn lockout_refuses_the_correct_password() {
+    let (state, _tmp) = test_app_state().await;
+    register_user(&state, "stilllocked", "still@example.com", "password123").await;
+
+    for i in 0..5 {
+        attempt_login(&state, "still@example.com", "wrong", i + 1).await;
+    }
+
+    let resp = attempt_login(&state, "still@example.com", "password123", 6).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "a lockout must hold even against the right password"
+    );
+}
+
+#[tokio::test]
+async fn successful_login_clears_the_failure_count() {
+    let (state, _tmp) = test_app_state().await;
+    register_user(&state, "reset", "reset@example.com", "password123").await;
+
+    for i in 0..4 {
+        attempt_login(&state, "reset@example.com", "wrong", i + 1).await;
+    }
+    let resp = attempt_login(&state, "reset@example.com", "password123", 5).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Budget is back to full: four more failures still must not lock.
+    for i in 0..4 {
+        let resp = attempt_login(&state, "reset@example.com", "wrong", i + 6).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "counter should have reset after the successful login"
+        );
+    }
+}
+
+#[tokio::test]
+async fn lockout_ignores_identifier_casing_and_padding() {
+    let (state, _tmp) = test_app_state().await;
+    register_user(&state, "casey", "casey@example.com", "password123").await;
+
+    // Spread across spellings that all resolve to the same account.
+    let spellings = [
+        "casey@example.com",
+        "Casey@Example.com",
+        "  casey@example.com  ",
+        "CASEY@EXAMPLE.COM",
+        "cAsEy@ExAmPlE.cOm",
+    ];
+    for (i, spelling) in spellings.iter().enumerate() {
+        let resp = attempt_login(&state, spelling, "wrong", i as u8 + 1).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let resp = attempt_login(&state, "casey@example.com", "wrong", 6).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "casing variants must share one budget, not get one each"
+    );
+}
+
+#[tokio::test]
+async fn deactivated_account_does_not_accrue_lockout() {
+    let (state, _tmp) = test_app_state().await;
+    state.user_group_service.seed_built_in().await.unwrap();
+    register_user(&state, "keepadmin", "keepadmin@example.com", "password123").await;
+    let (_, user_id) =
+        register_user(&state, "gonner", "gonner@example.com", "password123").await;
+    state.user_service.deactivate(&user_id).await.unwrap();
+
+    // Six attempts with the right password: rejected for being deactivated,
+    // never converted into a lockout.
+    for i in 0..6 {
+        let resp = attempt_login(&state, "gonner@example.com", "password123", i + 1).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "deactivation is not a failed credential guess"
+        );
+    }
+}
+
+#[tokio::test]
+async fn zero_max_attempts_disables_lockout() {
+    let (state, _tmp) = test_app_state().await;
+    register_user(&state, "unlimited", "unlimited@example.com", "password123").await;
+    let state = build_state_with_lockout(&state, 0, 15);
+
+    for i in 0..8 {
+        let resp = attempt_login(&state, "unlimited@example.com", "wrong", i + 1).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "attempt {i}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Self-service password change
+// ---------------------------------------------------------------------------
+
+fn change_password_req(token: &str, current: &str, new: &str) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri("/api/auth/password")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "current_password": current, "new_password": new }).to_string(),
+        ))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn change_password_swaps_the_credential() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "swapper", "swap@example.com", "password123").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(change_password_req(&token, "password123", "newpassword456"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(json["token"].is_string(), "a fresh access token is returned");
+
+    let resp = attempt_login(&state, "swap@example.com", "password123", 1).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "old password is dead");
+
+    let resp = attempt_login(&state, "swap@example.com", "newpassword456", 2).await;
+    assert_eq!(resp.status(), StatusCode::OK, "new password works");
+}
+
+#[tokio::test]
+async fn change_password_requires_the_current_one() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "wrongcur", "wrongcur@example.com", "password123").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(change_password_req(&token, "notmypassword", "newpassword456"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let resp = attempt_login(&state, "wrongcur@example.com", "password123", 1).await;
+    assert_eq!(resp.status(), StatusCode::OK, "password must be unchanged");
+}
+
+#[tokio::test]
+async fn change_password_rejects_a_short_new_password() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "shorty", "shorty@example.com", "password123").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(change_password_req(&token, "password123", "short"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn change_password_revokes_other_sessions() {
+    let (state, _tmp) = test_app_state().await;
+    let (first_session, _) =
+        register_user(&state, "multi", "multi@example.com", "password123").await;
+
+    // A second device signs in, then the first device changes the password.
+    let resp = attempt_login(&state, "multi@example.com", "password123", 1).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let second_session = body_json(resp).await["token"].as_str().unwrap().to_string();
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(change_password_req(&first_session, "password123", "newpassword456"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/auth/me")
+                .header("authorization", format!("Bearer {second_session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "the other device's session must be gone"
+    );
+}
+
+#[tokio::test]
+async fn change_password_clears_an_existing_lockout() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "lockedout", "lockedout@example.com", "password123").await;
+
+    for i in 0..5 {
+        attempt_login(&state, "lockedout@example.com", "wrong", i + 1).await;
+    }
+    assert_eq!(
+        attempt_login(&state, "lockedout@example.com", "password123", 6)
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(change_password_req(&token, "password123", "newpassword456"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = attempt_login(&state, "lockedout@example.com", "newpassword456", 7).await;
+    assert_eq!(resp.status(), StatusCode::OK, "lockout should be cleared");
+}
+
+// ---------------------------------------------------------------------------
+// Emailed password reset
+// ---------------------------------------------------------------------------
+
+fn reset_password_req(token: &str, new_password: &str) -> Request<Body> {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/reset-password")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "token": token, "new_password": new_password }).to_string(),
+        ))
+        .unwrap();
+    with_connect_info(&mut req);
+    req
+}
+
+#[tokio::test]
+async fn reset_password_consumes_the_token_and_sets_the_password() {
+    let (state, _tmp) = test_app_state().await;
+    let (_, user_id) =
+        register_user(&state, "forgetful", "forgetful@example.com", "password123").await;
+
+    let secret = state.password_reset_service.issue(&user_id).await.unwrap();
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(reset_password_req(&secret, "brandnewpass"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let resp = attempt_login(&state, "forgetful@example.com", "brandnewpass", 1).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn reset_token_is_single_use() {
+    let (state, _tmp) = test_app_state().await;
+    let (_, user_id) = register_user(&state, "onceonly", "once@example.com", "password123").await;
+    let secret = state.password_reset_service.issue(&user_id).await.unwrap();
+
+    let app = build_app(state.clone());
+    assert_eq!(
+        app.oneshot(reset_password_req(&secret, "brandnewpass"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let app = build_app(state.clone());
+    assert_eq!(
+        app.oneshot(reset_password_req(&secret, "yetanotherpass"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST,
+        "a spent token must not work twice"
+    );
+}
+
+#[tokio::test]
+async fn reset_password_rejects_an_unknown_token() {
+    let (state, _tmp) = test_app_state().await;
+    register_user(&state, "nobody", "nobody@example.com", "password123").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(reset_password_req("not-a-real-token", "brandnewpass"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn reset_password_keeps_the_token_when_the_new_password_is_rejected() {
+    let (state, _tmp) = test_app_state().await;
+    let (_, user_id) = register_user(&state, "typo", "typo@example.com", "password123").await;
+    let secret = state.password_reset_service.issue(&user_id).await.unwrap();
+
+    let app = build_app(state.clone());
+    assert_eq!(
+        app.oneshot(reset_password_req(&secret, "short"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    // The user gets to try again with the same link rather than being sent back
+    // to square one over a typo.
+    let app = build_app(state.clone());
+    assert_eq!(
+        app.oneshot(reset_password_req(&secret, "properlength"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
+async fn reset_password_revokes_existing_sessions() {
+    let (state, _tmp) = test_app_state().await;
+    let (session, user_id) =
+        register_user(&state, "kickme", "kickme@example.com", "password123").await;
+    let secret = state.password_reset_service.issue(&user_id).await.unwrap();
+
+    let app = build_app(state.clone());
+    assert_eq!(
+        app.oneshot(reset_password_req(&secret, "brandnewpass"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/auth/me")
+                .header("authorization", format!("Bearer {session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn changing_the_password_invalidates_an_outstanding_reset_link() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, user_id) =
+        register_user(&state, "racer", "racer@example.com", "password123").await;
+
+    // An attacker requests a reset; the real user then changes their password.
+    let secret = state.password_reset_service.issue(&user_id).await.unwrap();
+    let app = build_app(state.clone());
+    assert_eq!(
+        app.oneshot(change_password_req(&token, "password123", "chosenbyowner"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+
+    let app = build_app(state.clone());
+    assert_eq!(
+        app.oneshot(reset_password_req(&secret, "attackerchosen"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST,
+        "the pre-existing reset link must be dead"
+    );
+}
+
+#[tokio::test]
+async fn forgot_password_is_refused_when_mail_is_unconfigured() {
+    let (state, _tmp) = test_app_state().await;
+    register_user(&state, "nomail", "nomail@example.com", "password123").await;
+
+    let app = build_app(state.clone());
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/forgot-password")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "email": "nomail@example.com" }).to_string(),
+        ))
+        .unwrap();
+    with_connect_info(&mut req);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn auth_config_reports_password_reset_availability() {
+    let (state, _tmp) = test_app_state().await;
+    let app = build_app(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/auth/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["password_reset_enabled"], false,
+        "no SMTP configured in tests, so the flow must advertise as unavailable"
+    );
 }

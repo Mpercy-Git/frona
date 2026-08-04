@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref cancels an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (cargo test)
+    runs-on: ubuntu-latest
+    # The repo's .cargo/config.toml pins build.target-dir to a Windows path
+    # (C:/temp/...). On Linux the "C:" colon makes cargo assemble an invalid
+    # dynamic-library path and fail before compiling anything. Override it.
+    env:
+      CARGO_TARGET_DIR: target
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native build deps
+        # Mirrors build/pkgs/builder-rust-apt.txt (libclang for bindgen-based
+        # -sys crates; protobuf-compiler for presage's build scripts). The
+        # ubuntu runner already provides build-essential, pkg-config and libssl.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev protobuf-compiler
+
+      # Native toolchain (not a rust: container) to avoid the GitHub Actions
+      # "failed to join paths from $LD_LIBRARY_PATH" breakage that the rust
+      # Docker image hits inside container jobs. Pinned to match build/Dockerfile.
+      # This action also caches ~/.cargo and target keyed on Cargo.lock.
+      - name: Install Rust 1.95
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.95.0"
+          # This action defaults RUSTFLAGS to "-D warnings"; the codebase (and
+          # the Docker release build) don't treat warnings as errors, so clear
+          # it. CI is here to catch compile errors and test failures, not to
+          # enforce a zero-warning policy the project hasn't adopted.
+          rustflags: ""
+
+      # Compile every crate's tests. This is the check that cannot run on
+      # Windows — the sandbox code uses Unix-only APIs — so it's the main reason
+      # the workflow exists. Kept separate so a compile break reads distinctly
+      # from a test failure.
+      # Compile every crate's tests — the check that can't run on Windows (the
+      # sandbox's Unix-only APIs). Kept separate so a compile break reads
+      # distinctly from a test failure.
+      - name: Compile all tests
+        # `cargo build --tests` (not `cargo test --no-run`, which rejects
+        # --keep-going) so one failing test crate doesn't mask errors in the
+        # others — we get the full picture in a single run.
+        run: cargo build --workspace --tests --keep-going --locked
+
+      # Run the frona-server suite (channels, tasks, inference, policy, …).
+      # The other crates are only compiled above: frona-browser's tests need a
+      # real browser, and mcp_e2e is #[ignore]d (needs an external binary).
+      - name: Run server tests
+        # --no-fail-fast so one failing test crate doesn't hide failures in the
+        # others; we see every failure in a single run.
+        run: cargo test -p frona-server --locked --no-fail-fast
+
+  web:
+    name: Web (typecheck, lint, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npx vitest run

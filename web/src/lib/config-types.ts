@@ -37,6 +37,21 @@ export interface AuthConfig {
   refresh_token_expiry_secs: number;
   presign_expiry_secs: number;
   allow_registration: boolean;
+  max_login_attempts: number;
+  lockout_minutes: number;
+  password_reset_expiry_minutes: number;
+}
+
+export type SmtpTls = "starttls" | "implicit" | "none";
+
+export interface MailConfig {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string | null;
+  smtp_password: SensitiveField;
+  tls: SmtpTls;
+  from_address: string;
+  from_name: string;
 }
 
 export interface SsoConfig {
@@ -70,15 +85,12 @@ export interface VoiceConfig {
   twilio_voice_id: string | null;
   twilio_speech_model: string | null;
   twilio_tts_provider: string | null;
+  twilio_interrupt_sensitivity: string | null;
   plivo_auth_id: SensitiveField;
   plivo_auth_token: SensitiveField;
   plivo_from_number: string | null;
   callback_base_url: string | null;
   inbound_enabled: boolean;
-  inbound_user_id: string | null;
-  inbound_agent_id: string | null;
-  inbound_welcome_greeting: string | null;
-  inbound_allowlist: string[];
   silence_fill_enabled: boolean;
   silence_fill_initial_delay_secs: number;
   silence_fill_interval_secs: number;
@@ -173,6 +185,10 @@ export interface InferenceConfig {
   default_max_tokens: number;
   compaction_trigger_pct: number;
   history_truncation_pct: number;
+  tool_timeout_secs: number;
+  vision_models: string[];
+  text_only_models: string[];
+  transcribe_when_vision_unknown: boolean;
 }
 
 export interface SchedulerConfig {
@@ -194,6 +210,7 @@ export interface Config {
   sandbox: SandboxConfig;
   auth: AuthConfig;
   sso: SsoConfig;
+  mail: MailConfig;
   browser: BrowserConfig | null;
   search: SearchConfig;
   voice: VoiceConfig;

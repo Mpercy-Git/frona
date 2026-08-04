@@ -3,7 +3,6 @@ use serde_json::Value;
 use crate::agent::prompt::PromptLoader;
 use crate::app::models::{App, AppManifest, AppResponse};
 use crate::app::service::AppService;
-use crate::chat::broadcast::BroadcastService;
 use crate::inference::hitl::{Hitl, HitlOutcome, HitlRequest, HitlResponse};
 use crate::inference::tool_call::ToolStatus;
 use crate::core::error::AppError;
@@ -19,7 +18,6 @@ pub struct ManageAppTool {
     app_service: AppService,
     prompts: PromptLoader,
     notification_service: NotificationService,
-    broadcast_service: BroadcastService,
     storage_service: StorageService,
     public_base_url: String,
 }
@@ -29,15 +27,13 @@ impl ManageAppTool {
         app_service: AppService,
         prompts: PromptLoader,
         notification_service: NotificationService,
-        broadcast_service: BroadcastService,
-        storage_service: StorageService,
+            storage_service: StorageService,
         public_base_url: String,
     ) -> Self {
         Self {
             app_service,
             prompts,
             notification_service,
-            broadcast_service,
             storage_service,
             public_base_url,
         }

@@ -289,11 +289,89 @@ impl VaultService {
                 .await
             {
                 Ok(secret) => env_vars.extend(project_target(&secret, &binding.target)),
+                Err(AppError::NotFound(_)) => {
+                    // The credential was deleted out from under this binding.
+                    // Self-heal: prune the orphan so it stops failing every
+                    // hydration, and don't shout — it's an expected condition.
+                    tracing::debug!(
+                        vault_item_id = %binding.vault_item_id,
+                        "Pruning binding for missing credential"
+                    );
+                    if let Err(e) = self
+                        .binding_repo
+                        .delete_for_item(
+                            user_id,
+                            &binding.principal,
+                            &binding.connection_id,
+                            &binding.vault_item_id,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            vault_item_id = %binding.vault_item_id,
+                            error = %e,
+                            "Failed to prune orphaned binding"
+                        );
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(
                         vault_item_id = %binding.vault_item_id,
                         error = %e,
                         "Failed to fetch secret for binding"
+                    );
+                }
+            }
+        }
+        Ok(env_vars)
+    }
+
+    /// Load the *owner's* durable credential bindings for an agent into env
+    /// vars, for a recipient's run of a shared agent (credential delegation).
+    /// Only durable grants delegate; the owner's chat-scoped bindings (their
+    /// other conversations) are skipped. Best-effort — missing secrets are
+    /// logged and skipped, never fatal. Access is logged under the owner.
+    pub async fn hydrate_delegated_env_vars(
+        &self,
+        owner_id: &str,
+        agent_id: &str,
+        chat_id: &str,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let principal = Principal::agent(agent_id);
+        let bindings = self
+            .binding_repo
+            .find_for_principal(owner_id, &principal)
+            .await?;
+        let mut env_vars = Vec::new();
+        for binding in bindings {
+            if !matches!(binding.scope, BindingScope::Durable) {
+                continue;
+            }
+            match self
+                .get_secret(owner_id, &binding.connection_id, &binding.vault_item_id)
+                .await
+            {
+                Ok(secret) => {
+                    env_vars.extend(project_target(&secret, &binding.target));
+                    // Audit under the owner so delegated use is visible to them.
+                    let _ = self
+                        .log_access(
+                            owner_id,
+                            principal.clone(),
+                            chat_id,
+                            &binding.connection_id,
+                            &binding.vault_item_id,
+                            None,
+                            &binding.query,
+                            "Shared-agent credential delegation",
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        vault_item_id = %binding.vault_item_id,
+                        error = %e,
+                        "Failed to fetch delegated secret for shared agent"
                     );
                 }
             }
@@ -789,7 +867,16 @@ impl VaultService {
             return Err(AppError::Forbidden("Not your credential".into()));
         }
 
-        self.credential_repo.delete(credential_id).await
+        self.credential_repo.delete(credential_id).await?;
+
+        // Cascade: for the local vault a credential's id is its vault_item_id,
+        // so drop any bindings and grants that referenced it. Otherwise they
+        // dangle and fail every future hydration with "Credential not found".
+        self.binding_repo
+            .delete_by_item(user_id, credential_id)
+            .await?;
+        self.grant_repo.delete_by_item(user_id, credential_id).await?;
+        Ok(())
     }
 
     async fn get_provider(

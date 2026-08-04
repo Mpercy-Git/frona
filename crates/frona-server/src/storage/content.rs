@@ -40,10 +40,28 @@ pub fn detect_content_type(filename: &str) -> &'static str {
         "sh" | "bash" | "zsh" => "text/x-shellscript",
         "sql" => "text/x-sql",
         "dockerfile" => "text/x-dockerfile",
+        // Audio. Anything landing on application/octet-stream won't play in a
+        // browser, so the common container extensions are all listed.
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        // Bare .ogg is overwhelmingly audio in practice; .ogv covers the video
+        // case below.
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
+        "flac" => "audio/flac",
+        "weba" => "audio/webm",
+        // Video.
         "mp4" => "video/mp4",
         "webm" => "video/webm",
+        "m4v" => "video/x-m4v",
+        "mov" => "video/quicktime",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "ogv" => "video/ogg",
+        "3gp" => "video/3gpp",
+        "mpeg" | "mpg" => "video/mpeg",
         _ => "application/octet-stream",
     }
 }
@@ -71,6 +89,21 @@ mod tests {
         assert_eq!(detect_content_type("data.json"), "application/json");
         assert_eq!(detect_content_type("readme.md"), "text/markdown");
         assert_eq!(detect_content_type("unknown.xyz"), "application/octet-stream");
+    }
+
+    #[test]
+    fn detect_media_types() {
+        // A media file typed as application/octet-stream won't play in the
+        // browser, so every common container needs an entry.
+        assert_eq!(detect_content_type("song.mp3"), "audio/mpeg");
+        assert_eq!(detect_content_type("voice.m4a"), "audio/mp4");
+        assert_eq!(detect_content_type("note.ogg"), "audio/ogg");
+        assert_eq!(detect_content_type("note.opus"), "audio/opus");
+        assert_eq!(detect_content_type("track.flac"), "audio/flac");
+        assert_eq!(detect_content_type("clip.mp4"), "video/mp4");
+        assert_eq!(detect_content_type("clip.MOV"), "video/quicktime");
+        assert_eq!(detect_content_type("clip.mkv"), "video/x-matroska");
+        assert_eq!(detect_content_type("clip.ogv"), "video/ogg");
     }
 
     #[test]

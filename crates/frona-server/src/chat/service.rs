@@ -62,6 +62,10 @@ pub struct ChatService {
     presign: crate::credential::presign::PresignService,
     notification_service: NotificationService,
     usage_service: crate::inference::usage::UsageService,
+    /// Set once at startup via [`ChatService::set_share_service`]. Optional so
+    /// test constructions (and the two services' construction order) stay
+    /// simple; when absent, access is owner-only.
+    share_service: Option<crate::chat::share::service::ChatShareService>,
 }
 
 impl ChatService {
@@ -95,7 +99,17 @@ impl ChatService {
             presign,
             notification_service,
             usage_service,
+            share_service: None,
         }
+    }
+
+    /// Attach the share service so [`ChatService::get_accessible`] can honor
+    /// read-only shares. Call once at startup before the service is cloned.
+    pub fn set_share_service(
+        &mut self,
+        share_service: crate::chat::share::service::ChatShareService,
+    ) {
+        self.share_service = Some(share_service);
     }
 
     fn broadcast_chat_entity(&self, chat: &Chat, action: crate::chat::broadcast::EntityAction) {
@@ -150,16 +164,12 @@ impl ChatService {
         req: CreateChatRequest,
     ) -> Result<ChatResponse, AppError> {
         // Fail eagerly on bad `agent_id` — first /messages/stream would silently 404.
-        let agent = self
+        // Access-checked: the user must own the agent OR have it shared with
+        // them (use-only). `get_accessible` returns Forbidden/NotFound otherwise.
+        let (_agent, _access) = self
             .agent_service
-            .find_by_id(&req.agent_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!("Agent '{}' not found", req.agent_id))
-            })?;
-        if agent.user_id != user_id {
-            return Err(AppError::Forbidden("Not your agent".into()));
-        }
+            .get_accessible(user_id, &req.agent_id)
+            .await?;
 
         let now = chrono::Utc::now();
         let chat = Chat {
@@ -213,9 +223,64 @@ impl ChatService {
         Ok(chat)
     }
 
+    /// Resolve a chat the user is allowed to *view* — either they own it or
+    /// it was shared with them, read-only. Returns `Forbidden` otherwise. Use
+    /// this for read paths; keep [`ChatService::get_chat`] (owner-only) for
+    /// mutations (sending messages, archiving, deleting, resolving HITL
+    /// prompts, etc).
+    pub async fn get_accessible(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+    ) -> Result<(Chat, bool), AppError> {
+        let chat = self
+            .chat_repo
+            .find_by_id(chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
+
+        if chat.user_id == user_id {
+            return Ok((chat, true));
+        }
+
+        if let Some(share) = &self.share_service
+            && share.is_shared_with(chat_id, user_id).await?
+        {
+            return Ok((chat, false));
+        }
+
+        Err(AppError::Forbidden("Not your chat".into()))
+    }
+
+    /// Chats shared with `user_id` (read-only), as enriched `ChatResponse`s
+    /// with `is_shared`/`shared_by` set. Empty when no share service is
+    /// attached. Backing chats that have since been deleted are skipped.
+    pub async fn shared_chat_responses(&self, user_id: &str) -> Result<Vec<ChatResponse>, AppError> {
+        let Some(share_service) = &self.share_service else {
+            return Ok(Vec::new());
+        };
+        let shares = share_service.list_shared_with(user_id).await?;
+        let mut responses = Vec::with_capacity(shares.len());
+        for share in shares {
+            let Some(chat) = self.chat_repo.find_by_id(&share.chat_id).await? else {
+                continue;
+            };
+            let shared_by = self.user_service.handle_of(&chat.user_id).await.ok();
+            let mut response: ChatResponse = chat.into();
+            response.is_shared = true;
+            response.shared_by = shared_by.map(|h| h.to_string());
+            responses.push(response);
+        }
+        Ok(responses)
+    }
+
+    /// Owned chats first, then chats shared with `user_id` (read-only) —
+    /// mirrors `AgentService::list`'s owned-before-shared ordering.
     pub async fn list_chats(&self, user_id: &str) -> Result<Vec<ChatResponse>, AppError> {
         let chats = self.chat_repo.find_by_user_id(user_id).await?;
-        Ok(chats.into_iter().map(Into::into).collect())
+        let mut responses: Vec<ChatResponse> = chats.into_iter().map(Into::into).collect();
+        responses.extend(self.shared_chat_responses(user_id).await?);
+        Ok(responses)
     }
 
     pub async fn update_chat(
@@ -484,6 +549,42 @@ impl ChatService {
         let tool_calls = self.get_tool_calls(chat_id).await?;
         let mut rig_history = conv_builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
 
+        let catalog_vision = self.usage_service.model_supports_vision(&conv_ctx.model_ref);
+        let effective_vision = crate::inference::vision::resolve_vision_capability(
+            &conv_ctx.model_ref,
+            &model_group.inference,
+            catalog_vision,
+        );
+        if effective_vision == Some(false) {
+            match crate::inference::vision::resolve_vision_model_group(
+                &self.provider_registry,
+                &self.usage_service,
+            ) {
+                Some(vision_group) => {
+                    let img_msg_id = stored_messages
+                        .iter()
+                        .rev()
+                        .find(|m| !m.attachments.is_empty())
+                        .map(|m| m.id.clone())
+                        .unwrap_or_default();
+                    crate::inference::vision::transcribe_images_in_history(
+                        &mut rig_history,
+                        &vision_group,
+                        &self.provider_registry,
+                        &self.usage_service,
+                        user_id,
+                        &chat.agent_id,
+                        chat_id,
+                        &img_msg_id,
+                    )
+                    .await;
+                }
+                None => {
+                    crate::inference::conversation::strip_images_from_history(&mut rig_history);
+                }
+            }
+        }
+
         rig_history.push(RigMessage::user(&req.content));
         // Pre-allocate the message id so the usage row's message_id matches
         // the assistant Message that's about to be persisted.
@@ -533,7 +634,7 @@ impl ChatService {
         user_id: &str,
         chat_id: &str,
     ) -> Result<Vec<MessageResponse>, AppError> {
-        self.get_chat(user_id, chat_id).await?;
+        self.get_accessible(user_id, chat_id).await?;
 
         let messages = self.message_repo.find_by_chat_id(chat_id).await?;
         let tool_calls = self.get_tool_calls(chat_id).await.unwrap_or_default();
@@ -568,7 +669,7 @@ impl ChatService {
         after: Option<chrono::DateTime<chrono::Utc>>,
         limit: u32,
     ) -> Result<PaginatedMessagesResponse, AppError> {
-        self.get_chat(user_id, chat_id).await?;
+        self.get_accessible(user_id, chat_id).await?;
 
         let fetch_limit = limit + 1;
         let mut messages = self
@@ -969,9 +1070,17 @@ impl ChatService {
     }
 
     /// Mark `msg` as cancelled. Caller pre-fills any fields it wants set.
+    /// `notify` gates the live "cancelled" broadcast (the one that tells the
+    /// UI to stop showing a running turn). Pass `false` when this generation
+    /// has already been superseded by a newer one (e.g. an interrupting
+    /// message) — the DB row still gets marked Cancelled, but the client
+    /// isn't told, since the successor turn's own events already own the
+    /// running/streaming state and a stray cancellation broadcast would reset
+    /// it prematurely.
     pub async fn cancel_agent_message(
         &self,
         mut msg: Message,
+        notify: bool,
     ) -> Result<MessageResponse, AppError> {
         msg.status = Some(MessageStatus::Cancelled);
         let updated = self.message_repo.update(&msg).await?;
@@ -984,16 +1093,18 @@ impl ChatService {
                 chat.space_id.clone(),
                 None,
             );
-            self.broadcast.send(crate::chat::broadcast::BroadcastEvent {
-                user_id: chat.user_id.clone(),
-                chat_id: Some(chat.id.clone()),
-                space_id: chat.space_id.clone(),
-                kind: crate::chat::broadcast::BroadcastEventKind::Inference(
-                    crate::inference::tool_loop::InferenceEventKind::Cancelled {
-                        reason: "Cancelled".to_string(),
-                    },
-                ),
-            });
+            if notify {
+                self.broadcast.send(crate::chat::broadcast::BroadcastEvent {
+                    user_id: chat.user_id.clone(),
+                    chat_id: Some(chat.id.clone()),
+                    space_id: chat.space_id.clone(),
+                    kind: crate::chat::broadcast::BroadcastEventKind::Inference(
+                        crate::inference::tool_loop::InferenceEventKind::Cancelled {
+                            reason: "Cancelled".to_string(),
+                        },
+                    ),
+                });
+            }
         }
         Ok(updated.into())
     }
@@ -1557,9 +1668,11 @@ impl ChatService {
                 });
             }
             Some(group) if !group.is_empty() => {
-                self.provider_registry.get_model_group(group)?
+                self.provider_registry.get_model_group(group)?.clone()
             }
-            _ => self.provider_registry.get_model_group("primary")?,
+            // No explicit override: honor a "title" model group if configured,
+            // else fall back to primary — same convention as other utilities.
+            _ => self.provider_registry.utility_model_group("title")?,
         };
         Ok(crate::inference::config::ModelGroup {
             name: "title".to_string(),

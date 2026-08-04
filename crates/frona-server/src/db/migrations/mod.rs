@@ -24,6 +24,7 @@ use chrono::{DateTime, Utc};
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
+mod backfill_channel_enabled_and_reset_status;
 mod backfill_empty_metadata;
 mod drop_refuse_user_delete_event;
 mod handle_unification;

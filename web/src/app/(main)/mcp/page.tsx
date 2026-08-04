@@ -8,6 +8,7 @@ import { SectionHeader, SectionPanel, Field, TextInput } from "@/components/sett
 import { formatDistanceToNow } from "date-fns";
 import { SandboxSection } from "@/components/agents/configure/sandbox-section";
 import { AddCredentialForm, type VaultGrant, type VaultConnection, type PendingCredential } from "@/components/agents/configure/creds-section";
+import { ConfigSidebar } from "@/components/layout/config-sidebar";
 
 interface McpServer {
   id: string;
@@ -371,49 +372,37 @@ function McpServerPage() {
 
   return (
     <div className="flex h-full bg-surface">
-      {/* Sidebar */}
-      <div
-        className="border-r border-border bg-surface-nav p-4 flex flex-col"
-        style={{ width: 289 }}
-      >
-        <button
-          onClick={() => router.push("/settings#mcp")}
-          className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition mb-4"
-        >
-          <ArrowLeftIcon className="h-4 w-4" />
-          Back to Settings
-        </button>
-
-        <div className="flex items-center gap-2 mb-4">
-          {ownerAvatar ? (
-            <img src={ownerAvatar} alt="" className="h-8 w-8 rounded-lg shrink-0" />
-          ) : (
-            <CpuChipIcon className="h-8 w-8 text-text-tertiary shrink-0" />
-          )}
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-text-primary truncate">{displayName}</h2>
-            <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${STATUS_BADGE[server.status] ?? STATUS_BADGE.installed}`}>
-              {server.status}
-            </span>
-          </div>
-        </div>
-
-        <nav className="space-y-1 flex-1">
-          {SECTIONS.map((s) => (
+      {/* Sidebar — fixed column on desktop, drawer on mobile */}
+      <ConfigSidebar
+        header={
+          <>
             <button
-              key={s.id}
-              onClick={() => setActiveSection(s.id)}
-              className={`w-full text-left rounded-lg px-3 py-2 text-sm transition ${
-                activeSection === s.id
-                  ? "bg-accent/10 text-accent font-medium"
-                  : "text-text-secondary hover:bg-surface-tertiary hover:text-text-primary"
-              }`}
+              onClick={() => router.push("/settings#mcp")}
+              className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition mb-4"
             >
-              {s.label}
+              <ArrowLeftIcon className="h-4 w-4" />
+              Back to Settings
             </button>
-          ))}
-        </nav>
-      </div>
+
+            <div className="flex items-center gap-2 mb-4">
+              {ownerAvatar ? (
+                <img src={ownerAvatar} alt="" className="h-8 w-8 rounded-lg shrink-0" />
+              ) : (
+                <CpuChipIcon className="h-8 w-8 text-text-tertiary shrink-0" />
+              )}
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold text-text-primary truncate">{displayName}</h2>
+                <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${STATUS_BADGE[server.status] ?? STATUS_BADGE.installed}`}>
+                  {server.status}
+                </span>
+              </div>
+            </div>
+          </>
+        }
+        sections={SECTIONS}
+        activeSection={activeSection}
+        onSelect={(id) => setActiveSection(id as SectionId)}
+      />
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">

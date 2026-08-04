@@ -425,6 +425,19 @@ export async function installSkills(repo: string, skillNames: string[], opts?: {
   });
 }
 
+/** Add a hand-written SKILL.md without going through a repo. The server validates the
+ *  frontmatter and derives the skill name from it. */
+export async function addManualSkill(content: string, opts?: { agentId?: string; scope?: InstallScope }): Promise<SkillListItem> {
+  return request<SkillListItem>("/api/skills/manual", {
+    method: "POST",
+    body: JSON.stringify({
+      content,
+      agent_id: opts?.agentId,
+      scope: opts?.scope,
+    }),
+  });
+}
+
 export async function uninstallSkill(name: string, opts?: { agentId?: string; scope?: InstallScope }): Promise<void> {
   const params = new URLSearchParams();
   if (opts?.agentId) params.set("agent_id", opts.agentId);

@@ -36,7 +36,7 @@ struct SlackSelfIdentity {
 struct SlackChannelState {
     emit: tokio::sync::mpsc::Sender<ExternalMessage>,
     identity: SlackSelfIdentity,
-    channel_manager: Arc<super::super::ChannelManager>,
+    hitl: Arc<super::super::HitlDeliveryService>,
     chat_service: crate::chat::service::ChatService,
     bot_token: SlackApiToken,
 }
@@ -99,7 +99,7 @@ impl ChannelAdapter for SlackAdapter {
                 .with_user_state(SlackChannelState {
                     emit: ctx.emit.clone(),
                     identity,
-                    channel_manager: ctx.channel_manager.clone(),
+                    hitl: ctx.hitl.clone(),
                     chat_service: ctx.chat_service.clone(),
                     bot_token: self.bot_token.clone(),
                 })
@@ -117,16 +117,24 @@ impl ChannelAdapter for SlackAdapter {
         let app_token = self.app_token.clone();
         let cancel = ctx.cancel.clone();
         let channel_id = ctx.channel.id.clone();
-        let channel_manager = ctx.channel_manager.clone();
+        let signals = ctx.signals.clone();
         tokio::spawn(async move {
             if let Err(e) = listener.listen_for(&app_token).await {
-                let reason = format!("Slack Socket Mode listen_for failed: {e}");
                 tracing::warn!(
                     channel_id = %channel_id,
                     error = %e,
                     "Slack Socket Mode registration failed",
                 );
-                channel_manager.report_failure(&channel_id, reason).await;
+                // Auth failures (bad app token) are terminal; treat other
+                // registration errors as transient.
+                let msg = format!("Slack Socket Mode listen_for failed: {e}");
+                if e.to_string().contains("invalid_auth")
+                    || e.to_string().contains("not_authed")
+                {
+                    signals.disconnected_terminal(msg);
+                } else {
+                    signals.disconnected_transient(msg);
+                }
                 return;
             }
             // Not `serve()`: dropping its future skips the inner `shutdown()`,
@@ -136,6 +144,7 @@ impl ChannelAdapter for SlackAdapter {
                 channel_id = %channel_id,
                 "Slack channel connected via Socket Mode",
             );
+            signals.connected();
             cancel.cancelled().await;
             listener.shutdown().await;
             tracing::info!(
@@ -480,11 +489,11 @@ async fn handle_interaction_event(
         return Ok(());
     };
 
-    let (channel_manager, chat_service, bot_token) = {
+    let (hitl, chat_service, bot_token) = {
         let guard = states.read().await;
         match guard.get_user_state::<SlackChannelState>() {
             Some(state) => (
-                state.channel_manager.clone(),
+                state.hitl.clone(),
                 state.chat_service.clone(),
                 state.bot_token.clone(),
             ),
@@ -514,7 +523,7 @@ async fn handle_interaction_event(
     };
 
     let answer_label = crate::chat::channel::hitl::response_display(&response);
-    let outcome = channel_manager.resolve_hitl(&tool_call_id, response).await;
+    let outcome = hitl.resolve(&tool_call_id, response).await;
 
     let summary = match &outcome {
         Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) => answer_label,

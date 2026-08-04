@@ -40,6 +40,7 @@ export interface SsoStatus {
 export interface AuthConfig {
   sso: SsoStatus;
   allow_registration: boolean;
+  password_reset_enabled: boolean;
 }
 
 export interface SandboxPolicy {
@@ -76,7 +77,10 @@ export interface Agent {
   sandbox_limits: SandboxLimits | null;
   prompt: string | null;
   default_prompt: string;
+  /** True when this agent was shared with you (use-only). Editing is disabled. */
   is_shared: boolean;
+  /** Owner's handle when `is_shared` — shown as "Shared by …". */
+  shared_by?: string | null;
   chat_count: number;
   created_at: string;
   updated_at: string;
@@ -152,6 +156,11 @@ export interface ChatResponse {
   archived_at: string | null;
   created_at: string;
   updated_at: string;
+  /** True when this chat was shared with you (read-only). Sending messages
+   *  and resolving HITL prompts are disabled. */
+  is_shared: boolean;
+  /** Owner's handle when `is_shared` — shown as "Shared by …". */
+  shared_by?: string | null;
 }
 
 export interface CreateChatRequest {
@@ -217,11 +226,17 @@ export type MessageTool =
 export type PauseReason =
   | { type: "Hitl" };
 
+export interface CredentialRequestItem {
+  query: string;
+  label?: string | null;
+}
+
 export type HitlRequest =
   | { type: "Question"; data: { options: string[] } }
   | { type: "Takeover"; data: { reason: string; debugger_url: string } }
   | { type: "App"; data: { action: string; manifest: Record<string, unknown>; previous_manifest: Record<string, unknown> | null } }
-  | { type: "Credential"; data: { query: string; reason: string } };
+  | { type: "Credential"; data: { query: string; reason: string } }
+  | { type: "Credentials"; data: { items: CredentialRequestItem[]; reason: string } };
 
 export type VaultField =
   | "Password"
@@ -238,8 +253,17 @@ export type GrantDuration =
   | { hours: number }
   | { days: number };
 
+export interface VaultItemGrant {
+  query: string;
+  connection_id: string;
+  vault_item_id: string;
+  grant_duration: GrantDuration;
+  target: CredentialTarget;
+}
+
 export type VaultGrant =
   | { type: "Granted"; data: { connection_id: string; vault_item_id: string; grant_duration: GrantDuration; target: CredentialTarget } }
+  | { type: "GrantedMany"; data: { grants: VaultItemGrant[] } }
   | { type: "Denied" };
 
 export type HitlResponse =
@@ -283,7 +307,7 @@ export function hitlResponseText(hitl: Hitl): string | null {
 }
 
 export type MessageEvent =
-  | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string; summary?: string; schema?: Record<string, unknown> } }
+  | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string; summary?: string; schema?: Record<string, unknown>; citations?: { title?: string; url: string }[] } }
   | { type: "TaskDeferred"; data: { task_id: string; delay_minutes: number; reason: string } };
 
 export type MessageStatus = "executing" | "paused" | "completed" | "failed" | "cancelled";

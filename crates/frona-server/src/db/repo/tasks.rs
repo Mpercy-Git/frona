@@ -191,6 +191,30 @@ impl TaskRepository for SurrealRepo<Task> {
         Ok(tasks)
     }
 
+    async fn find_pending_immediate(&self) -> Result<Vec<Task>, AppError> {
+        // Pending, no run_at (deferred ones are handled by find_deferred_due),
+        // and neither a Cron template nor a Signal task — i.e. exactly the kinds
+        // that execute through `run_task`. Oldest first for fair draining.
+        let query = format!(
+            "{SELECT_CLAUSE} FROM task WHERE status.Pending IS NOT NONE \
+             AND run_at IS NONE \
+             AND kind.Cron IS NONE \
+             AND kind.Signal IS NONE \
+             ORDER BY created_at ASC"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let tasks: Vec<Task> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(tasks)
+    }
+
     async fn find_pending_signal_tasks(&self) -> Result<Vec<Task>, AppError> {
         let query = format!(
             "{SELECT_CLAUSE} FROM task WHERE kind.Signal IS NOT NONE AND status.Pending IS NOT NONE ORDER BY created_at ASC"

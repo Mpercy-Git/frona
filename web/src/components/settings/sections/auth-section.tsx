@@ -62,6 +62,38 @@ export function AuthSection({ auth, onChange }: AuthSectionProps) {
         onChange={(allow_registration) => onChange({ ...auth, allow_registration })}
       />
       </SectionPanel>
+
+      <SectionPanel title="Failed logins">
+
+      <NumberInput
+        label="Max login attempts"
+        description="Consecutive failed logins before an account is temporarily locked. Set to 0 to disable lockout."
+        value={auth.max_login_attempts}
+        onChange={(max_login_attempts) => onChange({ ...auth, max_login_attempts })}
+        min={0}
+        placeholder="5"
+      />
+
+      <NumberInput
+        label="Lockout duration (minutes)"
+        description="How long an account stays locked once the limit is hit. Admins can clear a lockout early from Settings → Users."
+        value={auth.lockout_minutes}
+        onChange={(lockout_minutes) => onChange({ ...auth, lockout_minutes })}
+        min={1}
+        placeholder="15"
+      />
+
+      <NumberInput
+        label="Password reset link expiry (minutes)"
+        description="How long an emailed reset link stays valid. Requires SMTP to be configured in the Email section."
+        value={auth.password_reset_expiry_minutes}
+        onChange={(password_reset_expiry_minutes) =>
+          onChange({ ...auth, password_reset_expiry_minutes })
+        }
+        min={1}
+        placeholder="30"
+      />
+      </SectionPanel>
     </div>
   );
 }

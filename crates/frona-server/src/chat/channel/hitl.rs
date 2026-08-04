@@ -2,6 +2,108 @@ pub use crate::inference::hitl::{
     Hitl, HitlDelivery, HitlOutcome, HitlRequest, HitlResponse, ResolveOutcome, VaultGrant,
 };
 
+use std::collections::HashMap;
+use std::sync::{Arc, Weak};
+
+use tokio::sync::Mutex;
+
+use super::models::{ChannelAdapter, ChannelCtx};
+use super::outbound::OutboundDeliveryService;
+use super::supervisor::ChannelManager;
+
+/// HITL resolution engine. Wraps `Harness::resolve_and_resume` + resume, then re-delivers
+/// any remaining pending HITLs over the live adapter (resolving it through a `Weak` handle
+/// to the supervisor's slot map — `Weak` so this shared engine never keeps the map, and
+/// hence the supervisor, alive).
+pub struct HitlDeliveryService {
+    chat_service: crate::chat::service::ChatService,
+    harness: Arc<crate::agent::harness::Harness>,
+    task_executor: Arc<crate::agent::task::executor::TaskExecutor>,
+    outbound: Arc<OutboundDeliveryService>,
+    channels: Weak<Mutex<HashMap<String, Arc<ChannelManager>>>>,
+}
+
+impl HitlDeliveryService {
+    pub(super) fn new(
+        chat_service: crate::chat::service::ChatService,
+        harness: Arc<crate::agent::harness::Harness>,
+        task_executor: Arc<crate::agent::task::executor::TaskExecutor>,
+        outbound: Arc<OutboundDeliveryService>,
+        channels: Weak<Mutex<HashMap<String, Arc<ChannelManager>>>>,
+    ) -> Self {
+        Self { chat_service, harness, task_executor, outbound, channels }
+    }
+
+    /// Full channel-side HITL resolution: harness resolve/resume, then re-deliver any
+    /// remaining pending HITLs over the live adapter. Idempotent re-delivery.
+    pub async fn resolve(
+        &self,
+        tool_call_id: &str,
+        response: HitlResponse,
+    ) -> Result<ResolveOutcome, crate::core::error::AppError> {
+        let outcome = self.resolve_and_resume(tool_call_id, response).await?;
+        if let Ok(Some(te)) = self.chat_service.get_tool_call(tool_call_id).await {
+            let _ = self.outbound.ensure_pending_delivery(&te.message_id).await;
+            if let Ok(Some(chat)) = self.chat_service.find_chat(&te.chat_id).await
+                && let Some(channel_id) = chat.channel_id.as_deref()
+                && let Some((adapter, ctx)) = self.running_adapter(channel_id).await
+            {
+                let _ = self
+                    .outbound
+                    .deliver_pending_hitls(&chat, &te.message_id, adapter.as_ref(), &ctx)
+                    .await;
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Resolve the live adapter+ctx for a channel via the supervisor's slot map.
+    async fn running_adapter(
+        &self,
+        channel_id: &str,
+    ) -> Option<(Arc<dyn ChannelAdapter>, ChannelCtx)> {
+        let map = self.channels.upgrade()?;
+        let manager = {
+            let map = map.lock().await;
+            map.get(channel_id).cloned()?
+        };
+        manager.live_handle().await
+    }
+
+    /// The harness core of HITL resolution: resolve + resume.
+    pub async fn resolve_and_resume(
+        &self,
+        tool_call_id: &str,
+        response: HitlResponse,
+    ) -> Result<ResolveOutcome, crate::core::error::AppError> {
+        let outcome = self
+            .harness
+            .resolve_and_resume(tool_call_id, response)
+            .await?;
+        if let ResolveOutcome::Resolved {
+            should_resume: true, user_id, chat_id, message_id, task_id,
+        } = &outcome
+        {
+            let h = self.harness.clone();
+            let exec = self.task_executor.clone();
+            let (u, c, m, tid) = (
+                user_id.clone(),
+                chat_id.clone(),
+                message_id.clone(),
+                task_id.clone(),
+            );
+            tokio::spawn(async move {
+                if let Some(tid) = tid {
+                    let _ = exec.run_task_by_id(&tid).await;
+                } else if let Err(e) = h.resume(&u, &c, &m).await {
+                    tracing::error!(error = %e, chat_id = %c, "Failed to resume chat after HITL resolve");
+                }
+            });
+        }
+        Ok(outcome)
+    }
+}
+
 /// Closed render taxonomy. Channel adapters branch on this, never on
 /// `HitlRequest` — new request variants only need a [`kind_for`] mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +125,7 @@ pub fn kind_for(req: &HitlRequest) -> HitlKind {
         },
         HitlRequest::App { .. } => HitlKind::Approval,
         HitlRequest::Credential { .. } => HitlKind::External,
+        HitlRequest::Credentials { .. } => HitlKind::External,
     }
 }
 
@@ -61,7 +164,7 @@ pub fn render_text(hitl: &Hitl) -> String {
 /// - `External` — returns `Ok(None)` (URL-only resolve path).
 pub async fn try_resolve_inbound(
     chat_service: &crate::chat::service::ChatService,
-    channel_manager: &crate::chat::channel::ChannelManager,
+    hitl_service: &HitlDeliveryService,
     chat_id: &str,
     quoted_external_message_id: Option<&str>,
     text: &str,
@@ -108,7 +211,7 @@ pub async fn try_resolve_inbound(
         HitlKind::External => return Ok(None),
     };
 
-    let outcome = channel_manager.resolve_hitl(&tc.id, response).await?;
+    let outcome = hitl_service.resolve(&tc.id, response).await?;
     Ok(Some(outcome))
 }
 
@@ -194,6 +297,9 @@ pub fn response_display(response: &HitlResponse) -> String {
         HitlResponse::Approval(false) => "❌ No".to_string(),
         HitlResponse::Choice(text) => text.clone(),
         HitlResponse::Vault(VaultGrant::Granted { .. }) => "🔑 Granted".to_string(),
+        HitlResponse::Vault(VaultGrant::GrantedMany { grants }) => {
+            format!("🔑 Granted ({})", grants.len())
+        }
         HitlResponse::Vault(VaultGrant::Denied) => "🚫 Denied".to_string(),
     }
 }
@@ -244,6 +350,19 @@ mod tests {
         let req = HitlRequest::Credential {
             query: "postgres".into(),
             reason: "ETL".into(),
+        };
+        assert_eq!(kind_for(&req), HitlKind::External);
+    }
+
+    #[test]
+    fn kind_for_credentials_batch_returns_external() {
+        use crate::inference::hitl::CredentialRequest;
+        let req = HitlRequest::Credentials {
+            items: vec![
+                CredentialRequest { query: "app key".into(), label: Some("App key".into()) },
+                CredentialRequest { query: "user key".into(), label: None },
+            ],
+            reason: "Acme API".into(),
         };
         assert_eq!(kind_for(&req), HitlKind::External);
     }

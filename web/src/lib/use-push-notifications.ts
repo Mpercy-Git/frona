@@ -5,24 +5,62 @@ import { api } from "./api-client";
 
 type PermissionState = "default" | "granted" | "denied" | "unsupported";
 
+/// iOS only delivers Web Push to an installed (home-screen) PWA — in a normal
+/// Safari tab `Notification` is undefined, so the hook reports `unsupported`
+/// with nothing to act on. This distinguishes "your browser can't" from
+/// "install this first", so the UI can say so.
+function needsHomeScreenInstall(): boolean {
+  if (typeof window === "undefined") return false;
+  const ua = window.navigator.userAgent;
+  const isIos =
+    /iPad|iPhone|iPod/.test(ua) ||
+    // iPadOS 13+ reports as a Mac; the touch points give it away.
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (!isIos) return false;
+  const standalone =
+    window.matchMedia("(display-mode: standalone)").matches ||
+    // Safari's non-standard flag for home-screen apps.
+    (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+  return !standalone;
+}
+
 export function usePushNotifications() {
   const [permission, setPermission] = useState<PermissionState>("default");
   const [subscribed, setSubscribed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [installRequired, setInstallRequired] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!("Notification" in window) || !("serviceWorker" in navigator)) {
       setPermission("unsupported");
+      setInstallRequired(needsHomeScreenInstall());
       return;
     }
     setPermission(Notification.permission as PermissionState);
 
-    // Check if already subscribed.
     navigator.serviceWorker.ready
       .then((reg) => reg.pushManager.getSubscription())
-      .then((sub) => {
-        if (sub) setSubscribed(true);
+      .then(async (sub) => {
+        if (!sub) return;
+        setSubscribed(true);
+        // Re-register the subscription we still hold locally.
+        //
+        // The browser rotates push subscriptions, and the server prunes an
+        // endpoint as soon as a send comes back "gone". The service worker's
+        // `pushsubscriptionchange` handler can't re-register on its own — it
+        // has no access to the page's in-memory access token — so without this
+        // the server can end up with no subscription while the UI still shows
+        // notifications as enabled, and nothing ever arrives again.
+        //
+        // `subscribe` dedupes by endpoint, so re-sending an unchanged
+        // subscription is a no-op.
+        try {
+          await api.post("/api/push/subscribe", sub.toJSON());
+        } catch (err) {
+          // Not fatal — most likely not signed in yet. The next load retries.
+          console.warn("[push] Could not re-sync subscription:", err);
+        }
       })
       .catch(() => {});
   }, []);
@@ -81,7 +119,7 @@ export function usePushNotifications() {
     }
   }, []);
 
-  return { permission, subscribed, loading, enable, disable };
+  return { permission, subscribed, loading, installRequired, enable, disable };
 }
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {

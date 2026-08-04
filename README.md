@@ -9,7 +9,7 @@
     <img src="https://img.shields.io/badge/built_with-Rust-dea584?style=flat-square&logo=rust" alt="Built with Rust">
     <a href="https://github.com/fronalabs/frona/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-BSL_1.1-blue?style=flat-square" alt="License"></a>
     <a href="https://github.com/fronalabs/frona/stargazers"><img src="https://img.shields.io/github/stars/fronalabs/frona?style=flat-square&logo=github" alt="GitHub stars"></a>
-    <a href="https://github.com/fronalabs/frona/pkgs/container/frona"><img src="https://img.shields.io/badge/ghcr.io-fronalabs%2Ffrona-2496ed?style=flat-square&logo=docker&logoColor=white" alt="Container image"></a>
+    <a href="https://github.com/Mpercy-Git/frona/pkgs/container/frona"><img src="https://img.shields.io/badge/ghcr.io-mpercy--git%2Ffrona-2496ed?style=flat-square&logo=docker&logoColor=white" alt="Container image"></a>
     <a href="https://docs.frona.ai/"><img src="https://img.shields.io/badge/docs-frona.ai-8a3ffc?style=flat-square" alt="Documentation"></a>
 </p>
 
@@ -56,6 +56,19 @@ A dedicated review pass fixed issues not present upstream, including:
 - UTF-8 byte-index truncation panics fixed; cancelled-scheduler push state fix; config `GET /api/config` now reads from disk so saved settings don't silently revert; a channel leaves `Setup` for `Disconnected` once required fields are provided
 - **Space management:** spaces can be archived or deleted from the chat sidebar (mirroring chats); deleting a channel no longer deletes its space, since spaces are independent and can hold chats
 - Chat file-upload robustness: friendlier over-size errors, no silent attachment drops, no leaked blob URLs
+
+### 🔑 Account recovery & login lockout (net-new)
+
+Local-auth accounts previously had no way back in: no password reset, no
+self-service change, and no admin override — a forgotten password meant
+deleting and recreating the account.
+
+- **Failed-login lockout** that can't be sidestepped by re-casing the identifier, runs for its full duration from the moment it engages, and counts only genuine credential rejections (a server error or a deactivated account no longer burns a user's budget). Configurable via `auth.max_login_attempts` and `auth.lockout_minutes`; `0` disables it. A locked identifier answers `429` with `Retry-After`
+- **Forgot-password over SMTP** — single-use, hash-at-rest reset tokens with a short TTL, sent via `mail.*` config. The request endpoint answers identically for registered and unregistered addresses, so it can't be used to enumerate accounts
+- **Self-service password change** (`PUT /api/auth/password`) requiring the current password, which revokes every other session
+- **Admin reset and unlock** (`PUT /api/admin/users/{id}/password`, `POST /api/admin/users/{id}/unlock`), surfaced in Settings → Users
+- **Break-glass CLI** (`frona reset-password --handle <h>`) for when the sole admin is locked out and no authenticated caller exists
+- Failed logins and lockouts are now logged and exported as `frona_auth_login_failures_total` / `frona_auth_lockouts_total`
 
 ### 🏗️ Build & release (fork-only)
 
@@ -116,7 +129,7 @@ You'll need an OCI runtime with Compose v2 support, such as [Docker](https://doc
 # docker-compose.yml
 services:
   frona:
-    image: ghcr.io/fronalabs/frona:latest
+    image: ghcr.io/mpercy-git/frona:latest
     ports:
       - "3001:3001"
     volumes:

@@ -6,6 +6,7 @@ use axum::{Json, Router};
 
 use crate::chat::channel::models::{Channel, CreateChannelRequest, ChannelManifest, UpdateChannelRequest};
 use crate::core::error::AppError;
+use crate::core::supervisor::Supervisor;
 use crate::core::state::AppState;
 
 use crate::api::error::ApiError;
@@ -77,7 +78,7 @@ async fn channel_webhook(
     }
 
     let response = state
-        .channel_manager
+        .channel_supervisor
         .dispatch_inbound_webhook(&channel_id, request)
         .await?;
     Ok(response)
@@ -161,7 +162,7 @@ async fn start_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Channel>, ApiError> {
-    let channel = state.channel_service.start(&auth.user_id, &id).await?;
+    let channel = state.channel_service.start(&state, &auth.user_id, &id).await?;
     Ok(Json(channel))
 }
 
@@ -216,9 +217,9 @@ async fn refresh_setup(
 ) -> Result<Json<Channel>, ApiError> {
     // Authorise: must own the channel.
     let _channel = state.channel_service.find_owned(&auth.user_id, &id).await?;
-    state.channel_manager.stop_channel(&id).await;
-    let channel = state.channel_service.find_by_id(&id).await?;
-    state.channel_manager.start_channel(&state, &channel).await?;
+    // Restart the supervisor: re-runs on_connect → fresh SetupReady (QR) if unregistered.
+    let _ = state.channel_supervisor.stop(&id).await;
+    let _ = state.channel_supervisor.start(&id).await;
     let channel = state.channel_service.find_by_id(&id).await?;
     Ok(Json(channel))
 }
