@@ -156,6 +156,11 @@ export interface ChatResponse {
   archived_at: string | null;
   created_at: string;
   updated_at: string;
+  /** True when this chat was shared with you (read-only). Sending messages
+   *  and resolving HITL prompts are disabled. */
+  is_shared: boolean;
+  /** Owner's handle when `is_shared` — shown as "Shared by …". */
+  shared_by?: string | null;
 }
 
 export interface CreateChatRequest {

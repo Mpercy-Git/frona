@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useContext, useLayoutEffect, useMemo, useRef } from "react";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { FronaUserMessage } from "./frona-user-message";
 import { FronaAssistantMessage } from "./frona-assistant-message";
@@ -9,8 +9,13 @@ import { ExternalToolDrawer, CollapsedToolTab, useToolWizard } from "./external-
 import { WizardAnswersContext } from "@/lib/wizard-answers-context";
 import { usePendingTools } from "@/lib/pending-tools-context";
 import { useChatPagination } from "@/lib/chat-pagination-context";
+import { ChatContext } from "@/lib/chat-context";
 
 export function AssistantThread() {
+  // Not `useChat()` — a brand-new (not-yet-created) chat renders this
+  // component with no `ChatProvider` ancestor, and `useChat()` throws in
+  // that case. `useContext` reads `null` safely instead.
+  const isReadOnly = useContext(ChatContext)?.isReadOnly ?? false;
   const wizard = useToolWizard();
   const wizardSetCollapsed = wizard.setCollapsed;
   const lastScrollTop = useRef(0);
@@ -115,19 +120,27 @@ export function AssistantThread() {
             Scroll to bottom
           </button>
         </ThreadPrimitive.ScrollToBottom>
-        <div className="relative mx-auto w-full max-w-3xl px-3 md:px-6 pb-4">
-          <div className="absolute inset-x-0 -top-7 z-0 flex justify-center px-3 md:px-6">
-            <CollapsedToolTab wizard={safeWizard} />
+        {isReadOnly ? (
+          <div className="mx-auto w-full max-w-3xl px-3 md:px-6 pb-4">
+            <div className="rounded-2xl border border-border bg-surface-secondary px-4 py-3 text-center text-xs text-text-tertiary">
+              This chat was shared with you, read-only — you can&rsquo;t send messages or respond to prompts.
+            </div>
           </div>
-          <div className={`relative z-10 rounded-2xl transition-colors ${
-            hasPendingTools
-              ? "border border-border bg-surface-secondary focus-within:border-accent"
-              : "has-[.tool-drawer]:border has-[.tool-drawer]:border-border has-[.tool-drawer]:bg-surface-secondary has-[.tool-drawer]:focus-within:border-accent focus-within:border-accent"
-          }`}>
-            <ExternalToolDrawer wizard={safeWizard} />
-            <FronaComposer wizard={safeWizard} />
+        ) : (
+          <div className="relative mx-auto w-full max-w-3xl px-3 md:px-6 pb-4">
+            <div className="absolute inset-x-0 -top-7 z-0 flex justify-center px-3 md:px-6">
+              <CollapsedToolTab wizard={safeWizard} />
+            </div>
+            <div className={`relative z-10 rounded-2xl transition-colors ${
+              hasPendingTools
+                ? "border border-border bg-surface-secondary focus-within:border-accent"
+                : "has-[.tool-drawer]:border has-[.tool-drawer]:border-border has-[.tool-drawer]:bg-surface-secondary has-[.tool-drawer]:focus-within:border-accent focus-within:border-accent"
+            }`}>
+              <ExternalToolDrawer wizard={safeWizard} />
+              <FronaComposer wizard={safeWizard} />
+            </div>
           </div>
-        </div>
+        )}
       </ThreadPrimitive.ViewportFooter>
     </ThreadPrimitive.Root>
     </WizardAnswersContext>
