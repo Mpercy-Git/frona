@@ -112,6 +112,11 @@ impl Harness {
         }
     }
 
+    /// `session_id` is the generation id this run was registered under (see
+    /// [`ActiveSessions::register`]/`register_token`), when the caller has
+    /// one. It lets `finalize` tell a genuine Stop apart from a run that lost
+    /// a race against an interrupting message — pass `None` if the caller
+    /// never registered this run with `ActiveSessions`.
     #[allow(clippy::too_many_arguments)]
     pub async fn run_turn(
         &self,
@@ -122,6 +127,7 @@ impl Harness {
         builder: Box<dyn ConversationBuilder>,
         tool_filters: &[ToolFilter],
         command_context_registry: Option<Arc<CommandRegistry>>,
+        session_id: Option<u64>,
     ) {
         let outcome = self
             .run_loop(
@@ -134,7 +140,7 @@ impl Harness {
                 command_context_registry,
             )
             .await;
-        self.finalize(message_id, user_id, outcome).await;
+        self.finalize(message_id, user_id, session_id, outcome).await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -237,7 +243,7 @@ impl Harness {
                 Ok(CommandOutcome::End) => {
                     let _ = self
                         .chat_service
-                        .cancel_agent_message(response.clone())
+                        .cancel_agent_message(response.clone(), true)
                         .await;
                     return Ok(AgentLoopOutcome {
                         inference: InferenceResponse::Handled,
@@ -319,7 +325,7 @@ impl Harness {
             storage_service: self.storage_service.clone(),
             agent_service: self.agent_service.clone(),
         });
-        self.run_turn(user_id, chat_id, message_id, cancel_token, builder, &[], None)
+        self.run_turn(user_id, chat_id, message_id, cancel_token, builder, &[], None, Some(session_id))
             .await;
         self.active_sessions.remove(chat_id, session_id).await;
         Ok(())
@@ -475,6 +481,7 @@ impl Harness {
         &self,
         message_id: &str,
         user_id: &str,
+        session_id: Option<u64>,
         outcome: Result<AgentLoopOutcome, AppError>,
     ) {
         match outcome {
@@ -492,7 +499,17 @@ impl Harness {
                 }
                 InferenceResponse::Cancelled(text) => {
                     response.content = text;
-                    let _ = self.chat_service.cancel_agent_message(response).await;
+                    // Only tell the client this generation was cancelled if
+                    // it's still the current one for the chat. If a newer
+                    // run has already superseded it (an interrupting
+                    // message), that run's own events carry the UI forward —
+                    // broadcasting here would reset its running/streaming
+                    // state out from under it.
+                    let notify = match session_id {
+                        Some(id) => self.active_sessions.is_current(&response.chat_id, id).await,
+                        None => true,
+                    };
+                    let _ = self.chat_service.cancel_agent_message(response, notify).await;
                 }
                 InferenceResponse::ExternalToolPending { tool_calls, .. } => {
                     let chat_id = response.chat_id.clone();

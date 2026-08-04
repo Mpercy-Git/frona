@@ -124,6 +124,19 @@ impl ActiveSessions {
         }
     }
 
+    /// True if `id` is still the current generation registered for
+    /// `chat_id` — i.e. this run has not been superseded by a newer
+    /// `register`/`register_token` call. A cancelled run uses this to tell
+    /// a genuine Stop (broadcast the cancellation) apart from losing a race
+    /// against an interrupting message (stay quiet — the superseding run's
+    /// own lifecycle events already carry the UI forward, and a stray
+    /// "cancelled" broadcast for the old generation would otherwise reset
+    /// the client's running/streaming state out from under the new turn).
+    pub async fn is_current(&self, chat_id: &str, id: u64) -> bool {
+        let map = self.inner.lock().await;
+        map.get(chat_id).is_some_and(|(cur, _)| *cur == id)
+    }
+
     pub async fn count(&self) -> usize {
         self.inner.lock().await.len()
     }
@@ -946,6 +959,30 @@ mod tests {
         sessions.remove("chat-1", id1).await; // stale — no-op
         assert_eq!(sessions.count().await, 1);
         assert!(sessions.cancel("chat-1").await, "successor token still present");
+    }
+
+    #[tokio::test]
+    async fn test_is_current_true_for_the_registered_generation() {
+        let sessions = ActiveSessions::default();
+        let (id, _) = sessions.register("chat-1").await;
+        assert!(sessions.is_current("chat-1", id).await);
+    }
+
+    #[tokio::test]
+    async fn test_is_current_false_once_superseded() {
+        // The old generation (id1) is no longer current once a new run (id2)
+        // registers for the same chat — this is what lets a cancelled run
+        // tell "the user hit Stop" apart from "an interrupt superseded me".
+        let sessions = ActiveSessions::default();
+        let (id1, _) = sessions.register("chat-1").await;
+        let (_id2, _) = sessions.register("chat-1").await;
+        assert!(!sessions.is_current("chat-1", id1).await);
+    }
+
+    #[tokio::test]
+    async fn test_is_current_false_for_unknown_chat() {
+        let sessions = ActiveSessions::default();
+        assert!(!sessions.is_current("nonexistent", 0).await);
     }
 
     #[tokio::test]
