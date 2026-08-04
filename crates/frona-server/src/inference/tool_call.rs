@@ -17,16 +17,15 @@ pub enum ToolStatus {
 /// Terminal signals emitted by task-control tools (`complete_task`,
 /// `fail_task`, `defer_task`). Distinct from `Hitl` (which pauses awaiting
 /// human input); `TaskEvent` terminates the tool loop with a task outcome.
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[serde(tag = "type", content = "data")]
 #[surreal(crate = "surrealdb::types", tag = "type", content = "data")]
 pub enum TaskEvent {
     Completion {
         task_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         chat_id: Option<String>,
         status: crate::agent::task::models::TaskStatus,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         deliverables: Vec<crate::storage::Attachment>,
@@ -38,6 +37,7 @@ pub enum TaskEvent {
     },
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "tool_call")]
@@ -54,16 +54,11 @@ pub struct ToolCall {
     pub duration_ms: u64,
     /// Pause marker for HITL prompts. `Some` when the tool emitted a Hitl;
     /// status starts as `Pending`, flips to `Resolved`/`Denied` on resolution.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hitl: Option<Hitl>,
     /// Terminal signal from task-control tools. Mutually exclusive with `hitl`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_event: Option<TaskEvent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_text: Option<String>,
     /// Per-turn reasoning emitted by the model right before this tool call.
     /// Set only on the FIRST tool_call of each turn (paired with `turn_text`).
@@ -71,7 +66,6 @@ pub struct ToolCall {
     /// thinking) which mandate `reasoning_content` be replayed in subsequent
     /// chat-completion requests — without it, resume after a HITL pause errors
     /// with `invalid_request_error`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_reasoning: Option<crate::chat::message::models::Reasoning>,
     pub created_at: DateTime<Utc>,
 }
