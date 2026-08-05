@@ -36,6 +36,7 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 - **Caller resolution by handle or name**, not just user ID, with a username (handle) inbound fallback
 - **International number normalization** — `00`-prefixed UK/Europe numbers are handled correctly
 - **Reverse-proxy-aware Twilio signature validation** (tries multiple URL variants; optional skip for debugging)
+- **Streaming agent speech** — the agent's reply reaches the caller as it is generated, instead of the whole loop (tool rounds included) having to finish before a single word is spoken. A retried turn no longer speaks its opening twice
 - Voice settings surfaced in the UI: inbound enable, silence-fill phrases/timing, caller allowlist, phone profile field
 
 ### 🔔 Web Push notifications & PWA (net-new)
@@ -43,10 +44,31 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 - **Web Push with VAPID** — a service worker delivers OS-level push notifications for agent replies to subscribed devices, including mobile
 - **Smart suppression** — a push only fires when the relevant chat isn't already focused: an active, focused conversation stays quiet, while a backgrounded window, unfocused tab, or different page still alerts
 - **Installable PWA with an Android app-like feel** — web app manifest, generated app icons (standard + maskable + apple-touch), `viewport-fit=cover`, safe-area insets, dynamic viewport height (`100dvh`), no accidental pull-to-refresh, and virtual-keyboard-aware composer scrolling
+- Push subscriptions re-sync on mobile, iOS gets explicit install guidance, and the composer stays above the on-screen keyboard
 
 ### 🧭 OpenRouter provider routing (net-new)
 
 - Expose OpenRouter's routing controls in the UI: `route`, explicit **provider order**, and **fallbacks** so you can steer which upstream backend serves each request
+
+### 🤝 Sharing agents and chats (net-new)
+
+Upstream has no sharing concept at all — a `user_id` equality check gated every read. This fork adds two independent grants:
+
+- **Share an agent (use-only)** — a recipient can chat with and run an agent they don't own, but not edit it. Definition-scoped lookups (workspace, skills, sandbox policy) resolve under the **owner**, so a shared agent behaves exactly as its owner configured it no matter who drives it. Share by handle or email; re-sharing is idempotent; sharing with yourself is rejected
+- **Optional credential delegation**, off by default — when the owner opts in, the recipient's runs may use the credentials the owner granted that agent. The ephemeral run token stays scoped to the runner regardless
+- **Share a chat read-only** — the recipient views messages and attachments but cannot send, archive, delete, or resolve human-in-the-loop prompts. Attachments presign under the chat owner's identity so a non-owner viewer can actually load them. Shared chats are merged into listing and navigation with `is_shared`/`shared_by`, and the composer renders read-only for chats you don't own
+- Registered-user sharing only; a public/anonymous read-only link is a separate follow-up
+
+### 📂 Files, media & previews (net-new)
+
+- **In-app preview dialog in the Files tab** — images, audio and video, text/markdown/source, and PDFs render without leaving the app. Anything else falls back to Open / Download. Previously the only way to view a file was a context-menu action that presigned it into a new tab
+- SVG previews render in an `<img>` context, while `/api/files` continues to serve SVG as an attachment so script execution on direct navigation stays blocked
+- **Inline audio/video playback for chat attachments** — media in a conversation plays in place instead of rendering as a download link, across assistant messages, user messages, and the Attachments tool UI
+
+### 🧩 Skills & tasks (net-new)
+
+- **Add skills manually, without a repo** — hand-write a `SKILL.md` or fix one whose upstream frontmatter is wrong, instead of being limited to installing from GitHub
+- **Website citations in task completion summaries** — sources from `web_search`/`web_fetch` are preserved structurally rather than surviving only if the model happens to retype them
 
 ### 🛡️ Security & correctness hardening (fork-only fixes)
 
@@ -56,6 +78,9 @@ A dedicated review pass fixed issues not present upstream, including:
 - UTF-8 byte-index truncation panics fixed; cancelled-scheduler push state fix; config `GET /api/config` now reads from disk so saved settings don't silently revert; a channel leaves `Setup` for `Disconnected` once required fields are provided
 - **Space management:** spaces can be archived or deleted from the chat sidebar (mirroring chats); deleting a channel no longer deletes its space, since spaces are independent and can hold chats
 - Chat file-upload robustness: friendlier over-size errors, no silent attachment drops, no leaked blob URLs
+- **Shared-agent workspace paths:** the file tools resolved relative paths under the *runner* while the sandbox mounts the *owner's* workspace. Harmless for an owned agent (the two are the same user) but it put every path in a shared run outside the mount, so reads and writes were denied outright. Both now resolve under the owner, and the resolver takes the whole inference context so the pairing can't be mismatched again
+- SMTP password redacted in config responses; mail and login-lockout settings surfaced in the UI
+- A superseded turn's cancellation no longer resets the UI mid-interrupt; the tasks tab sorts by status rather than just active vs finished
 
 ### 🔑 Account recovery & login lockout (net-new)
 
@@ -101,6 +126,7 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 - **Voice calls:** outbound phone calls via Twilio with speech recognition and DTMF navigation (optional)
 - **Persistent memory:** agents remember facts across conversations with automatic compaction and deduplication. User-scoped facts are shared across agents, agent-scoped facts are private
 - **Agent-to-agent delegation:** agents hand off tasks to specialized agents and get results back
+- **Sharing:** hand another registered user an agent to run (without letting them edit it) or a chat to read, with optional credential delegation on shared agents
 - **Spaces:** group conversations that share context. The platform summarizes linked conversations and feeds the context into new chats
 - **Notifications:** agents push status updates (task finished, app deployed, credential needs approval) into a feed in the top bar so nothing important gets lost
 - **Real-time streaming:** token-by-token response streaming over Server-Sent Events
@@ -119,6 +145,7 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 - **Tasks** represent units of work. They can be direct (run immediately), delegated (from one agent to another), or scheduled (recurring via cron expressions).
 - **Chat** is how you interact with agents. Each conversation belongs to one agent, but multiple agents can contribute to it through delegation. Messages stream in real-time over Server-Sent Events.
 - **Spaces** are groups of chats that share the same context. When you link conversations to a space, the platform summarizes those conversations and feeds the context back into new chats.
+- **Shares** grant another registered user access to something you own. An agent share is use-only — they can run it, they can't edit it, and it executes under your workspace, skills, and sandbox policy. A chat share is read-only. Neither transfers ownership, and both are revocable.
 - **Skills** are instruction packages you install on agents. They can be built-in, shared across all agents, or scoped to a single agent.
 
 ## Quickstart
