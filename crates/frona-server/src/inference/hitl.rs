@@ -8,6 +8,7 @@ use surrealdb::types::SurrealValue;
 use crate::credential::vault::models::GrantDuration;
 use crate::inference::tool_call::ToolStatus;
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct Hitl {
@@ -18,16 +19,15 @@ pub struct Hitl {
     pub request: HitlRequest,
     pub status: ToolStatus,
     /// `None` iff `status == Pending`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<HitlResponse>,
     /// Delivery cursor uses this for retry idempotency (skips already-rendered
     /// HITLs).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<HitlDelivery>,
 }
 
 /// Channels project this to `HitlKind` via `chat::channel::hitl::kind_for`
 /// rather than matching directly, so new variants only need a `kind_for` arm.
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[serde(tag = "type", content = "data")]
 #[surreal(crate = "surrealdb::types", tag = "type", content = "data")]
@@ -40,7 +40,6 @@ pub enum HitlRequest {
     App {
         action: String,
         manifest: serde_json::Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         previous_manifest: Option<serde_json::Value>,
     },
     Credential {

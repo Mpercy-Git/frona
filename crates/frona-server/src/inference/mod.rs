@@ -9,6 +9,8 @@ pub mod provider;
 pub mod registry;
 pub mod request;
 pub mod retry;
+pub mod trace;
+pub mod structured;
 pub mod tool_call;
 pub mod tool_loop;
 pub mod usage;
@@ -21,9 +23,12 @@ pub use hitl::{
 };
 pub use provider::ModelRef;
 pub use registry::ModelProviderRegistry;
-pub use request::{InferenceRequest, InferenceResponse, InferenceContext};
+pub use request::{InferenceRequest, InferenceResponse, InferenceContext, active_chat};
 pub use crate::chat::broadcast::EventSender;
 pub use rig_core::completion::request::Usage;
+pub use structured::{
+    AnswerAttempt, StructuredConversation, structured_inference, structured_inference_with_tools,
+};
 pub use tool_loop::{InferenceEvent, InferenceEventKind};
 
 
@@ -41,7 +46,7 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
     let chat_usage_ctx = UsageContext::new(
         InferenceKind::Text {
             agent_id: request.ctx.agent.id.clone(),
-            chat_id: request.ctx.chat.id.clone(),
+            chat_id: active_chat(&request.ctx)?.id.clone(),
             message_id: request.message_id.clone(),
         },
         request.ctx.user.id.clone(),
@@ -57,18 +62,9 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
 
     if request.tool_registry.is_empty() {
         use tool_loop::extract_reasoning;
-        let max_output = request
-            .model_group
-            .max_tokens
-            .unwrap_or(request.model_group.inference.default_max_tokens)
-            as usize;
-        let history = context::truncate_history(
-            request.history,
-            &request.system_prompt,
-            request.model_group.context_window,
-            max_output,
-            request.model_group.inference.history_truncation_pct,
-        );
+        // History is compaction-aware at load time; an
+        // over-budget request is rejected by the provider, not silently trimmed.
+        let history = request.history;
 
         let mut response_text = String::new();
         let event_tx = &request.ctx.event_tx;
@@ -153,32 +149,4 @@ pub async fn text_inference(
     )
     .await?;
     provider::extract_text_from_choice(&contents)
-}
-
-pub async fn structured_inference<T>(
-    registry: &ModelProviderRegistry,
-    model_group: &ModelGroup,
-    system_prompt: &str,
-    history: Vec<RigMessage>,
-    usage_service: &UsageService,
-    usage_ctx: &UsageContext,
-) -> Result<T, InferenceError>
-where
-    T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
-{
-    let schema = serde_json::to_value(schemars::schema_for!(T))
-        .map_err(|e| InferenceError::InferenceFailed(format!("schema_for failed: {e}")))?;
-    let value = retry::structured_inference_with_retry_and_fallback(
-        registry,
-        model_group,
-        system_prompt,
-        history,
-        schema,
-        usage_service,
-        usage_ctx,
-    )
-    .await?;
-    serde_json::from_value::<T>(value).map_err(|e| {
-        InferenceError::InferenceFailed(format!("submit args deserialization failed: {e}"))
-    })
 }
