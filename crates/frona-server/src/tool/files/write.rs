@@ -51,7 +51,7 @@ impl WriteTool {
             .ok_or_else(|| AppError::Validation("Missing 'content' parameter".into()))?;
         let overwrite = arguments.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
 
-        let resolved = super::resolve_path(path_arg, &ctx.user.handle, &ctx.agent.handle, &self.storage)?;
+        let resolved = super::resolve_path(path_arg, ctx, &self.storage)?;
         let sandbox = self.sandbox_manager.for_tool(ctx).await?;
         if !sandbox.is_writable(&resolved) {
             return Ok(ToolOutput::error(format!(

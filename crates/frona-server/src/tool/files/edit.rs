@@ -134,7 +134,7 @@ impl EditTool {
             .ok_or_else(|| AppError::Validation("Missing 'new_string' parameter".into()))?;
         let replace_all = arguments.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
 
-        let resolved = super::resolve_path(path_arg, &ctx.user.handle, &ctx.agent.handle, &self.storage)?;
+        let resolved = super::resolve_path(path_arg, ctx, &self.storage)?;
         let sandbox = self.sandbox_manager.for_tool(ctx).await?;
         if !sandbox.is_writable(&resolved) {
             return Ok(ToolOutput::error(format!(
