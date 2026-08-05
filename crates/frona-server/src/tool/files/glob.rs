@@ -45,10 +45,9 @@ impl GlobTool {
 
         let scope_input = scope_arg.unwrap_or(".");
         let resolved = if scope_arg.is_some() {
-            super::resolve_path(scope_input, &ctx.user.handle, &ctx.agent.handle, &self.storage)?
+            super::resolve_path(scope_input, ctx, &self.storage)?
         } else {
-            self.storage
-                .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle)
+            super::workspace_root(ctx, &self.storage)
         };
         let sandbox = self.sandbox_manager.for_tool(ctx).await?;
         if !sandbox.is_readable(&resolved) {
