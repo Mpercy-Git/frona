@@ -21,11 +21,14 @@ pub struct ConversationContext {
 
 #[async_trait]
 pub trait ConversationBuilder: Send + Sync {
+    /// `summary`: rolling summary of compacted-away earlier messages, prepended
+    /// as a leading message by chat builders; `None` when there is no summary.
     async fn build(
         &self,
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
+        summary: Option<&str>,
     ) -> Vec<RigMessage>;
 
     /// Turn-scoped system prompt appended to the agent's main system prompt.
@@ -42,15 +45,25 @@ pub struct DefaultConversationBuilder {
 
 #[async_trait]
 impl ConversationBuilder for DefaultConversationBuilder {
-    // NOTE: fallback models reuse this history — messages are not rebuilt per model.
+    // NOTE: fallback models reuse this history - messages are not rebuilt per model.
     async fn build(
         &self,
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
+        summary: Option<&str>,
     ) -> Vec<RigMessage> {
         let te_map = group_tool_calls_by_message(tool_calls);
-        let mut result = Vec::with_capacity(messages.len());
+        let mut result = Vec::with_capacity(messages.len() + 1);
+        // Compacted earlier conversation, re-injected as a leading message so
+        // the model sees the gist of what was summarized away.
+        if let Some(s) = summary
+            && !s.trim().is_empty()
+        {
+            result.push(RigMessage::user(format!(
+                "<conversation_summary>\n{s}\n</conversation_summary>"
+            )));
+        }
         for msg in messages {
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
@@ -149,6 +162,7 @@ impl ConversationBuilder for TaskConversationBuilder {
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
+        _summary: Option<&str>,
     ) -> Vec<RigMessage> {
         let te_map = group_tool_calls_by_message(tool_calls);
         let mut result = Vec::with_capacity(messages.len());
@@ -249,7 +263,7 @@ impl ConversationBuilder for TaskConversationBuilder {
     }
 }
 
-/// The injected heartbeat turn is never written to the message table —
+/// The injected heartbeat turn is never written to the message table -
 /// it exists only inside the inference request.
 pub struct HeartbeatConversationBuilder {
     pub user_service: UserService,
@@ -266,13 +280,14 @@ impl ConversationBuilder for HeartbeatConversationBuilder {
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
+        summary: Option<&str>,
     ) -> Vec<RigMessage> {
         let default = DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
             agent_service: self.agent_service.clone(),
         };
-        let mut result = default.build(messages, tool_calls, ctx).await;
+        let mut result = default.build(messages, tool_calls, ctx, summary).await;
 
         let mut injected = String::new();
         if let Some(prompt) = &self.continuation_prompt
@@ -306,6 +321,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
+        _summary: Option<&str>,
     ) -> Vec<RigMessage> {
         let te_map = group_tool_calls_by_message(tool_calls);
         let mut result = Vec::with_capacity(messages.len());
@@ -433,7 +449,7 @@ fn convert_agent_with_tool_calls(
 
     for tes in turns.values() {
         let mut assistant_items: Vec<AssistantContent> = Vec::new();
-        // Per-turn reasoning — stamped on the first tool_call of the turn at
+        // Per-turn reasoning - stamped on the first tool_call of the turn at
         // begin time. Replayed here so thinking-mode providers (DeepSeek,
         // Anthropic extended thinking) see the `reasoning_content` they
         // originally emitted; without it they reject the request with

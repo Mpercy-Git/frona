@@ -68,7 +68,7 @@ pub fn needs_compaction(
 /// Trims `history` to fit `history_truncation_pct` of the budget left over
 /// after `max_output_tokens` and the system prompt. Newest messages are kept;
 /// older ones are dropped first. Operates on a resolved window budget
-/// (typically from `resolve_context_window`) — doesn't know about model identity.
+/// (typically from `resolve_context_window`) - doesn't know about model identity.
 pub fn truncate_history(
     history: Vec<RigMessage>,
     system_prompt: &str,
@@ -88,6 +88,7 @@ pub fn truncate_history(
         return history;
     }
 
+    let original_len = history.len();
     let mut result: Vec<RigMessage> = Vec::new();
     let mut used = 0usize;
 
@@ -101,6 +102,18 @@ pub fn truncate_history(
     }
 
     result.reverse();
+    // We only get here when the history is over budget and messages are being
+    // dropped oldest-first - a silent context loss the caller can't see. Surface
+    // it: for the compaction summarizer (`text_inference`) this means the backlog
+    // exceeded the summarizer's own window and the oldest messages won't reach the
+    // summary either. No-op truncations returned above, so this never fires spuriously.
+    tracing::warn!(
+        estimated_tokens = total,
+        budget,
+        dropped_messages = original_len - result.len(),
+        kept_messages = result.len(),
+        "history over budget: dropped oldest messages to fit (silent context loss)"
+    );
     result
 }
 
