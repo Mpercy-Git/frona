@@ -90,6 +90,12 @@ pub struct SydDriver {
     dest_cache: moka::sync::Cache<String, Vec<String>>,
 }
 
+impl Default for SydDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SydDriver {
     pub fn new() -> Self {
         Self::with_resolv_conf("/etc/resolv.conf")
