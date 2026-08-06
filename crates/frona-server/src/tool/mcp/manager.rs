@@ -288,7 +288,6 @@ impl McpManager {
         self.register_connection(server, client, None, None, None, None).await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn register_connection(
         &self,
         server: &McpServer,

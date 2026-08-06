@@ -4,7 +4,6 @@
 //! satisfy a "send a reminder" instruction via `send_message` and then leave
 //! `complete_task.result` empty against a non-nullable schema.
 
-#[allow(dead_code)]
 mod helpers;
 
 use std::collections::HashMap;
@@ -64,6 +63,7 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             shared_config_dir: resources.to_string_lossy().into_owned(),
             skills_dir: format!("{base}/skills"),
             cache_dir: format!("{base}/cache"),
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -93,8 +93,8 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
     );
 
     // Replace the default chat_service with one wired to a mock provider so
-    // model-group resolution succeeds. We don't run inference here — the tests
-    // just inspect the tool registry the session builds — but `session.build`
+    // model-group resolution succeeds. We don't run inference here - the tests
+    // just inspect the tool registry the session builds - but `session.build`
     // resolves the agent's `model_group` against this registry.
     let provider: Arc<dyn frona::inference::provider::ModelProvider> =
         Arc::new(MockModelProvider::new(vec![]));
@@ -112,7 +112,6 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         mock_registry,
         state.storage_service.clone(),
         state.user_service.clone(),
-        state.memory_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
             state.presign_service.clone(),
@@ -125,9 +124,8 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.user_service.clone(),
         state.storage_service.clone(),
         state.agent_service.clone(),
-        state.memory_service.clone(),
-        state.skill_service.clone(),
-        state.task_service.clone(),
+        helpers::test_memory_service(&state, &db),
+        state.skill_service.clone(),        state.task_service.clone(),
         state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
@@ -218,7 +216,7 @@ fn registry_has_tool(session: &ChatSessionContext, tool_id: &str) -> bool {
 }
 
 /// Heartbeat path: the agent's `heartbeat_chat_id` points at the current chat,
-/// so `send_message` IS registered — this is the one context where the agent
+/// so `send_message` IS registered - this is the one context where the agent
 /// has no other channel to reach the user.
 #[tokio::test]
 async fn send_message_registered_in_heartbeat_chat() {
@@ -337,7 +335,7 @@ async fn send_message_filtered_in_normal_chat() {
     );
 }
 
-/// Sanity check the heartbeat allowance is keyed on identity, not presence —
+/// Sanity check the heartbeat allowance is keyed on identity, not presence -
 /// a second chat owned by the same agent (not its `heartbeat_chat_id`) should
 /// still be filtered. Prevents accidentally widening the rule to "agent has
 /// heartbeat configured anywhere".

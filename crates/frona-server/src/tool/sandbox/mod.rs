@@ -43,7 +43,7 @@ impl BaseFilesystemPolicy {
 
 /// Thin factory that owns the platform-specific sandbox driver and the
 /// process resource manager. Hands out `Sandbox` instances configured with
-/// the driver — no service knowledge, no orchestration. All production
+/// the driver - no service knowledge, no orchestration. All production
 /// callers go through [`SandboxManager`]; the factory itself is only
 /// reached directly for integration tests and for the install-phase
 /// permissive bypass in `McpManager::build_install_sandbox` (which skips
@@ -124,10 +124,10 @@ impl SandboxFactory {
 /// Single entry point for building a fully-configured [`Sandbox`]. Owns
 /// the Cedar policy + workspace + token + env machinery and exposes one
 /// constructor per principal kind:
-/// - [`SandboxManager::for_tool`] — agent inference tools (`CliTool`,
+/// - [`SandboxManager::for_tool`] - agent inference tools (`CliTool`,
 ///   the typed file tools). Adds skill paths + ephemeral token + vault env.
-/// - [`SandboxManager::for_app`] — App processes under an agent workspace.
-/// - [`SandboxManager::for_mcp`] — MCP servers in their own workspace.
+/// - [`SandboxManager::for_app`] - App processes under an agent workspace.
+/// - [`SandboxManager::for_mcp`] - MCP servers in their own workspace.
 ///
 /// Wraps a [`SandboxFactory`] internally; exposes it via
 /// [`SandboxManager::factory`] for the two callers that need raw factory
@@ -171,7 +171,7 @@ impl SandboxManager {
         }
     }
 
-    /// Underlying factory — useful for callers that need things like
+    /// Underlying factory - useful for callers that need things like
     /// `default_timeout_secs` or `resource_manager` without going through
     /// `for_tool`.
     pub fn factory(&self) -> &SandboxFactory {
@@ -213,6 +213,24 @@ impl SandboxManager {
             .storage_service
             .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
 
+        // Ambient grant: if the agent is authorized for the `memory` tool group,
+        // expose the user's memory dir read-only (the PKM page tree / Obsidian
+        // vault). Read-only - pages are derived, never agent-written.
+        let mut memory_read: Vec<String> = Vec::new();
+        if self
+            .policy_service
+            .is_tool_group_permitted(&ctx.user.id, &ctx.user.handle, &ctx.agent.handle, "memory")
+            .await
+            .unwrap_or(false)
+        {
+            memory_read.push(
+                self.storage_service
+                    .user_pkm_path(&ctx.user.handle)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+
         let mut sandbox = self
             .factory
             .get_sandbox(
@@ -222,6 +240,7 @@ impl SandboxManager {
                 policy.network_destinations.clone(),
             )
             .with_read_paths(skill_read_paths)
+            .with_read_paths(memory_read)
             .with_read_paths(policy.read_paths.clone())
             .with_write_paths(policy.write_paths.clone())
             .with_denied_paths(policy.denied_paths.clone())
@@ -468,7 +487,7 @@ impl Sandbox {
 
         let workspace = self.workspace_dir();
 
-        // Driver-hardcoded readable directories — pre-canonicalised at
+        // Driver-hardcoded readable directories - pre-canonicalised at
         // factory construction.
         for d in self
             .base_filesystem_policy
@@ -1046,7 +1065,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&ws.path);
     }
 
-    // ===== canonicalize_with_unresolved_tail + is_writable / is_readable =====
 
     #[test]
     fn canonicalize_existing_file() {

@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::task::models::{SignalMode, Task, TaskKind};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct SignalOutput {
     #[serde(default)]
     pub categories: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
 }
 

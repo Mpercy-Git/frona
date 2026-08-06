@@ -16,7 +16,9 @@ use crate::core::Principal;
 use crate::core::config::VoiceConfig;
 use crate::core::error::AppError;
 use crate::credential::keypair::service::KeyPairService;
-use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition};
+use crate::tool::{
+    AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VoiceCallbackExtensions {
@@ -38,9 +40,6 @@ pub struct VoiceSessionExtensions {
     pub call_id: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// VoiceProvider trait
-// ---------------------------------------------------------------------------
 
 #[async_trait]
 pub trait VoiceProvider: Send + Sync {
@@ -59,9 +58,6 @@ pub trait VoiceProvider: Send + Sync {
     ) -> Result<String, AppError>;
 }
 
-// ---------------------------------------------------------------------------
-// TwilioProvider
-// ---------------------------------------------------------------------------
 
 pub struct TwilioProvider {
     pub account_sid: String,
@@ -72,7 +68,7 @@ pub struct TwilioProvider {
     pub speech_model: Option<String>,
     pub token_service: TokenService,
     pub keypair_service: KeyPairService,
-    /// Callback token TTL in seconds — short enough that a leaked callback URL
+    /// Callback token TTL in seconds - short enough that a leaked callback URL
     /// can't be replayed beyond the call setup window.
     pub callback_ttl_secs: u64,
 }
@@ -141,9 +137,6 @@ impl VoiceProvider for TwilioProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Factory
-// ---------------------------------------------------------------------------
 
 pub fn create_voice_provider(
     config: &VoiceConfig,
@@ -180,9 +173,6 @@ pub fn create_voice_provider(
     }
 }
 
-// ---------------------------------------------------------------------------
-// VoiceCallTool (external — pauses loop until Twilio callback)
-// ---------------------------------------------------------------------------
 
 pub struct VoiceCallTool {
     pub provider: Option<Arc<dyn VoiceProvider>>,
@@ -226,7 +216,8 @@ impl AgentTool for VoiceCallTool {
             AppError::Tool("Voice calling is not configured. Set voice.twilio_account_sid, twilio_auth_token, and twilio_from_number in config.".into())
         })?;
 
-        let chat_id = &ctx.chat.id;
+        let chat = active_chat(ctx)?;
+        let chat_id = &chat.id;
         let user_id = &ctx.user.id;
 
         let contact = self.contact_service
@@ -260,9 +251,6 @@ impl AgentTool for VoiceCallTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SendDtmfTool (external — pauses tool loop)
-// ---------------------------------------------------------------------------
 
 pub struct SendDtmfTool {
     pub prompts: PromptLoader,
@@ -285,14 +273,11 @@ impl AgentTool for SendDtmfTool {
             .get("digits")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::Validation("Missing required parameter: digits".into()))?;
-        // The result IS the digits string — the voice handler reads external_tool.result
+        // The result IS the digits string - the voice handler reads external_tool.result
         Ok(ToolOutput::text(digits).as_pending_external())
     }
 }
 
-// ---------------------------------------------------------------------------
-// HangupCallTool (external — pauses tool loop)
-// ---------------------------------------------------------------------------
 
 pub struct HangupCallTool {
     pub prompts: PromptLoader,
@@ -315,9 +300,6 @@ impl AgentTool for HangupCallTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

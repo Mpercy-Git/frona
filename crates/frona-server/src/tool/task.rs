@@ -14,7 +14,7 @@ use crate::policy::models::PolicyAction;
 use crate::policy::service::PolicyService;
 use frona_derive::agent_tool;
 
-use super::{InferenceContext, ToolOutput};
+use super::{InferenceContext, ToolOutput, active_chat};
 
 /// XOR: both together is rejected because the schema's own root
 /// `description` already covers the prose case.
@@ -186,10 +186,11 @@ impl TaskTool {
     }
 
     async fn handle_create_task(&self, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let user_id = &ctx.user.id;
         let agent_id = &ctx.agent.id;
-        let chat_id = &ctx.chat.id;
-        let space_id = ctx.chat.space_id.clone();
+        let chat_id = &chat.id;
+        let space_id = chat.space_id.clone();
 
         let title = arguments
             .get("title")
@@ -224,7 +225,7 @@ impl TaskTool {
             return Ok(denied);
         }
 
-        if ctx.chat.task_id.is_some() {
+        if chat.task_id.is_some() {
             if has_delay_minutes || has_run_at {
                 return Err(AppError::Validation(
                     "Cannot create a deferred task from inside a running task. Use `defer_task` to retry the current task later instead of scheduling a duplicate.".into(),
@@ -247,10 +248,11 @@ impl TaskTool {
     }
 
     async fn handle_create_recurring(&self, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let user_id = &ctx.user.id;
         let agent_id = &ctx.agent.id;
-        let chat_id = &ctx.chat.id;
-        let space_id = ctx.chat.space_id.clone();
+        let chat_id = &chat.id;
+        let space_id = chat.space_id.clone();
 
         let title = arguments
             .get("title")

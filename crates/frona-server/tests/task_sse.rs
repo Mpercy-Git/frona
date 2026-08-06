@@ -1,7 +1,6 @@
 //! Integration test: execute a task end-to-end and verify every SSE event
 //! that the frontend would receive.
 
-#[allow(dead_code)]
 mod helpers;
 
 use std::collections::HashMap;
@@ -106,15 +105,17 @@ async fn test_app_state_with_mock(
         frona::agent::prompt::PromptLoader::new(format!("{base}/prompts"));
 
     let provider_registry_arc = Arc::new(provider_registry.clone());
-    let memory_service = frona::memory::service::MemoryService::new(
-        SurrealRepo::new(db.clone()),
-        SurrealRepo::new(db.clone()),
-        SurrealRepo::new(db.clone()),
-        provider_registry_arc,
-        prompt_loader.clone(),
-        storage.clone(),
-        helpers::test_usage_service(&db),
-    );
+    let memory_service: Arc<dyn frona::memory::service::MemoryService> =
+        Arc::new(frona::memory::basic::BasicMemoryService::new(
+            SurrealRepo::new(db.clone()),
+            SurrealRepo::new(db.clone()),
+            SurrealRepo::new(db.clone()),
+            SurrealRepo::new(db.clone()),
+            provider_registry_arc,
+            prompt_loader.clone(),
+            helpers::test_usage_service(&db),
+            frona::core::config::MemoryConfig::default(),
+        ));
 
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let mut state =
@@ -130,7 +131,6 @@ async fn test_app_state_with_mock(
         provider_registry,
         storage.clone(),
         user_service,
-        memory_service,
         prompt_loader.clone(),
         state.broadcast_service.clone(),
         state.presign_service.clone(),
@@ -146,7 +146,7 @@ async fn test_app_state_with_mock(
         state.user_service.clone(),
         state.storage_service.clone(),
         agent_service,
-        state.memory_service.clone(),
+        memory_service,
         state.skill_service.clone(),
         state.task_service.clone(),
         state.vault_service.clone(),

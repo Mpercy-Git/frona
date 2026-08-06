@@ -10,7 +10,7 @@ use crate::inference::tool_call::ToolStatus;
 
 use frona_derive::agent_tool;
 
-use super::{InferenceContext, ToolOutput};
+use super::{InferenceContext, ToolOutput, active_chat};
 
 pub struct RequestCredentialsTool {
     vault_service: VaultService,
@@ -47,6 +47,7 @@ impl RequestCredentialsTool {
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let query = arguments
             .get("query")
             .and_then(|v| v.as_str())
@@ -68,7 +69,7 @@ impl RequestCredentialsTool {
         if !force
             && let Some(binding) = self
                 .vault_service
-                .find_binding(&ctx.user.id, &principal, &query, Some(&ctx.chat.id))
+                .find_binding(&ctx.user.id, &principal, &query, Some(&chat.id))
                 .await?
         {
             let secret = self
@@ -80,7 +81,7 @@ impl RequestCredentialsTool {
                 .log_access(
                     &ctx.user.id,
                     principal.clone(),
-                    &ctx.chat.id,
+                    &chat.id,
                     &binding.connection_id,
                     &binding.vault_item_id,
                     None,
@@ -104,7 +105,7 @@ impl RequestCredentialsTool {
 
         Ok(ToolOutput::text("").with_hitl(Hitl {
             prompt: format!("Allow access to credential matching '{query}'?\n\n{reason}"),
-            url: format!("{}/chat?id={}", self.public_base_url, ctx.chat.id),
+            url: format!("{}/chat?id={}", self.public_base_url, chat.id),
             request: HitlRequest::Credential { query, reason },
             status: ToolStatus::Pending,
             response: None,
@@ -119,6 +120,7 @@ impl RequestCredentialsTool {
         response: HitlResponse,
         ctx: &InferenceContext,
     ) -> Result<HitlOutcome, AppError> {
+        let chat = active_chat(ctx)?;
         let HitlRequest::Credential { query, reason } = request else {
             return Err(AppError::Validation(
                 "request_credentials on_resume: expected Credential request".into(),
@@ -152,7 +154,7 @@ impl RequestCredentialsTool {
                         .await?;
                 }
 
-                let (scope, expires_at) = Self::scope_for(&grant_duration, &ctx.chat.id);
+                let (scope, expires_at) = Self::scope_for(&grant_duration, &chat.id);
 
                 self.vault_service
                     .create_binding(
@@ -171,7 +173,7 @@ impl RequestCredentialsTool {
                     .log_access(
                         &ctx.user.id,
                         principal,
-                        &ctx.chat.id,
+                        &chat.id,
                         &connection_id,
                         &vault_item_id,
                         None,

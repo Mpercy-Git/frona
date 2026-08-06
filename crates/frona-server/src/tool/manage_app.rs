@@ -13,7 +13,7 @@ use crate::storage::StorageService;
 
 use frona_derive::agent_tool;
 
-use super::{InferenceContext, ToolOutput};
+use super::{InferenceContext, ToolOutput, active_chat};
 
 pub struct ManageAppTool {
     app_service: AppService,
@@ -80,6 +80,7 @@ impl ManageAppTool {
         response: HitlResponse,
         ctx: &InferenceContext,
     ) -> Result<HitlOutcome, AppError> {
+        let chat = active_chat(ctx)?;
         let HitlRequest::App { action, manifest, .. } = request else {
             return Err(AppError::Validation(
                 "manage_app on_resume: expected App request".into(),
@@ -99,7 +100,7 @@ impl ManageAppTool {
                     .deploy_and_await(
                         &ctx.agent.id,
                         &ctx.user.id,
-                        &ctx.chat.id,
+                        &chat.id,
                         &manifest_parsed,
                         Vec::new(),
                     )
@@ -157,13 +158,14 @@ impl ManageAppTool {
         ctx: &InferenceContext,
         manifest_value: Option<Value>,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let manifest_value = manifest_value
             .ok_or_else(|| AppError::Validation("manifest is required for deploy".into()))?;
 
         let manifest: AppManifest = serde_json::from_value(manifest_value.clone())
             .map_err(|e| AppError::Validation(format!("Invalid manifest: {e}. Tip: `handle` is required — a short URL-safe identifier (e.g. \"notes\", \"my-dashboard\"). Apps are served at /apps/{{handle}}/.")))?;
 
-        // Pre-flight validation for static apps — catches manifest mistakes
+        // Pre-flight validation for static apps - catches manifest mistakes
         // (bad `static_dir`, missing files) BEFORE the human-approval HITL,
         // so the LLM gets immediate feedback to fix and retry.
         if manifest.effective_kind() == "static" {
@@ -185,7 +187,7 @@ impl ManageAppTool {
 
             return Ok(ToolOutput::text("").with_hitl(Hitl {
                 prompt,
-                url: format!("{}/chat?id={}", self.public_base_url, ctx.chat.id),
+                url: format!("{}/chat?id={}", self.public_base_url, chat.id),
                 request: HitlRequest::App {
                     action: "deploy".to_string(),
                     manifest: manifest_value,
@@ -199,11 +201,11 @@ impl ManageAppTool {
 
         let app = if let Some(ref existing) = existing {
             self.app_service
-                .restart(&ctx.agent.id, &existing.id, &ctx.chat.id)
+                .restart(&ctx.agent.id, &existing.id, &chat.id)
                 .await?
         } else {
             self.app_service
-                .deploy_and_await(&ctx.agent.id, &ctx.user.id, &ctx.chat.id, &manifest, Vec::new())
+                .deploy_and_await(&ctx.agent.id, &ctx.user.id, &chat.id, &manifest, Vec::new())
                 .await?
         };
 
@@ -230,9 +232,10 @@ impl ManageAppTool {
         ctx: &InferenceContext,
         manifest_value: Option<Value>,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let app_id = self.resolve_app_id(ctx, manifest_value.as_ref()).await?;
 
-        let app = self.app_service.stop(&ctx.agent.id, &app_id, &ctx.chat.id).await?;
+        let app = self.app_service.stop(&ctx.agent.id, &app_id, &chat.id).await?;
         self.emit_notification(ctx, &app.handle, "stop", NotificationLevel::Info, &format!("App '{}' stopped", app.name)).await;
         Ok(ToolOutput::text(format!(
             "App '{}' stopped. Status: {}",
@@ -245,11 +248,12 @@ impl ManageAppTool {
         ctx: &InferenceContext,
         manifest_value: Option<Value>,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let app_id = self.resolve_app_id(ctx, manifest_value.as_ref()).await?;
 
         let app = self
             .app_service
-            .start(&ctx.agent.id, &app_id, &ctx.chat.id, Vec::new())
+            .start(&ctx.agent.id, &app_id, &chat.id, Vec::new())
             .await?;
 
         self.emit_notification(ctx, &app.handle, "start", NotificationLevel::Success, &format!("App '{}' started", app.name)).await;
@@ -261,9 +265,10 @@ impl ManageAppTool {
         ctx: &InferenceContext,
         manifest_value: Option<Value>,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let app_id = self.resolve_app_id(ctx, manifest_value.as_ref()).await?;
 
-        let app = self.app_service.restart(&ctx.agent.id, &app_id, &ctx.chat.id).await?;
+        let app = self.app_service.restart(&ctx.agent.id, &app_id, &chat.id).await?;
 
         self.emit_notification(ctx, &app.handle, "restart", NotificationLevel::Info, &format!("App '{}' restarted", app.name)).await;
         Ok(ToolOutput::text(self.format_running_result("restarted", &app)))
@@ -591,7 +596,6 @@ mod tests {
         assert!(check_needs_approval(&Some(app), &new));
     }
 
-    // ── validate_static_dir ──────────────────────────────────────────────
 
     fn make_static_manifest(static_dir: Option<&str>) -> AppManifest {
         AppManifest {

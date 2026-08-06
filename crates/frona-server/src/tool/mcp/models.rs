@@ -72,6 +72,7 @@ pub struct CachedMcpTool {
     pub input_schema: serde_json::Value,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub enum TransportConfig {
@@ -84,11 +85,8 @@ pub enum TransportConfig {
         args: Vec<String>,
         #[serde(default)]
         env: BTreeMap<String, String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         port_env_var: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         endpoint_path: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
     },
 }
@@ -148,35 +146,31 @@ pub struct CredentialBinding {
     pub field: crate::credential::vault::models::VaultField,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpServerInstall {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name_override: Option<String>,
     /// When absent, the install service derives one via `sanitize_to_handle`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handle: Option<Handle>,
     #[serde(default)]
     pub credentials: Vec<CredentialBinding>,
     #[serde(default)]
     pub extra_env: BTreeMap<String, String>,
+    #[serialize_always]
     #[serde(default)]
     pub sandbox_policy: Option<crate::policy::sandbox::SandboxPolicy>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpServerUpdate {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<Vec<CredentialBinding>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_env: Option<BTreeMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_policy: Option<crate::policy::sandbox::SandboxPolicy>,
+    #[serialize_always]
     pub active_transport: Option<String>,
 }
 

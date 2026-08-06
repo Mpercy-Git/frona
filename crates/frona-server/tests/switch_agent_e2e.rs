@@ -1,8 +1,7 @@
 //! `/<agent-handle>` and `@<agent-handle>` invocations re-attribute the
-//! turn's reply to the target agent — verified end-to-end through the
+//! turn's reply to the target agent - verified end-to-end through the
 //! harness with a mock LLM.
 
-#[allow(dead_code)]
 mod helpers;
 
 use std::collections::HashMap;
@@ -60,6 +59,7 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             shared_config_dir: resources.to_string_lossy().into_owned(),
             skills_dir: format!("{base}/skills"),
             cache_dir: format!("{base}/cache"),
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -104,7 +104,6 @@ async fn build_state(provider: Arc<dyn frona::inference::provider::ModelProvider
         mock_registry,
         state.storage_service.clone(),
         state.user_service.clone(),
-        state.memory_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
         state.presign_service.clone(),
@@ -116,9 +115,8 @@ async fn build_state(provider: Arc<dyn frona::inference::provider::ModelProvider
         state.user_service.clone(),
         state.storage_service.clone(),
         state.agent_service.clone(),
-        state.memory_service.clone(),
-        state.skill_service.clone(),
-        state.task_service.clone(),
+        helpers::test_memory_service(&state, &db),
+        state.skill_service.clone(),        state.task_service.clone(),
         state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),

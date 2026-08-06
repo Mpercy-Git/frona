@@ -86,7 +86,13 @@ impl TaskRepository for SurrealRepo<Task> {
 
     async fn find_by_source_chat_id(&self, source_chat_id: &str) -> Result<Vec<Task>, AppError> {
         let query = format!(
-            "{SELECT_CLAUSE} FROM task WHERE kind.Delegation.source_chat_id = $source_chat_id ORDER BY created_at ASC"
+            "{SELECT_CLAUSE} FROM task WHERE \
+                kind.Direct.source_chat_id = $source_chat_id \
+                OR kind.Delegation.source_chat_id = $source_chat_id \
+                OR kind.Cron.source_chat_id = $source_chat_id \
+                OR kind.CronRun.source_chat_id = $source_chat_id \
+                OR kind.Signal.source_chat_id = $source_chat_id \
+                ORDER BY created_at ASC"
         );
         let mut result = self
             .db()
@@ -150,10 +156,10 @@ impl TaskRepository for SurrealRepo<Task> {
         Ok(tasks)
     }
 
-    /// Crash-recovery query: any CronRun still in Pending/InProgress on startup —
+    /// Crash-recovery query: any CronRun still in Pending/InProgress on startup -
     /// these were interrupted mid-flight and should be marked Failed (or restarted).
     async fn find_orphaned_cron_runs(&self) -> Result<Vec<Task>, AppError> {
-        // InProgress only — Pending CronRuns haven't started yet and should
+        // InProgress only - Pending CronRuns haven't started yet and should
         // be picked up by `find_resumable`, not marked Failed.
         let query = format!(
             "{SELECT_CLAUSE} FROM task WHERE kind.CronRun IS NOT NONE \
@@ -219,5 +225,65 @@ impl TaskRepository for SurrealRepo<Task> {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(tasks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::task::models::{CronConcurrency, CronMode, SignalMode, TaskKind, TaskStatus};
+    use crate::core::repository::Repository;
+    use surrealdb::Surreal;
+    use surrealdb::engine::local::Mem;
+
+    fn task(id: &str, kind: TaskKind) -> Task {
+        let now = Utc::now();
+        Task {
+            id:id.into(), user_id:"user".into(), agent_id:"agent".into(), space_id:None,
+            chat_id:Some(format!("chat-{id}")), title:id.into(), description:String::new(),
+            status:TaskStatus::Completed, kind, run_at:None, result_summary:None,
+            error_message:None, quarantined:false, result_schema:None,
+            result_description:None, created_at:now, updated_at:now,
+        }
+    }
+
+    #[tokio::test]
+    async fn source_chat_query_finds_every_child_task_kind() {
+        let db = Surreal::new::<Mem>(()).await.unwrap();
+        db.use_ns("test").use_db("test").await.unwrap();
+        let repo = SurrealRepo::<Task>::new(db);
+        let parent = "parent-chat";
+        let kinds = vec![
+            TaskKind::Direct { source_chat_id:Some(parent.into()) },
+            TaskKind::Delegation {
+                source_agent_id:"agent".into(), source_chat_id:parent.into(), resume_parent:false,
+            },
+            TaskKind::Cron {
+                cron_expression:"0 0 * * *".into(), timezone:None, next_run_at:None,
+                source_agent_id:None, source_chat_id:Some(parent.into()), mode:CronMode::Singleton,
+                concurrency:CronConcurrency::Replace, process_result:true,
+            },
+            TaskKind::CronRun {
+                source_cron_id:"cron".into(), source_chat_id:Some(parent.into()),
+                source_agent_id:Some("agent".into()), fire_at:Utc::now(), sequence_num:1,
+            },
+            TaskKind::Signal {
+                source_chat_id:parent.into(), resume_parent:false, mode:SignalMode::Once,
+                expected_categories:Vec::new(), expected_channels:Vec::new(),
+                expected_contacts:Vec::new(), expires_at:None, max_evaluations:1,
+                evaluation_count:0,
+            },
+        ];
+        for (index, kind) in kinds.into_iter().enumerate() {
+            repo.create(&task(&format!("task-{index}"), kind)).await.unwrap();
+        }
+        repo.create(&task("unrelated", TaskKind::Direct {
+            source_chat_id:Some("other-chat".into()),
+        })).await.unwrap();
+
+        let found = repo.find_by_source_chat_id(parent).await.unwrap();
+
+        assert_eq!(found.len(), 5);
+        assert!(found.iter().all(|task| task.kind.source_chat_id() == Some(parent)));
     }
 }

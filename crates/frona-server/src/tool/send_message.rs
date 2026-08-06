@@ -68,7 +68,7 @@ impl SendMessageTool {
         let (resolved_chat, is_new_chat) =
             self.resolve_target_chat(ctx, &content).await?;
 
-        // Broadcast space_id must match the resolved chat — task chats are
+        // Broadcast space_id must match the resolved chat - task chats are
         // None-spaced, but the resolved channel chat lives in the channel's
         // space, and the outbound dispatcher filters on it.
         let message = self
@@ -136,23 +136,28 @@ impl SendMessageTool {
         ctx: &InferenceContext,
         message_content: &str,
     ) -> Result<(Chat, bool), AppError> {
-        if ctx.chat.task_id.is_none()
-            && ctx.agent.heartbeat_chat_id.as_deref() != Some(&ctx.chat.id)
-        {
-            return Ok((ctx.chat.clone(), false));
-        }
+        // Detached (chatless) send: no chat to anchor to → let the model pick/create
+        // a target via `llm_resolve_chat`. When a chat IS present, keep the existing
+        // anchor-to-current / walk-up-the-task-chain behavior.
+        if let Some(chat) = &ctx.chat {
+            if chat.task_id.is_none()
+                && ctx.agent.heartbeat_chat_id.as_deref() != Some(&chat.id)
+            {
+                return Ok((chat.clone(), false));
+            }
 
-        if ctx.chat.task_id.is_some()
-            && let Some(chat) = self.walk_task_chain(ctx).await
-        {
-            return Ok((chat, false));
+            if chat.task_id.is_some()
+                && let Some(anchor) = self.walk_task_chain(ctx, &chat.id).await
+            {
+                return Ok((anchor, false));
+            }
         }
 
         self.llm_resolve_chat(ctx, message_content).await
     }
 
-    async fn walk_task_chain(&self, ctx: &InferenceContext) -> Option<Chat> {
-        let mut current_chat_id = ctx.chat.id.clone();
+    async fn walk_task_chain(&self, ctx: &InferenceContext, start_chat_id: &str) -> Option<Chat> {
+        let mut current_chat_id = start_chat_id.to_string();
         let mut depth = 0;
         const MAX_DEPTH: usize = 10;
 

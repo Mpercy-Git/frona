@@ -32,7 +32,6 @@ pub struct SignalService {
 }
 
 impl SignalService {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_service: TaskService,
         task_executor: Arc<TaskExecutor>,

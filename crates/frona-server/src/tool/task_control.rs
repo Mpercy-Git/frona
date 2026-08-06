@@ -11,7 +11,7 @@ use crate::inference::tool_call::TaskEvent;
 use crate::storage::resolve_workspace_attachment;
 use crate::storage::service::StorageService;
 
-use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition};
+use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition};
 
 pub struct TaskControlTool {
     storage: StorageService,
@@ -66,6 +66,7 @@ impl AgentTool for TaskControlTool {
         let task = ctx.task.as_ref().ok_or_else(|| {
             AppError::Tool("task_control tools can only be used within a task context".into())
         })?;
+        let chat = active_chat(ctx)?;
 
         match tool_name {
             "complete_task" => {
@@ -126,7 +127,7 @@ impl AgentTool for TaskControlTool {
                 let mut output = ToolOutput::text("Task marked as complete.").with_task_event(
                     TaskEvent::Completion {
                         task_id: task.id.clone(),
-                        chat_id: Some(ctx.chat.id.clone()),
+                        chat_id: Some(chat.id.clone()),
                         status: TaskStatus::Completed,
                         summary: result,
                         deliverables: resolved_deliverables.clone(),
@@ -148,7 +149,7 @@ impl AgentTool for TaskControlTool {
                 Ok(ToolOutput::text("Task marked as failed.").with_task_event(
                     TaskEvent::Completion {
                         task_id: task.id.clone(),
-                        chat_id: Some(ctx.chat.id.clone()),
+                        chat_id: Some(chat.id.clone()),
                         status: TaskStatus::Failed,
                         summary: Some(reason.to_string()),
                         deliverables: vec![],

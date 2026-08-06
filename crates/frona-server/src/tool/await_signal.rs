@@ -12,7 +12,7 @@ use crate::agent::task::service::TaskService;
 use crate::chat::broadcast::BroadcastService;
 use crate::core::error::AppError;
 use crate::tool::{
-    AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition,
+    AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition,
 };
 
 pub struct AwaitSignalTool {
@@ -65,6 +65,7 @@ impl AgentTool for AwaitSignalTool {
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let title = arguments
             .get("title")
             .and_then(|v| v.as_str())
@@ -133,7 +134,7 @@ impl AgentTool for AwaitSignalTool {
             .create_signal(
                 &ctx.user.id,
                 ctx.agent.id.clone(),
-                ctx.chat.id.clone(),
+                chat.id.clone(),
                 title,
                 description,
                 resume_parent,
@@ -157,7 +158,7 @@ impl AgentTool for AwaitSignalTool {
             "pending",
             &task.title,
             None,
-            Some(&ctx.chat.id),
+            Some(&chat.id),
             None,
         );
 

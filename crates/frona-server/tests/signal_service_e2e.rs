@@ -5,7 +5,6 @@
 //! using a mock model provider so `run_agent_loop` actually runs without
 //! touching a real LLM.
 
-#[allow(dead_code)]
 mod helpers;
 
 use std::collections::HashMap;
@@ -51,6 +50,7 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             shared_config_dir: format!("{base}/config"),
             skills_dir: format!("{base}/skills"),
             cache_dir: format!("{base}/cache"),
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -88,7 +88,6 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         mock_registry,
         state.storage_service.clone(),
         state.user_service.clone(),
-        state.memory_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
             state.presign_service.clone(),
@@ -100,9 +99,8 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.user_service.clone(),
         state.storage_service.clone(),
         state.agent_service.clone(),
-        state.memory_service.clone(),
-        state.skill_service.clone(),
-        state.task_service.clone(),
+        helpers::test_memory_service(&state, &db),
+        state.skill_service.clone(),        state.task_service.clone(),
         state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
@@ -124,7 +122,6 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
 }
 
 async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
-    // User
     let user_repo: SurrealRepo<User> = SurrealRepo::new(state.db.clone());
     user_repo
         .create(&User {
@@ -142,7 +139,6 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
         .await
         .unwrap();
 
-    // Agent
     let agent_repo: SurrealRepo<Agent> = SurrealRepo::new(state.db.clone());
     agent_repo
         .create(&Agent {
@@ -304,13 +300,12 @@ impl ForbidToolsProvider {
 impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
     async fn inference(
         &self,
-        _model_id: &str,
+        _model: &frona::inference::ModelRef,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-        _additional_params: Option<serde_json::Value>,
     ) -> Result<
         frona::inference::provider::InferenceOutput,
         frona::inference::InferenceError,
@@ -323,14 +318,13 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
 
     async fn stream_inference(
         &self,
-        _model_id: &str,
+        _model: &frona::inference::ModelRef,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
         _token_tx: tokio::sync::mpsc::Sender<frona::inference::provider::StreamToken>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-        _additional_params: Option<serde_json::Value>,
     ) -> Result<frona::inference::provider::InferenceOutput, frona::inference::InferenceError> {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
         panic!(
@@ -340,13 +334,12 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
 
     async fn structured_inference(
         &self,
-        _model_id: &str,
+        _model: &frona::inference::ModelRef,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _schema: serde_json::Value,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-        _additional_params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, frona::inference::InferenceError> {
         self.structured_calls.fetch_add(1, Ordering::SeqCst);
         Ok(self.canned_extract.clone())
@@ -392,7 +385,6 @@ async fn build_state_with_dyn(
         mock_registry,
         state.storage_service.clone(),
         state.user_service.clone(),
-        state.memory_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
             state.presign_service.clone(),
@@ -404,9 +396,8 @@ async fn build_state_with_dyn(
         state.user_service.clone(),
         state.storage_service.clone(),
         state.agent_service.clone(),
-        state.memory_service.clone(),
-        state.skill_service.clone(),
-        state.task_service.clone(),
+        helpers::test_memory_service(&state, &db),
+        state.skill_service.clone(),        state.task_service.clone(),
         state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
@@ -567,7 +558,7 @@ async fn rebuild_from_db_hydrates_pending_signal_tasks() {
     let (state, _tmp) = build_state(provider).await;
     seed_user_and_agent(&state, "user-1", "agent-1").await;
 
-    // Persist a Signal task BEFORE building a fresh service — so we exercise
+    // Persist a Signal task BEFORE building a fresh service - so we exercise
     // hydration on startup.
     let _task = create_signal_task(
         &state,
@@ -581,7 +572,6 @@ async fn rebuild_from_db_hydrates_pending_signal_tasks() {
     )
     .await;
 
-    // Spin up a fresh SignalService against the same DB.
     let fresh = Arc::new(SignalService::new(
         state.task_service.clone(),
         state.task_executor.clone(),
@@ -652,7 +642,7 @@ async fn evaluate_skips_watches_for_other_users() {
     .await;
     svc.register(Watch::from_task(&task).unwrap()).await;
 
-    // Different user — same matching tags, but should not see user-1's watches.
+    // Different user - same matching tags, but should not see user-1's watches.
     let cand = make_candidate("user-2", vec!["verification_code"], Some("sms"), None);
     let fired = svc.evaluate("user-2", cand).await.unwrap();
     assert!(fired.is_empty());
@@ -679,7 +669,7 @@ async fn evaluate_stale_task_unregisters_silently() {
     svc.register(Watch::from_task(&task).unwrap()).await;
     assert_eq!(svc.watch_count("user-1").await, 1);
 
-    // Cancel the underlying task — fire should detect stale state.
+    // Cancel the underlying task - fire should detect stale state.
     state
         .task_service
         .mark_cancelled(&task.id)
@@ -724,7 +714,7 @@ async fn evaluate_budget_exceeded_marks_task_failed() {
     let fired1 = svc.evaluate("user-1", cand1).await.unwrap();
     assert_eq!(fired1, vec![task.id.clone()], "first fire is allowed");
 
-    // Second fire trips the budget — should not be reported as fired and
+    // Second fire trips the budget - should not be reported as fired and
     // should mark the task Failed + unregister.
     let cand2 = make_candidate("user-1", vec!["verification_code"], Some("sms"), None);
     let fired2 = svc.evaluate("user-1", cand2).await.unwrap();
@@ -737,7 +727,7 @@ async fn evaluate_budget_exceeded_marks_task_failed() {
 
 #[tokio::test]
 async fn evaluate_with_default_policy_fires_and_runs_agent() {
-    // Mock the agent's response — a plain text reply is enough; we just need
+    // Mock the agent's response - a plain text reply is enough; we just need
     // run_agent_loop to complete without error so fire_signal returns Ok.
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
         "Acknowledged.".into(),
@@ -776,7 +766,6 @@ async fn evaluate_with_default_policy_fires_and_runs_agent() {
     }
     assert!(provider.calls() >= 1, "agent inference should have run");
 
-    // Task gets a chat assigned during ensure_task_chat.
     let reloaded = state.task_service.find_by_id(&task.id).await.unwrap().unwrap();
     assert!(reloaded.chat_id.is_some(), "fire_signal should ensure C₂");
     assert_eq!(
