@@ -10,7 +10,6 @@ pub mod manage_app;
 pub mod notify_human;
 pub mod produce_file;
 pub mod registry;
-pub mod memory;
 pub mod report_signal;
 pub mod request_credentials;
 pub mod task;
@@ -31,12 +30,30 @@ use serde_json::Value;
 
 use crate::core::error::AppError;
 
-pub use crate::inference::request::InferenceContext;
+pub use crate::inference::request::{InferenceContext, active_chat};
 
 use crate::agent::prompt::PromptLoader;
 
+/// Read a string argument out of a tool call: present, a string, and not blank once
+/// trimmed. `None` for anything else - a missing key, a non-string, or whitespace.
+///
+/// The **pull** only, deliberately not the policy. What a tool does about an absent
+/// argument is a real choice, and its callers make opposite ones for good reasons: the
+/// Classify's tools answer with `ToolOutput::text` naming the argument and saying what
+/// belongs in it, because the model is mid-conversation and can just try again, while
+/// `memory_search` raises `AppError::Validation`. Sharing the four combinators leaves that
+/// decision one visible line at each site instead of a chain each site re-derives -
+/// including the trimming and blank-check, which is where they had quietly diverged.
+pub fn str_arg<'a>(arguments: &'a Value, key: &str) -> Option<&'a str> {
+    arguments
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
 /// Accepts unix timestamp or naive ISO 8601 (interpreted in `tz`). Rejects
-/// offset-bearing strings — the agent must use naive + `timezone` parameter.
+/// offset-bearing strings - the agent must use naive + `timezone` parameter.
 pub fn parse_run_at(value: &Value, tz: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
     let dt = match value {
         Value::Number(n) => {
@@ -66,7 +83,7 @@ pub fn parse_run_at(value: &Value, tz: &str) -> Result<Option<chrono::DateTime<c
 }
 
 fn parse_naive_run_at(s: &str, tz: &str) -> Result<chrono::DateTime<chrono::Utc>, AppError> {
-    // RFC 3339 parse succeeds = offset-bearing. Reject — bypasses per-task TZ.
+    // RFC 3339 parse succeeds = offset-bearing. Reject - bypasses per-task TZ.
     if chrono::DateTime::parse_from_rfc3339(s).is_ok() {
         return Err(AppError::Validation(format!(
             "run_at '{}' includes an explicit UTC offset. Use a naive ISO 8601 form like '2026-05-20T22:00:00' (interpreted in the user's local timezone) and set the optional `timezone` parameter only if the user names a different zone.",
@@ -145,10 +162,10 @@ pub struct ToolOutput {
     text: String,
     images: Vec<ImageData>,
     attachments: Vec<crate::storage::Attachment>,
-    /// Pause marker — when `Some(_)` with `status == Pending`, the tool loop
+    /// Pause marker - when `Some(_)` with `status == Pending`, the tool loop
     /// exits with `ExternalToolPending`. Mutually exclusive with `task_event`.
     hitl: Option<crate::inference::hitl::Hitl>,
-    /// Terminal signal — when `Some(_)`, the tool loop exits as Completed
+    /// Terminal signal - when `Some(_)`, the tool loop exits as Completed
     /// with this as the lifecycle event. Mutually exclusive with `hitl`.
     task_event: Option<crate::inference::tool_call::TaskEvent>,
     system_prompt: Option<String>,
@@ -210,7 +227,7 @@ impl ToolOutput {
     /// `ExternalToolPending`. The agent message stays in `Executing` until
     /// the human resolves and the per-message barrier clears.
     ///
-    /// Mutually exclusive with `with_task_event` — the last builder called
+    /// Mutually exclusive with `with_task_event` - the last builder called
     /// wins, but `debug_assert` catches the contradiction in debug builds.
     pub fn with_hitl(mut self, h: crate::inference::hitl::Hitl) -> Self {
         debug_assert!(
@@ -295,7 +312,7 @@ pub trait AgentTool: Send + Sync {
     /// `execute`. The tool reads its original `request` payload, validates the
     /// `response` shape, performs any side effect (deploy, bind credential,
     /// etc.), and returns the result text that gets persisted as
-    /// `te.result` — what the LLM reads in conversation history on resume.
+    /// `te.result` - what the LLM reads in conversation history on resume.
     ///
     /// Default returns an error. Tools that emit HITLs must override.
     async fn on_resume(
@@ -472,7 +489,7 @@ mod tests {
     fn resolve_run_at_delay_minutes_takes_precedence() {
         let args = json!({"delay_minutes": 5, "run_at": "2030-05-20T22:00:00"});
         let dt = resolve_run_at(&args, "UTC").unwrap().unwrap();
-        // Should be ~5min from now, not 2030 — delay_minutes wins.
+        // Should be ~5min from now, not 2030 - delay_minutes wins.
         let delta = (dt - chrono::Utc::now()).num_minutes();
         assert!((4..=6).contains(&delta), "expected ~5 min from now, got {delta}");
     }

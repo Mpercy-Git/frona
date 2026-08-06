@@ -300,7 +300,7 @@ impl ToolManager {
 
     /// Find a builtin tool by its sub-tool name (e.g. "ask_user_question",
     /// "manage_app") for the resolve dispatcher. Bypasses per-user and
-    /// per-agent filtering — the agent already had policy permission to emit
+    /// per-agent filtering - the agent already had policy permission to emit
     /// the HITL at execute time, so resolution should always succeed.
     pub fn find_tool_for_resume(&self, tool_name: &str) -> Option<Arc<dyn AgentTool>> {
         for tool in self.builtins() {
@@ -318,7 +318,6 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     use super::browser::tool::BrowserTool;
     use super::cli::CliTool;
     use super::heartbeat::HeartbeatTool;
-    use super::memory::{StoreAgentMemoryTool, StoreUserMemoryTool};
     use super::notify_human::NotifyHumanTool;
     use super::files::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
     use super::produce_file::ProduceFileTool;
@@ -360,12 +359,6 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
         )),
         Arc::new(UpdateIdentityTool::new(state.agent_service.clone(), prompts.clone())),
-        Arc::new(StoreAgentMemoryTool::new(
-            state.memory_service.clone(), state.compaction_model_group(), prompts.clone(),
-        )),
-        Arc::new(StoreUserMemoryTool::new(
-            state.memory_service.clone(), state.compaction_model_group(), prompts.clone(),
-        )),
         Arc::new(BrowserTool::new(state.browser_session_manager.clone(), state.vault_service.clone())),
         Arc::new(WebFetchTool::new(state.browser_session_manager.clone(), prompts.clone())),
         Arc::new(WebSearchTool::new(state.search_provider.clone(), prompts.clone())),
@@ -387,6 +380,9 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         )),
         Arc::new(super::manage_policy::ManagePolicyTool::new(state.policy_service.clone(), prompts.clone())),
     ];
+
+    // The active memory service contributes its own tools (e.g. store-memory).
+    tools.extend(state.harness.memory_service.tools());
 
     tools.push(Arc::new(TaskTool::new(
         state.task_service.clone(), state.agent_service.clone(),

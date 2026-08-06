@@ -90,8 +90,29 @@ impl AgentToolRegistry {
     }
 
     pub fn register(&mut self, tool: Arc<dyn AgentTool>) {
+        let definitions = tool.definitions();
+        self.register_with_definitions(tool, definitions);
+    }
+
+    pub fn register_required(&mut self, tool: Arc<dyn AgentTool>) -> Result<(), AppError> {
+        let definitions = tool.definitions();
+        if definitions.is_empty() {
+            return Err(AppError::Internal(format!(
+                "required tool `{}` has no model definitions",
+                tool.name(),
+            )));
+        }
+        self.register_with_definitions(tool, definitions);
+        Ok(())
+    }
+
+    fn register_with_definitions(
+        &mut self,
+        tool: Arc<dyn AgentTool>,
+        definitions: Vec<ToolDefinition>,
+    ) {
         let owner_name = tool.name().to_string();
-        for def in tool.definitions() {
+        for def in definitions {
             self.tool_name_to_owner
                 .insert(def.id.clone(), owner_name.clone());
             self.definitions.push(def);
@@ -179,6 +200,17 @@ mod tests {
     use async_trait::async_trait;
 
     struct MockTool;
+
+    struct EmptyTool;
+
+    #[async_trait]
+    impl AgentTool for EmptyTool {
+        fn name(&self) -> &str { "empty" }
+        fn definitions(&self) -> Vec<ToolDefinition> { Vec::new() }
+        async fn execute(&self, _: &str, _: Value, _: &InferenceContext) -> Result<ToolOutput, AppError> {
+            Ok(ToolOutput::text("empty"))
+        }
+    }
 
     #[async_trait]
     impl AgentTool for MockTool {
@@ -271,6 +303,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(output.text_content(), "executed mock_action");
+    }
+
+    #[test]
+    fn required_tool_registration_rejects_an_empty_definition_set() {
+        let mut registry = AgentToolRegistry::empty();
+
+        let error = registry.register_required(Arc::new(EmptyTool)).unwrap_err();
+
+        assert!(error.to_string().contains("empty"));
+        assert!(registry.is_empty());
     }
 
     #[tokio::test]
