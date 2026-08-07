@@ -1,32 +1,51 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { InformationCircleIcon } from "@heroicons/react/16/solid";
-import * as Tooltip from "@radix-ui/react-tooltip";
 import type { SensitiveField } from "@/lib/config-types";
 import { isSensitiveSet } from "@/lib/config-types";
 
 export function HelpTip({ content }: { content: string }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(e: PointerEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
   return (
-    <Tooltip.Provider delayDuration={200}>
-      <Tooltip.Root>
-        <Tooltip.Trigger asChild>
-          <button type="button" className="inline-flex items-center p-0 leading-none">
-            <InformationCircleIcon className="h-3.5 w-3.5 text-text-tertiary hover:text-text-secondary transition-colors" />
-          </button>
-        </Tooltip.Trigger>
-        <Tooltip.Portal>
-          <Tooltip.Content
-            side="top"
-            sideOffset={4}
-            className="z-50 max-w-xs rounded-lg bg-surface-secondary border border-border px-3 py-2 text-xs text-text-secondary shadow-lg animate-in fade-in-0 zoom-in-95"
-          >
-            {content}
-            <Tooltip.Arrow className="fill-surface-secondary" />
-          </Tooltip.Content>
-        </Tooltip.Portal>
-      </Tooltip.Root>
-    </Tooltip.Provider>
+    <div ref={containerRef} className="relative inline-flex">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="inline-flex items-center p-0 leading-none"
+      >
+        <InformationCircleIcon className="h-3.5 w-3.5 text-text-tertiary hover:text-text-secondary transition-colors" />
+      </button>
+      {open && (
+        <div
+          role="tooltip"
+          className="absolute left-1/2 top-full z-50 mt-1.5 w-max max-w-xs -translate-x-1/2 rounded-lg border border-border bg-surface-secondary px-3 py-2 text-xs text-text-secondary shadow-lg animate-in fade-in-0 zoom-in-95"
+        >
+          {content}
+        </div>
+      )}
+    </div>
   );
 }
 
