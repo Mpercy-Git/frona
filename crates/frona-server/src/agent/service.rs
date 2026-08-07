@@ -174,6 +174,18 @@ impl AgentService {
         self.repo.find_by_handle(user_id, &handle).await
     }
 
+    /// Resolve the user's `system` builtin agent - the identity for detached /
+    /// background inference that has no originating chat (e.g. the PKM sync
+    /// investigator). Cloned for every user at signup, so absence is an invariant
+    /// violation, not a normal outcome → `NotFound`.
+    pub async fn system_agent(&self, user_id: &str) -> Result<Agent, AppError> {
+        self.find_by_handle(user_id, crate::agent::models::SYSTEM_AGENT_HANDLE)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("system agent not found for user {user_id}"))
+            })
+    }
+
     pub async fn list(
         &self,
         user_id: &str,

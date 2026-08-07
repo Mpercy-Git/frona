@@ -15,6 +15,7 @@ pub enum SkillScope {
     Agent,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize)]
 pub struct Skill {
     pub name: String,
@@ -29,7 +30,6 @@ pub struct Skill {
     pub disable_model_invocation: bool,
     /// SKILL.md `argument-hint: "[city]"` or similar — display string shown in
     /// the `/` dropdown next to the skill name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub argument_hint: Option<String>,
     /// SKILL.md `arguments: [name1, name2]` — declared names for `$<name>`
     /// substitution in the skill body. Empty if not declared.
