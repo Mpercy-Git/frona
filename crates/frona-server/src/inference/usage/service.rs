@@ -15,7 +15,7 @@ use crate::inference::usage::UsageContext;
 
 use super::models::InferenceUsage;
 
-// Metric names — `_total` suffix on counters per Prometheus convention; no
+// Metric names - `_total` suffix on counters per Prometheus convention; no
 // `_histogram` suffix on histograms (auto-generated `_bucket`/`_count`/`_sum`).
 pub const INFERENCE_INPUT_TOKENS_TOTAL: &str = "frona_inference_input_tokens_total";
 pub const INFERENCE_CACHED_INPUT_TOKENS_TOTAL: &str = "frona_inference_cached_input_tokens_total";
@@ -45,7 +45,7 @@ pub struct LatencyMetrics {
 #[derive(Clone)]
 pub struct UsageService {
     /// Cloned from `AppState.model_catalog`. `ModelCatalogStore` is internally
-    /// `Arc`-wrapped, so all clones share the same underlying ArcSwap — the
+    /// `Arc`-wrapped, so all clones share the same underlying ArcSwap - the
     /// scheduler can `swap()` from outside this service and we observe it.
     catalog: ModelCatalogStore,
     repo: SurrealRepo<InferenceUsage>,
@@ -88,7 +88,7 @@ impl UsageService {
             pricing_version,
         );
 
-        // Persistence failure logs but never propagates — observability never
+        // Persistence failure logs but never propagates - observability never
         // blocks the user's reply.
         if let Err(e) = self.repo.create(&row).await {
             tracing::warn!(
@@ -208,7 +208,7 @@ fn build_row(
         turn_index: kind.turn_index(),
         kind_tag: kind.tag().to_owned(),
         model_group: usage_ctx.model_group.clone(),
-        provider: model_ref.provider.clone(),
+        provider: model_ref.provider_name().to_string(),
         model_id: model_ref.model_id.clone(),
         model_ref: model_ref.as_str(),
         input_tokens: usage.input_tokens,
@@ -229,7 +229,7 @@ fn build_row(
 
 /// `output_tokens / generation_seconds` where generation_seconds is the wall
 /// time after the first token arrived. Returns `None` if there's no usable
-/// signal — no output tokens, no TTFT (non-streaming path), or duration shorter
+/// signal - no output tokens, no TTFT (non-streaming path), or duration shorter
 /// than TTFT (clock skew between captures).
 fn compute_output_tps(output_tokens: u64, latency: LatencyMetrics) -> Option<f64> {
     if output_tokens == 0 {
@@ -242,4 +242,3 @@ fn compute_output_tps(output_tokens: u64, latency: LatencyMetrics) -> Option<f64
     }
     Some(output_tokens as f64 * 1000.0 / gen_ms as f64)
 }
-
