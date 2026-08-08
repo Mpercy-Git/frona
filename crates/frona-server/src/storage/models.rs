@@ -3,6 +3,7 @@ use surrealdb::types::SurrealValue;
 
 use crate::core::error::AppError;
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct Attachment {
@@ -11,7 +12,6 @@ pub struct Attachment {
     pub size_bytes: u64,
     pub owner: String,
     pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
