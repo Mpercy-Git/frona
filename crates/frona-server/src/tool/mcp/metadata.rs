@@ -105,6 +105,11 @@ pub struct RegistryTransport {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Header requirements declared by a `remotes[]` entry (e.g. a bearer
+    /// token). Frona only understands `is_secret` headers as `${NAME}`
+    /// templates the installer must supply a value for — no OAuth discovery.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<RegistryEnvVar>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -347,6 +352,44 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].name, "d/top");
         assert_eq!(hits[1].name, "b/high");
+    }
+
+    #[test]
+    fn parses_remote_transport_with_headers() {
+        let json = serde_json::json!({
+            "name": "io.example/remote-mcp",
+            "description": "remote only",
+            "version": "1.0.0",
+            "packages": [],
+            "remotes": [{
+                "type": "streamable-http",
+                "url": "https://example.com/mcp",
+                "headers": [{
+                    "name": "Authorization",
+                    "is_required": true,
+                    "is_secret": true
+                }]
+            }]
+        });
+        let entry: RegistryServerEntry = serde_json::from_value(json).unwrap();
+        assert!(entry.packages.is_empty());
+        assert_eq!(entry.remotes.len(), 1);
+        let remote = &entry.remotes[0];
+        assert_eq!(remote.kind, "streamable-http");
+        assert_eq!(remote.url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(remote.headers.len(), 1);
+        assert_eq!(remote.headers[0].name, "Authorization");
+        assert!(remote.headers[0].is_secret);
+    }
+
+    #[test]
+    fn remote_transport_headers_default_to_empty() {
+        let json = serde_json::json!({
+            "type": "streamable-http",
+            "url": "https://example.com/mcp"
+        });
+        let transport: RegistryTransport = serde_json::from_value(json).unwrap();
+        assert!(transport.headers.is_empty());
     }
 
     #[test]

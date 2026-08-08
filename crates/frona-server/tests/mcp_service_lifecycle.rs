@@ -16,7 +16,10 @@ use frona::db::repo::generic::SurrealRepo;
 use frona::tool::mcp::metadata::{
     RegistryEnvVar, RegistryPackage, RegistryServerEntry, RegistryTransport,
 };
-use frona::tool::mcp::models::{CredentialBinding, McpServerInstall, McpServerStatus, McpServerUpdate, McpServer};
+use frona::tool::mcp::models::{
+    CredentialBinding, McpRuntime, McpServer, McpServerInstall, McpServerStatus, McpServerUpdate,
+    RemoteMcpInstall, TransportConfig,
+};
 use frona::tool::mcp::registry::McpRegistryClient;
 use frona::tool::mcp::repository::McpServerRepository;
 use frona::tool::mcp::service::{McpServerService, NoopPackageInstaller};
@@ -60,7 +63,7 @@ fn sample_entry(env_vars: Vec<RegistryEnvVar>) -> RegistryServerEntry {
             identifier: "@example/workspace-mcp".into(),
             version: Some("1.0.0".into()),
             runtime_hint: None,
-            transport: RegistryTransport { kind: "stdio".into(), url: None },
+            transport: RegistryTransport { kind: "stdio".into(), url: None, headers: vec![] },
             runtime_arguments: vec![],
             package_arguments: vec![],
             environment_variables: env_vars,
@@ -271,6 +274,7 @@ async fn install_rejects_when_binding_has_no_matching_grant() {
         extra_env: Default::default(),
         sandbox_policy: None,
         handle: None,
+        ..Default::default()
     };
     let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
     assert!(
@@ -292,6 +296,7 @@ async fn install_allows_missing_binding_for_declared_secret() {
         extra_env: Default::default(),
         sandbox_policy: None,
         handle: None,
+        ..Default::default()
     };
     let server = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
     assert_eq!(server.status, McpServerStatus::Installed);
@@ -313,6 +318,7 @@ async fn install_rejects_extraneous_binding() {
         extra_env: Default::default(),
         sandbox_policy: None,
         handle: None,
+        ..Default::default()
     };
     let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
     assert!(
@@ -336,6 +342,7 @@ async fn install_rejects_relative_extra_paths() {
             ..Default::default()
         }),
         handle: None,
+        ..Default::default()
     };
     let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
     assert!(matches!(err, AppError::Validation(_)));
@@ -353,6 +360,7 @@ async fn install_succeeds_with_empty_env_entry() {
         extra_env: Default::default(),
         sandbox_policy: None,
         handle: None,
+        ..Default::default()
     };
     let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
     assert_eq!(persisted.user_id, "user1");
@@ -384,6 +392,7 @@ async fn uninstall_sweeps_bindings_and_grants() {
                 extra_env: Default::default(),
                 sandbox_policy: None,
                 handle: None,
+                ..Default::default()
             },
         )
         .await
@@ -461,6 +470,7 @@ async fn update_extra_env_replaces_value() {
                     .collect(),
                 sandbox_policy: None,
                 handle: None,
+                ..Default::default()
             },
         )
         .await
@@ -495,6 +505,7 @@ async fn update_rejects_when_another_user_owns_the_server() {
                 extra_env: Default::default(),
                 sandbox_policy: None,
                 handle: None,
+                ..Default::default()
             },
         )
         .await
@@ -507,4 +518,137 @@ async fn update_rejects_when_another_user_owns_the_server() {
         matches!(result, Err(AppError::Forbidden(_))),
         "non-owner update should return Forbidden"
     );
+}
+
+#[tokio::test]
+async fn install_remote_rejects_when_unauthenticated_and_not_opted_in() {
+    let (_db, _vault, service, _tmp) = build_test_harness(vec![]).await;
+
+    let req = McpServerInstall {
+        remote: Some(RemoteMcpInstall {
+            url: "https://example.com/mcp".into(),
+            transport: "streamable-http".into(),
+            headers: Default::default(),
+        }),
+        ..Default::default()
+    };
+    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    assert!(
+        matches!(err, AppError::Validation(_)),
+        "expected Validation for unauthenticated remote install without opt-in, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn install_remote_allows_unauthenticated_with_explicit_opt_in() {
+    let (_db, _vault, service, _tmp) = build_test_harness(vec![]).await;
+
+    let req = McpServerInstall {
+        remote: Some(RemoteMcpInstall {
+            url: "https://example.com/mcp".into(),
+            transport: "streamable-http".into(),
+            headers: Default::default(),
+        }),
+        allow_unauthenticated_remote: true,
+        ..Default::default()
+    };
+    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    assert_eq!(persisted.status, McpServerStatus::Installed);
+    assert_eq!(persisted.package.runtime, McpRuntime::Remote);
+    assert!(persisted.command.is_empty());
+    assert!(persisted.args.is_empty());
+    assert_eq!(persisted.active_transport, "streamable-http");
+    assert_eq!(persisted.transports.len(), 1);
+    match &persisted.transports[0] {
+        TransportConfig::Http { url, headers, .. } => {
+            assert_eq!(url.as_deref(), Some("https://example.com/mcp"));
+            assert!(headers.is_empty());
+        }
+        other => panic!("expected Http transport, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn install_remote_with_bearer_header_succeeds_without_opt_in() {
+    let (_db, _vault, service, _tmp) = build_test_harness(vec![]).await;
+
+    let mut headers = std::collections::BTreeMap::new();
+    headers.insert("Authorization".to_string(), "Bearer ${MCP_TOKEN}".to_string());
+
+    let req = McpServerInstall {
+        remote: Some(RemoteMcpInstall {
+            url: "https://example.com/mcp".into(),
+            transport: "streamable-http".into(),
+            headers,
+        }),
+        extra_env: [("MCP_TOKEN".to_string(), "secret-token".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    match &persisted.transports[0] {
+        TransportConfig::Http { headers, .. } => {
+            assert_eq!(headers.get("Authorization").unwrap(), "Bearer ${MCP_TOKEN}");
+        }
+        other => panic!("expected Http transport, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn install_remote_rejects_extraneous_binding_not_referenced_by_headers() {
+    let (_db, _vault, service, _tmp) = build_test_harness(vec![]).await;
+
+    let mut headers = std::collections::BTreeMap::new();
+    headers.insert("Authorization".to_string(), "Bearer ${MCP_TOKEN}".to_string());
+
+    let req = McpServerInstall {
+        remote: Some(RemoteMcpInstall {
+            url: "https://example.com/mcp".into(),
+            transport: "streamable-http".into(),
+            headers,
+        }),
+        credentials: vec![binding("NOT_REFERENCED", "item")],
+        ..Default::default()
+    };
+    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    assert!(matches!(err, AppError::Forbidden(_) | AppError::Validation(_)));
+}
+
+#[tokio::test]
+async fn install_remote_rejects_unsupported_transport() {
+    let (_db, _vault, service, _tmp) = build_test_harness(vec![]).await;
+
+    let req = McpServerInstall {
+        remote: Some(RemoteMcpInstall {
+            url: "https://example.com/mcp".into(),
+            transport: "websocket".into(),
+            headers: Default::default(),
+        }),
+        allow_unauthenticated_remote: true,
+        ..Default::default()
+    };
+    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    assert!(matches!(err, AppError::Validation(_)));
+}
+
+#[tokio::test]
+async fn install_remote_does_not_require_npm_registry_network_access() {
+    // A remote install never calls `pick_package`/`build_invocation` (no
+    // npm/pypi package at all), so the resulting server has no command to
+    // spawn — nothing needs the npm registry allow-listed.
+    let (_db, _vault, service, _tmp) = build_test_harness(vec![]).await;
+
+    let req = McpServerInstall {
+        remote: Some(RemoteMcpInstall {
+            url: "https://example.com/mcp".into(),
+            transport: "streamable-http".into(),
+            headers: Default::default(),
+        }),
+        allow_unauthenticated_remote: true,
+        ..Default::default()
+    };
+    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    assert_eq!(persisted.package.name, "https://example.com/mcp");
+    assert_eq!(persisted.command, "");
 }

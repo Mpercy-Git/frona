@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use surrealdb::types::SurrealValue;
 
 use crate::Entity;
@@ -13,6 +13,9 @@ pub enum McpRuntime {
     Npm,
     Pypi,
     Binary,
+    /// No local package is spawned at all — the server lives entirely behind
+    /// a remote streamable-HTTP/SSE URL. See `TransportConfig::Http::url`.
+    Remote,
 }
 
 impl std::fmt::Display for McpRuntime {
@@ -21,6 +24,7 @@ impl std::fmt::Display for McpRuntime {
             Self::Npm => write!(f, "npm"),
             Self::Pypi => write!(f, "pypi"),
             Self::Binary => write!(f, "binary"),
+            Self::Remote => write!(f, "remote"),
         }
     }
 }
@@ -90,6 +94,13 @@ pub enum TransportConfig {
         endpoint_path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
+        /// HTTP headers sent with every request when `url` is set (pure
+        /// remote connection, no child process). Values may reference
+        /// `${ENV_VAR}` — resolved against the server's env (including
+        /// vault-bound credentials) at connect time, same convention
+        /// `mcp-remote` uses for `--header`.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        headers: BTreeMap<String, String>,
     },
 }
 
@@ -105,6 +116,51 @@ impl TransportConfig {
             Self::Stdio { env, .. } | Self::Http { env, .. } => env,
         }
     }
+}
+
+/// Substitute `${VAR}` occurrences in `template` with values from `env`.
+/// A reference to a name absent from `env` is left as-is (matches the
+/// `mcp-remote` convention this mirrors).
+pub fn interpolate_env_vars(template: &str, env: &BTreeMap<String, String>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        match after.find('}') {
+            Some(end) => {
+                let var_name = &after[..end];
+                match env.get(var_name) {
+                    Some(value) => out.push_str(value),
+                    None => out.push_str(&rest[start..start + 2 + end + 1]),
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[start..]);
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Collect every `${VAR}` name referenced across `headers`' values, e.g. to
+/// determine which env vars a remote install's header templates require.
+pub fn extract_env_var_refs(headers: &BTreeMap<String, String>) -> HashSet<&str> {
+    let mut out = HashSet::new();
+    for value in headers.values() {
+        let mut rest = value.as_str();
+        while let Some(start) = rest.find("${") {
+            let after = &rest[start + 2..];
+            let Some(end) = after.find('}') else { break };
+            out.insert(&after[..end]);
+            rest = &after[end + 1..];
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
@@ -156,6 +212,8 @@ pub struct McpServerInstall {
     pub manifest: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name_override: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description_override: Option<String>,
     /// When absent, the install service derives one via `sanitize_to_handle`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handle: Option<Handle>,
@@ -165,6 +223,33 @@ pub struct McpServerInstall {
     pub extra_env: BTreeMap<String, String>,
     #[serde(default)]
     pub sandbox_policy: Option<crate::policy::sandbox::SandboxPolicy>,
+    /// Install a server that lives entirely behind a remote URL — no
+    /// registry package, no child process. Mutually exclusive with
+    /// `registry_id`/`manifest`; when set, those are ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteMcpInstall>,
+    /// Required to install a remote server whose `remote.headers` (or the
+    /// registry entry's `remotes[0]`) carries no auth header — guards
+    /// against silently pointing Frona's own engine process at an
+    /// unauthenticated endpoint.
+    #[serde(default)]
+    pub allow_unauthenticated_remote: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteMcpInstall {
+    pub url: String,
+    #[serde(default = "default_remote_transport_kind")]
+    pub transport: String,
+    /// Header name -> value template, e.g. `{"Authorization": "Bearer ${MCP_TOKEN}"}`.
+    /// `${VAR}` is resolved from `extra_env` / vault-bound credentials at
+    /// connect time — see `interpolate_env_vars`.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+fn default_remote_transport_kind() -> String {
+    "streamable-http".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -376,5 +461,66 @@ mod tests {
         });
         let parsed: McpServerInstall = serde_json::from_value(json).unwrap();
         assert!(parsed.manifest.is_some());
+    }
+
+    #[test]
+    fn install_dto_accepts_remote_only() {
+        let json = serde_json::json!({
+            "remote": { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer ${TOKEN}" } }
+        });
+        let parsed: McpServerInstall = serde_json::from_value(json).unwrap();
+        let remote = parsed.remote.unwrap();
+        assert_eq!(remote.url, "https://example.com/mcp");
+        assert_eq!(remote.transport, "streamable-http");
+        assert_eq!(remote.headers.get("Authorization").unwrap(), "Bearer ${TOKEN}");
+        assert!(!parsed.allow_unauthenticated_remote);
+    }
+
+    #[test]
+    fn interpolate_env_vars_substitutes_known_var() {
+        let mut env = BTreeMap::new();
+        env.insert("TOKEN".to_string(), "secret123".to_string());
+        assert_eq!(
+            interpolate_env_vars("Bearer ${TOKEN}", &env),
+            "Bearer secret123"
+        );
+    }
+
+    #[test]
+    fn interpolate_env_vars_leaves_unknown_var_untouched() {
+        let env = BTreeMap::new();
+        assert_eq!(interpolate_env_vars("Bearer ${MISSING}", &env), "Bearer ${MISSING}");
+    }
+
+    #[test]
+    fn interpolate_env_vars_handles_multiple_refs_and_plain_text() {
+        let mut env = BTreeMap::new();
+        env.insert("A".to_string(), "1".to_string());
+        env.insert("B".to_string(), "2".to_string());
+        assert_eq!(interpolate_env_vars("${A}-${B}-plain", &env), "1-2-plain");
+    }
+
+    #[test]
+    fn interpolate_env_vars_ignores_unterminated_placeholder() {
+        let env = BTreeMap::new();
+        assert_eq!(interpolate_env_vars("Bearer ${TOKEN", &env), "Bearer ${TOKEN");
+    }
+
+    #[test]
+    fn extract_env_var_refs_collects_all_names() {
+        let mut headers = BTreeMap::new();
+        headers.insert("Authorization".to_string(), "Bearer ${TOKEN}".to_string());
+        headers.insert("X-Client".to_string(), "id-${CLIENT_ID}-${TOKEN}".to_string());
+        let refs = extract_env_var_refs(&headers);
+        assert_eq!(refs.len(), 2);
+        assert!(refs.contains("TOKEN"));
+        assert!(refs.contains("CLIENT_ID"));
+    }
+
+    #[test]
+    fn extract_env_var_refs_empty_for_plain_headers() {
+        let mut headers = BTreeMap::new();
+        headers.insert("X-Static".to_string(), "no-vars-here".to_string());
+        assert!(extract_env_var_refs(&headers).is_empty());
     }
 }
