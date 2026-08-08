@@ -47,6 +47,8 @@ spec:
           env:
             - name: CONCURRENT
               value: "10"
+            - name: PORT
+              value: "3333"
           volumeMounts:
             - name: data
               mountPath: /profiles
