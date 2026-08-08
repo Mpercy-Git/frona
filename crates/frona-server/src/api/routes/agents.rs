@@ -27,7 +27,7 @@ fn resolve_model(state: &AppState, model_group_name: &str) -> Option<Model> {
         .ok()?;
     let entry = state.model_catalog.current().lookup(&group.main).cloned();
     Some(Model {
-        provider: group.main.provider.clone(),
+        provider: group.main.provider_name().to_string(),
         model_id: group.main.model_id.clone(),
         context_window: group.context_window,
         entry,
@@ -323,4 +323,3 @@ async fn upload_avatar(
         "url": presigned_url,
     })))
 }
-
