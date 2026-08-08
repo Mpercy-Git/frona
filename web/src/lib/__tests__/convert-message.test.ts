@@ -2,9 +2,6 @@ import { describe, it, expect } from "vitest";
 import { convertMessage, promoteTurnText, type AssistantContentPart } from "../use-chat-runtime";
 import type { MessageResponse, ToolCall } from "../types";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function makeAgentMessage(overrides: Partial<MessageResponse> = {}): MessageResponse {
   return {
@@ -35,9 +32,6 @@ function makeToolCall(overrides: Partial<ToolCall> = {}): ToolCall {
   };
 }
 
-// ---------------------------------------------------------------------------
-// convertMessage: user messages
-// ---------------------------------------------------------------------------
 
 describe("convertMessage: user messages", () => {
   it("converts a basic user message", () => {
@@ -87,9 +81,6 @@ describe("convertMessage: user messages", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// convertMessage: agent messages
-// ---------------------------------------------------------------------------
 
 describe("convertMessage: agent messages", () => {
   it("converts a basic agent message", () => {
@@ -127,9 +118,6 @@ describe("convertMessage: agent messages", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// convertMessage: status mapping
-// ---------------------------------------------------------------------------
 
 describe("convertMessage: status mapping", () => {
   it("maps executing status to running", () => {
@@ -187,9 +175,6 @@ describe("convertMessage: status mapping", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// convertMessage: tool executions
-// ---------------------------------------------------------------------------
 
 describe("convertMessage: tool executions", () => {
   it("converts regular tool executions to tool-call parts", () => {
@@ -293,11 +278,30 @@ describe("convertMessage: tool executions", () => {
     const toolPart = result!.content.find((p: any) => p.type === "tool-call") as any;
     expect(toolPart.args.turnText).toBe("Before the tool");
   });
+
+  it("surfaces the agent's turn text when body is empty and reasoning is present", () => {
+    // The reported bug: an internal-tool turn (memory_remember) where the agent
+    // streamed text into turn_text, the message body is empty, and reasoning is
+    // set - the empty-text placeholder is suppressed, so the words must be
+    // recovered from the tool call or they vanish behind "Used 1 tool".
+    const msg = makeAgentMessage({
+      content: "",
+      reasoning: "Mina told me something personal.",
+      tool_calls: [
+        makeToolCall({
+          name: "memory_remember",
+          turn_text: "Oh nice, that's a big shop. What team are you on?",
+        }),
+      ],
+    });
+
+    const result = convertMessage(msg);
+    const textPart = result!.content.find((p: any) => p.type === "text") as any;
+    expect(textPart?.text).toBe("Oh nice, that's a big shop. What team are you on?");
+    expect(result!.content[0].type).toBe("text");
+  });
 });
 
-// ---------------------------------------------------------------------------
-// convertMessage: system and taskcompletion messages
-// ---------------------------------------------------------------------------
 
 describe("convertMessage: special roles", () => {
   it("converts taskcompletion messages as assistant", () => {
@@ -385,9 +389,6 @@ describe("convertMessage: special roles", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// promoteTurnText
-// ---------------------------------------------------------------------------
 
 describe("promoteTurnText", () => {
   it("does nothing when text part already has content", () => {
@@ -398,7 +399,6 @@ describe("promoteTurnText", () => {
 
     const result = promoteTurnText(parts);
     expect(result[0]).toEqual({ type: "text", text: "Already here" });
-    // turnText should remain in args since text was already present
     expect((result[1] as any).args.turnText).toBe("Before tool");
   });
 
@@ -411,7 +411,6 @@ describe("promoteTurnText", () => {
 
     const result = promoteTurnText(parts);
     expect((result[0] as any).text).toBe("Last turn");
-    // turnText should be stripped from all tool-call args
     expect((result[1] as any).args.turnText).toBeUndefined();
     expect((result[2] as any).args.turnText).toBeUndefined();
   });
@@ -432,7 +431,6 @@ describe("promoteTurnText", () => {
       { type: "tool-call", toolCallId: "tc-1", toolName: "cli", args: { turnText: "Before" } as any, argsText: "{}", result: "ok" },
     ];
 
-    // Whitespace-only text is falsy in trim check, so turnText should be promoted
     const result = promoteTurnText(parts);
     expect((result[0] as any).text).toBe("Before");
   });
@@ -447,11 +445,20 @@ describe("promoteTurnText", () => {
     const result = promoteTurnText(parts);
     expect(result[0]).toEqual({ type: "reasoning", text: "thinking" });
   });
+
+  it("prepends a text part when turnText exists but no text part is present", () => {
+    // The internal-tool case: reasoning suppressed the empty-text placeholder,
+    // so content is a lone tool-call whose turnText carries the agent's words.
+    const parts: AssistantContentPart[] = [
+      { type: "tool-call", toolCallId: "tc-1", toolName: "memory_remember", args: { turnText: "Oh nice, big shop." } as any, argsText: "{}", result: "ok" },
+    ];
+
+    const result = promoteTurnText(parts);
+    expect(result[0]).toEqual({ type: "text", text: "Oh nice, big shop." });
+    expect((result[1] as any).args.turnText).toBeUndefined();
+  });
 });
 
-// ---------------------------------------------------------------------------
-// convertMessage: promoteTurnText is NOT applied during executing status
-// ---------------------------------------------------------------------------
 
 describe("convertMessage: turnText promotion gated on status", () => {
   it("does not promote turnText on executing messages", () => {
@@ -464,7 +471,6 @@ describe("convertMessage: turnText promotion gated on status", () => {
     });
 
     const result = convertMessage(msg);
-    // During executing, turnText stays in args for streaming bubble display
     const toolPart = result!.content.find((p: any) => p.type === "tool-call") as any;
     expect(toolPart.args.turnText).toBe("I'll do that");
   });

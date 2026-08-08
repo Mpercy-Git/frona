@@ -93,7 +93,7 @@ export function promoteTurnText(parts: AssistantContentPart[]): AssistantContent
   }
   if (!lastTurnText) return parts;
 
-  return parts.map(p => {
+  const promoted = parts.map(p => {
     if (p.type === "text") return { ...p, text: lastTurnText };
     if (p.type === "tool-call" && (p.args as Record<string, unknown>)?.turnText) {
       const { turnText: _, ...rest } = p.args;
@@ -101,6 +101,15 @@ export function promoteTurnText(parts: AssistantContentPart[]): AssistantContent
     }
     return p;
   });
+
+  // No text part existed to receive the promoted turnText - e.g. an internal
+  // tool turn whose message body is empty and whose reasoning suppressed the
+  // empty-text placeholder in convertMessage. Prepend one so the agent's words
+  // render above the tool timeline instead of vanishing behind "Used N tools".
+  if (!textPart) {
+    return [{ type: "text", text: lastTurnText }, ...promoted];
+  }
+  return promoted;
 }
 
 export function convertMessage(msg: MessageResponse) {
@@ -140,15 +149,12 @@ export function convertMessage(msg: MessageResponse) {
 
     const content: AssistantContentPart[] = [];
 
-    // User-facing external tools (HITL prompts) render BEFORE text.
     if (msg.tool_calls?.length) {
       for (const te of msg.tool_calls) {
         if (te.hitl) {
           const toolName = te.hitl.request.type;
           const status = te.hitl.status;
           const resolved = status === "resolved" || status === "denied";
-          // Project request data + hitl-level fields into a flat args object
-          // for assistant-ui consumption.
           const args: Record<string, string | number | boolean | null> = {
             prompt: te.hitl.prompt,
             url: te.hitl.url,
@@ -194,7 +200,6 @@ export function convertMessage(msg: MessageResponse) {
       content.push({ type: "text", text: "" });
     }
 
-    // Attachments render between text and tools
     if (msg.attachments?.length) {
       content.push({
         type: "tool-call",
@@ -206,8 +211,6 @@ export function convertMessage(msg: MessageResponse) {
       });
     }
 
-    // Task lifecycle events (TaskCompletion / TaskDeferred) — after
-    // attachments, before regular tools.
     if (msg.tool_calls?.length) {
       for (const te of msg.tool_calls) {
         if (te.task_event) {
@@ -233,7 +236,6 @@ export function convertMessage(msg: MessageResponse) {
       }
     }
 
-    // Regular tools (neither hitl nor task_event) — last
     if (msg.tool_calls?.length) {
       for (const te of msg.tool_calls) {
         if (!te.hitl && !te.task_event) {
@@ -291,7 +293,6 @@ export function convertMessage(msg: MessageResponse) {
     };
   }
 
-  // System messages without events — skip
   return null;
 }
 
@@ -308,18 +309,17 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
   const onChatCreatedRef = useRef(onChatCreated);
   onChatCreatedRef.current = onChatCreated;
 
-  // One store per ChatView mount — persists across chatId changes (pending → real)
+  // One store per ChatView mount - persists across chatId changes (pending → real)
   const storeRef = useRef<ChatStore | null>(null);
   if (!storeRef.current) {
     storeRef.current = new ChatStore();
   }
   const store = storeRef.current;
 
-  // Eager SSE subscription controller — set in onNew so events are captured
+  // Eager SSE subscription controller - set in onNew so events are captured
   // immediately, before the useEffect has a chance to fire.
   const eagerSubRef = useRef<AbortController | null>(null);
 
-  // Subscribe to store changes for re-rendering
   const subscribe = useCallback((cb: () => void) => store.subscribe(cb), [store]);
   const storeSnapshot = useSyncExternalStore(
     subscribe,
@@ -366,7 +366,6 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     });
   }, [store]);
 
-  // onNew callback — creates chat if needed, sends message to backend
   const onNew = useCallback(async (message: AppendMessage) => {
     const text = message.content
       .filter((p): p is { type: "text"; text: string } => p.type === "text")
@@ -465,7 +464,6 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
 
   const runtime = useExternalStoreRuntime(adapter);
 
-  // Programmatic send — used for pending messages
   const sendMessage = useCallback((content: string, attachments?: Attachment[]) => {
     if (attachments?.length) {
       for (const att of attachments) {
