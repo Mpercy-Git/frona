@@ -194,19 +194,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    if let Ok(compaction_group) = state.chat_service.provider_registry()
-        .get_model_group("compaction")
-        .or_else(|_| state.chat_service.provider_registry().get_model_group("primary"))
-    {
-        let scheduler = Arc::new(Scheduler::new(state.clone(), compaction_group.clone()));
-        scheduler.start();
-        info!(
-            space_secs = config.scheduler.space_compaction_secs,
-            memory_secs = config.scheduler.memory_compaction_secs,
-            poll_secs = config.scheduler.poll_secs,
-            "Scheduler started"
-        );
-    }
+    // The scheduler always runs (poll/cleanup jobs); memory maintenance is
+    // registered by the active memory service itself (which resolves its own
+    // compaction model group).
+    let scheduler = Arc::new(Scheduler::new(state.clone()));
+    scheduler.start();
+    info!(
+        poll_secs = config.scheduler.poll_secs,
+        "Scheduler started"
+    );
 
     let cors = config.server.cors_origins.as_deref().map(|origins_str| {
         let origins: Vec<String> = origins_str
@@ -287,7 +283,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::voice::router())
         .merge(routes::system::router())
         .merge(routes::config::router())
-        .merge(routes::provider_models::router())
+        .merge(routes::provider_models::router());
+    // Register the PKM sync API only when PKM is the active backend - a Basic install
+    // never exposes `/api/memory/pkm/*`, so no request-time is-PKM probe is needed.
+    if config.memory.backend.unwrap_or(frona::core::config::MemoryBackend::Basic)
+        == frona::core::config::MemoryBackend::Pkm
+    {
+        api = api
+            .merge(routes::memory_pkm::router())
+            .merge(routes::memory_pkm_read::router());
+    }
+    let mut api = api
         .layer(DefaultBodyLimit::max(config.server.max_body_size_bytes))
         .layer(axum::middleware::from_fn(track_http_metrics))
         .layer(axum::middleware::from_fn_with_state(state.clone(), shutdown_gate));

@@ -30,7 +30,8 @@ use crate::credential::presign::PresignService;
 use crate::credential::vault::service::VaultService;
 use crate::inference::ModelProviderRegistry;
 use crate::inference::config::ModelRegistryConfig;
-use crate::memory::service::MemoryService;
+use crate::memory::basic::BasicMemoryService;
+use crate::memory::pkm::PkmService;
 use crate::notification::service::NotificationService;
 use crate::policy::service::PolicyService;
 use crate::tool::manager::ToolManager;
@@ -48,7 +49,10 @@ use surrealdb::engine::local::Db;
 
 use super::config::Config;
 use crate::auth::UserService;
+use crate::db::repo::basic_memory::{SurrealMemoryEntryRepo, SurrealMemoryRepo};
+use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::generic::SurrealRepo;
+use crate::db::repo::spaces::SurrealSpaceRepo;
 
 #[derive(Clone, Default)]
 pub struct ActiveSessions {
@@ -88,6 +92,13 @@ impl ActiveSessions {
 #[derive(Clone)]
 pub struct AppState {
     pub db: Surreal<Db>,
+    pub runtime_config: crate::core::runtime_config::RuntimeConfigStore,
+    /// The Obsidian sync engine - `Some` only when PKM is the active memory backend.
+    /// Presence *is* the gate: the `/api/memory/pkm/*` handlers read this instead of
+    /// re-checking config and rebuilding an engine on every request.
+    pub pkm_sync: Option<crate::memory::pkm::sync::PkmSyncService>,
+    pub pkm_read: Option<crate::memory::pkm::read::PkmReadService>,
+    pub pkm_service: Option<crate::memory::pkm::PkmService>,
     pub auth_service: Arc<AuthService>,
     pub app_service: AppService,
     pub user_service: UserService,
@@ -103,7 +114,6 @@ pub struct AppState {
     pub broadcast_service: BroadcastService,
     pub browser_session_manager: Arc<BrowserSessionManager>,
     pub active_sessions: ActiveSessions,
-    pub memory_service: MemoryService,
     pub notification_service: NotificationService,
     pub sandbox_factory: Arc<SandboxFactory>,
     pub sandbox_manager: Arc<SandboxManager>,
@@ -153,7 +163,7 @@ impl AppState {
 
         let broadcast_service = BroadcastService::with_pending_events_secs(config.server.sse_pending_events_secs);
 
-        // Load the catalog before the provider registry — `parse_model_groups`
+        // Load the catalog before the provider registry - `parse_model_groups`
         // consults it to bake `context_window` into each `ModelGroup` at
         // resolve time.
         let model_catalog = crate::inference::metadata::ModelCatalogStore::new(
@@ -206,14 +216,74 @@ impl AppState {
             SurrealRepo::new(db.clone()),
             broadcast_service.clone(),
         );
-        let memory_service = MemoryService::new(
-            SurrealRepo::new(db.clone()),
-            SurrealRepo::new(db.clone()),
-            SurrealRepo::new(db.clone()),
-            provider_registry_arc,
-            prompt_loader.clone(),
-            storage.clone(),
-            usage_service.clone(),
+        // Built before the memory backend so PKM receives a *clone* of this exact instance
+        // (moka caches are `Arc`-backed, so a clone shares them). One config cache spans the
+        // background consolidation sweep and the `/api/memory/pkm/sync/config` route, so a
+        // directory rename invalidates the value the sweep reads.
+        let user_service = UserService::new(SurrealRepo::new(db.clone()), &config.cache);
+        // Select the memory backend at boot. Unconfigured (`None`) → Basic; PKM is
+        // reached only by an explicit choice - the setup wizard bakes `pkm` for new
+        // installs (setup is mandatory for fresh installs), and existing installs opt in
+        // via admin settings. The `/api/memory/pkm/*` sync routes read `pkm_sync` below,
+        // which is `Some` only under PKM - so the backend-specific capability is visible
+        // in `AppState`'s type rather than re-derived per request.
+        let backend = config.memory.backend.unwrap_or(crate::core::config::MemoryBackend::Basic);
+        // Only the PKM branch produces a sync engine; Basic leaves it `None`.
+        let mut pkm_sync: Option<crate::memory::pkm::sync::PkmSyncService> = None;
+        let mut pkm_read: Option<crate::memory::pkm::read::PkmReadService> = None;
+        let mut pkm_service: Option<crate::memory::pkm::PkmService> = None;
+        let memory_service: Arc<dyn crate::memory::service::MemoryService> = match backend {
+            crate::core::config::MemoryBackend::Basic => {
+                Arc::new(BasicMemoryService::new(
+                    SurrealMemoryRepo::new(db.clone()),
+                    SurrealMemoryEntryRepo::new(db.clone()),
+                    SurrealSpaceRepo::new(db.clone()),
+                    SurrealChatRepo::new(db.clone()),
+                    provider_registry_arc.clone(),
+                    prompt_loader.clone(),
+                    usage_service.clone(),
+                    config.memory.clone(),
+                ))
+            }
+            crate::core::config::MemoryBackend::Pkm => {
+                // The PKM backend hands the ontology roots to the service, which loads a
+                // catalogue from them if one is there. Boot does not depend on it: the
+                // release is downloaded, so a fresh install legitimately has none yet,
+                // and only the consolidation loop needs one. Nothing is *reasoned* over
+                // at boot either - a pass cuts the projection it needs - so even a
+                // successful load here is an index build, not a materialisation.
+                let pkm = PkmService::new(
+                    db.clone(),
+                    storage.clone(),
+                    provider_registry_arc.clone(),
+                    prompt_loader.clone(),
+                    config.memory.clone(),
+                    user_service.clone(),
+                    config.storage.ontology_roots(),
+                );
+                // The sync engine is a peer service over the *same* repo and storage -
+                // not a second assembly, and not something `PkmService` knows about.
+                pkm_sync = Some(crate::memory::pkm::sync::PkmSyncService::with_operations(
+                    pkm.repo(),
+                    pkm.storage(),
+                    config.memory.clone(),
+                    user_service.clone(),
+                    prompt_loader.clone(),
+                    provider_registry_arc.clone(),
+                    pkm.operation_coordinator(),
+                ));
+                pkm_read = Some(crate::memory::pkm::read::PkmReadService::new(
+                    pkm.repo(),
+                    pkm.ontology_manager(),
+                ));
+                pkm_service = Some(pkm.clone());
+                Arc::new(pkm)
+            }
+        };
+        tracing::info!(
+            backend = ?backend,
+            model_group = %config.memory.model_group,
+            "Memory backend active"
         );
 
         let skill_resolver = SkillResolver::new(&config.storage.shared_config_dir, storage.clone())
@@ -232,7 +302,6 @@ impl AppState {
             &config.auth.encryption_secret,
             Arc::new(keypair_repo),
         );
-        let user_service = UserService::new(SurrealRepo::new(db.clone()), &config.cache);
         let user_group_service = crate::auth::group_service::UserGroupService::new(db.clone());
         let presign_service = PresignService::new(
             keypair_service.clone(),
@@ -424,7 +493,6 @@ impl AppState {
             provider_registry,
             storage.clone(),
             user_service.clone(),
-            memory_service.clone(),
             prompt_loader.clone(),
             broadcast_service.clone(),
             presign_service.clone(),
@@ -477,7 +545,11 @@ impl AppState {
             task_executor.clone(),
         ));
         Self {
+            pkm_sync,
+            pkm_read,
+            pkm_service,
             db: db.clone(),
+            runtime_config: crate::core::runtime_config::RuntimeConfigStore::new(db.clone()),
             auth_service: Arc::new(AuthService::new()),
             app_service,
             user_service: user_service.clone(),
@@ -493,7 +565,6 @@ impl AppState {
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions,
-            memory_service,
             notification_service: NotificationService::new(SurrealRepo::new(db.clone())),
             policy_service: policy_service.clone(),
             tool_manager,
@@ -528,28 +599,11 @@ impl AppState {
     }
 
     pub async fn get_runtime_config(&self, key: &str) -> Result<Option<String>, crate::core::error::AppError> {
-        let mut result = self.db
-            .query("SELECT `value` FROM runtime_config WHERE `key` = $key LIMIT 1")
-            .bind(("key", key.to_string()))
-            .await
-            .map_err(|e| crate::core::error::AppError::Internal(e.to_string()))?;
-        let row: Option<serde_json::Value> = result.take(0)
-            .map_err(|e| crate::core::error::AppError::Internal(e.to_string()))?;
-        Ok(row.and_then(|v| v.get("value").and_then(|v| v.as_str().map(String::from))))
+        self.runtime_config.get_raw(key).await
     }
 
     pub async fn set_runtime_config(&self, key: &str, value: &str) -> Result<(), crate::core::error::AppError> {
-        self.db
-            .query(
-                "DELETE FROM runtime_config WHERE `key` = $key; \
-                 CREATE runtime_config SET `key` = $key, `value` = $value, updated_at = $now"
-            )
-            .bind(("key", key.to_string()))
-            .bind(("value", value.to_string()))
-            .bind(("now", chrono::Utc::now()))
-            .await
-            .map_err(|e| crate::core::error::AppError::Internal(e.to_string()))?;
-        Ok(())
+        self.runtime_config.set_raw(key, value).await
     }
 
     pub async fn get_runtime_config_bool(&self, key: &str) -> bool {
@@ -580,17 +634,6 @@ impl AppState {
 
     pub fn is_shutting_down(&self) -> bool {
         self.shutdown_token.is_cancelled()
-    }
-
-    pub fn compaction_model_group(&self) -> Option<crate::inference::config::ModelGroup> {
-        let registry = self.chat_service.provider_registry();
-        if let Ok(group) = registry.get_model_group("compaction") {
-            return Some(group.clone());
-        }
-        if let Ok(group) = registry.get_model_group("primary") {
-            return Some(group.clone());
-        }
-        None
     }
 }
 
