@@ -253,7 +253,11 @@ async fn install_remote_server_with_bearer_token() {
     assert_eq!(server["command"], "");
     let transports = server["transports"].as_array().unwrap();
     assert_eq!(transports.len(), 1);
-    assert_eq!(transports[0]["url"], "https://example.com/mcp");
+    assert_eq!(transports[0]["Http"]["url"], "https://example.com/mcp");
+    assert_eq!(
+        transports[0]["Http"]["headers"]["Authorization"],
+        "Bearer ${MCP_BEARER_TOKEN}"
+    );
 
     let app = build_app(state);
     let resp = app
