@@ -3,13 +3,15 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, RwLock};
 
+use http::{HeaderName, HeaderValue};
+
 use crate::auth::ephemeral_token::EphemeralTokenGuard;
 use crate::core::error::AppError;
 use crate::tool::ToolDefinition;
 use crate::tool::sandbox::{Sandbox, SandboxManager};
 
 use super::client::{McpClient, default_client_info};
-use super::models::{McpServer, McpServerStatus, TransportConfig};
+use super::models::{McpServer, McpServerStatus, TransportConfig, interpolate_env_vars};
 
 pub struct McpConnection {
     pub server_id: String,
@@ -141,9 +143,9 @@ impl McpManager {
         });
 
         match config {
-            Some(TransportConfig::Http { url, port_env_var, endpoint_path, args, env }) => {
+            Some(TransportConfig::Http { url, port_env_var, endpoint_path, args, env, headers }) => {
                 if let Some(url) = url.as_ref().filter(|u| !u.is_empty()) {
-                    self.start_remote_http(server, url.clone()).await
+                    self.start_remote_http(server, url.clone(), headers, &resolved_env).await
                 } else {
                     self.start_local_http(server, resolved_env, args, env, port_env_var.as_deref(), endpoint_path.as_deref(), token_guard).await
                 }
@@ -279,12 +281,42 @@ impl McpManager {
         self.register_connection(server, client, Some(child), Some(port), Some(log_path), token_guard).await
     }
 
+    /// Connects directly to a remote MCP server over streamable-HTTP/SSE.
+    /// No child process is spawned for this branch — there is no npm/pypi
+    /// package, no per-principal sandbox (seccomp, filesystem, exec), and
+    /// nothing to warm up. The outbound call is made from Frona's own engine
+    /// process, so `sandbox_policy.network_destinations` is the *only* gate
+    /// on where this can connect — a materially different trust boundary
+    /// than every other MCP server type in this codebase.
     async fn start_remote_http(
         &self,
         server: &McpServer,
         url: String,
+        header_templates: &BTreeMap<String, String>,
+        resolved_env: &BTreeMap<String, String>,
     ) -> Result<Vec<ToolDefinition>, AppError> {
-        let transport = rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_uri(url.as_str());
+        let mut headers = HashMap::new();
+        for (name, template) in header_templates {
+            let value = interpolate_env_vars(template, resolved_env);
+            let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+                AppError::Validation(format!("invalid MCP remote header name '{name}': {e}"))
+            })?;
+            let header_value = HeaderValue::from_str(&value).map_err(|e| {
+                AppError::Validation(format!("invalid MCP remote header value for '{name}': {e}"))
+            })?;
+            headers.insert(header_name, header_value);
+        }
+
+        tracing::info!(
+            server_id = %server.id,
+            url = %url,
+            header_count = headers.len(),
+            "connecting to remote MCP server: no child process spawned, only sandbox_policy.network_destinations gates this outbound call"
+        );
+
+        let config = rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url)
+            .custom_headers(headers);
+        let transport = rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_config(config);
         let client = McpClient::connect(transport, default_client_info()).await?;
         self.register_connection(server, client, None, None, None, None).await
     }

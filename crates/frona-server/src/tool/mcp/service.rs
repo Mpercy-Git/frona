@@ -22,7 +22,7 @@ use super::manager::McpManager;
 use super::metadata::{RegistryPackage, RegistryServerEntry};
 use super::models::{
     CachedMcpTool, CredentialBinding, McpPackage, McpRuntime, McpServer, McpServerInstall,
-    McpServerStatus, McpServerUpdate, TransportConfig, sanitize_to_handle,
+    McpServerStatus, McpServerUpdate, TransportConfig, extract_env_var_refs, sanitize_to_handle,
 };
 use super::registry::McpRegistryClient;
 use super::repository::McpServerRepository;
@@ -45,6 +45,12 @@ impl SandboxedPackageInstaller {
 #[async_trait]
 impl PackageInstaller for SandboxedPackageInstaller {
     async fn install(&self, server: &McpServer) -> Result<(), AppError> {
+        // No package to warm up, and no sandbox needed: nothing is ever
+        // spawned for a remote-only server.
+        if server.package.runtime == McpRuntime::Remote {
+            return Ok(());
+        }
+
         let sandbox = self.manager.build_install_sandbox(server);
         sandbox.setup()?;
 
@@ -58,6 +64,7 @@ impl PackageInstaller for SandboxedPackageInstaller {
                 ("uv", vec!["tool".to_string(), "install".to_string(), pkg])
             }
             McpRuntime::Binary => return Ok(()),
+            McpRuntime::Remote => unreachable!("handled above"),
         };
 
         let log_dir = std::path::Path::new(&server.workspace_dir).join("logs");
@@ -252,14 +259,54 @@ impl McpServerService {
         user_handle: &crate::core::Handle,
         req: McpServerInstall,
     ) -> Result<McpServer, AppError> {
-        let entry = self.resolve_entry(&req).await?;
-        let package = pick_package(&entry).ok_or_else(|| {
-            AppError::Validation(
-                "registry entry has no npm/pypi package with a supported transport".into(),
-            )
-        })?;
+        if let Some(remote) = req.remote.clone() {
+            return self
+                .install_remote(user_id, user_handle, &req, remote.url, remote.transport, remote.headers, None)
+                .await;
+        }
 
-        validate_credential_bindings(package, &req.credentials, &req.extra_env)?;
+        let entry = self.resolve_entry(&req).await?;
+        let package = pick_package(&entry).cloned();
+        match package {
+            Some(package) => self.install_local(user_id, user_handle, req, entry, package).await,
+            None => {
+                let remote_transport = entry.remotes.first().cloned().ok_or_else(|| {
+                    AppError::Validation(
+                        "registry entry has no npm/pypi package with a supported transport, and no remote endpoint".into(),
+                    )
+                })?;
+                let url = remote_transport.url.clone().ok_or_else(|| {
+                    AppError::Validation("registry remote transport entry is missing a url".into())
+                })?;
+                self.install_remote(
+                    user_id,
+                    user_handle,
+                    &req,
+                    url,
+                    remote_transport.kind.clone(),
+                    BTreeMap::new(),
+                    Some(&entry),
+                )
+                .await
+            }
+        }
+    }
+
+    async fn install_local(
+        &self,
+        user_id: &str,
+        user_handle: &crate::core::Handle,
+        req: McpServerInstall,
+        entry: RegistryServerEntry,
+        package: RegistryPackage,
+    ) -> Result<McpServer, AppError> {
+        let required: HashSet<&str> = package
+            .environment_variables
+            .iter()
+            .filter(|v| v.is_secret)
+            .map(|v| v.name.as_str())
+            .collect();
+        validate_credential_bindings(&required, &req.credentials, &req.extra_env)?;
         if let Some(ref policy) = req.sandbox_policy {
             validate_absolute_paths(&policy.read_paths)?;
             validate_absolute_paths(&policy.write_paths)?;
@@ -289,7 +336,7 @@ impl McpServerService {
             AppError::Tool(format!("creating MCP server workspace {workspace_dir}: {e}"))
         })?;
 
-        let (runtime, command, args) = build_invocation(package)?;
+        let (runtime, command, args) = build_invocation(&package)?;
         let mcp_package = McpPackage {
             runtime,
             name: package.identifier.clone(),
@@ -303,18 +350,19 @@ impl McpServerService {
             handle,
             display_name: req
                 .display_name_override
+                .clone()
                 .or(entry.title.clone())
                 .unwrap_or_else(|| {
                     entry.name.rsplit('/').next().unwrap_or(&entry.name).to_string()
                 }),
-            description: Some(entry.description.clone()),
+            description: req.description_override.clone().or_else(|| Some(entry.description.clone())),
             repository_url: entry.repository.as_ref().and_then(|r| r.url.clone()),
             registry_id: Some(entry.name.clone()),
             server_info: None,
             package: mcp_package,
             command,
             args,
-            env: req.extra_env,
+            env: req.extra_env.clone(),
             transports: entry.packages.iter().filter_map(|p| {
                 let pkg_args = build_invocation(p).map(|(_, _, a)| a).ok()?;
                 Some(match p.transport.kind.as_str() {
@@ -329,6 +377,7 @@ impl McpServerService {
                         endpoint_path: p.transport.url.as_ref()
                             .and_then(|u| u.rfind('/').map(|i| u[i..].to_string())),
                         url: None,
+                        headers: BTreeMap::new(),
                     },
                     _ => TransportConfig::Stdio {
                         args: pkg_args,
@@ -349,6 +398,121 @@ impl McpServerService {
         self.write_bindings(user_id, &persisted.id, req.credentials).await?;
         self.installer.install(&persisted).await?;
         let sandbox_policy = req.sandbox_policy.unwrap_or_default();
+        self.policy_service
+            .reconcile_sandbox_policy(
+                user_id,
+                crate::policy::reconcile::EntityRef::Mcp(persisted.id.clone()),
+                &sandbox_policy,
+            )
+            .await?;
+        Ok(persisted)
+    }
+
+    /// Installs a server reachable only over a remote streamable-HTTP/SSE
+    /// URL — no package, no child process, no per-principal sandbox. Only
+    /// `sandbox_policy.network_destinations` gates this outbound call, made
+    /// directly from Frona's own engine process (see `McpManager::start_remote_http`).
+    #[allow(clippy::too_many_arguments)]
+    async fn install_remote(
+        &self,
+        user_id: &str,
+        user_handle: &crate::core::Handle,
+        req: &McpServerInstall,
+        url: String,
+        transport_kind: String,
+        headers: BTreeMap<String, String>,
+        entry: Option<&RegistryServerEntry>,
+    ) -> Result<McpServer, AppError> {
+        if !matches!(transport_kind.as_str(), "streamable-http" | "sse") {
+            return Err(AppError::Validation(format!(
+                "unsupported remote MCP transport: {transport_kind}"
+            )));
+        }
+        if headers.is_empty() && !req.allow_unauthenticated_remote {
+            return Err(AppError::Validation(
+                "remote MCP install has no auth headers configured — pass allow_unauthenticated_remote: true to install without one".into(),
+            ));
+        }
+
+        let required = extract_env_var_refs(&headers);
+        validate_credential_bindings(&required, &req.credentials, &req.extra_env)?;
+        if let Some(ref policy) = req.sandbox_policy {
+            validate_absolute_paths(&policy.read_paths)?;
+            validate_absolute_paths(&policy.write_paths)?;
+        }
+
+        let handle_source = req
+            .display_name_override
+            .as_deref()
+            .or_else(|| entry.and_then(|e| e.title.as_deref()))
+            .or_else(|| entry.map(|e| e.name.as_str()))
+            .unwrap_or(&url);
+        let desired_handle = req
+            .handle
+            .clone()
+            .unwrap_or_else(|| sanitize_to_handle(handle_source));
+        let handle = self.resolve_unique_handle(user_id, &desired_handle).await?;
+
+        let id = crate::core::repository::new_id();
+        self.verify_grants(user_id, &id, &req.credentials).await?;
+
+        let workspace_dir = self
+            .manager
+            .storage()
+            .mcp_workspace_path(user_handle, &handle)
+            .to_string_lossy()
+            .into_owned();
+        std::fs::create_dir_all(&workspace_dir).map_err(|e| {
+            AppError::Tool(format!("creating MCP server workspace {workspace_dir}: {e}"))
+        })?;
+
+        let now = Utc::now();
+        let server = McpServer {
+            id: id.clone(),
+            user_id: user_id.to_string(),
+            handle,
+            display_name: req
+                .display_name_override
+                .clone()
+                .or_else(|| entry.and_then(|e| e.title.clone()))
+                .or_else(|| entry.map(|e| e.name.rsplit('/').next().unwrap_or(&e.name).to_string()))
+                .unwrap_or_else(|| url.clone()),
+            description: req
+                .description_override
+                .clone()
+                .or_else(|| entry.map(|e| e.description.clone())),
+            repository_url: entry.and_then(|e| e.repository.as_ref().and_then(|r| r.url.clone())),
+            registry_id: entry.map(|e| e.name.clone()),
+            server_info: None,
+            package: McpPackage {
+                runtime: McpRuntime::Remote,
+                name: url.clone(),
+                version: "-".into(),
+            },
+            command: String::new(),
+            args: Vec::new(),
+            env: req.extra_env.clone(),
+            transports: vec![TransportConfig::Http {
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                port_env_var: None,
+                endpoint_path: None,
+                url: Some(url),
+                headers,
+            }],
+            active_transport: transport_kind,
+            status: McpServerStatus::Installed,
+            tool_cache: Vec::new(),
+            workspace_dir,
+            installed_at: now,
+            last_started_at: None,
+            updated_at: now,
+        };
+
+        let persisted = self.repo.create(&server).await?;
+        self.write_bindings(user_id, &persisted.id, req.credentials.clone()).await?;
+        self.installer.install(&persisted).await?;
+        let sandbox_policy = req.sandbox_policy.clone().unwrap_or_default();
         self.policy_service
             .reconcile_sandbox_policy(
                 user_id,
@@ -431,7 +595,13 @@ impl McpServerService {
             if let Some(id) = server.registry_id.as_deref() {
                 let entry = self.registry.fetch(id).await?;
                 if let Some(package) = pick_package(&entry) {
-                    validate_credential_bindings(package, &credentials, &server.env)?;
+                    let required: HashSet<&str> = package
+                        .environment_variables
+                        .iter()
+                        .filter(|v| v.is_secret)
+                        .map(|v| v.name.as_str())
+                        .collect();
+                    validate_credential_bindings(&required, &credentials, &server.env)?;
                 }
             }
             self.verify_grants(user_id, &server.id, &credentials).await?;
@@ -695,19 +865,15 @@ fn build_invocation(
 }
 
 /// Secret env vars can be satisfied by either a vault credential binding or
-/// a plain value in `extra_env`. Any binding referring to an env var the
-/// package does not declare is an error.
+/// a plain value in `extra_env`. Any binding referring to an env var not in
+/// `required` is an error. `required` is either a package's declared secret
+/// env vars, or (for a remote install) the `${VAR}` names referenced by the
+/// header templates.
 fn validate_credential_bindings(
-    package: &RegistryPackage,
+    required: &HashSet<&str>,
     bindings: &[CredentialBinding],
     extra_env: &BTreeMap<String, String>,
 ) -> Result<(), AppError> {
-    let required: HashSet<&str> = package
-        .environment_variables
-        .iter()
-        .filter(|v| v.is_secret)
-        .map(|v| v.name.as_str())
-        .collect();
     let mut provided: HashSet<&str> = bindings.iter().map(|b| b.env_var.as_str()).collect();
     for name in extra_env.keys() {
         if required.contains(name.as_str()) {
@@ -715,7 +881,7 @@ fn validate_credential_bindings(
         }
     }
 
-    let extraneous: Vec<&&str> = provided.difference(&required).collect();
+    let extraneous: Vec<&&str> = provided.difference(required).collect();
     if !extraneous.is_empty() {
         return Err(AppError::Validation(format!(
             "binding(s) provided for env var(s) the package does not declare: {}",
@@ -763,6 +929,7 @@ mod tests {
             transport: RegistryTransport {
                 kind: transport.into(),
                 url: None,
+                headers: vec![],
             },
             runtime_arguments: vec![],
             package_arguments: vec![],
@@ -867,18 +1034,26 @@ mod tests {
         ));
     }
 
+    fn required_from(p: &RegistryPackage) -> HashSet<&str> {
+        p.environment_variables
+            .iter()
+            .filter(|v| v.is_secret)
+            .map(|v| v.name.as_str())
+            .collect()
+    }
+
     #[test]
     fn validate_credential_bindings_accepts_exact_match() {
         let mut p = pkg("npm", "stdio");
         p.environment_variables = vec![secret_env_var("GITHUB_TOKEN")];
-        assert!(validate_credential_bindings(&p, &[binding("GITHUB_TOKEN")], &BTreeMap::new()).is_ok());
+        assert!(validate_credential_bindings(&required_from(&p), &[binding("GITHUB_TOKEN")], &BTreeMap::new()).is_ok());
     }
 
     #[test]
     fn validate_credential_bindings_allows_missing_secret() {
         let mut p = pkg("npm", "stdio");
         p.environment_variables = vec![secret_env_var("GITHUB_TOKEN")];
-        assert!(validate_credential_bindings(&p, &[], &BTreeMap::new()).is_ok());
+        assert!(validate_credential_bindings(&required_from(&p), &[], &BTreeMap::new()).is_ok());
     }
 
     #[test]
@@ -886,7 +1061,7 @@ mod tests {
         let mut p = pkg("npm", "stdio");
         p.environment_variables = vec![secret_env_var("GITHUB_TOKEN")];
         let err = validate_credential_bindings(
-            &p,
+            &required_from(&p),
             &[binding("GITHUB_TOKEN"), binding("NOT_DECLARED")],
             &BTreeMap::new(),
         )
@@ -907,7 +1082,30 @@ mod tests {
                 format: None,
             },
         ];
-        assert!(validate_credential_bindings(&p, &[binding("SECRET")], &BTreeMap::new()).is_ok());
+        assert!(validate_credential_bindings(&required_from(&p), &[binding("SECRET")], &BTreeMap::new()).is_ok());
+    }
+
+    #[test]
+    fn validate_credential_bindings_accepts_header_derived_requirement() {
+        let mut headers = BTreeMap::new();
+        headers.insert("Authorization".to_string(), "Bearer ${MCP_TOKEN}".to_string());
+        let required = extract_env_var_refs(&headers);
+        assert!(validate_credential_bindings(&required, &[binding("MCP_TOKEN")], &BTreeMap::new()).is_ok());
+        assert!(validate_credential_bindings(&required, &[binding("OTHER")], &BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn pick_package_returns_none_for_empty_packages() {
+        let mut entry = entry_with(vec![]);
+        entry.remotes = vec![RegistryTransport {
+            kind: "streamable-http".into(),
+            url: Some("https://example.com/mcp".into()),
+            headers: vec![],
+        }];
+        assert!(
+            pick_package(&entry).is_none(),
+            "pick_package only considers local packages; remotes are handled by the install() fallback"
+        );
     }
 
     #[test]

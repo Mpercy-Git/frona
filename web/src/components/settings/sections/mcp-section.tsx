@@ -95,6 +95,7 @@ export function McpSection() {
   // Custom (non-registry) install form
   const [showCustom, setShowCustom] = useState(false);
   const [installingCustom, setInstallingCustom] = useState(false);
+  const [customMode, setCustomMode] = useState<"local" | "remote">("local");
   const [customName, setCustomName] = useState("");
   const [customDescription, setCustomDescription] = useState("");
   const [customRuntime, setCustomRuntime] = useState<"npm" | "pypi">("npm");
@@ -104,7 +105,14 @@ export function McpSection() {
   const [customUrl, setCustomUrl] = useState("");
   const [customEnv, setCustomEnv] = useState<{ key: string; value: string }[]>([]);
 
+  // Remote server install form (streamable-HTTP/SSE, no local package)
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [remoteTransport, setRemoteTransport] = useState<"streamable-http" | "sse">("streamable-http");
+  const [remoteAuthMode, setRemoteAuthMode] = useState<"bearer" | "none">("bearer");
+  const [remoteToken, setRemoteToken] = useState("");
+
   const resetCustomForm = () => {
+    setCustomMode("local");
     setCustomName("");
     setCustomDescription("");
     setCustomRuntime("npm");
@@ -113,6 +121,10 @@ export function McpSection() {
     setCustomTransport("stdio");
     setCustomUrl("");
     setCustomEnv([]);
+    setRemoteUrl("");
+    setRemoteTransport("streamable-http");
+    setRemoteAuthMode("bearer");
+    setRemoteToken("");
   };
 
   const closeCustom = () => {
@@ -177,7 +189,7 @@ export function McpSection() {
     }
   };
 
-  const installCustom = async () => {
+  const installCustomLocal = async () => {
     const name = customName.trim();
     const identifier = customIdentifier.trim();
     if (!name || !identifier) {
@@ -225,6 +237,63 @@ export function McpSection() {
       setInstallingCustom(false);
     }
   };
+
+  // Header value templates use `${ENV_VAR}` — resolved from extra_env (or a
+  // vault-bound credential) at connect time, same convention `mcp-remote` uses.
+  const REMOTE_TOKEN_ENV_VAR = "MCP_BEARER_TOKEN";
+
+  const installCustomRemote = async () => {
+    const name = customName.trim();
+    const url = remoteUrl.trim();
+    if (!name || !url) {
+      setError("Name and URL are required.");
+      return;
+    }
+    const token = remoteToken.trim();
+    if (remoteAuthMode === "bearer" && !token) {
+      setError("Enter a bearer token, or switch auth to None.");
+      return;
+    }
+    setInstallingCustom(true);
+    setError(null);
+    try {
+      const extraEnv = Object.fromEntries(
+        customEnv
+          .map((e) => [e.key.trim(), e.value] as const)
+          .filter(([k]) => k.length > 0)
+      );
+
+      const server = await api.post<McpServer>("/api/mcp/servers", {
+        display_name_override: name,
+        remote: {
+          url,
+          transport: remoteTransport,
+          ...(remoteAuthMode === "bearer"
+            ? { headers: { Authorization: `Bearer \${${REMOTE_TOKEN_ENV_VAR}}` } }
+            : {}),
+        },
+        ...(remoteAuthMode === "bearer"
+          ? { extra_env: { ...extraEnv, [REMOTE_TOKEN_ENV_VAR]: token } }
+          : { allow_unauthenticated_remote: true, ...(Object.keys(extraEnv).length > 0 ? { extra_env: extraEnv } : {}) }),
+      });
+      closeCustom();
+      await reload();
+      router.push(`/mcp?id=${server.id}`);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Install failed");
+    } finally {
+      setInstallingCustom(false);
+    }
+  };
+
+  const installCustom = () => (customMode === "remote" ? installCustomRemote() : installCustomLocal());
+
+  const customFormValid =
+    customMode === "remote"
+      ? customName.trim().length > 0 &&
+        remoteUrl.trim().length > 0 &&
+        (remoteAuthMode !== "bearer" || remoteToken.trim().length > 0)
+      : customName.trim().length > 0 && customIdentifier.trim().length > 0;
 
   const start = async (id: string) => {
     setActionLoading(id);
@@ -381,8 +450,35 @@ export function McpSection() {
             </div>
 
             <p className="text-xs text-text-tertiary">
-              Install a server that isn&apos;t in the registry by pointing at an npm or PyPI package.
+              {customMode === "local"
+                ? "Install a server that isn't in the registry by pointing at an npm or PyPI package."
+                : "Connect directly to a remote MCP server over streamable-HTTP or SSE — no package, no local process."}
             </p>
+
+            <div className="flex rounded-lg border border-border p-0.5">
+              <button
+                type="button"
+                onClick={() => setCustomMode("local")}
+                className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                  customMode === "local"
+                    ? "bg-accent text-surface"
+                    : "text-text-secondary hover:text-text-primary"
+                }`}
+              >
+                Local package
+              </button>
+              <button
+                type="button"
+                onClick={() => setCustomMode("remote")}
+                className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                  customMode === "remote"
+                    ? "bg-accent text-surface"
+                    : "text-text-secondary hover:text-text-primary"
+                }`}
+              >
+                Remote server
+              </button>
+            </div>
 
             <div>
               <label className="block text-xs font-medium text-text-tertiary mb-1">Name</label>
@@ -395,77 +491,138 @@ export function McpSection() {
               />
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-text-tertiary mb-1">Description <span className="text-text-tertiary/70">(optional)</span></label>
-              <input
-                type="text"
-                value={customDescription}
-                onChange={(e) => setCustomDescription(e.target.value)}
-                placeholder="What this server does"
-                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-              />
-            </div>
-
-            <div className="grid grid-cols-3 gap-2">
+            {customMode === "local" && (
               <div>
-                <label className="block text-xs font-medium text-text-tertiary mb-1">Runtime</label>
-                <select
-                  value={customRuntime}
-                  onChange={(e) => setCustomRuntime(e.target.value as "npm" | "pypi")}
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
-                >
-                  <option value="npm">npm</option>
-                  <option value="pypi">PyPI</option>
-                </select>
-              </div>
-              <div className="col-span-2">
-                <label className="block text-xs font-medium text-text-tertiary mb-1">Package identifier</label>
+                <label className="block text-xs font-medium text-text-tertiary mb-1">Description <span className="text-text-tertiary/70">(optional)</span></label>
                 <input
                   type="text"
-                  value={customIdentifier}
-                  onChange={(e) => setCustomIdentifier(e.target.value)}
-                  placeholder={customRuntime === "npm" ? "@scope/my-mcp-server" : "my-mcp-server"}
+                  value={customDescription}
+                  onChange={(e) => setCustomDescription(e.target.value)}
+                  placeholder="What this server does"
                   className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
                 />
               </div>
-            </div>
+            )}
 
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-xs font-medium text-text-tertiary mb-1">Version <span className="text-text-tertiary/70">(optional)</span></label>
-                <input
-                  type="text"
-                  value={customVersion}
-                  onChange={(e) => setCustomVersion(e.target.value)}
-                  placeholder="latest"
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-text-tertiary mb-1">Transport</label>
-                <select
-                  value={customTransport}
-                  onChange={(e) => setCustomTransport(e.target.value as "stdio" | "streamable-http" | "sse")}
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
-                >
-                  <option value="stdio">stdio</option>
-                  <option value="streamable-http">streamable-http</option>
-                  <option value="sse">sse</option>
-                </select>
-              </div>
-            </div>
+            {customMode === "local" ? (
+              <>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-xs font-medium text-text-tertiary mb-1">Runtime</label>
+                    <select
+                      value={customRuntime}
+                      onChange={(e) => setCustomRuntime(e.target.value as "npm" | "pypi")}
+                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+                    >
+                      <option value="npm">npm</option>
+                      <option value="pypi">PyPI</option>
+                    </select>
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-xs font-medium text-text-tertiary mb-1">Package identifier</label>
+                    <input
+                      type="text"
+                      value={customIdentifier}
+                      onChange={(e) => setCustomIdentifier(e.target.value)}
+                      placeholder={customRuntime === "npm" ? "@scope/my-mcp-server" : "my-mcp-server"}
+                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+                    />
+                  </div>
+                </div>
 
-            {customTransport !== "stdio" && (
-              <div>
-                <label className="block text-xs font-medium text-text-tertiary mb-1">URL <span className="text-text-tertiary/70">(optional)</span></label>
-                <input
-                  type="text"
-                  value={customUrl}
-                  onChange={(e) => setCustomUrl(e.target.value)}
-                  placeholder="http://localhost:3000/mcp"
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-                />
-              </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs font-medium text-text-tertiary mb-1">Version <span className="text-text-tertiary/70">(optional)</span></label>
+                    <input
+                      type="text"
+                      value={customVersion}
+                      onChange={(e) => setCustomVersion(e.target.value)}
+                      placeholder="latest"
+                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-text-tertiary mb-1">Transport</label>
+                    <select
+                      value={customTransport}
+                      onChange={(e) => setCustomTransport(e.target.value as "stdio" | "streamable-http" | "sse")}
+                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+                    >
+                      <option value="stdio">stdio</option>
+                      <option value="streamable-http">streamable-http</option>
+                      <option value="sse">sse</option>
+                    </select>
+                  </div>
+                </div>
+
+                {customTransport !== "stdio" && (
+                  <div>
+                    <label className="block text-xs font-medium text-text-tertiary mb-1">URL <span className="text-text-tertiary/70">(optional)</span></label>
+                    <input
+                      type="text"
+                      value={customUrl}
+                      onChange={(e) => setCustomUrl(e.target.value)}
+                      placeholder="http://localhost:3000/mcp"
+                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+                    />
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-2">
+                    <label className="block text-xs font-medium text-text-tertiary mb-1">URL</label>
+                    <input
+                      type="text"
+                      value={remoteUrl}
+                      onChange={(e) => setRemoteUrl(e.target.value)}
+                      placeholder="https://example.com/mcp"
+                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-text-tertiary mb-1">Transport</label>
+                    <select
+                      value={remoteTransport}
+                      onChange={(e) => setRemoteTransport(e.target.value as "streamable-http" | "sse")}
+                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+                    >
+                      <option value="streamable-http">streamable-http</option>
+                      <option value="sse">sse</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-text-tertiary mb-1">Auth</label>
+                  <select
+                    value={remoteAuthMode}
+                    onChange={(e) => setRemoteAuthMode(e.target.value as "bearer" | "none")}
+                    className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+                  >
+                    <option value="bearer">Static bearer token</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>
+
+                {remoteAuthMode === "bearer" ? (
+                  <div>
+                    <label className="block text-xs font-medium text-text-tertiary mb-1">Bearer token</label>
+                    <input
+                      type="password"
+                      value={remoteToken}
+                      onChange={(e) => setRemoteToken(e.target.value)}
+                      placeholder="Sent as: Authorization: Bearer <token>"
+                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+                    />
+                  </div>
+                ) : (
+                  <p className="text-xs text-yellow-500">
+                    No auth header will be sent. Only use this for endpoints that don&apos;t need one.
+                  </p>
+                )}
+              </>
             )}
 
             <div>
@@ -515,7 +672,7 @@ export function McpSection() {
             <div className="flex gap-2 pt-4">
               <button
                 onClick={installCustom}
-                disabled={installingCustom || !customName.trim() || !customIdentifier.trim()}
+                disabled={installingCustom || !customFormValid}
                 className="w-32 inline-flex items-center justify-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50 transition"
               >
                 <ArrowDownTrayIcon className="h-4 w-4" />

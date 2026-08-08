@@ -223,6 +223,104 @@ async fn update_wrong_owner_returns_403() {
 }
 
 #[tokio::test]
+async fn install_remote_server_with_bearer_token() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) =
+        register_user(&state, "mcp-remote", "mcpremote@example.com", "password123").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/mcp/servers",
+            &token,
+            serde_json::json!({
+                "display_name_override": "My Remote Server",
+                "remote": {
+                    "url": "https://example.com/mcp",
+                    "transport": "streamable-http",
+                    "headers": { "Authorization": "Bearer ${MCP_BEARER_TOKEN}" }
+                },
+                "extra_env": { "MCP_BEARER_TOKEN": "secret-token" }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "remote install should succeed");
+    let server = body_json(resp).await;
+    assert_eq!(server["display_name"], "My Remote Server");
+    assert_eq!(server["status"], "installed");
+    assert_eq!(server["active_transport"], "streamable-http");
+    assert_eq!(server["command"], "");
+    let transports = server["transports"].as_array().unwrap();
+    assert_eq!(transports.len(), 1);
+    assert_eq!(transports[0]["url"], "https://example.com/mcp");
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_get("/api/mcp/servers", &token))
+        .await
+        .unwrap();
+    let list = body_json(resp).await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn install_remote_server_without_auth_is_rejected_by_default() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) =
+        register_user(&state, "mcp-remote-noauth", "mcpremotenoauth@example.com", "password123").await;
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/mcp/servers",
+            &token,
+            serde_json::json!({
+                "remote": {
+                    "url": "http://127.0.0.1:9/mcp",
+                    "transport": "streamable-http"
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "unauthenticated remote install without opt-in should be rejected"
+    );
+}
+
+#[tokio::test]
+async fn install_remote_server_without_auth_succeeds_with_opt_in() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "mcp-remote-optin",
+        "mcpremoteoptin@example.com",
+        "password123",
+    )
+    .await;
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/mcp/servers",
+            &token,
+            serde_json::json!({
+                "remote": {
+                    "url": "http://127.0.0.1:9/mcp",
+                    "transport": "streamable-http"
+                },
+                "allow_unauthenticated_remote": true
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn stop_installed_server_returns_ok() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) =
