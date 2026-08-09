@@ -9,7 +9,7 @@ import { sseBus } from "./sse-event-bus";
 import { sendMessage as apiSendMessage, cancelGeneration, api, uploadFile } from "./api-client";
 import { computeTimeMarkers, useTimezone } from "./format-time";
 import type { MessageResponse, ChatResponse, Attachment } from "./types";
-import { renderMessageBody } from "./task-result-render";
+import { renderMessageBody, getCitations } from "./task-result-render";
 import { useToast } from "./toast";
 
 
@@ -222,6 +222,7 @@ export function convertMessage(msg: MessageResponse) {
     }
 
     const bodyText = renderMessageBody(msg);
+    const citations = getCitations(msg);
     if (bodyText) {
       content.push({ type: "text", text: bodyText });
     }
@@ -313,6 +314,7 @@ export function convertMessage(msg: MessageResponse) {
           gap: msg._gap,
           ...(msg.reasoning ? { reasoning: msg.reasoning } : {}),
           ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
+          ...(citations.length ? { citations } : {}),
           ...(msg.role === "taskcompletion" && msg.event?.type === "TaskCompletion"
             ? {
                 taskCompletion: {

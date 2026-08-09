@@ -1,7 +1,13 @@
 // Mirror of Rust `chat::channel::render::render_result_markdown`
 // (crates/frona-server/src/chat/channel/render.rs). Keep in lockstep.
+//
+// One deliberate divergence: the Rust renderer appends a flat "Sources"
+// markdown list because channels like Discord have no other way to show
+// citations. The web UI renders citations as its own collapsible component
+// (see SourcesList) instead, so this file leaves them out of the body text —
+// use getCitations() to read them separately.
 
-import type { MessageResponse, MessageEvent } from "./types";
+import type { MessageResponse, MessageEvent, Citation } from "./types";
 
 type JsonValue =
   | null
@@ -16,7 +22,15 @@ export function renderMessageBody(msg: MessageResponse): string {
   if (event?.type !== "TaskCompletion") {
     return msg.content || "";
   }
-  return appendCitations(renderTaskCompletionBody(msg, event), event.data.citations);
+  return renderTaskCompletionBody(msg, event);
+}
+
+/** Citations for a TaskCompletion message, or [] when there's nothing to show
+ * a Sources list for (e.g. a suppressed/empty completion body). */
+export function getCitations(msg: MessageResponse): Citation[] {
+  const event = msg.event;
+  if (event?.type !== "TaskCompletion" || !event.data.citations?.length) return [];
+  return renderMessageBody(msg).trim() ? event.data.citations : [];
 }
 
 function renderTaskCompletionBody(
@@ -36,17 +50,6 @@ function renderTaskCompletionBody(
   // No fallback to msg.content on null — that's the signal to suppress the
   // bubble for complex schemas without a summary field.
   return renderResultMarkdown(schema as JsonValue, parsed) ?? "";
-}
-
-/** Appends a "Sources" markdown list. No-op when there's nothing rendered to
- * attach sources to (e.g. a suppressed/empty completion body). */
-function appendCitations(
-  body: string,
-  citations: { title?: string; url: string }[] | undefined,
-): string {
-  if (!body || !citations || citations.length === 0) return body;
-  const lines = citations.map((c) => `- [${c.title || c.url}](${c.url})`);
-  return `${body}\n\n**Sources**\n${lines.join("\n")}`;
 }
 
 export function renderResultMarkdown(

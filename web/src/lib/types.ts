@@ -306,8 +306,13 @@ export function hitlResponseText(hitl: Hitl): string | null {
   }
 }
 
+export interface Citation {
+  title?: string;
+  url: string;
+}
+
 export type MessageEvent =
-  | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string; summary?: string; schema?: Record<string, unknown>; citations?: { title?: string; url: string }[] } }
+  | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string; summary?: string; schema?: Record<string, unknown>; citations?: Citation[] } }
   | { type: "TaskDeferred"; data: { task_id: string; delay_minutes: number; reason: string } };
 
 export type MessageStatus = "executing" | "paused" | "completed" | "failed" | "cancelled";

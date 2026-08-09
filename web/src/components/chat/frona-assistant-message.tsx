@@ -18,6 +18,8 @@ import { MediaAttachment } from "@/components/preview/media-attachment";
 import { mediaKind } from "@/lib/media-utils";
 import { DefaultToolCallUI } from "./tool-uis/default-tool-call-ui";
 import { ToolTimelineProvider } from "./tool-uis/tool-timeline-context";
+import { SourcesList } from "./sources-list";
+import type { Citation } from "@/lib/types";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { ArrowDownTrayIcon, XMarkIcon, ClipboardDocumentListIcon, SparklesIcon } from "@heroicons/react/24/outline";
 import { useRouter } from "next/navigation";
@@ -308,6 +310,7 @@ export function FronaAssistantMessage() {
   const taskCompletion = custom.taskCompletion as
     | { task_id: string; status: string }
     | undefined;
+  const citations = (custom.citations as Citation[] | undefined) ?? [];
   const showTaskBadge =
     taskCompletion && activeTaskId !== taskCompletion.task_id;
   const isoTime = message.createdAt?.toISOString();
@@ -381,6 +384,7 @@ export function FronaAssistantMessage() {
               }}
             />
           </ToolTimelineProvider>
+          <SourcesList citations={citations} />
         </div>
       </div>
     </MessagePrimitive.Root>
