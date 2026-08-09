@@ -1,9 +1,9 @@
 use chrono::{Duration, Utc};
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
-use frona::db::repo::memory_entries::SurrealMemoryEntryRepo;
-use frona::memory::models::MemoryEntry;
-use frona::memory::repository::MemoryEntryRepository;
+use frona::db::repo::basic_memory::SurrealMemoryEntryRepo;
+use frona::memory::basic::models::MemoryEntry;
+use frona::memory::basic::repository::MemoryEntryRepository;
 use frona::core::repository::Repository;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
