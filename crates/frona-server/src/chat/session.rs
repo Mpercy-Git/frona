@@ -137,36 +137,41 @@ impl ChatSessionContext {
 
         let resolved_tz = user.resolved_timezone(&harness.config.server.timezone);
 
-        let mut system_prompt = match harness
-            .memory_service
-            .build_augmented_system_prompt(
-                &agent_config.system_prompt,
-                &chat.agent_id,
-                &agent.handle,
-                user_id,
-                &user.handle,
-                chat.space_id.as_deref(),
-                &skills,
-                &agent_summaries,
-                &agent_config.identity,
-                &mcp_servers,
-                &resolved_tz,
-            )
-            .await
-        {
-            Ok(prompt) => prompt,
-            Err(e) => {
-                tracing::warn!(error = %e, agent_id = %chat.agent_id, "Failed to build augmented system prompt, using base");
-                agent_config.system_prompt.clone()
-            }
-        };
+        let mut system_prompt = crate::agent::prompt::build_augmented_system_prompt(
+            &agent_config.system_prompt,
+            &agent_config.identity,
+            &harness.prompts,
+            &harness.storage_service,
+            &user.handle,
+            &agent.handle,
+            &skills,
+            &agent_summaries,
+            &mcp_servers,
+            &resolved_tz,
+        );
 
         let model_group = harness
             .chat_service
             .provider_registry()
             .resolve_model_group(&agent_config.model_group)?;
 
-        let stored_messages = harness.chat_service.get_stored_messages(&chat.id).await?;
+        let max_output =
+            model_group.max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
+        let loaded = harness
+            .chat_service
+            .compactor()
+            .compact_chat(
+                user_id,
+                &chat.id,
+                &chat.agent_id,
+                &system_prompt,
+                model_group.context_window,
+                max_output,
+            )
+            .await?
+            .conversation;
+        let conversation_summary = loaded.summary;
+        let stored_messages = loaded.messages;
         let tool_calls = harness.chat_service
             .get_tool_calls(&chat.id)
             .await
@@ -179,7 +184,7 @@ impl ChatSessionContext {
         //      `<skill ...>...</skill>` form. Persistent DB row is untouched.
         //   2. Drop assistant messages whose immediately-preceding message is
         //      a user message with `command: Some(Command { … })`. Those are
-        //      synthetic acknowledgements for `/clear`, `/compact`, etc. —
+        //      synthetic acknowledgements for `/clear`, `/compact`, etc. -
         //      user-facing chrome, not conversation the model needs.
         let stored_messages = transform_for_commands(stored_messages, &skills);
 
@@ -232,7 +237,9 @@ impl ChatSessionContext {
             );
         }
 
-        let rig_history = builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
+        let mut rig_history = builder
+            .build(&stored_messages, &tool_calls, &conv_ctx, conversation_summary.as_deref())
+            .await;
 
         let registry = harness.chat_service.provider_registry().clone();
 
@@ -258,6 +265,17 @@ impl ChatSessionContext {
         if !vault_env.is_empty() {
             let mut vault_vars = tool_ctx.vault_env_vars.write().await;
             vault_vars.extend(vault_env);
+        }
+
+        {
+            let mut mcx = crate::memory::service::MemoryContext::new(
+                &mut system_prompt,
+                &mut rig_history,
+                &tool_ctx,
+            );
+            if let Err(e) = harness.memory_service.retrieve(&mut mcx).await {
+                tracing::warn!(error = %e, "memory retrieve failed; continuing without memory block");
+            }
         }
 
         Ok(Self {

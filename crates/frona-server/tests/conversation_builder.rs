@@ -69,7 +69,6 @@ fn test_ctx() -> ConversationContext {
         model_ref: ModelRef {
             provider: "mock".into(),
             model_id: "test-model".into(),
-            additional_params: None,
         },
         user_id: "test-user".into(),
     }
@@ -124,13 +123,11 @@ async fn agent_with_tool_calls_single_turn() {
     let te2 = tool_call("chat-1", &agent_msg_id, 0, "browse_page");
     let tool_calls = vec![te1, te2];
 
-    let result = builder.build(&messages, &tool_calls, &ctx).await;
+    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
 
-    // user msg, assistant(tool_calls x2), user(tool_results x2), assistant(final text)
     assert_eq!(result.len(), 4);
     assert!(matches!(&result[0], RigMessage::User { .. }));
 
-    // Assistant with tool calls
     if let RigMessage::Assistant { content, .. } = &result[1] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 2);
@@ -139,7 +136,6 @@ async fn agent_with_tool_calls_single_turn() {
         panic!("Expected assistant message with tool calls");
     }
 
-    // User with tool results
     if let RigMessage::User { content } = &result[2] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 2);
@@ -148,7 +144,6 @@ async fn agent_with_tool_calls_single_turn() {
         panic!("Expected user message with tool results");
     }
 
-    // Final text
     if let RigMessage::Assistant { content, .. } = &result[3] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 1);
@@ -173,9 +168,8 @@ async fn agent_with_tool_calls_multi_turn() {
     let te_turn1 = tool_call("chat-1", &agent_msg_id, 1, "browse");
     let tool_calls = vec![te_turn0, te_turn1];
 
-    let result = builder.build(&messages, &tool_calls, &ctx).await;
+    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
 
-    // user, assistant(tc t0), user(tr t0), assistant(tc t1), user(tr t1), assistant(final)
     assert_eq!(result.len(), 6);
 }
 
@@ -193,9 +187,8 @@ async fn agent_executing_status_no_final_text() {
     let te = tool_call("chat-1", &agent_msg_id, 0, "web_search");
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx).await;
+    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
 
-    // user, assistant(tool_call), user(tool_result) — no final text
     assert_eq!(result.len(), 3);
     assert!(matches!(&result[0], RigMessage::User { .. }));
     assert!(matches!(&result[1], RigMessage::Assistant { .. }));
@@ -214,7 +207,7 @@ async fn agent_without_tool_calls_unchanged() {
     ];
     let tool_calls = vec![];
 
-    let result = builder.build(&messages, &tool_calls, &ctx).await;
+    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
 
     assert_eq!(result.len(), 2);
     assert!(matches!(&result[0], RigMessage::User { .. }));
@@ -242,12 +235,10 @@ async fn turn_text_appears_in_reconstructed_history() {
     te.turn_text = Some("Here's what I found:".into());
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx).await;
+    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
 
-    // user, assistant(turn_text + tool_call), user(tool_result), assistant(final text)
     assert_eq!(result.len(), 4);
 
-    // Assistant message should contain turn text + tool call
     if let RigMessage::Assistant { content, .. } = &result[1] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 2);
@@ -273,9 +264,8 @@ async fn turn_text_empty_string_omitted() {
     te.turn_text = Some(String::new());
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx).await;
+    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
 
-    // Assistant message should only have the tool call, no empty text
     if let RigMessage::Assistant { content, .. } = &result[1] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 1);
@@ -286,7 +276,7 @@ async fn turn_text_empty_string_omitted() {
 }
 
 /// Per-turn reasoning stamped on the first tool_call of a turn must surface
-/// as `AssistantContent::Reasoning` in that turn's Assistant block — load-
+/// as `AssistantContent::Reasoning` in that turn's Assistant block - load-
 /// bearing for thinking-mode providers (DeepSeek, Anthropic) which reject
 /// chat requests if previously-emitted reasoning_content isn't replayed.
 #[tokio::test]
@@ -295,7 +285,6 @@ async fn agent_with_tool_calls_includes_per_turn_reasoning() {
     let builder = test_builder(&db);
     let ctx = test_ctx();
 
-    // Executing (paused) message — no final completion block.
     let agent_msg = agent_message("chat-1", "", Some(MessageStatus::Executing));
     let agent_msg_id = agent_msg.id.clone();
 
@@ -309,10 +298,8 @@ async fn agent_with_tool_calls_includes_per_turn_reasoning() {
         signature: Some("sig-0".into()),
     });
 
-    let result = builder.build(&messages, &[te], &ctx).await;
+    let result = builder.build(&messages, &[te], &ctx, None).await;
 
-    // user msg, assistant(reasoning + text + tool_call), user(tool_result)
-    // No final completion block (status = Executing).
     assert_eq!(result.len(), 3);
 
     if let RigMessage::Assistant { content, .. } = &result[1] {
@@ -342,10 +329,9 @@ async fn agent_with_tool_calls_omits_reasoning_when_absent() {
 
     let mut te = tool_call("chat-1", &agent_msg_id, 0, "search_web");
     te.turn_text = Some("looking".into());
-    // turn_reasoning intentionally None — non-thinking providers
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx).await;
+    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
 
     if let RigMessage::Assistant { content, .. } = &result[1] {
         let items: Vec<_> = content.iter().collect();
@@ -363,7 +349,7 @@ async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
     let builder = test_builder(&db);
     let ctx = test_ctx();
 
-    // Multi-turn paused message — each turn has its OWN reasoning that must
+    // Multi-turn paused message - each turn has its OWN reasoning that must
     // surface in its OWN Assistant block (DeepSeek requires per-turn replay).
     let agent_msg = agent_message("chat-1", "", Some(MessageStatus::Executing));
     let agent_msg_id = agent_msg.id.clone();
@@ -384,9 +370,8 @@ async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
         signature: None,
     });
 
-    let result = builder.build(&messages, &[te0, te1], &ctx).await;
+    let result = builder.build(&messages, &[te0, te1], &ctx, None).await;
 
-    // user, assistant(turn0: reasoning+tool), user(result0), assistant(turn1: reasoning+tool), user(result1)
     assert_eq!(result.len(), 5);
 
     for (idx, expected) in [(1usize, "thinking for turn 0"), (3, "thinking for turn 1")] {
@@ -399,4 +384,26 @@ async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
         };
         assert_eq!(r.display_text(), expected);
     }
+}
+
+#[tokio::test]
+async fn prepends_conversation_summary() {
+    let db = test_db().await;
+    let builder = test_builder(&db);
+    let ctx = test_ctx();
+    let messages = vec![user_message("chat-1", "hello")];
+
+    let without = builder.build(&messages, &[], &ctx, None).await;
+    let with = builder
+        .build(&messages, &[], &ctx, Some("earlier conversation"))
+        .await;
+
+    assert_eq!(with.len(), without.len() + 1, "summary adds one leading message");
+    let RigMessage::User { .. } = &with[0] else {
+        panic!("leading message must be a user message");
+    };
+    assert!(
+        format!("{:?}", with[0]).contains("conversation_summary"),
+        "leading message must be the summary block"
+    );
 }

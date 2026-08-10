@@ -50,28 +50,28 @@ pub enum MessageCommand {
     Command { name: String, args: String },
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[serde(tag = "type", content = "data")]
 #[surreal(crate = "surrealdb::types", tag = "type", content = "data")]
 pub enum MessageEvent {
     TaskCompletion {
         task_id: String,
+        #[serialize_always]
         chat_id: Option<String>,
         status: crate::agent::task::models::TaskStatus,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
         /// Schema the LLM produced its result against. Renderers (channel
         /// adapters, web UI) read this together with `message.content` (raw
         /// JSON) to format the result for humans.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         schema: Option<serde_json::Value>,
     },
     TaskMatch {
         task_id: String,
+        #[serialize_always]
         chat_id: Option<String>,
         attempt_index: u32,
         summary: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         result: Option<serde_json::Value>,
     },
     TaskDeferred {
@@ -91,24 +91,19 @@ pub enum DeliveryState {
     Failed,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct MessageDelivery {
     pub state: DeliveryState,
     #[serde(default)]
     pub attempts: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_attempt_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_attempt_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     /// Classification of the last send failure. Cleared on success.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_kind: Option<crate::chat::channel::ChannelErrorKind>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivered_at: Option<DateTime<Utc>>,
     /// Cursor: `0..tool_count` walks each tool call's `turn_text`;
     /// `tool_count` is the trailing `Message.content`.
@@ -132,6 +127,7 @@ impl MessageDelivery {
     }
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "message")]
@@ -140,28 +136,23 @@ pub struct Message {
     pub chat_id: String,
     pub role: MessageRole,
     pub content: String,
+    #[serialize_always]
     pub agent_id: Option<String>,
+    #[serialize_always]
     pub event: Option<MessageEvent>,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<MessageStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<MessageDelivery>,
     /// The mode that authorized this inbound; may differ from the channel's
     /// nominal mode when Message-mode falls back to `ReceiveSignal`. `None`
     /// for non-channel messages (callers use the channel's nominal mode).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_mode: Option<crate::chat::channel::DispatchMode>,
     /// User-role only: parsed slash invocation. `None` for plain messages and
     /// for all assistant/system/etc. roles.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<MessageCommand>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
@@ -333,7 +324,6 @@ pub struct ToolResolution {
     pub action: ToolResolutionAction,
     /// When set, the dispatcher invokes the tool's `on_resume` hook with the
     /// typed payload. When `None`, `response` + `action` drive the legacy path.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hitl_response: Option<crate::inference::hitl::HitlResponse>,
 }
 

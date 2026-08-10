@@ -11,7 +11,6 @@ use crate::auth::UserService;
 use crate::inference::conversation::{ConversationBuilder, ConversationContext, DefaultConversationBuilder};
 use crate::inference::text_inference;
 use crate::inference::provider::ModelRef;
-use crate::memory::service::MemoryService;
 use crate::agent::prompt::PromptLoader;
 use crate::core::repository::Repository;
 use rig_core::completion::Message as RigMessage;
@@ -54,11 +53,11 @@ pub struct ChatService {
     provider_registry: ModelProviderRegistry,
     storage_service: StorageService,
     user_service: UserService,
-    memory_service: MemoryService,
     prompts: PromptLoader,
     broadcast: crate::chat::broadcast::BroadcastService,
     presign: crate::credential::presign::PresignService,
     usage_service: crate::inference::usage::UsageService,
+    compactor: super::compactor::ChatCompactor,
 }
 
 impl ChatService {
@@ -71,12 +70,22 @@ impl ChatService {
         provider_registry: ModelProviderRegistry,
         storage_service: StorageService,
         user_service: UserService,
-        memory_service: MemoryService,
         prompts: PromptLoader,
         broadcast: crate::chat::broadcast::BroadcastService,
         presign: crate::credential::presign::PresignService,
         usage_service: crate::inference::usage::UsageService,
     ) -> Self {
+        let compactor = super::compactor::ChatCompactor::new(
+            crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(
+                message_repo.db().clone(),
+            ),
+            message_repo.clone(),
+            std::sync::Arc::new(super::compactor::TextInferenceSummarizer::new(
+                provider_registry.clone(),
+                usage_service.clone(),
+            )),
+            prompts.clone(),
+        );
         Self {
             chat_repo,
             message_repo,
@@ -85,11 +94,11 @@ impl ChatService {
             provider_registry,
             storage_service,
             user_service,
-            memory_service,
             prompts,
             broadcast,
             presign,
             usage_service,
+            compactor,
         }
     }
 
@@ -135,8 +144,8 @@ impl ChatService {
         &self.usage_service
     }
 
-    pub fn memory_service(&self) -> &MemoryService {
-        &self.memory_service
+    pub fn compactor(&self) -> &super::compactor::ChatCompactor {
+        &self.compactor
     }
 
     pub async fn create_chat(
@@ -144,7 +153,7 @@ impl ChatService {
         user_id: &str,
         req: CreateChatRequest,
     ) -> Result<ChatResponse, AppError> {
-        // Fail eagerly on bad `agent_id` — first /messages/stream would silently 404.
+        // Fail eagerly on bad `agent_id` - first /messages/stream would silently 404.
         let agent = self
             .agent_service
             .find_by_id(&req.agent_id)
@@ -464,8 +473,23 @@ impl ChatService {
         let system_prompt = agent_config.system_prompt;
         let model_group_name = agent_config.model_group;
 
-        let stored_messages = self.message_repo.find_by_chat_id(chat_id).await?;
         let model_group = self.provider_registry.get_model_group(&model_group_name)?;
+        let max_output =
+            model_group.max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
+        let loaded = self
+            .compactor
+            .compact_chat(
+                user_id,
+                chat_id,
+                &chat.agent_id,
+                &system_prompt,
+                model_group.context_window,
+                max_output,
+            )
+            .await?
+            .conversation;
+        let conversation_summary = loaded.summary;
+        let stored_messages = loaded.messages;
         let conv_builder = DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
@@ -477,7 +501,9 @@ impl ChatService {
             user_id: user_id.to_string(),
         };
         let tool_calls = self.get_tool_calls(chat_id).await?;
-        let mut rig_history = conv_builder.build(&stored_messages, &tool_calls, &conv_ctx).await;
+        let mut rig_history = conv_builder
+            .build(&stored_messages, &tool_calls, &conv_ctx, conversation_summary.as_deref())
+            .await;
 
         rig_history.push(RigMessage::user(&req.content));
         // Pre-allocate the message id so the usage row's message_id matches
@@ -676,7 +702,7 @@ impl ChatService {
         .await
     }
 
-    /// Skips broadcasting — an empty Executing row would render as a phantom
+    /// Skips broadcasting - an empty Executing row would render as a phantom
     /// message in the UI while tokens stream.
     async fn save_message(&self, message: Message) -> Result<MessageResponse, AppError> {
         let saved = self.message_repo.create(&message).await?;
@@ -979,7 +1005,7 @@ impl ChatService {
     }
 
     /// Returns `true` iff this call performed the flip. Callers racing on the
-    /// last HITL of a message must use this as the dedup signal — the loser
+    /// last HITL of a message must use this as the dedup signal - the loser
     /// sees `false` and must skip the resume spawn.
     pub async fn mark_message_executing(&self, message_id: &str) -> Result<bool, AppError> {
         let query = "UPDATE message
@@ -1008,7 +1034,6 @@ impl ChatService {
         Ok(!rows.is_empty())
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub async fn begin_tool_call(
         &self,
@@ -1326,7 +1351,7 @@ impl ChatService {
         Ok(message)
     }
 
-    /// Strictly Executing — Paused messages are waiting on a human and MUST
+    /// Strictly Executing - Paused messages are waiting on a human and MUST
     /// NOT be auto-resumed (doing so would feed the loop empty HITL answers).
     pub async fn find_executing_chat_messages(&self) -> Vec<Message> {
         let query = "SELECT *, meta::id(id) as id FROM message WHERE status = $status AND chat_id IN (SELECT VALUE meta::id(id) FROM chat WHERE task_id IS NONE)";

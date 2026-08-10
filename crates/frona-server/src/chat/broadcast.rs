@@ -45,7 +45,7 @@ pub enum BroadcastEventKind {
     },
     /// Per-inference-call usage event fired from `UsageService::record`.
     /// Only dispatched when the row has a `chat_id` so we have somewhere to send it
-    /// — rootless rows (`Compaction::User`, `Compaction::Space`) still hit the DB
+    /// - rootless rows (`Compaction::User`, `Compaction::Space`) still hit the DB
     /// and Prometheus, they just don't broadcast.
     UsageRecorded(UsageRecorded),
 }
@@ -104,6 +104,20 @@ pub struct EventSender {
 }
 
 impl EventSender {
+    /// A sender wired to nothing - for detached (chatless) inference that streams
+    /// no events. The mpsc receiver is dropped and the bus has no subscribers, so
+    /// `send`/`send_kind` are silent no-ops (both already ignore the send result).
+    pub fn noop() -> Self {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        Self {
+            tx,
+            bus: crate::core::event_bus::EventBus::new(),
+            user_id: String::new(),
+            chat_id: String::new(),
+            space_id: None,
+        }
+    }
+
     pub fn send(&self, event: crate::inference::tool_loop::InferenceEvent) {
         let broadcast = BroadcastEvent {
             user_id: self.user_id.clone(),
@@ -365,7 +379,6 @@ impl BroadcastService {
                         }
                     }
                 }
-                // No live senders left — buffer into pending_events cache for reconnect
                 let has_live = {
                     let reg = sessions.read().await;
                     reg.get(&event.user_id).is_some_and(|s| !s.is_empty())
@@ -375,7 +388,6 @@ impl BroadcastService {
                     buf.lock().unwrap().push(event.sse);
                 }
             } else {
-                // User has no session entry — might be pending_eventsing after disconnect
                 if let Some(buf) = pending_events.get(&event.user_id) {
                     buf.lock().unwrap().push(event.sse);
                 }
@@ -416,7 +428,6 @@ impl BroadcastService {
         user_id: &str,
         sender: SseSender,
     ) {
-        // Drain any events buffered during the disconnect window.
         if let Some(buf) = self.pending_events.remove(user_id) {
             for event in buf.lock().unwrap().drain(..) {
                 let _ = sender.send(Ok(event));
@@ -446,7 +457,7 @@ impl BroadcastService {
     }
 
     /// Dispatched by `UsageService::record` after persisting a row.
-    /// Always carries a `chat_id` — callers gate on `row.chat_id.is_some()`.
+    /// Always carries a `chat_id` - callers gate on `row.chat_id.is_some()`.
     pub fn broadcast_usage_recorded(&self, usage: UsageRecorded) {
         let user_id = usage.user_id.clone();
         let chat_id = usage.chat_id.clone();
