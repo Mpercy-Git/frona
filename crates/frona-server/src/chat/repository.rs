@@ -2,7 +2,12 @@ use async_trait::async_trait;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
 
-use super::models::Chat;
+use super::models::{Chat, ChatSummary};
+
+#[async_trait]
+pub trait ChatSummaryRepository: Repository<ChatSummary> {
+    async fn find_by_chat_id(&self, chat_id: &str) -> Result<Option<ChatSummary>, AppError>;
+}
 
 #[async_trait]
 pub trait ChatRepository: Repository<Chat> {
