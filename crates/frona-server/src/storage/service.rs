@@ -70,6 +70,39 @@ impl StorageService {
         self.user_root(user_handle).join("skills")
     }
 
+    /// Root of the wiki memory projection - `<handle>/pkm` (sibling of `files/`,
+    /// `skills/`). Holds the `<vault-directory>/` tree of markdown pages. Named
+    /// `pkm` (not `memory`) so the on-disk path doesn't read `pkm/Memory` as
+    /// `memory/Memory` - the leaf directory is the user-configured vault name.
+    pub fn user_pkm_path(&self, user_handle: &Handle) -> PathBuf {
+        self.user_root(user_handle).join("pkm")
+    }
+
+    /// True when `candidate` is below this user's PKM storage directory.
+    /// The data root can differ from the active configuration because persisted tool
+    /// calls can outlive a database restore, relocation, or benchmark copy.
+    pub fn is_user_pkm_path(&self, user_handle: &Handle, candidate: &str) -> bool {
+        let expected_root = self.user_pkm_path(user_handle);
+        let Ok(expected_relative) = expected_root.strip_prefix(&self.data_dir) else {
+            return false;
+        };
+        let expected = expected_relative.components().filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        let mut actual = Vec::new();
+        for component in Path::new(candidate).components() {
+            match component {
+                std::path::Component::Normal(value) => actual.push(value),
+                std::path::Component::ParentDir => return false,
+                _ => {}
+            }
+        }
+        actual.windows(expected.len()).enumerate().any(|(index, window)| {
+            window == expected.as_slice() && index + expected.len() < actual.len()
+        })
+    }
+
     pub fn user_tokens_path(&self, user_handle: &Handle) -> PathBuf {
         self.user_root(user_handle).join("tokens")
     }

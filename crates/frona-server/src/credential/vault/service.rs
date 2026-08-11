@@ -301,7 +301,6 @@ impl VaultService {
         Ok(env_vars)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn has_grant_for_item(
         &self,
         user_id: &str,
