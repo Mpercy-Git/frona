@@ -358,6 +358,19 @@ fn build_parameters_json(yaml: &Value) -> Value {
         result["required"] = Value::Array(req);
     }
 
+    // Optional JSON Schema composition keywords, e.g.
+    //   anyOf:
+    //     - required: [result_description]
+    //     - required: [result_schema]
+    // to express "exactly one of these is required" — a constraint the flat
+    // `required` list can't encode. Passed through verbatim so it reaches the
+    // model in the tool's input schema instead of living only in prose.
+    for keyword in ["anyOf", "oneOf", "allOf", "not"] {
+        if let Some(value) = yaml.get(keyword) {
+            result[keyword] = value.clone();
+        }
+    }
+
     result
 }
 
@@ -387,6 +400,52 @@ pub fn load_tool_definition_with_vars(prompts: &PromptLoader, path: &str, vars: 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn build_parameters_json_passes_through_any_of() {
+        let yaml: Value = serde_yaml::from_str(
+            r#"
+parameters:
+  result_description:
+    type: string
+  result_schema:
+    type: object
+required:
+  - title
+anyOf:
+  - required: [result_description]
+  - required: [result_schema]
+"#,
+        )
+        .unwrap();
+
+        let params = build_parameters_json(&yaml);
+        assert_eq!(params["required"], json!(["title"]));
+        assert_eq!(
+            params["anyOf"],
+            json!([
+                { "required": ["result_description"] },
+                { "required": ["result_schema"] },
+            ])
+        );
+    }
+
+    #[test]
+    fn build_parameters_json_omits_any_of_when_absent() {
+        let yaml: Value = serde_yaml::from_str(
+            r#"
+parameters:
+  title:
+    type: string
+required:
+  - title
+"#,
+        )
+        .unwrap();
+
+        let params = build_parameters_json(&yaml);
+        assert!(params.get("anyOf").is_none());
+    }
 
     #[test]
     fn parse_run_at_unix_timestamp_number() {
