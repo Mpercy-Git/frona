@@ -1,8 +1,10 @@
+use std::time::Duration;
+
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::Request;
-use axum::response::Response;
-use axum::routing::get;
+use axum::http::{Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
@@ -12,6 +14,10 @@ use super::super::error::ApiError;
 use super::super::middleware::auth::{AuthUser, NavigableAuth};
 use crate::core::error::AppError;
 use crate::core::state::AppState;
+use frona_browser::BrowserConnection;
+
+/// Kept short so a bad host/port fails fast instead of hanging the settings UI.
+const TEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Presign tokens for the browser debugger are scoped with this owner prefix so
 /// a token minted for one credential can't open another.
@@ -27,6 +33,42 @@ pub fn router() -> Router<AppState> {
             get(debugger_link),
         )
         .route("/api/browser/debugger/{credential_id}", get(debugger_proxy))
+        .route("/api/browser/test", post(test_browser))
+}
+
+#[derive(serde::Deserialize)]
+struct TestBrowserRequest {
+    ws_url: String,
+}
+
+/// Verifies browserless is actually reachable by opening (and immediately
+/// tearing down) a real CDP connection, rather than just probing HTTP.
+///
+/// Builds the error response directly instead of going through `ApiError` —
+/// that path collapses `AppError::Browser` down to a generic "Browser
+/// service error" for clients, which would defeat the point of a test
+/// button that exists to tell the user *why* the connection failed.
+async fn test_browser(_auth: AuthUser, Json(req): Json<TestBrowserRequest>) -> Response {
+    let ws_url = req.ws_url.trim();
+    if ws_url.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "WebSocket URL is required" })),
+        )
+            .into_response();
+    }
+
+    match BrowserConnection::connect(ws_url, TEST_CONNECT_TIMEOUT, TEST_CONNECT_TIMEOUT).await {
+        Ok(conn) => {
+            let _ = conn.disconnect().await;
+            Json(serde_json::json!({ "ok": true })).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("Failed to connect to browserless: {e}") })),
+        )
+            .into_response(),
+    }
 }
 
 /// Mint a short-lived presigned debugger URL. Authenticated normally (called
