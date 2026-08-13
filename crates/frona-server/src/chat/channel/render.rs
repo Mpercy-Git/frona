@@ -1,6 +1,12 @@
 //! TaskCompletion rows with a schema carry raw JSON in `content`; this
 //! module re-renders that JSON to markdown. Adapters then apply their
 //! native converter (`markdown::to_signal`, `to_whatsapp`, `to_plain`).
+//!
+//! The web frontend mirrors `render_result_markdown` in
+//! `web/src/lib/task-result-render.ts` but deliberately does NOT mirror
+//! `append_citations` — it renders citations as its own collapsible
+//! component instead of a flat markdown list, since (unlike Discord/etc.)
+//! it isn't limited to plain markdown.
 
 use serde_json::Value;
 

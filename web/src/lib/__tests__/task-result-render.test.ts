@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderMessageBody, renderResultMarkdown } from "../task-result-render";
+import { renderMessageBody, renderResultMarkdown, getCitations } from "../task-result-render";
 import type { MessageResponse } from "../types";
 
 function taskCompletionMessage(
@@ -30,7 +30,7 @@ function taskCompletionMessage(
 }
 
 describe("renderMessageBody: citations", () => {
-  it("appends a Sources section when citations are present", () => {
+  it("does not include citations in the rendered body", () => {
     const msg = taskCompletionMessage({
       content: "Found the answer.",
       citations: [
@@ -39,20 +39,47 @@ describe("renderMessageBody: citations", () => {
       ],
     });
 
-    const body = renderMessageBody(msg);
-    expect(body).toBe(
-      "Found the answer.\n\n**Sources**\n" +
-        "- [Rust Programming](https://rust-lang.org)\n" +
-        "- [https://doc.rust-lang.org/book/](https://doc.rust-lang.org/book/)",
-    );
+    expect(renderMessageBody(msg)).toBe("Found the answer.");
   });
 
-  it("omits the Sources section when there are no citations", () => {
+  it("renders body as-is when there are no citations", () => {
     const msg = taskCompletionMessage({ content: "Found the answer." });
     expect(renderMessageBody(msg)).toBe("Found the answer.");
   });
 
-  it("does not attach sources to a suppressed (null) complex-schema result", () => {
+  it("non-TaskCompletion messages render raw content, ignoring citations", () => {
+    const msg: MessageResponse = {
+      id: "m2",
+      chat_id: "c1",
+      role: "agent",
+      content: "hello",
+      created_at: new Date().toISOString(),
+    };
+    expect(renderMessageBody(msg)).toBe("hello");
+  });
+});
+
+describe("getCitations", () => {
+  it("returns citations when the body renders non-empty text", () => {
+    const msg = taskCompletionMessage({
+      content: "Found the answer.",
+      citations: [
+        { title: "Rust Programming", url: "https://rust-lang.org" },
+        { url: "https://doc.rust-lang.org/book/" },
+      ],
+    });
+    expect(getCitations(msg)).toEqual([
+      { title: "Rust Programming", url: "https://rust-lang.org" },
+      { url: "https://doc.rust-lang.org/book/" },
+    ]);
+  });
+
+  it("returns [] when there are no citations", () => {
+    const msg = taskCompletionMessage({ content: "Found the answer." });
+    expect(getCitations(msg)).toEqual([]);
+  });
+
+  it("returns [] for a suppressed (null) complex-schema result even with citations", () => {
     const schema = {
       type: "object",
       properties: {
@@ -65,10 +92,10 @@ describe("renderMessageBody: citations", () => {
       schema,
       citations: [{ url: "https://example.com" }],
     });
-    expect(renderMessageBody(msg)).toBe("");
+    expect(getCitations(msg)).toEqual([]);
   });
 
-  it("attaches citations to a schema-rendered summary field", () => {
+  it("returns citations for a schema-rendered summary field", () => {
     const schema = {
       type: "object",
       properties: {
@@ -81,12 +108,10 @@ describe("renderMessageBody: citations", () => {
       schema,
       citations: [{ title: "Example", url: "https://example.com" }],
     });
-    expect(renderMessageBody(msg)).toBe(
-      "Here you go.\n\n**Sources**\n- [Example](https://example.com)",
-    );
+    expect(getCitations(msg)).toEqual([{ title: "Example", url: "https://example.com" }]);
   });
 
-  it("non-TaskCompletion messages render raw content, ignoring citations", () => {
+  it("returns [] for non-TaskCompletion messages", () => {
     const msg: MessageResponse = {
       id: "m2",
       chat_id: "c1",
@@ -94,7 +119,7 @@ describe("renderMessageBody: citations", () => {
       content: "hello",
       created_at: new Date().toISOString(),
     };
-    expect(renderMessageBody(msg)).toBe("hello");
+    expect(getCitations(msg)).toEqual([]);
   });
 });
 
