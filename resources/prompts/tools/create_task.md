@@ -32,6 +32,9 @@ parameters:
 required:
   - title
   - instruction
+anyOf:
+  - required: [result_description]
+  - required: [result_schema]
 ---
 Create a one-off task — immediate or deferred, for yourself or another agent. Use to parallelize work by splitting a problem into independent pieces, each running in its own chat. Target another agent from <available_agents> when expertise matches; target yourself to spawn parallel slices of your own work. Default behavior is fire-and-forget — the task runs and the completion summary lands in this chat for the user to read. Set `process_result: true` only when you'll synthesize the result with a fresh inference turn. For recurring work, use create_recurring_task. For periodic autonomous check-ins, use set_heartbeat.
 

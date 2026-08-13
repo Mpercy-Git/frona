@@ -36,6 +36,9 @@ required:
   - title
   - instruction
   - cron_expression
+anyOf:
+  - required: [result_description]
+  - required: [result_schema]
 ---
 Create a recurring task that fires on a cron schedule. Use this for any work that should repeat: reminders, periodic polls, scheduled reports, regular check-ins.
 
