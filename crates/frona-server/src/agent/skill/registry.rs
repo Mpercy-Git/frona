@@ -126,7 +126,7 @@ impl SkillRegistryClient {
             let full_path = repo_dir.join(&relative_path);
             let description = std::fs::read_to_string(&full_path)
                 .ok()
-                .and_then(|content| agent_skills::Skill::parse(&content).ok())
+                .and_then(|content| agent_skills::Skill::parse(&sanitize_metadata_frontmatter(&content)).ok())
                 .map(|parsed| parsed.description().as_str().to_string())
                 .unwrap_or_default();
 
@@ -153,7 +153,7 @@ impl SkillRegistryClient {
         let content = std::fs::read_to_string(skill_base.join("SKILL.md"))
             .map_err(|_| AppError::NotFound(format!("Skill '{}' not found in {repo}", discovered.name)))?;
 
-        let parsed = agent_skills::Skill::parse(&content)
+        let parsed = agent_skills::Skill::parse(&sanitize_metadata_frontmatter(&content))
             .map_err(|e| AppError::Validation(format!("Invalid SKILL.md: {e}")))?;
 
         let files = read_skill_files(&skill_base);
@@ -256,6 +256,52 @@ async fn git_head_sha(repo_dir: &Path) -> Result<String, AppError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Some SKILL.md files embed structured (non-string) values under
+/// `metadata` — e.g. platform-specific config blocks such as
+/// `metadata.openclaw: {...}`. The `agent-skills` crate's `Metadata` type
+/// only accepts string values, so parsing such files fails outright with
+/// "invalid type: map, expected a string". Stringify any non-string
+/// `metadata` entries before parsing, mirroring the lenient handling our
+/// own `parse_frontmatter` already applies when listing installed skills.
+/// Falls back to the original content unchanged if anything looks off, so
+/// genuinely malformed frontmatter still surfaces its real parse error.
+fn sanitize_metadata_frontmatter(content: &str) -> String {
+    let trimmed = content.trim_start();
+    let Some(after_first) = trimmed.strip_prefix("---") else {
+        return content.to_string();
+    };
+    let Some(end_idx) = after_first.find("\n---") else {
+        return content.to_string();
+    };
+
+    let yaml_str = &after_first[..end_idx];
+    let rest = &after_first[end_idx + 4..];
+
+    let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(yaml_str) else {
+        return content.to_string();
+    };
+    let Some(mapping) = doc.as_mapping_mut() else {
+        return content.to_string();
+    };
+
+    let metadata_key = serde_yaml::Value::String("metadata".to_string());
+    if let Some(serde_yaml::Value::Mapping(metadata)) = mapping.get_mut(&metadata_key) {
+        for (_, value) in metadata.iter_mut() {
+            if !matches!(value, serde_yaml::Value::String(_))
+                && let Ok(serialized) = serde_yaml::to_string(value)
+            {
+                *value = serde_yaml::Value::String(serialized.trim().to_string());
+            }
+        }
+    }
+
+    let Ok(sanitized_yaml) = serde_yaml::to_string(&doc) else {
+        return content.to_string();
+    };
+
+    format!("---\n{sanitized_yaml}---{rest}")
+}
+
 fn walk_for_files(dir: &Path, base: &Path, target: &str, results: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
@@ -309,6 +355,53 @@ pub fn derive_avatar_url(repo: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sanitize_metadata_frontmatter_stringifies_nested_map() {
+        let content = r#"---
+name: pricewin-flight-search
+description: Search for flights.
+metadata:
+  openclaw:
+    compatible: true
+    version: "1.0"
+  author: example-org
+---
+# Instructions
+"#;
+
+        // The raw content fails to parse because `metadata.openclaw` is a map.
+        assert!(agent_skills::Skill::parse(content).is_err());
+
+        let sanitized = sanitize_metadata_frontmatter(content);
+        let parsed = agent_skills::Skill::parse(&sanitized).expect("should parse after sanitizing");
+        assert_eq!(parsed.name().as_str(), "pricewin-flight-search");
+        let metadata = parsed.frontmatter().metadata().expect("metadata present");
+        assert_eq!(metadata.get("author"), Some("example-org"));
+        assert!(metadata.get("openclaw").unwrap().contains("compatible"));
+    }
+
+    #[test]
+    fn test_sanitize_metadata_frontmatter_leaves_valid_content_unchanged_semantically() {
+        let content = r#"---
+name: my-skill
+description: Does something useful.
+metadata:
+  author: test
+---
+Body text.
+"#;
+        let sanitized = sanitize_metadata_frontmatter(content);
+        let parsed = agent_skills::Skill::parse(&sanitized).expect("should still parse");
+        assert_eq!(parsed.name().as_str(), "my-skill");
+        assert_eq!(parsed.body().trim(), "Body text.");
+    }
+
+    #[test]
+    fn test_sanitize_metadata_frontmatter_falls_back_on_non_frontmatter_content() {
+        let content = "no frontmatter here";
+        assert_eq!(sanitize_metadata_frontmatter(content), content);
+    }
 
     #[test]
     fn test_derive_avatar_url() {
