@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: frona
-          image: ghcr.io/mpercy-git/frona:v2026.8.2
+          image: ghcr.io/mpercy-git/frona:v2026.8.3
           ports:
             - containerPort: 3001
           env:
