@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
+use backon::{ExponentialBuilder, Retryable};
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
@@ -80,7 +81,22 @@ impl BrowserSessionManager {
 
         let timeout = Duration::from_millis(config.connection_timeout_ms);
         let lifetime = BROWSERLESS_SESSION_TIMEOUT.saturating_sub(SELF_EVICT_MARGIN);
-        BrowserConnection::connect(&ws_url, timeout, lifetime)
+        // Browserless can still be booting its own Chromium/HTTP listener
+        // right after the container starts (e.g. fresh `docker compose up`),
+        // which surfaces here as a transient connection-refused. A short
+        // retry absorbs that race instead of failing the user's request.
+        (|| BrowserConnection::connect(&ws_url, timeout, lifetime))
+            .retry(
+                ExponentialBuilder::default()
+                    .with_max_times(4)
+                    .with_min_delay(Duration::from_millis(500))
+                    .with_max_delay(Duration::from_secs(5)),
+            )
+            .sleep(tokio::time::sleep)
+            .when(|e| e.is_disconnect())
+            .notify(|e, dur| {
+                tracing::warn!(error = %e, delay = ?dur, "Browser connect failed, retrying");
+            })
             .await
             .map_err(|e| AppError::Browser(format!("Failed to connect to browser: {e}")))
     }
