@@ -3,7 +3,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 
 use crate::core::config::{
-    Config, config_file_path, deep_merge, persist_config, redact_config_for_api,
+    Config, build_effective_config, config_file_path, deep_merge, persist_config,
+    redact_config_for_api,
 };
 use crate::core::state::AppState;
 
@@ -22,23 +23,16 @@ async fn get_schema(_auth: AuthUser) -> Json<serde_json::Value> {
     Json(serde_json::to_value(schema).unwrap_or_default())
 }
 
-async fn get_config(
-    _auth: AuthUser,
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    // Always read from disk so the response reflects settings saved via PUT
-    // (state.config is the snapshot at startup and is never mutated in place).
+async fn get_config(_auth: AuthUser) -> Result<Json<serde_json::Value>, ApiError> {
+    // Rebuild the effective config the same way the process does at startup
+    // (disk YAML + FRONA_* env overrides), rather than reading disk alone
+    // (state.config is a startup snapshot and is never mutated in place).
+    // Otherwise a value pinned by an env var (e.g. FRONA_BROWSER_WS_URL) can
+    // show — and test — differently in the settings UI than what's actually
+    // running, since env vars always win at real startup.
     let path = config_file_path();
-    let raw_yaml = std::fs::read_to_string(&path).unwrap_or_default();
-    let config: Config = if raw_yaml.is_empty() {
-        (*state.config).clone()
-    } else {
-        let base: serde_json::Value = serde_yaml::from_str::<serde_yaml::Value>(&raw_yaml)
-            .ok()
-            .and_then(|y| serde_json::to_value(y).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-        serde_json::from_value(base).unwrap_or_else(|_| (*state.config).clone())
-    };
+    let raw_yaml = std::fs::read_to_string(&path).ok();
+    let config = build_effective_config(raw_yaml.as_deref());
     let mut value = serde_json::to_value(&config)
         .map_err(|e| ApiError(crate::core::error::AppError::Internal(e.to_string())))?;
     redact_config_for_api(&mut value);
@@ -68,11 +62,8 @@ async fn update_config(
 
     deep_merge(&mut base, patch);
 
-    // Validate the merged config and capture the fully-deserialised struct.
-    // Deserialising into `Config` fills in all default values (via
-    // `#[serde(default)]`), so the response we return to the frontend has
-    // every field present — matching the shape of GET /api/config.
-    let validated: Config = serde_json::from_value(base.clone())
+    // Validate the merged config before writing anything to disk.
+    let _validated: Config = serde_json::from_value(base.clone())
         .map_err(|e| ApiError(crate::core::error::AppError::Validation(
             format!("Invalid config: {e}"),
         )))?;
@@ -83,9 +74,14 @@ async fn update_config(
 
     state.set_runtime_config("setup_completed", "true").await?;
 
-    // Build the API response from the validated config (with all defaults
-    // filled in), NOT from the stripped `base` that was written to disk.
-    let mut response = serde_json::to_value(&validated)
+    // Build the API response from the effective config (disk + FRONA_* env
+    // overrides), the same way GET /api/config does — not from `validated`
+    // above, which reflects only what was just saved. A value the user just
+    // typed here can still be shadowed by an env var at actual startup, and
+    // the response should say so rather than echo back what won't take effect.
+    let saved_yaml = std::fs::read_to_string(&path).ok();
+    let effective = build_effective_config(saved_yaml.as_deref());
+    let mut response = serde_json::to_value(&effective)
         .map_err(|e| ApiError(crate::core::error::AppError::Internal(e.to_string())))?;
     redact_config_for_api(&mut response);
 

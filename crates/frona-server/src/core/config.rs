@@ -1105,53 +1105,60 @@ pub struct LoadedConfig {
     pub models: Option<crate::inference::config::ModelRegistryConfig>,
 }
 
+/// Builds the effective `Config` the same way the process does at startup:
+/// defaults, then the on-disk YAML (if any), then `FRONA_*` env vars layered
+/// on top (env always wins). Shared by `Config::load()` and the `/api/config`
+/// handlers so a value set via `FRONA_BROWSER_WS_URL` (etc.) can never look
+/// different — and untested — in the settings UI than what's actually running.
+pub fn build_effective_config(yaml_content: Option<&str>) -> Config {
+    let data_dir = std::env::var("FRONA_SERVER_DATA_DIR")
+        .unwrap_or_else(|_| "data".into());
+
+    let mut builder = config::Config::builder()
+        .set_default("database.path", format!("{data_dir}/db")).unwrap()
+        .set_default("storage.data_dir", data_dir.clone()).unwrap()
+        .set_default("storage.skills_dir", format!("{data_dir}/skills")).unwrap()
+        .set_default("storage.cache_dir", format!("{data_dir}/system/cache")).unwrap();
+
+    if let Some(content) = yaml_content {
+        let expanded = expand_env_vars(content);
+        builder = builder.add_source(
+            config::File::from_str(&expanded, config::FileFormat::Yaml),
+        );
+    }
+
+    // FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
+    let frona_env: HashMap<String, String> = std::env::vars()
+        .filter(|(k, _)| k.starts_with(ENV_PREFIX) && !EXCLUDED_ENV_VARS.contains(&k.as_str()))
+        .map(|(k, v)| {
+            let stripped = k[ENV_PREFIX.len()..].to_lowercase();
+            let mapped = match stripped.find('_') {
+                Some(pos) => format!("{}__{}", &stripped[..pos], &stripped[pos + 1..]),
+                None => stripped,
+            };
+            (mapped, v)
+        })
+        .collect();
+
+    builder = builder.add_source(
+        config::Environment::default()
+            .source(Some(frona_env))
+            .separator("__")
+            .try_parsing(true),
+    );
+
+    let built = builder.build().expect("Failed to build config");
+
+    built.try_deserialize().expect("Failed to deserialize config")
+}
+
 impl Config {
     pub fn load() -> LoadedConfig {
-        let data_dir = std::env::var("FRONA_SERVER_DATA_DIR")
-            .unwrap_or_else(|_| "data".into());
-
         let config_path = config_file_path();
 
         let yaml_content = std::fs::read_to_string(&config_path).ok();
 
-        let mut builder = config::Config::builder()
-            .set_default("database.path", format!("{data_dir}/db")).unwrap()
-            .set_default("storage.data_dir", data_dir.clone()).unwrap()
-            .set_default("storage.skills_dir", format!("{data_dir}/skills")).unwrap()
-            .set_default("storage.cache_dir", format!("{data_dir}/system/cache")).unwrap();
-
-        if let Some(ref content) = yaml_content {
-            let expanded = expand_env_vars(content);
-            builder = builder.add_source(
-                config::File::from_str(&expanded, config::FileFormat::Yaml),
-            );
-        }
-
-        // FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
-        let frona_env: HashMap<String, String> = std::env::vars()
-            .filter(|(k, _)| k.starts_with(ENV_PREFIX) && !EXCLUDED_ENV_VARS.contains(&k.as_str()))
-            .map(|(k, v)| {
-                let stripped = k[ENV_PREFIX.len()..].to_lowercase();
-                let mapped = match stripped.find('_') {
-                    Some(pos) => format!("{}__{}", &stripped[..pos], &stripped[pos + 1..]),
-                    None => stripped,
-                };
-                (mapped, v)
-            })
-            .collect();
-
-        builder = builder.add_source(
-            config::Environment::default()
-                .source(Some(frona_env))
-                .separator("__")
-                .try_parsing(true),
-        );
-
-        let built = builder.build().expect("Failed to build config");
-
-        let mut config: Config = built
-            .try_deserialize()
-            .expect("Failed to deserialize config");
+        let mut config = build_effective_config(yaml_content.as_deref());
 
         resolve_server_timezone(&mut config.server);
 
@@ -1520,6 +1527,19 @@ mod tests {
         let loaded = Config::load();
         assert_eq!(loaded.config.server.port, 9999);
         unsafe { std::env::remove_var("FRONA_SERVER_PORT") };
+    }
+
+    #[test]
+    fn build_effective_config_env_overrides_yaml_browser_ws_url() {
+        // Regression test: GET/PUT /api/config used to read config.yaml
+        // verbatim, so a value pinned by FRONA_BROWSER_WS_URL (which always
+        // wins at real startup) could show — and test successfully — as a
+        // different, inert value from config.yaml in the settings UI.
+        unsafe { std::env::set_var("FRONA_BROWSER_WS_URL", "ws://from-env:3333") };
+        let yaml = "browser:\n  ws_url: ws://from-yaml:3333\n";
+        let config = build_effective_config(Some(yaml));
+        assert_eq!(config.browser.unwrap().ws_url, "ws://from-env:3333");
+        unsafe { std::env::remove_var("FRONA_BROWSER_WS_URL") };
     }
 
     #[test]
