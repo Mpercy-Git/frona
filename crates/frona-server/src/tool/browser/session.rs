@@ -64,6 +64,20 @@ impl BrowserSessionManager {
         )
     }
 
+    /// Builds the exact WS URL a real session would use (including the
+    /// `--user-data-dir` / `timeout` launch args) so the settings-page "Test
+    /// connection" button actually exercises what production sessions rely
+    /// on, instead of only proving the bare WS endpoint is reachable.
+    pub async fn test_connection(
+        user_handle: &crate::core::Handle,
+        config: &BrowserConfig,
+        timeout: Duration,
+    ) -> Result<(), frona_browser::Error> {
+        let ws_url = Self::ws_url_for_profile(config, user_handle, "connection-test");
+        let conn = BrowserConnection::connect(&ws_url, timeout, timeout).await?;
+        conn.disconnect().await
+    }
+
     async fn create_connection(
         &self,
         user_handle: &crate::core::Handle,

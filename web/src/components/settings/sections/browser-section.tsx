@@ -28,7 +28,7 @@ export function BrowserSection({ browser, onChange }: BrowserSectionProps) {
     setTestStatus("testing");
     setTestError(null);
     try {
-      await api.post("/api/browser/test", { ws_url: browser.ws_url });
+      await api.post("/api/browser/test", { ws_url: browser.ws_url, profiles_path: browser.profiles_path });
       setTestStatus("success");
     } catch (e) {
       setTestStatus("error");
