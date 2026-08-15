@@ -6,7 +6,6 @@ use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 
@@ -19,6 +18,11 @@ use crate::tool::browser::session::BrowserSessionManager;
 
 /// Kept short so a bad host/port fails fast instead of hanging the settings UI.
 const TEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bounds the debugger proxy's outbound request to Browserless. Without this,
+/// a Browserless response that never cleanly terminates leaves the client
+/// tab hanging on the very first navigation with no feedback at all.
+const DEBUGGER_PROXY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Presign tokens for the browser debugger are scoped with this owner prefix so
 /// a token minted for one credential can't open another.
@@ -172,18 +176,26 @@ async fn debugger_proxy(
         )))
     })?;
 
-    let resp = client.request(req).await.map_err(|e| {
-        ApiError::from(AppError::Browser(format!(
-            "Failed to proxy to browserless: {e}"
-        )))
-    })?;
+    // Bounded so a Browserless response that never terminates surfaces as a
+    // clear error instead of hanging the client tab indefinitely. The body is
+    // streamed straight through rather than buffered in full: that avoids
+    // waiting for the whole (possibly large or slow) response before the
+    // client sees anything, and sidesteps any risk of the forwarded
+    // `Content-Length`/`Transfer-Encoding` headers no longer matching a
+    // repackaged body.
+    let resp = tokio::time::timeout(DEBUGGER_PROXY_TIMEOUT, client.request(req))
+        .await
+        .map_err(|_| {
+            ApiError::from(AppError::Browser(
+                "Timed out connecting to the browser debugger".into(),
+            ))
+        })?
+        .map_err(|e| {
+            ApiError::from(AppError::Browser(format!(
+                "Failed to proxy to browserless: {e}"
+            )))
+        })?;
 
     let (parts, body) = resp.into_parts();
-    let bytes = body.collect().await.map_err(|e| {
-        ApiError::from(AppError::Browser(format!(
-            "Failed to read proxy response: {e}"
-        )))
-    })?;
-
-    Ok(Response::from_parts(parts, Body::from(bytes.to_bytes())))
+    Ok(Response::from_parts(parts, Body::new(body)))
 }
