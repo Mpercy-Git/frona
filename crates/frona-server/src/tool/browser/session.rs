@@ -34,6 +34,13 @@ struct BrowserlessSession {
 pub struct BrowserSessionManager {
     config: Option<BrowserConfig>,
     sessions: Arc<RwLock<HashMap<String, BrowserConnection>>>,
+    /// One lock per `(user, provider)` profile. Without this, two requests
+    /// racing to open the same profile can both miss the session cache and
+    /// both try to launch Chrome against the same `--user-data-dir` at once;
+    /// Browserless accepts only the first, and the second fails every retry
+    /// with "browser already running" since the winner is a healthy session
+    /// that never dies during the retry window.
+    connect_locks: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl BrowserSessionManager {
@@ -41,7 +48,20 @@ impl BrowserSessionManager {
         Self {
             config,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            connect_locks: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    async fn lock_for(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        if let Some(lock) = self.connect_locks.read().await.get(key) {
+            return lock.clone();
+        }
+        self.connect_locks
+            .write()
+            .await
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn config(&self) -> Option<&BrowserConfig> {
@@ -121,6 +141,21 @@ impl BrowserSessionManager {
         provider: &str,
     ) -> Result<BrowserConnection, AppError> {
         let key = Self::profile_key(user_handle, provider);
+
+        // Fast path: no lock needed just to reuse an already-alive connection.
+        if let Some(conn) = self.sessions.read().await.get(&key).cloned() {
+            if conn.is_alive() {
+                return Ok(conn);
+            }
+        }
+
+        // Serialize the check-then-create-then-insert sequence per profile so
+        // concurrent callers for the same (user, provider) queue behind the
+        // first connect attempt and reuse its result, instead of racing each
+        // other to launch Chrome against the same `--user-data-dir`.
+        let lock = self.lock_for(&key).await;
+        let _guard = lock.lock().await;
+
         if let Some(conn) = self.sessions.read().await.get(&key).cloned() {
             if conn.is_alive() {
                 return Ok(conn);
