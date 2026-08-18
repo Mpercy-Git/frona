@@ -540,6 +540,23 @@ impl PolicyService {
         )
     }
 
+    /// Group-level authorization check: is `agent` allowed the given tool group?
+    /// Used to derive ambient grants (e.g. read access to the memory dir when the
+    /// agent has the `memory` tool group).
+    pub async fn is_tool_group_permitted(
+        &self,
+        user_id: &str,
+        user_handle: &crate::core::Handle,
+        agent_handle: &crate::core::Handle,
+        group: &str,
+    ) -> Result<bool, AppError> {
+        let cached = self.build_policy_set(user_id).await?;
+        let resource = PolicyResource::ToolGroup {
+            group: group.to_string(),
+        };
+        self.is_permitted(user_handle, agent_handle, &resource, &cached.policy_set)
+    }
+
     fn is_permitted(
         &self,
         user_handle: &crate::core::Handle,
