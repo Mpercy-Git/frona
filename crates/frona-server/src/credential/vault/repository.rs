@@ -59,9 +59,7 @@ pub trait VaultAccessLogRepository: Repository<VaultAccessLog> {
 }
 
 #[async_trait]
-pub trait PrincipalCredentialBindingRepository:
-    Repository<PrincipalCredentialBinding>
-{
+pub trait PrincipalCredentialBindingRepository: Repository<PrincipalCredentialBinding> {
     /// Look up the binding for an exact `(user, principal, query)` triple,
     /// honoring scope: returns the chat-scoped one if `chat_id` is supplied
     /// and a match exists, otherwise the durable one. Expired bindings are

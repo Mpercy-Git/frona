@@ -3,12 +3,10 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 
 use crate::core::error::AppError;
-use crate::memory::pkm::consolidation::context::ConsolidationContext;
 use crate::memory::pkm::consolidation::classify::ProposalSet;
+use crate::memory::pkm::consolidation::context::ConsolidationContext;
 use crate::memory::pkm::consolidation::reconcile::validation::has_attribute_assertion;
-use crate::memory::pkm::consolidation::reconcile::{
-    EntityVerdict, Related, RelationInput,
-};
+use crate::memory::pkm::consolidation::reconcile::{EntityVerdict, Related, RelationInput};
 use crate::memory::pkm::consolidation::{comparison_key, prompt_evidence};
 use crate::memory::pkm::model::{
     AttributeSource, KnowledgeEntity, KnowledgeEntityLink, KnowledgeMemory, RelationType,
@@ -21,7 +19,10 @@ pub(super) async fn entity_in_pass(
     path: &str,
 ) -> Result<Option<KnowledgeEntity>, AppError> {
     let draft = proposals.entity_draft();
-    Ok(ctx.view.entity_by_path_with(&draft, path).await?
+    Ok(ctx
+        .view
+        .entity_by_path_with(&draft, path)
+        .await?
         .map(|entity| entity.as_knowledge_entity()))
 }
 
@@ -42,7 +43,8 @@ pub(super) fn render_memory_lines(
         };
         out.push_str(&format!(
             "- [{:?}] id={}  ({when})  entities={}  evidence={}  {}\n",
-            m.kind, m.id,
+            m.kind,
+            m.id,
             serde_json::to_string(memory_entities.get(&m.id).map(Vec::as_slice).unwrap_or(&[]))
                 .unwrap_or_else(|_| "[]".into()),
             prompt_evidence(&m.evidence),
@@ -79,22 +81,23 @@ pub(super) fn sorted_sources(ids: &[String]) -> Vec<&str> {
     ids
 }
 
-pub(super) fn source_set_mismatch(
-    side: &str,
-    supplied: &[String],
-    expected: &[String],
-) -> String {
-    let missing = expected.iter()
+pub(super) fn source_set_mismatch(side: &str, supplied: &[String], expected: &[String]) -> String {
+    let missing = expected
+        .iter()
         .filter(|id| !supplied.contains(id))
         .map(String::as_str)
         .collect::<Vec<_>>();
-    let unexpected = supplied.iter()
+    let unexpected = supplied
+        .iter()
         .filter(|id| !expected.contains(id))
         .map(String::as_str)
         .collect::<Vec<_>>();
     format!(
         "{side} source ids do not match stored provenance: expected {:?}, supplied {:?}, missing {:?}, unexpected {:?}.",
-        sorted_sources(expected), sorted_sources(supplied), missing, unexpected,
+        sorted_sources(expected),
+        sorted_sources(supplied),
+        missing,
+        unexpected,
     )
 }
 
@@ -112,13 +115,18 @@ pub(super) fn add_inferred_replace(
     let related = match relations.iter_mut().find(|related| related.memory == old) {
         Some(related) => related,
         None => {
-            relations.push(Related { memory: old.to_string(), links: Vec::new() });
+            relations.push(Related {
+                memory: old.to_string(),
+                links: Vec::new(),
+            });
             relations.last_mut().expect("just pushed")
         }
     };
-    if related.links.iter().any(|link| {
-        link.relation == RelationType::Replace && link.to == new
-    }) {
+    if related
+        .links
+        .iter()
+        .any(|link| link.relation == RelationType::Replace && link.to == new)
+    {
         return;
     }
     related.links.push(RelationInput {
@@ -135,28 +143,52 @@ pub(super) fn add_inferred_replace(
 /// the semantic property decision; provenance deterministically supplies the memory
 /// lifecycle decision so the graph and History can never disagree.
 pub(super) fn close_property_replacements(verdict: &mut EntityVerdict) {
-    let attribute_edges = verdict.attribute_replacements.iter().flat_map(|replacement| {
-        let was = replacement_value(&replacement.was);
-        let now = replacement_value(&replacement.now);
-        replacement.old_source_memory_ids.iter().flat_map(move |old| {
-            let was = was.clone();
-            let now = now.clone();
-            replacement.new_source_memory_ids.iter().map(move |new| {
-                (old.clone(), new.clone(), was.clone(), now.clone(), replacement.property.clone())
-            })
-        })
-    });
-    let relation_edges = verdict.entity_relation_replacements.iter().flat_map(|replacement| {
-        let was = target_value(&replacement.was_target);
-        let now = target_value(&replacement.now_target);
-        replacement.old_source_memory_ids.iter().flat_map(move |old| {
-            let was = was.clone();
-            let now = now.clone();
-            replacement.new_source_memory_ids.iter().map(move |new| {
-                (old.clone(), new.clone(), was.clone(), now.clone(), replacement.property.clone())
-            })
-        })
-    });
+    let attribute_edges = verdict
+        .attribute_replacements
+        .iter()
+        .flat_map(|replacement| {
+            let was = replacement_value(&replacement.was);
+            let now = replacement_value(&replacement.now);
+            replacement
+                .old_source_memory_ids
+                .iter()
+                .flat_map(move |old| {
+                    let was = was.clone();
+                    let now = now.clone();
+                    replacement.new_source_memory_ids.iter().map(move |new| {
+                        (
+                            old.clone(),
+                            new.clone(),
+                            was.clone(),
+                            now.clone(),
+                            replacement.property.clone(),
+                        )
+                    })
+                })
+        });
+    let relation_edges = verdict
+        .entity_relation_replacements
+        .iter()
+        .flat_map(|replacement| {
+            let was = target_value(&replacement.was_target);
+            let now = target_value(&replacement.now_target);
+            replacement
+                .old_source_memory_ids
+                .iter()
+                .flat_map(move |old| {
+                    let was = was.clone();
+                    let now = now.clone();
+                    replacement.new_source_memory_ids.iter().map(move |new| {
+                        (
+                            old.clone(),
+                            new.clone(),
+                            was.clone(),
+                            now.clone(),
+                            replacement.property.clone(),
+                        )
+                    })
+                })
+        });
     let relations = &mut verdict.relations;
     for (old, new, was, now, property) in attribute_edges.chain(relation_edges) {
         add_inferred_replace(
@@ -180,14 +212,13 @@ pub(super) fn property_replacement_rejections(
     let mut rejected = Vec::new();
     for replacement in &verdict.attribute_replacements {
         let property = replacement.property.trim();
-        let old_assertion = existing_attributes.iter().find(|source| {
-            source.property == property
-                && source.value == replacement.was
-        });
-        let new_assertion = verdict.attribute_sources.iter().find(|source| {
-            source.property == property
-                && source.value == replacement.now
-        });
+        let old_assertion = existing_attributes
+            .iter()
+            .find(|source| source.property == property && source.value == replacement.was);
+        let new_assertion = verdict
+            .attribute_sources
+            .iter()
+            .find(|source| source.property == property && source.value == replacement.now);
         let new_held = has_attribute_assertion(&verdict.attributes, property, &replacement.now);
         let old_removed = !has_attribute_assertion(&verdict.attributes, property, &replacement.was);
         let mut reasons = Vec::new();
@@ -196,13 +227,21 @@ pub(super) fn property_replacement_rejections(
         }
         match old_assertion {
             None => reasons.push(format!(
-                "No stored `{property}` assertion has old value {}.", replacement.was
+                "No stored `{property}` assertion has old value {}.",
+                replacement.was
             )),
-            Some(source) if !sources_equal(
-                &source.source_memory_ids, &replacement.old_source_memory_ids,
-            ) => reasons.push(source_set_mismatch(
-                "Old", &replacement.old_source_memory_ids, &source.source_memory_ids,
-            )),
+            Some(source)
+                if !sources_equal(
+                    &source.source_memory_ids,
+                    &replacement.old_source_memory_ids,
+                ) =>
+            {
+                reasons.push(source_set_mismatch(
+                    "Old",
+                    &replacement.old_source_memory_ids,
+                    &source.source_memory_ids,
+                ))
+            }
             Some(_) => {}
         }
         match new_assertion {
@@ -210,25 +249,42 @@ pub(super) fn property_replacement_rejections(
                 "The submitted attribute_sources do not contain `{property}` value {}.",
                 replacement.now,
             )),
-            Some(source) if !sources_equal(
-                &source.source_memory_ids, &replacement.new_source_memory_ids,
-            ) => reasons.push(source_set_mismatch(
-                "New", &replacement.new_source_memory_ids, &source.source_memory_ids,
-            )),
+            Some(source)
+                if !sources_equal(
+                    &source.source_memory_ids,
+                    &replacement.new_source_memory_ids,
+                ) =>
+            {
+                reasons.push(source_set_mismatch(
+                    "New",
+                    &replacement.new_source_memory_ids,
+                    &source.source_memory_ids,
+                ))
+            }
             Some(_) => {}
         }
         if !new_held {
-            reasons.push(format!("The new value {} is not retained in attributes.", replacement.now));
+            reasons.push(format!(
+                "The new value {} is not retained in attributes.",
+                replacement.now
+            ));
         }
         if !old_removed {
-            reasons.push(format!("The old value {} is still present in attributes.", replacement.was));
+            reasons.push(format!(
+                "The old value {} is still present in attributes.",
+                replacement.was
+            ));
         }
-        let inactive = replacement.new_source_memory_ids.iter()
+        let inactive = replacement
+            .new_source_memory_ids
+            .iter()
             .filter(|id| !active.contains(id.as_str()))
             .map(String::as_str)
             .collect::<Vec<_>>();
         if !inactive.is_empty() {
-            reasons.push(format!("New source ids {inactive:?} are not current memories."));
+            reasons.push(format!(
+                "New source ids {inactive:?} are not current memories."
+            ));
         }
         if !reasons.is_empty() {
             rejected.push(format!(
@@ -240,16 +296,13 @@ pub(super) fn property_replacement_rejections(
     for replacement in &verdict.entity_relation_replacements {
         let property = replacement.property.trim();
         let old_assertion = existing_links.iter().find(|link| {
-            link.relation == property
-                && link.to_entity_path == replacement.was_target
+            link.relation == property && link.to_entity_path == replacement.was_target
         });
         let new_existing = existing_links.iter().find(|link| {
-            link.relation == property
-                && link.to_entity_path == replacement.now_target
+            link.relation == property && link.to_entity_path == replacement.now_target
         });
         let new_submitted = verdict.entity_relations.iter().find(|relation| {
-            relation.property == property
-                && relation.target == replacement.now_target
+            relation.property == property && relation.target == replacement.now_target
         });
         let old_retracted = verdict.relation_retractions.iter().any(|retraction| {
             retraction.property == property && retraction.target == replacement.was_target
@@ -260,16 +313,22 @@ pub(super) fn property_replacement_rejections(
         }
         match old_assertion {
             None => reasons.push(format!(
-                "No stored `{property}` assertion targets `{}`.", replacement.was_target
+                "No stored `{property}` assertion targets `{}`.",
+                replacement.was_target
             )),
-            Some(link) if !sources_equal(
-                &link.source_memory_ids, &replacement.old_source_memory_ids,
-            ) => reasons.push(source_set_mismatch(
-                "Old", &replacement.old_source_memory_ids, &link.source_memory_ids,
-            )),
+            Some(link)
+                if !sources_equal(&link.source_memory_ids, &replacement.old_source_memory_ids) =>
+            {
+                reasons.push(source_set_mismatch(
+                    "Old",
+                    &replacement.old_source_memory_ids,
+                    &link.source_memory_ids,
+                ))
+            }
             Some(_) => {}
         }
-        let expected_new_sources = new_submitted.map(|relation| &relation.source_memory_ids)
+        let expected_new_sources = new_submitted
+            .map(|relation| &relation.source_memory_ids)
             .or_else(|| new_existing.map(|link| &link.source_memory_ids));
         match expected_new_sources {
             None => reasons.push(format!(
@@ -278,7 +337,9 @@ pub(super) fn property_replacement_rejections(
             )),
             Some(expected) if !sources_equal(expected, &replacement.new_source_memory_ids) => {
                 reasons.push(source_set_mismatch(
-                    "New", &replacement.new_source_memory_ids, expected,
+                    "New",
+                    &replacement.new_source_memory_ids,
+                    expected,
                 ));
             }
             Some(_) => {}
@@ -289,12 +350,16 @@ pub(super) fn property_replacement_rejections(
                 replacement.was_target,
             ));
         }
-        let inactive = replacement.new_source_memory_ids.iter()
+        let inactive = replacement
+            .new_source_memory_ids
+            .iter()
             .filter(|id| !active.contains(id.as_str()))
             .map(String::as_str)
             .collect::<Vec<_>>();
         if !inactive.is_empty() {
-            reasons.push(format!("New source ids {inactive:?} are not current memories."));
+            reasons.push(format!(
+                "New source ids {inactive:?} are not current memories."
+            ));
         }
         if !reasons.is_empty() {
             rejected.push(format!(
@@ -313,17 +378,32 @@ pub(super) fn memory_replacement_property_rejections(
 ) -> Vec<String> {
     let mut rejected = Vec::new();
     for related in &verdict.relations {
-        for link in related.links.iter().filter(|link| link.relation == RelationType::Replace) {
+        for link in related
+            .links
+            .iter()
+            .filter(|link| link.relation == RelationType::Replace)
+        {
             let was = comparison_key(&link.was);
             let now = comparison_key(&link.now);
-            let matching_attributes = existing_attributes.iter().filter(|source| {
-                source.source_memory_ids.iter().any(|id| id == &related.memory)
-                    && comparison_key(&replacement_value(&source.value)) == was
-            }).collect::<Vec<_>>();
-            let matching_links = existing_links.iter().filter(|held| {
-                held.source_memory_ids.iter().any(|id| id == &related.memory)
-                    && comparison_key(&target_value(&held.to_entity_path)) == was
-            }).collect::<Vec<_>>();
+            let matching_attributes = existing_attributes
+                .iter()
+                .filter(|source| {
+                    source
+                        .source_memory_ids
+                        .iter()
+                        .any(|id| id == &related.memory)
+                        && comparison_key(&replacement_value(&source.value)) == was
+                })
+                .collect::<Vec<_>>();
+            let matching_links = existing_links
+                .iter()
+                .filter(|held| {
+                    held.source_memory_ids
+                        .iter()
+                        .any(|id| id == &related.memory)
+                        && comparison_key(&target_value(&held.to_entity_path)) == was
+                })
+                .collect::<Vec<_>>();
             let attribute_covered = matching_attributes.iter().all(|source| {
                 verdict.attribute_replacements.iter().any(|replacement| {
                     replacement.property == source.property
@@ -334,13 +414,16 @@ pub(super) fn memory_replacement_property_rejections(
                 })
             });
             let relation_covered = matching_links.iter().all(|held| {
-                verdict.entity_relation_replacements.iter().any(|replacement| {
-                    replacement.property == held.relation
-                        && replacement.was_target == held.to_entity_path
-                        && comparison_key(&target_value(&replacement.now_target)) == now
-                        && replacement.old_source_memory_ids.contains(&related.memory)
-                        && replacement.new_source_memory_ids.contains(&link.to)
-                })
+                verdict
+                    .entity_relation_replacements
+                    .iter()
+                    .any(|replacement| {
+                        replacement.property == held.relation
+                            && replacement.was_target == held.to_entity_path
+                            && comparison_key(&target_value(&replacement.now_target)) == now
+                            && replacement.old_source_memory_ids.contains(&related.memory)
+                            && replacement.new_source_memory_ids.contains(&link.to)
+                    })
             });
             if (!matching_attributes.is_empty() && !attribute_covered)
                 || (!matching_links.is_empty() && !relation_covered)
@@ -363,12 +446,18 @@ pub(super) fn unsupported_scope_relations(
     let mut rejected = Vec::new();
     for related in &candidate.relations {
         let subordinate = related.memory.trim();
-        let Some(subordinate_pages) = memory_entities.get(subordinate) else { continue };
+        let Some(subordinate_pages) = memory_entities.get(subordinate) else {
+            continue;
+        };
         for link in &related.links {
             let survivor = link.to.trim();
-            let Some(survivor_pages) = memory_entities.get(survivor) else { continue };
+            let Some(survivor_pages) = memory_entities.get(survivor) else {
+                continue;
+            };
             let scope_is_safe = if link.relation == RelationType::Replace {
-                subordinate_pages.iter().any(|entity| entity == current_page)
+                subordinate_pages
+                    .iter()
+                    .any(|entity| entity == current_page)
                     && survivor_pages.iter().any(|entity| entity == current_page)
             } else {
                 subordinate_pages == survivor_pages
@@ -500,8 +589,9 @@ pub(super) fn curie_key_attributes(
 /// `dc:title` becomes `frona:title` rather than a key that expands to `urn:frona:dc:title`.
 pub(super) fn curie_key(k: &str, px: &crate::memory::pkm::ontology::PrefixMap) -> String {
     if !k.contains(':')
-        && let Some((_, curie)) =
-            STD_ATTRIBUTE_CURIES.iter().find(|(name, _)| name.eq_ignore_ascii_case(k))
+        && let Some((_, curie)) = STD_ATTRIBUTE_CURIES
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(k))
     {
         return (*curie).to_string();
     }
@@ -509,5 +599,6 @@ pub(super) fn curie_key(k: &str, px: &crate::memory::pkm::ontology::PrefixMap) -
         return t;
     }
     let local = k.rsplit(':').next().unwrap_or(k);
-    px.repair_term(local, TermKind::Property).unwrap_or_else(|_| "frona:attribute".to_string())
+    px.repair_term(local, TermKind::Property)
+        .unwrap_or_else(|_| "frona:attribute".to_string())
 }

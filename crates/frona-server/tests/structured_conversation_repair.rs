@@ -69,10 +69,12 @@ async fn a_malformed_submission_is_returned_to_the_model_and_corrected() {
         // Round 1 - `classes` omitted. `relations` alone deserializes fine, which is
         // exactly why this reaches serde as "missing field" rather than a type error.
         submit("call-1", serde_json::json!({ "relations": ["works for"] })),
-        submit("call-2", serde_json::json!({ "classes": ["schema:Person"] })),
+        submit(
+            "call-2",
+            serde_json::json!({ "classes": ["schema:Person"] }),
+        ),
     ]));
-    let registry =
-        test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &registry,
@@ -87,7 +89,10 @@ async fn a_malformed_submission_is_returned_to_the_model_and_corrected() {
     );
 
     assert!(matches!(
-        convo.next_attempt().await.expect("malformed attempt returned"),
+        convo
+            .next_attempt()
+            .await
+            .expect("malformed attempt returned"),
         AnswerAttempt::InvalidSubmission
     ));
     let AnswerAttempt::Submitted(got) = convo.next_attempt().await.expect("corrected attempt")
@@ -95,8 +100,15 @@ async fn a_malformed_submission_is_returned_to_the_model_and_corrected() {
         panic!("the second attempt must be a valid submission");
     };
     assert_eq!(got.classes, ["schema:Person"]);
-    assert!(got.relations.is_empty(), "the defaulted field is still defaulted");
-    assert_eq!(provider.calls(), 2, "one repair round, not a fresh conversation");
+    assert!(
+        got.relations.is_empty(),
+        "the defaulted field is still defaulted"
+    );
+    assert_eq!(
+        provider.calls(),
+        2,
+        "one repair round, not a fresh conversation"
+    );
 }
 
 /// The correction has to be a `tool_result` answering the submit call. A plain user
@@ -108,10 +120,12 @@ async fn the_correction_answers_the_submit_call_rather_than_arriving_as_a_user_m
     let usage = test_usage_service(&db);
     let provider = Arc::new(MockModelProvider::new(vec![
         submit("call-1", serde_json::json!({})),
-        submit("call-2", serde_json::json!({ "classes": ["schema:Person"] })),
+        submit(
+            "call-2",
+            serde_json::json!({ "classes": ["schema:Person"] }),
+        ),
     ]));
-    let registry =
-        test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &registry,
@@ -125,7 +139,10 @@ async fn the_correction_answers_the_submit_call_rather_than_arriving_as_a_user_m
         8,
     );
     assert!(matches!(
-        convo.next_attempt().await.expect("malformed attempt returned"),
+        convo
+            .next_attempt()
+            .await
+            .expect("malformed attempt returned"),
         AnswerAttempt::InvalidSubmission
     ));
     assert!(matches!(
@@ -149,13 +166,23 @@ async fn a_tool_call_batched_with_a_bad_submit_still_gets_its_result() {
     let usage = test_usage_service(&db);
     let provider = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![
-            ("call-bad".into(), SUBMIT_TOOL_NAME.into(), serde_json::json!({})),
-            ("call-tool".into(), "nonexistent_tool".into(), serde_json::json!({})),
+            (
+                "call-bad".into(),
+                SUBMIT_TOOL_NAME.into(),
+                serde_json::json!({}),
+            ),
+            (
+                "call-tool".into(),
+                "nonexistent_tool".into(),
+                serde_json::json!({}),
+            ),
         ]),
-        submit("call-ok", serde_json::json!({ "classes": ["schema:Person"] })),
+        submit(
+            "call-ok",
+            serde_json::json!({ "classes": ["schema:Person"] }),
+        ),
     ]));
-    let registry =
-        test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &registry,
@@ -169,7 +196,10 @@ async fn a_tool_call_batched_with_a_bad_submit_still_gets_its_result() {
         8,
     );
     assert!(matches!(
-        convo.next_attempt().await.expect("malformed attempt returned"),
+        convo
+            .next_attempt()
+            .await
+            .expect("malformed attempt returned"),
         AnswerAttempt::InvalidSubmission
     ));
     assert!(matches!(
@@ -182,7 +212,10 @@ async fn a_tool_call_batched_with_a_bad_submit_still_gets_its_result() {
     // conversation proves nothing; the result has to be found on a message that is
     // actually a tool result.
     let sent = provider.last_history();
-    assert!(answered(&sent, "call-bad"), "the failed submit was answered: {sent:#?}");
+    assert!(
+        answered(&sent, "call-bad"),
+        "the failed submit was answered: {sent:#?}"
+    );
     assert!(
         answered(&sent, "call-tool"),
         "a tool call batched alongside the bad submit must still get a result, or the \
@@ -199,10 +232,12 @@ async fn prose_instead_of_a_submission_is_asked_for_one_rather_than_hung_up_on()
     let usage = test_usage_service(&db);
     let provider = Arc::new(MockModelProvider::new(vec![
         MockResponse::Text("Sure! This entity looks like a person to me.".into()),
-        submit("call-1", serde_json::json!({ "classes": ["schema:Person"] })),
+        submit(
+            "call-1",
+            serde_json::json!({ "classes": ["schema:Person"] }),
+        ),
     ]));
-    let registry =
-        test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &registry,
@@ -217,7 +252,10 @@ async fn prose_instead_of_a_submission_is_asked_for_one_rather_than_hung_up_on()
     );
 
     assert!(matches!(
-        convo.next_attempt().await.expect("missing attempt returned"),
+        convo
+            .next_attempt()
+            .await
+            .expect("missing attempt returned"),
         AnswerAttempt::MissingSubmission
     ));
     let AnswerAttempt::Submitted(got) = convo.next_attempt().await.expect("corrected attempt")
@@ -236,10 +274,12 @@ async fn the_nudge_for_prose_is_not_addressed_to_a_tool_call() {
     let usage = test_usage_service(&db);
     let provider = Arc::new(MockModelProvider::new(vec![
         MockResponse::Text("no tools for me thanks".into()),
-        submit("call-1", serde_json::json!({ "classes": ["schema:Person"] })),
+        submit(
+            "call-1",
+            serde_json::json!({ "classes": ["schema:Person"] }),
+        ),
     ]));
-    let registry =
-        test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &registry,
@@ -253,7 +293,10 @@ async fn the_nudge_for_prose_is_not_addressed_to_a_tool_call() {
         8,
     );
     assert!(matches!(
-        convo.next_attempt().await.expect("missing attempt returned"),
+        convo
+            .next_attempt()
+            .await
+            .expect("missing attempt returned"),
         AnswerAttempt::MissingSubmission
     ));
     assert!(matches!(
@@ -279,10 +322,11 @@ async fn prose_returns_one_missing_submission_per_request() {
     let db = test_db().await;
     let usage = test_usage_service(&db);
     let provider = Arc::new(MockModelProvider::new(
-        (0..3).map(|i| MockResponse::Text(format!("thinking aloud {i}"))).collect(),
+        (0..3)
+            .map(|i| MockResponse::Text(format!("thinking aloud {i}")))
+            .collect(),
     ));
-    let registry =
-        test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &registry,
@@ -298,11 +342,18 @@ async fn prose_returns_one_missing_submission_per_request() {
 
     for _ in 0..3 {
         assert!(matches!(
-            convo.next_attempt().await.expect("missing attempt returned"),
+            convo
+                .next_attempt()
+                .await
+                .expect("missing attempt returned"),
             AnswerAttempt::MissingSubmission
         ));
     }
-    assert_eq!(provider.calls(), 3, "one provider request per answer attempt");
+    assert_eq!(
+        provider.calls(),
+        3,
+        "one provider request per answer attempt"
+    );
     assert_eq!(convo.requests_used(), 3);
 }
 
@@ -313,10 +364,11 @@ async fn malformed_submissions_do_not_consume_the_tool_turn_limit() {
     let db = test_db().await;
     let usage = test_usage_service(&db);
     let provider = Arc::new(MockModelProvider::new(
-        (0..3).map(|i| submit(&format!("call-{i}"), serde_json::json!({}))).collect(),
+        (0..3)
+            .map(|i| submit(&format!("call-{i}"), serde_json::json!({})))
+            .collect(),
     ));
-    let registry =
-        test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &registry,
@@ -332,11 +384,18 @@ async fn malformed_submissions_do_not_consume_the_tool_turn_limit() {
 
     for _ in 0..3 {
         assert!(matches!(
-            convo.next_attempt().await.expect("invalid attempt returned"),
+            convo
+                .next_attempt()
+                .await
+                .expect("invalid attempt returned"),
             AnswerAttempt::InvalidSubmission
         ));
     }
-    assert_eq!(provider.calls(), 3, "one provider request per answer attempt");
+    assert_eq!(
+        provider.calls(),
+        3,
+        "one provider request per answer attempt"
+    );
 }
 
 /// The final permitted exploration turn does not consume the answer request that follows
@@ -351,13 +410,18 @@ async fn the_last_tool_turn_can_be_followed_by_a_submission() {
             "lookup".into(),
             serde_json::json!({}),
         )]),
-        submit("call-2", serde_json::json!({ "classes": ["schema:Person"] })),
+        submit(
+            "call-2",
+            serde_json::json!({ "classes": ["schema:Person"] }),
+        ),
     ]));
-    let registry =
-        test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
     let mut tools = AgentToolRegistry::empty();
     tools
-        .register_required(Arc::new(MockInternalTool::new("lookup", vec!["found".into()])))
+        .register_required(Arc::new(MockInternalTool::new(
+            "lookup",
+            vec!["found".into()],
+        )))
         .unwrap();
 
     let mut convo = StructuredConversation::<Classification>::new(
@@ -373,14 +437,20 @@ async fn the_last_tool_turn_can_be_followed_by_a_submission() {
     );
 
     assert!(matches!(
-        convo.next_attempt().await.expect("submission after exploration"),
+        convo
+            .next_attempt()
+            .await
+            .expect("submission after exploration"),
         AnswerAttempt::Submitted(_)
     ));
     assert_eq!(provider.calls(), 2);
     let tool_histories = provider.tool_histories();
     assert!(tool_histories[0].iter().any(|tool| tool.name == "lookup"));
     assert_eq!(
-        tool_histories[1].iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
+        tool_histories[1]
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
         [SUBMIT_TOOL_NAME],
         "the request after the final tool turn offers only submit"
     );
@@ -393,10 +463,12 @@ async fn a_rejected_submission_is_answered_before_the_next_attempt() {
     let usage = test_usage_service(&db);
     let provider = Arc::new(MockModelProvider::new(vec![
         submit("call-1", serde_json::json!({ "classes": ["schema:Thing"] })),
-        submit("call-2", serde_json::json!({ "classes": ["schema:Person"] })),
+        submit(
+            "call-2",
+            serde_json::json!({ "classes": ["schema:Person"] }),
+        ),
     ]));
-    let registry =
-        test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
     let mut convo = StructuredConversation::<Classification>::new(
         &registry,
         &usage,
@@ -413,7 +485,9 @@ async fn a_rejected_submission_is_answered_before_the_next_attempt() {
         convo.next_attempt().await.expect("first submission"),
         AnswerAttempt::Submitted(_)
     ));
-    convo.reject_submission("schema:Thing is too broad").unwrap();
+    convo
+        .reject_submission("schema:Thing is too broad")
+        .unwrap();
     assert!(matches!(
         convo.next_attempt().await.expect("revised submission"),
         AnswerAttempt::Submitted(_)
@@ -426,8 +500,7 @@ async fn rejection_without_a_pending_submission_is_refused() {
     let db = test_db().await;
     let usage = test_usage_service(&db);
     let provider = Arc::new(MockModelProvider::new(Vec::new()));
-    let registry =
-        test_registry_with_group("mock", provider, "test", test_model_group());
+    let registry = test_registry_with_group("mock", provider, "test", test_model_group());
     let mut convo = StructuredConversation::<Classification>::new(
         &registry,
         &usage,
@@ -440,6 +513,8 @@ async fn rejection_without_a_pending_submission_is_refused() {
         0,
     );
 
-    let err = convo.reject_submission("nothing to reject").expect_err("no pending submit");
+    let err = convo
+        .reject_submission("nothing to reject")
+        .expect_err("no pending submit");
     assert!(err.to_string().contains("no submitted answer"));
 }

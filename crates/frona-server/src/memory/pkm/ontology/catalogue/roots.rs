@@ -79,9 +79,7 @@ impl Roots {
 pub(super) fn usable(dir: &Path) -> bool {
     match release::verify(dir) {
         Ok(()) => true,
-        Err(release::Invalid::NoManifest) => {
-            ontology_files(dir).is_ok_and(|f| !f.is_empty())
-        }
+        Err(release::Invalid::NoManifest) => ontology_files(dir).is_ok_and(|f| !f.is_empty()),
         Err(_) => false,
     }
 }

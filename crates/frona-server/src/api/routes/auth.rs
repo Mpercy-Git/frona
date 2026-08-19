@@ -1,6 +1,6 @@
 use axum::extract::{Path, State};
-use axum::http::header::SET_COOKIE;
 use axum::http::StatusCode;
+use axum::http::header::SET_COOKIE;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use tower_governor::GovernorLayer;
@@ -12,7 +12,10 @@ use crate::api::cookie::{
     make_clear_refresh_cookie, make_clear_sso_csrf_cookie, make_refresh_cookie,
     make_sso_csrf_cookie,
 };
-use crate::auth::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo};
+use crate::auth::models::{
+    AuthResponse, LoginRequest, RegisterRequest, UpdateHandleRequest, UpdateProfileRequest,
+    UserInfo,
+};
 use crate::auth::token::models::CreatePatRequest;
 use crate::core::error::{AppError, AuthErrorCode};
 
@@ -61,8 +64,14 @@ pub fn router() -> Router<AppState> {
 async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
-) -> Result<(StatusCode, [(axum::http::HeaderName, axum::http::HeaderValue); 1], Json<AuthResponse>), ApiError>
-{
+) -> Result<
+    (
+        StatusCode,
+        [(axum::http::HeaderName, axum::http::HeaderValue); 1],
+        Json<AuthResponse>,
+    ),
+    ApiError,
+> {
     if state.config.sso.disable_local_auth {
         return Err(ApiError(AppError::Validation(
             "SSO registration required".into(),
@@ -89,29 +98,33 @@ async fn register(
         .clone_all_builtins_for_user(&response.user.id, &state.storage_service)
         .await?;
 
-    let secure = state.config.server.base_url.as_deref().is_some_and(|u| u.starts_with("https://"));
+    let secure = state
+        .config
+        .server
+        .base_url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("https://"));
     let cookie = make_refresh_cookie(
         &refresh_jwt,
         state.token_service.refresh_expiry_secs(),
         secure,
     );
 
-    Ok((
-        StatusCode::CREATED,
-        [(SET_COOKIE, cookie)],
-        Json(response),
-    ))
+    Ok((StatusCode::CREATED, [(SET_COOKIE, cookie)], Json(response)))
 }
 
 async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
-) -> Result<([(axum::http::HeaderName, axum::http::HeaderValue); 1], Json<AuthResponse>), ApiError>
-{
+) -> Result<
+    (
+        [(axum::http::HeaderName, axum::http::HeaderValue); 1],
+        Json<AuthResponse>,
+    ),
+    ApiError,
+> {
     if state.config.sso.disable_local_auth {
-        return Err(ApiError(AppError::Validation(
-            "SSO login required".into(),
-        )));
+        return Err(ApiError(AppError::Validation("SSO login required".into())));
     }
 
     let identifier = req.identifier.clone();
@@ -145,7 +158,12 @@ async fn login(
         }
     };
 
-    let secure = state.config.server.base_url.as_deref().is_some_and(|u| u.starts_with("https://"));
+    let secure = state
+        .config
+        .server
+        .base_url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("https://"));
     let cookie = make_refresh_cookie(
         &refresh_jwt,
         state.token_service.refresh_expiry_secs(),
@@ -155,10 +173,7 @@ async fn login(
     Ok(([(SET_COOKIE, cookie)], Json(response)))
 }
 
-async fn me(
-    auth: AuthUser,
-    State(state): State<AppState>,
-) -> Result<Json<UserInfo>, ApiError> {
+async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Json<UserInfo>, ApiError> {
     let user = state
         .user_service
         .find_by_id(&auth.user_id)
@@ -176,8 +191,13 @@ async fn change_handle(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<UpdateHandleRequest>,
-) -> Result<([(axum::http::HeaderName, axum::http::HeaderValue); 1], Json<AuthResponse>), ApiError>
-{
+) -> Result<
+    (
+        [(axum::http::HeaderName, axum::http::HeaderValue); 1],
+        Json<AuthResponse>,
+    ),
+    ApiError,
+> {
     let (response, refresh_jwt) = state
         .auth_service
         .change_handle(
@@ -192,7 +212,12 @@ async fn change_handle(
         )
         .await?;
 
-    let secure = state.config.server.base_url.as_deref().is_some_and(|u| u.starts_with("https://"));
+    let secure = state
+        .config
+        .server
+        .base_url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("https://"));
     let cookie = make_refresh_cookie(
         &refresh_jwt,
         state.token_service.refresh_expiry_secs(),
@@ -209,7 +234,12 @@ async fn update_profile(
 ) -> Result<Json<UserInfo>, ApiError> {
     let user_info = state
         .auth_service
-        .update_profile(&state.user_service, &state.policy_service, &auth.user_id, req)
+        .update_profile(
+            &state.user_service,
+            &state.policy_service,
+            &auth.user_id,
+            req,
+        )
         .await?;
     Ok(Json(user_info))
 }
@@ -217,7 +247,13 @@ async fn update_profile(
 async fn logout(
     auth: AuthUser,
     State(state): State<AppState>,
-) -> Result<([(axum::http::HeaderName, axum::http::HeaderValue); 1], StatusCode), ApiError> {
+) -> Result<
+    (
+        [(axum::http::HeaderName, axum::http::HeaderValue); 1],
+        StatusCode,
+    ),
+    ApiError,
+> {
     if let Some(token) = state
         .token_service
         .repo()
@@ -231,7 +267,12 @@ async fn logout(
         }
     }
 
-    let secure = state.config.server.base_url.as_deref().is_some_and(|u| u.starts_with("https://"));
+    let secure = state
+        .config
+        .server
+        .base_url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("https://"));
     Ok((
         [(SET_COOKIE, make_clear_refresh_cookie(secure))],
         StatusCode::NO_CONTENT,
@@ -241,20 +282,33 @@ async fn logout(
 async fn refresh(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
-) -> Result<([(axum::http::HeaderName, axum::http::HeaderValue); 1], Json<serde_json::Value>), ApiError>
-{
+) -> Result<
+    (
+        [(axum::http::HeaderName, axum::http::HeaderValue); 1],
+        Json<serde_json::Value>,
+    ),
+    ApiError,
+> {
     let refresh_token = headers
         .get("cookie")
         .and_then(|v| v.to_str().ok())
         .and_then(extract_refresh_token_from_cookie_header)
-        .ok_or_else(|| AppError::Auth { message: "Missing refresh token".into(), code: AuthErrorCode::TokenInvalid })?;
+        .ok_or_else(|| AppError::Auth {
+            message: "Missing refresh token".into(),
+            code: AuthErrorCode::TokenInvalid,
+        })?;
 
     let (access_jwt, new_refresh_jwt, _claims) = state
         .token_service
         .refresh(&state.keypair_service, refresh_token)
         .await?;
 
-    let secure = state.config.server.base_url.as_deref().is_some_and(|u| u.starts_with("https://"));
+    let secure = state
+        .config
+        .server
+        .base_url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("https://"));
     let cookie = make_refresh_cookie(
         &new_refresh_jwt,
         state.token_service.refresh_expiry_secs(),
@@ -289,7 +343,10 @@ async fn create_pat(
         .create_pat(&state.keypair_service, &user, req)
         .await?;
 
-    Ok((StatusCode::CREATED, Json(serde_json::to_value(pat).unwrap())))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(pat).unwrap()),
+    ))
 }
 
 async fn list_pats(
@@ -305,10 +362,7 @@ async fn delete_pat(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    state
-        .token_service
-        .delete_pat(&auth.user_id, &id)
-        .await?;
+    state.token_service.delete_pat(&auth.user_id, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -324,9 +378,7 @@ struct AuthConfigResponse {
     allow_registration: bool,
 }
 
-async fn auth_config(
-    State(state): State<AppState>,
-) -> Json<AuthConfigResponse> {
+async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigResponse> {
     Json(AuthConfigResponse {
         sso: SsoStatus {
             enabled: state.config.sso.enabled,
@@ -338,25 +390,43 @@ async fn auth_config(
 
 async fn sso_authorize(
     State(state): State<AppState>,
-) -> Result<([(axum::http::HeaderName, axum::http::HeaderValue); 1], axum::response::Redirect), ApiError> {
+) -> Result<
+    (
+        [(axum::http::HeaderName, axum::http::HeaderValue); 1],
+        axum::response::Redirect,
+    ),
+    ApiError,
+> {
     let oauth_svc = state
         .oauth_service
         .as_ref()
         .ok_or_else(|| AppError::Validation("SSO is not enabled".into()))?;
 
     let (auth_url, csrf_secret, _nonce) = oauth_svc.get_authorization_url().await?;
-    let secure = state.config.server.base_url.as_deref().is_some_and(|u| u.starts_with("https://"));
+    let secure = state
+        .config
+        .server
+        .base_url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("https://"));
     let cookie = make_sso_csrf_cookie(&csrf_secret, secure);
-    Ok(([(SET_COOKIE, cookie)], axum::response::Redirect::temporary(&auth_url)))
+    Ok((
+        [(SET_COOKIE, cookie)],
+        axum::response::Redirect::temporary(&auth_url),
+    ))
 }
 
 async fn sso_callback(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> axum::response::Response
-{
-    let secure = state.config.server.base_url.as_deref().is_some_and(|u| u.starts_with("https://"));
+) -> axum::response::Response {
+    let secure = state
+        .config
+        .server
+        .base_url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("https://"));
 
     match sso_callback_inner(&state, &headers, &params).await {
         Ok(refresh_jwt) => {
@@ -368,7 +438,10 @@ async fn sso_callback(
             let clear_csrf = make_clear_sso_csrf_cookie(secure);
 
             axum::response::IntoResponse::into_response((
-                axum::response::AppendHeaders([(SET_COOKIE, refresh_cookie), (SET_COOKIE, clear_csrf)]),
+                axum::response::AppendHeaders([
+                    (SET_COOKIE, refresh_cookie),
+                    (SET_COOKIE, clear_csrf),
+                ]),
                 axum::response::Redirect::temporary("/auth/sso/callback"),
             ))
         }
@@ -407,10 +480,16 @@ async fn sso_callback_inner(
         .get("cookie")
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    let csrf_cookie = extract_sso_csrf_from_cookie_header(cookie_header)
-        .ok_or_else(|| AppError::Auth { message: "Missing SSO CSRF cookie — please restart the login flow".into(), code: AuthErrorCode::CsrfFailed })?;
+    let csrf_cookie =
+        extract_sso_csrf_from_cookie_header(cookie_header).ok_or_else(|| AppError::Auth {
+            message: "Missing SSO CSRF cookie — please restart the login flow".into(),
+            code: AuthErrorCode::CsrfFailed,
+        })?;
     if csrf_cookie != callback_state {
-        return Err(AppError::Auth { message: "SSO state mismatch".into(), code: AuthErrorCode::CsrfFailed });
+        return Err(AppError::Auth {
+            message: "SSO state mismatch".into(),
+            code: AuthErrorCode::CsrfFailed,
+        });
     }
 
     let code = params

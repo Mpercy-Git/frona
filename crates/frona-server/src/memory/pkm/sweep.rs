@@ -16,12 +16,12 @@ use crate::contact::service::ContactService;
 use crate::core::error::AppError;
 use crate::db::repo::tool_calls::ToolCallRepository;
 
+use super::PkmService;
 use super::consolidation::{
     ConsolidationScope, ConsolidationStageState, ConsolidationStats, IngestState,
 };
 use super::model::KnowledgeShortMemory;
 use super::vault::VaultScope;
-use super::PkmService;
 
 struct ExtractionWrite {
     batch: crate::db::repo::pkm::IngestBatch,
@@ -51,14 +51,19 @@ fn completed_task_result_links(
     let mut pending = Vec::new();
     let mut links = std::collections::HashMap::<String, Vec<String>>::new();
     for message in ordered {
-        if let Some(MessageEvent::TaskCompletion { task_id, status, .. }) = &message.event
+        if let Some(MessageEvent::TaskCompletion {
+            task_id, status, ..
+        }) = &message.event
             && *status == crate::agent::task::models::TaskStatus::Completed
         {
             pending.push(task_id.clone());
             continue;
         }
         if message.role == MessageRole::Agent && !pending.is_empty() {
-            links.entry(message.id.clone()).or_default().append(&mut pending);
+            links
+                .entry(message.id.clone())
+                .or_default()
+                .append(&mut pending);
         }
     }
     links
@@ -137,9 +142,15 @@ async fn collect_task_tree_tool_calls(
     let mut visited_chats = std::collections::HashSet::new();
     let mut calls = Vec::new();
     while let Some(task_id) = pending.pop_front() {
-        if !visited_tasks.insert(task_id.clone()) { continue; }
-        let Some(task) = task_service.find_by_id(&task_id).await? else { continue };
-        let Some(chat_id) = task.chat_id else { continue };
+        if !visited_tasks.insert(task_id.clone()) {
+            continue;
+        }
+        let Some(task) = task_service.find_by_id(&task_id).await? else {
+            continue;
+        };
+        let Some(chat_id) = task.chat_id else {
+            continue;
+        };
         if visited_chats.insert(chat_id.clone()) {
             calls.extend(tool_calls.find_by_chat_id(&chat_id).await?);
         }
@@ -148,15 +159,18 @@ async fn collect_task_tree_tool_calls(
         }
     }
     calls.sort_by(|left, right| {
-        (left.created_at, &left.chat_id, left.turn, &left.id)
-            .cmp(&(right.created_at, &right.chat_id, right.turn, &right.id))
+        (left.created_at, &left.chat_id, left.turn, &left.id).cmp(&(
+            right.created_at,
+            &right.chat_id,
+            right.turn,
+            &right.id,
+        ))
     });
     calls.dedup_by(|left, right| left.id == right.id);
     Ok(calls)
 }
 
 impl PkmService {
-
     pub async fn run_consolidation_sweep(
         &self,
         chat_service: &ChatService,
@@ -172,7 +186,8 @@ impl PkmService {
                 harness,
             },
             SweepMode::Full,
-        ).await
+        )
+        .await
     }
 
     /// Mine eligible chat windows and stop after Extract. Intended for diagnostics and
@@ -192,7 +207,8 @@ impl PkmService {
                 harness,
             },
             SweepMode::ExtractOnly,
-        ).await
+        )
+        .await
     }
 
     async fn run_sweep(
@@ -228,7 +244,11 @@ impl PkmService {
         for user_id in self.repo.users_with_open_consolidation().await? {
             by_user.entry(user_id).or_default();
         }
-        tracing::debug!(chats = chat_ids.len(), users = by_user.len(), "pkm consolidation sweep");
+        tracing::debug!(
+            chats = chat_ids.len(),
+            users = by_user.len(),
+            "pkm consolidation sweep"
+        );
 
         for (user_id, mut chats) in by_user {
             if reset_users.contains(&user_id) {
@@ -241,13 +261,7 @@ impl PkmService {
             let cancel_token = operation.cancellation();
             chats.sort();
             if let Err(e) = self
-                .consolidate_user(
-                    &user_id,
-                    &chats,
-                    services,
-                    mode,
-                    cancel_token,
-                )
+                .consolidate_user(&user_id, &chats, services, mode, cancel_token)
                 .await
             {
                 tracing::warn!(error = %e, user = %user_id, "pkm consolidation: pass failed");
@@ -310,7 +324,9 @@ impl PkmService {
                     _ => None,
                 }) else {
                     for write in patch {
-                        let _ = write.done.send(Err("extraction writer is no longer in ingest".into()));
+                        let _ = write
+                            .done
+                            .send(Err("extraction writer is no longer in ingest".into()));
                     }
                     continue;
                 };
@@ -319,7 +335,9 @@ impl PkmService {
                 let mut short_memory_ids = Vec::new();
                 for write in &mut patch {
                     combined.merge_from(&mut write.batch);
-                    if let Some(watermark) = write.watermark.take() { watermarks.push(watermark); }
+                    if let Some(watermark) = write.watermark.take() {
+                        watermarks.push(watermark);
+                    }
                     short_memory_ids.append(&mut write.short_memory_ids);
                 }
                 // These counters describe the same windows as `combined`. Bank them in
@@ -327,9 +345,16 @@ impl PkmService {
                 // them after commit: the watermark, extracted rows, pending state, and
                 // grounding diagnostics then survive (or roll back) together.
                 writer_record.stats.absorb_ingest_batch(&combined);
-                match extraction_repo.commit_extract_patch_with_checkpoint(
-                    &extraction_user, &combined, &watermarks, &short_memory_ids, &writer_record,
-                ).await {
+                match extraction_repo
+                    .commit_extract_patch_with_checkpoint(
+                        &extraction_user,
+                        &combined,
+                        &watermarks,
+                        &short_memory_ids,
+                        &writer_record,
+                    )
+                    .await
+                {
                     Ok(counts) => {
                         let mut counts = Some(counts);
                         for write in patch {
@@ -338,7 +363,9 @@ impl PkmService {
                     }
                     Err(error) => {
                         let message = error.to_string();
-                        for write in patch { let _ = write.done.send(Err(message.clone())); }
+                        for write in patch {
+                            let _ = write.done.send(Err(message.clone()));
+                        }
                         return Err(message);
                     }
                 }
@@ -352,8 +379,11 @@ impl PkmService {
             // walked past.
             _ => chat_ids.iter().cloned().collect(),
         };
-        let chat_ids: Vec<String> =
-            chat_ids.iter().filter(|c| !already_mined.contains(*c)).cloned().collect();
+        let chat_ids: Vec<String> = chat_ids
+            .iter()
+            .filter(|c| !already_mined.contains(*c))
+            .cloned()
+            .collect();
 
         // Mine every chat before consolidating. The user-scoped stages that follow read the
         // whole dirty entity set, so running them per chat would repeat them - and their
@@ -382,12 +412,7 @@ impl PkmService {
                 let chat_cancel = cancel_token.clone();
                 Box::pin(async move {
                     let outcome = self
-                        .drain_chat(
-                            chat_id,
-                            services,
-                            schedule,
-                            chat_cancel,
-                        )
+                        .drain_chat(chat_id, services, schedule, chat_cancel)
                         .await;
                     (chat_id.clone(), outcome)
                 }) as futures::future::BoxFuture<'_, (String, IngestOutcome)>
@@ -407,9 +432,10 @@ impl PkmService {
             }
         };
         drop(extraction_tx);
-        record = extraction_writer.await.map_err(|error| {
-            AppError::Internal(format!("extraction writer task failed: {error}"))
-        })?.map_err(AppError::Internal)?;
+        record = extraction_writer
+            .await
+            .map_err(|error| AppError::Internal(format!("extraction writer task failed: {error}")))?
+            .map_err(AppError::Internal)?;
 
         // Completion order is nondeterministic; sort so the scope chosen (and therefore
         // the agent the consolidation runs as) does not vary run to run.
@@ -443,9 +469,7 @@ impl PkmService {
         // Bank what mined before deciding what to do about what didn't, so a retry does
         // not re-read a transcript this pass has already consumed.
         if matches!(&record.state, ConsolidationStageState::Ingest(_)) {
-            record.state = ConsolidationStageState::Ingest(IngestState {
-                mined: done,
-            });
+            record.state = ConsolidationStageState::Ingest(IngestState { mined: done });
             record.stats.merge(ingested.clone());
             if let Err(e) = self.repo.save_consolidation_record(&record).await {
                 tracing::warn!(error = %e, user = %user_id, "pkm consolidation: checkpoint failed");
@@ -474,7 +498,9 @@ impl PkmService {
         };
 
         if cancel_token.is_cancelled() {
-            return Err(AppError::Internal("PKM consolidation was cancelled for reset".into()));
+            return Err(AppError::Internal(
+                "PKM consolidation was cancelled for reset".into(),
+            ));
         }
         let stats = self
             .consolidate_with_cancel(scope, services.harness.clone(), cancel_token)
@@ -547,10 +573,16 @@ impl PkmService {
             .unwrap_or(DateTime::<Utc>::MIN_UTC);
         let all_messages = services.chat.list_messages(&chat.user_id, chat_id).await?;
         let task_result_links = completed_task_result_links(&all_messages);
-        let agent_message_ids = all_messages.iter()
+        let agent_message_ids = all_messages
+            .iter()
             .filter(|message| message.role == MessageRole::Agent)
-            .map(|message| message.id.clone()).collect::<Vec<_>>();
-        let chat_tool_calls = self.tool_calls.find_by_chat_id(chat_id).await.unwrap_or_default();
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        let chat_tool_calls = self
+            .tool_calls
+            .find_by_chat_id(chat_id)
+            .await
+            .unwrap_or_default();
         let mut windows = consolidation_windows(
             all_messages,
             watermark,
@@ -576,16 +608,25 @@ impl PkmService {
         let mut prepared = Vec::with_capacity(windows.len());
         for (ordinal, (new_messages, advance_to)) in windows.into_iter().enumerate() {
             let window_short = if ordinal == 0 { short.as_slice() } else { &[] };
-            let assertion_message_ids = new_messages.iter()
+            let assertion_message_ids = new_messages
+                .iter()
                 .filter(|message| message.role == MessageRole::Agent)
-                .map(|message| message.id.clone()).collect::<Vec<_>>();
+                .map(|message| message.id.clone())
+                .collect::<Vec<_>>();
             let mut task_evidence = std::collections::HashMap::new();
             for assertion in &assertion_message_ids {
-                let Some(task_ids) = task_result_links.get(assertion) else { continue };
+                let Some(task_ids) = task_result_links.get(assertion) else {
+                    continue;
+                };
                 let calls = collect_task_tree_tool_calls(
-                    task_ids, &services.harness.task_service, &self.tool_calls,
-                ).await?;
-                if !calls.is_empty() { task_evidence.insert(assertion.clone(), calls); }
+                    task_ids,
+                    &services.harness.task_service,
+                    &self.tool_calls,
+                )
+                .await?;
+                if !calls.is_empty() {
+                    task_evidence.insert(assertion.clone(), calls);
+                }
             }
             let (transcript, temporal_sources, evidence_sources, recall) = self
                 .build_transcript(TranscriptInput {
@@ -615,7 +656,11 @@ impl PkmService {
                 },
                 transcript,
                 watermark: advance_to.map(|until| (chat_id.to_string(), until)),
-                short_memory_ids: if ordinal == 0 { short_ids.clone() } else { Vec::new() },
+                short_memory_ids: if ordinal == 0 {
+                    short_ids.clone()
+                } else {
+                    Vec::new()
+                },
                 new_messages: new_messages.len(),
             });
         }
@@ -636,9 +681,7 @@ impl PkmService {
         schedule: ExtractionSchedule,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Option<(ConsolidationScope, ConsolidationStats)>, AppError> {
-        let windows = self
-            .prepare_chat_windows(chat_id, services)
-            .await?;
+        let windows = self.prepare_chat_windows(chat_id, services).await?;
         if windows.is_empty() {
             return Ok(None);
         }
@@ -668,19 +711,24 @@ impl PkmService {
                 Ok::<_, AppError>(MinedExtractionWindow { prepared, batch })
             }
         });
-        let mut completed = futures::stream::iter(jobs)
-            .buffered(schedule.per_chat_concurrency.max(1));
+        let mut completed =
+            futures::stream::iter(jobs).buffered(schedule.per_chat_concurrency.max(1));
         while let Some(result) = completed.next().await {
             let window = result?;
             let MinedExtractionWindow { prepared, batch } = window;
             let (done, committed) = tokio::sync::oneshot::channel();
-            schedule.sender.send(ExtractionWrite {
-                batch,
-                watermark: prepared.watermark,
-                short_memory_ids: prepared.short_memory_ids,
-                done,
-            }).await.map_err(|_| AppError::Internal("extraction writer stopped".into()))?;
-            let counts = committed.await
+            schedule
+                .sender
+                .send(ExtractionWrite {
+                    batch,
+                    watermark: prepared.watermark,
+                    short_memory_ids: prepared.short_memory_ids,
+                    done,
+                })
+                .await
+                .map_err(|_| AppError::Internal("extraction writer stopped".into()))?;
+            let counts = committed
+                .await
                 .map_err(|_| AppError::Internal("extraction writer dropped commit result".into()))?
                 .map_err(AppError::Internal)?;
             let mut window_stats = ConsolidationStats::default();
@@ -724,16 +772,22 @@ impl PkmService {
             user_id,
             vault,
         } = input;
-        let current_message_ids = messages.iter().map(|message| message.id.as_str())
+        let current_message_ids = messages
+            .iter()
+            .map(|message| message.id.as_str())
             .collect::<std::collections::HashSet<_>>();
-        let current_tool_calls = tool_calls.iter()
+        let current_tool_calls = tool_calls
+            .iter()
             .filter(|call| current_message_ids.contains(call.message_id.as_str()))
-            .cloned().collect::<Vec<_>>();
+            .cloned()
+            .collect::<Vec<_>>();
         let is_memory_path = |value: &str| {
             self.storage.is_user_pkm_path(vault.handle(), value)
                 || vault.page_from_any(value).is_some()
                 || value.split_whitespace().any(|token| {
-                    let token = token.trim_matches(|character: char| matches!(character, '"' | '\'' | ',' | ')' | ']' | '}'));
+                    let token = token.trim_matches(|character: char| {
+                        matches!(character, '"' | '\'' | ',' | ')' | ']' | '}')
+                    });
                     let token = token.strip_prefix("path=").unwrap_or(token);
                     self.storage.is_user_pkm_path(vault.handle(), token)
                         || vault.page_from_any(token).is_some()
@@ -744,14 +798,15 @@ impl PkmService {
             agent_message_ids,
             assertion_message_ids,
             task_evidence,
-            self.memory_config.pkm_extract_agent_evidence_lookback_messages,
-            self.memory_config.pkm_extract_agent_evidence_result_token_cap,
+            self.memory_config
+                .pkm_extract_agent_evidence_lookback_messages,
+            self.memory_config
+                .pkm_extract_agent_evidence_result_token_cap,
             is_memory_path,
         );
-        let recall = super::consolidation::RecallProjection::new(
-            &current_tool_calls,
-            is_memory_path,
-        ).with_evidence(evidence);
+        let recall =
+            super::consolidation::RecallProjection::new(&current_tool_calls, is_memory_path)
+                .with_evidence(evidence);
         tracing::debug!(
             recall_calls = recall.len(),
             recall_preview_chars = recall.preview_chars(),
@@ -771,14 +826,22 @@ impl PkmService {
             items.push((s.created_at, Item::Mem(s)));
         }
         for call in tool_calls {
-            if !current_message_ids.contains(call.message_id.as_str()) { continue; }
-            if call.success && matches!(call.name.as_str(), "create_task" | "create_recurring_task") {
+            if !current_message_ids.contains(call.message_id.as_str()) {
+                continue;
+            }
+            if call.success && matches!(call.name.as_str(), "create_task" | "create_recurring_task")
+            {
                 items.push((call.created_at, Item::Task(call)));
             }
             if call.hitl.as_ref().is_some_and(|hitl| {
                 hitl.status == crate::inference::tool_call::ToolStatus::Resolved
-                    && matches!(&hitl.response, Some(crate::inference::hitl::HitlResponse::Choice(_)
-                        | crate::inference::hitl::HitlResponse::Approval(_)))
+                    && matches!(
+                        &hitl.response,
+                        Some(
+                            crate::inference::hitl::HitlResponse::Choice(_)
+                                | crate::inference::hitl::HitlResponse::Approval(_)
+                        )
+                    )
             }) {
                 items.push((call.created_at, Item::Hitl(call)));
             }
@@ -794,7 +857,10 @@ impl PkmService {
             match item {
                 Item::Msg(m) => {
                     if m.role == MessageRole::TaskCompletion {
-                        let Some(MessageEvent::TaskCompletion { task_id, status, .. }) = &m.event else {
+                        let Some(MessageEvent::TaskCompletion {
+                            task_id, status, ..
+                        }) = &m.event
+                        else {
                             continue;
                         };
                         let Ok(Some(task)) = task_service.find_by_id(task_id).await else {
@@ -807,12 +873,8 @@ impl PkmService {
                             _ => continue,
                         };
                         let target_at = task_target_at(&task);
-                        let text = render_task_lifecycle(
-                            lifecycle,
-                            &task.title,
-                            created_at,
-                            target_at,
-                        );
+                        let text =
+                            render_task_lifecycle(lifecycle, &task.title, created_at, target_at);
                         let handle = format!("m{next_handle}");
                         next_handle += 1;
                         super::consolidation::transcript::push_task(&mut out, &handle, &text);
@@ -841,7 +903,8 @@ impl PkmService {
                     } else {
                         None
                     };
-                    let text = agent_text.as_ref()
+                    let text = agent_text
+                        .as_ref()
                         .cloned()
                         .unwrap_or_else(|| m.content.trim().to_string());
                     if text.is_empty() {
@@ -879,22 +942,23 @@ impl PkmService {
                         );
                     } else {
                         super::consolidation::transcript::push_message(
-                            &mut out,
-                            &handle,
-                            &speaker,
-                            &text,
+                            &mut out, &handle, &speaker, &text,
                         );
                     }
                     let kind = match m.role {
-                        MessageRole::User => Some(super::consolidation::TranscriptEvidenceKind::UserMessage {
-                            message_id: m.id.clone(),
-                            chat_id: m.chat_id.clone(),
-                        }),
-                        MessageRole::Agent => Some(super::consolidation::TranscriptEvidenceKind::AgentMessage {
-                            message_id: m.id.clone(),
-                            agent_id: m.agent_id.clone().unwrap_or_default(),
-                            chat_id: m.chat_id.clone(),
-                        }),
+                        MessageRole::User => {
+                            Some(super::consolidation::TranscriptEvidenceKind::UserMessage {
+                                message_id: m.id.clone(),
+                                chat_id: m.chat_id.clone(),
+                            })
+                        }
+                        MessageRole::Agent => {
+                            Some(super::consolidation::TranscriptEvidenceKind::AgentMessage {
+                                message_id: m.id.clone(),
+                                agent_id: m.agent_id.clone().unwrap_or_default(),
+                                chat_id: m.chat_id.clone(),
+                            })
+                        }
                         _ => None,
                     };
                     if let Some(kind) = kind {
@@ -912,17 +976,27 @@ impl PkmService {
                         task_target_at: None,
                     });
                 }
-                Item::Mem(s) => super::consolidation::transcript::push_remembered(&mut out, &s.content),
+                Item::Mem(s) => {
+                    super::consolidation::transcript::push_remembered(&mut out, &s.content)
+                }
                 Item::Task(call) => {
-                    let Some(title) = call.arguments.get("title").and_then(|value| value.as_str()) else {
+                    let Some(title) = call.arguments.get("title").and_then(|value| value.as_str())
+                    else {
                         continue;
                     };
                     let title = title.trim();
-                    if title.is_empty() { continue; }
+                    if title.is_empty() {
+                        continue;
+                    }
                     let Some(task_id) = serde_json::from_str::<serde_json::Value>(&call.result)
                         .ok()
-                        .and_then(|value| value.get("task_id").or_else(|| value.get("id"))
-                            .and_then(|id| id.as_str()).map(str::to_string))
+                        .and_then(|value| {
+                            value
+                                .get("task_id")
+                                .or_else(|| value.get("id"))
+                                .and_then(|id| id.as_str())
+                                .map(str::to_string)
+                        })
                     else {
                         continue;
                     };
@@ -959,7 +1033,11 @@ impl PkmService {
                     let text = match &hitl.response {
                         Some(crate::inference::hitl::HitlResponse::Choice(value)) => value.clone(),
                         Some(crate::inference::hitl::HitlResponse::Approval(value)) => {
-                            if *value { "approved".to_string() } else { "denied".to_string() }
+                            if *value {
+                                "approved".to_string()
+                            } else {
+                                "denied".to_string()
+                            }
                         }
                         _ => continue,
                     };
@@ -980,14 +1058,17 @@ impl PkmService {
                         },
                     });
                     temporal_sources.push(super::consolidation::TemporalSource {
-                        handle, text, created_at, task_event_at: None, task_target_at: None,
+                        handle,
+                        text,
+                        created_at,
+                        task_event_at: None,
+                        task_target_at: None,
                     });
                 }
             }
         }
         (out, temporal_sources, evidence_sources, recall)
     }
-
 }
 
 mod window;

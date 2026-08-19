@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl OntologyManager {
     /// Build the manager and load a catalogue if one is already on disk. A missing or
     /// unreadable catalogue is **not** an error: the server starts, and consolidation
@@ -24,7 +23,11 @@ impl OntologyManager {
                 None
             }
         };
-        Self { catalogue: Arc::new(ArcSwapOption::new(catalogue)), repo, roots }
+        Self {
+            catalogue: Arc::new(ArcSwapOption::new(catalogue)),
+            repo,
+            roots,
+        }
     }
 
     /// Fetch the release if neither the image's copy nor a previous repair verifies,
@@ -58,7 +61,9 @@ impl OntologyManager {
     /// prefix would make one stored string mean two different terms. Falls back to the
     /// bundled set only when no catalogue is installed, which is the same map.
     pub fn prefixes(&self) -> PrefixMap {
-        self.catalogue().map(|c| c.prefixes().clone()).unwrap_or_default()
+        self.catalogue()
+            .map(|c| c.prefixes().clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn catalogue(&self) -> Option<Arc<OntologyCatalogue>> {
@@ -87,7 +92,10 @@ impl OntologyManager {
 
     /// What this user reasons over. Use this (never a manager-wide one) whenever
     /// expanding or compacting anything that came out of *their* entities.
-    pub(crate) async fn user_effective_ontology(&self, user_id: &str) -> Result<Arc<OntologyScope>, AppError> {
+    pub(crate) async fn user_effective_ontology(
+        &self,
+        user_id: &str,
+    ) -> Result<Arc<OntologyScope>, AppError> {
         Ok(self.load(user_id).await?.effective_ontology().clone())
     }
 
@@ -95,9 +103,10 @@ impl OntologyManager {
     ///
     /// Finding a term brings it into scope, so a hit here always resolves.
     pub(crate) fn search_vocab(&self, term: &str, limit: usize) -> Vec<VocabHit> {
-        self.catalogue.load().as_ref().map(|catalogue| {
-            catalogue.search(term, limit)
-        }).unwrap_or_default()
+        self.catalogue
+            .load()
+            .as_ref()
+            .map(|catalogue| catalogue.search(term, limit))
+            .unwrap_or_default()
     }
-
 }

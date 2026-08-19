@@ -9,11 +9,11 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::oneshot as futures_oneshot;
+use presage::Manager;
 use presage::libsignal_service::configuration::SignalServers;
 use presage::model::identity::OnNewIdentity;
 use presage::model::messages::Received;
 use presage::store::StateStore;
-use presage::Manager;
 use presage_store_sqlite::SqliteStore;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -125,9 +125,11 @@ pub async fn spawn(
     let qr = match qr_rx {
         Some(rx) => match tokio::time::timeout(QR_TIMEOUT, rx).await {
             Ok(Ok(url)) => Some(url),
-            Ok(Err(_)) => return Err(AppError::Internal(
-                "Signal worker dropped QR oneshot before emitting a URL".into(),
-            )),
+            Ok(Err(_)) => {
+                return Err(AppError::Internal(
+                    "Signal worker dropped QR oneshot before emitting a URL".into(),
+                ));
+            }
             Err(_) => {
                 return Err(AppError::Internal(format!(
                     "Signal link URL not emitted within {:?}",
@@ -200,12 +202,8 @@ async fn run(
                 let _ = tx.send(url.to_string());
             }
         };
-        let link_fut = Manager::link_secondary_device(
-            store,
-            SignalServers::Production,
-            device_name,
-            link_tx,
-        );
+        let link_fut =
+            Manager::link_secondary_device(store, SignalServers::Production, device_name, link_tx);
         match futures::future::join(link_fut, qr_forward).await {
             (Ok(m), _) => {
                 tracing::info!(

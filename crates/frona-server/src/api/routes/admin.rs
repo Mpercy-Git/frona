@@ -21,14 +21,8 @@ pub fn router() -> Router<AppState> {
             "/api/admin/users/{id}",
             patch(patch_user).delete(delete_user),
         )
-        .route(
-            "/api/admin/users/{id}/deactivate",
-            post(deactivate_user),
-        )
-        .route(
-            "/api/admin/users/{id}/reactivate",
-            post(reactivate_user),
-        )
+        .route("/api/admin/users/{id}/deactivate", post(deactivate_user))
+        .route("/api/admin/users/{id}/reactivate", post(reactivate_user))
         .route("/api/admin/groups", get(list_groups))
 }
 
@@ -109,11 +103,7 @@ async fn load_caller(state: &AppState, auth: &AuthUser) -> Result<User, AppError
         .ok_or_else(|| AppError::NotFound("User not found".into()))
 }
 
-async fn require(
-    state: &AppState,
-    caller: &User,
-    action: PolicyAction,
-) -> Result<(), AppError> {
+async fn require(state: &AppState, caller: &User, action: PolicyAction) -> Result<(), AppError> {
     let decision = state.policy_service.authorize_user(caller, action).await?;
     if decision.allowed {
         Ok(())
@@ -134,8 +124,13 @@ async fn list_users(
     let caller = load_caller(&state, &auth).await?;
     require(&state, &caller, PolicyAction::ListUsers).await?;
 
-    let users = state.user_service.list_all(query.include_deactivated).await?;
-    Ok(Json(users.into_iter().map(AdminUserListItem::from).collect()))
+    let users = state
+        .user_service
+        .list_all(query.include_deactivated)
+        .await?;
+    Ok(Json(
+        users.into_iter().map(AdminUserListItem::from).collect(),
+    ))
 }
 
 async fn create_user(
@@ -307,7 +302,10 @@ async fn delete_user(
     }
     if let Ok(channels) = state.channel_service.list_for_user(&target_id).await {
         for channel in channels {
-            let _ = state.channel_service.delete(&state, &target_id, &channel.id).await;
+            let _ = state
+                .channel_service
+                .delete(&state, &target_id, &channel.id)
+                .await;
         }
     }
 
@@ -342,5 +340,7 @@ async fn list_groups(
     require(&state, &caller, PolicyAction::ListUsers).await?;
 
     let groups = state.user_group_service.list_all().await?;
-    Ok(Json(groups.into_iter().map(AdminGroupListItem::from).collect()))
+    Ok(Json(
+        groups.into_iter().map(AdminGroupListItem::from).collect(),
+    ))
 }

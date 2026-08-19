@@ -29,7 +29,10 @@ pub(crate) async fn page_everywhere(
     from: &str,
     to: &str,
 ) -> Result<(), AppError> {
-    let linkers = repo.entities_linking_to(user_id, from).await.unwrap_or_default();
+    let linkers = repo
+        .entities_linking_to(user_id, from)
+        .await
+        .unwrap_or_default();
     repo.rename_entity(user_id, from, to).await?;
     if let Err(e) = storage.move_page_file(vault, from, to) {
         tracing::warn!(error = %e, %from, %to, "pkm rename: page file move failed");
@@ -52,7 +55,10 @@ pub(crate) async fn rewrite_links_after_move(
     from: &str,
     to: &str,
 ) {
-    let linkers = repo.entities_linking_to(user_id, to).await.unwrap_or_default();
+    let linkers = repo
+        .entities_linking_to(user_id, to)
+        .await
+        .unwrap_or_default();
     rewrite_links(storage, vault, &linkers, from, to);
 }
 

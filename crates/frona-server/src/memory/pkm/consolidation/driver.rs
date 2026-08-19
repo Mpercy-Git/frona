@@ -37,7 +37,15 @@ impl Consolidator {
         user_service: crate::auth::user_service::UserService,
     ) -> Self {
         let prefixes = ontology.prefixes();
-        Self { ctx, config, ontology, prefixes, tool_calls, messages, user_service }
+        Self {
+            ctx,
+            config,
+            ontology,
+            prefixes,
+            tool_calls,
+            messages,
+            user_service,
+        }
     }
 
     /// Drive the user-scoped stages from wherever the record left off.
@@ -63,25 +71,26 @@ impl Consolidator {
             let stage = self.ctx.stage().await;
             let entered = stage.label();
             let outcome: Result<(), AppError> = match stage {
-                ConsolidationStageState::Ingest(_) => {
-                    Ok(())
-                }
+                ConsolidationStageState::Ingest(_) => Ok(()),
                 ConsolidationStageState::Classify(_)
                 | ConsolidationStageState::Resolve(_)
                 | ConsolidationStageState::Reconcile(_)
                 | ConsolidationStageState::Assemble(_) => match self.execute().await {
                     Ok((classify, resolve, assemble)) => {
-                        self.ctx.absorb(|s| {
-                            s.absorb_classify(classify);
-                            s.absorb_resolve(resolve);
-                            s.absorb_assemble(assemble);
-                        }).await;
+                        self.ctx
+                            .absorb(|s| {
+                                s.absorb_classify(classify);
+                                s.absorb_resolve(resolve);
+                                s.absorb_assemble(assemble);
+                            })
+                            .await;
                         Ok(())
                     }
                     Err(e) => Err(e),
                 },
                 ConsolidationStageState::PlaybookResolve(_) => self.playbook_resolve().run().await,
-                ConsolidationStageState::PlaybookAuthor => match self.playbook_author().run().await {
+                ConsolidationStageState::PlaybookAuthor => match self.playbook_author().run().await
+                {
                     Ok(o) => {
                         self.ctx.absorb(|s| s.absorb_playbook_author(o)).await;
                         Ok(())
@@ -105,8 +114,10 @@ impl Consolidator {
                         // still in flux, and anything written mid-pass would be rewritten
                         // moments later. A failure costs nothing - the next load notices
                         // the seed set moved and cuts again.
-                        if let Err(e) =
-                            self.ontology.save_effective_ontology(&self.ctx.scope.user_id).await
+                        if let Err(e) = self
+                            .ontology
+                            .save_effective_ontology(&self.ctx.scope.user_id)
+                            .await
                         {
                             warn!(error = %e, "pkm ontology: saving the effective ontology failed");
                         }
@@ -115,9 +126,11 @@ impl Consolidator {
                     Err(e) => Err(e),
                 },
                 ConsolidationStageState::Done => return Ok(()),
-                ConsolidationStageState::Failed => return Err(AppError::Database(
-                    "pkm consolidation: terminally failed checkpoint".into(),
-                )),
+                ConsolidationStageState::Failed => {
+                    return Err(AppError::Database(
+                        "pkm consolidation: terminally failed checkpoint".into(),
+                    ));
+                }
             };
             outcome?;
             if self.ctx.stage().await.label() == entered {
@@ -127,10 +140,13 @@ impl Consolidator {
     }
 
     async fn dirty_concept_entities(&self) -> Result<Vec<String>, AppError> {
-        self.ctx.repo.entities_needing_reconciliation_by_category(
-            &self.ctx.scope.user_id,
-            crate::memory::pkm::model::EntityCategory::Concept,
-        ).await
+        self.ctx
+            .repo
+            .entities_needing_reconciliation_by_category(
+                &self.ctx.scope.user_id,
+                crate::memory::pkm::model::EntityCategory::Concept,
+            )
+            .await
     }
 
     fn playbook_resolve(&self) -> playbook::PlaybookResolve {

@@ -438,8 +438,7 @@ mod tests {
 
     #[test]
     fn message_without_reasoning_omits_field() {
-        let msg = Message::builder("chat-1", MessageRole::Agent, "answer".to_string())
-            .build();
+        let msg = Message::builder("chat-1", MessageRole::Agent, "answer".to_string()).build();
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("\"reasoning\""));
@@ -461,8 +460,7 @@ mod tests {
 
     #[test]
     fn message_response_none_reasoning_when_absent() {
-        let msg = Message::builder("chat-1", MessageRole::Agent, "answer".to_string())
-            .build();
+        let msg = Message::builder("chat-1", MessageRole::Agent, "answer".to_string()).build();
 
         let response: MessageResponse = msg.into();
         assert!(response.reasoning.is_none());

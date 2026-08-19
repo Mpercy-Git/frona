@@ -28,10 +28,19 @@ pub struct AgentToolStatus {
 
 #[derive(Debug, Clone)]
 pub enum PolicyAction {
-    InvokeTool { tool_name: String, tool_group: String },
+    InvokeTool {
+        tool_name: String,
+        tool_group: String,
+    },
     /// `target_handle` builds the Cedar UID; `target_agent_id` (UUID) is for internal lookups.
-    DelegateTask { target_agent_id: String, target_handle: crate::core::Handle },
-    SendMessage { target_agent_id: String, target_handle: crate::core::Handle },
+    DelegateTask {
+        target_agent_id: String,
+        target_handle: crate::core::Handle,
+    },
+    SendMessage {
+        target_agent_id: String,
+        target_handle: crate::core::Handle,
+    },
     ReceiveSignal {
         connector_id: String,
         channel_handle: crate::core::Handle,
@@ -46,7 +55,9 @@ pub enum PolicyAction {
         paired_addresses: Vec<String>,
     },
     ListUsers,
-    ManageUsers { target_user_id: String },
+    ManageUsers {
+        target_user_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -176,4 +187,3 @@ impl PolicyResource {
         }
     }
 }
-

@@ -16,7 +16,8 @@ fn resolve_provider_model(
     match provider {
         ProviderModel::OpenAI { api, params } => ProviderModel::OpenAI {
             api: Some(
-                (*api).or_else(|| catalog.protocol_default("openai", model_id))
+                (*api)
+                    .or_else(|| catalog.protocol_default("openai", model_id))
                     .unwrap_or_default(),
             ),
             params: params.clone(),
@@ -104,7 +105,11 @@ impl ModelRegistryConfig {
         let inference = InferenceConfig::default();
         let models = build_default_model_groups(&providers, &inference);
 
-        Self { providers, models, skip_auto_discover: false }
+        Self {
+            providers,
+            models,
+            skip_auto_discover: false,
+        }
     }
 
     pub fn merge_with_auto_discovered(&mut self) {
@@ -135,11 +140,7 @@ impl ModelRegistryConfig {
                 .iter()
                 .map(|fb| ModelRef {
                     model_id: fb.common().model.clone(),
-                    provider: resolve_provider_model(
-                        &fb.provider,
-                        &fb.common().model,
-                        catalog,
-                    ),
+                    provider: resolve_provider_model(&fb.provider, &fb.common().model, catalog),
                 })
                 .collect();
 
@@ -251,7 +252,10 @@ thinking:
             panic!("expected anthropic provider");
         };
         assert_eq!(
-            params.thinking.as_ref().map(|thinking| thinking.budget_tokens),
+            params
+                .thinking
+                .as_ref()
+                .map(|thinking| thinking.budget_tokens),
             Some(Some(16000))
         );
         let written = serde_yaml::to_string(&config).unwrap();
@@ -311,7 +315,10 @@ candidate_count: 2
             panic!("expected gemini provider");
         };
         assert_eq!(
-            params.thinking_config.as_ref().map(|thinking| thinking.thinking_budget),
+            params
+                .thinking_config
+                .as_ref()
+                .map(|thinking| thinking.thinking_budget),
             Some(2048)
         );
         assert_eq!(params.candidate_count, Some(2));
@@ -377,10 +384,9 @@ fallbacks:
     model: metadata-model
 "#;
         let mut registry = ModelRegistryConfig::empty();
-        registry.models.insert(
-            "primary".to_string(),
-            serde_yaml::from_str(yaml).unwrap(),
-        );
+        registry
+            .models
+            .insert("primary".to_string(), serde_yaml::from_str(yaml).unwrap());
         let mut catalog = crate::inference::metadata::ModelCatalogSnapshot::empty();
         catalog.protocol_defaults.insert(
             "openai/configured-model".to_string(),
@@ -398,11 +404,20 @@ fallbacks:
         let ProviderModel::OpenAI { api: main_api, .. } = &group.main.provider else {
             panic!("expected openai main");
         };
-        let ProviderModel::OpenAI { api: fallback_api, .. } = &group.fallbacks[0].provider else {
+        let ProviderModel::OpenAI {
+            api: fallback_api, ..
+        } = &group.fallbacks[0].provider
+        else {
             panic!("expected openai fallback");
         };
-        assert_eq!(*main_api, Some(crate::core::config::OpenAiApi::ChatCompletions));
-        assert_eq!(*fallback_api, Some(crate::core::config::OpenAiApi::Responses));
+        assert_eq!(
+            *main_api,
+            Some(crate::core::config::OpenAiApi::ChatCompletions)
+        );
+        assert_eq!(
+            *fallback_api,
+            Some(crate::core::config::OpenAiApi::Responses)
+        );
     }
 
     #[test]

@@ -86,9 +86,9 @@ impl BasicMemoryService {
     /// Load a compaction prompt from the resources dir. Missing → `AppError`
     /// (a packaging/deploy problem) rather than a panic on the background task.
     fn load_prompt(&self, name: &str) -> Result<String, AppError> {
-        self.prompts
-            .read(name)
-            .ok_or_else(|| AppError::Internal(format!("compaction prompt {name} missing from resources")))
+        self.prompts.read(name).ok_or_else(|| {
+            AppError::Internal(format!("compaction prompt {name} missing from resources"))
+        })
     }
 
     pub async fn store_memory_entry(

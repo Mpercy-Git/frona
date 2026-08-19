@@ -11,28 +11,27 @@ use crate::db::repo::pkm::{
 use crate::memory::pkm::consolidation::Verdict;
 use crate::memory::pkm::consolidation::classify::ProposalSet;
 use crate::memory::pkm::consolidation::reconcile::projection::{
-    close_property_replacements, curie_key, curie_key_attributes,
-    drop_keys_held_as_relations, memory_replacement_property_rejections,
-    property_replacement_rejections, render_attribute_lines, render_memory_lines,
-    unsupported_scope_relations,
+    close_property_replacements, curie_key, curie_key_attributes, drop_keys_held_as_relations,
+    memory_replacement_property_rejections, property_replacement_rejections,
+    render_attribute_lines, render_memory_lines, unsupported_scope_relations,
 };
 use crate::memory::pkm::consolidation::reconcile::validation::{
-    accepted_promotions, assertion_provenance_rejections, merge_explicit_retractions,
-    promotion_suggestions, reconcile_declaration_rejections,
+    RelationPromotionValidation, accepted_promotions, assertion_provenance_rejections,
+    merge_explicit_retractions, promotion_suggestions, reconcile_declaration_rejections,
     relation_promotion_rejections, render_promotion_suggestions, replace_is_supported,
-    replacement_retractions, unsupported_replaces, RelationPromotionValidation,
+    replacement_retractions, unsupported_replaces,
 };
 use crate::memory::pkm::consolidation::reconcile::{
     EntityOutcome, EntityVerdict, Reconcile, ReconciledEntityUpdate,
 };
 use crate::memory::pkm::consolidation::{
-    Consolidator, ConsolidationProgress, ReconcilePromotion, ResolveWorkState,
+    ConsolidationProgress, Consolidator, ReconcilePromotion, ResolveWorkState,
+};
+use crate::memory::pkm::consolidation::{
+    PromptIds, PromptSpec, ReconcileOutcome, ResolveOutcome, comparison_key,
 };
 use crate::memory::pkm::consolidation::{
     projection_rejection_details, validate_proposal_projection,
-};
-use crate::memory::pkm::consolidation::{
-    PromptIds, ReconcileOutcome, ResolveOutcome, PromptSpec, comparison_key,
 };
 use crate::memory::pkm::model::{
     AttributeSource, EntityCategory, KnowledgeEntityLink, KnowledgeMemory, RelationType,
@@ -63,16 +62,22 @@ pub(super) fn partition_reconcile_memories(
     all_memories: &[KnowledgeMemory],
 ) -> (Vec<KnowledgeMemory>, Vec<KnowledgeMemory>) {
     let terminal_task_plans = terminal_task_plan_ids(all_memories);
-    let current = all_memories.iter()
-        .filter(|memory| memory.relations.is_empty()
-            && memory.disposition == crate::memory::pkm::model::Disposition::None
-            && !terminal_task_plans.contains(&memory.id))
+    let current = all_memories
+        .iter()
+        .filter(|memory| {
+            memory.relations.is_empty()
+                && memory.disposition == crate::memory::pkm::model::Disposition::None
+                && !terminal_task_plans.contains(&memory.id)
+        })
         .cloned()
         .collect();
-    let historical = all_memories.iter()
-        .filter(|memory| !memory.relations.is_empty()
-            || memory.disposition != crate::memory::pkm::model::Disposition::None
-            || terminal_task_plans.contains(&memory.id))
+    let historical = all_memories
+        .iter()
+        .filter(|memory| {
+            !memory.relations.is_empty()
+                || memory.disposition != crate::memory::pkm::model::Disposition::None
+                || terminal_task_plans.contains(&memory.id)
+        })
         .cloned()
         .collect();
     (current, historical)
@@ -122,7 +127,8 @@ impl Reconcile {
         resolve_state: &mut ResolveWorkState,
         ontology_stats: &mut ResolveOutcome,
     ) -> Result<(), AppError> {
-        let mut pending = self.ctx
+        let mut pending = self
+            .ctx
             .repo
             .entities_needing_reconciliation(&self.ctx.scope.user_id)
             .await?;
@@ -140,12 +146,7 @@ impl Reconcile {
                 let promotions = reconciliation.promotions().to_vec();
                 let retractions = reconciliation.retractions().to_vec();
                 let mut trial = proposals.clone();
-                trial.add_reconcile_promotions(
-                    &path,
-                    &promotions,
-                    &retractions,
-                    &self.prefixes,
-                );
+                trial.add_reconcile_promotions(&path, &promotions, &retractions, &self.prefixes);
                 if let Some(entity) = self.ctx.view.entity_by_path(&path).await? {
                     trial.apply_reconciled_entity(
                         &path,
@@ -154,16 +155,10 @@ impl Reconcile {
                         entity.attributes.clone(),
                         entity.attribute_sources,
                     );
-                    trial.add_reconcile_attributes(
-                        &path,
-                        &entity.attributes,
-                        &[],
-                        &self.prefixes,
-                    );
+                    trial.add_reconcile_attributes(&path, &entity.attributes, &[], &self.prefixes);
                 }
-                let validation = validate_proposal_projection(
-                    &self.ctx, &self.ontology, &trial,
-                ).await?;
+                let validation =
+                    validate_proposal_projection(&self.ctx, &self.ontology, &trial).await?;
                 if validation.is_valid() {
                     *proposals = trial;
                     progress
@@ -183,20 +178,20 @@ impl Reconcile {
                             ontology_stats,
                             worklist: &mut worklist,
                         },
-                    ).await?;
+                    )
+                    .await?;
                     continue;
                 }
-                replay_rejection = Some(projection_rejection_details(
-                    &validation,
-                ));
+                replay_rejection = Some(projection_rejection_details(&validation));
                 progress.reopen_reconciliation(&path);
                 progress
                     .checkpoint_transition("reconcile-replay-rejected", &path, proposals)
                     .await?;
             }
             let draft = proposals.entity_draft();
-            let Some(entity) = self.ctx.view.entity_by_path_with(&draft, &path).await?
-            else { continue };
+            let Some(entity) = self.ctx.view.entity_by_path_with(&draft, &path).await? else {
+                continue;
+            };
             if entity.category != EntityCategory::Concept {
                 continue;
             }
@@ -207,9 +202,10 @@ impl Reconcile {
                 continue;
             }
             let mut counted = ReconcileOutcome::default();
-            match self.reconcile_entity(
-                &path, proposals, &mut counted, replay_rejection.as_deref(),
-            ).await {
+            match self
+                .reconcile_entity(&path, proposals, &mut counted, replay_rejection.as_deref())
+                .await
+            {
                 Ok(mut outcome) => {
                     if let Some(update) = outcome.page_update.as_ref() {
                         proposals.apply_reconciled_entity(
@@ -226,7 +222,8 @@ impl Reconcile {
                             &self.prefixes,
                         );
                         if let Some(mut entity) = proposals.input_entity(&path) {
-                            entity.lifecycle = crate::memory::pkm::model::ConsolidationEntityLifecycle::Active;
+                            entity.lifecycle =
+                                crate::memory::pkm::model::ConsolidationEntityLifecycle::Active;
                             entity.rederive_search();
                             entity.validate()?;
                             outcome.commit.entity = Some(entity);
@@ -268,7 +265,8 @@ impl Reconcile {
                             ontology_stats,
                             worklist: &mut worklist,
                         },
-                    ).await?;
+                    )
+                    .await?;
                     for p in outcome.reconcile_dirty {
                         // Re-enqueue (back-edges allowed); the worklist only dedups
                         // simultaneous entries, so an entity can be reconciled again.
@@ -295,18 +293,25 @@ impl Reconcile {
         state: ReconcileResolutionState<'_>,
     ) -> Result<(), AppError> {
         let mut affected = std::collections::BTreeSet::from([effects.path.to_string()]);
-        affected.extend(effects.promotions.iter().map(|promotion| promotion.target.clone()));
+        affected.extend(
+            effects
+                .promotions
+                .iter()
+                .map(|promotion| promotion.target.clone()),
+        );
         affected.extend(effects.retractions.iter().map(|(_, target)| target.clone()));
         for candidate in affected {
             let candidate = progress.canonical_path(&candidate);
-            let winner = resolver.resolve_identity(
-                &candidate,
-                proposals,
-                progress,
-                &mut *state.resolve,
-                &mut *state.ontology_stats,
-                true,
-            ).await?;
+            let winner = resolver
+                .resolve_identity(
+                    &candidate,
+                    proposals,
+                    progress,
+                    &mut *state.resolve,
+                    &mut *state.ontology_stats,
+                    true,
+                )
+                .await?;
             if let Some(winner) = winner {
                 state.worklist.push(winner);
             }
@@ -328,17 +333,24 @@ impl Reconcile {
     ) -> Result<ProposalSet, AppError> {
         let mut trial = proposals.clone();
         let valid: HashSet<&str> = memories.iter().map(|memory| memory.id.as_str()).collect();
-        let retired_any = verdict.outdated.iter().any(|item| valid.contains(item.memory.trim()))
+        let retired_any = verdict
+            .outdated
+            .iter()
+            .any(|item| valid.contains(item.memory.trim()))
             || verdict.relations.iter().any(|related| {
-                valid.contains(related.memory.trim()) && related.links.iter().any(|link| {
-                    !link.to.trim().is_empty() && valid.contains(link.to.trim())
-                })
+                valid.contains(related.memory.trim())
+                    && related
+                        .links
+                        .iter()
+                        .any(|link| !link.to.trim().is_empty() && valid.contains(link.to.trim()))
             });
         if !retired_any {
             let mut linked_names = HashSet::new();
             for link in links {
                 let draft = proposals.entity_draft();
-                let target = self.ctx.view
+                let target = self
+                    .ctx
+                    .view
                     .entity_by_path_with(&draft, &link.to_entity_path)
                     .await?;
                 if let Some(target) = target {
@@ -352,11 +364,15 @@ impl Reconcile {
                 &linked_names,
                 &self.prefixes,
             );
-            let attribute_sources = verdict.attribute_sources.iter().map(|source| AttributeSource {
-                property: curie_key(&source.property, &self.prefixes),
-                value: source.value.clone(),
-                source_memory_ids: source.source_memory_ids.clone(),
-            }).collect::<Vec<_>>();
+            let attribute_sources = verdict
+                .attribute_sources
+                .iter()
+                .map(|source| AttributeSource {
+                    property: curie_key(&source.property, &self.prefixes),
+                    value: source.value.clone(),
+                    source_memory_ids: source.source_memory_ids.clone(),
+                })
+                .collect::<Vec<_>>();
             let description = if verdict.description.trim().is_empty() {
                 entity.description.clone()
             } else {
@@ -384,7 +400,8 @@ impl Reconcile {
             &self.prefixes,
             memories,
             proposals.promotions_for(path),
-        ).await?;
+        )
+        .await?;
         let retractions = replacement_retractions(
             verdict,
             &promotions,
@@ -393,7 +410,8 @@ impl Reconcile {
             &self.ctx,
             proposals,
             path,
-        ).await?;
+        )
+        .await?;
         let retractions = merge_explicit_retractions(retractions, verdict);
         trial.add_reconcile_promotions(path, &promotions, &retractions, &self.prefixes);
         Ok(trial)
@@ -402,9 +420,7 @@ impl Reconcile {
     /// No reconciled patch reaches the durable checkpoint unless the complete staged
     /// A-box and T-box remain valid together.
     async fn validate_staged_projection(&self, proposals: &ProposalSet) -> Result<(), AppError> {
-        let validation = validate_proposal_projection(
-            &self.ctx, &self.ontology, proposals,
-        ).await?;
+        let validation = validate_proposal_projection(&self.ctx, &self.ontology, proposals).await?;
         if validation.is_valid() {
             return Ok(());
         }
@@ -421,14 +437,18 @@ impl Reconcile {
         stats: &mut ReconcileOutcome,
         initial_rejection: Option<&str>,
     ) -> Result<EntityOutcome, AppError> {
-        let mut all_memories = self.ctx
+        let mut all_memories = self
+            .ctx
             .repo
             .memories_for_entity(&self.ctx.scope.user_id, path)
             .await?;
         let draft = proposals.entity_draft();
-        let Some(entity) = self.ctx.view.entity_by_path_with(&draft, path).await?
-        else { return Ok(EntityOutcome::default()) };
-        for memory in self.ctx.repo
+        let Some(entity) = self.ctx.view.entity_by_path_with(&draft, path).await? else {
+            return Ok(EntityOutcome::default());
+        };
+        for memory in self
+            .ctx
+            .repo
             .memories_by_ids(&self.ctx.scope.user_id, &entity.source_memory_ids)
             .await?
         {
@@ -457,7 +477,9 @@ impl Reconcile {
         let prompt_ids = PromptIds::new("m", all_memories.iter().map(|memory| memory.id.clone()));
         let mut memory_entities = HashMap::<String, Vec<String>>::new();
         for memory in &all_memories {
-            let mut entities = self.ctx.repo
+            let mut entities = self
+                .ctx
+                .repo
                 .memory_entity_paths(&self.ctx.scope.user_id, &memory.id)
                 .await?;
             entities.extend(proposals.memory_paths(&memory.id));
@@ -465,18 +487,30 @@ impl Reconcile {
             entities.dedup();
             memory_entities.insert(prompt_ids.local(&memory.id).to_string(), entities);
         }
-        let prompt_memories = memories.iter().cloned().map(|mut memory| {
-            memory.id = prompt_ids.local(&memory.id).to_string();
-            memory
-        }).collect::<Vec<_>>();
-        let prompt_historical = historical.iter().cloned().map(|mut memory| {
-            memory.id = prompt_ids.local(&memory.id).to_string();
-            memory
-        }).collect::<Vec<_>>();
+        let prompt_memories = memories
+            .iter()
+            .cloned()
+            .map(|mut memory| {
+                memory.id = prompt_ids.local(&memory.id).to_string();
+                memory
+            })
+            .collect::<Vec<_>>();
+        let prompt_historical = historical
+            .iter()
+            .cloned()
+            .map(|mut memory| {
+                memory.id = prompt_ids.local(&memory.id).to_string();
+                memory
+            })
+            .collect::<Vec<_>>();
         let memory_lines = format!(
             "Current memories (verdict subjects):\n{}\nHistorical comparison memories (read-only targets):\n{}",
             render_memory_lines(&prompt_memories, &memory_entities),
-            if prompt_historical.is_empty() { "(none)\n".to_string() } else { render_memory_lines(&prompt_historical, &memory_entities) },
+            if prompt_historical.is_empty() {
+                "(none)\n".to_string()
+            } else {
+                render_memory_lines(&prompt_historical, &memory_entities)
+            },
         );
         // The model reads CURIEs; the database holds IRIs.
         let kinds = self.prefixes.display_joined(&entity.kinds);
@@ -489,7 +523,10 @@ impl Reconcile {
         let links = proposals.project_links(
             &self.ctx.scope.user_id,
             path,
-            self.ctx.repo.links_from_entity(&self.ctx.scope.user_id, path).await
+            self.ctx
+                .repo
+                .links_from_entity(&self.ctx.scope.user_id, path)
+                .await
                 .unwrap_or_default(),
         );
         let relation_lines: String = links
@@ -506,11 +543,19 @@ impl Reconcile {
                 ("memories", &memory_lines),
                 (
                     "attributes",
-                    if attribute_lines.is_empty() { "(none)\n" } else { &attribute_lines },
+                    if attribute_lines.is_empty() {
+                        "(none)\n"
+                    } else {
+                        &attribute_lines
+                    },
                 ),
                 (
                     "relations",
-                    if relation_lines.is_empty() { "(none)\n" } else { &relation_lines },
+                    if relation_lines.is_empty() {
+                        "(none)\n"
+                    } else {
+                        &relation_lines
+                    },
                 ),
             ],
         )?;
@@ -529,7 +574,8 @@ impl Reconcile {
             input.push_str("\n\nThe checkpointed proposal is no longer valid against the reconstructed graph. Revise it before it can be staged:\n");
             input.push_str(rejection);
         }
-        let mut convo = match self.ctx
+        let mut convo = match self
+            .ctx
             .llm
             .conversation::<EntityVerdict>(
                 None,
@@ -550,7 +596,8 @@ impl Reconcile {
         };
         // An entity whose model never produced an accepted answer is skipped, not fatal.
         // Its memories and dirty state remain unchanged, so a later pass can retry it.
-        let (ctx, current, source_path, scopes) = (&self.ctx, &prompt_memories, path, &memory_entities);
+        let (ctx, current, source_path, scopes) =
+            (&self.ctx, &prompt_memories, path, &memory_entities);
         let mut prompt_attribute_sources = entity.attribute_sources.clone();
         for source in &mut prompt_attribute_sources {
             for id in &mut source.source_memory_ids {
@@ -566,10 +613,12 @@ impl Reconcile {
         let existing_attribute_sources = &prompt_attribute_sources;
         let existing_links = &prompt_links;
         let catalogue = self.ontology.catalog(&self.ctx.scope.user_id).await.ok();
-        let mut known_object_properties: HashSet<String> = catalogue.as_ref()
+        let mut known_object_properties: HashSet<String> = catalogue
+            .as_ref()
             .map(|catalogue| catalogue.object_properties.iter().cloned().collect())
             .unwrap_or_default();
-        let mut known_data_properties: HashSet<String> = catalogue.as_ref()
+        let mut known_data_properties: HashSet<String> = catalogue
+            .as_ref()
             .map(|catalogue| catalogue.data_properties.iter().cloned().collect())
             .unwrap_or_default();
         for edit in &proposals.proposed_edits {
@@ -587,8 +636,7 @@ impl Reconcile {
         let known_data_properties = &known_data_properties;
         let prefixes = &self.prefixes;
         let draft = proposals.entity_draft();
-        let suggestion_entities = self.ctx.view.snapshot_with(&draft).await?
-            .into_entities();
+        let suggestion_entities = self.ctx.view.snapshot_with(&draft).await?.into_entities();
         let suggestion_links = links.clone();
         let suggestion_entities = &suggestion_entities;
         let suggestion_links = &suggestion_links;
@@ -601,97 +649,108 @@ impl Reconcile {
         let validation_memories = &memories;
         let validation_ids = &prompt_ids;
         let refined = convo
-            .refine(self.max_submissions, move |mut candidate: EntityVerdict| async move {
-                close_property_replacements(&mut candidate);
-                let mut rejections = reconcile_declaration_rejections(
-                    &candidate, known_object_properties, known_data_properties, prefixes,
-                );
-                rejections.extend(unsupported_replaces(&candidate, current));
-                rejections.extend(property_replacement_rejections(
-                    &candidate,
-                    current,
-                    existing_attribute_sources,
-                    existing_links,
-                ));
-                rejections.extend(memory_replacement_property_rejections(
-                    &candidate,
-                    existing_attribute_sources,
-                    existing_links,
-                ));
-                rejections.extend(unsupported_scope_relations(&candidate, scopes, source_path));
-                rejections.extend(assertion_provenance_rejections(
-                    &candidate,
-                    current,
-                    existing_attribute_sources,
-                    existing_links,
-                    scopes,
-                    source_path,
-                ));
-                rejections.extend(relation_promotion_rejections(
-                    &candidate,
-                    RelationPromotionValidation {
-                        ctx,
-                        proposals: proposal_snapshot,
-                        source_path,
-                        prefixes,
-                        memories: current,
-                        known_data_properties,
-                        existing: proposal_snapshot.promotions_for(source_path),
-                    },
-                )
-                .await?);
-                let advisory = if !sent.swap(true, Ordering::Relaxed) {
-                    let suggestions = promotion_suggestions(
-                        source_path,
+            .refine(
+                self.max_submissions,
+                move |mut candidate: EntityVerdict| async move {
+                    close_property_replacements(&mut candidate);
+                    let mut rejections = reconcile_declaration_rejections(
                         &candidate,
-                        suggestion_entities,
-                        suggestion_links,
+                        known_object_properties,
+                        known_data_properties,
+                        prefixes,
                     );
-                    if !suggestions.is_empty() {
-                        Some(render_promotion_suggestions(ctx, &suggestions)?)
+                    rejections.extend(unsupported_replaces(&candidate, current));
+                    rejections.extend(property_replacement_rejections(
+                        &candidate,
+                        current,
+                        existing_attribute_sources,
+                        existing_links,
+                    ));
+                    rejections.extend(memory_replacement_property_rejections(
+                        &candidate,
+                        existing_attribute_sources,
+                        existing_links,
+                    ));
+                    rejections.extend(unsupported_scope_relations(&candidate, scopes, source_path));
+                    rejections.extend(assertion_provenance_rejections(
+                        &candidate,
+                        current,
+                        existing_attribute_sources,
+                        existing_links,
+                        scopes,
+                        source_path,
+                    ));
+                    rejections.extend(
+                        relation_promotion_rejections(
+                            &candidate,
+                            RelationPromotionValidation {
+                                ctx,
+                                proposals: proposal_snapshot,
+                                source_path,
+                                prefixes,
+                                memories: current,
+                                known_data_properties,
+                                existing: proposal_snapshot.promotions_for(source_path),
+                            },
+                        )
+                        .await?,
+                    );
+                    let advisory = if !sent.swap(true, Ordering::Relaxed) {
+                        let suggestions = promotion_suggestions(
+                            source_path,
+                            &candidate,
+                            suggestion_entities,
+                            suggestion_links,
+                        );
+                        if !suggestions.is_empty() {
+                            Some(render_promotion_suggestions(ctx, &suggestions)?)
+                        } else {
+                            None
+                        }
                     } else {
                         None
+                    };
+                    let mut expanded = candidate.clone();
+                    expanded.expand_prompt_ids(validation_ids)?;
+                    let trial = reconciler
+                        .reconcile_trial(
+                            source_path,
+                            validation_page,
+                            validation_links,
+                            validation_memories,
+                            &expanded,
+                            proposal_snapshot,
+                        )
+                        .await?;
+                    let validation =
+                        validate_proposal_projection(&reconciler.ctx, &reconciler.ontology, &trial)
+                            .await?;
+                    if !validation.is_valid() {
+                        rejections.push(projection_rejection_details(&validation));
                     }
-                } else {
-                    None
-                };
-                let mut expanded = candidate.clone();
-                expanded.expand_prompt_ids(validation_ids)?;
-                let trial = reconciler.reconcile_trial(
-                    source_path,
-                    validation_page,
-                    validation_links,
-                    validation_memories,
-                    &expanded,
-                    proposal_snapshot,
-                ).await?;
-                let validation = validate_proposal_projection(
-                    &reconciler.ctx,
-                    &reconciler.ontology,
-                    &trial,
-                ).await?;
-                if !validation.is_valid() {
-                    rejections.push(projection_rejection_details(&validation));
-                }
-                if rejections.is_empty() && advisory.is_none() {
-                    return Ok(Verdict::Accept(candidate));
-                }
-                let mut feedback = if rejections.is_empty() {
-                    String::new()
-                } else {
-                    ctx.llm.reject(
-                        PromptSpec::RECONCILE,
-                        &[("rejections", &rejections.join("\n"))],
-                    )?
-                };
-                if let Some(advisory) = advisory {
-                    if !feedback.is_empty() {
-                        feedback.push_str("\n\n");
+                    if rejections.is_empty() && advisory.is_none() {
+                        return Ok(Verdict::Accept(candidate));
                     }
-                    feedback.push_str(&advisory);
-                }
-                Ok(Verdict::Revise { feedback, keep: None })
-            })
+                    let mut feedback = if rejections.is_empty() {
+                        String::new()
+                    } else {
+                        ctx.llm.reject(
+                            PromptSpec::RECONCILE,
+                            &[("rejections", &rejections.join("\n"))],
+                        )?
+                    };
+                    if let Some(advisory) = advisory {
+                        if !feedback.is_empty() {
+                            feedback.push_str("\n\n");
+                        }
+                        feedback.push_str(&advisory);
+                    }
+                    Ok(Verdict::Revise {
+                        feedback,
+                        keep: None,
+                    })
+                },
+            )
             .await;
         let mut parsed = match refined {
             Ok(Some(v)) => v,
@@ -780,10 +839,16 @@ impl Reconcile {
                 proposals.promotions_for(path),
             )
             .await?;
-            let retractions =
-                replacement_retractions(
-                    &parsed, &promotions, &links, &memories, &self.ctx, proposals, path,
-                ).await?;
+            let retractions = replacement_retractions(
+                &parsed,
+                &promotions,
+                &links,
+                &memories,
+                &self.ctx,
+                proposals,
+                path,
+            )
+            .await?;
             let retractions = merge_explicit_retractions(retractions, &parsed);
             reconcile_dirty.insert(path.to_string());
             return Ok(EntityOutcome {
@@ -814,7 +879,9 @@ impl Reconcile {
         let mut linked_names: HashSet<String> = HashSet::new();
         for l in &links {
             let draft = proposals.entity_draft();
-            let target = self.ctx.view
+            let target = self
+                .ctx
+                .view
                 .entity_by_path_with(&draft, &l.to_entity_path)
                 .await?;
             if let Some(target) = target {
@@ -828,11 +895,15 @@ impl Reconcile {
             &linked_names,
             &self.prefixes,
         );
-        let attribute_sources = parsed.attribute_sources.iter().map(|source| AttributeSource {
-            property: curie_key(&source.property, &self.prefixes),
-            value: source.value.clone(),
-            source_memory_ids: source.source_memory_ids.clone(),
-        }).collect::<Vec<_>>();
+        let attribute_sources = parsed
+            .attribute_sources
+            .iter()
+            .map(|source| AttributeSource {
+                property: curie_key(&source.property, &self.prefixes),
+                value: source.value.clone(),
+                source_memory_ids: source.source_memory_ids.clone(),
+            })
+            .collect::<Vec<_>>();
         let promotions = accepted_promotions(
             &parsed,
             &self.ctx,
@@ -855,14 +926,18 @@ impl Reconcile {
         .await?;
         let retractions = merge_explicit_retractions(retractions, &parsed);
         for relation in &parsed.entity_relations {
-            let property = self.prefixes.repair_term(relation.property.trim(), TermKind::Property)
+            let property = self
+                .prefixes
+                .repair_term(relation.property.trim(), TermKind::Property)
                 .unwrap_or_else(|_| relation.property.trim().to_string());
-            commit.entity_link_sources.push(ReconcileEntityLinkSourceWrite {
-                from_entity_path: path.to_string(),
-                to_entity_path: relation.target.trim().to_string(),
-                relation: property,
-                source_memory_ids: relation.source_memory_ids.clone(),
-            });
+            commit
+                .entity_link_sources
+                .push(ReconcileEntityLinkSourceWrite {
+                    from_entity_path: path.to_string(),
+                    to_entity_path: relation.target.trim().to_string(),
+                    relation: property,
+                    source_memory_ids: relation.source_memory_ids.clone(),
+                });
         }
         stats.entities_reconciled += 1;
 
@@ -870,11 +945,7 @@ impl Reconcile {
             && let (Some(from), Some(to)) = (normalize_path(&mv.from), normalize_path(&mv.to))
             && from == path
             && to != from
-            && self.ctx
-                .view
-                .entity_by_path(&to)
-                .await?
-                .is_none()
+            && self.ctx.view.entity_by_path(&to).await?.is_none()
         {
             match self.ctx.rename_page_everywhere(&from, &to).await {
                 Ok(()) => stats.moves_applied += 1,

@@ -86,10 +86,13 @@ impl StorageService {
         let Ok(expected_relative) = expected_root.strip_prefix(&self.data_dir) else {
             return false;
         };
-        let expected = expected_relative.components().filter_map(|component| match component {
-            std::path::Component::Normal(value) => Some(value),
-            _ => None,
-        }).collect::<Vec<_>>();
+        let expected = expected_relative
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(value) => Some(value),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let mut actual = Vec::new();
         for component in Path::new(candidate).components() {
             match component {
@@ -98,9 +101,12 @@ impl StorageService {
                 _ => {}
             }
         }
-        actual.windows(expected.len()).enumerate().any(|(index, window)| {
-            window == expected.as_slice() && index + expected.len() < actual.len()
-        })
+        actual
+            .windows(expected.len())
+            .enumerate()
+            .any(|(index, window)| {
+                window == expected.as_slice() && index + expected.len() < actual.len()
+            })
     }
 
     pub fn user_tokens_path(&self, user_handle: &Handle) -> PathBuf {
@@ -149,7 +155,11 @@ impl StorageService {
                 let resolved = if name.contains('/') {
                     users_root.join(name).join(&path.relative)
                 } else {
-                    users_root.join(name).join("agents").join(name).join(&path.relative)
+                    users_root
+                        .join(name)
+                        .join("agents")
+                        .join(name)
+                        .join(&path.relative)
                 };
                 validate_no_traversal(&resolved, &users_root_str)?;
                 resolved
@@ -199,11 +209,7 @@ impl StorageService {
 
             entries.push(FileEntry {
                 id,
-                size: if metadata.is_dir() {
-                    0
-                } else {
-                    metadata.len()
-                },
+                size: if metadata.is_dir() { 0 } else { metadata.len() },
                 date: modified.to_rfc3339(),
                 entry_type: if metadata.is_dir() {
                     "folder".into()

@@ -457,11 +457,21 @@ mod tests {
             },
         };
 
-        let vars: HashMap<String, String> = secret.to_env_vars("HOME_ASSISTANT").into_iter().collect();
+        let vars: HashMap<String, String> =
+            secret.to_env_vars("HOME_ASSISTANT").into_iter().collect();
         assert_eq!(vars.len(), 3);
-        assert_eq!(vars.get("HOME_ASSISTANT_HOSTNAME").map(String::as_str), Some("https://ha.example.com"));
-        assert_eq!(vars.get("HOME_ASSISTANT_TYPE").map(String::as_str), Some("bearer"));
-        assert_eq!(vars.get("HOME_ASSISTANT_CREDENTIAL").map(String::as_str), Some("tok_secret_123"));
+        assert_eq!(
+            vars.get("HOME_ASSISTANT_HOSTNAME").map(String::as_str),
+            Some("https://ha.example.com")
+        );
+        assert_eq!(
+            vars.get("HOME_ASSISTANT_TYPE").map(String::as_str),
+            Some("bearer")
+        );
+        assert_eq!(
+            vars.get("HOME_ASSISTANT_CREDENTIAL").map(String::as_str),
+            Some("tok_secret_123")
+        );
     }
 
     #[test]
@@ -502,7 +512,11 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: VaultConnectionConfig = serde_json::from_str(&json).unwrap();
         match deserialized {
-            VaultConnectionConfig::Hashicorp { address, token, mount_path } => {
+            VaultConnectionConfig::Hashicorp {
+                address,
+                token,
+                mount_path,
+            } => {
                 assert_eq!(address, "http://localhost:8200");
                 assert_eq!(token, "hvs.test");
                 assert_eq!(mount_path.as_deref(), Some("secret"));

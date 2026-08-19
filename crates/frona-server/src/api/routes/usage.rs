@@ -86,21 +86,25 @@ struct UserUsageResponse {
     top_chats: Option<Vec<ChatCostRow>>,
 }
 
-
 async fn chat_usage(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(chat_id): Path<String>,
     Query(window): Query<UsageWindow>,
 ) -> Result<Json<ChatUsageResponse>, ApiError> {
-    let chat = state.chat_service.find_chat(&chat_id).await?
+    let chat = state
+        .chat_service
+        .find_chat(&chat_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("chat not found".into()))?;
     if chat.user_id != auth.user_id {
         return Err(AppError::Forbidden("not your chat".into()).into());
     }
 
     let repo: SurrealRepo<InferenceUsage> = SurrealRepo::new(state.db.clone());
-    let totals = repo.aggregate_by_chat(&chat_id, window.since, window.until).await?;
+    let totals = repo
+        .aggregate_by_chat(&chat_id, window.since, window.until)
+        .await?;
     // For per-kind/per-model on a single chat, scope is implicit — use the user
     // aggregations gated on chat scope at the repo layer for v1. We accept that
     // by_kind/by_model are user-scoped here; the chat-scoped versions can be
@@ -136,9 +140,15 @@ async fn user_usage(
     }
 
     let repo: SurrealRepo<InferenceUsage> = SurrealRepo::new(state.db.clone());
-    let totals = repo.aggregate_by_user(&user_id, window.since, window.until).await?;
-    let by_kind = repo.aggregate_by_kind(&user_id, window.since, window.until).await?;
-    let by_model = repo.aggregate_by_model(&user_id, window.since, window.until).await?;
+    let totals = repo
+        .aggregate_by_user(&user_id, window.since, window.until)
+        .await?;
+    let by_kind = repo
+        .aggregate_by_kind(&user_id, window.since, window.until)
+        .await?;
+    let by_model = repo
+        .aggregate_by_model(&user_id, window.since, window.until)
+        .await?;
 
     // Dashboard mode — opt in with `?bucket=hour|day` plus a since/until
     // window. Adds time-series + latency percentiles + top chats in one
@@ -156,7 +166,12 @@ async fn user_usage(
                 .latency_percentiles_by_user(&user_id, Some(since), Some(until))
                 .await?;
             let top = repo
-                .top_chats_by_user(&user_id, Some(since), Some(until), window.top_chats.unwrap_or(10))
+                .top_chats_by_user(
+                    &user_id,
+                    Some(since),
+                    Some(until),
+                    window.top_chats.unwrap_or(10),
+                )
                 .await?;
             // SQL-side per-group percentiles via `array::map` —
             // see InferenceUsageRepository::latency_by_model.

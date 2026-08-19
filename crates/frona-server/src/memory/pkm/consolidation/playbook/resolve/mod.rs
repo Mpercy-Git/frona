@@ -9,22 +9,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::error::AppError;
 use crate::db::repo::pkm::PlaybookResolutionWrite;
-use crate::memory::pkm::model::{
-    ConsolidationEntityLifecycle, EntityCategory, EntityHit, KnowledgeConsolidationEntity,
-    PlaybookResolutionProgress, PLAYBOOK_KIND_IRI,
+use crate::memory::pkm::consolidation::candidates::{
+    RESOLUTION_PROMPT_LIMIT, Request, Search, Subject,
 };
 use crate::memory::pkm::consolidation::view::EntityTransition;
-use crate::memory::pkm::consolidation::candidates::{
-    Request, Search, Subject,
-    RESOLUTION_PROMPT_LIMIT,
+use crate::memory::pkm::model::{
+    ConsolidationEntityLifecycle, EntityCategory, EntityHit, KnowledgeConsolidationEntity,
+    PLAYBOOK_KIND_IRI, PlaybookResolutionProgress,
 };
 use crate::memory::pkm::storage::normalize_path;
 use crate::tool::AgentTool;
 use crate::tool::registry::ToolFilter;
 
-use crate::memory::pkm::model::PendingPlaybookCandidate;
 use crate::memory::pkm::consolidation::context::ConsolidationContext;
 use crate::memory::pkm::consolidation::{ConsolidationStageState, PromptIds, PromptSpec};
+use crate::memory::pkm::model::PendingPlaybookCandidate;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct ResolvedPlaybook {
@@ -58,33 +57,48 @@ impl PlaybookResolve {
     pub(crate) async fn run(&self) -> Result<(), AppError> {
         let mut state = match self.ctx.stage().await {
             ConsolidationStageState::PlaybookResolve(state) => state,
-            other => return Err(AppError::Internal(format!(
-                "playbook resolve: record is on `{}`", other.label()
-            ))),
+            other => {
+                return Err(AppError::Internal(format!(
+                    "playbook resolve: record is on `{}`",
+                    other.label()
+                )));
+            }
         };
-        let mut rows: BTreeMap<String, KnowledgeConsolidationEntity> =
-            self.ctx.view.rows().await?.into_iter()
-                .filter(|row| row.category == EntityCategory::Playbook)
-                .map(|row| (row.consolidation_entity_id.clone(), row))
-                .collect();
-        let candidates: BTreeMap<String, PendingPlaybookCandidate> = rows.values()
-            .filter(|row| !row.contributions.is_empty())
-            .map(|row| (row.consolidation_entity_id.clone(), PendingPlaybookCandidate {
-                id: row.consolidation_entity_id.clone(),
-                path: row.path.clone(),
-                name: row.name.clone(),
-                description: row.description.clone(),
-                source_memory_ids: row.source_memory_ids.iter().cloned().collect(),
-            }))
+        let mut rows: BTreeMap<String, KnowledgeConsolidationEntity> = self
+            .ctx
+            .view
+            .rows()
+            .await?
+            .into_iter()
+            .filter(|row| row.category == EntityCategory::Playbook)
+            .map(|row| (row.consolidation_entity_id.clone(), row))
             .collect();
-        let mut proposals: BTreeMap<String, serde_json::Value> = rows.iter()
-            .filter_map(|(id, row)| match &row.progress.playbook_resolution {
-                PlaybookResolutionProgress::Accepted { proposal } => {
-                    Some((id.clone(), proposal.clone()))
-                }
-                PlaybookResolutionProgress::Pending | PlaybookResolutionProgress::Failed { .. } => None,
+        let candidates: BTreeMap<String, PendingPlaybookCandidate> = rows
+            .values()
+            .filter(|row| !row.contributions.is_empty())
+            .map(|row| {
+                (
+                    row.consolidation_entity_id.clone(),
+                    PendingPlaybookCandidate {
+                        id: row.consolidation_entity_id.clone(),
+                        path: row.path.clone(),
+                        name: row.name.clone(),
+                        description: row.description.clone(),
+                        source_memory_ids: row.source_memory_ids.iter().cloned().collect(),
+                    },
+                )
             })
             .collect();
+        let mut proposals: BTreeMap<String, serde_json::Value> =
+            rows.iter()
+                .filter_map(|(id, row)| match &row.progress.playbook_resolution {
+                    PlaybookResolutionProgress::Accepted { proposal } => {
+                        Some((id.clone(), proposal.clone()))
+                    }
+                    PlaybookResolutionProgress::Pending
+                    | PlaybookResolutionProgress::Failed { .. } => None,
+                })
+                .collect();
 
         for (id, candidate) in &candidates {
             if proposals.contains_key(id) {
@@ -96,26 +110,29 @@ impl PlaybookResolve {
                     let proposal = serde_json::to_value(&targets)
                         .map_err(|e| AppError::Internal(format!("playbook resolve encode: {e}")))?;
                     state.revision += 1;
-                    let mut row = rows.get(id).cloned().ok_or_else(||
-                        AppError::Internal(format!("playbook resolve: missing row {id}")))?;
+                    let mut row = rows.get(id).cloned().ok_or_else(|| {
+                        AppError::Internal(format!("playbook resolve: missing row {id}"))
+                    })?;
                     row.progress.playbook_resolution = PlaybookResolutionProgress::Accepted {
                         proposal: proposal.clone(),
                     };
                     row.checkpoint_revision = state.revision;
-                    let projection_rows = self.accepted_projection_rows(
-                        row,
-                        &targets,
-                        &rows,
-                        state.revision,
-                    ).await?;
+                    let projection_rows = self
+                        .accepted_projection_rows(row, &targets, &rows, state.revision)
+                        .await?;
                     let mut checkpoint = self.ctx.record().await;
                     checkpoint.state = ConsolidationStageState::PlaybookResolve(state.clone());
                     checkpoint.updated_at = chrono::Utc::now();
-                    let transition = EntityTransition::new(checkpoint.clone())
-                        .with_rows(projection_rows);
+                    let transition =
+                        EntityTransition::new(checkpoint.clone()).with_rows(projection_rows);
                     self.ctx.view.commit_transition(&transition).await?;
                     self.ctx.adopt_committed_record(checkpoint).await;
-                    rows = self.ctx.view.rows().await?.into_iter()
+                    rows = self
+                        .ctx
+                        .view
+                        .rows()
+                        .await?
+                        .into_iter()
                         .filter(|row| row.category == EntityCategory::Playbook)
                         .map(|row| (row.consolidation_entity_id.clone(), row))
                         .collect();
@@ -123,8 +140,9 @@ impl PlaybookResolve {
                 }
                 Err(error) => {
                     state.revision += 1;
-                    let mut row = rows.get(id).cloned().ok_or_else(||
-                        AppError::Internal(format!("playbook resolve: missing row {id}")))?;
+                    let mut row = rows.get(id).cloned().ok_or_else(|| {
+                        AppError::Internal(format!("playbook resolve: missing row {id}"))
+                    })?;
                     row.progress.playbook_resolution = PlaybookResolutionProgress::Failed {
                         error: error.to_string(),
                     };
@@ -132,8 +150,7 @@ impl PlaybookResolve {
                     let mut checkpoint = self.ctx.record().await;
                     checkpoint.state = ConsolidationStageState::PlaybookResolve(state.clone());
                     checkpoint.updated_at = chrono::Utc::now();
-                    let transition = EntityTransition::new(checkpoint.clone())
-                        .with_row(row);
+                    let transition = EntityTransition::new(checkpoint.clone()).with_row(row);
                     self.ctx.view.commit_transition(&transition).await?;
                     self.ctx.adopt_committed_record(checkpoint).await;
                     return Err(error);
@@ -152,7 +169,8 @@ impl PlaybookResolve {
         known_rows: &BTreeMap<String, KnowledgeConsolidationEntity>,
         revision: u64,
     ) -> Result<Vec<KnowledgeConsolidationEntity>, AppError> {
-        let known_by_path: BTreeMap<_, _> = known_rows.values()
+        let known_by_path: BTreeMap<_, _> = known_rows
+            .values()
             .map(|row| (row.path.clone(), row.clone()))
             .collect();
         let mut changed = BTreeMap::<String, KnowledgeConsolidationEntity>::new();
@@ -163,7 +181,11 @@ impl PlaybookResolve {
                 owner.clone()
             } else if let Some(row) = known_by_path.get(&target.path) {
                 row.clone()
-            } else if let Some(row) = self.ctx.view.entity_by_path(&target.path).await?
+            } else if let Some(row) = self
+                .ctx
+                .view
+                .entity_by_path(&target.path)
+                .await?
                 .filter(|row| row.path == target.path)
             {
                 row
@@ -183,7 +205,9 @@ impl PlaybookResolve {
             target_row.kinds = vec![PLAYBOOK_KIND_IRI.to_string()];
             target_row.name = target.name.clone();
             target_row.description = target.description.clone();
-            target_row.source_memory_ids.extend(target.memory_ids.iter().cloned());
+            target_row
+                .source_memory_ids
+                .extend(target.memory_ids.iter().cloned());
             target_row.source_memory_ids.sort();
             target_row.source_memory_ids.dedup();
             target_row.checkpoint_revision = revision;
@@ -191,7 +215,11 @@ impl PlaybookResolve {
             changed.insert(target.path.clone(), target_row);
 
             let mut sources = target.merge_from.clone();
-            if let Some(source) = target.existing_path.as_ref().filter(|path| *path != &target.path) {
+            if let Some(source) = target
+                .existing_path
+                .as_ref()
+                .filter(|path| *path != &target.path)
+            {
                 sources.push(source.clone());
             }
             sources.sort();
@@ -201,7 +229,11 @@ impl PlaybookResolve {
                     owner.clone()
                 } else if let Some(row) = known_by_path.get(&source) {
                     row.clone()
-                } else if let Some(row) = self.ctx.view.entity_by_path(&source).await?
+                } else if let Some(row) = self
+                    .ctx
+                    .view
+                    .entity_by_path(&source)
+                    .await?
                     .filter(|row| row.path == source)
                 {
                     row
@@ -215,9 +247,9 @@ impl PlaybookResolve {
         }
 
         if !targets.iter().any(|target| target.path == owner.path)
-            && !changed.get(&owner.path).is_some_and(|row| {
-                row.lifecycle == ConsolidationEntityLifecycle::Coalesced
-            })
+            && !changed
+                .get(&owner.path)
+                .is_some_and(|row| row.lifecycle == ConsolidationEntityLifecycle::Coalesced)
         {
             let mut owner_row = owner;
             if targets.len() == 1 {
@@ -240,16 +272,28 @@ impl PlaybookResolve {
         staged: &[ResolvedPlaybook],
     ) -> Result<Vec<ResolvedPlaybook>, AppError> {
         let memory_ids: Vec<String> = candidate.source_memory_ids.iter().cloned().collect();
-        let memories = self.ctx.repo
-            .memories_by_ids(&self.ctx.scope.user_id, &memory_ids).await?;
+        let memories = self
+            .ctx
+            .repo
+            .memories_by_ids(&self.ctx.scope.user_id, &memory_ids)
+            .await?;
         let ids = PromptIds::new("m", memories.iter().map(|memory| memory.id.clone()));
-        let memory_block = memories.iter().map(|memory| format!(
-            "- {}: {}", ids.local(&memory.id), memory.content
-        )).collect::<Vec<_>>().join("\n");
+        let memory_block = memories
+            .iter()
+            .map(|memory| format!("- {}: {}", ids.local(&memory.id), memory.content))
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        let staged_paths = staged.iter().map(|entity| entity.path.clone()).collect::<BTreeSet<_>>();
+        let staged_paths = staged
+            .iter()
+            .map(|entity| entity.path.clone())
+            .collect::<BTreeSet<_>>();
         let mut visible_entities: BTreeMap<String, crate::memory::pkm::model::KnowledgeEntity> =
-            self.ctx.view.list_entities().await?.into_iter()
+            self.ctx
+                .view
+                .list_entities()
+                .await?
+                .into_iter()
                 .filter(|row| {
                     row.entity_id.is_some()
                         || row.contributions.is_empty()
@@ -261,8 +305,10 @@ impl PlaybookResolve {
                 })
                 .map(|row| (row.path.clone(), row.as_knowledge_entity()))
                 .collect();
-        let existing_by_path: BTreeMap<String, EntityCategory> = visible_entities.values()
-            .map(|entity| (entity.path.clone(), entity.category)).collect();
+        let existing_by_path: BTreeMap<String, EntityCategory> = visible_entities
+            .values()
+            .map(|entity| (entity.path.clone(), entity.category))
+            .collect();
         if let Some(entity) = visible_entities.get_mut(&candidate.path) {
             entity.category = EntityCategory::Playbook;
             entity.kinds = vec![PLAYBOOK_KIND_IRI.to_string()];
@@ -273,8 +319,11 @@ impl PlaybookResolve {
             entity.source_memory_ids.dedup();
         } else {
             let mut entity = KnowledgeConsolidationEntity::pending(
-                self.ctx.view.consolidation_id(), &self.ctx.scope.user_id,
-                &candidate.path, EntityCategory::Playbook, Vec::new(),
+                self.ctx.view.consolidation_id(),
+                &self.ctx.scope.user_id,
+                &candidate.path,
+                EntityCategory::Playbook,
+                Vec::new(),
                 memory_ids.iter().cloned().collect(),
             );
             entity.kinds = vec![PLAYBOOK_KIND_IRI.to_string()];
@@ -284,35 +333,55 @@ impl PlaybookResolve {
         }
         let entity_view = Arc::new(
             crate::memory::pkm::consolidation::tools::EntityToolView::new(
-                visible_entities.into_values().collect(), usize::MAX,
+                visible_entities.into_values().collect(),
+                usize::MAX,
                 Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             ),
         );
-        let eligible_paths: HashSet<String> = entity_view.entities().iter()
+        let eligible_paths: HashSet<String> = entity_view
+            .entities()
+            .iter()
             .filter(|entity| entity.category == EntityCategory::Playbook)
-            .map(|entity| entity.path.clone()).collect();
-        let view_hits: Vec<EntityHit> = entity_view.entities().iter().map(|entity| EntityHit {
-            path: entity.path.clone(), origin: entity.origin, category: entity.category,
-            kinds: entity.kinds.clone(), name: entity.name.clone(),
-            description: entity.description.clone(), aliases: entity.aliases.clone(),
-            body: entity.body.clone(), search_name_tokens: entity.search_name_tokens.clone(),
-            search_assertions: entity.search_assertions.clone(),
-        }).collect();
+            .map(|entity| entity.path.clone())
+            .collect();
+        let view_hits: Vec<EntityHit> = entity_view
+            .entities()
+            .iter()
+            .map(|entity| EntityHit {
+                path: entity.path.clone(),
+                origin: entity.origin,
+                category: entity.category,
+                kinds: entity.kinds.clone(),
+                name: entity.name.clone(),
+                description: entity.description.clone(),
+                aliases: entity.aliases.clone(),
+                body: entity.body.clone(),
+                search_name_tokens: entity.search_name_tokens.clone(),
+                search_assertions: entity.search_assertions.clone(),
+            })
+            .collect();
         let subject = Subject::from_parts(
-            candidate.path.clone(), candidate.name.clone(), std::iter::empty(),
-            candidate.description.clone(), EntityCategory::Playbook,
-            vec![PLAYBOOK_KIND_IRI.to_string()], std::iter::empty(),
+            candidate.path.clone(),
+            candidate.name.clone(),
+            std::iter::empty(),
+            candidate.description.clone(),
+            EntityCategory::Playbook,
+            vec![PLAYBOOK_KIND_IRI.to_string()],
+            std::iter::empty(),
         );
         let existing = Search::new(self.ctx.view.clone())
             .find_candidates(
                 Request {
-                    subject, eligible_paths: Some(eligible_paths.clone()),
+                    subject,
+                    eligible_paths: Some(eligible_paths.clone()),
                     additional_candidates: view_hits,
-                    forced_paths: Vec::new(), limit: RESOLUTION_PROMPT_LIMIT,
+                    forced_paths: Vec::new(),
+                    limit: RESOLUTION_PROMPT_LIMIT,
                 },
                 |entity| entity.kinds = vec![PLAYBOOK_KIND_IRI.to_string()],
                 |_, _| Some(3),
-            ).await?;
+            )
+            .await?;
         let existing_lines = existing.iter().map(|candidate| format!(
             "- path={} name={} description={} exact_name={} token_containment={} similarity={:.3}",
             candidate.entity.path, candidate.entity.name, candidate.entity.description,
@@ -328,18 +397,22 @@ impl PlaybookResolve {
             "path={}\nname={}\ndescription={}",
             candidate.path, candidate.name, candidate.description
         );
-        let rendered = self.ctx.llm.render(PromptSpec::PLAYBOOK_RESOLVE, &[
-            ("candidate", &candidate_block),
-            ("memories", &memory_block),
-            ("existing_playbooks", &existing_block),
-        ])?;
+        let rendered = self.ctx.llm.render(
+            PromptSpec::PLAYBOOK_RESOLVE,
+            &[
+                ("candidate", &candidate_block),
+                ("memories", &memory_block),
+                ("existing_playbooks", &existing_block),
+            ],
+        )?;
 
         let allowed: BTreeSet<String> = memories.iter().map(|memory| memory.id.clone()).collect();
         let playbook_lookup = Arc::new(super::tools::PlaybookLookup::default());
         let total_tool_budget = Arc::new(std::sync::atomic::AtomicUsize::new(20));
-        let memory_lookup = memories.iter().map(|memory|
-            (ids.local(&memory.id).to_string(), memory.clone())
-        ).collect();
+        let memory_lookup = memories
+            .iter()
+            .map(|memory| (ids.local(&memory.id).to_string(), memory.clone()))
+            .collect();
         let tools: Vec<Arc<dyn AgentTool>> = vec![
             Arc::new(super::tools::ReadMemoryContextTool {
                 prompts: self.ctx.llm.prompts().clone(),
@@ -366,17 +439,23 @@ impl PlaybookResolve {
                 total: total_tool_budget,
             }),
         ];
-        let mut conversation = self.ctx.llm.conversation::<Verdict>(
-            None,
-            &self.ctx.scope.agent_id,
-            rendered.system,
-            rendered.input,
-            &[ToolFilter::AllowList(&[
-                "read_memory_context", "find_playbooks", "read_playbook",
-            ])],
-            &tools,
-            self.max_tool_turns,
-        ).await?;
+        let mut conversation = self
+            .ctx
+            .llm
+            .conversation::<Verdict>(
+                None,
+                &self.ctx.scope.agent_id,
+                rendered.system,
+                rendered.input,
+                &[ToolFilter::AllowList(&[
+                    "read_memory_context",
+                    "find_playbooks",
+                    "read_playbook",
+                ])],
+                &tools,
+                self.max_tool_turns,
+            )
+            .await?;
         let prompt = &self.ctx.llm;
         let accepted = conversation.refine(self.max_submissions, move |mut verdict: Verdict| {
             let ids = ids.clone();
@@ -468,7 +547,9 @@ impl PlaybookResolve {
                 }
             }
         }).await?;
-        Ok(accepted.map(|verdict| verdict.playbooks).unwrap_or_default())
+        Ok(accepted
+            .map(|verdict| verdict.playbooks)
+            .unwrap_or_default())
     }
 
     async fn apply(
@@ -476,30 +557,42 @@ impl PlaybookResolve {
         candidates_by_id: &BTreeMap<String, PendingPlaybookCandidate>,
         proposals: &BTreeMap<String, serde_json::Value>,
     ) -> Result<(), AppError> {
-        let writes = coalesced_targets(proposals)?.into_iter().map(|target| {
-            let assigned: BTreeSet<_> = target.memory_ids.iter().collect();
-            let candidates = candidates_by_id.iter().filter(|(_, candidate)| {
-                candidate.source_memory_ids.iter().any(|memory| assigned.contains(memory))
-            }).collect::<Vec<_>>();
-            PlaybookResolutionWrite {
-            candidate_ids: candidates.iter().map(|(id, _)| (*id).clone()).collect(),
-            candidate_paths: candidates.iter().map(|(_, candidate)| candidate.path.clone()).collect(),
-            existing_path: target.existing_path,
-            merge_from: target.merge_from,
-            path: target.path,
-            name: target.name,
-            description: target.description,
-            memory_ids: target.memory_ids,
-        }}).collect::<Vec<_>>();
+        let writes = coalesced_targets(proposals)?
+            .into_iter()
+            .map(|target| {
+                let assigned: BTreeSet<_> = target.memory_ids.iter().collect();
+                let candidates = candidates_by_id
+                    .iter()
+                    .filter(|(_, candidate)| {
+                        candidate
+                            .source_memory_ids
+                            .iter()
+                            .any(|memory| assigned.contains(memory))
+                    })
+                    .collect::<Vec<_>>();
+                PlaybookResolutionWrite {
+                    candidate_ids: candidates.iter().map(|(id, _)| (*id).clone()).collect(),
+                    candidate_paths: candidates
+                        .iter()
+                        .map(|(_, candidate)| candidate.path.clone())
+                        .collect(),
+                    existing_path: target.existing_path,
+                    merge_from: target.merge_from,
+                    path: target.path,
+                    name: target.name,
+                    description: target.description,
+                    memory_ids: target.memory_ids,
+                }
+            })
+            .collect::<Vec<_>>();
         let mut completed = self.ctx.record().await;
         completed.state = completed.state.next();
         completed.attempts = 0;
         completed.updated_at = chrono::Utc::now();
-        self.ctx.repo.commit_playbook_resolutions(
-            &self.ctx.scope.user_id,
-            &writes,
-            &completed,
-        ).await?;
+        self.ctx
+            .repo
+            .commit_playbook_resolutions(&self.ctx.scope.user_id, &writes, &completed)
+            .await?;
         self.ctx.adopt_committed_record(completed).await;
         Ok(())
     }
@@ -541,19 +634,25 @@ mod tests {
     #[test]
     fn repeated_target_keeps_all_memories_and_latest_scope() {
         let mut proposals = BTreeMap::new();
-        proposals.insert("candidate-1".to_string(), serde_json::json!([{
-            "path": "operations/update-device",
-            "name": "Enter update mode",
-            "description": "Put a device into its firmware update mode.",
-            "memory_ids": ["memory-1"]
-        }]));
-        proposals.insert("candidate-2".to_string(), serde_json::json!([{
-            "existing_path": "operations/update-device",
-            "path": "operations/update-device",
-            "name": "Update device firmware",
-            "description": "Enter update mode, install firmware, and verify the result.",
-            "memory_ids": ["memory-2"]
-        }]));
+        proposals.insert(
+            "candidate-1".to_string(),
+            serde_json::json!([{
+                "path": "operations/update-device",
+                "name": "Enter update mode",
+                "description": "Put a device into its firmware update mode.",
+                "memory_ids": ["memory-1"]
+            }]),
+        );
+        proposals.insert(
+            "candidate-2".to_string(),
+            serde_json::json!([{
+                "existing_path": "operations/update-device",
+                "path": "operations/update-device",
+                "name": "Update device firmware",
+                "description": "Enter update mode, install firmware, and verify the result.",
+                "memory_ids": ["memory-2"]
+            }]),
+        );
 
         let targets = coalesced_targets(&proposals).expect("proposals should coalesce");
 

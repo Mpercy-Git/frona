@@ -2,18 +2,18 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use tracing::warn;
 
 use crate::core::error::AppError;
-use crate::memory::pkm::consolidation::context::ConsolidationContext;
 use crate::memory::pkm::consolidation::classify::ProposalSet;
+use crate::memory::pkm::consolidation::context::ConsolidationContext;
+use crate::memory::pkm::consolidation::driver::Consolidator;
 use crate::memory::pkm::consolidation::progress::{ConsolidationProgress, WorkStage};
 use crate::memory::pkm::consolidation::projection::{
     is_unbacked_shell, projection_rejection_details, validate_proposal_projection,
 };
-use crate::memory::pkm::consolidation::{reconcile, resolve};
 use crate::memory::pkm::consolidation::{
     AssembleOutcome, ClassifyOutcome, ConsolidationStageState, PromptSpec, ResolveOutcome,
     prompt_evidence,
 };
-use crate::memory::pkm::consolidation::driver::Consolidator;
+use crate::memory::pkm::consolidation::{reconcile, resolve};
 use crate::memory::pkm::model::{
     ClassificationProgress, EntityCategory, KnowledgeConsolidationEntity, SELF_ENTITY_PATH,
     merge_consolidation_attribute_values,
@@ -117,7 +117,9 @@ pub(super) fn bad_term_feedback(
     // means the instruction did not take, and the count over a run is the only signal for
     // whether that is getting better or worse.
     warn!(count = bad.len(), stage = stage.dir, terms = %bad.join(" "), "ontology: unusable terms");
-    ctx.llm.bad_term(stage, &[("terms", bad.join("\n").as_str())]).map(Some)
+    ctx.llm
+        .bad_term(stage, &[("terms", bad.join("\n").as_str())])
+        .map(Some)
 }
 
 impl Consolidator {
@@ -131,7 +133,9 @@ impl Consolidator {
     > {
         let draft = proposals.entity_draft();
         let entities = self.ctx.view.snapshot_with(&draft).await?.into_entities();
-        let abox = self.projected_abox(ontology_manager, proposals, None).await?;
+        let abox = self
+            .projected_abox(ontology_manager, proposals, None)
+            .await?;
         Ok(std::sync::Arc::new(
             crate::memory::pkm::consolidation::tools::ontology::OntologyToolOverlay {
                 entities,
@@ -164,11 +168,11 @@ impl Consolidator {
             return Ok(None);
         }
         let draft = proposals.entity_draft();
-        let Some(stored) = self.ctx.view.entity_by_path_with(&draft, path).await?
-        else {
+        let Some(stored) = self.ctx.view.entity_by_path_with(&draft, path).await? else {
             return Ok(None);
         };
-        let staged_type_delta = self.ontology
+        let staged_type_delta = self
+            .ontology
             .plan_schema(&self.ctx.scope.user_id, &proposals.proposed_edits)
             .await?
             .triples;
@@ -200,7 +204,8 @@ impl Consolidator {
             stats.resolve_identity_state_changes += 1;
         }
         let projected_abox = self.projected_abox(&self.ontology, proposals, None).await?;
-        let pass = self.ontology
+        let pass = self
+            .ontology
             .reason_user_with_proposed(
                 &self.ctx.scope.user_id,
                 &proposals.proposed_edits,
@@ -227,26 +232,29 @@ impl Consolidator {
         }
         let mut identifying_matches: BTreeMap<String, Vec<resolve::IdentityMatch>> = candidates
             .iter()
-            .map(|candidate| (
-                candidate.entity.path.clone(),
-                resolve::identity_matches(
-                    &typed,
-                    &candidate.entity,
-                    &has_keys,
-                    &inverse_functional,
-                    &self.prefixes,
-                ),
-            ))
+            .map(|candidate| {
+                (
+                    candidate.entity.path.clone(),
+                    resolve::identity_matches(
+                        &typed,
+                        &candidate.entity,
+                        &has_keys,
+                        &inverse_functional,
+                        &self.prefixes,
+                    ),
+                )
+            })
             .collect();
         if after_first_sweep {
             let mut weaker_or_removed = Vec::new();
             candidates.retain(|candidate| {
-                let matches = identifying_matches.get(&candidate.entity.path)
-                    .map(Vec::as_slice).unwrap_or(&[]);
+                let matches = identifying_matches
+                    .get(&candidate.entity.path)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 let key = resolve::resolution_pair_key(&typed.path, &candidate.entity.path);
-                let fingerprint = resolve::resolution_pair_fingerprint(
-                    &typed, &candidate.entity, matches,
-                );
+                let fingerprint =
+                    resolve::resolution_pair_fingerprint(&typed, &candidate.entity, matches);
                 let old = progress.resolution_pair_fingerprint(&key);
                 let should_judge = if matches.is_empty() && old.is_none() {
                     false
@@ -260,32 +268,42 @@ impl Consolidator {
                 if should_judge {
                     stats.resolve_identity_pair_changes += 1;
                 }
-                if !should_judge { stats.resolve_fingerprint_skips += 1; }
+                if !should_judge {
+                    stats.resolve_fingerprint_skips += 1;
+                }
                 should_judge
             });
             if !weaker_or_removed.is_empty() {
                 progress.bank_resolution_pairs(weaker_or_removed).await?;
             }
             identifying_matches.retain(|path, _| {
-                candidates.iter().any(|candidate| candidate.entity.path == *path)
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.entity.path == *path)
             });
             if candidates.is_empty() {
-                progress.commit_resolved_distinct(
-                    path, identity_fingerprint,
-                    serde_json::json!({"reason": "no_changed_identity_candidates"}),
-                    proposals,
-                ).await?;
+                progress
+                    .commit_resolved_distinct(
+                        path,
+                        identity_fingerprint,
+                        serde_json::json!({"reason": "no_changed_identity_candidates"}),
+                        proposals,
+                    )
+                    .await?;
                 return Ok(None);
             }
         } else {
             candidates.sort_by_key(|candidate| {
-                identifying_matches.get(&candidate.entity.path)
+                identifying_matches
+                    .get(&candidate.entity.path)
                     .is_none_or(Vec::is_empty)
             });
         }
         candidates.truncate(crate::memory::pkm::consolidation::candidates::RESOLUTION_PROMPT_LIMIT);
         identifying_matches.retain(|path, _| {
-            candidates.iter().any(|candidate| candidate.entity.path == *path)
+            candidates
+                .iter()
+                .any(|candidate| candidate.entity.path == *path)
         });
         // Resolve validates the complete post-merge graph inside its model loop. Stage
         // the offered live candidates in the in-memory projection so that trial merge
@@ -302,7 +320,11 @@ impl Consolidator {
         for candidate in &candidates {
             let evidence = match proposals.input_entity(&candidate.entity.path) {
                 Some(entity) => prompt_evidence(&entity.identity_evidence),
-                None => self.ctx.view.entity_by_path(&candidate.entity.path).await?
+                None => self
+                    .ctx
+                    .view
+                    .entity_by_path(&candidate.entity.path)
+                    .await?
                     .map(|entity| prompt_evidence(&entity.identity_evidence))
                     .unwrap_or_else(|| "(none)".into()),
             };
@@ -326,13 +348,16 @@ impl Consolidator {
             if after_first_sweep {
                 stats.resolve_reconsideration_conversations += 1;
             }
-            match self.adjudicate_identity(
-                &self.ontology,
-                &typed,
-                &candidates,
-                &decision_context,
-                proposals,
-            ).await {
+            match self
+                .adjudicate_identity(
+                    &self.ontology,
+                    &typed,
+                    &candidates,
+                    &decision_context,
+                    proposals,
+                )
+                .await
+            {
                 Ok(conversation) => {
                     stats.resolve_evidence_corrections += conversation.corrections;
                     Some(conversation.decision)
@@ -345,12 +370,14 @@ impl Consolidator {
         };
         let Some(resolution) = resolved else {
             progress.remember_resolution_pairs(decision_context.pair_fingerprints);
-            progress.commit_resolved_distinct(
-                path,
-                identity_fingerprint,
-                serde_json::json!({"reason": "no_identity_candidates"}),
-                proposals,
-            ).await?;
+            progress
+                .commit_resolved_distinct(
+                    path,
+                    identity_fingerprint,
+                    serde_json::json!({"reason": "no_identity_candidates"}),
+                    proposals,
+                )
+                .await?;
             return Ok(None);
         };
 
@@ -358,24 +385,35 @@ impl Consolidator {
 
         let (canonical, same_as, evidence) = match resolution {
             resolve::IdentityResolution::Distinct { evidence } => {
-                let count = evidence.get("distinct_because")
-                    .and_then(serde_json::Value::as_array).map_or(0, Vec::len);
+                let count = evidence
+                    .get("distinct_because")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(0, Vec::len);
                 stats.resolve_distinct_with_evidence += count;
-                progress.commit_resolved_distinct(
-                    path, identity_fingerprint, evidence, proposals,
-                ).await?;
+                progress
+                    .commit_resolved_distinct(path, identity_fingerprint, evidence, proposals)
+                    .await?;
                 return Ok(None);
             }
-            resolve::IdentityResolution::Unresolved { diagnostic, pair_count } => {
+            resolve::IdentityResolution::Unresolved {
+                diagnostic,
+                pair_count,
+            } => {
                 stats.resolve_unresolved_pairs += pair_count;
-                progress.commit_resolution_unresolved(
-                    path, identity_fingerprint, diagnostic, proposals,
-                ).await?;
+                progress
+                    .commit_resolution_unresolved(path, identity_fingerprint, diagnostic, proposals)
+                    .await?;
                 return Ok(None);
             }
-            resolve::IdentityResolution::Merge { canonical, same_as, evidence } => {
-                let count = evidence.get("merge_because")
-                    .and_then(serde_json::Value::as_array).map_or(0, Vec::len);
+            resolve::IdentityResolution::Merge {
+                canonical,
+                same_as,
+                evidence,
+            } => {
+                let count = evidence
+                    .get("merge_because")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(0, Vec::len);
                 stats.resolve_merges_with_evidence += count;
                 (canonical, same_as, evidence)
             }
@@ -384,10 +422,11 @@ impl Consolidator {
 
         let into = progress.canonical_path(&canonical);
         if proposals.input_entity(&into).is_none() {
-            let canonical = self.ctx.view.entity_by_path(&into).await?
-                .ok_or_else(|| AppError::Internal(format!(
+            let canonical = self.ctx.view.entity_by_path(&into).await?.ok_or_else(|| {
+                AppError::Internal(format!(
                     "resolve: resolved canonical entity `{into}` disappeared"
-                )))?;
+                ))
+            })?;
             proposals.stage_input_entity(canonical);
         }
         let mut losing_paths = vec![typed.path.clone()];
@@ -400,15 +439,22 @@ impl Consolidator {
                 continue;
             }
             if proposals.input_entity(&losing).is_none() {
-                let duplicate = self.ctx.view.entity_by_path(&losing).await?
-                    .ok_or_else(|| AppError::Internal(format!(
-                        "resolve: duplicate entity `{losing}` disappeared"
-                    )))?;
+                let duplicate = self
+                    .ctx
+                    .view
+                    .entity_by_path(&losing)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Internal(format!(
+                            "resolve: duplicate entity `{losing}` disappeared"
+                        ))
+                    })?;
                 proposals.stage_input_entity(duplicate);
             }
             state.merged.insert(losing.clone());
             proposals.retarget(&losing, &into);
-            if proposals.input_entity(&into)
+            if proposals
+                .input_entity(&into)
                 .is_some_and(|entity| !entity.source_memory_ids.is_empty())
             {
                 state.shell_paths.remove(&into);
@@ -419,7 +465,9 @@ impl Consolidator {
             if after_first_sweep {
                 stats.resolve_merges_after_first_sweep += 1;
             }
-            progress.commit_resolved_merge(&losing, &into, proposals).await?;
+            progress
+                .commit_resolved_merge(&losing, &into, proposals)
+                .await?;
             accepted = true;
         }
         Ok(accepted.then_some(into))
@@ -446,17 +494,22 @@ impl Consolidator {
             let mut trial_minted = Vec::new();
             if self
                 .record_entity_proposal(
-                    ontology_manager, entity, &banked, &mut trial, &mut trial_minted,
+                    ontology_manager,
+                    entity,
+                    &banked,
+                    &mut trial,
+                    &mut trial_minted,
                 )
                 .await
             {
-                let validation = validate_proposal_projection(
-                    &self.ctx, ontology_manager, &trial,
-                ).await?;
+                let validation =
+                    validate_proposal_projection(&self.ctx, ontology_manager, &trial).await?;
                 if validation.is_valid() {
                     *proposals = trial;
                     for path in trial_minted {
-                        if !minted.contains(&path) { minted.push(path); }
+                        if !minted.contains(&path) {
+                            minted.push(path);
+                        }
                     }
                     progress
                         .checkpoint_transition(mode.replay_stage(), &entity.path, proposals)
@@ -504,7 +557,12 @@ impl Consolidator {
         // checkpoint; merging it here gives classify its virtual entity shape without
         // exposing free-text keys to the live A-box.
         let mut pages_by_path: BTreeMap<String, KnowledgeConsolidationEntity> = BTreeMap::new();
-        for path in self.ctx.repo.entities_needing_reconciliation(&user_id).await? {
+        for path in self
+            .ctx
+            .repo
+            .entities_needing_reconciliation(&user_id)
+            .await?
+        {
             if let Some(p) = self.ctx.view.entity_by_path(&path).await?
                 && p.category == EntityCategory::Concept
             {
@@ -527,14 +585,13 @@ impl Consolidator {
                 ) {
                     continue;
                 }
-                if let (Some(held), Some(offered)) =
-                    (entity.attributes.as_object_mut(), staged_attributes.as_object())
-                {
+                if let (Some(held), Some(offered)) = (
+                    entity.attributes.as_object_mut(),
+                    staged_attributes.as_object(),
+                ) {
                     for (key, value) in offered {
                         match held.get_mut(key) {
-                            Some(existing) => {
-                                merge_consolidation_attribute_values(existing, value)
-                            }
+                            Some(existing) => merge_consolidation_attribute_values(existing, value),
                             None => {
                                 held.insert(key.clone(), value.clone());
                             }
@@ -553,15 +610,25 @@ impl Consolidator {
             // preserves such paths as update-only placeholders so an existing entity can
             // receive the memory above; when the lookup finds nothing, keep the path on
             // the durable memory for repair but do not turn it into an entity candidate.
-            if candidate.existing_only() { continue; }
+            if candidate.existing_only() {
+                continue;
+            }
             let name = if candidate.name.trim().is_empty() {
-                candidate.path.rsplit('/').next().unwrap_or(&candidate.path).to_string()
+                candidate
+                    .path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&candidate.path)
+                    .to_string()
             } else {
                 candidate.name.clone()
             };
             let mut entity = KnowledgeConsolidationEntity::pending(
-                self.ctx.view.consolidation_id(), &user_id, &candidate.path,
-                EntityCategory::Concept, candidate.contributions.clone(),
+                self.ctx.view.consolidation_id(),
+                &user_id,
+                &candidate.path,
+                EntityCategory::Concept,
+                candidate.contributions.clone(),
                 candidate.source_memory_ids.iter().cloned().collect(),
             );
             entity.name = name;
@@ -576,7 +643,8 @@ impl Consolidator {
         // in the temporary entity view so a backed entity can discover it as an identity or
         // relation target, but do not classify, reconcile, author, or materialize it.
         // Existing live entities are never shells, even when an old row has no provenance.
-        let shell_paths: HashSet<String> = entities.iter()
+        let shell_paths: HashSet<String> = entities
+            .iter()
             .filter(|entity| is_unbacked_shell(entity))
             .map(|entity| entity.path.clone())
             .collect();
@@ -596,7 +664,9 @@ impl Consolidator {
         // an entity for. They arrive after `entities` was read, so they are carried separately -
         // resolve has to see them or a mint can duplicate an entity the search missed.
         let mut minted: Vec<String> = Vec::new();
-        let mut classification_jobs: VecDeque<_> = entities.iter().enumerate()
+        let mut classification_jobs: VecDeque<_> = entities
+            .iter()
+            .enumerate()
             .filter(|(_, entity)| !shell_paths.contains(&entity.path))
             .map(|(entity_index, _)| ClassificationJob {
                 entity_index,
@@ -617,12 +687,15 @@ impl Consolidator {
                 // A shell becomes an A-box individual only when an accepted mapping
                 // points at it. Add these jobs after every normal entity has produced
                 // its edges, in the same stable entity order as before.
-                referenced_shell_paths = proposals.referenced_targets()
+                referenced_shell_paths = proposals
+                    .referenced_targets()
                     .intersection(&shell_paths)
                     .cloned()
                     .collect();
                 classification_jobs.extend(
-                    entities.iter().enumerate()
+                    entities
+                        .iter()
+                        .enumerate()
                         .filter(|(_, entity)| referenced_shell_paths.contains(&entity.path))
                         .map(|(entity_index, _)| ClassificationJob {
                             entity_index,
@@ -653,11 +726,14 @@ impl Consolidator {
             }
         }
 
-        let unresolved = progress.concept_rows()
-            .filter(|candidate| !candidate.existing_only()
-                && !candidate.source_memory_ids.is_empty()
-                && !proposals.by_path.contains_key(&candidate.path)
-                && !progress.is_resolved(&candidate.path))
+        let unresolved = progress
+            .concept_rows()
+            .filter(|candidate| {
+                !candidate.existing_only()
+                    && !candidate.source_memory_ids.is_empty()
+                    && !proposals.by_path.contains_key(&candidate.path)
+                    && !progress.is_resolved(&candidate.path)
+            })
             .count();
         if unresolved != 0 {
             return Err(AppError::Internal(format!(
@@ -677,29 +753,36 @@ impl Consolidator {
         // Resolve shells first, and only into memory-backed entities. Backed entities may then
         // resolve among themselves, but never into a shell: provenance always wins as the
         // canonical identity. Shell-to-shell merging has no durable knowledge to preserve.
-        let mut backed_paths: HashSet<String> = self.ctx.view.list_entities().await?
+        let mut backed_paths: HashSet<String> = self
+            .ctx
+            .view
+            .list_entities()
+            .await?
             .into_iter()
             .filter(|entity| {
                 entity.category == EntityCategory::Concept && entity.entity_id.is_some()
             })
             .map(|entity| entity.path)
             .collect();
-        backed_paths.extend(entities.iter()
-            .filter(|entity| !shell_paths.contains(&entity.path))
-            .map(|entity| entity.path.clone())
-            .chain(minted.iter().cloned()));
+        backed_paths.extend(
+            entities
+                .iter()
+                .filter(|entity| !shell_paths.contains(&entity.path))
+                .map(|entity| entity.path.clone())
+                .chain(minted.iter().cloned()),
+        );
         let mut identities: Vec<String> = shell_paths.iter().cloned().collect();
         identities.sort();
-        identities.extend(entities.iter()
-            .filter(|entity| !shell_paths.contains(&entity.path))
-            .map(|entity| entity.path.clone()));
+        identities.extend(
+            entities
+                .iter()
+                .filter(|entity| !shell_paths.contains(&entity.path))
+                .map(|entity| entity.path.clone()),
+        );
         identities.extend(minted.iter().cloned());
         let previously_merged = progress.resolved_into().keys().cloned().collect();
-        let mut resolve_state = ResolveWorkState::new(
-            backed_paths,
-            shell_paths.clone(),
-            previously_merged,
-        );
+        let mut resolve_state =
+            ResolveWorkState::new(backed_paths, shell_paths.clone(), previously_merged);
         resolve.resolve_sweeps += 1;
         for path in &identities {
             self.resolve_identity(
@@ -709,7 +792,8 @@ impl Consolidator {
                 &mut resolve_state,
                 resolve,
                 false,
-            ).await?;
+            )
+            .await?;
         }
 
         // An unmerged shell has served its only entity-level purpose. Forgetting it prevents
@@ -718,14 +802,19 @@ impl Consolidator {
         // object IRI exists in the A-box without requiring a knowledge_entity row.
         for path in &shell_paths {
             if !resolve_state.is_merged(path)
-                && proposals.input_entity(path).is_some_and(|entity| is_unbacked_shell(&entity))
+                && proposals
+                    .input_entity(path)
+                    .is_some_and(|entity| is_unbacked_shell(&entity))
                 && !referenced_shell_paths.contains(path)
             {
                 proposals.forget(path);
             }
         }
 
-        classify.entities_minted += minted.iter().filter(|p| !resolve_state.is_merged(p)).count();
+        classify.entities_minted += minted
+            .iter()
+            .filter(|p| !resolve_state.is_merged(p))
+            .count();
 
         if matches!(self.ctx.stage().await, ConsolidationStageState::Resolve(_)) {
             progress.advance_to(WorkStage::Reconcile).await?;
@@ -744,7 +833,10 @@ impl Consolidator {
         .run(&mut proposals, progress, self, &mut resolve_state, resolve)
         .await?;
 
-        if matches!(self.ctx.stage().await, ConsolidationStageState::Reconcile(_)) {
+        if matches!(
+            self.ctx.stage().await,
+            ConsolidationStageState::Reconcile(_)
+        ) {
             progress.advance_to(WorkStage::Assemble).await?;
         }
 
@@ -761,7 +853,6 @@ impl Consolidator {
 
         Ok((classify_out, resolve_out, assemble_out))
     }
-
 }
 
 #[cfg(test)]

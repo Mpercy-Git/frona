@@ -132,9 +132,7 @@ fn extract_openrouter(body: &serde_json::Value) -> Vec<ModelInfo> {
                 .filter_map(|m| {
                     let id = m.get("id")?.as_str()?.to_string();
                     let name = m.get("name").and_then(|v| v.as_str()).map(String::from);
-                    let context_window = m
-                        .get("context_length")
-                        .and_then(|v| v.as_u64());
+                    let context_window = m.get("context_length").and_then(|v| v.as_u64());
                     let max_tokens = m
                         .get("top_provider")
                         .and_then(|tp| tp.get("max_completion_tokens"))
@@ -158,7 +156,10 @@ fn extract_gemini(body: &serde_json::Value) -> Vec<ModelInfo> {
             arr.iter()
                 .filter_map(|m| {
                     let raw_name = m.get("name")?.as_str()?;
-                    let id = raw_name.strip_prefix("models/").unwrap_or(raw_name).to_string();
+                    let id = raw_name
+                        .strip_prefix("models/")
+                        .unwrap_or(raw_name)
+                        .to_string();
                     let name = m
                         .get("displayName")
                         .and_then(|v| v.as_str())

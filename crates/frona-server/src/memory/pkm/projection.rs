@@ -32,7 +32,7 @@ use crate::core::error::AppError;
 use crate::db::repo::pkm::PkmRepo;
 use crate::memory::pkm::ontology::PrefixMap;
 
-use super::model::{KnowledgeEntity, KnowledgeEntityLink, EntityCategory};
+use super::model::{EntityCategory, KnowledgeEntity, KnowledgeEntityLink};
 use super::storage::PkmStorage;
 use super::vault::VaultScope;
 
@@ -50,33 +50,34 @@ pub(crate) fn canonicalize_wikilinks(
             .expect("wikilink expression is valid")
     });
     let vault_prefix = format!("{}/", scope.directory());
-    wikilink.replace_all(markdown, |captures: &regex::Captures<'_>| {
-        let target = &captures[1];
-        let (path, prefixed) = match target.strip_prefix(&vault_prefix) {
-            Some(path) => (path, true),
-            None => (target, false),
-        };
-        let canonical = canonical_path(path, redirects);
-        if canonical == path {
-            return captures[0].to_string();
-        }
-        let target = if prefixed {
-            scope.vault_path(&canonical)
-        } else {
-            canonical
-        };
-        format!("[[{target}{}]]", &captures[2])
-    }).into_owned()
+    wikilink
+        .replace_all(markdown, |captures: &regex::Captures<'_>| {
+            let target = &captures[1];
+            let (path, prefixed) = match target.strip_prefix(&vault_prefix) {
+                Some(path) => (path, true),
+                None => (target, false),
+            };
+            let canonical = canonical_path(path, redirects);
+            if canonical == path {
+                return captures[0].to_string();
+            }
+            let target = if prefixed {
+                scope.vault_path(&canonical)
+            } else {
+                canonical
+            };
+            format!("[[{target}{}]]", &captures[2])
+        })
+        .into_owned()
 }
 
-pub(crate) fn canonical_path(
-    path: &str,
-    redirects: &BTreeMap<String, String>,
-) -> String {
+pub(crate) fn canonical_path(path: &str, redirects: &BTreeMap<String, String>) -> String {
     let mut canonical = path;
     let mut seen = std::collections::HashSet::new();
     while seen.insert(canonical) {
-        let Some(next) = redirects.get(canonical) else { break };
+        let Some(next) = redirects.get(canonical) else {
+            break;
+        };
         canonical = next;
     }
     canonical.to_string()
@@ -344,7 +345,8 @@ pub(crate) async fn restamp_rev(
         return Ok(None);
     };
     let rev = sha256_hex(&content);
-    repo.set_page_projection(user_id, path, &content, &rev).await?;
+    repo.set_page_projection(user_id, path, &content, &rev)
+        .await?;
     Ok(Some(rev))
 }
 
@@ -368,8 +370,14 @@ mod tests {
     #[test]
     fn merged_wikilinks_follow_chained_redirects_without_losing_labels_or_fragments() {
         let redirects = BTreeMap::from([
-            ("hardware/device-x".into(), "devices/example-tools-device-x".into()),
-            ("devices/example-tools-device-x".into(), "tools/example-tools-device-x".into()),
+            (
+                "hardware/device-x".into(),
+                "devices/example-tools-device-x".into(),
+            ),
+            (
+                "devices/example-tools-device-x".into(),
+                "tools/example-tools-device-x".into(),
+            ),
         ]);
         let rewritten = canonicalize_wikilinks(
             "Use [[hardware/device-x|the screwdriver]] and \
@@ -379,7 +387,9 @@ mod tests {
             &vault(),
         );
         assert!(rewritten.contains("[[tools/example-tools-device-x|the screwdriver]]"));
-        assert!(rewritten.contains("[[Memory/tools/example-tools-device-x#Firmware|its firmware]]"));
+        assert!(
+            rewritten.contains("[[Memory/tools/example-tools-device-x#Firmware|its firmware]]")
+        );
         assert!(rewritten.contains("[[hardware/device-x-compatible-case]]"));
         assert!(!rewritten.contains("[[hardware/device-x|"));
         assert!(!rewritten.contains("[[Memory/hardware/device-x#"));
@@ -388,7 +398,8 @@ mod tests {
     #[test]
     fn curie_frontmatter_keys_are_quoted_and_liftable() {
         use crate::memory::pkm::model::{
-            AttributeSource, KnowledgeEntity, KnowledgeEntityLink, LinkOrigin, EntityCategory, EntityOrigin,
+            AttributeSource, EntityCategory, EntityOrigin, KnowledgeEntity, KnowledgeEntityLink,
+            LinkOrigin,
         };
         let now = chrono::Utc::now();
         let page = KnowledgeEntity {
@@ -413,7 +424,9 @@ mod tests {
             extracted_rev: None,
             related_playbooks: vec!["playbooks/backup-postgres".into()],
             search_text: String::new(),
-            search_names: Vec::new(), search_name_tokens: Vec::new(), search_assertions: Vec::new(),
+            search_names: Vec::new(),
+            search_name_tokens: Vec::new(),
+            search_assertions: Vec::new(),
             attributes: serde_json::json!({ "frona:port": 5432, "host": "db.internal" }),
             use_count: 0,
             aliases: Default::default(),
@@ -431,7 +444,10 @@ mod tests {
             origin: LinkOrigin::Asserted,
             created_at: now,
         };
-        let article = MarkdownPage { body: "# Postgres\nbody".into(), has_title: true };
+        let article = MarkdownPage {
+            body: "# Postgres\nbody".into(),
+            has_title: true,
+        };
         let rendered = compose_page(
             &page,
             &article,
@@ -443,12 +459,25 @@ mod tests {
         assert!(!rendered.contains("memory-secret"));
         assert!(!rendered.contains("attribute_sources"));
         assert!(!rendered.contains("source_memory_ids"));
-        assert!(rendered.contains("related_playbooks:\n  - \"[[Memory/playbooks/backup-postgres]]\""));
-        assert!(rendered.contains("## Related Playbooks\n\n- [[Memory/playbooks/backup-postgres]]"));
+        assert!(
+            rendered.contains("related_playbooks:\n  - \"[[Memory/playbooks/backup-postgres]]\"")
+        );
+        assert!(
+            rendered.contains("## Related Playbooks\n\n- [[Memory/playbooks/backup-postgres]]")
+        );
 
-        assert!(rendered.contains("\"frona:dependsOn\":"), "relation CURIE key quoted:\n{rendered}");
-        assert!(rendered.contains("\"frona:port\": 5432"), "attribute CURIE key quoted:\n{rendered}");
-        assert!(rendered.contains("  host: "), "plain attribute key stays bare:\n{rendered}");
+        assert!(
+            rendered.contains("\"frona:dependsOn\":"),
+            "relation CURIE key quoted:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("\"frona:port\": 5432"),
+            "attribute CURIE key quoted:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("  host: "),
+            "plain attribute key stays bare:\n{rendered}"
+        );
         assert!(
             rendered.contains("type: [frona:Service]"),
             "type is a CURIE array, even at one element:\n{rendered}"
@@ -456,9 +485,14 @@ mod tests {
 
         let fm = rendered.split("---\n").nth(1).expect("frontmatter block");
         let v: serde_yaml::Value = serde_yaml::from_str(fm).expect("frontmatter parses");
-        assert!(v.get("frona:dependsOn").is_some(), "relation key parsed as the CURIE");
         assert!(
-            v.get("attributes").and_then(|a| a.get("frona:port")).is_some(),
+            v.get("frona:dependsOn").is_some(),
+            "relation key parsed as the CURIE"
+        );
+        assert!(
+            v.get("attributes")
+                .and_then(|a| a.get("frona:port"))
+                .is_some(),
             "attribute CURIE key parsed"
         );
         let types: Vec<&str> = v
@@ -475,10 +509,17 @@ mod tests {
     /// out of what `compose_page` wrote - and be absent for a file we did not mint.
     #[test]
     fn uid_stamp_round_trips_and_is_absent_from_a_foreign_file() {
-        assert_eq!(parse_uid("---\nuid: page:abc\ntitle: X\n---\n\nbody"), Some("page:abc".into()));
+        assert_eq!(
+            parse_uid("---\nuid: page:abc\ntitle: X\n---\n\nbody"),
+            Some("page:abc".into())
+        );
         assert_eq!(parse_uid("---\ntitle: X\n---\n\nbody"), None, "no uid key");
         assert_eq!(parse_uid("# Just prose\n\nno frontmatter"), None);
-        assert_eq!(parse_uid("---\nuid:   \n---\n"), None, "blank uid is not an id");
+        assert_eq!(
+            parse_uid("---\nuid:   \n---\n"),
+            None,
+            "blank uid is not an id"
+        );
     }
 
     #[test]
@@ -541,8 +582,16 @@ mod tests {
     fn rev_is_over_exact_bytes() {
         let bytes = "---\nuid: page:1\n---\n\n# X\n\nbody\n";
         assert_eq!(sha256_hex(bytes), sha256_hex(bytes), "deterministic");
-        assert_ne!(sha256_hex(bytes), sha256_hex(bytes.trim_end()), "a trailing newline counts");
-        assert_ne!(sha256_hex(bytes), sha256_hex(&bytes.replace("# X", "# Y")), "content counts");
+        assert_ne!(
+            sha256_hex(bytes),
+            sha256_hex(bytes.trim_end()),
+            "a trailing newline counts"
+        );
+        assert_ne!(
+            sha256_hex(bytes),
+            sha256_hex(&bytes.replace("# X", "# Y")),
+            "content counts"
+        );
         assert_eq!(sha256_hex(bytes).len(), 64, "hex sha256");
     }
 }

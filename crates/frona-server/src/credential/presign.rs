@@ -1,5 +1,5 @@
-use crate::auth::jwt::JwtService;
 use crate::auth::UserService;
+use crate::auth::jwt::JwtService;
 use crate::chat::message::models::MessageResponse;
 use crate::core::Handle;
 use crate::core::error::{AppError, AuthErrorCode};
@@ -42,7 +42,8 @@ impl PresignService {
         user_id: &str,
         handle: &Handle,
     ) -> Result<String, AppError> {
-        self.sign_with_expiry(owner, path, user_id, handle, self.expiry_secs).await
+        self.sign_with_expiry(owner, path, user_id, handle, self.expiry_secs)
+            .await
     }
 
     pub async fn sign_with_expiry(
@@ -94,14 +95,16 @@ impl PresignService {
         expiry_secs: u64,
     ) -> Result<String, AppError> {
         let handle = self.user_service.handle_of(user_id).await?;
-        self.sign_with_expiry(owner, path, user_id, &handle, expiry_secs).await
+        self.sign_with_expiry(owner, path, user_id, &handle, expiry_secs)
+            .await
     }
 
     pub async fn verify(&self, token: &str) -> Result<PresignClaims, AppError> {
         let header = self.jwt_svc.decode_unverified_header(token)?;
-        let kid = header
-            .kid
-            .ok_or_else(|| AppError::Auth { message: "Token missing kid".into(), code: AuthErrorCode::TokenInvalid })?;
+        let kid = header.kid.ok_or_else(|| AppError::Auth {
+            message: "Token missing kid".into(),
+            code: AuthErrorCode::TokenInvalid,
+        })?;
 
         let decoding_key = self.keypair_svc.get_verifying_key(&kid).await?;
         self.jwt_svc.verify::<PresignClaims>(token, &decoding_key)

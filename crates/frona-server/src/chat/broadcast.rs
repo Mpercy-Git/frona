@@ -24,9 +24,15 @@ pub enum EntityAction {
 #[allow(clippy::large_enum_variant)]
 pub enum BroadcastEventKind {
     Inference(InferenceEventKind),
-    Title { title: String },
-    NewNotification { notification: Notification },
-    ChatMessage { message: MessageResponse },
+    Title {
+        title: String,
+    },
+    NewNotification {
+        notification: Notification,
+    },
+    ChatMessage {
+        message: MessageResponse,
+    },
     TaskUpdate {
         task_id: String,
         status: String,
@@ -35,7 +41,9 @@ pub enum BroadcastEventKind {
         source_chat_id: Option<String>,
         result_summary: Option<String>,
     },
-    InferenceCount { count: usize },
+    InferenceCount {
+        count: usize,
+    },
     EntityUpdated {
         table: String,
         record_id: String,
@@ -188,7 +196,13 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                     "token",
                     serde_json::json!({ "chat_id": chat_id, "content": text }),
                 )),
-                InferenceEventKind::ToolCall { id, provider_call_id, name, arguments, description } => Some(sse_event(
+                InferenceEventKind::ToolCall {
+                    id,
+                    provider_call_id,
+                    name,
+                    arguments,
+                    description,
+                } => Some(sse_event(
                     "tool_call",
                     serde_json::json!({
                         "chat_id": chat_id,
@@ -203,14 +217,22 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                     "reasoning",
                     serde_json::json!({ "chat_id": chat_id, "content": text }),
                 )),
-                InferenceEventKind::ToolResult { name, result, success } => {
+                InferenceEventKind::ToolResult {
+                    name,
+                    result,
+                    success,
+                } => {
                     let summary: String = result.chars().take(200).collect();
                     Some(sse_event(
                         "tool_result",
                         serde_json::json!({ "chat_id": chat_id, "name": name, "success": success, "summary": summary }),
                     ))
                 }
-                InferenceEventKind::EntityUpdated { table, record_id, fields } => Some(sse_event(
+                InferenceEventKind::EntityUpdated {
+                    table,
+                    record_id,
+                    fields,
+                } => Some(sse_event(
                     "entity_updated",
                     serde_json::json!({
                         "chat_id": chat_id,
@@ -219,7 +241,10 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                         "fields": fields,
                     }),
                 )),
-                InferenceEventKind::Retry { retry_after_ms, reason } => Some(sse_event(
+                InferenceEventKind::Retry {
+                    retry_after_ms,
+                    reason,
+                } => Some(sse_event(
                     "retry",
                     serde_json::json!({
                         "chat_id": chat_id,
@@ -338,7 +363,12 @@ impl BroadcastService {
         });
 
         let bus = crate::core::event_bus::EventBus::<BroadcastEvent>::new();
-        Self { tx, sessions, pending_events, bus }
+        Self {
+            tx,
+            sessions,
+            pending_events,
+            bus,
+        }
     }
 
     pub fn subscribe_raw(&self) -> mpsc::UnboundedReceiver<BroadcastEvent> {
@@ -384,7 +414,8 @@ impl BroadcastService {
                     reg.get(&event.user_id).is_some_and(|s| !s.is_empty())
                 };
                 if !has_live {
-                    let buf = pending_events.get_with(event.user_id.clone(), || Arc::new(Mutex::new(Vec::new())));
+                    let buf = pending_events
+                        .get_with(event.user_id.clone(), || Arc::new(Mutex::new(Vec::new())));
                     buf.lock().unwrap().push(event.sse);
                 }
             } else {
@@ -423,18 +454,17 @@ impl BroadcastService {
         }
     }
 
-    pub async fn register_session(
-        &self,
-        user_id: &str,
-        sender: SseSender,
-    ) {
+    pub async fn register_session(&self, user_id: &str, sender: SseSender) {
         if let Some(buf) = self.pending_events.remove(user_id) {
             for event in buf.lock().unwrap().drain(..) {
                 let _ = sender.send(Ok(event));
             }
         }
         let mut registry = self.sessions.write().await;
-        registry.entry(user_id.to_string()).or_default().push(sender);
+        registry
+            .entry(user_id.to_string())
+            .or_default()
+            .push(sender);
     }
 
     pub fn send(&self, event: BroadcastEvent) {
@@ -543,9 +573,18 @@ mod tests {
 
     #[test]
     fn entity_action_serializes_lowercase() {
-        assert_eq!(serde_json::to_string(&EntityAction::Created).unwrap(), "\"created\"");
-        assert_eq!(serde_json::to_string(&EntityAction::Updated).unwrap(), "\"updated\"");
-        assert_eq!(serde_json::to_string(&EntityAction::Deleted).unwrap(), "\"deleted\"");
+        assert_eq!(
+            serde_json::to_string(&EntityAction::Created).unwrap(),
+            "\"created\""
+        );
+        assert_eq!(
+            serde_json::to_string(&EntityAction::Updated).unwrap(),
+            "\"updated\""
+        );
+        assert_eq!(
+            serde_json::to_string(&EntityAction::Deleted).unwrap(),
+            "\"deleted\""
+        );
     }
 
     #[test]

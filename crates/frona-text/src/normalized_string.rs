@@ -14,8 +14,8 @@
 //!
 //! Spans are `(u32, u32)` per byte → 4 GiB file-size ceiling.
 
-use unicode_normalization_alignments::UnicodeNormalization;
 use unicode_casefold::UnicodeCaseFold;
+use unicode_normalization_alignments::UnicodeNormalization;
 
 /// A `(src_start, src_end)` byte range in the original buffer, stored
 /// per-byte of the normalised buffer. `src_end` includes any source bytes
@@ -180,11 +180,7 @@ impl NormalizedString {
     /// to ASCII `' '`.
     pub fn ascii_spaces(&mut self) -> &mut Self {
         self.map_chars(|c| match c {
-            '\u{00A0}'
-            | '\u{2002}'..='\u{200A}'
-            | '\u{202F}'
-            | '\u{205F}'
-            | '\u{3000}' => ' ',
+            '\u{00A0}' | '\u{2002}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
             other => other,
         })
     }

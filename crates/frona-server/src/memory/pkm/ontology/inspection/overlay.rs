@@ -1,9 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use frona_ontologies::rdf::{
-    C_ANN_PROP, C_DATA_PROP, C_OBJ_PROP, C_OWL_CLASS, C_RDF_PROPERTY, P_COMMENT,
-    P_DISJOINT, P_DOMAIN, P_EQ_CLASS, P_EQ_PROP, P_INVERSE, P_LABEL, P_RANGE,
-    P_SUBCLASS, P_SUBPROP, P_TYPE,
+    C_ANN_PROP, C_DATA_PROP, C_OBJ_PROP, C_OWL_CLASS, C_RDF_PROPERTY, P_COMMENT, P_DISJOINT,
+    P_DOMAIN, P_EQ_CLASS, P_EQ_PROP, P_INVERSE, P_LABEL, P_RANGE, P_SUBCLASS, P_SUBPROP, P_TYPE,
 };
 use oxrdf::{NamedOrBlankNode, Term, Triple};
 
@@ -30,7 +29,9 @@ impl SchemaOverlay {
     pub(super) fn from_triples(triples: &[Triple]) -> Self {
         let mut overlay = Self::default();
         for triple in triples {
-            let NamedOrBlankNode::NamedNode(subject) = &triple.subject else { continue };
+            let NamedOrBlankNode::NamedNode(subject) = &triple.subject else {
+                continue;
+            };
             let subject = subject.as_str().to_string();
             let predicate = triple.predicate.as_str();
             match (&triple.object, predicate) {
@@ -76,10 +77,12 @@ impl SchemaOverlay {
                         .insert(object.as_str().to_string());
                 }
                 (Term::Literal(value), P_LABEL) => {
-                    overlay.terms.entry(subject).or_default().label = Some(value.value().to_string());
+                    overlay.terms.entry(subject).or_default().label =
+                        Some(value.value().to_string());
                 }
                 (Term::Literal(value), P_COMMENT) => {
-                    overlay.terms.entry(subject).or_default().definition = Some(value.value().to_string());
+                    overlay.terms.entry(subject).or_default().definition =
+                        Some(value.value().to_string());
                 }
                 _ => {}
             }

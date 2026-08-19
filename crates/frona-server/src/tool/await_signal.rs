@@ -84,9 +84,7 @@ impl AgentTool for AwaitSignalTool {
             .get("instructions")
             .or_else(|| arguments.get("description"))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                AppError::Validation("Missing required parameter: instructions".into())
-            })?
+            .ok_or_else(|| AppError::Validation("Missing required parameter: instructions".into()))?
             .to_string();
         // Accept both `expected_categories` (current) and `tags` (legacy alias)
         // for the categorical-match list.
@@ -248,4 +246,3 @@ fn parse_string_array(args: &Value, key: &str) -> Result<Vec<String>, AppError> 
     }
     Ok(out)
 }
-

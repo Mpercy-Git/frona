@@ -108,51 +108,82 @@ impl OntologyDeclaration {
 
     pub(crate) fn edits(&self) -> Vec<SchemaEdit> {
         match self {
-            Self::Class { term, parents, equivalent_to, disjoint_with, .. } => {
+            Self::Class {
+                term,
+                parents,
+                equivalent_to,
+                disjoint_with,
+                ..
+            } => {
                 let term = term.trim().to_string();
                 let mut edits = if parents.is_empty() {
-                    vec![SchemaEdit::DeclareClass { class: term.clone() }]
+                    vec![SchemaEdit::DeclareClass {
+                        class: term.clone(),
+                    }]
                 } else {
-                    parents.iter().filter_map(|parent| {
-                        let parent = parent.trim();
-                        (!parent.is_empty()).then(|| SchemaEdit::SubClassOf {
-                            sub: term.clone(), sup: parent.to_string(),
+                    parents
+                        .iter()
+                        .filter_map(|parent| {
+                            let parent = parent.trim();
+                            (!parent.is_empty()).then(|| SchemaEdit::SubClassOf {
+                                sub: term.clone(),
+                                sup: parent.to_string(),
+                            })
                         })
-                    }).collect()
+                        .collect()
                 };
                 edits.extend(equivalent_to.iter().filter_map(|other| {
                     let other = other.trim();
                     (!other.is_empty()).then(|| SchemaEdit::EquivalentClasses {
-                        a: term.clone(), b: other.to_string(),
+                        a: term.clone(),
+                        b: other.to_string(),
                     })
                 }));
                 edits.extend(disjoint_with.iter().filter_map(|other| {
                     let other = other.trim();
                     (!other.is_empty()).then(|| SchemaEdit::DisjointClasses {
-                        a: term.clone(), b: other.to_string(),
+                        a: term.clone(),
+                        b: other.to_string(),
                     })
                 }));
                 edits
             }
             Self::ObjectProperty {
-                term, domain, range, subproperty_of, inverse, characteristics, ..
+                term,
+                domain,
+                range,
+                subproperty_of,
+                inverse,
+                characteristics,
+                ..
             } => {
                 let term = term.trim().to_string();
-                let mut edits = vec![SchemaEdit::DeclareObjectProperty { property: term.clone() }];
+                let mut edits = vec![SchemaEdit::DeclareObjectProperty {
+                    property: term.clone(),
+                }];
                 edits.extend(domain.iter().filter_map(|class| {
                     let class = class.trim();
                     (!class.is_empty()).then(|| SchemaEdit::ObjectPropertyDomain {
-                        property: term.clone(), class: class.to_string(),
+                        property: term.clone(),
+                        class: class.to_string(),
                     })
                 }));
                 edits.extend(range.iter().filter_map(|class| {
                     let class = class.trim();
                     (!class.is_empty()).then(|| SchemaEdit::ObjectPropertyRange {
-                        property: term.clone(), class: class.to_string(),
+                        property: term.clone(),
+                        class: class.to_string(),
                     })
                 }));
-                if let Some(parent) = subproperty_of.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                    edits.push(SchemaEdit::SubPropertyOf { sub: term.clone(), sup: parent.into() });
+                if let Some(parent) = subproperty_of
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    edits.push(SchemaEdit::SubPropertyOf {
+                        sub: term.clone(),
+                        sup: parent.into(),
+                    });
                 }
                 if let Some(other) = inverse.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                     let (a, b) = if term.as_str() <= other {
@@ -164,18 +195,28 @@ impl OntologyDeclaration {
                 }
                 for characteristic in characteristics {
                     let edit = SchemaEdit::PropertyCharacteristic {
-                        property: term.clone(), characteristic: *characteristic,
+                        property: term.clone(),
+                        characteristic: *characteristic,
                     };
-                    if !edits.contains(&edit) { edits.push(edit); }
+                    if !edits.contains(&edit) {
+                        edits.push(edit);
+                    }
                 }
                 edits
             }
             Self::DataProperty { term, datatype, .. } => {
                 let term = term.trim().to_string();
-                let mut edits = vec![SchemaEdit::DeclareDataProperty { property: term.clone() }];
-                if let Some(datatype) = datatype.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                let mut edits = vec![SchemaEdit::DeclareDataProperty {
+                    property: term.clone(),
+                }];
+                if let Some(datatype) = datatype.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                {
                     edits.push(SchemaEdit::RestrictDatatype {
-                        property: term, datatype: datatype.into(), min: None, max: None, pattern: None,
+                        property: term,
+                        datatype: datatype.into(),
+                        min: None,
+                        max: None,
+                        pattern: None,
                     });
                 }
                 edits
@@ -185,13 +226,24 @@ impl OntologyDeclaration {
 
     fn terms(&self) -> Vec<&str> {
         match self {
-            Self::Class { term, parents, equivalent_to, disjoint_with, .. } => std::iter::once(term.as_str())
+            Self::Class {
+                term,
+                parents,
+                equivalent_to,
+                disjoint_with,
+                ..
+            } => std::iter::once(term.as_str())
                 .chain(parents.iter().map(String::as_str))
                 .chain(equivalent_to.iter().map(String::as_str))
                 .chain(disjoint_with.iter().map(String::as_str))
                 .collect(),
             Self::ObjectProperty {
-                term, domain, range, subproperty_of, inverse, ..
+                term,
+                domain,
+                range,
+                subproperty_of,
+                inverse,
+                ..
             } => std::iter::once(term.as_str())
                 .chain(domain.iter().map(String::as_str))
                 .chain(range.iter().map(String::as_str))
@@ -213,13 +265,18 @@ impl OntologyDeclaration {
             values.iter().map(|value| fix(value, kind)).collect()
         };
         let fix_optional = |value: &Option<String>, kind: TermKind| {
-            value.as_deref()
+            value
+                .as_deref()
                 .filter(|value| !value.trim().is_empty())
                 .map(|value| fix(value, kind))
         };
         match self {
             Self::Class {
-                term, description, parents, equivalent_to, disjoint_with,
+                term,
+                description,
+                parents,
+                equivalent_to,
+                disjoint_with,
             } => Self::Class {
                 term: fix(term, TermKind::Class),
                 description: description.clone(),
@@ -228,7 +285,13 @@ impl OntologyDeclaration {
                 disjoint_with: fix_all(disjoint_with, TermKind::Class),
             },
             Self::ObjectProperty {
-                term, description, domain, range, subproperty_of, inverse, characteristics,
+                term,
+                description,
+                domain,
+                range,
+                subproperty_of,
+                inverse,
+                characteristics,
             } => Self::ObjectProperty {
                 term: fix(term, TermKind::Property),
                 description: description.clone(),
@@ -238,7 +301,11 @@ impl OntologyDeclaration {
                 inverse: fix_optional(inverse, TermKind::Property),
                 characteristics: characteristics.clone(),
             },
-            Self::DataProperty { term, description, datatype } => Self::DataProperty {
+            Self::DataProperty {
+                term,
+                description,
+                datatype,
+            } => Self::DataProperty {
                 term: fix(term, TermKind::Property),
                 description: description.clone(),
                 datatype: fix_optional(datatype, TermKind::Class),
@@ -277,63 +344,108 @@ impl Classification {
         let mut problems = Vec::new();
         for declaration in &self.declarations {
             let term = declaration.term();
-            if term.is_empty() { problems.push("a declaration has an empty term".into()); continue; }
+            if term.is_empty() {
+                problems.push("a declaration has an empty term".into());
+                continue;
+            }
             if declaration.description().is_empty() {
                 problems.push(format!("new term {term} needs a semantic description"));
             }
             if by_term.insert(term, declaration).is_some() {
                 problems.push(format!("{term} is declared more than once"));
             }
-            if matches!(declaration, OntologyDeclaration::Class { parents, .. } if parents.is_empty()) {
+            if matches!(declaration, OntologyDeclaration::Class { parents, .. } if parents.is_empty())
+            {
                 problems.push(format!("new class {term} must name at least one parent"));
             }
         }
-        let needs = |term: &str| px.expand(term).starts_with("urn:frona:") && !existing.contains(term);
-        for class in self.classes.iter().map(|c| c.class.as_str())
+        let needs =
+            |term: &str| px.expand(term).starts_with("urn:frona:") && !existing.contains(term);
+        for class in self
+            .classes
+            .iter()
+            .map(|c| c.class.as_str())
             .chain(self.new_entities.iter().map(|e| e.class.as_str()))
         {
             let class = class.trim();
-            if needs(class) && !matches!(by_term.get(class), Some(OntologyDeclaration::Class { .. })) {
-                problems.push(format!("new class {class} needs one central class declaration"));
+            if needs(class)
+                && !matches!(by_term.get(class), Some(OntologyDeclaration::Class { .. }))
+            {
+                problems.push(format!(
+                    "new class {class} needs one central class declaration"
+                ));
             }
         }
         for relation in &self.relations {
             let term = relation.to.trim();
-            if needs(term) && !matches!(by_term.get(term), Some(OntologyDeclaration::ObjectProperty { .. })) {
-                problems.push(format!("new relation {term} needs one object_property declaration"));
+            if needs(term)
+                && !matches!(
+                    by_term.get(term),
+                    Some(OntologyDeclaration::ObjectProperty { .. })
+                )
+            {
+                problems.push(format!(
+                    "new relation {term} needs one object_property declaration"
+                ));
             }
         }
         for attribute in &self.attributes {
             let term = attribute.to.trim();
-            if !needs(term) { continue; }
+            if !needs(term) {
+                continue;
+            }
             let valid = if attribute.targets.is_empty() {
-                matches!(by_term.get(term), Some(OntologyDeclaration::DataProperty { .. }))
+                matches!(
+                    by_term.get(term),
+                    Some(OntologyDeclaration::DataProperty { .. })
+                )
             } else {
-                matches!(by_term.get(term), Some(OntologyDeclaration::ObjectProperty { .. }))
+                matches!(
+                    by_term.get(term),
+                    Some(OntologyDeclaration::ObjectProperty { .. })
+                )
             };
             if !valid {
-                let kind = if attribute.targets.is_empty() { "data_property" } else { "object_property" };
-                problems.push(format!("attribute {term} needs one {kind} declaration matching its usage"));
+                let kind = if attribute.targets.is_empty() {
+                    "data_property"
+                } else {
+                    "object_property"
+                };
+                problems.push(format!(
+                    "attribute {term} needs one {kind} declaration matching its usage"
+                ));
             }
         }
         (!problems.is_empty()).then(|| problems.join("\n"))
     }
 
-    pub(crate) fn identity_marker_feedback(&self, entity: &KnowledgeConsolidationEntity) -> Option<String> {
-        let classes: HashSet<&str> = self.classes.iter()
+    pub(crate) fn identity_marker_feedback(
+        &self,
+        entity: &KnowledgeConsolidationEntity,
+    ) -> Option<String> {
+        let classes: HashSet<&str> = self
+            .classes
+            .iter()
             .map(|choice| choice.class.trim())
             .filter(|class| !class.is_empty())
             .collect();
-        let mut properties: HashSet<&str> = self.attributes.iter()
+        let mut properties: HashSet<&str> = self
+            .attributes
+            .iter()
             .map(|mapping| mapping.to.trim())
             .chain(self.relations.iter().map(|mapping| mapping.to.trim()))
             .filter(|property| !property.is_empty())
             .collect();
-        let mut object_properties: HashSet<&str> = self.relations.iter()
+        let mut object_properties: HashSet<&str> = self
+            .relations
+            .iter()
             .map(|mapping| mapping.to.trim())
-            .chain(self.attributes.iter()
-                .filter(|mapping| !mapping.targets.is_empty())
-                .map(|mapping| mapping.to.trim()))
+            .chain(
+                self.attributes
+                    .iter()
+                    .filter(|mapping| !mapping.targets.is_empty())
+                    .map(|mapping| mapping.to.trim()),
+            )
             .filter(|property| !property.is_empty())
             .collect();
         if let Some(attributes) = entity.attributes.as_object() {
@@ -350,10 +462,19 @@ impl Classification {
             if class.is_empty() || !classes.contains(class) {
                 problems.push(format!("{class} is not one of this entity's classes"));
             }
-            if marker.properties.iter().all(|property| property.trim().is_empty()) {
-                problems.push(format!("hasKey for {class} must contain at least one property"));
+            if marker
+                .properties
+                .iter()
+                .all(|property| property.trim().is_empty())
+            {
+                problems.push(format!(
+                    "hasKey for {class} must contain at least one property"
+                ));
             }
-            for property in marker.properties.iter().map(|property| property.trim())
+            for property in marker
+                .properties
+                .iter()
+                .map(|property| property.trim())
                 .filter(|property| !property.is_empty())
             {
                 if !properties.contains(property) {
@@ -363,12 +484,16 @@ impl Classification {
                 }
             }
         }
-        for property in self.inverse_functional_properties.iter()
+        for property in self
+            .inverse_functional_properties
+            .iter()
             .map(|property| property.trim())
             .filter(|property| !property.is_empty())
         {
             if !object_properties.contains(property) {
-                problems.push(format!("{property} is not an object property on this entity"));
+                problems.push(format!(
+                    "{property} is not an object property on this entity"
+                ));
             }
         }
         (!problems.is_empty()).then(|| problems.join("\n"))
@@ -401,10 +526,13 @@ impl Classification {
     /// improve is left exactly as it is - it is legal, so it is usable.
     pub(crate) fn repaired(&self, px: &crate::memory::pkm::ontology::PrefixMap) -> Self {
         let fix = |s: &str, kind: TermKind| {
-            px.repair_term(s, kind).unwrap_or_else(|_| s.trim().to_string())
+            px.repair_term(s, kind)
+                .unwrap_or_else(|_| s.trim().to_string())
         };
         let opt = |o: &Option<String>, kind: TermKind| {
-            o.as_deref().filter(|s| !s.trim().is_empty()).map(|s| fix(s, kind))
+            o.as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| fix(s, kind))
         };
         Self {
             entity: self.entity.clone(),
@@ -444,16 +572,26 @@ impl Classification {
                     ..e.clone()
                 })
                 .collect(),
-            declarations: self.declarations.iter()
+            declarations: self
+                .declarations
+                .iter()
                 .map(|declaration| declaration.repaired(px))
                 .collect(),
-            has_keys: self.has_keys.iter().map(|marker| HasKeyMarker {
-                class: fix(&marker.class, TermKind::Class),
-                properties: marker.properties.iter()
-                    .map(|property| fix(property, TermKind::Property))
-                    .collect(),
-            }).collect(),
-            inverse_functional_properties: self.inverse_functional_properties.iter()
+            has_keys: self
+                .has_keys
+                .iter()
+                .map(|marker| HasKeyMarker {
+                    class: fix(&marker.class, TermKind::Class),
+                    properties: marker
+                        .properties
+                        .iter()
+                        .map(|property| fix(property, TermKind::Property))
+                        .collect(),
+                })
+                .collect(),
+            inverse_functional_properties: self
+                .inverse_functional_properties
+                .iter()
                 .map(|property| fix(property, TermKind::Property))
                 .collect(),
         }
@@ -468,23 +606,34 @@ impl Classification {
         self.classes
             .iter()
             .flat_map(|c| [Some(c.class.as_str()), c.new_class_parent.as_deref()])
-            .chain(
-                self.relations
-                    .iter()
-                    .map(|r| Some(r.to.as_str())),
-            )
+            .chain(self.relations.iter().map(|r| Some(r.to.as_str())))
             .chain(self.attributes.iter().map(|a| Some(a.to.as_str())))
             .chain(
                 self.new_entities
                     .iter()
                     .flat_map(|e| [Some(e.class.as_str()), e.new_class_parent.as_deref()]),
             )
-            .chain(self.declarations.iter().flat_map(OntologyDeclaration::terms).map(Some))
-            .chain(self.has_keys.iter().flat_map(|marker| {
-                std::iter::once(marker.class.as_str())
-                    .chain(marker.properties.iter().map(String::as_str))
-            }).map(Some))
-            .chain(self.inverse_functional_properties.iter().map(String::as_str).map(Some))
+            .chain(
+                self.declarations
+                    .iter()
+                    .flat_map(OntologyDeclaration::terms)
+                    .map(Some),
+            )
+            .chain(
+                self.has_keys
+                    .iter()
+                    .flat_map(|marker| {
+                        std::iter::once(marker.class.as_str())
+                            .chain(marker.properties.iter().map(String::as_str))
+                    })
+                    .map(Some),
+            )
+            .chain(
+                self.inverse_functional_properties
+                    .iter()
+                    .map(String::as_str)
+                    .map(Some),
+            )
             .flatten()
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -591,7 +740,9 @@ pub(crate) fn accept_mints(
 ) -> Vec<AcceptedMint> {
     let mut out: Vec<AcceptedMint> = Vec::new();
     for m in mints {
-        let Some(path) = normalize_path(&m.path) else { continue };
+        let Some(path) = normalize_path(&m.path) else {
+            continue;
+        };
         let (name, class) = (m.name.trim(), m.class.trim());
         if path == entity_path || name.is_empty() || class.is_empty() {
             continue;
@@ -604,7 +755,10 @@ pub(crate) fn accept_mints(
         // declared by the bundled ontologies.
         let parent = m.new_class_parent.as_deref().map(str::trim).unwrap_or("");
         let edits = (px.expand(class).starts_with("urn:frona:") && !parent.is_empty())
-            .then(|| SchemaEdit::SubClassOf { sub: class.to_string(), sup: parent.to_string() })
+            .then(|| SchemaEdit::SubClassOf {
+                sub: class.to_string(),
+                sup: parent.to_string(),
+            })
             .into_iter()
             .collect();
         out.push(AcceptedMint {
@@ -650,8 +804,11 @@ where
 /// decisions imply, the `(free_text_key, curie)` re-keys for attributes that stay
 /// literals, and the `(free_text_key, curie, target_path)` promotions for those that
 /// turned out to name another entity.
-pub(crate) type AttributeDecisions =
-    (Vec<SchemaEdit>, Vec<(String, String)>, Vec<(String, String, String)>);
+pub(crate) type AttributeDecisions = (
+    Vec<SchemaEdit>,
+    Vec<(String, String)>,
+    Vec<(String, String, String)>,
+);
 
 /// What classify proposed for one entity. Held in memory for the whole pass: no schema
 /// is committed and no entity is mutated until `assemble`'s `assemble`.
@@ -690,7 +847,9 @@ pub(crate) fn attribute_edits(
         // needs no mint.
         if targets.is_empty() {
             if is_mint {
-                edits.push(SchemaEdit::DeclareDataProperty { property: to.to_string() });
+                edits.push(SchemaEdit::DeclareDataProperty {
+                    property: to.to_string(),
+                });
             }
             if from != to {
                 rekeys.push((from.to_string(), to.to_string()));
@@ -700,7 +859,9 @@ pub(crate) fn attribute_edits(
         // One declaration however many targets - the property is an object property once,
         // not once per edge.
         if is_mint {
-            edits.push(SchemaEdit::DeclareObjectProperty { property: to.to_string() });
+            edits.push(SchemaEdit::DeclareObjectProperty {
+                property: to.to_string(),
+            });
         }
         for target in targets {
             promoted.push((from.to_string(), to.to_string(), target.to_string()));
@@ -738,7 +899,11 @@ pub(crate) fn search_terms(v: &serde_json::Value) -> Vec<String> {
     match v {
         serde_json::Value::String(s) => {
             let s = s.trim();
-            if s.is_empty() { Vec::new() } else { vec![s.to_string()] }
+            if s.is_empty() {
+                Vec::new()
+            } else {
+                vec![s.to_string()]
+            }
         }
         serde_json::Value::Array(items) => items
             .iter()
@@ -753,11 +918,16 @@ pub(crate) fn search_terms(v: &serde_json::Value) -> Vec<String> {
 /// The schema edits a classification implies - a subclass axiom when it mints a new
 /// `frona:` class under a standard parent; empty when reusing an existing class.
 pub(crate) fn classification_edits(c: &Classification) -> Vec<SchemaEdit> {
-    let mut edits: Vec<SchemaEdit> = c.classes
+    let mut edits: Vec<SchemaEdit> = c
+        .classes
         .iter()
         .filter_map(|choice| {
             let sub = choice.class.trim();
-            let sup = choice.new_class_parent.as_deref().map(str::trim).unwrap_or("");
+            let sup = choice
+                .new_class_parent
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("");
             (!sub.is_empty() && !sup.is_empty()).then(|| SchemaEdit::SubClassOf {
                 sub: sub.to_string(),
                 sup: sup.to_string(),
@@ -765,7 +935,9 @@ pub(crate) fn classification_edits(c: &Classification) -> Vec<SchemaEdit> {
         })
         .collect();
     for edit in c.declarations.iter().flat_map(OntologyDeclaration::edits) {
-        if !edits.contains(&edit) { edits.push(edit); }
+        if !edits.contains(&edit) {
+            edits.push(edit);
+        }
     }
     edits
 }

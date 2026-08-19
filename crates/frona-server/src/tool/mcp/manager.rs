@@ -63,7 +63,9 @@ impl McpManager {
                 return Ok(port);
             }
         }
-        Err(AppError::Tool("No available ports for MCP HTTP server".into()))
+        Err(AppError::Tool(
+            "No available ports for MCP HTTP server".into(),
+        ))
     }
 
     async fn release_port(&self, port: u16) {
@@ -140,14 +142,32 @@ impl McpManager {
         });
 
         match config {
-            Some(TransportConfig::Http { url, port_env_var, endpoint_path, args, env }) => {
+            Some(TransportConfig::Http {
+                url,
+                port_env_var,
+                endpoint_path,
+                args,
+                env,
+            }) => {
                 if let Some(url) = url.as_ref().filter(|u| !u.is_empty()) {
                     self.start_remote_http(server, url.clone()).await
                 } else {
-                    self.start_local_http(server, resolved_env, args, env, port_env_var.as_deref(), endpoint_path.as_deref(), token_guard).await
+                    self.start_local_http(
+                        server,
+                        resolved_env,
+                        args,
+                        env,
+                        port_env_var.as_deref(),
+                        endpoint_path.as_deref(),
+                        token_guard,
+                    )
+                    .await
                 }
             }
-            other => self.start_stdio(server, resolved_env, other, token_guard).await,
+            other => {
+                self.start_stdio(server, resolved_env, other, token_guard)
+                    .await
+            }
         }
     }
 
@@ -162,15 +182,19 @@ impl McpManager {
         if let Some(TransportConfig::Stdio { env, .. }) = config {
             env_pairs.extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
-        let sandbox = self.build_run_sandbox_with_token(
-            server,
-            env_pairs,
-            token_guard.as_ref().map(|g| g.path()),
-        ).await?;
+        let sandbox = self
+            .build_run_sandbox_with_token(server, env_pairs, token_guard.as_ref().map(|g| g.path()))
+            .await?;
         sandbox.setup()?;
 
         let args_owned: Vec<String> = config
-            .and_then(|c| if c.args().is_empty() { None } else { Some(c.args().to_vec()) })
+            .and_then(|c| {
+                if c.args().is_empty() {
+                    None
+                } else {
+                    Some(c.args().to_vec())
+                }
+            })
             .unwrap_or_else(|| server.args.clone());
         let args_refs: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
 
@@ -203,7 +227,8 @@ impl McpManager {
             .ok_or_else(|| AppError::Tool("MCP server child stdout missing".into()))?;
 
         let client = McpClient::connect((stdout, stdin), default_client_info()).await?;
-        self.register_connection(server, client, Some(child), None, None, token_guard).await
+        self.register_connection(server, client, Some(child), None, None, token_guard)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -229,7 +254,11 @@ impl McpManager {
             .with_bind_ports(vec![port]);
         sandbox.setup()?;
 
-        let args_owned: Vec<String> = if config_args.is_empty() { server.args.clone() } else { config_args.to_vec() };
+        let args_owned: Vec<String> = if config_args.is_empty() {
+            server.args.clone()
+        } else {
+            config_args.to_vec()
+        };
         tracing::info!(
             command = %server.command,
             args = ?args_owned,
@@ -248,7 +277,8 @@ impl McpManager {
             .append(true)
             .open(&log_path)
             .map_err(|e| AppError::Tool(format!("opening {}: {e}", log_path.display())))?;
-        let log_file_clone = log_file.try_clone()
+        let log_file_clone = log_file
+            .try_clone()
             .map_err(|e| AppError::Tool(format!("cloning log fd: {e}")))?;
 
         let child = sandbox.spawn(
@@ -263,19 +293,36 @@ impl McpManager {
 
         let path = endpoint_path.unwrap_or("/mcp");
         let url = format!("http://127.0.0.1:{port}{path}");
-        if let Err(e) = self.wait_for_ready(port, path, std::time::Duration::from_secs(30)).await {
+        if let Err(e) = self
+            .wait_for_ready(port, path, std::time::Duration::from_secs(30))
+            .await
+        {
             self.release_port(port).await;
             return Err(e);
         }
 
-        let transport = rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_uri(url.as_str());
-        let client = McpClient::connect(transport, default_client_info()).await
+        let transport =
+            rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_uri(
+                url.as_str(),
+            );
+        let client = McpClient::connect(transport, default_client_info())
+            .await
             .inspect_err(|_| {
                 let allocated = self.allocated_ports.clone();
-                tokio::spawn(async move { allocated.lock().await.remove(&port); });
+                tokio::spawn(async move {
+                    allocated.lock().await.remove(&port);
+                });
             })?;
 
-        self.register_connection(server, client, Some(child), Some(port), Some(log_path), token_guard).await
+        self.register_connection(
+            server,
+            client,
+            Some(child),
+            Some(port),
+            Some(log_path),
+            token_guard,
+        )
+        .await
     }
 
     async fn start_remote_http(
@@ -283,9 +330,13 @@ impl McpManager {
         server: &McpServer,
         url: String,
     ) -> Result<Vec<ToolDefinition>, AppError> {
-        let transport = rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_uri(url.as_str());
+        let transport =
+            rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_uri(
+                url.as_str(),
+            );
         let client = McpClient::connect(transport, default_client_info()).await?;
-        self.register_connection(server, client, None, None, None, None).await
+        self.register_connection(server, client, None, None, None, None)
+            .await
     }
 
     async fn register_connection(
@@ -309,7 +360,9 @@ impl McpManager {
             .collect();
 
         let log_path = log_path_override.unwrap_or_else(|| {
-            std::path::PathBuf::from(&server.workspace_dir).join("logs").join("server.log")
+            std::path::PathBuf::from(&server.workspace_dir)
+                .join("logs")
+                .join("server.log")
         });
 
         let connection = McpConnection {
@@ -333,15 +386,29 @@ impl McpManager {
         Ok(tools)
     }
 
-    async fn wait_for_ready(&self, port: u16, path: &str, timeout: std::time::Duration) -> Result<(), AppError> {
+    async fn wait_for_ready(
+        &self,
+        port: u16,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), AppError> {
         let url = format!("http://127.0.0.1:{port}{path}");
         let req_timeout = std::time::Duration::from_secs(2);
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             if tokio::time::Instant::now() > deadline {
-                return Err(AppError::Tool("MCP HTTP server did not become ready in time".into()));
+                return Err(AppError::Tool(
+                    "MCP HTTP server did not become ready in time".into(),
+                ));
             }
-            if self.http.get(&url).timeout(req_timeout).send().await.is_ok() {
+            if self
+                .http
+                .get(&url)
+                .timeout(req_timeout)
+                .send()
+                .await
+                .is_ok()
+            {
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -483,7 +550,10 @@ fn package_manager_env_vars(workspace_dir: &str) -> Vec<(String, String)> {
         ("UV_CACHE_DIR".into(), format!("{workspace_dir}/.uv-cache")),
         ("UV_TOOL_DIR".into(), format!("{workspace_dir}/.uv-tools")),
         ("UV_LINK_MODE".into(), "copy".into()),
-        ("NPM_CONFIG_CACHE".into(), format!("{workspace_dir}/.npm-cache")),
+        (
+            "NPM_CONFIG_CACHE".into(),
+            format!("{workspace_dir}/.npm-cache"),
+        ),
     ];
     let (_, node_env) = crate::tool::sandbox::node_env_vars(workspace);
     env.extend(node_env);

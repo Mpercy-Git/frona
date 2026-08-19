@@ -3,16 +3,16 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 
 use crate::core::config::CacheConfig;
-use crate::db::repo::agents::SurrealAgentRepo;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
+use crate::db::repo::agents::SurrealAgentRepo;
 use crate::policy::sandbox::SandboxPolicy;
 use crate::policy::service::PolicyService;
 use crate::tool::sandbox::driver::resource_monitor::SystemResourceManager;
 
 use super::config::parse_frontmatter;
-use super::models::{CreateAgentRequest, UpdateAgentRequest};
 use super::models::Agent;
+use super::models::{CreateAgentRequest, UpdateAgentRequest};
 use super::repository::AgentRepository;
 use crate::auth::UserService;
 use crate::core::Handle;
@@ -52,7 +52,11 @@ impl AgentService {
         let agents = self.repo.find_all().await?;
         for agent in agents {
             if let Some(ref limits) = agent.sandbox_limits {
-                self.resource_manager.set_agent_limits(&agent.id, Some(limits.max_cpu_pct), Some(limits.max_memory_pct));
+                self.resource_manager.set_agent_limits(
+                    &agent.id,
+                    Some(limits.max_cpu_pct),
+                    Some(limits.max_memory_pct),
+                );
             }
         }
         Ok(())
@@ -60,15 +64,15 @@ impl AgentService {
 
     fn push_agent_limits(&self, agent_id: &str, agent: &Agent) {
         if let Some(ref limits) = agent.sandbox_limits {
-            self.resource_manager.set_agent_limits(agent_id, Some(limits.max_cpu_pct), Some(limits.max_memory_pct));
+            self.resource_manager.set_agent_limits(
+                agent_id,
+                Some(limits.max_cpu_pct),
+                Some(limits.max_memory_pct),
+            );
         }
     }
 
-    pub async fn create(
-        &self,
-        user_id: &str,
-        req: CreateAgentRequest,
-    ) -> Result<Agent, AppError> {
+    pub async fn create(&self, user_id: &str, req: CreateAgentRequest) -> Result<Agent, AppError> {
         let raw_handle = req
             .handle
             .clone()
@@ -132,11 +136,7 @@ impl AgentService {
         Ok(result)
     }
 
-    pub async fn get(
-        &self,
-        user_id: &str,
-        agent_id: &str,
-    ) -> Result<Agent, AppError> {
+    pub async fn get(&self, user_id: &str, agent_id: &str) -> Result<Agent, AppError> {
         let agent = self
             .repo
             .find_by_id(agent_id)
@@ -151,11 +151,7 @@ impl AgentService {
     }
 
     /// Tries handle lookup first, falls back to UUID for call-sites passing `agent.id`.
-    pub async fn owned_by(
-        &self,
-        user_id: &str,
-        handle_or_id: &str,
-    ) -> Result<Agent, AppError> {
+    pub async fn owned_by(&self, user_id: &str, handle_or_id: &str) -> Result<Agent, AppError> {
         if let Some(agent) = self.find_by_handle(user_id, handle_or_id).await? {
             return Ok(agent);
         }
@@ -181,15 +177,10 @@ impl AgentService {
     pub async fn system_agent(&self, user_id: &str) -> Result<Agent, AppError> {
         self.find_by_handle(user_id, crate::agent::models::SYSTEM_AGENT_HANDLE)
             .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!("system agent not found for user {user_id}"))
-            })
+            .ok_or_else(|| AppError::NotFound(format!("system agent not found for user {user_id}")))
     }
 
-    pub async fn list(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<Agent>, AppError> {
+    pub async fn list(&self, user_id: &str) -> Result<Vec<Agent>, AppError> {
         self.repo.find_by_user_id(user_id).await
     }
 
@@ -244,7 +235,11 @@ impl AgentService {
             agent.sandbox_limits = Some(sandbox_limits);
         }
         if let Some(prompt) = req.prompt {
-            agent.prompt = if prompt.is_empty() { None } else { Some(prompt) };
+            agent.prompt = if prompt.is_empty() {
+                None
+            } else {
+                Some(prompt)
+            };
         }
         if let Some(ref identity) = req.identity {
             if let Some(avatar) = identity.get("avatar")
@@ -288,11 +283,7 @@ impl AgentService {
         self.repo.find_by_name(user_id, name).await
     }
 
-    pub async fn delete(
-        &self,
-        user_id: &str,
-        agent_id: &str,
-    ) -> Result<(), AppError> {
+    pub async fn delete(&self, user_id: &str, agent_id: &str) -> Result<(), AppError> {
         let agent = self
             .repo
             .find_by_id(agent_id)
@@ -376,7 +367,11 @@ impl AgentService {
                     .get("name")
                     .cloned()
                     .unwrap_or_else(|| title_case(handle.as_str()));
-                let desc = entry.metadata.get("description").cloned().unwrap_or_default();
+                let desc = entry
+                    .metadata
+                    .get("description")
+                    .cloned()
+                    .unwrap_or_default();
                 let mg = entry
                     .metadata
                     .get("model_group")
@@ -384,7 +379,13 @@ impl AgentService {
                     .unwrap_or_else(|| "primary".to_string());
                 (nm, desc, mg)
             })
-            .unwrap_or_else(|| (title_case(handle.as_str()), String::new(), "primary".to_string()));
+            .unwrap_or_else(|| {
+                (
+                    title_case(handle.as_str()),
+                    String::new(),
+                    "primary".to_string(),
+                )
+            });
 
         let now = chrono::Utc::now();
         let agent = Agent {

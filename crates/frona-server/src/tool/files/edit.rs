@@ -29,7 +29,11 @@ impl EditTool {
         sandbox_manager: Arc<SandboxManager>,
         prompts: PromptLoader,
     ) -> Self {
-        Self { storage, sandbox_manager, prompts }
+        Self {
+            storage,
+            sandbox_manager,
+            prompts,
+        }
     }
 }
 
@@ -81,10 +85,16 @@ pub(crate) fn apply_edit(
         return EditOutcome::NotFound;
     }
     if matches.len() > 1 && !replace_all {
-        return EditOutcome::Ambiguous { count: matches.len() };
+        return EditOutcome::Ambiguous {
+            count: matches.len(),
+        };
     }
 
-    let selected: Vec<usize> = if replace_all { matches.clone() } else { vec![matches[0]] };
+    let selected: Vec<usize> = if replace_all {
+        matches.clone()
+    } else {
+        vec![matches[0]]
+    };
     let needle_len = needle.len();
 
     // Normalise the replacement's line endings to match the file. The
@@ -109,7 +119,10 @@ pub(crate) fn apply_edit(
     }
     rewritten.push_str(&original[cursor..]);
 
-    EditOutcome::Applied { rewritten, count: selected.len() }
+    EditOutcome::Applied {
+        rewritten,
+        count: selected.len(),
+    }
 }
 
 #[agent_tool]
@@ -132,9 +145,13 @@ impl EditTool {
             .get("new_string")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::Validation("Missing 'new_string' parameter".into()))?;
-        let replace_all = arguments.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
+        let replace_all = arguments
+            .get("replace_all")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-        let resolved = super::resolve_path(path_arg, &ctx.user.handle, &ctx.agent.handle, &self.storage)?;
+        let resolved =
+            super::resolve_path(path_arg, &ctx.user.handle, &ctx.agent.handle, &self.storage)?;
         let sandbox = self.sandbox_manager.for_tool(ctx).await?;
         if !sandbox.is_writable(&resolved) {
             return Ok(ToolOutput::error(format!(
@@ -147,14 +164,14 @@ impl EditTool {
             return Ok(ToolOutput::error(format!("file not found: {}", path_arg)));
         }
 
-        let original = tokio::fs::read_to_string(&resolved).await.map_err(|e| {
-            AppError::Internal(format!("read {}: {e}", resolved.display()))
-        })?;
+        let original = tokio::fs::read_to_string(&resolved)
+            .await
+            .map_err(|e| AppError::Internal(format!("read {}: {e}", resolved.display())))?;
 
         match apply_edit(&original, old_string, new_string, replace_all) {
-            EditOutcome::EmptyNeedle => {
-                Ok(ToolOutput::error("old_string must not be empty".to_string()))
-            }
+            EditOutcome::EmptyNeedle => Ok(ToolOutput::error(
+                "old_string must not be empty".to_string(),
+            )),
             EditOutcome::NotFound => Ok(ToolOutput::error(format!(
                 "old_string not found in {}. The file may have changed, or whitespace/quotes may not match.",
                 path_arg
@@ -166,7 +183,11 @@ impl EditTool {
             EditOutcome::Applied { rewritten, count } => {
                 atomic_write(&resolved, rewritten.as_bytes()).await?;
                 let snippet = context_snippet(&original, &rewritten, SNIPPET_CONTEXT_LINES);
-                let replacement_word = if count == 1 { "replacement" } else { "replacements" };
+                let replacement_word = if count == 1 {
+                    "replacement"
+                } else {
+                    "replacements"
+                };
                 let text = format!(
                     "Edit applied to {} ({} {}). Surrounding context:\n{}",
                     path_arg, count, replacement_word, snippet
@@ -232,11 +253,7 @@ mod tests {
 
     #[test]
     fn ascii_quotes_in_needle_match_smart_in_file() {
-        let r = apply(
-            "let s = \u{201C}hello\u{201D};",
-            "\"hello\"",
-            "\"world\"",
-        );
+        let r = apply("let s = \u{201C}hello\u{201D};", "\"hello\"", "\"world\"");
         match r {
             EditOutcome::Applied { rewritten, .. } => {
                 // The file's smart quotes were absorbed by the match; the
@@ -291,7 +308,10 @@ mod tests {
         match r {
             EditOutcome::Applied { rewritten, .. } => {
                 assert_eq!(rewritten, "X\r\nc\r\n");
-                assert!(!rewritten.contains("\r\r\n"), "no doubled CR: {rewritten:?}");
+                assert!(
+                    !rewritten.contains("\r\r\n"),
+                    "no doubled CR: {rewritten:?}"
+                );
             }
             other => panic!("expected Applied, got {other:?}"),
         }
@@ -382,8 +402,14 @@ mod tests {
         let r = apply(file, "\"target\"", "[replaced]");
         match r {
             EditOutcome::Applied { rewritten, .. } => {
-                assert!(rewritten.contains('\u{201C}'), "smart left quote lost: {rewritten:?}");
-                assert!(rewritten.contains('\u{201D}'), "smart right quote lost: {rewritten:?}");
+                assert!(
+                    rewritten.contains('\u{201C}'),
+                    "smart left quote lost: {rewritten:?}"
+                );
+                assert!(
+                    rewritten.contains('\u{201D}'),
+                    "smart right quote lost: {rewritten:?}"
+                );
                 assert!(rewritten.contains("[replaced]"));
                 assert!(!rewritten.contains("\"target\""));
             }
@@ -592,11 +618,20 @@ mod tests {
         match r {
             EditOutcome::Applied { rewritten, .. } => {
                 // The 4-space run before 'b' should survive verbatim.
-                assert!(rewritten.contains("a    b"), "left whitespace lost: {rewritten:?}");
+                assert!(
+                    rewritten.contains("a    b"),
+                    "left whitespace lost: {rewritten:?}"
+                );
                 // The 3-newline gap should survive.
-                assert!(rewritten.contains("b\n\n\nc"), "newline gap lost: {rewritten:?}");
+                assert!(
+                    rewritten.contains("b\n\n\nc"),
+                    "newline gap lost: {rewritten:?}"
+                );
                 // The 3-space run between d and e should survive.
-                assert!(rewritten.contains("d   e"), "right whitespace lost: {rewritten:?}");
+                assert!(
+                    rewritten.contains("d   e"),
+                    "right whitespace lost: {rewritten:?}"
+                );
                 // The edit itself applied.
                 assert!(rewritten.contains("c = 2"));
             }

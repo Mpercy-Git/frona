@@ -185,7 +185,9 @@ pub fn sanitize_to_handle(input: &str) -> Handle {
     let mut last: Option<char> = None;
     for c in stripped.chars() {
         let mapped = match c.to_ascii_lowercase() {
-            ch if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-' => Some(ch),
+            ch if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-' => {
+                Some(ch)
+            }
             '.' | '/' | ' ' | '\t' => Some('-'),
             _ => Some('-'),
         };
@@ -218,8 +220,9 @@ pub fn sanitize_to_handle(input: &str) -> Handle {
         s = s.trim_end_matches(['-', '_']).to_string();
     }
 
-    Handle::try_new(s)
-        .expect("sanitize_to_handle produced a value that fails Handle validation — bug in the sanitizer")
+    Handle::try_new(s).expect(
+        "sanitize_to_handle produced a value that fails Handle validation — bug in the sanitizer",
+    )
 }
 
 fn strip_io_github_prefix(input: &str) -> &str {
@@ -237,7 +240,10 @@ mod tests {
 
     #[test]
     fn sanitize_to_handle_basic() {
-        assert_eq!(sanitize_to_handle("Google Workspace").as_str(), "google-workspace");
+        assert_eq!(
+            sanitize_to_handle("Google Workspace").as_str(),
+            "google-workspace"
+        );
         assert_eq!(sanitize_to_handle("GitHub").as_str(), "github");
         assert_eq!(sanitize_to_handle("my-tool-2").as_str(), "my-tool-2");
     }

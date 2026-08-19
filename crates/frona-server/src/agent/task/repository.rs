@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use super::models::Task;
 

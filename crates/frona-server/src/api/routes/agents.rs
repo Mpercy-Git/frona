@@ -1,15 +1,13 @@
 use std::collections::HashMap;
 use std::path::Path as StdPath;
 
+use crate::agent::config::parse_frontmatter;
+use crate::agent::models::{Agent, AgentResponse, CreateAgentRequest, Model, UpdateAgentRequest};
+use crate::chat::broadcast::{BroadcastEvent, BroadcastEventKind};
+use crate::inference::tool_loop::InferenceEventKind;
 use axum::extract::{Multipart, Path, State};
 use axum::routing::{get, put};
 use axum::{Json, Router};
-use crate::agent::config::parse_frontmatter;
-use crate::agent::models::{
-    Agent, AgentResponse, CreateAgentRequest, Model, UpdateAgentRequest,
-};
-use crate::chat::broadcast::{BroadcastEvent, BroadcastEventKind};
-use crate::inference::tool_loop::InferenceEventKind;
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -77,7 +75,11 @@ async fn sync_agent_tools(
         .map_err(crate::core::error::AppError::from)
 }
 
-fn resolve_default_prompt(state: &AppState, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle) -> String {
+fn resolve_default_prompt(
+    state: &AppState,
+    user_handle: &crate::core::Handle,
+    agent_handle: &crate::core::Handle,
+) -> String {
     state
         .storage_service
         .agent_workspace(user_handle, agent_handle)
@@ -86,20 +88,25 @@ fn resolve_default_prompt(state: &AppState, user_handle: &crate::core::Handle, a
         .unwrap_or_default()
 }
 
-async fn to_response(state: &AppState, user_id: &str, user_handle: &crate::core::Handle, agent: Agent) -> Result<AgentResponse, AppError> {
+async fn to_response(
+    state: &AppState,
+    user_id: &str,
+    user_handle: &crate::core::Handle,
+    agent: Agent,
+) -> Result<AgentResponse, AppError> {
     let registry = state
         .tool_manager
         .build_agent_registry(user_id, &agent, &state.policy_service, None)
         .await;
-    let tools: Vec<String> = registry.definitions().iter().map(|d| d.id.clone()).collect();
+    let tools: Vec<String> = registry
+        .definitions()
+        .iter()
+        .map(|d| d.id.clone())
+        .collect();
     let sandbox_policy = state
         .policy_service
         .evaluate_sandbox_policy(
-            crate::policy::service::SandboxPrincipalRef::agent(
-                user_id,
-                user_handle,
-                &agent.handle,
-            ),
+            crate::policy::service::SandboxPrincipalRef::agent(user_id, user_handle, &agent.handle),
             false,
         )
         .await?
@@ -250,14 +257,20 @@ async fn list_agent_skills(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<crate::agent::skill::service::SkillListItem>>, ApiError> {
     let agent = state.agent_service.get(&auth.user_id, &id).await?;
-    let skills = state.skill_service.list(&auth.handle, &agent.handle, None).await;
-    let items = skills.into_iter().map(|s| crate::agent::skill::service::SkillListItem {
-        name: s.name,
-        description: s.description,
-        source: None,
-        installed_at: None,
-        scope: s.scope,
-    }).collect();
+    let skills = state
+        .skill_service
+        .list(&auth.handle, &agent.handle, None)
+        .await;
+    let items = skills
+        .into_iter()
+        .map(|s| crate::agent::skill::service::SkillListItem {
+            name: s.name,
+            description: s.description,
+            source: None,
+            installed_at: None,
+            scope: s.scope,
+        })
+        .collect();
     Ok(Json(items))
 }
 
@@ -293,8 +306,8 @@ async fn upload_avatar(
         }
     }
 
-    let (filename, bytes) = file_data
-        .ok_or_else(|| ApiError(AppError::Validation("Missing file field".into())))?;
+    let (filename, bytes) =
+        file_data.ok_or_else(|| ApiError(AppError::Validation("Missing file field".into())))?;
 
     let ext = StdPath::new(&filename)
         .extension()
@@ -302,7 +315,9 @@ async fn upload_avatar(
         .unwrap_or("jpg");
     let avatar_filename = format!("avatar.{ext}");
 
-    let workspace = state.storage_service.agent_workspace(&auth.handle, &agent.handle);
+    let workspace = state
+        .storage_service
+        .agent_workspace(&auth.handle, &agent.handle);
     workspace
         .write_bytes(&avatar_filename, &bytes)
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;

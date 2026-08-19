@@ -51,7 +51,10 @@ impl PkmResetStateStore {
         for _ in 0..STATE_RETRIES {
             let current: Option<PkmResetStatus> = self.runtime.get(&key).await?;
             if let Some(status) = &current
-                && matches!(status.state, PkmResetState::Pending | PkmResetState::Running)
+                && matches!(
+                    status.state,
+                    PkmResetState::Pending | PkmResetState::Running
+                )
             {
                 return Ok(status.clone());
             }
@@ -62,21 +65,20 @@ impl PkmResetStateStore {
                 started_at: None,
                 error: None,
             };
-            if self.runtime
+            if self
+                .runtime
                 .compare_exchange(&key, current.as_ref(), Some(&requested))
                 .await?
             {
                 return Ok(requested);
             }
         }
-        Err(AppError::Conflict("PKM reset state changed concurrently; try again".into()))
+        Err(AppError::Conflict(
+            "PKM reset state changed concurrently; try again".into(),
+        ))
     }
 
-    pub(crate) async fn claim(
-        &self,
-        user_id: &str,
-        request_id: &str,
-    ) -> Result<bool, AppError> {
+    pub(crate) async fn claim(&self, user_id: &str, request_id: &str) -> Result<bool, AppError> {
         let key = Self::key(user_id);
         let Some(current): Option<PkmResetStatus> = self.runtime.get(&key).await? else {
             return Ok(false);
@@ -90,7 +92,9 @@ impl PkmResetStateStore {
             error: None,
             ..current.clone()
         };
-        self.runtime.compare_exchange(&key, Some(&current), Some(&running)).await
+        self.runtime
+            .compare_exchange(&key, Some(&current), Some(&running))
+            .await
     }
 
     pub(crate) async fn fail(
@@ -111,14 +115,12 @@ impl PkmResetStateStore {
             error: Some(error),
             ..current.clone()
         };
-        self.runtime.compare_exchange(&key, Some(&current), Some(&failed)).await
+        self.runtime
+            .compare_exchange(&key, Some(&current), Some(&failed))
+            .await
     }
 
-    pub(crate) async fn complete(
-        &self,
-        user_id: &str,
-        request_id: &str,
-    ) -> Result<bool, AppError> {
+    pub(crate) async fn complete(&self, user_id: &str, request_id: &str) -> Result<bool, AppError> {
         let key = Self::key(user_id);
         let Some(current): Option<PkmResetStatus> = self.runtime.get(&key).await? else {
             return Ok(false);
@@ -126,7 +128,9 @@ impl PkmResetStateStore {
         if current.request_id != request_id || current.state != PkmResetState::Running {
             return Ok(false);
         }
-        self.runtime.compare_exchange(&key, Some(&current), None).await
+        self.runtime
+            .compare_exchange(&key, Some(&current), None)
+            .await
     }
 
     pub(crate) async fn list(&self) -> Result<Vec<(String, PkmResetStatus)>, AppError> {
@@ -136,7 +140,8 @@ impl PkmResetStateStore {
             .map(|rows| {
                 rows.into_iter()
                     .filter_map(|(key, status)| {
-                        key.strip_prefix(KEY_PREFIX).map(|user_id| (user_id.to_string(), status))
+                        key.strip_prefix(KEY_PREFIX)
+                            .map(|user_id| (user_id.to_string(), status))
                     })
                     .collect()
             })
@@ -208,26 +213,29 @@ impl PkmService {
                     self.operations.clear_reset(&user_id);
                     tracing::info!(user = %user_id, "pkm reset: completed");
                 }
-                Ok(false) => tracing::error!(user = %user_id, "pkm reset: completion state was replaced"),
-                Err(error) => tracing::error!(%error, user = %user_id, "pkm reset: could not complete request state"),
+                Ok(false) => {
+                    tracing::error!(user = %user_id, "pkm reset: completion state was replaced")
+                }
+                Err(error) => {
+                    tracing::error!(%error, user = %user_id, "pkm reset: could not complete request state")
+                }
             },
-            Err(error) => self.fail_reset(&user_id, &request_id, error.to_string()).await,
+            Err(error) => {
+                self.fail_reset(&user_id, &request_id, error.to_string())
+                    .await
+            }
         }
         drop(reset_guard);
     }
 
     async fn reset_user(&self, user_id: &str) -> Result<(), AppError> {
-        let user = self.user_service
+        let user = self
+            .user_service
             .find_by_id(user_id)
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;
-        let vault = VaultScope::resolve(
-            &self.user_service,
-            &self.storage,
-            user_id,
-            &user.handle,
-        )
-        .await?;
+        let vault =
+            VaultScope::resolve(&self.user_service, &self.storage, user_id, &user.handle).await?;
         self.repo.reset_user_derived_memory(user_id).await?;
         self.storage.delete_memory_directory(&vault)?;
         Ok(())
@@ -247,7 +255,11 @@ impl PkmService {
                 PkmResetState::Failed => {}
                 PkmResetState::Pending => self.spawn_reset(user_id, status.request_id),
                 PkmResetState::Running => {
-                    if self.reset_state.requeue_interrupted(&user_id, &status).await? {
+                    if self
+                        .reset_state
+                        .requeue_interrupted(&user_id, &status)
+                        .await?
+                    {
                         self.spawn_reset(user_id, status.request_id);
                     }
                 }
@@ -298,19 +310,35 @@ mod tests {
         assert_eq!(first.request_id, repeated.request_id);
         assert!(store.claim("u1", &first.request_id).await.unwrap());
         assert!(!store.claim("u1", &first.request_id).await.unwrap());
-        assert_eq!(store.status("u1").await.unwrap().unwrap().state, PkmResetState::Running);
+        assert_eq!(
+            store.status("u1").await.unwrap().unwrap().state,
+            PkmResetState::Running
+        );
     }
 
     #[tokio::test]
     async fn stale_worker_cannot_change_a_retried_request() {
         let store = store().await;
         let failed = store.request("u1").await.unwrap();
-        assert!(store.fail("u1", &failed.request_id, "failed".into()).await.unwrap());
+        assert!(
+            store
+                .fail("u1", &failed.request_id, "failed".into())
+                .await
+                .unwrap()
+        );
         let retry = store.request("u1").await.unwrap();
         assert_ne!(failed.request_id, retry.request_id);
         assert!(!store.complete("u1", &failed.request_id).await.unwrap());
-        assert!(!store.fail("u1", &failed.request_id, "stale".into()).await.unwrap());
-        assert_eq!(store.status("u1").await.unwrap().unwrap().request_id, retry.request_id);
+        assert!(
+            !store
+                .fail("u1", &failed.request_id, "stale".into())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.status("u1").await.unwrap().unwrap().request_id,
+            retry.request_id
+        );
     }
 
     #[tokio::test]

@@ -1,26 +1,28 @@
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
-use frona::db::init as db;
-use frona::db::repo::generic::SurrealRepo;
+use frona::auth::AuthService;
+use frona::auth::User;
+use frona::auth::UserService;
 use frona::auth::jwt::JwtService;
 use frona::auth::token::models::CreatePatRequest;
 use frona::auth::token::repository::TokenRepository;
 use frona::auth::token::service::TokenService;
-use frona::auth::AuthService;
-use frona::auth::User;
-use frona::auth::UserService;
 use frona::core::config::CacheConfig;
 use frona::core::repository::Repository;
 use frona::credential::keypair::service::KeyPairService;
+use frona::db::init as db;
+use frona::db::repo::generic::SurrealRepo;
 use frona::policy::service::PolicyService;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     let schema = frona::policy::schema::build_schema();
     let repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(
+            db.clone(),
+        ));
     let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = frona::auth::UserService::new(
@@ -57,10 +59,8 @@ fn test_user() -> User {
 }
 
 fn setup_services(db: &Surreal<Db>) -> (KeyPairService, TokenService) {
-    let keypair_service = KeyPairService::new(
-        "test-jwt-secret",
-        Arc::new(SurrealRepo::new(db.clone())),
-    );
+    let keypair_service =
+        KeyPairService::new("test-jwt-secret", Arc::new(SurrealRepo::new(db.clone())));
     let jwt_service = JwtService::new();
     let user_service = frona::auth::user_service::UserService::new(
         SurrealRepo::new(db.clone()),
@@ -117,7 +117,9 @@ async fn test_keypair_signing_and_verifying() {
     };
 
     let token = jwt_svc.sign(&claims, &encoding_key, &kid).unwrap();
-    let verified = jwt_svc.verify::<frona::auth::models::Claims>(&token, &decoding_key).unwrap();
+    let verified = jwt_svc
+        .verify::<frona::auth::models::Claims>(&token, &decoding_key)
+        .unwrap();
     assert_eq!(verified.sub, "test-456");
     assert_eq!(verified.token_id, "tok-1");
 }
@@ -140,7 +142,10 @@ async fn test_session_pair_creation() {
     assert_eq!(access_claims.sub, user.id);
     assert_eq!(access_claims.token_type, "access");
 
-    let refresh_claims = token_svc.validate(&keypair_svc, &refresh_jwt).await.unwrap();
+    let refresh_claims = token_svc
+        .validate(&keypair_svc, &refresh_jwt)
+        .await
+        .unwrap();
     assert_eq!(refresh_claims.sub, user.id);
     assert_eq!(refresh_claims.token_type, "refresh");
 }
@@ -159,10 +164,8 @@ async fn test_token_refresh_rotation() {
         .await
         .unwrap();
 
-    let (new_access, new_refresh, claims) = token_svc
-        .refresh(&keypair_svc, &refresh_jwt)
-        .await
-        .unwrap();
+    let (new_access, new_refresh, claims) =
+        token_svc.refresh(&keypair_svc, &refresh_jwt).await.unwrap();
 
     assert_eq!(claims.sub, user.id);
 
@@ -175,7 +178,10 @@ async fn test_token_refresh_rotation() {
     let old_refresh_result = token_svc.validate(&keypair_svc, &refresh_jwt).await;
     assert!(old_refresh_result.is_err());
 
-    let new_refresh_claims = token_svc.validate(&keypair_svc, &new_refresh).await.unwrap();
+    let new_refresh_claims = token_svc
+        .validate(&keypair_svc, &new_refresh)
+        .await
+        .unwrap();
     assert_eq!(new_refresh_claims.token_type, "refresh");
 }
 
@@ -195,7 +201,12 @@ async fn test_token_revocation() {
 
     let claims = token_svc.validate(&keypair_svc, &access_jwt).await.unwrap();
 
-    let token_record = token_svc.repo().find_active_by_id(&claims.token_id).await.unwrap().unwrap();
+    let token_record = token_svc
+        .repo()
+        .find_active_by_id(&claims.token_id)
+        .await
+        .unwrap()
+        .unwrap();
     let pair_id = token_record.refresh_pair_id.unwrap();
     token_svc.revoke_session(&pair_id).await.unwrap();
 

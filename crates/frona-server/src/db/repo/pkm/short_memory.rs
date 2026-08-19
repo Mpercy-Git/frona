@@ -1,7 +1,6 @@
 use super::*;
 
 impl PkmRepo {
-
     pub async fn remember(
         &self,
         user_id: &str,
@@ -69,7 +68,6 @@ impl PkmRepo {
             .map_err(|e| Self::err("unconsolidated_sm_take", e))
     }
 
-
     /// The chat's consolidation watermark (last consolidated message time), if any.
     pub async fn consolidation_watermark(
         &self,
@@ -117,7 +115,8 @@ impl PkmRepo {
                 .bind(("cancelled", MessageStatus::Cancelled))
                 .await
                 .map_err(|e| Self::err("chats_needing_msg", e))?;
-            q.take(0).map_err(|e| Self::err("chats_needing_msg_take", e))?
+            q.take(0)
+                .map_err(|e| Self::err("chats_needing_msg_take", e))?
         };
 
         // Chats with an unvalidated short memory (may have no new messages at all,
@@ -131,7 +130,8 @@ impl PkmRepo {
                 )
                 .await
                 .map_err(|e| Self::err("chats_needing_short", e))?;
-            q.take(0).map_err(|e| Self::err("chats_needing_short_take", e))?
+            q.take(0)
+                .map_err(|e| Self::err("chats_needing_short_take", e))?
         };
 
         // Still-active chats (a message since the idle cutoff) - excluded.
@@ -142,7 +142,9 @@ impl PkmRepo {
                 .bind(("cutoff", idle_cutoff))
                 .await
                 .map_err(|e| Self::err("chats_needing_active", e))?;
-            let v: Vec<String> = q.take(0).map_err(|e| Self::err("chats_needing_active_take", e))?;
+            let v: Vec<String> = q
+                .take(0)
+                .map_err(|e| Self::err("chats_needing_active_take", e))?;
             v.into_iter().collect()
         };
 
@@ -155,7 +157,9 @@ impl PkmRepo {
                 )
                 .await
                 .map_err(|e| Self::err("chats_needing_live", e))?;
-            let v: Vec<String> = q.take(0).map_err(|e| Self::err("chats_needing_live_take", e))?;
+            let v: Vec<String> = q
+                .take(0)
+                .map_err(|e| Self::err("chats_needing_live_take", e))?;
             v.into_iter().collect()
         };
 
@@ -193,5 +197,4 @@ impl PkmRepo {
         let rows: Vec<Row> = q.take(0).map_err(|e| Self::err("chat_owners_take", e))?;
         Ok(rows.into_iter().map(|r| (r.chat_id, r.user_id)).collect())
     }
-
 }

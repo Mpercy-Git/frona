@@ -26,7 +26,7 @@ use chrono::Utc;
 use std::collections::HashSet;
 
 use crate::memory::pkm::model::{
-    KnowledgeEntity, KnowledgeEntityLink, LinkOrigin, EntityCategory, EntityOrigin,
+    EntityCategory, EntityOrigin, KnowledgeEntity, KnowledgeEntityLink, LinkOrigin,
 };
 use crate::memory::pkm::ontology::{
     Characteristic, PrefixMap, SchemaEdit, abox, individual_iri, reasoning, schema, sparql,
@@ -57,7 +57,9 @@ fn entity(path: &str) -> KnowledgeEntity {
         extracted_rev: None,
         related_playbooks: Vec::new(),
         search_text: String::new(),
-        search_names: Vec::new(), search_name_tokens: Vec::new(), search_assertions: Vec::new(),
+        search_names: Vec::new(),
+        search_name_tokens: Vec::new(),
+        search_assertions: Vec::new(),
         attributes: serde_json::Value::Null,
         use_count: 0,
         aliases: HashSet::new(),
@@ -92,7 +94,11 @@ impl Closure {
     /// The base ontology is empty on purpose: a `frona:` mint declares itself (see
     /// `mint_op` in `schema.rs`), so nothing here depends on a downloaded catalogue
     /// release being present. That keeps the file a pure statement about the rules.
-    fn build(edits: &[SchemaEdit], entities: &[KnowledgeEntity], links: &[KnowledgeEntityLink]) -> Self {
+    fn build(
+        edits: &[SchemaEdit],
+        entities: &[KnowledgeEntity],
+        links: &[KnowledgeEntityLink],
+    ) -> Self {
         let px = PrefixMap::standard();
         let ofn = schema::apply_edits("", edits, &px).expect("apply edits");
         let delta = schema::delta_triples(&ofn).expect("lower delta");
@@ -150,7 +156,10 @@ impl Closure {
 }
 
 fn characteristic(property: &str, characteristic: Characteristic) -> SchemaEdit {
-    SchemaEdit::PropertyCharacteristic { property: property.into(), characteristic }
+    SchemaEdit::PropertyCharacteristic {
+        property: property.into(),
+        characteristic,
+    }
 }
 
 /// `partOf` chains: Kreuzberg ⊑ Berlin ⊑ Germany means Kreuzberg is in Germany, and
@@ -159,7 +168,11 @@ fn characteristic(property: &str, characteristic: Characteristic) -> SchemaEdit 
 fn transitive_closes_a_chain() {
     let c = Closure::build(
         &[characteristic("frona:partOf", Characteristic::Transitive)],
-        &[entity("places/kreuzberg"), entity("places/berlin"), entity("places/germany")],
+        &[
+            entity("places/kreuzberg"),
+            entity("places/berlin"),
+            entity("places/germany"),
+        ],
         &[
             link("places/kreuzberg", "frona:partOf", "places/berlin"),
             link("places/berlin", "frona:partOf", "places/germany"),
@@ -177,7 +190,12 @@ fn transitive_closes_a_chain() {
 fn transitive_does_not_join_unconnected_pairs() {
     let c = Closure::build(
         &[characteristic("frona:partOf", Characteristic::Transitive)],
-        &[entity("places/kreuzberg"), entity("places/berlin"), entity("places/lisbon"), entity("places/portugal")],
+        &[
+            entity("places/kreuzberg"),
+            entity("places/berlin"),
+            entity("places/lisbon"),
+            entity("places/portugal"),
+        ],
         &[
             link("places/kreuzberg", "frona:partOf", "places/berlin"),
             link("places/lisbon", "frona:partOf", "places/portugal"),
@@ -196,7 +214,10 @@ fn symmetric_derives_the_reverse_edge() {
         &[entity("people/alice"), entity("people/bob")],
         &[link("people/alice", "frona:knows", "people/bob")],
     );
-    assert!(c.holds("people/bob", "frona:knows", "people/alice"), "knows(a,b) must derive knows(b,a)");
+    assert!(
+        c.holds("people/bob", "frona:knows", "people/alice"),
+        "knows(a,b) must derive knows(b,a)"
+    );
 }
 
 /// The characteristic is per-property. Declaring `knows` symmetric must not make
@@ -226,7 +247,10 @@ fn asymmetric_flags_a_mutual_edge_as_a_clash() {
             link("people/bob", "frona:parentOf", "people/alice"),
         ],
     );
-    assert!(c.clashes_on("prp-asyp"), "a mutual edge on an asymmetric property is a clash");
+    assert!(
+        c.clashes_on("prp-asyp"),
+        "a mutual edge on an asymmetric property is a clash"
+    );
 }
 
 /// A mutual edge implicates **both** entities, and the reasoner says so once per
@@ -261,13 +285,19 @@ fn asymmetric_leaves_a_one_way_edge_alone() {
         &[entity("people/alice"), entity("people/bob")],
         &[link("people/alice", "frona:parentOf", "people/bob")],
     );
-    assert!(!c.clashes_on("prp-asyp"), "a one-way edge is exactly what asymmetric permits");
+    assert!(
+        !c.clashes_on("prp-asyp"),
+        "a one-way edge is exactly what asymmetric permits"
+    );
 }
 
 #[test]
 fn irreflexive_flags_a_self_loop_as_a_clash() {
     let c = Closure::build(
-        &[characteristic("frona:parentOf", Characteristic::Irreflexive)],
+        &[characteristic(
+            "frona:parentOf",
+            Characteristic::Irreflexive,
+        )],
         &[entity("people/alice")],
         &[link("people/alice", "frona:parentOf", "people/alice")],
     );
@@ -277,11 +307,17 @@ fn irreflexive_flags_a_self_loop_as_a_clash() {
 #[test]
 fn irreflexive_leaves_an_edge_between_two_entities_alone() {
     let c = Closure::build(
-        &[characteristic("frona:parentOf", Characteristic::Irreflexive)],
+        &[characteristic(
+            "frona:parentOf",
+            Characteristic::Irreflexive,
+        )],
         &[entity("people/alice"), entity("people/bob")],
         &[link("people/alice", "frona:parentOf", "people/bob")],
     );
-    assert!(!c.clashes_on("prp-irp"), "an edge between two distinct entities is fine");
+    assert!(
+        !c.clashes_on("prp-irp"),
+        "an edge between two distinct entities is fine"
+    );
 }
 
 /// Functional is the identity rule we do ship: one subject cannot have two different
@@ -291,7 +327,11 @@ fn irreflexive_leaves_an_edge_between_two_entities_alone() {
 fn functional_identifies_two_values_of_one_subject() {
     let c = Closure::build(
         &[characteristic("frona:bornIn", Characteristic::Functional)],
-        &[entity("people/sarah"), entity("places/berlin"), entity("places/berlin-de")],
+        &[
+            entity("people/sarah"),
+            entity("places/berlin"),
+            entity("places/berlin-de"),
+        ],
         &[
             link("people/sarah", "frona:bornIn", "places/berlin"),
             link("people/sarah", "frona:bornIn", "places/berlin-de"),
@@ -309,7 +349,12 @@ fn functional_identifies_two_values_of_one_subject() {
 fn functional_identifies_nothing_across_different_subjects() {
     let c = Closure::build(
         &[characteristic("frona:bornIn", Characteristic::Functional)],
-        &[entity("people/sarah"), entity("people/tom"), entity("places/berlin"), entity("places/paris")],
+        &[
+            entity("people/sarah"),
+            entity("people/tom"),
+            entity("places/berlin"),
+            entity("places/paris"),
+        ],
         &[
             link("people/sarah", "frona:bornIn", "places/berlin"),
             link("people/tom", "frona:bornIn", "places/paris"),
@@ -319,7 +364,11 @@ fn functional_identifies_nothing_across_different_subjects() {
         !c.holds("places/berlin", "owl:sameAs", "places/paris"),
         "different subjects must identify nothing"
     );
-    assert_eq!(c.same_as_pairs(), 0, "and no identity at all should have been derived");
+    assert_eq!(
+        c.same_as_pairs(),
+        0,
+        "and no identity at all should have been derived"
+    );
 }
 
 /// The measurement behind leaving `owl:InverseFunctionalProperty` out of
@@ -347,7 +396,13 @@ fn no_single_characteristic_collapses_entities_that_share_nothing() {
     let people: Vec<KnowledgeEntity> = (0..10).map(|i| entity(&format!("people/p{i}"))).collect();
     let orgs: Vec<KnowledgeEntity> = (0..10).map(|i| entity(&format!("orgs/o{i}"))).collect();
     let links: Vec<KnowledgeEntityLink> = (0..10)
-        .map(|i| link(&format!("people/p{i}"), "frona:worksFor", &format!("orgs/o{i}")))
+        .map(|i| {
+            link(
+                &format!("people/p{i}"),
+                "frona:worksFor",
+                &format!("orgs/o{i}"),
+            )
+        })
         .collect();
     let entities: Vec<KnowledgeEntity> = people.into_iter().chain(orgs).collect();
 

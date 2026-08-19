@@ -11,17 +11,16 @@ fn claim_automatic_identity_discovery(
     discovery_calls: &AtomicUsize,
     challenged: &AtomicBool,
 ) -> bool {
-    discovery_calls.load(Ordering::Relaxed) == 0
-        && !challenged.swap(true, Ordering::Relaxed)
+    discovery_calls.load(Ordering::Relaxed) == 0 && !challenged.swap(true, Ordering::Relaxed)
 }
 
 mod proposal;
 mod run;
 
-pub(crate) use proposal::{Classification, OntologyDeclaration, ProposalSet};
-pub(super) use proposal::HasKeyMarker;
 #[cfg(test)]
 pub(super) use proposal::EntityProposal;
+pub(super) use proposal::HasKeyMarker;
+pub(crate) use proposal::{Classification, OntologyDeclaration, ProposalSet};
 
 #[cfg(test)]
 mod tests;

@@ -19,13 +19,29 @@ pub struct RequestCredentialsTool {
 }
 
 impl RequestCredentialsTool {
-    pub fn new(vault_service: VaultService, prompts: PromptLoader, public_base_url: String) -> Self {
-        Self { vault_service, prompts, public_base_url }
+    pub fn new(
+        vault_service: VaultService,
+        prompts: PromptLoader,
+        public_base_url: String,
+    ) -> Self {
+        Self {
+            vault_service,
+            prompts,
+            public_base_url,
+        }
     }
 
-    fn scope_for(grant_duration: &GrantDuration, chat_id: &str) -> (BindingScope, Option<chrono::DateTime<chrono::Utc>>) {
+    fn scope_for(
+        grant_duration: &GrantDuration,
+        chat_id: &str,
+    ) -> (BindingScope, Option<chrono::DateTime<chrono::Utc>>) {
         match grant_duration {
-            GrantDuration::Once => (BindingScope::Chat { chat_id: chat_id.to_string() }, None),
+            GrantDuration::Once => (
+                BindingScope::Chat {
+                    chat_id: chat_id.to_string(),
+                },
+                None,
+            ),
             GrantDuration::Hours(h) => (
                 BindingScope::Durable,
                 Some(chrono::Utc::now() + chrono::Duration::hours(*h as i64)),
@@ -92,8 +108,7 @@ impl RequestCredentialsTool {
 
             let env_vars =
                 crate::credential::vault::service::project_target(&secret, &binding.target);
-            let var_names: Vec<String> =
-                env_vars.iter().map(|(k, _)| k.clone()).collect();
+            let var_names: Vec<String> = env_vars.iter().map(|(k, _)| k.clone()).collect();
             let mut vault_vars = ctx.vault_env_vars.write().await;
             vault_vars.extend(env_vars);
 
@@ -182,10 +197,8 @@ impl RequestCredentialsTool {
                     )
                     .await?;
 
-                let env_vars =
-                    crate::credential::vault::service::project_target(&secret, &target);
-                let var_names: Vec<String> =
-                    env_vars.iter().map(|(k, _)| k.clone()).collect();
+                let env_vars = crate::credential::vault::service::project_target(&secret, &target);
+                let var_names: Vec<String> = env_vars.iter().map(|(k, _)| k.clone()).collect();
                 let mut vault_vars = ctx.vault_env_vars.write().await;
                 vault_vars.extend(env_vars);
 

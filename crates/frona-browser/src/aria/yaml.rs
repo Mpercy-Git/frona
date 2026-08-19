@@ -12,16 +12,63 @@ mod tests {
     #[test]
     fn round_trip_preserves_input_as_value() {
         for s in [
-            "", "simple", "hello-world", "foo_bar", " text", "text ", "\t",
-            "-foo", "&anchor", "*alias", "?key", "!tag", "|literal", ">folded",
-            "@x", "#hash", "%directive", "[array", "{flow",
-            "foo: bar", "foo:", "foo #comment", "a\nb", "a\rb",
-            "foo{bar", "foo}bar", "foo`bar", "foo\"bar", "foo'bar", "foo\\bar",
-            "y", "n", "yes", "no", "true", "false", "on", "off", "null",
-            "0", "1", "123", "-1", "1.5", "1e10", "inf", "nan",
-            "héllo", "日本語", "🎉",
-            "hello\nworld", "quote\"here", "back\\slash", "tab\there",
-            "\x00", "\x07", "\x1B",
+            "",
+            "simple",
+            "hello-world",
+            "foo_bar",
+            " text",
+            "text ",
+            "\t",
+            "-foo",
+            "&anchor",
+            "*alias",
+            "?key",
+            "!tag",
+            "|literal",
+            ">folded",
+            "@x",
+            "#hash",
+            "%directive",
+            "[array",
+            "{flow",
+            "foo: bar",
+            "foo:",
+            "foo #comment",
+            "a\nb",
+            "a\rb",
+            "foo{bar",
+            "foo}bar",
+            "foo`bar",
+            "foo\"bar",
+            "foo'bar",
+            "foo\\bar",
+            "y",
+            "n",
+            "yes",
+            "no",
+            "true",
+            "false",
+            "on",
+            "off",
+            "null",
+            "0",
+            "1",
+            "123",
+            "-1",
+            "1.5",
+            "1e10",
+            "inf",
+            "nan",
+            "héllo",
+            "日本語",
+            "🎉",
+            "hello\nworld",
+            "quote\"here",
+            "back\\slash",
+            "tab\there",
+            "\x00",
+            "\x07",
+            "\x1B",
         ] {
             let escaped = yaml_scalar(s);
             let doc = format!("v: {escaped}");
@@ -48,7 +95,10 @@ mod tests {
             let k = key.as_str().unwrap_or_else(|| {
                 panic!("key {s:?} → {escaped:?} did not parse as string: got {key:?}")
             });
-            assert_eq!(k, s, "key round-trip mismatch for {s:?}: escaped={escaped:?}");
+            assert_eq!(
+                k, s,
+                "key round-trip mismatch for {s:?}: escaped={escaped:?}"
+            );
         }
     }
 

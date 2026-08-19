@@ -20,7 +20,6 @@ pub enum TypePlan {
     Refused,
 }
 
-
 impl OntologyManager {
     /// Reduce a set of classes to its most specific members.
     ///
@@ -38,7 +37,9 @@ impl OntologyManager {
     /// order survives, so the outcome does not depend on what order the model listed
     /// them in.
     pub(crate) fn normalize_types(&self, kinds: &[String], delta: &[Triple]) -> Vec<String> {
-        let Some(catalogue) = self.catalogue() else { return kinds.to_vec() };
+        let Some(catalogue) = self.catalogue() else {
+            return kinds.to_vec();
+        };
 
         // `subClassOf` edges the delta adds on top of the catalogue.
         let mut delta_parents: std::collections::HashMap<&str, Vec<&str>> =
@@ -48,7 +49,10 @@ impl OntologyManager {
                 continue;
             }
             if let (NamedOrBlankNode::NamedNode(s), Term::NamedNode(o)) = (&t.subject, &t.object) {
-                delta_parents.entry(s.as_str()).or_default().push(o.as_str());
+                delta_parents
+                    .entry(s.as_str())
+                    .or_default()
+                    .push(o.as_str());
             }
         }
 
@@ -129,7 +133,11 @@ impl OntologyManager {
             schema::apply_edits(current.delta_ofn(), edits, current.prefixes())?
         };
         let triples = schema::delta_triples(&owl)?;
-        Ok(PlannedSchema { owl, version, triples })
+        Ok(PlannedSchema {
+            owl,
+            version,
+            triples,
+        })
     }
 
     /// What adding `class` to an entity holding `kinds` would produce, judged against the
@@ -139,7 +147,12 @@ impl OntologyManager {
     /// **The newest type loses**: everything already on the entity survived its own
     /// admission and has facts written against it, so the arrival is the only thing in
     /// question and the only thing refused.
-    pub(crate) fn plan_entity_type(&self, kinds: &[String], class: &str, delta: &[Triple]) -> TypePlan {
+    pub(crate) fn plan_entity_type(
+        &self,
+        kinds: &[String],
+        class: &str,
+        delta: &[Triple],
+    ) -> TypePlan {
         let Some(catalogue) = self.catalogue() else {
             return TypePlan::Refused;
         };
@@ -185,7 +198,13 @@ impl OntologyManager {
             let swapped: Vec<String> = entity
                 .kinds
                 .iter()
-                .map(|k| if k == from_iri { to_iri.to_string() } else { k.clone() })
+                .map(|k| {
+                    if k == from_iri {
+                        to_iri.to_string()
+                    } else {
+                        k.clone()
+                    }
+                })
                 .collect();
             // Landing `to` on an entity that already carries something implying it would
             // otherwise leave both; normalising here keeps the stored set the most
@@ -194,5 +213,4 @@ impl OntologyManager {
         }
         Ok(out)
     }
-
 }

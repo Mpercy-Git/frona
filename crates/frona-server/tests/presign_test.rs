@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use frona::db::init as db;
-use frona::storage::{Attachment, PresignClaims};
-use frona::db::repo::generic::SurrealRepo;
+use frona::auth::User;
+use frona::auth::UserService;
 use frona::auth::jwt::JwtService;
 use frona::auth::models::Claims;
-use frona::auth::UserService;
 use frona::chat::message::models::{MessageResponse, MessageRole};
-use frona::auth::User;
 use frona::core::config::CacheConfig;
 use frona::core::repository::Repository;
 use frona::credential::keypair::service::KeyPairService;
 use frona::credential::presign::{PresignService, presign_response, presign_response_by_user_id};
+use frona::db::init as db;
+use frona::db::repo::generic::SurrealRepo;
+use frona::storage::{Attachment, PresignClaims};
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem};
 
@@ -86,13 +86,15 @@ fn make_message_response(attachments: Vec<Attachment>) -> MessageResponse {
     }
 }
 
-
 #[tokio::test]
 async fn presign_service_sign_user_file() {
     let db = test_db().await;
     let svc = presign_service(&db);
 
-    let url = svc.sign("user:uid-1", "photo.png", "uid-1", &frona::handle!("jdoe")).await.unwrap();
+    let url = svc
+        .sign("user:uid-1", "photo.png", "uid-1", &frona::handle!("jdoe"))
+        .await
+        .unwrap();
     assert!(url.starts_with("http://localhost:3001/api/files/user/jdoe/photo.png?presign="));
 }
 
@@ -101,7 +103,10 @@ async fn presign_service_sign_agent_file() {
     let db = test_db().await;
     let svc = presign_service(&db);
 
-    let url = svc.sign("agent:dev", "output.csv", "uid-1", &frona::handle!("jdoe")).await.unwrap();
+    let url = svc
+        .sign("agent:dev", "output.csv", "uid-1", &frona::handle!("jdoe"))
+        .await
+        .unwrap();
     assert!(url.starts_with("http://localhost:3001/api/files/agent/dev/output.csv?presign="));
 }
 
@@ -110,7 +115,10 @@ async fn presign_service_sign_invalid_owner() {
     let db = test_db().await;
     let svc = presign_service(&db);
 
-    let url = svc.sign("invalid:x", "y", "uid-1", &frona::handle!("jdoe")).await.unwrap();
+    let url = svc
+        .sign("invalid:x", "y", "uid-1", &frona::handle!("jdoe"))
+        .await
+        .unwrap();
     assert!(url.is_empty());
 }
 
@@ -119,17 +127,29 @@ async fn presign_service_sign_nested_path() {
     let db = test_db().await;
     let svc = presign_service(&db);
 
-    let url = svc.sign("user:uid-5", "sub/dir/report.pdf", "uid-5", &frona::handle!("jdoe")).await.unwrap();
-    assert!(url.starts_with("http://localhost:3001/api/files/user/jdoe/sub/dir/report.pdf?presign="));
+    let url = svc
+        .sign(
+            "user:uid-5",
+            "sub/dir/report.pdf",
+            "uid-5",
+            &frona::handle!("jdoe"),
+        )
+        .await
+        .unwrap();
+    assert!(
+        url.starts_with("http://localhost:3001/api/files/user/jdoe/sub/dir/report.pdf?presign=")
+    );
 }
-
 
 #[tokio::test]
 async fn presign_service_verify_round_trip() {
     let db = test_db().await;
     let svc = presign_service(&db);
 
-    let url = svc.sign("user:uid-1", "photo.png", "uid-1", &frona::handle!("jdoe")).await.unwrap();
+    let url = svc
+        .sign("user:uid-1", "photo.png", "uid-1", &frona::handle!("jdoe"))
+        .await
+        .unwrap();
     let token = url.split("?presign=").nth(1).expect("token in URL");
 
     let claims = svc.verify(token).await.unwrap();
@@ -167,7 +187,10 @@ async fn presign_token_cannot_be_used_as_auth_token() {
     let svc = presign_service(&db);
     let jwt_svc = JwtService::new();
 
-    let url = svc.sign("user:uid-1", "photo.png", "uid-1", &frona::handle!("jdoe")).await.unwrap();
+    let url = svc
+        .sign("user:uid-1", "photo.png", "uid-1", &frona::handle!("jdoe"))
+        .await
+        .unwrap();
     let token = url.split("?presign=").nth(1).unwrap();
 
     let header = jwt_svc.decode_unverified_header(token).unwrap();
@@ -185,7 +208,10 @@ async fn presign_token_wrong_key_rejected() {
     let svc = presign_service(&db);
     let kp_svc = keypair_service(&db);
 
-    let url = svc.sign("user:uid-1", "photo.png", "uid-1", &frona::handle!("jdoe")).await.unwrap();
+    let url = svc
+        .sign("user:uid-1", "photo.png", "uid-1", &frona::handle!("jdoe"))
+        .await
+        .unwrap();
     let token = url.split("?presign=").nth(1).unwrap();
 
     let (_, other_kid) = kp_svc.get_signing_key("user:other-user").await.unwrap();
@@ -195,7 +221,6 @@ async fn presign_token_wrong_key_rejected() {
     let result = jwt_svc.verify::<PresignClaims>(token, &other_key);
     assert!(result.is_err());
 }
-
 
 #[tokio::test]
 async fn presign_response_presigns_all_attachments() {
@@ -210,7 +235,10 @@ async fn presign_response_presigns_all_attachments() {
     presign_response(&svc, &mut msg, "uid-1", &frona::handle!("jdoe")).await;
 
     for att in &msg.attachments {
-        assert!(att.url.is_some(), "each attachment should have a presigned URL");
+        assert!(
+            att.url.is_some(),
+            "each attachment should have a presigned URL"
+        );
         assert!(att.url.as_ref().unwrap().contains("?presign="));
     }
 }
@@ -225,14 +253,16 @@ async fn presign_response_no_attachments_is_noop() {
     assert!(msg.attachments.is_empty());
 }
 
-
 #[tokio::test]
 async fn sign_by_user_id_resolves_username() {
     let db = test_db().await;
     create_user(&db, "uid-10", "alice").await;
     let svc = presign_service(&db);
 
-    let url = svc.sign_by_user_id("user:uid-10", "doc.pdf", "uid-10").await.unwrap();
+    let url = svc
+        .sign_by_user_id("user:uid-10", "doc.pdf", "uid-10")
+        .await
+        .unwrap();
     assert!(url.contains("/user/alice/doc.pdf?presign="));
 }
 
@@ -242,8 +272,14 @@ async fn sign_by_user_id_caches_username() {
     create_user(&db, "uid-20", "bob").await;
     let svc = presign_service(&db);
 
-    let url1 = svc.sign_by_user_id("user:uid-20", "a.txt", "uid-20").await.unwrap();
-    let url2 = svc.sign_by_user_id("user:uid-20", "b.txt", "uid-20").await.unwrap();
+    let url1 = svc
+        .sign_by_user_id("user:uid-20", "a.txt", "uid-20")
+        .await
+        .unwrap();
+    let url2 = svc
+        .sign_by_user_id("user:uid-20", "b.txt", "uid-20")
+        .await
+        .unwrap();
 
     assert!(url1.contains("/user/bob/a.txt"));
     assert!(url2.contains("/user/bob/b.txt"));
@@ -254,10 +290,11 @@ async fn sign_by_user_id_unknown_user_returns_error() {
     let db = test_db().await;
     let svc = presign_service(&db);
 
-    let result = svc.sign_by_user_id("user:nonexistent", "file.txt", "nonexistent").await;
+    let result = svc
+        .sign_by_user_id("user:nonexistent", "file.txt", "nonexistent")
+        .await;
     assert!(result.is_err());
 }
-
 
 #[tokio::test]
 async fn presign_response_by_user_id_resolves_and_presigns() {
@@ -272,10 +309,21 @@ async fn presign_response_by_user_id_resolves_and_presigns() {
 
     presign_response_by_user_id(&svc, &mut msg, "uid-30").await;
 
-    assert!(msg.attachments[0].url.as_ref().unwrap().contains("/user/carol/photo.png"));
-    assert!(msg.attachments[1].url.as_ref().unwrap().contains("/agent/dev/output.csv"));
+    assert!(
+        msg.attachments[0]
+            .url
+            .as_ref()
+            .unwrap()
+            .contains("/user/carol/photo.png")
+    );
+    assert!(
+        msg.attachments[1]
+            .url
+            .as_ref()
+            .unwrap()
+            .contains("/agent/dev/output.csv")
+    );
 }
-
 
 #[tokio::test]
 async fn presign_response_skips_invalid_owners() {
@@ -295,20 +343,29 @@ async fn presign_response_skips_invalid_owners() {
     assert!(msg.attachments[2].url.is_some());
 }
 
-
 #[tokio::test]
 async fn presign_different_users_get_different_tokens() {
     let db = test_db().await;
     let svc = presign_service(&db);
 
-    let url1 = svc.sign("user:user-a", "file.png", "user-a", &frona::handle!("alice")).await.unwrap();
-    let url2 = svc.sign("user:user-b", "file.png", "user-b", &frona::handle!("bob")).await.unwrap();
+    let url1 = svc
+        .sign(
+            "user:user-a",
+            "file.png",
+            "user-a",
+            &frona::handle!("alice"),
+        )
+        .await
+        .unwrap();
+    let url2 = svc
+        .sign("user:user-b", "file.png", "user-b", &frona::handle!("bob"))
+        .await
+        .unwrap();
 
     let token1 = url1.split("?presign=").nth(1).unwrap();
     let token2 = url2.split("?presign=").nth(1).unwrap();
     assert_ne!(token1, token2);
 }
-
 
 #[tokio::test]
 async fn signing_key_cache_returns_same_key() {
@@ -360,7 +417,6 @@ async fn verifying_key_cache_returns_same_key() {
     jwt_svc.verify::<PresignClaims>(&token, &dk1).unwrap();
     jwt_svc.verify::<PresignClaims>(&token, &dk2).unwrap();
 }
-
 
 #[tokio::test]
 async fn generic_jwt_sign_verify_with_presign_claims() {

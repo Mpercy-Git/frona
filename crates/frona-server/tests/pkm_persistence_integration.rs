@@ -8,14 +8,17 @@ use chrono::Utc;
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem};
 
-use frona::memory::pkm::model::{
-    Disposition, EvidenceSource, EvidenceStrength, KnowledgeMemory, KnowledgeEntity,
-    KnowledgeEntitySource, MemoryEvidence, MemoryKind, EntityCategory, EntityOrigin,
-};
 use frona::db::repo::pkm::PkmRepo;
+use frona::memory::pkm::model::{
+    Disposition, EntityCategory, EntityOrigin, EvidenceSource, EvidenceStrength, KnowledgeEntity,
+    KnowledgeEntitySource, KnowledgeMemory, MemoryEvidence, MemoryKind,
+};
 
 fn evidence(source: EvidenceSource) -> Vec<MemoryEvidence> {
-    vec![MemoryEvidence { strength: EvidenceStrength::Explicit, source }]
+    vec![MemoryEvidence {
+        strength: EvidenceStrength::Explicit,
+        source,
+    }]
 }
 
 async fn test_db() -> Surreal<Db> {
@@ -34,9 +37,9 @@ async fn author_eligibility_uses_entity_memory_membership_and_keeps_the_self_ent
         ("entities/unreferenced-shell", EntityCategory::Concept),
         ("procedures/restart-service", EntityCategory::Playbook),
     ] {
-        repo.upsert_entity_skeleton(
-            "u1", path, category, &[], path, "pending authoring", &[],
-        ).await.unwrap();
+        repo.upsert_entity_skeleton("u1", path, category, &[], path, "pending authoring", &[])
+            .await
+            .unwrap();
     }
 
     let source = KnowledgeEntitySource {
@@ -52,18 +55,28 @@ async fn author_eligibility_uses_entity_memory_membership_and_keeps_the_self_ent
         .await
         .unwrap();
 
-    let concepts = repo.entities_needing_reconciliation_by_category(
-        "u1", EntityCategory::Concept,
-    ).await.unwrap();
-    assert!(concepts.contains(&"people/me".to_string()), "the self page is always authored");
-    assert!(!concepts.contains(&"entities/unreferenced-shell".to_string()),
-        "an ordinary page without a memory remains ineligible");
+    let concepts = repo
+        .entities_needing_reconciliation_by_category("u1", EntityCategory::Concept)
+        .await
+        .unwrap();
+    assert!(
+        concepts.contains(&"people/me".to_string()),
+        "the self page is always authored"
+    );
+    assert!(
+        !concepts.contains(&"entities/unreferenced-shell".to_string()),
+        "an ordinary page without a memory remains ineligible"
+    );
 
-    let playbooks = repo.entities_needing_reconciliation_by_category(
-        "u1", EntityCategory::Playbook,
-    ).await.unwrap();
-    assert_eq!(playbooks, vec!["procedures/restart-service".to_string()],
-        "playbook membership lives in knowledge_entity_source, not page assertion provenance");
+    let playbooks = repo
+        .entities_needing_reconciliation_by_category("u1", EntityCategory::Playbook)
+        .await
+        .unwrap();
+    assert_eq!(
+        playbooks,
+        vec!["procedures/restart-service".to_string()],
+        "playbook membership lives in knowledge_entity_source, not page assertion provenance"
+    );
 }
 
 const SELECT: &str = "SELECT *, meta::id(id) as id";
@@ -72,20 +85,38 @@ const SELECT: &str = "SELECT *, meta::id(id) as id";
 async fn web_evidence_round_trips_without_copying_the_execution_payload() {
     let db = test_db().await;
     let mem = KnowledgeMemory {
-        id:"web-memory".into(),user_id:"u1".into(),created_at:Utc::now(),kind:MemoryKind::Fact,
-        episode:None,content:"Acme released 4.2".into(),relations:Vec::new(),
-        disposition:Disposition::None,ended_at:None,erroneous_at:None,comment:None,
-        evidence:evidence(EvidenceSource::WebSearch {
-            message_id:"m1".into(),chat_id:"c1".into(),tool_call_id:"tool-1".into(),
-            quote:"Acme 4.2 is available".into(),query:Some("Acme 4.2".into()),
-            url:Some("https://acme.example/releases/4.2".into()),
+        id: "web-memory".into(),
+        user_id: "u1".into(),
+        created_at: Utc::now(),
+        kind: MemoryKind::Fact,
+        episode: None,
+        content: "Acme released 4.2".into(),
+        relations: Vec::new(),
+        disposition: Disposition::None,
+        ended_at: None,
+        erroneous_at: None,
+        comment: None,
+        evidence: evidence(EvidenceSource::WebSearch {
+            message_id: "m1".into(),
+            chat_id: "c1".into(),
+            tool_call_id: "tool-1".into(),
+            quote: "Acme 4.2 is available".into(),
+            query: Some("Acme 4.2".into()),
+            url: Some("https://acme.example/releases/4.2".into()),
         }),
     };
-    let _:Option<surrealdb::types::Value> = db.create(("knowledge_memory","web-memory"))
-        .content(mem).await.unwrap();
-    let mut result = db.query(format!("{SELECT} FROM knowledge_memory WHERE user_id = 'u1'"))
-        .await.unwrap();
-    let rows:Vec<KnowledgeMemory> = result.take(0).unwrap();
+    let _: Option<surrealdb::types::Value> = db
+        .create(("knowledge_memory", "web-memory"))
+        .content(mem)
+        .await
+        .unwrap();
+    let mut result = db
+        .query(format!(
+            "{SELECT} FROM knowledge_memory WHERE user_id = 'u1'"
+        ))
+        .await
+        .unwrap();
+    let rows: Vec<KnowledgeMemory> = result.take(0).unwrap();
     assert!(matches!(&rows[0].evidence[0].source,
         EvidenceSource::WebSearch { tool_call_id, url, .. }
             if tool_call_id == "tool-1" && url.as_deref() == Some("https://acme.example/releases/4.2")));
@@ -108,7 +139,8 @@ async fn knowledge_memory_new_fields_round_trip() {
         erroneous_at: None,
         comment: None,
         evidence: evidence(EvidenceSource::ExternalNote {
-            note: "Journal/2026-07-10".into(), quote: "Alex worked at Globex".into(),
+            note: "Journal/2026-07-10".into(),
+            quote: "Alex worked at Globex".into(),
         }),
     };
     let _: Option<surrealdb::types::Value> = db
@@ -118,7 +150,9 @@ async fn knowledge_memory_new_fields_round_trip() {
         .unwrap();
 
     let mut res = db
-        .query(format!("{SELECT} FROM knowledge_memory WHERE user_id = 'u1'"))
+        .query(format!(
+            "{SELECT} FROM knowledge_memory WHERE user_id = 'u1'"
+        ))
         .await
         .unwrap();
     let rows: Vec<KnowledgeMemory> = res.take(0).unwrap();
@@ -126,7 +160,9 @@ async fn knowledge_memory_new_fields_round_trip() {
     let got = &rows[0];
     assert_eq!(got.id, "m1");
     assert_eq!(got.disposition, Disposition::Outdated);
-    assert!(matches!(&got.evidence[0].source, EvidenceSource::ExternalNote { note, .. } if note == "Journal/2026-07-10"));
+    assert!(
+        matches!(&got.evidence[0].source, EvidenceSource::ExternalNote { note, .. } if note == "Journal/2026-07-10")
+    );
     assert!(got.ended_at.is_some(), "ended_at survives round-trip");
     assert!(got.erroneous_at.is_none());
 }
@@ -153,11 +189,15 @@ async fn external_source_note_is_queryable_at_pascalcase_nested_path() {
         erroneous_at: None,
         comment: None,
         evidence: evidence(EvidenceSource::ExternalNote {
-            note: "Work Notes/standup".into(), quote: "from a note".into(),
+            note: "Work Notes/standup".into(),
+            quote: "from a note".into(),
         }),
     };
-    let _: Option<surrealdb::types::Value> =
-        db.create(("knowledge_memory", "m1")).content(mem).await.unwrap();
+    let _: Option<surrealdb::types::Value> = db
+        .create(("knowledge_memory", "m1"))
+        .content(mem)
+        .await
+        .unwrap();
 
     // PascalCase variant key - matches (this is what the repo query uses).
     let mut res = db
@@ -165,7 +205,11 @@ async fn external_source_note_is_queryable_at_pascalcase_nested_path() {
         .await
         .unwrap();
     let hit: Vec<String> = res.take(0).unwrap();
-    assert_eq!(hit, vec!["m1".to_string()], "evidence source ExternalNote matches");
+    assert_eq!(
+        hit,
+        vec!["m1".to_string()],
+        "evidence source ExternalNote matches"
+    );
 
     // Lowercase variant key - matches nothing (the wrong casing would silently
     // never fire, so pin it down as a regression guard).
@@ -174,7 +218,10 @@ async fn external_source_note_is_queryable_at_pascalcase_nested_path() {
         .await
         .unwrap();
     let miss: Vec<String> = res.take(0).unwrap();
-    assert!(miss.is_empty(), "source.external.note (lowercase) must NOT match");
+    assert!(
+        miss.is_empty(),
+        "source.external.note (lowercase) must NOT match"
+    );
 }
 
 #[tokio::test]
@@ -195,15 +242,22 @@ async fn knowledge_memory_optional_fields_default_to_none() {
         erroneous_at: None,
         comment: None,
         evidence: evidence(EvidenceSource::AgentMessage {
-            message_id: "m2".into(), agent_id: "a1".into(), chat_id: "c1".into(),
+            message_id: "m2".into(),
+            agent_id: "a1".into(),
+            chat_id: "c1".into(),
             quote: "Alex works at Acme".into(),
         }),
     };
-    let _: Option<surrealdb::types::Value> =
-        db.create(("knowledge_memory", "m2")).content(mem).await.unwrap();
+    let _: Option<surrealdb::types::Value> = db
+        .create(("knowledge_memory", "m2"))
+        .content(mem)
+        .await
+        .unwrap();
 
     let mut res = db
-        .query(format!("{SELECT} FROM knowledge_memory WHERE user_id = 'u1'"))
+        .query(format!(
+            "{SELECT} FROM knowledge_memory WHERE user_id = 'u1'"
+        ))
         .await
         .unwrap();
     let rows: Vec<KnowledgeMemory> = res.take(0).unwrap();
@@ -212,7 +266,9 @@ async fn knowledge_memory_optional_fields_default_to_none() {
     assert_eq!(
         rows[0].evidence[0].source,
         EvidenceSource::AgentMessage {
-            message_id: "m2".into(), agent_id: "a1".into(), chat_id: "c1".into(),
+            message_id: "m2".into(),
+            agent_id: "a1".into(),
+            chat_id: "c1".into(),
             quote: "Alex works at Acme".into(),
         },
         "Agent source carries agent/chat through the round-trip"
@@ -247,7 +303,9 @@ async fn knowledge_entity_origin_and_rev_round_trip() {
         extracted_rev: None,
         related_playbooks: Vec::new(),
         search_text: "Standup".into(),
-        search_names: Vec::new(), search_name_tokens: Vec::new(), search_assertions: Vec::new(),
+        search_names: Vec::new(),
+        search_name_tokens: Vec::new(),
+        search_assertions: Vec::new(),
         attributes: serde_json::json!({}),
         use_count: 0,
         aliases: Default::default(),
@@ -262,7 +320,9 @@ async fn knowledge_entity_origin_and_rev_round_trip() {
         .unwrap();
 
     let mut res = db
-        .query(format!("{SELECT} FROM knowledge_entity WHERE user_id = 'u1'"))
+        .query(format!(
+            "{SELECT} FROM knowledge_entity WHERE user_id = 'u1'"
+        ))
         .await
         .unwrap();
     let rows: Vec<KnowledgeEntity> = res.take(0).unwrap();
@@ -295,7 +355,9 @@ async fn knowledge_entity_internal_origin_and_no_rev_round_trip() {
         extracted_rev: None,
         related_playbooks: Vec::new(),
         search_text: "Bob".into(),
-        search_names: Vec::new(), search_name_tokens: Vec::new(), search_assertions: Vec::new(),
+        search_names: Vec::new(),
+        search_name_tokens: Vec::new(),
+        search_assertions: Vec::new(),
         attributes: serde_json::json!({}),
         use_count: 0,
         aliases: Default::default(),
@@ -303,11 +365,16 @@ async fn knowledge_entity_internal_origin_and_no_rev_round_trip() {
         updated_at: Utc::now(),
         rendered_at: Utc::now(),
     };
-    let _: Option<surrealdb::types::Value> =
-        db.create(("knowledge_entity", "p2")).content(page).await.unwrap();
+    let _: Option<surrealdb::types::Value> = db
+        .create(("knowledge_entity", "p2"))
+        .content(page)
+        .await
+        .unwrap();
 
     let mut res = db
-        .query(format!("{SELECT} FROM knowledge_entity WHERE user_id = 'u1'"))
+        .query(format!(
+            "{SELECT} FROM knowledge_entity WHERE user_id = 'u1'"
+        ))
         .await
         .unwrap();
     let rows: Vec<KnowledgeEntity> = res.take(0).unwrap();

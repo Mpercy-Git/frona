@@ -18,8 +18,7 @@ fn db_err(e: impl std::fmt::Display) -> AppError {
 #[async_trait]
 impl ChatSummaryRepository for SurrealRepo<ChatSummary> {
     async fn find_by_chat_id(&self, chat_id: &str) -> Result<Option<ChatSummary>, AppError> {
-        let query =
-            format!("{SELECT_CLAUSE} FROM chat_summary WHERE chat_id = $chat_id LIMIT 1");
+        let query = format!("{SELECT_CLAUSE} FROM chat_summary WHERE chat_id = $chat_id LIMIT 1");
         let mut result = self
             .db()
             .query(&query)
@@ -27,9 +26,7 @@ impl ChatSummaryRepository for SurrealRepo<ChatSummary> {
             .await
             .map_err(db_err)?;
 
-        let row: Option<ChatSummary> = result
-            .take(0)
-            .map_err(db_err)?;
+        let row: Option<ChatSummary> = result.take(0).map_err(db_err)?;
 
         Ok(row)
     }

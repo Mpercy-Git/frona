@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use tokio::fs;
 
 use crate::storage::{VirtualPath, validate_relative_path};
@@ -22,22 +22,16 @@ pub(crate) async fn rename_user_file(
     let resolved = state.storage_service.resolve_virtual_path(&vpath)?;
 
     if !resolved.exists() {
-        return Err(ApiError(AppError::NotFound(
-            "File not found".into(),
-        )));
+        return Err(ApiError(AppError::NotFound("File not found".into())));
     }
 
     if req.new_name.contains('/') || req.new_name.contains("..") || req.new_name.contains('\0') {
-        return Err(ApiError(AppError::Validation(
-            "Invalid filename".into(),
-        )));
+        return Err(ApiError(AppError::Validation("Invalid filename".into())));
     }
 
     let dest = resolved
         .parent()
-        .ok_or_else(|| {
-            ApiError(AppError::Internal("No parent dir".into()))
-        })?
+        .ok_or_else(|| ApiError(AppError::Internal("No parent dir".into())))?
         .join(&req.new_name);
 
     if dest.exists() {
@@ -94,8 +88,7 @@ pub(crate) async fn copy_files(
 ) -> Result<(), ApiError> {
     ensure_user_destination(&req.destination)?;
 
-    let dest_dir =
-        resolve_file_virtual_path(&req.destination, &auth, &state.storage_service)?;
+    let dest_dir = resolve_file_virtual_path(&req.destination, &auth, &state.storage_service)?;
 
     fs::create_dir_all(&dest_dir)
         .await
@@ -108,9 +101,7 @@ pub(crate) async fn copy_files(
         }
         let name = src
             .file_name()
-            .ok_or_else(|| {
-                ApiError(AppError::Internal("No filename".into()))
-            })?
+            .ok_or_else(|| ApiError(AppError::Internal("No filename".into())))?
             .to_string_lossy()
             .into_owned();
         let target = dest_dir.join(&name);
@@ -165,8 +156,7 @@ pub(crate) async fn move_files(
 ) -> Result<(), ApiError> {
     ensure_user_destination(&req.destination)?;
 
-    let dest_dir =
-        resolve_file_virtual_path(&req.destination, &auth, &state.storage_service)?;
+    let dest_dir = resolve_file_virtual_path(&req.destination, &auth, &state.storage_service)?;
 
     fs::create_dir_all(&dest_dir)
         .await
@@ -184,9 +174,7 @@ pub(crate) async fn move_files(
         }
         let name = src
             .file_name()
-            .ok_or_else(|| {
-                ApiError(AppError::Internal("No filename".into()))
-            })?
+            .ok_or_else(|| ApiError(AppError::Internal("No filename".into())))?
             .to_string_lossy()
             .into_owned();
         let target = dest_dir.join(&name);

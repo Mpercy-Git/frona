@@ -149,7 +149,13 @@ impl OntologyScope {
             }
             triples.push(Triple::new(q.subject, q.predicate, q.object));
         }
-        Ok(Self { triples, prefixes, seeds, sources, terms: subjects.len() })
+        Ok(Self {
+            triples,
+            prefixes,
+            seeds,
+            sources,
+            terms: subjects.len(),
+        })
     }
 
     /// Carry forward the part of a previous cut that the catalogue can no longer
@@ -185,7 +191,9 @@ impl OntologyScope {
         let mut adjacent: HashMap<&str, Vec<&str>> = HashMap::new();
         let mut by_subject: HashMap<&str, Vec<&Triple>> = HashMap::new();
         for t in &previous.triples {
-            let NamedOrBlankNode::NamedNode(s) = &t.subject else { continue };
+            let NamedOrBlankNode::NamedNode(s) = &t.subject else {
+                continue;
+            };
             by_subject.entry(s.as_str()).or_default().push(t);
             if let Term::NamedNode(o) = &t.object {
                 adjacent.entry(s.as_str()).or_default().push(o.as_str());

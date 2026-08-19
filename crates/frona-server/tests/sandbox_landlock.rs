@@ -1,8 +1,8 @@
 #![cfg(target_os = "linux")]
 
-use std::sync::Arc;
 use frona::tool::sandbox::SandboxFactory;
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use std::sync::Arc;
 
 fn test_resource_manager() -> Arc<SystemResourceManager> {
     Arc::new(SystemResourceManager::new(60.0, 60.0, 60.0, 60.0))
@@ -213,10 +213,7 @@ async fn test_sandbox_python_cannot_write_system() {
     let output = ws
         .execute(
             "python3",
-            &[
-                "-c",
-                "open('/etc/landlock_test', 'w').write('hacked')",
-            ],
+            &["-c", "open('/etc/landlock_test', 'w').write('hacked')"],
             30,
             None,
             None,

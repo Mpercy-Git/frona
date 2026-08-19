@@ -48,12 +48,7 @@ mod tests {
 
     fn names_in(root: &std::path::Path) -> Vec<String> {
         let mut out: Vec<String> = walk_with_ignore(root)
-            .map(|p| {
-                p.strip_prefix(root)
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            })
+            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
             .collect();
         out.sort();
         out

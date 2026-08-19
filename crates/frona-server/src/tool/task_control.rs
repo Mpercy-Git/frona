@@ -11,7 +11,9 @@ use crate::inference::tool_call::TaskEvent;
 use crate::storage::resolve_workspace_attachment;
 use crate::storage::service::StorageService;
 
-use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition};
+use super::{
+    AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition,
+};
 
 pub struct TaskControlTool {
     storage: StorageService,
@@ -40,18 +42,19 @@ impl AgentTool for TaskControlTool {
     }
 
     fn definitions(&self) -> Vec<ToolDefinition> {
-        let complete = load_tool_definition(&self.prompts, "tools/complete_task.md").map(|mut def| {
-            if let Some(spec) = &self.result_schema
-                && let Some(props) = def
-                    .parameters
-                    .as_object_mut()
-                    .and_then(|o| o.get_mut("properties"))
-                    .and_then(|p| p.as_object_mut())
-            {
-                props.insert("result".to_string(), spec.schema.clone());
-            }
-            def
-        });
+        let complete =
+            load_tool_definition(&self.prompts, "tools/complete_task.md").map(|mut def| {
+                if let Some(spec) = &self.result_schema
+                    && let Some(props) = def
+                        .parameters
+                        .as_object_mut()
+                        .and_then(|o| o.get_mut("properties"))
+                        .and_then(|p| p.as_object_mut())
+                {
+                    props.insert("result".to_string(), spec.schema.clone());
+                }
+                def
+            });
         let fail = load_tool_definition(&self.prompts, "tools/fail_task.md");
         let defer = load_tool_definition(&self.prompts, "tools/defer_task.md");
         [complete, fail, defer].into_iter().flatten().collect()
@@ -109,7 +112,8 @@ impl AgentTool for TaskControlTool {
                 };
 
                 let mut resolved_deliverables = Vec::new();
-                if let Some(deliverables) = arguments.get("deliverables").and_then(|v| v.as_array()) {
+                if let Some(deliverables) = arguments.get("deliverables").and_then(|v| v.as_array())
+                {
                     for path_val in deliverables {
                         if let Some(path) = path_val.as_str() {
                             let attachment = resolve_workspace_attachment(
@@ -178,7 +182,9 @@ impl AgentTool for TaskControlTool {
                         }),
                 )
             }
-            _ => Err(AppError::Tool(format!("Unknown task_control tool: {tool_name}"))),
+            _ => Err(AppError::Tool(format!(
+                "Unknown task_control tool: {tool_name}"
+            ))),
         }
     }
 }
@@ -210,9 +216,15 @@ mod tests {
         let tool = tool_with_schema(None);
         let defs = tool.definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
-        assert!(names.contains(&"complete_task"), "missing complete_task: {names:?}");
+        assert!(
+            names.contains(&"complete_task"),
+            "missing complete_task: {names:?}"
+        );
         assert!(names.contains(&"fail_task"), "missing fail_task: {names:?}");
-        assert!(names.contains(&"defer_task"), "missing defer_task: {names:?}");
+        assert!(
+            names.contains(&"defer_task"),
+            "missing defer_task: {names:?}"
+        );
     }
 
     #[test]

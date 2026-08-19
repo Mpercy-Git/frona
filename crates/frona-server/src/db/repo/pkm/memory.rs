@@ -1,7 +1,6 @@
 use super::*;
 
 impl PkmRepo {
-
     /// Record a typed relation on the **subordinate** memory: it was superseded by
     /// `to` (global - the memory's role is entity-independent). Appends to `relations`.
     ///
@@ -65,8 +64,11 @@ impl PkmRepo {
             entity_path: entity_path.to_string(),
             created_at: now,
         };
-        let res: Result<Option<surrealdb::types::Value>, _> =
-            self.db.create(("knowledge_entity_source", link.id.clone())).content(link).await;
+        let res: Result<Option<surrealdb::types::Value>, _> = self
+            .db
+            .create(("knowledge_entity_source", link.id.clone()))
+            .content(link)
+            .await;
         if let Err(e) = res {
             return Err(Self::err("attach_memory_link", e));
         }
@@ -135,17 +137,21 @@ impl PkmRepo {
         if memory_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let ids: Vec<RecordId> = memory_ids.iter()
+        let ids: Vec<RecordId> = memory_ids
+            .iter()
             .map(|id| RecordId::new("knowledge_memory", id.clone()))
             .collect();
-        let mut q = self.db.query(format!(
-            "{SELECT} FROM knowledge_memory WHERE user_id = $uid AND id IN $ids"
-        ))
-        .bind(("uid", user_id.to_string()))
-        .bind(("ids", ids))
-        .await
-        .map_err(|e| Self::err("memories_by_ids", e))?;
-        let mut out: Vec<KnowledgeMemory> = q.take(0)
+        let mut q = self
+            .db
+            .query(format!(
+                "{SELECT} FROM knowledge_memory WHERE user_id = $uid AND id IN $ids"
+            ))
+            .bind(("uid", user_id.to_string()))
+            .bind(("ids", ids))
+            .await
+            .map_err(|e| Self::err("memories_by_ids", e))?;
+        let mut out: Vec<KnowledgeMemory> = q
+            .take(0)
             .map_err(|e| Self::err("memories_by_ids_take", e))?;
         out.sort_by_key(|memory| std::cmp::Reverse(memory.created_at));
         Ok(out)
@@ -260,7 +266,10 @@ impl PkmRepo {
                 .relations
                 .iter()
                 .any(|l| matches!(l.relation, RelationType::Duplicate | RelationType::Absorbed));
-            let has_replace = m.relations.iter().any(|l| l.relation == RelationType::Replace);
+            let has_replace = m
+                .relations
+                .iter()
+                .any(|l| l.relation == RelationType::Replace);
             if has_drop && !has_replace {
                 dead.push(m.id);
             }
@@ -285,10 +294,15 @@ impl PkmRepo {
             .await
             .map_err(|e| Self::err("dangling_paths", e))?;
         let linked: Vec<String> = q.take(0).map_err(|e| Self::err("dangling_linked", e))?;
-        let entities: std::collections::HashSet<String> =
-            q.take::<Vec<String>>(1).map_err(|e| Self::err("dangling_pages", e))?.into_iter().collect();
-        let mut out: Vec<String> =
-            linked.into_iter().filter(|p| !entities.contains(p)).collect();
+        let entities: std::collections::HashSet<String> = q
+            .take::<Vec<String>>(1)
+            .map_err(|e| Self::err("dangling_pages", e))?
+            .into_iter()
+            .collect();
+        let mut out: Vec<String> = linked
+            .into_iter()
+            .filter(|p| !entities.contains(p))
+            .collect();
         out.sort();
         out.dedup();
         Ok(out)
@@ -380,5 +394,4 @@ impl PkmRepo {
             .map(|m| m.content.trim().to_lowercase())
             .collect())
     }
-
 }

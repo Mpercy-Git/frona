@@ -4,8 +4,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use frona_ontologies::graph::{Graph, Id, Kind};
 use frona_ontologies::rdf::{
-    P_DISJOINT, P_DOMAIN, P_EQ_CLASS, P_EQ_PROP, P_INVERSE, P_LABEL, P_RANGE,
-    P_SUBCLASS, P_SUBPROP, P_TYPE,
+    P_DISJOINT, P_DOMAIN, P_EQ_CLASS, P_EQ_PROP, P_INVERSE, P_LABEL, P_RANGE, P_SUBCLASS,
+    P_SUBPROP, P_TYPE,
 };
 use oxrdf::{Literal, NamedNode, NamedOrBlankNode, Term, Triple};
 use sha2::{Digest, Sha256};
@@ -106,7 +106,12 @@ impl OntologyCatalogue {
                          reporting a problem. State the axioms over named classes instead.",
                         path.display(),
                         scan.anonymous.len(),
-                        scan.anonymous.iter().take(3).cloned().collect::<Vec<_>>().join(", "),
+                        scan.anonymous
+                            .iter()
+                            .take(3)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", "),
                     )));
                 }
 
@@ -120,14 +125,23 @@ impl OntologyCatalogue {
                         terms += 1;
                     }
                 }
-                sources.push(SourceInfo { name, iri: scan.iri, root, terms });
+                sources.push(SourceInfo {
+                    name,
+                    iri: scan.iri,
+                    root,
+                    terms,
+                });
             }
         }
 
         if sources.is_empty() {
             return Err(AppError::Internal(format!(
                 "ontology: no sources found under {}",
-                roots.iter().map(|(_, p)| p.display().to_string()).collect::<Vec<_>>().join(", ")
+                roots
+                    .iter()
+                    .map(|(_, p)| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )));
         }
 
@@ -187,7 +201,9 @@ impl OntologyCatalogue {
     }
 
     pub fn declares(&self, iri: &str) -> bool {
-        self.graph.id_of(iri).is_some_and(|id| self.graph.kind[id as usize].is_some())
+        self.graph
+            .id_of(iri)
+            .is_some_and(|id| self.graph.kind[id as usize].is_some())
     }
 
     /// Return the indexed facts about one named term. This is the catalogue inspection
@@ -196,8 +212,10 @@ impl OntologyCatalogue {
         let id = self.graph.id_of(iri)?;
         let kind = self.graph.kind[id as usize]?;
         let iris = |ids: &[Id]| {
-            let mut values: Vec<String> =
-                ids.iter().map(|&item| self.graph.iri(item).to_string()).collect();
+            let mut values: Vec<String> = ids
+                .iter()
+                .map(|&item| self.graph.iri(item).to_string())
+                .collect();
             values.sort();
             values.dedup();
             values
@@ -217,8 +235,12 @@ impl OntologyCatalogue {
         let direct_children = iris(&child_ids);
         Some(CatalogueTerm {
             iri: self.graph.iri(id).to_string(),
-            label: self.graph.label[id as usize].as_ref().map(|value| value.to_string()),
-            definition: self.graph.definition[id as usize].as_ref().map(|value| value.to_string()),
+            label: self.graph.label[id as usize]
+                .as_ref()
+                .map(|value| value.to_string()),
+            definition: self.graph.definition[id as usize]
+                .as_ref()
+                .map(|value| value.to_string()),
             kind: kind.to_string(),
             source: self
                 .source_of
@@ -237,7 +259,9 @@ impl OntologyCatalogue {
     }
 
     pub(crate) fn direct_parents(&self, iri: &str) -> Vec<String> {
-        let Some(id) = self.graph.id_of(iri) else { return Vec::new() };
+        let Some(id) = self.graph.id_of(iri) else {
+            return Vec::new();
+        };
         let mut values: Vec<String> = self.graph.sup[id as usize]
             .iter()
             .map(|&parent| self.graph.iri(parent).to_string())
@@ -248,7 +272,9 @@ impl OntologyCatalogue {
     }
 
     pub(crate) fn equivalents(&self, iri: &str) -> Vec<String> {
-        let Some(id) = self.graph.id_of(iri) else { return Vec::new() };
+        let Some(id) = self.graph.id_of(iri) else {
+            return Vec::new();
+        };
         let mut values: Vec<String> = self
             .eq
             .get(&id)
@@ -263,7 +289,9 @@ impl OntologyCatalogue {
     }
 
     pub(crate) fn disjoint_with(&self, iri: &str) -> Vec<String> {
-        let Some(id) = self.graph.id_of(iri) else { return Vec::new() };
+        let Some(id) = self.graph.id_of(iri) else {
+            return Vec::new();
+        };
         let mut values: Vec<String> = self
             .dj
             .get(&id)
@@ -284,7 +312,9 @@ impl OntologyCatalogue {
     /// `owl:equivalentClass` subsumption both ways, and walking only `subClassOf`
     /// missed 26,544 subsumptions against a materialised closure of the catalogue.
     pub fn ancestors(&self, iri: &str) -> Vec<String> {
-        let Some(id) = self.graph.id_of(iri) else { return Vec::new() };
+        let Some(id) = self.graph.id_of(iri) else {
+            return Vec::new();
+        };
         let mut out: Vec<String> = self
             .graph
             .ancestor_closure_with(&HashSet::from([id]), &self.eq)
@@ -310,8 +340,11 @@ impl OntologyCatalogue {
         // Sorted, because several axioms can explain one clash and a `HashSet` scan
         // names a different one on each run.
         let sorted = |id: Id| {
-            let mut v: Vec<Id> =
-                self.graph.ancestor_closure_with(&HashSet::from([id]), &self.eq).into_iter().collect();
+            let mut v: Vec<Id> = self
+                .graph
+                .ancestor_closure_with(&HashSet::from([id]), &self.eq)
+                .into_iter()
+                .collect();
             v.sort_by_key(|&i| self.graph.iri(i));
             v
         };
@@ -325,10 +358,7 @@ impl OntologyCatalogue {
                             return Some(Clash {
                                 a: types[i].clone(),
                                 b: types[j].clone(),
-                                via: (
-                                    self.graph.iri(p).to_string(),
-                                    self.graph.iri(q).to_string(),
-                                ),
+                                via: (self.graph.iri(p).to_string(), self.graph.iri(q).to_string()),
                             });
                         }
                     }
@@ -349,7 +379,8 @@ impl OntologyCatalogue {
         let (Some(a), Some(b)) = (self.graph.id_of(x), self.graph.id_of(y)) else {
             return true;
         };
-        self.graph.edge_is_safe(a, b, &self.eq, &self.dj, &self.children)
+        self.graph
+            .edge_is_safe(a, b, &self.eq, &self.dj, &self.children)
     }
 
     /// Cut the effective ontology `seeds` reason under: ancestors, equivalents, and the partners of
@@ -429,7 +460,11 @@ impl OntologyCatalogue {
                 Term::NamedNode(NamedNode::new_unchecked(kind.iri().to_string())),
             ));
 
-            let sub = if kind.is_property() { P_SUBPROP } else { P_SUBCLASS };
+            let sub = if kind.is_property() {
+                P_SUBPROP
+            } else {
+                P_SUBCLASS
+            };
             for &p in &self.graph.sup[i] {
                 if terms.contains(&p) {
                     edge(id, sub, p, &mut out);
@@ -485,7 +520,10 @@ impl OntologyCatalogue {
     /// Catalogue-wide on purpose: finding a term brings it into the effective scope, so
     /// a returned reference can be resolved.
     pub fn search(&self, term: &str, limit: usize) -> Vec<VocabHit> {
-        self.search_ranked(term, limit).into_iter().map(|(_, _, hit)| hit).collect()
+        self.search_ranked(term, limit)
+            .into_iter()
+            .map(|(_, _, hit)| hit)
+            .collect()
     }
 
     /// Search with the lexical rank and brevity retained for user-aware re-ranking.
@@ -501,7 +539,9 @@ impl OntologyCatalogue {
         let mut scored: Vec<(u8, usize, VocabHit)> = Vec::new();
         for id in self.graph.declared() {
             let i = id as usize;
-            let Some(kind) = self.graph.kind[i] else { continue };
+            let Some(kind) = self.graph.kind[i] else {
+                continue;
+            };
             let iri = self.graph.iri(id);
             let label = self.graph.label[i].as_ref().map(|l| l.to_string());
             let from_name = normalize(&decamel(local_name(iri)));
@@ -530,8 +570,15 @@ impl OntologyCatalogue {
             } else {
                 from_label.len()
             });
-            let curie = self.prefixes.compact(iri).unwrap_or_else(|| iri.to_string());
-            let kind = if kind.is_property() { "property" } else { "class" };
+            let curie = self
+                .prefixes
+                .compact(iri)
+                .unwrap_or_else(|| iri.to_string());
+            let kind = if kind.is_property() {
+                "property"
+            } else {
+                "class"
+            };
             scored.push((rank, brevity, VocabHit { curie, label, kind }));
         }
         scored.sort_by(|a, b| (a.0, a.1, &a.2.curie).cmp(&(b.0, b.1, &b.2.curie)));
@@ -558,7 +605,11 @@ impl OntologyCatalogue {
             .filter(|candidate| !candidate.is_empty())
             .filter_map(|candidate| match_rank(&needle, &squashed, candidate))
             .min()?;
-        let brevity = name.len().min(if label.is_empty() { usize::MAX } else { label.len() });
+        let brevity = name.len().min(if label.is_empty() {
+            usize::MAX
+        } else {
+            label.len()
+        });
         Some((rank, brevity))
     }
 

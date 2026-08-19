@@ -4,10 +4,12 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use crate::chat::channel::models::{Channel, CreateChannelRequest, ChannelManifest, UpdateChannelRequest};
+use crate::chat::channel::models::{
+    Channel, ChannelManifest, CreateChannelRequest, UpdateChannelRequest,
+};
 use crate::core::error::AppError;
-use crate::core::supervisor::Supervisor;
 use crate::core::state::AppState;
+use crate::core::supervisor::Supervisor;
 
 use crate::api::error::ApiError;
 use crate::api::middleware::auth::AuthUser;
@@ -25,7 +27,9 @@ pub fn router() -> Router<AppState> {
         .route("/api/channels", get(list_channels).post(create_channel))
         .route(
             "/api/channels/{id}",
-            get(get_channel).patch(update_channel).delete(delete_channel),
+            get(get_channel)
+                .patch(update_channel)
+                .delete(delete_channel),
         )
         .route("/api/channels/{id}/start", post(start_channel))
         .route("/api/channels/{id}/stop", post(stop_channel))
@@ -144,7 +148,10 @@ async fn update_channel(
     Path(id): Path<String>,
     Json(req): Json<UpdateChannelRequest>,
 ) -> Result<Json<Channel>, ApiError> {
-    let channel = state.channel_service.update(&auth.user_id, &id, req).await?;
+    let channel = state
+        .channel_service
+        .update(&auth.user_id, &id, req)
+        .await?;
     Ok(Json(channel))
 }
 
@@ -153,7 +160,10 @@ async fn delete_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    state.channel_service.delete(&state, &auth.user_id, &id).await?;
+    state
+        .channel_service
+        .delete(&state, &auth.user_id, &id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -162,7 +172,10 @@ async fn start_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Channel>, ApiError> {
-    let channel = state.channel_service.start(&state, &auth.user_id, &id).await?;
+    let channel = state
+        .channel_service
+        .start(&state, &auth.user_id, &id)
+        .await?;
     Ok(Json(channel))
 }
 
@@ -171,14 +184,19 @@ async fn stop_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Channel>, ApiError> {
-    let channel = state.channel_service.stop(&state, &auth.user_id, &id).await?;
+    let channel = state
+        .channel_service
+        .stop(&state, &auth.user_id, &id)
+        .await?;
     Ok(Json(channel))
 }
 
-async fn list_manifests(
-    State(state): State<AppState>,
-) -> Json<Vec<ChannelManifest>> {
-    Json(state.channel_service.list_manifests_with_resolved_defaults())
+async fn list_manifests(State(state): State<AppState>) -> Json<Vec<ChannelManifest>> {
+    Json(
+        state
+            .channel_service
+            .list_manifests_with_resolved_defaults(),
+    )
 }
 
 #[derive(serde::Serialize)]

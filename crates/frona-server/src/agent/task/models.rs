@@ -1,5 +1,5 @@
-use chrono::{DateTime, Utc};
 use crate::Entity;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
@@ -105,7 +105,9 @@ pub enum TaskKind {
 
 impl Default for TaskKind {
     fn default() -> Self {
-        TaskKind::Direct { source_chat_id: None }
+        TaskKind::Direct {
+            source_chat_id: None,
+        }
     }
 }
 
@@ -249,7 +251,9 @@ mod tests {
             title: "t".into(),
             description: "d".into(),
             status: TaskStatus::Pending,
-            kind: TaskKind::Direct { source_chat_id: None },
+            kind: TaskKind::Direct {
+                source_chat_id: None,
+            },
             run_at: None,
             result_summary: None,
             error_message: None,
@@ -298,12 +302,20 @@ mod tests {
 
     #[test]
     fn source_chat_id_direct() {
-        assert_eq!(TaskKind::Direct { source_chat_id: None }.source_chat_id(), None);
+        assert_eq!(
+            TaskKind::Direct {
+                source_chat_id: None
+            }
+            .source_chat_id(),
+            None
+        );
     }
 
     #[test]
     fn source_chat_id_direct_with_source() {
-        let kind = TaskKind::Direct { source_chat_id: Some("c0".to_string()) };
+        let kind = TaskKind::Direct {
+            source_chat_id: Some("c0".to_string()),
+        };
         assert_eq!(kind.source_chat_id(), Some("c0"));
     }
 

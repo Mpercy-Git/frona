@@ -59,7 +59,11 @@ pub struct BadTerm {
 
 impl std::fmt::Display for BadTerm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "`{}` cannot be used as a term: {}", self.term, self.reason)
+        write!(
+            f,
+            "`{}` cannot be used as a term: {}",
+            self.term, self.reason
+        )
     }
 }
 
@@ -91,7 +95,8 @@ impl PrefixMap {
     #[cfg(test)]
     pub(crate) fn with_prefix(mut self, prefix: &str, namespace: &str) -> Self {
         self.prefixes.retain(|(current, _)| current != prefix);
-        self.prefixes.push((prefix.to_string(), namespace.to_string()));
+        self.prefixes
+            .push((prefix.to_string(), namespace.to_string()));
         self
     }
 
@@ -157,7 +162,12 @@ impl PrefixMap {
     /// what genuinely cannot survive the round trip is refused. Style (camelCase, and
     /// which case for classes vs properties) is asked for in the prompts.
     pub fn validate_term(&self, curie: &str) -> Result<(), BadTerm> {
-        let bad = |reason: String| Err(BadTerm { term: curie.to_string(), reason });
+        let bad = |reason: String| {
+            Err(BadTerm {
+                term: curie.to_string(),
+                reason,
+            })
+        };
         let t = curie.trim();
         if t.is_empty() {
             return bad("it is empty".into());
@@ -200,15 +210,20 @@ impl PrefixMap {
         }
         // Whitespace and the RFC 3987 delimiters: what an OWL/Turtle parser cannot read
         // back once written. A space here is the one that has actually happened.
-        if let Some(c) = local.chars().find(|c| {
-            c.is_whitespace() || c.is_control() || "<>\"{}|^`\\/".contains(*c)
-        }) {
+        if let Some(c) = local
+            .chars()
+            .find(|c| c.is_whitespace() || c.is_control() || "<>\"{}|^`\\/".contains(*c))
+        {
             return bad(format!(
                 "its local name contains {}. Join the words by capitalising instead \
                  (`firmwareVersion`, not `firmware version`) — a term written this way \
                  produces an identifier no parser can read back, which takes the whole \
                  schema with it",
-                if c.is_whitespace() { "a space".to_string() } else { format!("`{c}`") }
+                if c.is_whitespace() {
+                    "a space".to_string()
+                } else {
+                    format!("`{c}`")
+                }
             ));
         }
         Ok(())
@@ -235,7 +250,10 @@ impl PrefixMap {
     pub fn repair_term(&self, raw: &str, kind: TermKind) -> Result<String, BadTerm> {
         use heck::{ToLowerCamelCase, ToUpperCamelCase};
 
-        let bad = |reason: String| BadTerm { term: raw.to_string(), reason };
+        let bad = |reason: String| BadTerm {
+            term: raw.to_string(),
+            reason,
+        };
         let mut t = raw.trim();
         if t.is_empty() {
             return Err(bad("it is empty".into()));
@@ -288,7 +306,11 @@ impl PrefixMap {
 
     /// The bound prefixes as a model-readable list, for a rejection message.
     fn prefix_list(&self) -> String {
-        self.prefixes.iter().map(|(p, _)| format!("{p}:")).collect::<Vec<_>>().join(", ")
+        self.prefixes
+            .iter()
+            .map(|(p, _)| format!("{p}:"))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// Compact an absolute IRI back to a CURIE, or `None` if no bundled prefix
@@ -326,9 +348,18 @@ mod tests {
         assert_eq!(m.expand("schema:Person"), "https://schema.org/Person");
         assert_eq!(m.expand("foaf:name"), "http://xmlns.com/foaf/0.1/name");
         assert_eq!(m.expand("frona:worksFor"), "urn:frona:worksFor");
-        assert_eq!(m.expand("xsd:integer"), "http://www.w3.org/2001/XMLSchema#integer");
-        assert_eq!(m.expand("kbpedia:Doctor-Medical"), "http://kbpedia.org/kko/rc/Doctor-Medical");
-        assert_eq!(m.expand("kko:Generals"), "http://kbpedia.org/ontologies/kko#Generals");
+        assert_eq!(
+            m.expand("xsd:integer"),
+            "http://www.w3.org/2001/XMLSchema#integer"
+        );
+        assert_eq!(
+            m.expand("kbpedia:Doctor-Medical"),
+            "http://kbpedia.org/kko/rc/Doctor-Medical"
+        );
+        assert_eq!(
+            m.expand("kko:Generals"),
+            "http://kbpedia.org/ontologies/kko#Generals"
+        );
     }
 
     /// The catalogue's two largest namespaces round-trip, or every KBpedia term a
@@ -344,8 +375,14 @@ mod tests {
     #[test]
     fn expand_passes_through_absolute_and_defaults_bare() {
         let m = PrefixMap::standard();
-        assert_eq!(m.expand("https://schema.org/Thing"), "https://schema.org/Thing");
-        assert_eq!(m.expand("urn:frona:kb:people/sarah"), "urn:frona:kb:people/sarah");
+        assert_eq!(
+            m.expand("https://schema.org/Thing"),
+            "https://schema.org/Thing"
+        );
+        assert_eq!(
+            m.expand("urn:frona:kb:people/sarah"),
+            "urn:frona:kb:people/sarah"
+        );
         assert_eq!(m.expand("Database"), "urn:frona:Database");
         assert_eq!(m.expand("bogus:Term"), "urn:frona:bogus:Term");
     }
@@ -353,8 +390,14 @@ mod tests {
     #[test]
     fn compact_round_trips_and_guards_individuals() {
         let m = PrefixMap::standard();
-        assert_eq!(m.compact("https://schema.org/Person").as_deref(), Some("schema:Person"));
-        assert_eq!(m.compact("urn:frona:worksFor").as_deref(), Some("frona:worksFor"));
+        assert_eq!(
+            m.compact("https://schema.org/Person").as_deref(),
+            Some("schema:Person")
+        );
+        assert_eq!(
+            m.compact("urn:frona:worksFor").as_deref(),
+            Some("frona:worksFor")
+        );
         assert_eq!(m.compact("urn:frona:kb:people/sarah"), None);
         assert_eq!(m.compact("http://example.com/x"), None);
     }
@@ -367,7 +410,7 @@ mod tests {
         for t in [
             "schema:Person",
             "schema:worksFor",
-            "foaf:mbox_sha1sum",     // underscore
+            "foaf:mbox_sha1sum",      // underscore
             "kbpedia:Doctor-Medical", // hyphen
             "kko:Generals",
             "dcterms:title",
@@ -375,7 +418,11 @@ mod tests {
             "frona:firmwareVersion",
             "frona:SolderingIron",
         ] {
-            assert!(m.validate_term(t).is_ok(), "`{t}` must validate: {:?}", m.validate_term(t));
+            assert!(
+                m.validate_term(t).is_ok(),
+                "`{t}` must validate: {:?}",
+                m.validate_term(t)
+            );
         }
     }
 
@@ -385,10 +432,23 @@ mod tests {
     #[test]
     fn local_name_with_a_space_is_refused() {
         let m = PrefixMap::standard();
-        let e = m.validate_term("frona:firmware download").expect_err("a space must be refused");
-        assert_eq!(e.term, "frona:firmware download", "the term is quoted back verbatim");
-        assert!(e.reason.contains("a space"), "the reason names the character: {}", e.reason);
-        assert!(e.reason.contains("firmwareVersion"), "and shows the fix: {}", e.reason);
+        let e = m
+            .validate_term("frona:firmware download")
+            .expect_err("a space must be refused");
+        assert_eq!(
+            e.term, "frona:firmware download",
+            "the term is quoted back verbatim"
+        );
+        assert!(
+            e.reason.contains("a space"),
+            "the reason names the character: {}",
+            e.reason
+        );
+        assert!(
+            e.reason.contains("firmwareVersion"),
+            "and shows the fix: {}",
+            e.reason
+        );
     }
 
     /// An unbound prefix is the *silent* failure: `expand` turns `dc:title` into
@@ -396,22 +456,42 @@ mod tests {
     #[test]
     fn unbound_prefix_is_refused_and_says_which_are_bound() {
         let m = PrefixMap::standard();
-        let e = m.validate_term("dc:title").expect_err("`dc:` is not bound — `dcterms:` is");
-        assert!(e.reason.contains("`dc:` is not a bound prefix"), "{}", e.reason);
-        assert!(e.reason.contains("dcterms:"), "the list names the real one: {}", e.reason);
+        let e = m
+            .validate_term("dc:title")
+            .expect_err("`dc:` is not bound — `dcterms:` is");
+        assert!(
+            e.reason.contains("`dc:` is not a bound prefix"),
+            "{}",
+            e.reason
+        );
+        assert!(
+            e.reason.contains("dcterms:"),
+            "the list names the real one: {}",
+            e.reason
+        );
         assert_eq!(m.expand("dc:title"), "urn:frona:dc:title");
     }
 
     #[test]
     fn bare_word_a_full_iri_and_a_nested_colon_are_all_refused() {
         let m = PrefixMap::standard();
-        assert!(m.validate_term("Database").is_err(), "a bare word has no prefix");
         assert!(
-            m.validate_term("https://ref.gs1.org/voc/manufacturer").is_err(),
+            m.validate_term("Database").is_err(),
+            "a bare word has no prefix"
+        );
+        assert!(
+            m.validate_term("https://ref.gs1.org/voc/manufacturer")
+                .is_err(),
             "a full IRI outside the bound prefixes cannot compact back to a CURIE"
         );
-        assert!(m.validate_term("frona:kb:people/me").is_err(), "that namespace holds entities");
-        assert!(m.validate_term("frona:").is_err(), "a prefix with no local name");
+        assert!(
+            m.validate_term("frona:kb:people/me").is_err(),
+            "that namespace holds entities"
+        );
+        assert!(
+            m.validate_term("frona:").is_err(),
+            "a prefix with no local name"
+        );
         assert!(m.validate_term("").is_err());
         assert!(m.validate_term(" frona:port").is_err(), "untrimmed");
     }
@@ -429,7 +509,11 @@ mod tests {
             "xsd:integer",
         ] {
             m.validate_term(t).unwrap();
-            assert_eq!(m.compact(&m.expand(t)).as_deref(), Some(t), "`{t}` must round-trip");
+            assert_eq!(
+                m.compact(&m.expand(t)).as_deref(),
+                Some(t),
+                "`{t}` must round-trip"
+            );
         }
     }
 
@@ -442,7 +526,11 @@ mod tests {
         assert_eq!(prop("support_email"), "frona:supportEmail");
         assert_eq!(prop("frona:support_email"), "frona:supportEmail");
         assert_eq!(prop("frona:firmware download"), "frona:firmwareDownload");
-        assert_eq!(prop("frona:firmwareversion"), "frona:firmwareversion", "one word, unknowable");
+        assert_eq!(
+            prop("frona:firmwareversion"),
+            "frona:firmwareversion",
+            "one word, unknowable"
+        );
         assert_eq!(prop("frona:FirmwareVersion"), "frona:firmwareVersion");
         assert_eq!(class("frona:soldering iron"), "frona:SolderingIron");
         assert_eq!(class("soldering-iron"), "frona:SolderingIron");
@@ -451,8 +539,14 @@ mod tests {
         assert_eq!(class("Database"), "frona:Database");
 
         assert_eq!(prop("https://schema.org/worksFor"), "schema:worksFor");
-        assert_eq!(class("http://kbpedia.org/kko/rc/Doctor-Medical"), "kbpedia:Doctor-Medical");
-        assert_eq!(prop("urn:frona:firmware download"), "frona:firmwareDownload");
+        assert_eq!(
+            class("http://kbpedia.org/kko/rc/Doctor-Medical"),
+            "kbpedia:Doctor-Medical"
+        );
+        assert_eq!(
+            prop("urn:frona:firmware download"),
+            "frona:firmwareDownload"
+        );
     }
 
     /// A standard term is returned verbatim: `foaf:mbox_sha1sum` restyled would expand to an
@@ -460,8 +554,17 @@ mod tests {
     #[test]
     fn repair_never_restyles_a_standard_term() {
         let m = PrefixMap::standard();
-        for t in ["foaf:mbox_sha1sum", "kbpedia:Doctor-Medical", "schema:worksFor", "xsd:integer"] {
-            assert_eq!(m.repair_term(t, TermKind::Property).unwrap(), t, "`{t}` is not ours");
+        for t in [
+            "foaf:mbox_sha1sum",
+            "kbpedia:Doctor-Medical",
+            "schema:worksFor",
+            "xsd:integer",
+        ] {
+            assert_eq!(
+                m.repair_term(t, TermKind::Property).unwrap(),
+                t,
+                "`{t}` is not ours"
+            );
         }
         assert_eq!(
             m.repair_term("schema:Person", TermKind::Class).unwrap(),
@@ -473,15 +576,21 @@ mod tests {
     #[test]
     fn repair_refuses_what_it_would_have_to_guess() {
         let m = PrefixMap::standard();
-        let e = m.repair_term("dc:title", TermKind::Property).expect_err("`dc:` is unbound");
+        let e = m
+            .repair_term("dc:title", TermKind::Property)
+            .expect_err("`dc:` is unbound");
         assert!(e.reason.contains("guessing"), "{}", e.reason);
         assert!(
-            m.repair_term("https://ref.gs1.org/voc/manufacturer", TermKind::Property).is_err(),
+            m.repair_term("https://ref.gs1.org/voc/manufacturer", TermKind::Property)
+                .is_err(),
             "an unbound namespace has no CURIE to compact to"
         );
         assert!(m.repair_term("", TermKind::Property).is_err());
         assert!(m.repair_term("frona:", TermKind::Property).is_err());
-        assert!(m.repair_term("!!!", TermKind::Property).is_err(), "nothing left after slugging");
+        assert!(
+            m.repair_term("!!!", TermKind::Property).is_err(),
+            "nothing left after slugging"
+        );
     }
 
     /// The property repair is meant to be a fixed point: whatever it returns, feeding it

@@ -11,10 +11,10 @@ use crate::core::error::AppError;
 use crate::db::repo::pkm::ReconcileCommit;
 use crate::memory::pkm::model::{AttributeSource, RelationType};
 
-use crate::memory::pkm::consolidation::context::ConsolidationContext;
-use crate::memory::pkm::consolidation::classify::OntologyDeclaration;
-use crate::memory::pkm::consolidation::ReconcilePromotion;
 use crate::memory::pkm::consolidation::PromptIds;
+use crate::memory::pkm::consolidation::ReconcilePromotion;
+use crate::memory::pkm::consolidation::classify::OntologyDeclaration;
+use crate::memory::pkm::consolidation::context::ConsolidationContext;
 
 pub(super) struct Reconcile {
     pub ctx: Arc<ConsolidationContext>,

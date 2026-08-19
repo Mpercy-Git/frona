@@ -8,16 +8,20 @@ impl PkmRepo {
         consolidation_id: &str,
         user_id: &str,
     ) -> Result<Vec<KnowledgeConsolidationEntity>, AppError> {
-        let mut response = self.db.query(
-            "SELECT *, meta::id(id) AS consolidation_entity_id
+        let mut response = self
+            .db
+            .query(
+                "SELECT *, meta::id(id) AS consolidation_entity_id
              FROM knowledge_consolidation_entity
              WHERE consolidation_id = $cid AND user_id = $uid ORDER BY path",
-        )
-        .bind(("cid", consolidation_id.to_string()))
-        .bind(("uid", user_id.to_string()))
-        .await
-        .map_err(|e| Self::err("consolidation_entity_list", e))?;
-        response.take(0).map_err(|e| Self::err("consolidation_entity_list_take", e))
+            )
+            .bind(("cid", consolidation_id.to_string()))
+            .bind(("uid", user_id.to_string()))
+            .await
+            .map_err(|e| Self::err("consolidation_entity_list", e))?;
+        response
+            .take(0)
+            .map_err(|e| Self::err("consolidation_entity_list_take", e))
     }
 
     pub(crate) async fn list_effective_entities(
@@ -25,8 +29,10 @@ impl PkmRepo {
         consolidation_id: &str,
         user_id: &str,
     ) -> Result<Vec<KnowledgeConsolidationEntity>, AppError> {
-        let mut response = self.db.query(format!(
-            "LET $shadowed = SELECT VALUE path FROM knowledge_consolidation_entity
+        let mut response = self
+            .db
+            .query(format!(
+                "LET $shadowed = SELECT VALUE path FROM knowledge_consolidation_entity
                  WHERE consolidation_id = $cid AND user_id = $uid;
              {SELECT} FROM knowledge_entity
                  WHERE user_id = $uid AND path NOT IN $shadowed ORDER BY path;
@@ -34,16 +40,19 @@ impl PkmRepo {
                  FROM knowledge_consolidation_entity
                  WHERE consolidation_id = $cid AND user_id = $uid AND searchable = true
                  ORDER BY path;"
-        ))
-        .bind(("cid", consolidation_id.to_string()))
-        .bind(("uid", user_id.to_string()))
-        .await
-        .map_err(|e| Self::err("effective_entity_list", e))?;
-        let published: Vec<KnowledgeEntity> = response.take(1)
+            ))
+            .bind(("cid", consolidation_id.to_string()))
+            .bind(("uid", user_id.to_string()))
+            .await
+            .map_err(|e| Self::err("effective_entity_list", e))?;
+        let published: Vec<KnowledgeEntity> = response
+            .take(1)
             .map_err(|e| Self::err("effective_entity_list_published_take", e))?;
-        let working: Vec<KnowledgeConsolidationEntity> = response.take(2)
+        let working: Vec<KnowledgeConsolidationEntity> = response
+            .take(2)
             .map_err(|e| Self::err("effective_entity_list_working_take", e))?;
-        let mut entities: Vec<KnowledgeConsolidationEntity> = published.into_iter()
+        let mut entities: Vec<KnowledgeConsolidationEntity> = published
+            .into_iter()
             .map(|entity| KnowledgeConsolidationEntity::from_committed(consolidation_id, entity))
             .chain(working)
             .collect();
@@ -81,7 +90,8 @@ impl PkmRepo {
         .bind(("path", path.to_string()))
         .await
         .map_err(|e| Self::err("consolidation_entity_by_path", e))?;
-        let rows: Vec<KnowledgeConsolidationEntity> = response.take(0)
+        let rows: Vec<KnowledgeConsolidationEntity> = response
+            .take(0)
             .map_err(|e| Self::err("consolidation_entity_by_path_take", e))?;
         Ok(rows.into_iter().next())
     }
@@ -98,33 +108,38 @@ impl PkmRepo {
             canonical_path: String,
         }
 
-        let mut response = self.db.query(
-            "SELECT path, canonical_path FROM knowledge_consolidation_entity
+        let mut response = self
+            .db
+            .query(
+                "SELECT path, canonical_path FROM knowledge_consolidation_entity
              WHERE consolidation_id = $cid AND user_id = $uid
                AND lifecycle = $lifecycle AND canonical_path != NONE",
-        )
-        .bind(("cid", consolidation_id.to_string()))
-        .bind(("uid", user_id.to_string()))
-        .bind(("lifecycle", ConsolidationEntityLifecycle::Coalesced))
-        .await
-        .map_err(|e| Self::err("consolidation_entity_redirects", e))?;
-        let rows: Vec<Redirect> = response.take(0)
+            )
+            .bind(("cid", consolidation_id.to_string()))
+            .bind(("uid", user_id.to_string()))
+            .bind(("lifecycle", ConsolidationEntityLifecycle::Coalesced))
+            .await
+            .map_err(|e| Self::err("consolidation_entity_redirects", e))?;
+        let rows: Vec<Redirect> = response
+            .take(0)
             .map_err(|e| Self::err("consolidation_entity_redirects_take", e))?;
-        Ok(rows.into_iter().map(|row| (row.path, row.canonical_path)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.path, row.canonical_path))
+            .collect())
     }
 
     pub(crate) async fn delete_consolidation_entities(
         &self,
         consolidation_id: &str,
     ) -> Result<(), AppError> {
-        self.db.query(
-            "DELETE knowledge_consolidation_entity WHERE consolidation_id = $cid",
-        )
-        .bind(("cid", consolidation_id.to_string()))
-        .await
-        .map_err(|e| Self::err("delete_consolidation_entities", e))?
-        .check()
-        .map_err(|e| Self::err("delete_consolidation_entities_check", e))?;
+        self.db
+            .query("DELETE knowledge_consolidation_entity WHERE consolidation_id = $cid")
+            .bind(("cid", consolidation_id.to_string()))
+            .await
+            .map_err(|e| Self::err("delete_consolidation_entities", e))?
+            .check()
+            .map_err(|e| Self::err("delete_consolidation_entities_check", e))?;
         Ok(())
     }
 
@@ -137,8 +152,12 @@ impl PkmRepo {
         query_text: &str,
     ) -> Result<Vec<EntityHit>, AppError> {
         self.search_effective_entities_with_limit(
-            consolidation_id, user_id, query_text, self.search_top_k,
-        ).await
+            consolidation_id,
+            user_id,
+            query_text,
+            self.search_top_k,
+        )
+        .await
     }
 
     pub(crate) async fn search_effective_entities_with_limit(
@@ -148,8 +167,10 @@ impl PkmRepo {
         query_text: &str,
         limit: i64,
     ) -> Result<Vec<EntityHit>, AppError> {
-        let mut response = self.db.query(
-            "LET $shadowed = SELECT VALUE path FROM knowledge_consolidation_entity
+        let mut response = self
+            .db
+            .query(
+                "LET $shadowed = SELECT VALUE path FROM knowledge_consolidation_entity
                  WHERE consolidation_id = $cid AND user_id = $uid;
              LET $live = SELECT id, path, origin, category, kinds, name, description, aliases, body,
                     search_name_tokens, search_assertions,
@@ -167,13 +188,13 @@ impl PkmRepo {
                    AND user_id = $uid AND searchable = true
                  ORDER BY score DESC, use_count DESC LIMIT $k;
              RETURN search::rrf([$live, $working], $k, 60);",
-        )
-        .bind(("cid", consolidation_id.to_string()))
-        .bind(("uid", user_id.to_string()))
-        .bind(("q", query_text.to_string()))
-        .bind(("k", limit.max(1)))
-        .await
-        .map_err(|e| Self::err("effective_entity_fts", e))?;
+            )
+            .bind(("cid", consolidation_id.to_string()))
+            .bind(("uid", user_id.to_string()))
+            .bind(("q", query_text.to_string()))
+            .bind(("k", limit.max(1)))
+            .await
+            .map_err(|e| Self::err("effective_entity_fts", e))?;
         #[derive(Deserialize, SurrealValue)]
         #[surreal(crate = "surrealdb::types")]
         struct Raw {
@@ -188,13 +209,24 @@ impl PkmRepo {
             search_assertions: Vec<String>,
             body: String,
         }
-        let rows: Vec<Raw> = response.take(3)
+        let rows: Vec<Raw> = response
+            .take(3)
             .map_err(|e| Self::err("effective_entity_fts_take", e))?;
-        Ok(rows.into_iter().map(|row| EntityHit {
-            path: row.path, origin: row.origin.unwrap_or_default(), category: row.category, kinds: row.kinds,
-            name: row.name, description: row.description, aliases: row.aliases, body: row.body,
-            search_name_tokens: row.search_name_tokens, search_assertions: row.search_assertions,
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| EntityHit {
+                path: row.path,
+                origin: row.origin.unwrap_or_default(),
+                category: row.category,
+                kinds: row.kinds,
+                name: row.name,
+                description: row.description,
+                aliases: row.aliases,
+                body: row.body,
+                search_name_tokens: row.search_name_tokens,
+                search_assertions: row.search_assertions,
+            })
+            .collect())
     }
 
     pub(super) async fn search_effective_resolution_candidates(
@@ -241,7 +273,9 @@ impl PkmRepo {
                                  array::union($live_type_names, $working_type_names)),
                     search::rrf([$live_text, $working_text], $k, 60));"
         );
-        let mut response = self.db.query(sql)
+        let mut response = self
+            .db
+            .query(sql)
             .bind(("cid", consolidation_id.to_string()))
             .bind(("uid", user_id.to_string()))
             .bind(("names", query.names.to_vec()))
@@ -266,16 +300,26 @@ impl PkmRepo {
             search_name_tokens: Vec<String>,
             search_assertions: Vec<String>,
         }
-        let rows: Vec<Raw> = response.take(7)
+        let rows: Vec<Raw> = response
+            .take(7)
             .map_err(|e| Self::err("effective_resolution_candidates_take", e))?;
         let mut seen = std::collections::HashSet::new();
-        Ok(rows.into_iter().filter(|row| seen.insert(row.path.clone())).map(|row| EntityHit {
-            path: row.path, origin: row.origin.unwrap_or_default(), category: row.category,
-            kinds: row.kinds, name: row.name, description: row.description,
-            aliases: row.aliases, body: row.body,
-            search_name_tokens: row.search_name_tokens,
-            search_assertions: row.search_assertions,
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .filter(|row| seen.insert(row.path.clone()))
+            .map(|row| EntityHit {
+                path: row.path,
+                origin: row.origin.unwrap_or_default(),
+                category: row.category,
+                kinds: row.kinds,
+                name: row.name,
+                description: row.description,
+                aliases: row.aliases,
+                body: row.body,
+                search_name_tokens: row.search_name_tokens,
+                search_assertions: row.search_assertions,
+            })
+            .collect())
     }
 
     /// Whether a failed write was a transaction conflict the engine invites us to retry.
@@ -288,5 +332,4 @@ impl PkmRepo {
     pub(crate) fn is_write_conflict(e: &AppError) -> bool {
         e.to_string().to_lowercase().contains("conflict")
     }
-
 }

@@ -25,10 +25,15 @@ impl GroundingText {
     pub fn new(text: &str) -> Self {
         let mut compact = NormalizedString::from(text);
         compact.nfkc().case_fold().retain_chars(retained);
-        let substantive_len = compact.get().chars()
+        let substantive_len = compact
+            .get()
+            .chars()
             .filter(|c| c.is_letter() || c.is_number())
             .count();
-        Self { compact, substantive_len }
+        Self {
+            compact,
+            substantive_len,
+        }
     }
 
     pub fn comparison_stream(&self) -> &str {
@@ -58,13 +63,22 @@ impl GroundingText {
     }
 
     fn resolve_compact(&self, quote: &Self) -> Result<GroundingMatch, GroundingError> {
-        let start = self.compact.get().find(quote.compact.get())
+        let start = self
+            .compact
+            .get()
+            .find(quote.compact.get())
             .ok_or(GroundingError::QuoteNotFound)?;
         let normalized_range = start..start + quote.compact.len();
-        let raw_range = self.compact.splice_range_original(normalized_range.clone())
+        let raw_range = self
+            .compact
+            .splice_range_original(normalized_range.clone())
             .ok_or(GroundingError::QuoteNotFound)?;
         let raw_span = self.compact.get_original()[raw_range.clone()].to_string();
-        Ok(GroundingMatch { normalized_range, raw_range, raw_span })
+        Ok(GroundingMatch {
+            normalized_range,
+            raw_range,
+            raw_span,
+        })
     }
 }
 
@@ -79,21 +93,44 @@ mod tests {
     #[test]
     fn multilingual_presentation_and_unicode_forms_resolve_to_raw_spans() {
         let cases = [
-            ("**Tap   the main run button** — now", "tap the main run button", "Tap   the main run button"),
+            (
+                "**Tap   the main run button** — now",
+                "tap the main run button",
+                "Tap   the main run button",
+            ),
             ("اضغط على الزِّر ١٢٣", "الزِّر ١٢٣", "الزِّر ١٢٣"),
             ("请按下运行按钮，然后等待。", "运行按钮", "运行按钮"),
             ("実行ボタンを押してください。", "実行ボタン", "実行ボタン"),
-            ("İSTANBUL için çalıştır", "i\u{307}stanbul için", "İSTANBUL için"),
-            ("Die STRAẞE ist offen", "strasse ist offen", "STRAẞE ist offen"),
+            (
+                "İSTANBUL için çalıştır",
+                "i\u{307}stanbul için",
+                "İSTANBUL için",
+            ),
+            (
+                "Die STRAẞE ist offen",
+                "strasse ist offen",
+                "STRAẞE ist offen",
+            ),
             ("ΟΣ και ος είναι sigma", "οσ και οσ", "ΟΣ και ος"),
             ("अगला चरण चलाएँ", "अगला चरण", "अगला चरण"),
-            ("Cafe\u{301} firmware", "Café firmware", "Cafe\u{301} firmware"),
-            ("Ｍｅｔａ ﬁrmware v1.71 /opt/FW.bin", "meta firmware v171 opt fw bin", "Ｍｅｔａ ﬁrmware v1.71 /opt/FW.bin"),
+            (
+                "Cafe\u{301} firmware",
+                "Café firmware",
+                "Cafe\u{301} firmware",
+            ),
+            (
+                "Ｍｅｔａ ﬁrmware v1.71 /opt/FW.bin",
+                "meta firmware v171 opt fw bin",
+                "Ｍｅｔａ ﬁrmware v1.71 /opt/FW.bin",
+            ),
         ];
 
         for (source, quote, expected_raw) in cases {
             let resolved = GroundingText::new(source).resolve(quote).unwrap();
-            assert_eq!(resolved.raw_span, expected_raw, "source={source:?} quote={quote:?}");
+            assert_eq!(
+                resolved.raw_span, expected_raw,
+                "source={source:?} quote={quote:?}"
+            );
             assert_eq!(&source[resolved.raw_range], expected_raw);
         }
     }
@@ -122,7 +159,9 @@ mod tests {
     fn exact_short_quotes_are_valid_evidence_but_empty_compact_quotes_are_rejected() {
         for quote in ["a", "AI", "42"] {
             assert!(
-                GroundingText::new(&format!("before {quote} after")).resolve(quote).is_ok(),
+                GroundingText::new(&format!("before {quote} after"))
+                    .resolve(quote)
+                    .is_ok(),
                 "quote={quote:?}",
             );
         }

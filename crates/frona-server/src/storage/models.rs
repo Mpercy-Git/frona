@@ -81,7 +81,11 @@ pub async fn resolve_workspace_attachment(
     })
 }
 
-pub fn attachment_url_segment(owner: &str, path: &str, user_handle: Option<&str>) -> Option<String> {
+pub fn attachment_url_segment(
+    owner: &str,
+    path: &str,
+    user_handle: Option<&str>,
+) -> Option<String> {
     if owner.starts_with("user:") {
         Some(format!("user/{}/{path}", user_handle?))
     } else {

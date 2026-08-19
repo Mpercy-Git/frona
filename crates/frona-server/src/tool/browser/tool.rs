@@ -19,10 +19,7 @@ pub struct BrowserTool {
 }
 
 impl BrowserTool {
-    pub fn new(
-        session_manager: Arc<BrowserSessionManager>,
-        vault_service: VaultService,
-    ) -> Self {
+    pub fn new(session_manager: Arc<BrowserSessionManager>, vault_service: VaultService) -> Self {
         Self {
             session_manager,
             vault_service,
@@ -34,7 +31,10 @@ fn default_true() -> bool {
     true
 }
 
-fn element_target(selector: Option<&str>, index: Option<usize>) -> Result<ElementTarget<'_>, AppError> {
+fn element_target(
+    selector: Option<&str>,
+    index: Option<usize>,
+) -> Result<ElementTarget<'_>, AppError> {
     match (selector, index) {
         (Some(s), None) => Ok(ElementTarget::Selector(s)),
         (None, Some(i)) => Ok(ElementTarget::Index(i)),
@@ -309,9 +309,12 @@ impl AgentTool for BrowserTool {
                 Ok(ToolOutput::text(serde_json::to_string(&info)?))
             }
             "browser_go_back" => {
-                run_with_reconnect(mgr, session_key, &provider, |c| async move {
-                    c.go_back().await
-                })
+                run_with_reconnect(
+                    mgr,
+                    session_key,
+                    &provider,
+                    |c| async move { c.go_back().await },
+                )
                 .await?;
                 Ok(ToolOutput::text(String::new()))
             }
@@ -410,10 +413,13 @@ impl AgentTool for BrowserTool {
                 .await?;
                 let text = serde_json::to_string(&result)?;
                 if let Ok(bytes) = std::fs::read(&p.path) {
-                    return Ok(ToolOutput::mixed(text, vec![ImageData {
-                        bytes,
-                        media_type: "image/png".into(),
-                    }]));
+                    return Ok(ToolOutput::mixed(
+                        text,
+                        vec![ImageData {
+                            bytes,
+                            media_type: "image/png".into(),
+                        }],
+                    ));
                 }
                 Ok(ToolOutput::text(text))
             }
@@ -554,10 +560,14 @@ impl AgentTool for BrowserTool {
                 Ok(ToolOutput::text(serde_json::to_string(&info)?))
             }
             "browser_tab_list" => {
-                let tabs = run_with_reconnect(mgr, session_key, &provider, |c| async move {
-                    c.tabs().await
-                })
-                .await?;
+                let tabs =
+                    run_with_reconnect(
+                        mgr,
+                        session_key,
+                        &provider,
+                        |c| async move { c.tabs().await },
+                    )
+                    .await?;
                 Ok(ToolOutput::text(serde_json::to_string(&tabs)?))
             }
             "browser_switch_tab" => {

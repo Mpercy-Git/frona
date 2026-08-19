@@ -13,9 +13,9 @@ use crate::inference::context::estimate_tokens;
 
 use chrono::Utc;
 
+use super::PkmService;
 use super::model::{self, EntityCategory};
 use super::vault::VaultScope;
-use super::PkmService;
 use crate::memory::service::MemoryContext;
 
 impl PkmService {
@@ -37,8 +37,10 @@ impl PkmService {
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(self.memory_config.pkm_short_memory_top_n);
 
-        let lines: Vec<String> =
-            scored.iter().map(|(_, r)| format!("- {}\n", r.content)).collect();
+        let lines: Vec<String> = scored
+            .iter()
+            .map(|(_, r)| format!("- {}\n", r.content))
+            .collect();
         // The dropped count is discarded on purpose. Decay and `top_n` have already bound
         // this block, and unlike the playbook index it makes no completeness claim there
         // would be anything to mark against - `agent_section.md` describes it as
@@ -99,7 +101,10 @@ impl PkmService {
         .await?;
         if let Some(section) = self.prompts.read_with_vars(
             "pkm/agent_section.md",
-            &[("memory_root", &vault.root().to_string_lossy()), ("directory", vault.directory())],
+            &[
+                ("memory_root", &vault.root().to_string_lossy()),
+                ("directory", vault.directory()),
+            ],
         ) && !section.is_empty()
         {
             mcx.system_prompt.push_str("\n\n");
@@ -149,10 +154,7 @@ impl PkmService {
             mcx.system_prompt.push_str(&block);
             mcx.system_prompt.push_str("</short_memory>");
         }
-        if let Some(block) = self
-            .playbook_index_block(&mcx.ctx.user.id, &vault)
-            .await?
-        {
+        if let Some(block) = self.playbook_index_block(&mcx.ctx.user.id, &vault).await? {
             mcx.system_prompt.push_str("\n\n<available_playbooks>\n");
             mcx.system_prompt.push_str(&block);
             mcx.system_prompt.push_str("</available_playbooks>");
@@ -217,7 +219,10 @@ mod tests {
         let out = render_playbook_index(&lines, 10_000).unwrap();
         assert!(out.contains("- A — do a"));
         assert!(out.contains("- B — do b"));
-        assert!(!out.contains("more playbook"), "no truncation marker when all fit");
+        assert!(
+            !out.contains("more playbook"),
+            "no truncation marker when all fit"
+        );
     }
 
     #[test]
@@ -226,8 +231,14 @@ mod tests {
         let lines = vec![line.clone(); 5];
         let per = estimate_tokens(&line);
         let out = render_playbook_index(&lines, per * 2 + 1).unwrap();
-        assert!(out.contains("(+3 more playbook(s) not shown"), "marker with dropped count:\n{out}");
-        assert!(out.contains("memory_search"), "marker points at the fallback:\n{out}");
+        assert!(
+            out.contains("(+3 more playbook(s) not shown"),
+            "marker with dropped count:\n{out}"
+        );
+        assert!(
+            out.contains("memory_search"),
+            "marker points at the fallback:\n{out}"
+        );
     }
 
     #[test]
@@ -266,7 +277,10 @@ mod tests {
     fn cap_below_the_first_line_yields_nothing() {
         let (body, dropped) = take_within_budget(&lines(3), 1);
         assert!(body.is_empty());
-        assert_eq!(dropped, 3, "all of them, so a marker would report the full count");
+        assert_eq!(
+            dropped, 3,
+            "all of them, so a marker would report the full count"
+        );
     }
 
     #[test]

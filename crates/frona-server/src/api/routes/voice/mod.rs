@@ -1,11 +1,11 @@
 mod models;
 mod websocket;
 
+use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
 
 use crate::auth::models::Claims;
 use crate::auth::token::models::TokenType;
@@ -77,10 +77,7 @@ pub(super) async fn verify_voice_jwt(state: &AppState, token: &str) -> Result<Cl
         .await
 }
 
-async fn twilio_callback(
-    State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
-) -> Response {
+async fn twilio_callback(State(state): State<AppState>, Query(q): Query<TokenQuery>) -> Response {
     let claims = match verify_voice_jwt(&state, &q.token).await {
         Ok(c) => c,
         Err(e) => {
@@ -109,18 +106,16 @@ async fn twilio_callback(
     let agent_id = claims.principal.id.clone();
 
     let call_id = match state.call_service.find_by_chat_id(&chat_id).await {
-        Ok(Some(call)) => {
-            match state.call_service.mark_active(&call.id).await {
-                Ok(updated) => {
-                    tracing::info!(call_id = %updated.id, chat_id = %chat_id, "Call marked Active");
-                    Some(updated.id)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to mark call active");
-                    Some(call.id)
-                }
+        Ok(Some(call)) => match state.call_service.mark_active(&call.id).await {
+            Ok(updated) => {
+                tracing::info!(call_id = %updated.id, chat_id = %chat_id, "Call marked Active");
+                Some(updated.id)
             }
-        }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to mark call active");
+                Some(call.id)
+            }
+        },
         Ok(None) => None,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to look up call by chat_id");
@@ -176,7 +171,10 @@ async fn twilio_callback(
         }
     };
 
-    let base_url = state.config.server.external_base_url()
+    let base_url = state
+        .config
+        .server
+        .external_base_url()
         .unwrap_or_else(|| format!("http://localhost:{}", state.config.server.port));
     let ws_base = base_url
         .replace("https://", "wss://")

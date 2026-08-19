@@ -64,9 +64,9 @@ impl EntityViewManager {
         query_text: &str,
         limit: i64,
     ) -> Result<Vec<EntityHit>, AppError> {
-        self.durable.resolution_candidates(
-            names, name_tokens, assertions, kinds, query_text, limit,
-        ).await
+        self.durable
+            .resolution_candidates(names, name_tokens, assertions, kinds, query_text, limit)
+            .await
     }
 
     pub(crate) async fn snapshot_with(
@@ -121,8 +121,7 @@ impl EntityViewManager {
                     "entity transition: row revision mismatch".into(),
                 ));
             }
-            if !paths.insert(row.path.as_str())
-                || !ids.insert(row.consolidation_entity_id.as_str())
+            if !paths.insert(row.path.as_str()) || !ids.insert(row.consolidation_entity_id.as_str())
             {
                 return Err(AppError::Database(
                     "entity transition: duplicate entity row".into(),

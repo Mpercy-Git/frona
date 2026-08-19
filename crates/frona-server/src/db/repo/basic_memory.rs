@@ -40,9 +40,7 @@ impl MemoryRepository for SurrealRepo<Memory> {
             .await
             .map_err(db_err)?;
 
-        let memory: Option<Memory> = result
-            .take(0)
-            .map_err(db_err)?;
+        let memory: Option<Memory> = result.take(0).map_err(db_err)?;
 
         Ok(memory)
     }
@@ -61,9 +59,7 @@ impl MemoryEntryRepository for SurrealRepo<MemoryEntry> {
             .await
             .map_err(db_err)?;
 
-        let entries: Vec<MemoryEntry> = result
-            .take(0)
-            .map_err(db_err)?;
+        let entries: Vec<MemoryEntry> = result.take(0).map_err(db_err)?;
 
         Ok(entries)
     }
@@ -84,9 +80,7 @@ impl MemoryEntryRepository for SurrealRepo<MemoryEntry> {
             .await
             .map_err(db_err)?;
 
-        let entries: Vec<MemoryEntry> = result
-            .take(0)
-            .map_err(db_err)?;
+        let entries: Vec<MemoryEntry> = result.take(0).map_err(db_err)?;
 
         Ok(entries)
     }
@@ -115,9 +109,7 @@ impl MemoryEntryRepository for SurrealRepo<MemoryEntry> {
 
         // agent_id is nullable (an entry is agent- or user-scoped), and SurrealDB's
         // `NONE != ''` is true, so a NONE can slip through - flatten it away.
-        let ids: Vec<Option<String>> = result
-            .take(0)
-            .map_err(db_err)?;
+        let ids: Vec<Option<String>> = result.take(0).map_err(db_err)?;
         Ok(ids.into_iter().flatten().collect())
     }
 
@@ -132,9 +124,7 @@ impl MemoryEntryRepository for SurrealRepo<MemoryEntry> {
             .await
             .map_err(db_err)?;
 
-        let entries: Vec<MemoryEntry> = result
-            .take(0)
-            .map_err(db_err)?;
+        let entries: Vec<MemoryEntry> = result.take(0).map_err(db_err)?;
 
         Ok(entries)
     }
@@ -155,9 +145,7 @@ impl MemoryEntryRepository for SurrealRepo<MemoryEntry> {
             .await
             .map_err(db_err)?;
 
-        let entries: Vec<MemoryEntry> = result
-            .take(0)
-            .map_err(db_err)?;
+        let entries: Vec<MemoryEntry> = result.take(0).map_err(db_err)?;
 
         Ok(entries)
     }
@@ -180,14 +168,14 @@ impl MemoryEntryRepository for SurrealRepo<MemoryEntry> {
     async fn find_distinct_user_ids(&self) -> Result<Vec<String>, AppError> {
         let mut result = self
             .db()
-            .query("SELECT VALUE user_id FROM memory_entry WHERE user_id IS NOT NULL GROUP BY user_id")
+            .query(
+                "SELECT VALUE user_id FROM memory_entry WHERE user_id IS NOT NULL GROUP BY user_id",
+            )
             .await
             .map_err(db_err)?;
 
         // user_id is nullable (an entry is agent- or user-scoped) - flatten any NONE.
-        let ids: Vec<Option<String>> = result
-            .take(0)
-            .map_err(db_err)?;
+        let ids: Vec<Option<String>> = result.take(0).map_err(db_err)?;
         Ok(ids.into_iter().flatten().collect())
     }
 }

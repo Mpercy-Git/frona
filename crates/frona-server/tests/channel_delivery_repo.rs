@@ -8,8 +8,8 @@ use frona::core::repository::Repository;
 use frona::db::init as db;
 use frona::db::repo::chats::SurrealChatRepo;
 use frona::db::repo::messages::SurrealMessageRepo;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -171,10 +171,14 @@ async fn resume_deliveries_pulls_backed_off_rows_forward() {
     let due_ids: Vec<&str> = due.iter().map(|m| m.id.as_str()).collect();
     assert!(due_ids.contains(&backed_off_a1.id.as_str()));
     assert!(due_ids.contains(&backed_off_a2.id.as_str()));
-    assert!(!due_ids.contains(&backed_off_b.id.as_str()),
-        "channel B's backed-off row must not be resumed by channel A");
-    assert!(!due_ids.contains(&terminal_a.id.as_str()),
-        "terminal Failed rows must not be swept");
+    assert!(
+        !due_ids.contains(&backed_off_b.id.as_str()),
+        "channel B's backed-off row must not be resumed by channel A"
+    );
+    assert!(
+        !due_ids.contains(&terminal_a.id.as_str()),
+        "terminal Failed rows must not be swept"
+    );
 }
 
 fn executing_agent_msg(chat_id: &str, delivery: Option<MessageDelivery>) -> Message {
@@ -206,10 +210,14 @@ async fn find_due_deliveries_excludes_executing_messages() {
 
     let due = msg_repo.find_due_deliveries(now, 50).await.unwrap();
     let due_ids: Vec<&str> = due.iter().map(|m| m.id.as_str()).collect();
-    assert!(due_ids.contains(&completed.id.as_str()),
-        "completed message must surface in retry queue");
-    assert!(!due_ids.contains(&executing.id.as_str()),
-        "executing message must not surface in retry queue");
+    assert!(
+        due_ids.contains(&completed.id.as_str()),
+        "completed message must surface in retry queue"
+    );
+    assert!(
+        !due_ids.contains(&executing.id.as_str()),
+        "executing message must not surface in retry queue"
+    );
 }
 
 #[tokio::test]
@@ -233,7 +241,10 @@ async fn resume_deliveries_skips_executing_messages() {
         .resume_deliveries_for_channel("channel:tg", now)
         .await
         .unwrap();
-    assert_eq!(updated, 1, "only the Completed message should have been touched");
+    assert_eq!(
+        updated, 1,
+        "only the Completed message should have been touched"
+    );
 
     let due = msg_repo.find_due_deliveries(now, 50).await.unwrap();
     let due_ids: Vec<&str> = due.iter().map(|m| m.id.as_str()).collect();

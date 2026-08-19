@@ -5,17 +5,17 @@ use futures::StreamExt;
 use futures::future::BoxFuture;
 use serde::Deserialize;
 
-use crate::core::error::AppError;
 use crate::chat::message::models::MessageRole;
 use crate::chat::message::repository::MessageRepository;
-use crate::db::repo::tool_calls::ToolCallRepository;
+use crate::core::error::AppError;
 use crate::db::repo::pkm::AuthoredPageWrite;
-use crate::memory::pkm::model::{EvidenceSource, KnowledgeMemory, EntityCategory};
+use crate::db::repo::tool_calls::ToolCallRepository;
+use crate::memory::pkm::model::{EntityCategory, EvidenceSource, KnowledgeMemory};
 use crate::memory::pkm::projection::{
     MarkdownPage, canonical_path, canonicalize_wikilinks, compose_page,
 };
-use crate::tool::registry::ToolFilter;
 use crate::tool::AgentTool;
+use crate::tool::registry::ToolFilter;
 
 use crate::memory::pkm::consolidation::context::ConsolidationContext;
 use crate::memory::pkm::consolidation::{PlaybookAuthorOutcome, PromptSpec, prompt_evidence};
@@ -47,30 +47,51 @@ pub(crate) struct PlaybookAuthor {
 
 impl PlaybookAuthor {
     pub(crate) async fn run(&self) -> Result<PlaybookAuthorOutcome, AppError> {
-        let paths = self.ctx.repo.entities_needing_reconciliation_by_category(
-            &self.ctx.scope.user_id, EntityCategory::Playbook
-        ).await?;
+        let paths = self
+            .ctx
+            .repo
+            .entities_needing_reconciliation_by_category(
+                &self.ctx.scope.user_id,
+                EntityCategory::Playbook,
+            )
+            .await?;
         let redirects = self.ctx.view.redirects().await?;
-        let jobs: Vec<BoxFuture<'_, Result<bool, AppError>>> = paths.iter().map(|path| {
-            Box::pin(self.author_one(path, &redirects)) as BoxFuture<'_, Result<bool, AppError>>
-        }).collect();
+        let jobs: Vec<BoxFuture<'_, Result<bool, AppError>>> = paths
+            .iter()
+            .map(|path| {
+                Box::pin(self.author_one(path, &redirects)) as BoxFuture<'_, Result<bool, AppError>>
+            })
+            .collect();
         let results: Vec<Result<bool, AppError>> = futures::stream::iter(jobs)
-            .buffer_unordered(self.concurrency.max(1)).collect().await;
-        let built = results.iter().filter(|result| matches!(result, Ok(true))).count();
+            .buffer_unordered(self.concurrency.max(1))
+            .collect()
+            .await;
+        let built = results
+            .iter()
+            .filter(|result| matches!(result, Ok(true)))
+            .count();
         for result in results {
             if let Err(error) = result {
                 tracing::warn!(%error, "pkm playbook author: page remains dirty");
             }
         }
-        let remaining = self.ctx.repo.entities_needing_reconciliation_by_category(
-            &self.ctx.scope.user_id, EntityCategory::Playbook
-        ).await?;
+        let remaining = self
+            .ctx
+            .repo
+            .entities_needing_reconciliation_by_category(
+                &self.ctx.scope.user_id,
+                EntityCategory::Playbook,
+            )
+            .await?;
         if !remaining.is_empty() {
             return Err(AppError::Internal(format!(
-                "playbook author: {} page(s) remain dirty", remaining.len()
+                "playbook author: {} page(s) remain dirty",
+                remaining.len()
             )));
         }
-        Ok(PlaybookAuthorOutcome { playbooks_built: built })
+        Ok(PlaybookAuthorOutcome {
+            playbooks_built: built,
+        })
     }
 
     async fn author_one(
@@ -78,44 +99,73 @@ impl PlaybookAuthor {
         path: &str,
         redirects: &std::collections::BTreeMap<String, String>,
     ) -> Result<bool, AppError> {
-        let Some(page) = self.ctx.view.entity_by_path(path).await?
-        else { return Ok(false) };
+        let Some(page) = self.ctx.view.entity_by_path(path).await? else {
+            return Ok(false);
+        };
         require_requested_path(path, &page.path)?;
         if page.category != EntityCategory::Playbook {
             return Ok(false);
         }
-        let memories = self.ctx.repo.memories_for_entity(&self.ctx.scope.user_id, path).await?;
-        let procedural: Vec<&KnowledgeMemory> = memories.iter()
+        let memories = self
+            .ctx
+            .repo
+            .memories_for_entity(&self.ctx.scope.user_id, path)
+            .await?;
+        let procedural: Vec<&KnowledgeMemory> = memories
+            .iter()
             .filter(|memory| memory.kind == crate::memory::pkm::model::MemoryKind::Procedural)
             .collect();
         let memory_block = if procedural.is_empty() {
             "(none)".to_string()
         } else {
-            procedural.iter().map(|memory| format!(
-                "- {}\n  evidence: {}", memory.content, prompt_evidence(&memory.evidence)
-            )).collect::<Vec<_>>().join("\n")
+            procedural
+                .iter()
+                .map(|memory| {
+                    format!(
+                        "- {}\n  evidence: {}",
+                        memory.content,
+                        prompt_evidence(&memory.evidence)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
         };
         let (transcript, invocations, transcript_lookup) =
             self.evidence_context(&procedural).await?;
         let invocation_block = if invocations.is_empty() {
             "(none)".to_string()
         } else {
-            invocations.iter().enumerate().map(|(index, invocation)| format!(
-                "- c{}: {} {}", index + 1, invocation.tool, invocation.reference
-            )).collect::<Vec<_>>().join("\n")
+            invocations
+                .iter()
+                .enumerate()
+                .map(|(index, invocation)| {
+                    format!(
+                        "- c{}: {} {}",
+                        index + 1,
+                        invocation.tool,
+                        invocation.reference
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
         };
-        let rendered = self.ctx.llm.render(PromptSpec::PLAYBOOK_AUTHOR, &[
-            ("path", &page.path),
-            ("name", &page.name),
-            ("description", &page.description),
-            ("body", &page.body),
-            ("memories", &memory_block),
-            ("transcript", &transcript),
-            ("invocations", &invocation_block),
-        ])?;
-        let allowed = invocations.iter().enumerate().map(|(index, invocation)|
-            (format!("c{}", index + 1), invocation.id.clone())
-        ).collect();
+        let rendered = self.ctx.llm.render(
+            PromptSpec::PLAYBOOK_AUTHOR,
+            &[
+                ("path", &page.path),
+                ("name", &page.name),
+                ("description", &page.description),
+                ("body", &page.body),
+                ("memories", &memory_block),
+                ("transcript", &transcript),
+                ("invocations", &invocation_block),
+            ],
+        )?;
+        let allowed = invocations
+            .iter()
+            .enumerate()
+            .map(|(index, invocation)| (format!("c{}", index + 1), invocation.id.clone()))
+            .collect();
         let playbook_lookup = Arc::new(super::tools::PlaybookLookup::default());
         let total_tool_budget = Arc::new(std::sync::atomic::AtomicUsize::new(40));
         let tools: Vec<Arc<dyn AgentTool>> = vec![
@@ -149,13 +199,15 @@ impl PlaybookAuthor {
                 lookup: playbook_lookup.clone(),
                 total: total_tool_budget.clone(),
             }),
-            Arc::new(crate::memory::pkm::consolidation::tools::SearchEntitiesTool {
-                prompts: self.ctx.llm.prompts().clone(),
-                repo: self.ctx.view.clone(),
-                overlay: None,
-                budget: Some(total_tool_budget.clone()),
-                prefixes: self.prefixes.clone(),
-            }),
+            Arc::new(
+                crate::memory::pkm::consolidation::tools::SearchEntitiesTool {
+                    prompts: self.ctx.llm.prompts().clone(),
+                    repo: self.ctx.view.clone(),
+                    overlay: None,
+                    budget: Some(total_tool_budget.clone()),
+                    prefixes: self.prefixes.clone(),
+                },
+            ),
             Arc::new(crate::memory::pkm::consolidation::tools::ReadEntityTool {
                 prompts: self.ctx.llm.prompts().clone(),
                 repo: self.ctx.view.clone(),
@@ -166,38 +218,63 @@ impl PlaybookAuthor {
                 prefixes: self.prefixes.clone(),
             }),
         ];
-        let mut conversation = self.ctx.llm.conversation::<AuthoredPlaybook>(
-            None,
-            &self.ctx.scope.agent_id,
-            rendered.system,
-            rendered.input,
-            &[ToolFilter::AllowList(&[
-                "get_tool_output", "read_transcript", "find_playbooks", "read_playbook",
-                "search_entities", "read_entity",
-            ])],
-            &tools,
-            self.max_tool_turns,
-        ).await?;
+        let mut conversation = self
+            .ctx
+            .llm
+            .conversation::<AuthoredPlaybook>(
+                None,
+                &self.ctx.scope.agent_id,
+                rendered.system,
+                rendered.input,
+                &[ToolFilter::AllowList(&[
+                    "get_tool_output",
+                    "read_transcript",
+                    "find_playbooks",
+                    "read_playbook",
+                    "search_entities",
+                    "read_entity",
+                ])],
+                &tools,
+                self.max_tool_turns,
+            )
+            .await?;
         let llm = &self.ctx.llm;
-        let authored = conversation.refine(self.max_submissions, move |candidate: AuthoredPlaybook| {
-            async move {
-                let mut missing = Vec::new();
-                if candidate.name.trim().is_empty() { missing.push("name"); }
-                if candidate.description.trim().is_empty() { missing.push("description"); }
-                if candidate.body.trim().is_empty() { missing.push("body"); }
-                if missing.is_empty() {
-                    Ok(crate::memory::pkm::consolidation::Verdict::Accept(candidate))
-                } else {
-                    let feedback = llm.reject(
-                        PromptSpec::PLAYBOOK_AUTHOR,
-                        &[("rejections", &format!("missing: {}", missing.join(", ")))],
-                    )?;
-                    Ok(crate::memory::pkm::consolidation::Verdict::Revise { feedback, keep: None })
-                }
-            }
-        }).await?.ok_or_else(|| AppError::Internal(
-            format!("playbook author: `{path}` exhausted its submission budget")
-        ))?;
+        let authored = conversation
+            .refine(
+                self.max_submissions,
+                move |candidate: AuthoredPlaybook| async move {
+                    let mut missing = Vec::new();
+                    if candidate.name.trim().is_empty() {
+                        missing.push("name");
+                    }
+                    if candidate.description.trim().is_empty() {
+                        missing.push("description");
+                    }
+                    if candidate.body.trim().is_empty() {
+                        missing.push("body");
+                    }
+                    if missing.is_empty() {
+                        Ok(crate::memory::pkm::consolidation::Verdict::Accept(
+                            candidate,
+                        ))
+                    } else {
+                        let feedback = llm.reject(
+                            PromptSpec::PLAYBOOK_AUTHOR,
+                            &[("rejections", &format!("missing: {}", missing.join(", ")))],
+                        )?;
+                        Ok(crate::memory::pkm::consolidation::Verdict::Revise {
+                            feedback,
+                            keep: None,
+                        })
+                    }
+                },
+            )
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(format!(
+                    "playbook author: `{path}` exhausted its submission budget"
+                ))
+            })?;
 
         let mut related = Vec::new();
         for proposed in authored.related_playbooks {
@@ -205,7 +282,11 @@ impl PlaybookAuthor {
                 continue;
             };
             let candidate = canonical_path(&candidate, redirects);
-            if self.ctx.view.entity_by_path(&candidate).await?
+            if self
+                .ctx
+                .view
+                .entity_by_path(&candidate)
+                .await?
                 .is_some_and(|page| page.category == EntityCategory::Playbook)
             {
                 related.push(candidate);
@@ -219,47 +300,77 @@ impl PlaybookAuthor {
             projected.name = authored.name.clone();
         }
         projected.description = authored.description.clone();
-        let body = canonicalize_wikilinks(
-            &authored.body, redirects, &self.ctx.scope.vault,
-        );
+        let body = canonicalize_wikilinks(&authored.body, redirects, &self.ctx.scope.vault);
         projected.body = body.clone();
         projected.related_playbooks = related.clone();
-        let links = self.ctx.repo.links_from_entity(&self.ctx.scope.user_id, path).await?;
+        let links = self
+            .ctx
+            .repo
+            .links_from_entity(&self.ctx.scope.user_id, path)
+            .await?;
         let article = MarkdownPage::parse(&body);
         let rendered = projected.as_knowledge_entity();
         let file = compose_page(
-            &rendered, &article, &rendered.attributes, &links, &self.prefixes,
-            &self.ctx.scope.vault
+            &rendered,
+            &article,
+            &rendered.attributes,
+            &links,
+            &self.prefixes,
+            &self.ctx.scope.vault,
         );
         let rev = crate::memory::pkm::sha256_hex(&file);
-        self.ctx.repo.commit_authored_page(
-            self.ctx.view.consolidation_id(),
-            &self.ctx.scope.user_id,
-            &AuthoredPageWrite {
-                path: path.to_string(), name: authored.name,
-                description: authored.description, attributes: projected.attributes,
-                body, related_playbooks: related, content: file.clone(), rev,
-            },
-        ).await?;
-        self.ctx.storage.write_page(&self.ctx.scope.vault, path, &file)?;
+        self.ctx
+            .repo
+            .commit_authored_page(
+                self.ctx.view.consolidation_id(),
+                &self.ctx.scope.user_id,
+                &AuthoredPageWrite {
+                    path: path.to_string(),
+                    name: authored.name,
+                    description: authored.description,
+                    attributes: projected.attributes,
+                    body,
+                    related_playbooks: related,
+                    content: file.clone(),
+                    rev,
+                },
+            )
+            .await?;
+        self.ctx
+            .storage
+            .write_page(&self.ctx.scope.vault, path, &file)?;
         Ok(true)
     }
 
     async fn evidence_context(
         &self,
         memories: &[&KnowledgeMemory],
-    ) -> Result<(
-        String,
-        Vec<InvocationEvidence>,
-        Arc<super::tools::TranscriptLookup>,
-    ), AppError> {
+    ) -> Result<
+        (
+            String,
+            Vec<InvocationEvidence>,
+            Arc<super::tools::TranscriptLookup>,
+        ),
+        AppError,
+    > {
         let mut anchors = HashMap::<String, BTreeSet<String>>::new();
         for memory in memories {
             for evidence in &memory.evidence {
                 match &evidence.source {
-                    EvidenceSource::UserMessage { chat_id, message_id, .. }
-                    | EvidenceSource::AgentMessage { chat_id, message_id, .. } => {
-                        anchors.entry(chat_id.clone()).or_default().insert(message_id.clone());
+                    EvidenceSource::UserMessage {
+                        chat_id,
+                        message_id,
+                        ..
+                    }
+                    | EvidenceSource::AgentMessage {
+                        chat_id,
+                        message_id,
+                        ..
+                    } => {
+                        anchors
+                            .entry(chat_id.clone())
+                            .or_default()
+                            .insert(message_id.clone());
                     }
                     _ => {}
                 }
@@ -274,7 +385,9 @@ impl PlaybookAuthor {
             let messages = self.messages.find_by_chat_id(chat_id).await?;
             let tool_calls = self.tool_calls.find_by_chat_id(chat_id).await?;
             for index in 0..messages.len() {
-                lookup.cursors.insert(format!("t{next_cursor}"), (chat_id.clone(), index));
+                lookup
+                    .cursors
+                    .insert(format!("t{next_cursor}"), (chat_id.clone(), index));
                 next_cursor += 1;
             }
             let mut selected = BTreeSet::new();
@@ -294,9 +407,13 @@ impl PlaybookAuthor {
             }
             for index in selected {
                 let message = &messages[index];
-                let local = lookup.cursors.iter().find_map(|(local, held)|
-                    (held == &(chat_id.clone(), index)).then_some(local.as_str())
-                ).unwrap_or("?");
+                let local = lookup
+                    .cursors
+                    .iter()
+                    .find_map(|(local, held)| {
+                        (held == &(chat_id.clone(), index)).then_some(local.as_str())
+                    })
+                    .unwrap_or("?");
                 let role = match message.role {
                     MessageRole::User => "user",
                     MessageRole::Agent => "agent",
@@ -307,7 +424,9 @@ impl PlaybookAuthor {
                     "[{local} {role}] {}\n",
                     super::tools::redact_text(
                         &super::super::transcript::message_text(
-                            &message.id, &message.content, &tool_calls,
+                            &message.id,
+                            &message.content,
+                            &tool_calls,
                         ),
                         &[],
                     )
@@ -318,7 +437,10 @@ impl PlaybookAuthor {
                     transcript.push_str(&line);
                 }
                 if message.role == MessageRole::Agent {
-                    selected_agents.entry(chat_id.clone()).or_default().insert(message.id.clone());
+                    selected_agents
+                        .entry(chat_id.clone())
+                        .or_default()
+                        .insert(message.id.clone());
                 }
             }
             lookup.tool_calls.insert(chat_id.clone(), tool_calls);
@@ -338,7 +460,9 @@ impl PlaybookAuthor {
                 let reference = invocation_projection(call);
                 let Some(reference) = reference else { continue };
                 let cost = crate::inference::context::estimate_tokens(&reference.reference);
-                if cost > 2_000 || tokens + cost > 16_000 { continue; }
+                if cost > 2_000 || tokens + cost > 16_000 {
+                    continue;
+                }
                 tokens += cost;
                 out.push(reference);
             }
@@ -356,11 +480,20 @@ fn require_requested_path(requested: &str, resolved: &str) -> Result<(), AppErro
     )))
 }
 
-fn invocation_projection(call: &crate::inference::tool_call::ToolCall) -> Option<InvocationEvidence> {
+fn invocation_projection(
+    call: &crate::inference::tool_call::ToolCall,
+) -> Option<InvocationEvidence> {
     let name = call.name.to_ascii_lowercase();
-    let value = |keys: &[&str]| keys.iter().find_map(|key|
-        call.arguments.get(*key).and_then(|value| value.as_str()).map(str::trim)
-    ).filter(|value| !value.is_empty());
+    let value = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| {
+                call.arguments
+                    .get(*key)
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+            })
+            .filter(|value| !value.is_empty())
+    };
     let reference = if name.contains("browser") {
         serde_json::json!({"url": value(&["url"])?}).to_string()
     } else if name.contains("search") {
@@ -373,7 +506,8 @@ fn invocation_projection(call: &crate::inference::tool_call::ToolCall) -> Option
         serde_json::json!({
             "tool": call.name,
             "parameters": super::tools::redact_json(&call.arguments, &[]),
-        }).to_string()
+        })
+        .to_string()
     };
     Some(InvocationEvidence {
         id: call.id.clone(),
@@ -391,9 +525,14 @@ mod tests {
         let error = require_requested_path(
             "tools/yfinance/fetch-stock-close-price",
             "tools/yfinance/diagnose-secure-yahoo-connectivity",
-        ).unwrap_err();
+        )
+        .unwrap_err();
 
         assert!(error.to_string().contains("fetch-stock-close-price"));
-        assert!(error.to_string().contains("diagnose-secure-yahoo-connectivity"));
+        assert!(
+            error
+                .to_string()
+                .contains("diagnose-secure-yahoo-connectivity")
+        );
     }
 }

@@ -71,31 +71,46 @@ impl SkillRegistryClient {
         }
     }
 
-    pub async fn search(&self, query: &str, limit: u32) -> Result<Vec<RemoteSkillSummary>, AppError> {
+    pub async fn search(
+        &self,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<RemoteSkillSummary>, AppError> {
         let url = format!("{SKILLS_SH_BASE}/api/search");
 
-        let resp = self.client.get(&url)
+        let resp = self
+            .client
+            .get(&url)
             .query(&[("q", query), ("limit", &limit.to_string())])
             .send()
             .await
             .map_err(|e| AppError::Internal(format!("skills.sh search failed: {e}")))?;
 
         if !resp.status().is_success() {
-            return Err(AppError::Internal(format!("skills.sh returned status {}", resp.status())));
+            return Err(AppError::Internal(format!(
+                "skills.sh returned status {}",
+                resp.status()
+            )));
         }
 
-        let data: SkillsShResponse = resp.json().await
+        let data: SkillsShResponse = resp
+            .json()
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to parse skills.sh response: {e}")))?;
 
-        Ok(data.skills.into_iter().map(|entry| {
-            let avatar_url = derive_avatar_url(&entry.source);
-            RemoteSkillSummary {
-                name: entry.name,
-                repo: entry.source,
-                avatar_url,
-                installs: entry.installs,
-            }
-        }).collect())
+        Ok(data
+            .skills
+            .into_iter()
+            .map(|entry| {
+                let avatar_url = derive_avatar_url(&entry.source);
+                RemoteSkillSummary {
+                    name: entry.name,
+                    repo: entry.source,
+                    avatar_url,
+                    installs: entry.installs,
+                }
+            })
+            .collect())
     }
 
     pub async fn discover_skills(&self, repo: &str) -> Result<Vec<DiscoveredSkill>, AppError> {
@@ -108,7 +123,8 @@ impl SkillRegistryClient {
         let mut seen = std::collections::HashSet::new();
 
         for relative_path in skill_md_paths {
-            let dir_path = relative_path.parent()
+            let dir_path = relative_path
+                .parent()
                 .filter(|p| *p != Path::new(""))
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
@@ -141,7 +157,11 @@ impl SkillRegistryClient {
         Ok(skills)
     }
 
-    pub async fn fetch_skill_from_cache(&self, repo: &str, discovered: &DiscoveredSkill) -> Result<FetchedSkill, AppError> {
+    pub async fn fetch_skill_from_cache(
+        &self,
+        repo: &str,
+        discovered: &DiscoveredSkill,
+    ) -> Result<FetchedSkill, AppError> {
         let (repo_dir, _) = self.ensure_repo(repo).await?;
 
         let skill_base = if discovered.dir_path.is_empty() {
@@ -150,8 +170,9 @@ impl SkillRegistryClient {
             repo_dir.join(&discovered.dir_path)
         };
 
-        let content = std::fs::read_to_string(skill_base.join("SKILL.md"))
-            .map_err(|_| AppError::NotFound(format!("Skill '{}' not found in {repo}", discovered.name)))?;
+        let content = std::fs::read_to_string(skill_base.join("SKILL.md")).map_err(|_| {
+            AppError::NotFound(format!("Skill '{}' not found in {repo}", discovered.name))
+        })?;
 
         let parsed = agent_skills::Skill::parse(&content)
             .map_err(|e| AppError::Validation(format!("Invalid SKILL.md: {e}")))?;
@@ -168,22 +189,31 @@ impl SkillRegistryClient {
         })
     }
 
-    pub async fn fetch_skill_content(&self, repo: &str, dir_path: &str) -> Result<String, AppError> {
+    pub async fn fetch_skill_content(
+        &self,
+        repo: &str,
+        dir_path: &str,
+    ) -> Result<String, AppError> {
         let url = if dir_path.is_empty() {
             format!("{GITHUB_RAW_BASE}/{repo}/main/SKILL.md")
         } else {
             format!("{GITHUB_RAW_BASE}/{repo}/main/{dir_path}/SKILL.md")
         };
-        let resp = self.client.get(&url)
+        let resp = self
+            .client
+            .get(&url)
             .send()
             .await
             .map_err(|e| AppError::Internal(format!("Failed to fetch SKILL.md: {e}")))?;
 
         if !resp.status().is_success() {
-            return Err(AppError::NotFound(format!("SKILL.md not found at {dir_path} in {repo}")));
+            return Err(AppError::NotFound(format!(
+                "SKILL.md not found at {dir_path} in {repo}"
+            )));
         }
 
-        resp.text().await
+        resp.text()
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to read SKILL.md: {e}")))
     }
 
@@ -191,7 +221,8 @@ impl SkillRegistryClient {
         let repo_dir = self.cache_dir.join(repo);
 
         if repo_dir.join(".git").exists() {
-            let needs_pull = repo_dir.join(".git/FETCH_HEAD")
+            let needs_pull = repo_dir
+                .join(".git/FETCH_HEAD")
                 .metadata()
                 .and_then(|m| m.modified())
                 .map(|t| t.elapsed().unwrap_or_default() > std::time::Duration::from_secs(3600))
@@ -232,7 +263,10 @@ impl SkillRegistryClient {
         if !output.status.success() {
             let _ = std::fs::remove_dir_all(&repo_dir);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("not found") || stderr.contains("does not exist") || stderr.contains("Could not read from remote") {
+            if stderr.contains("not found")
+                || stderr.contains("does not exist")
+                || stderr.contains("Could not read from remote")
+            {
                 return Err(AppError::NotFound(format!("Repository '{repo}' not found")));
             }
             return Err(AppError::Internal(format!("git clone failed: {stderr}")));
@@ -257,7 +291,9 @@ async fn git_head_sha(repo_dir: &Path) -> Result<String, AppError> {
 }
 
 fn walk_for_files(dir: &Path, base: &Path, target: &str, results: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = path.file_name().unwrap_or_default();
@@ -281,7 +317,9 @@ fn read_skill_files(skill_dir: &Path) -> Vec<FetchedSkillFile> {
 }
 
 fn collect_skill_files(dir: &Path, base: &Path, files: &mut Vec<FetchedSkillFile>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = path.file_name().unwrap_or_default();
@@ -338,7 +376,10 @@ mod tests {
         walk_for_files(base, base, "SKILL.md", &mut results);
 
         assert_eq!(results.len(), 2);
-        let paths: Vec<String> = results.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        let paths: Vec<String> = results
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
         assert!(paths.contains(&"skill-a/SKILL.md".to_string()));
         assert!(paths.contains(&"nested/skill-b/SKILL.md".to_string()));
     }

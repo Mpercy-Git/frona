@@ -5,14 +5,13 @@ use surrealdb::types::SurrealValue;
 
 use crate::core::error::AppError;
 use crate::db::repo::pkm::ReconcileCommit;
-use crate::memory::pkm::consolidation::context::ConsolidationContext;
-use crate::memory::pkm::consolidation::classify::{Classification, ProposalSet};
-use crate::memory::pkm::consolidation::assemble::adjudicate::AdjudicationResult;
 use crate::memory::pkm::consolidation::ConsolidationStageState;
+use crate::memory::pkm::consolidation::assemble::adjudicate::AdjudicationResult;
+use crate::memory::pkm::consolidation::classify::{Classification, ProposalSet};
+use crate::memory::pkm::consolidation::context::ConsolidationContext;
 use crate::memory::pkm::consolidation::view::EntityTransition;
 use crate::memory::pkm::model::{
-    ClassificationProgress, IdentityProgress, KnowledgeConsolidationEntity,
-    ReconciliationProgress,
+    ClassificationProgress, IdentityProgress, KnowledgeConsolidationEntity, ReconciliationProgress,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
@@ -137,7 +136,10 @@ impl<'a> ConsolidationProgress<'a> {
         checkpoint.state = self.checkpoint_state();
         checkpoint.updated_at = chrono::Utc::now();
         let mut transition = EntityTransition::new(checkpoint.clone());
-        for mut row in proposals.input_entities.values().cloned()
+        for mut row in proposals
+            .input_entities
+            .values()
+            .cloned()
             .map(|entity| proposals.project_entity(entity))
         {
             let is_new = !self.rows.contains_key(&row.path);
@@ -159,7 +161,9 @@ impl<'a> ConsolidationProgress<'a> {
                     decision: decision.clone(),
                 };
             }
-            if row.path == item && let Some(identity) = self.pending_identity.get(item) {
+            if row.path == item
+                && let Some(identity) = self.pending_identity.get(item)
+            {
                 row.progress.identity = identity.clone();
             }
             row.rederive_search();
@@ -167,7 +171,11 @@ impl<'a> ConsolidationProgress<'a> {
         }
         self.ctx.view.commit_transition(&transition).await?;
         self.rows.extend(
-            transition.rows.iter().cloned().map(|row| (row.path.clone(), row)),
+            transition
+                .rows
+                .iter()
+                .cloned()
+                .map(|row| (row.path.clone(), row)),
         );
         self.banked_classifications.remove(item);
         self.pending_identity.remove(item);
@@ -192,37 +200,54 @@ impl<'a> ConsolidationProgress<'a> {
             ConsolidationStageState::Resolve(state) => (WorkStage::Resolve, state),
             ConsolidationStageState::Reconcile(state) => (WorkStage::Reconcile, state),
             ConsolidationStageState::Assemble(state) => (WorkStage::Assemble, state),
-            other => return Err(AppError::Internal(format!(
-                "consolidation work: the record is on `{}`",
-                other.label()
-            ))),
+            other => {
+                return Err(AppError::Internal(format!(
+                    "consolidation work: the record is on `{}`",
+                    other.label()
+                )));
+            }
         };
-        let rows: BTreeMap<_, _> = ctx.view.rows().await?.into_iter()
+        let rows: BTreeMap<_, _> = ctx
+            .view
+            .rows()
+            .await?
+            .into_iter()
             .map(|row| (row.path.clone(), row))
             .collect();
-                for row in rows.values() {
-                    state.revision = state.revision.max(row.checkpoint_revision);
+        for row in rows.values() {
+            state.revision = state.revision.max(row.checkpoint_revision);
+        }
+        let redirects = rows
+            .values()
+            .filter_map(|row| match &row.progress.identity {
+                IdentityProgress::Coalesced { canonical_path, .. } => {
+                    Some((row.path.clone(), canonical_path.clone()))
                 }
-                let redirects = rows.values().filter_map(|row| match &row.progress.identity {
-                    IdentityProgress::Coalesced { canonical_path, .. } => {
-                        Some((row.path.clone(), canonical_path.clone()))
-                    }
-                    IdentityProgress::Pending
-                    | IdentityProgress::Distinct { .. }
-                    | IdentityProgress::Unresolved { .. } => None,
-                }).collect();
-                let reconciliations = rows.values().filter_map(|row| {
-                    let ReconciliationProgress::Accepted { promotions, retractions } =
-                        &row.progress.reconciliation
-                    else {
-                        return None;
-                    };
-                    let promotions = serde_json::from_value(promotions.clone()).ok()?;
-                    Some((row.path.clone(), AcceptedReconciliation {
+                IdentityProgress::Pending
+                | IdentityProgress::Distinct { .. }
+                | IdentityProgress::Unresolved { .. } => None,
+            })
+            .collect();
+        let reconciliations = rows
+            .values()
+            .filter_map(|row| {
+                let ReconciliationProgress::Accepted {
+                    promotions,
+                    retractions,
+                } = &row.progress.reconciliation
+                else {
+                    return None;
+                };
+                let promotions = serde_json::from_value(promotions.clone()).ok()?;
+                Some((
+                    row.path.clone(),
+                    AcceptedReconciliation {
                         promotions,
                         retractions: retractions.clone(),
-                    }))
-                }).collect();
+                    },
+                ))
+            })
+            .collect();
         Ok(Self {
             ctx,
             state,
@@ -238,10 +263,14 @@ impl<'a> ConsolidationProgress<'a> {
 
     /// The classification banked for an entity, if one was and it still parses.
     pub(super) fn classification(&self, path: &str) -> Option<Classification> {
-        let decision = self.rows.get(path).and_then(|row| match &row.progress.classification {
-            ClassificationProgress::Accepted { decision, .. } => Some(decision),
-            ClassificationProgress::Pending | ClassificationProgress::Discarded { .. } => None,
-        }).or_else(|| self.banked_classifications.get(path))?;
+        let decision = self
+            .rows
+            .get(path)
+            .and_then(|row| match &row.progress.classification {
+                ClassificationProgress::Accepted { decision, .. } => Some(decision),
+                ClassificationProgress::Pending | ClassificationProgress::Discarded { .. } => None,
+            })
+            .or_else(|| self.banked_classifications.get(path))?;
         serde_json::from_value(decision.clone()).ok()
     }
 
@@ -259,11 +288,16 @@ impl<'a> ConsolidationProgress<'a> {
 
     pub(super) async fn discard_classification(&mut self, path: &str) -> Result<(), AppError> {
         self.banked_classifications.remove(path);
-        let mut row = self.rows.get(path).cloned()
+        let mut row = self
+            .rows
+            .get(path)
+            .cloned()
             .or(self.ctx.view.entity_by_path(path).await?)
-            .ok_or_else(|| AppError::Internal(format!(
-                "consolidation: classification row `{path}` disappeared"
-        )))?;
+            .ok_or_else(|| {
+                AppError::Internal(format!(
+                    "consolidation: classification row `{path}` disappeared"
+                ))
+            })?;
         row.progress.classification = ClassificationProgress::Pending;
         self.commit_row_progress(path, row).await
     }
@@ -282,7 +316,10 @@ impl<'a> ConsolidationProgress<'a> {
     }
 
     pub(super) fn entity_search(&self, query: &str) -> Option<&str> {
-        let cached = self.state.entity_search_cache.get(&query.trim().to_lowercase())?;
+        let cached = self
+            .state
+            .entity_search_cache
+            .get(&query.trim().to_lowercase())?;
         (cached.get("revision")?.as_u64()? == self.state.revision)
             .then(|| cached.get("result")?.as_str())
             .flatten()
@@ -303,11 +340,16 @@ impl<'a> ConsolidationProgress<'a> {
         path: &str,
         diagnostic: serde_json::Value,
     ) -> Result<(), AppError> {
-        let mut row = self.rows.get(path).cloned()
+        let mut row = self
+            .rows
+            .get(path)
+            .cloned()
             .or(self.ctx.view.entity_by_path(path).await?)
-            .ok_or_else(|| AppError::Internal(format!(
-                "consolidation: diagnostic row `{path}` disappeared"
-        )))?;
+            .ok_or_else(|| {
+                AppError::Internal(format!(
+                    "consolidation: diagnostic row `{path}` disappeared"
+                ))
+            })?;
         row.progress.classification_diagnostic = Some(diagnostic);
         self.commit_row_progress(path, row).await
     }
@@ -328,17 +370,19 @@ impl<'a> ConsolidationProgress<'a> {
         Ok(())
     }
 
-    pub(super) async fn discard(
-        &mut self,
-        path: &str,
-        reason: &str,
-    ) -> Result<(), AppError> {
+    pub(super) async fn discard(&mut self, path: &str, reason: &str) -> Result<(), AppError> {
         self.state.revision += 1;
-        let mut row = self.ctx.view.working_entity(path).await?
+        let mut row = self
+            .ctx
+            .view
+            .working_entity(path)
+            .await?
             .or(self.ctx.view.entity_by_path(path).await?)
-            .ok_or_else(|| AppError::Internal(format!(
-                "consolidation: discarded entity `{path}` is absent from the entity view"
-            )))?;
+            .ok_or_else(|| {
+                AppError::Internal(format!(
+                    "consolidation: discarded entity `{path}` is absent from the entity view"
+                ))
+            })?;
         row.mark_discarded(reason);
         row.checkpoint_revision = self.state.revision;
         let mut checkpoint = self.ctx.record().await;
@@ -346,27 +390,33 @@ impl<'a> ConsolidationProgress<'a> {
         checkpoint.updated_at = chrono::Utc::now();
         let transition = EntityTransition::new(checkpoint.clone()).with_row(row);
         self.ctx.view.commit_transition(&transition).await?;
-        self.rows.insert(path.to_string(), transition.rows[0].clone());
+        self.rows
+            .insert(path.to_string(), transition.rows[0].clone());
         self.ctx.adopt_committed_record(checkpoint).await;
         Ok(())
     }
 
     pub(super) fn is_resolved(&self, path: &str) -> bool {
-        self.rows.get(path).is_some_and(|row| {
-            !matches!(row.progress.identity, IdentityProgress::Pending)
-        })
+        self.rows
+            .get(path)
+            .is_some_and(|row| !matches!(row.progress.identity, IdentityProgress::Pending))
     }
 
     pub(super) fn resolution_fingerprint(&self, path: &str) -> Option<&str> {
-        self.rows.get(path).and_then(|row| match &row.progress.identity {
-            IdentityProgress::Distinct { fingerprint, .. }
-            | IdentityProgress::Unresolved { fingerprint, .. } => Some(fingerprint.as_str()),
-            IdentityProgress::Pending | IdentityProgress::Coalesced { .. } => None,
-        })
+        self.rows
+            .get(path)
+            .and_then(|row| match &row.progress.identity {
+                IdentityProgress::Distinct { fingerprint, .. }
+                | IdentityProgress::Unresolved { fingerprint, .. } => Some(fingerprint.as_str()),
+                IdentityProgress::Pending | IdentityProgress::Coalesced { .. } => None,
+            })
     }
 
     pub(super) fn resolution_pair_fingerprint(&self, pair: &str) -> Option<&str> {
-        self.state.resolution_pair_fingerprints.get(pair).map(String::as_str)
+        self.state
+            .resolution_pair_fingerprints
+            .get(pair)
+            .map(String::as_str)
     }
 
     pub(super) fn remember_resolution_pairs(
@@ -392,11 +442,15 @@ impl<'a> ConsolidationProgress<'a> {
         evidence: serde_json::Value,
         proposals: &ProposalSet,
     ) -> Result<(), AppError> {
-        self.pending_identity.insert(path.to_string(), IdentityProgress::Distinct {
-            fingerprint,
-            evidence,
-        });
-        self.checkpoint_transition("resolve-distinct", path, proposals).await
+        self.pending_identity.insert(
+            path.to_string(),
+            IdentityProgress::Distinct {
+                fingerprint,
+                evidence,
+            },
+        );
+        self.checkpoint_transition("resolve-distinct", path, proposals)
+            .await
     }
 
     pub(super) async fn commit_resolution_unresolved(
@@ -406,19 +460,20 @@ impl<'a> ConsolidationProgress<'a> {
         diagnostic: serde_json::Value,
         proposals: &ProposalSet,
     ) -> Result<(), AppError> {
-        self.pending_identity.insert(path.to_string(), IdentityProgress::Unresolved {
-            fingerprint,
-            diagnostic,
-        });
-        self.checkpoint_transition("resolve-unresolved", path, proposals).await
+        self.pending_identity.insert(
+            path.to_string(),
+            IdentityProgress::Unresolved {
+                fingerprint,
+                diagnostic,
+            },
+        );
+        self.checkpoint_transition("resolve-unresolved", path, proposals)
+            .await
     }
 
-    pub(super) fn remember_resolution_evidence(
-        &mut self,
-        path: &str,
-        evidence: serde_json::Value,
-    ) {
-        self.pending_resolution_evidence.insert(path.to_string(), evidence);
+    pub(super) fn remember_resolution_evidence(&mut self, path: &str, evidence: serde_json::Value) {
+        self.pending_resolution_evidence
+            .insert(path.to_string(), evidence);
     }
 
     pub(super) async fn commit_resolved_merge(
@@ -435,7 +490,8 @@ impl<'a> ConsolidationProgress<'a> {
                 *target = canonical_path.clone();
             }
         }
-        self.redirects.insert(path.to_string(), canonical_path.clone());
+        self.redirects
+            .insert(path.to_string(), canonical_path.clone());
         self.state.revision += 1;
         let working = proposals.trace_value();
 
@@ -447,21 +503,35 @@ impl<'a> ConsolidationProgress<'a> {
         canonical.progress.reconciliation = ReconciliationProgress::Pending;
         canonical.checkpoint_revision = self.state.revision;
         canonical.rederive_search();
-        let mut losing = self.rows.get(path).cloned()
+        let mut losing = self
+            .rows
+            .get(path)
+            .cloned()
             .or(self.ctx.view.working_entity(path).await?)
             .or(self.ctx.view.entity_by_path(path).await?)
-            .ok_or_else(|| AppError::Internal(format!(
-                "consolidation: resolved losing entity `{path}` is absent from working state"
-            )))?;
+            .ok_or_else(|| {
+                AppError::Internal(format!(
+                    "consolidation: resolved losing entity `{path}` is absent from working state"
+                ))
+            })?;
         let evidence = self.pending_resolution_evidence.remove(path);
         losing.mark_coalesced_with_evidence(&canonical_path, evidence);
         losing.checkpoint_revision = self.state.revision;
 
         let mut checkpoint = self.ctx.record().await;
         checkpoint.state = self.checkpoint_state();
-        self.ctx.repo.commit_entity_identity_merge(&canonical, &losing, &checkpoint).await?;
-        self.rows = self.ctx.view.rows().await?.into_iter()
-            .map(|row| (row.path.clone(), row)).collect();
+        self.ctx
+            .repo
+            .commit_entity_identity_merge(&canonical, &losing, &checkpoint)
+            .await?;
+        self.rows = self
+            .ctx
+            .view
+            .rows()
+            .await?
+            .into_iter()
+            .map(|row| (row.path.clone(), row))
+            .collect();
         self.ctx.adopt_committed_record(checkpoint).await;
         crate::inference::trace::record_stage_state(
             "consolidation-stage-state",
@@ -483,7 +553,9 @@ impl<'a> ConsolidationProgress<'a> {
         let mut current = path;
         let mut seen = std::collections::HashSet::new();
         while seen.insert(current) {
-            let Some(next) = self.redirects.get(current) else { break; };
+            let Some(next) = self.redirects.get(current) else {
+                break;
+            };
             current = next;
         }
         current.to_string()
@@ -500,23 +572,26 @@ impl<'a> ConsolidationProgress<'a> {
     ) -> Result<(), AppError> {
         for decision in &a.decisions {
             if let Ok(value) = serde_json::to_value(decision) {
-                self.state.adjudicated_terms.insert(decision.term.clone(), value);
+                self.state
+                    .adjudicated_terms
+                    .insert(decision.term.clone(), value);
             }
         }
-        let decisions = self.state.adjudicated_terms.values().filter_map(|value| {
-            serde_json::from_value(value.clone()).ok()
-        }).collect();
+        let decisions = self
+            .state
+            .adjudicated_terms
+            .values()
+            .filter_map(|value| serde_json::from_value(value.clone()).ok())
+            .collect();
         self.state.adjudicated = serde_json::to_value(AdjudicationResult {
             decisions,
             amendment_nominations: a.amendment_nominations.clone(),
-        }).ok();
+        })
+        .ok();
         self.persist().await
     }
 
-    pub(super) fn reconciliation(
-        &self,
-        path: &str,
-    ) -> Option<&AcceptedReconciliation> {
+    pub(super) fn reconciliation(&self, path: &str) -> Option<&AcceptedReconciliation> {
         self.reconciliations.get(path)
     }
 
@@ -558,7 +633,10 @@ impl<'a> ConsolidationProgress<'a> {
             };
             entity.checkpoint_revision = next_state.revision;
         }
-        self.ctx.repo.commit_reconciliation(&write, &checkpoint).await?;
+        self.ctx
+            .repo
+            .commit_reconciliation(&write, &checkpoint)
+            .await?;
 
         self.state = next_state;
         if let Some(entity) = write.entity {

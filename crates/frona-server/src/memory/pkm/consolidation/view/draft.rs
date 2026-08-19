@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::core::error::AppError;
-use crate::memory::pkm::model::{
-    ConsolidationEntityLifecycle, KnowledgeConsolidationEntity,
-};
+use crate::memory::pkm::model::{ConsolidationEntityLifecycle, KnowledgeConsolidationEntity};
 
 pub(super) enum DraftEntityLookup {
     Found(Box<KnowledgeConsolidationEntity>),
@@ -17,11 +15,12 @@ pub(crate) struct EntityDraft {
 }
 
 impl EntityDraft {
-    pub(crate) fn from_rows(
-        rows: impl IntoIterator<Item = KnowledgeConsolidationEntity>,
-    ) -> Self {
+    pub(crate) fn from_rows(rows: impl IntoIterator<Item = KnowledgeConsolidationEntity>) -> Self {
         Self {
-            rows: rows.into_iter().map(|row| (row.path.clone(), row)).collect(),
+            rows: rows
+                .into_iter()
+                .map(|row| (row.path.clone(), row))
+                .collect(),
         }
     }
 
@@ -29,10 +28,7 @@ impl EntityDraft {
         self.rows.values()
     }
 
-    pub(super) fn resolve(
-        &self,
-        path: &str,
-    ) -> Result<DraftEntityLookup, AppError> {
+    pub(super) fn resolve(&self, path: &str) -> Result<DraftEntityLookup, AppError> {
         let mut current_path = path;
         let mut visited = HashSet::new();
         loop {
@@ -56,8 +52,7 @@ impl EntityDraft {
                 ConsolidationEntityLifecycle::Discarded => {
                     return Ok(DraftEntityLookup::Missing);
                 }
-                ConsolidationEntityLifecycle::Pending
-                | ConsolidationEntityLifecycle::Active => {
+                ConsolidationEntityLifecycle::Pending | ConsolidationEntityLifecycle::Active => {
                     return Ok(DraftEntityLookup::Found(Box::new(row.clone())));
                 }
             }

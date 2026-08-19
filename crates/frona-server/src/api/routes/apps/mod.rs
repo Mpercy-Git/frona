@@ -24,13 +24,22 @@ pub fn router() -> Router<AppState> {
 }
 
 /// 400 for malformed handles, 404 for missing or cross-user.
-async fn resolve_user_app(state: &AppState, auth: &AuthUser, handle: &str) -> Result<App, ApiError> {
+async fn resolve_user_app(
+    state: &AppState,
+    auth: &AuthUser,
+    handle: &str,
+) -> Result<App, ApiError> {
     let handle = crate::core::Handle::try_new(handle)?;
     let app = state
         .app_service
         .find_by_user_handle(&auth.user_id, &handle)
         .await?
-        .ok_or_else(|| ApiError(AppError::NotFound(format!("App '{}' not found", handle.as_str()))))?;
+        .ok_or_else(|| {
+            ApiError(AppError::NotFound(format!(
+                "App '{}' not found",
+                handle.as_str()
+            )))
+        })?;
     Ok(app)
 }
 
@@ -67,7 +76,10 @@ async fn stop_app(
     Path(handle): Path<String>,
 ) -> Result<Json<AppResponse>, ApiError> {
     let app = resolve_user_app(&state, &auth, &handle).await?;
-    let resp = state.app_service.stop(&app.agent_id, &app.id, &app.chat_id).await?;
+    let resp = state
+        .app_service
+        .stop(&app.agent_id, &app.id, &app.chat_id)
+        .await?;
     Ok(Json(resp))
 }
 
@@ -77,7 +89,9 @@ async fn restart_app(
     Path(handle): Path<String>,
 ) -> Result<Json<AppResponse>, ApiError> {
     let app = resolve_user_app(&state, &auth, &handle).await?;
-    let resp = state.app_service.restart(&app.agent_id, &app.id, &app.chat_id).await?;
+    let resp = state
+        .app_service
+        .restart(&app.agent_id, &app.id, &app.chat_id)
+        .await?;
     Ok(Json(resp))
 }
-

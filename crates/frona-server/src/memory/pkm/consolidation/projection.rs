@@ -1,6 +1,6 @@
 use crate::core::error::AppError;
-use crate::memory::pkm::consolidation::context::ConsolidationContext;
 use crate::memory::pkm::consolidation::classify::ProposalSet;
+use crate::memory::pkm::consolidation::context::ConsolidationContext;
 use crate::memory::pkm::model::KnowledgeConsolidationEntity;
 use crate::memory::pkm::ontology::{GraphValidation, OntologyManager};
 
@@ -11,7 +11,11 @@ pub(super) async fn validate_proposal_projection(
     proposals: &ProposalSet,
 ) -> Result<GraphValidation, AppError> {
     let user_id = &ctx.scope.user_id;
-    let durable = ctx.view.list_entities().await?.into_iter()
+    let durable = ctx
+        .view
+        .list_entities()
+        .await?
+        .into_iter()
         .map(|row| row.as_knowledge_entity())
         .collect();
     let links = ctx.repo.asserted_links(user_id).await?;
@@ -22,13 +26,20 @@ pub(super) async fn validate_proposal_projection(
 }
 
 pub(super) fn projection_rejection_details(validation: &GraphValidation) -> String {
-    validation.grouped().iter().map(|group| format!(
-        "- [{}] affected={} axioms={:?} examples={}",
-        group.rule,
-        group.affected_count,
-        group.causal_axioms,
-        serde_json::to_string(&group.examples).unwrap_or_default(),
-    )).collect::<Vec<_>>().join("\n")
+    validation
+        .grouped()
+        .iter()
+        .map(|group| {
+            format!(
+                "- [{}] affected={} axioms={:?} examples={}",
+                group.rule,
+                group.affected_count,
+                group.causal_axioms,
+                serde_json::to_string(&group.examples).unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(super) fn is_unbacked_shell(entity: &KnowledgeConsolidationEntity) -> bool {
@@ -44,16 +55,31 @@ mod tests {
 
     fn entity(id: &str, sources: &[&str]) -> KnowledgeConsolidationEntity {
         let committed = KnowledgeEntity {
-            id: id.into(), user_id: "user".into(), path: "things/example".into(),
+            id: id.into(),
+            user_id: "user".into(),
+            path: "things/example".into(),
             origin: crate::memory::pkm::model::EntityOrigin::Internal,
-            category: EntityCategory::Concept, kinds: Vec::new(), name: "Example".into(),
-            description: String::new(), identity_evidence: Vec::new(), attribute_sources: Vec::new(),
+            category: EntityCategory::Concept,
+            kinds: Vec::new(),
+            name: "Example".into(),
+            description: String::new(),
+            identity_evidence: Vec::new(),
+            attribute_sources: Vec::new(),
             source_memory_ids: sources.iter().map(|source| (*source).into()).collect(),
-            body: String::new(), sync_content: None, mirrored_rev: None, extracted_rev: None,
-            related_playbooks: Vec::new(), search_text: String::new(),
-            search_names: Vec::new(), search_name_tokens: Vec::new(), search_assertions: Vec::new(),
-            attributes: serde_json::json!({}), use_count: 0, aliases: Default::default(),
-            rev: None, updated_at: chrono::Utc::now(),
+            body: String::new(),
+            sync_content: None,
+            mirrored_rev: None,
+            extracted_rev: None,
+            related_playbooks: Vec::new(),
+            search_text: String::new(),
+            search_names: Vec::new(),
+            search_name_tokens: Vec::new(),
+            search_assertions: Vec::new(),
+            attributes: serde_json::json!({}),
+            use_count: 0,
+            aliases: Default::default(),
+            rev: None,
+            updated_at: chrono::Utc::now(),
             rendered_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
         };
         let mut entity = KnowledgeConsolidationEntity::from_committed("run", committed);
@@ -84,12 +110,17 @@ mod tests {
     #[test]
     fn promoted_relation_makes_a_shell_a_referenced_target() {
         let mut proposals = ProposalSet::default();
-        proposals.by_path.insert("people/sarah".into(), EntityProposal {
-            promoted: vec![(
-                "employer".into(), "schema:worksFor".into(), "organizations/acme".into(),
-            )],
-            ..EntityProposal::default()
-        });
+        proposals.by_path.insert(
+            "people/sarah".into(),
+            EntityProposal {
+                promoted: vec![(
+                    "employer".into(),
+                    "schema:worksFor".into(),
+                    "organizations/acme".into(),
+                )],
+                ..EntityProposal::default()
+            },
+        );
 
         let targets = proposals.referenced_targets();
         assert!(targets.contains("organizations/acme"));
@@ -99,10 +130,13 @@ mod tests {
     #[test]
     fn projected_graph_removes_only_the_explicitly_retracted_relation() {
         let mut proposals = ProposalSet::default();
-        proposals.by_path.insert("things/example".into(), EntityProposal {
-            retracted: vec![("schema:memberOf".into(), "organizations/old".into())],
-            ..EntityProposal::default()
-        });
+        proposals.by_path.insert(
+            "things/example".into(),
+            EntityProposal {
+                retracted: vec![("schema:memberOf".into(), "organizations/old".into())],
+                ..EntityProposal::default()
+            },
+        );
         let links = vec![
             link("schema:memberOf", "organizations/old"),
             link("schema:memberOf", "organizations/current"),
@@ -116,12 +150,10 @@ mod tests {
         );
 
         assert!(!projected_links.iter().any(|link| {
-            link.relation == "schema:memberOf"
-                && link.to_entity_path == "organizations/old"
+            link.relation == "schema:memberOf" && link.to_entity_path == "organizations/old"
         }));
         assert!(projected_links.iter().any(|link| {
-            link.relation == "schema:memberOf"
-                && link.to_entity_path == "organizations/current"
+            link.relation == "schema:memberOf" && link.to_entity_path == "organizations/current"
         }));
         assert!(projected_links.iter().any(|link| {
             link.relation == "schema:knows" && link.to_entity_path == "people/friend"
@@ -131,10 +163,13 @@ mod tests {
     #[test]
     fn reconcile_minted_attribute_enters_the_tbox_proposal_layer() {
         let mut proposals = ProposalSet::default();
-        proposals.record("people/me", EntityProposal {
-            classes: vec!["schema:Person".into()],
-            ..EntityProposal::default()
-        });
+        proposals.record(
+            "people/me",
+            EntityProposal {
+                classes: vec!["schema:Person".into()],
+                ..EntityProposal::default()
+            },
+        );
         let px = crate::memory::pkm::ontology::PrefixMap::standard();
 
         proposals.add_reconcile_attributes(

@@ -1,6 +1,7 @@
 use rig_core::completion::Message as RigMessage;
 pub use tokio_util::sync::CancellationToken;
 
+use crate::agent::harness::Harness;
 use crate::agent::skill::resolver::Skill;
 use crate::chat::broadcast::EventSender;
 use crate::chat::command::render::render_skill;
@@ -8,12 +9,13 @@ use crate::chat::message::models::{Message, MessageCommand, MessageRole};
 use crate::chat::models::Chat;
 use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
-use crate::agent::harness::Harness;
-use crate::inference::config::ModelGroup;
-use crate::inference::conversation::{ConversationBuilder, ConversationContext, resolve_attachment_path};
 use crate::inference::ModelProviderRegistry;
-use crate::tool::registry::AgentToolRegistry;
+use crate::inference::config::ModelGroup;
+use crate::inference::conversation::{
+    ConversationBuilder, ConversationContext, resolve_attachment_path,
+};
 use crate::tool::InferenceContext;
+use crate::tool::registry::AgentToolRegistry;
 
 pub struct ChatSessionContext {
     pub chat: Chat,
@@ -35,9 +37,10 @@ impl ChatSessionContext {
         cancel_token: CancellationToken,
         builder: Box<dyn ConversationBuilder>,
     ) -> Result<Self, AppError> {
-        let event_sender: EventSender = harness
-            .broadcast_service
-            .create_event_sender(user_id, &chat.id, chat.space_id.clone());
+        let event_sender: EventSender =
+            harness
+                .broadcast_service
+                .create_event_sender(user_id, &chat.id, chat.space_id.clone());
         let agent_config = harness
             .chat_service
             .resolve_agent_config(&chat.agent_id)
@@ -63,17 +66,23 @@ impl ChatSessionContext {
         // Load task early so `build_agent_registry` can register
         // task-domain tools in the same pass.
         let task = if let Some(ref task_id) = chat.task_id {
-            harness.task_service.find_by_id(task_id).await.ok().flatten()
+            harness
+                .task_service
+                .find_by_id(task_id)
+                .await
+                .ok()
+                .flatten()
         } else {
             None
         };
-        let task_in_progress = task.as_ref().is_some_and(|t|
+        let task_in_progress = task.as_ref().is_some_and(|t| {
             !matches!(t.kind, crate::agent::task::models::TaskKind::Cron { .. })
-            && matches!(t.status,
-                crate::agent::task::models::TaskStatus::Pending
-                | crate::agent::task::models::TaskStatus::InProgress
-            )
-        );
+                && matches!(
+                    t.status,
+                    crate::agent::task::models::TaskStatus::Pending
+                        | crate::agent::task::models::TaskStatus::InProgress
+                )
+        });
         let task_ctx = if task_in_progress {
             task.clone().map(|t| crate::tool::manager::TaskToolContext {
                 task: t,
@@ -106,21 +115,17 @@ impl ChatSessionContext {
         let allowed_tool_groups = tool_registry.tool_groups();
 
         let agent_summaries =
-            crate::tool::registry::build_agent_summaries(
-                harness,
-                user_id,
-                &chat.agent_id,
-            )
-            .await;
+            crate::tool::registry::build_agent_summaries(harness, user_id, &chat.agent_id).await;
 
         let mcp_servers: Vec<(String, String)> = if harness.config.mcp.bridge_mode {
-            let servers = harness.mcp_service.list_for_user(user_id).await.unwrap_or_default();
+            let servers = harness
+                .mcp_service
+                .list_for_user(user_id)
+                .await
+                .unwrap_or_default();
             let allowed_handles: std::collections::HashSet<String> = allowed_tool_groups
                 .iter()
-                .filter_map(|id| {
-                    id.strip_prefix("mcp:")
-                        .map(|handle| handle.to_string())
-                })
+                .filter_map(|id| id.strip_prefix("mcp:").map(|handle| handle.to_string()))
                 .collect();
             servers
                 .into_iter()
@@ -155,8 +160,9 @@ impl ChatSessionContext {
             .provider_registry()
             .resolve_model_group(&agent_config.model_group)?;
 
-        let max_output =
-            model_group.max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
+        let max_output = model_group
+            .max_tokens
+            .unwrap_or(model_group.inference.default_max_tokens) as usize;
         let loaded = harness
             .chat_service
             .compactor()
@@ -172,7 +178,8 @@ impl ChatSessionContext {
             .conversation;
         let conversation_summary = loaded.summary;
         let stored_messages = loaded.messages;
-        let tool_calls = harness.chat_service
+        let tool_calls = harness
+            .chat_service
             .get_tool_calls(&chat.id)
             .await
             .unwrap_or_default();
@@ -190,17 +197,15 @@ impl ChatSessionContext {
 
         // Cron is already filtered from `task_in_progress`: TASK.md would prompt
         // complete_task → status=Completed → cron stops firing forever.
-        if task_in_progress
-            && let Some(task_prompt) = harness.prompts.read("TASK.md")
-        {
+        if task_in_progress && let Some(task_prompt) = harness.prompts.read("TASK.md") {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&task_prompt);
         }
 
         if task_in_progress {
-            tool_registry.apply_filter(
-                &crate::tool::registry::ToolFilter::DenyList(&["create_recurring_task"]),
-            );
+            tool_registry.apply_filter(&crate::tool::registry::ToolFilter::DenyList(&[
+                "create_recurring_task",
+            ]));
         }
 
         for te in &tool_calls {
@@ -218,17 +223,25 @@ impl ChatSessionContext {
         };
 
         if let Some(ref task) = task {
-            let tz: chrono_tz::Tz = resolved_tz
-                .parse()
-                .unwrap_or(chrono_tz::UTC);
+            let tz: chrono_tz::Tz = resolved_tz.parse().unwrap_or(chrono_tz::UTC);
             let fmt = "%Y-%m-%d %H:%M:%S %Z";
-            let mut items = vec![
-                ("created_at".into(), task.created_at.with_timezone(&tz).format(fmt).to_string()),
-            ];
+            let mut items = vec![(
+                "created_at".into(),
+                task.created_at.with_timezone(&tz).format(fmt).to_string(),
+            )];
             if let Some(run_at) = task.run_at {
-                items.push(("scheduled_at".into(), run_at.with_timezone(&tz).format(fmt).to_string()));
+                items.push((
+                    "scheduled_at".into(),
+                    run_at.with_timezone(&tz).format(fmt).to_string(),
+                ));
             }
-            items.push(("now".into(), chrono::Utc::now().with_timezone(&tz).format(fmt).to_string()));
+            items.push((
+                "now".into(),
+                chrono::Utc::now()
+                    .with_timezone(&tz)
+                    .format(fmt)
+                    .to_string(),
+            ));
             crate::agent::prompt::append_tagged_section(
                 &mut system_prompt,
                 "task_time",
@@ -238,7 +251,12 @@ impl ChatSessionContext {
         }
 
         let mut rig_history = builder
-            .build(&stored_messages, &tool_calls, &conv_ctx, conversation_summary.as_deref())
+            .build(
+                &stored_messages,
+                &tool_calls,
+                &conv_ctx,
+                conversation_summary.as_deref(),
+            )
             .await;
 
         let registry = harness.chat_service.provider_registry().clone();
@@ -246,14 +264,23 @@ impl ChatSessionContext {
         let mut file_paths = Vec::new();
         for msg in &stored_messages {
             for att in &msg.attachments {
-                let resolved = resolve_attachment_path(att, &harness.user_service, &harness.storage_service).await;
+                let resolved =
+                    resolve_attachment_path(att, &harness.user_service, &harness.storage_service)
+                        .await;
                 if !file_paths.contains(&resolved) {
                     file_paths.push(resolved);
                 }
             }
         }
 
-        let mut tool_ctx = InferenceContext::new(user, agent, chat.clone(), event_sender, harness.shutdown_token.clone(), cancel_token.clone());
+        let mut tool_ctx = InferenceContext::new(
+            user,
+            agent,
+            chat.clone(),
+            event_sender,
+            harness.shutdown_token.clone(),
+            cancel_token.clone(),
+        );
         tool_ctx.file_paths = file_paths;
         tool_ctx.task = task;
 

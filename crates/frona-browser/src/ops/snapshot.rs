@@ -20,9 +20,7 @@ impl BrowserConnection {
         let interactive_count = ax.refs.len();
         self.store_snapshot_refs(ax.refs);
 
-        let output = if incremental
-            && let Some(prev) = self.take_last_snapshot()
-        {
+        let output = if incremental && let Some(prev) = self.take_last_snapshot() {
             diff_snapshots(&prev, &rendered)
         } else {
             rendered.clone()

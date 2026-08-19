@@ -12,13 +12,13 @@ use crate::chat::message::models::MessageStatus;
 use crate::core::error::AppError;
 use crate::core::repository::new_id;
 
-use crate::memory::pkm::{KnowledgeConsolidationRecord, PendingEntityContribution};
 use crate::memory::pkm::model::{
-    Disposition, KnowledgeMemory, KnowledgeOntology, KnowledgeEntitySource, KnowledgeEntity,
-    KnowledgeEntityLink, KnowledgeShortMemory, LinkOrigin, MemoryEvidence, MemoryRelation, MemoryKind,
-    EntityCategory, EntityHit, EntityOrigin,
-    RelationType, SELF_ENTITY_PATH, PLAYBOOK_KIND_IRI, derive_search_text, derive_resolution_search,
+    Disposition, EntityCategory, EntityHit, EntityOrigin, KnowledgeEntity, KnowledgeEntityLink,
+    KnowledgeEntitySource, KnowledgeMemory, KnowledgeOntology, KnowledgeShortMemory, LinkOrigin,
+    MemoryEvidence, MemoryKind, MemoryRelation, PLAYBOOK_KIND_IRI, RelationType, SELF_ENTITY_PATH,
+    derive_resolution_search, derive_search_text,
 };
+use crate::memory::pkm::{KnowledgeConsolidationRecord, PendingEntityContribution};
 
 const SELECT: &str = "SELECT *, meta::id(id) as id";
 
@@ -57,18 +57,18 @@ mod types;
 
 pub mod consolidation;
 
-pub use consolidation::{PkmConsolidationRepo, PkmConsolidationStore};
 pub use crate::memory::pkm::model::{
     ConsolidationEntityLifecycle, ConsolidationEntityLink, KnowledgeConsolidationEntity,
 };
+pub use consolidation::{PkmConsolidationRepo, PkmConsolidationStore};
 pub use types::{
-    AttributeOps, AuthoredPageWrite, ExternalPageProgress, IngestBatch, IngestWindow, IngestCounts,
+    AttributeOps, AuthoredPageWrite, ExternalPageProgress, IngestBatch, IngestCounts, IngestWindow,
     PendingEntity, PendingEntityUpdate, PendingMemory, PlaybookResolutionWrite,
 };
 pub(crate) use types::{
-    ExternalExtractionWrite, ExtractCommit, PageEditBase, PageEditCommit, PageEditMemoryOp, PageEditWrite,
-    ReconcileCommit, ReconcileMemoryRelationWrite, ReconcileOutdatedWrite,
-    ReconcileEntityLinkSourceWrite,
+    ExternalExtractionWrite, ExtractCommit, PageEditBase, PageEditCommit, PageEditMemoryOp,
+    PageEditWrite, ReconcileCommit, ReconcileEntityLinkSourceWrite, ReconcileMemoryRelationWrite,
+    ReconcileOutdatedWrite,
 };
 
 #[derive(Clone)]
@@ -86,10 +86,9 @@ impl PkmRepo {
     fn err(ctx: &str, e: impl std::fmt::Display) -> AppError {
         AppError::Database(format!("pkm/{ctx}: {e}"))
     }
-
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 pub(crate) mod test_support;
+#[cfg(test)]
+mod tests;

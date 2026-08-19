@@ -1,29 +1,27 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tracing::warn;
 
 use crate::core::error::AppError;
 use crate::memory::pkm::consolidation::Verdict;
+use crate::memory::pkm::consolidation::candidates::{
+    RESOLUTION_PROMPT_LIMIT, Request, Search, Subject,
+};
 use crate::memory::pkm::consolidation::classify::claim_automatic_identity_discovery;
 use crate::memory::pkm::consolidation::classify::proposal::{
-    AttributeDecisions, AttributeMapping, Classification, EntityProposal, NewEntity,
-    ProposalSet, RelationMapping, accept_mints, attribute_edits, classification_edits,
-    render_value, search_terms, ATTRIBUTE_CANDIDATES, EVIDENCE_VOCAB_HITS,
+    ATTRIBUTE_CANDIDATES, AttributeDecisions, AttributeMapping, Classification,
+    EVIDENCE_VOCAB_HITS, EntityProposal, NewEntity, ProposalSet, RelationMapping, accept_mints,
+    attribute_edits, classification_edits, render_value, search_terms,
 };
 use crate::memory::pkm::consolidation::{
-    Consolidator, ConsolidationProgress, bad_term_feedback, projection_rejection_details,
+    ConsolidationProgress, Consolidator, bad_term_feedback, projection_rejection_details,
     validate_proposal_projection,
-};
-use crate::memory::pkm::consolidation::candidates::{
-    RESOLUTION_PROMPT_LIMIT, Request, Search,
-    Subject,
 };
 use crate::memory::pkm::consolidation::{PromptIds, PromptSpec, prompt_evidence};
 use crate::memory::pkm::model::{
-    EntityCategory, KnowledgeConsolidationEntity, KnowledgeEntity, KnowledgeEntityLink,
-    LinkOrigin,
+    EntityCategory, KnowledgeConsolidationEntity, KnowledgeEntity, KnowledgeEntityLink, LinkOrigin,
 };
 use crate::memory::pkm::ontology::{OntologyManager, SchemaEdit};
 use crate::tool::registry::ToolFilter;
@@ -49,8 +47,16 @@ impl Consolidator {
         initial_rejection: Option<&str>,
     ) -> Result<bool, AppError> {
         let user_id = &self.ctx.scope.user_id;
-        let mut facts = self.ctx.repo.current_memories_for_entity(user_id, &entity.path).await?;
-        let pending = self.ctx.repo.memories_by_ids(user_id, &entity.source_memory_ids).await?;
+        let mut facts = self
+            .ctx
+            .repo
+            .current_memories_for_entity(user_id, &entity.path)
+            .await?;
+        let pending = self
+            .ctx
+            .repo
+            .memories_by_ids(user_id, &entity.source_memory_ids)
+            .await?;
         for memory in pending {
             if !facts.iter().any(|held| held.id == memory.id) {
                 facts.push(memory);
@@ -61,7 +67,9 @@ impl Consolidator {
         // shares that memory instead of being a name with nothing behind it.
         let mut fact_lines = String::new();
         for memory in &facts {
-            let mut entities = self.ctx.repo
+            let mut entities = self
+                .ctx
+                .repo
                 .memory_entity_paths(user_id, &memory.id)
                 .await?;
             entities.extend(proposals.memory_paths(&memory.id));
@@ -75,22 +83,27 @@ impl Consolidator {
                 memory.content,
             ));
         }
-        let minted = ontology_manager.catalog(user_id).await.unwrap_or_default().classes.join(", ");
+        let minted = ontology_manager
+            .catalog(user_id)
+            .await
+            .unwrap_or_default()
+            .classes
+            .join(", ");
         // The entity's stated (asserted, free-text) relations, for the model to map to
         // CURIE object properties.
-        let links = self.ctx.repo.links_from_entity(user_id, &entity.path).await.unwrap_or_default();
+        let links = self
+            .ctx
+            .repo
+            .links_from_entity(user_id, &entity.path)
+            .await
+            .unwrap_or_default();
         let relation_lines: String = links
             .iter()
             .filter(|l| l.origin != LinkOrigin::Inferred)
             .map(|l| format!("- \"{}\" → {}\n", l.relation, l.to_entity_path))
             .collect();
         let (attribute_lines, evidence) = self
-            .classification_evidence(
-                ontology_manager,
-                entity,
-                &links,
-                progress,
-            )
+            .classification_evidence(ontology_manager, entity, &links, progress)
             .await;
         let evidence_text =
             serde_json::to_string_pretty(&evidence).unwrap_or_else(|_| "(unavailable)".into());
@@ -101,17 +114,25 @@ impl Consolidator {
             &entity.path,
             &evidence,
         );
-        let contribution_text = progress.entity_row(&entity.path)
-            .map(|row| serde_json::to_string_pretty(&row.contributions.iter().map(|item| {
-                serde_json::json!({
-                    "name": item.name,
-                    "description": item.description,
-                    "aliases": item.aliases,
-                    "attributes": item.attributes,
-                    "existing_only": item.existing_only,
-                    "occurrence_count": item.occurrence_count,
-                })
-            }).collect::<Vec<_>>()))
+        let contribution_text = progress
+            .entity_row(&entity.path)
+            .map(|row| {
+                serde_json::to_string_pretty(
+                    &row.contributions
+                        .iter()
+                        .map(|item| {
+                            serde_json::json!({
+                                "name": item.name,
+                                "description": item.description,
+                                "aliases": item.aliases,
+                                "attributes": item.attributes,
+                                "existing_only": item.existing_only,
+                                "occurrence_count": item.occurrence_count,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
             .transpose()
             .unwrap_or(None)
             .unwrap_or_else(|| "[]".into());
@@ -123,16 +144,35 @@ impl Consolidator {
                 ("name", entity.name.as_str()),
                 (
                     "description",
-                    if entity.description.is_empty() { "(none)" } else { &entity.description },
+                    if entity.description.is_empty() {
+                        "(none)"
+                    } else {
+                        &entity.description
+                    },
                 ),
-                ("facts", if fact_lines.is_empty() { "(none)\n" } else { &fact_lines }),
+                (
+                    "facts",
+                    if fact_lines.is_empty() {
+                        "(none)\n"
+                    } else {
+                        &fact_lines
+                    },
+                ),
                 (
                     "relations",
-                    if relation_lines.is_empty() { "(none)\n" } else { &relation_lines },
+                    if relation_lines.is_empty() {
+                        "(none)\n"
+                    } else {
+                        &relation_lines
+                    },
                 ),
                 (
                     "attributes",
-                    if attribute_lines.is_empty() { "(none)\n" } else { &attribute_lines },
+                    if attribute_lines.is_empty() {
+                        "(none)\n"
+                    } else {
+                        &attribute_lines
+                    },
                 ),
                 ("minted", &minted),
                 ("evidence", &evidence_text),
@@ -144,19 +184,21 @@ impl Consolidator {
         let overlay = self.tool_overlay(ontology_manager, proposals).await?;
         let diagnostic_store = overlay.diagnostics.clone();
         let discovery_calls = overlay.tool_calls.clone();
-        let tools = crate::memory::pkm::consolidation::tools::ontology::build_ontology_tools_with_overlay(
-            ontology_manager.clone(),
-            &self.ctx,
-            self.prefixes.clone(),
-            Some(overlay),
-            crate::memory::pkm::consolidation::tools::ontology::OntologyToolProfile::Classify,
-        );
+        let tools =
+            crate::memory::pkm::consolidation::tools::ontology::build_ontology_tools_with_overlay(
+                ontology_manager.clone(),
+                &self.ctx,
+                self.prefixes.clone(),
+                Some(overlay),
+                crate::memory::pkm::consolidation::tools::ontology::OntologyToolProfile::Classify,
+            );
         let mut input = rendered.input;
         if let Some(rejection) = initial_rejection {
             input.push_str("\n\nA previously accepted checkpoint proposal is no longer valid against the reconstructed graph. Revise it before it can be staged:\n");
             input.push_str(rejection);
         }
-        let mut convo = self.ctx
+        let mut convo = self
+            .ctx
             .llm
             .conversation::<Classification>(
                 self.ctx.scope.chat_id.as_deref(),
@@ -174,7 +216,9 @@ impl Consolidator {
         // ontology is not a partial answer, it is the wrong answer.
         let px = self.prefixes.clone();
         let catalog = ontology_manager.catalog(user_id).await.unwrap_or_default();
-        let existing: HashSet<String> = catalog.classes.into_iter()
+        let existing: HashSet<String> = catalog
+            .classes
+            .into_iter()
             .chain(catalog.object_properties)
             .chain(catalog.data_properties)
             .collect();
@@ -191,7 +235,8 @@ impl Consolidator {
         let challenged = identity_challenged.clone();
         let identity_page = entity.clone();
         let validation_prompt_ids = &prompt_ids;
-        let requires_page_shape = progress.entity_row(&entity.path)
+        let requires_page_shape = progress
+            .entity_row(&entity.path)
             .is_some_and(|row| !row.contributions.is_empty());
         let refined = convo
             .refine(self.config.pkm_consolidation_max_submissions, move |candidate: Classification| {
@@ -403,7 +448,9 @@ impl Consolidator {
                 let candidate = candidate.repaired(&px);
                 // Bank it before anything else can fail: the conversation is paid for,
                 // and a later stage dying must not make the pass buy it twice.
-                progress.bank_classification(&entity.path, &candidate).await?;
+                progress
+                    .bank_classification(&entity.path, &candidate)
+                    .await?;
                 // The "Map" half of classify - mints, relations and attributes - is shared
                 // with the resume path that replays a banked classification, so the two
                 // cannot drift apart.
@@ -423,9 +470,7 @@ impl Consolidator {
             }
             // The model exhausted its semantic revision budget. The caller records a
             // terminal candidate discard; extraction memories remain durable for Repair.
-            None => {
-                Ok(false)
-            }
+            None => Ok(false),
         }
     }
 
@@ -467,8 +512,12 @@ impl Consolidator {
                     let result = if let Some(cached) = progress.entity_search(&name) {
                         cached.to_string()
                     } else {
-                        let hits =
-                            self.ctx.view.search_entities(&name).await.unwrap_or_default();
+                        let hits = self
+                            .ctx
+                            .view
+                            .search_entities(&name)
+                            .await
+                            .unwrap_or_default();
                         let candidates: Vec<String> = hits
                             .iter()
                             .filter(|h| h.path != entity.path)
@@ -553,7 +602,9 @@ impl Consolidator {
                 continue;
             }
             if px.expand(to).starts_with("urn:frona:") {
-                edits.push(SchemaEdit::DeclareObjectProperty { property: to.to_string() });
+                edits.push(SchemaEdit::DeclareObjectProperty {
+                    property: to.to_string(),
+                });
             }
             rekeys.push((from.to_string(), to.to_string()));
         }
@@ -587,20 +638,22 @@ impl Consolidator {
         let mut edits = classification_edits(c);
         // Mints first: the attribute half needs their paths to accept the targets naming
         // them, and an entity minted here is findable by the entities classified after it.
-        let fresh =
-            self.mint_entities(entity, &c.new_entities, proposals).await;
+        let fresh = self.mint_entities(entity, &c.new_entities, proposals).await;
         minted.extend(fresh.iter().cloned());
         let staged_targets: Vec<String> = proposals.staged_entities.keys().cloned().collect();
-        let (rel_edits, rekeys) = self.relation_proposals(ontology_manager, &c.relations).await;
+        let (rel_edits, rekeys) = self
+            .relation_proposals(ontology_manager, &c.relations)
+            .await;
         edits.extend(rel_edits);
-        let (attr_edits, attr_rekeys, promoted) =
-            self.attribute_proposals(
+        let (attr_edits, attr_rekeys, promoted) = self
+            .attribute_proposals(
                 ontology_manager,
                 entity,
                 &c.attributes,
                 &fresh,
                 &staged_targets,
-            ).await;
+            )
+            .await;
         tracing::debug!(
             entity = %entity.path,
             submitted_attributes = ?c.attributes,
@@ -627,7 +680,9 @@ impl Consolidator {
         );
         proposals.record_declarations(&c.declarations);
         if !c.entity.name.trim().is_empty() {
-            proposals.entity_shapes.insert(entity.path.clone(), c.entity.clone());
+            proposals
+                .entity_shapes
+                .insert(entity.path.clone(), c.entity.clone());
         }
         true
     }
@@ -703,7 +758,10 @@ impl Consolidator {
             let aliases = HashSet::new();
             let (search_names, search_name_tokens, search_assertions) =
                 crate::memory::pkm::model::derive_resolution_search(
-                    &mint.name, &aliases, &serde_json::json!({}), std::iter::empty(),
+                    &mint.name,
+                    &aliases,
+                    &serde_json::json!({}),
+                    std::iter::empty(),
                 );
             let committed_shape = KnowledgeEntity {
                 id: String::new(),
@@ -716,17 +774,25 @@ impl Consolidator {
                 description: mint.description.clone(),
                 identity_evidence: Vec::new(),
                 attribute_sources: Vec::new(),
-                source_memory_ids: mint.from_facts.iter()
-                    .filter(|id| shown.contains(*id)).cloned().collect(),
+                source_memory_ids: mint
+                    .from_facts
+                    .iter()
+                    .filter(|id| shown.contains(*id))
+                    .cloned()
+                    .collect(),
                 body: String::new(),
                 sync_content: None,
                 mirrored_rev: None,
                 extracted_rev: None,
                 related_playbooks: Vec::new(),
                 search_text: crate::memory::pkm::model::derive_search_text(
-                    &mint.name, &mint.description, &aliases,
+                    &mint.name,
+                    &mint.description,
+                    &aliases,
                 ),
-                search_names, search_name_tokens, search_assertions,
+                search_names,
+                search_name_tokens,
+                search_assertions,
                 attributes: serde_json::json!({}),
                 use_count: 0,
                 aliases,
@@ -735,7 +801,8 @@ impl Consolidator {
                 rendered_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
             };
             let mut staged = KnowledgeConsolidationEntity::from_committed(
-                self.ctx.view.consolidation_id(), committed_shape,
+                self.ctx.view.consolidation_id(),
+                committed_shape,
             );
             staged.entity_id = None;
             proposals.stage_entity(staged);
@@ -787,8 +854,13 @@ impl Consolidator {
         let Ok(effective_ontology) = ontology_manager.user_effective_ontology(user_id).await else {
             return (Vec::new(), Vec::new(), Vec::new());
         };
-        let held: HashSet<&str> =
-            entity.attributes.as_object().into_iter().flatten().map(|(k, _)| k.as_str()).collect();
+        let held: HashSet<&str> = entity
+            .attributes
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, _)| k.as_str())
+            .collect();
         // Which targets are real. `knowledge_entity_link` stores `to_entity_path` as a plain string
         // and the commit never checks it, so a path the model invented would be written as
         // an edge to nothing and nothing downstream would notice. The prompt asks for a
@@ -806,6 +878,12 @@ impl Consolidator {
                 known.insert(t.to_string());
             }
         }
-        attribute_edits(mappings, &entity.path, &held, &known, effective_ontology.prefixes())
+        attribute_edits(
+            mappings,
+            &entity.path,
+            &held,
+            &known,
+            effective_ontology.prefixes(),
+        )
     }
 }

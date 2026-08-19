@@ -5,13 +5,12 @@ use std::sync::Arc;
 use frona::core::error::AppError;
 use frona::inference::error::InferenceError;
 use frona::inference::text_inference;
-use frona::inference::tool_loop::{run_tool_loop, ToolLoopOutcome};
+use frona::inference::tool_loop::{ToolLoopOutcome, run_tool_loop};
 use frona::tool::registry::AgentToolRegistry;
 use helpers::*;
 use rig_core::completion::Message as RigMessage;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-
 
 #[tokio::test]
 async fn test_tool_loop_simple_text_response() {
@@ -56,7 +55,9 @@ async fn test_tool_loop_simple_text_response() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let frames = drain_sse_frames(&mut sse_rx).await;
-    let saw_text = frames.iter().any(|f| f.event == "token" && f.data["content"] == "Hello!");
+    let saw_text = frames
+        .iter()
+        .any(|f| f.event == "token" && f.data["content"] == "Hello!");
     assert!(saw_text, "Should emit token event with 'Hello!'");
     assert_eq!(provider.calls(), 1);
 }
@@ -114,8 +115,12 @@ async fn test_tool_loop_single_tool_call() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let frames = drain_sse_frames(&mut sse_rx).await;
-    let saw_tool_call = frames.iter().any(|f| f.event == "tool_call" && f.data["name"] == "search");
-    let saw_tool_result = frames.iter().any(|f| f.event == "tool_result" && f.data["name"] == "search" && f.data["success"] == true);
+    let saw_tool_call = frames
+        .iter()
+        .any(|f| f.event == "tool_call" && f.data["name"] == "search");
+    let saw_tool_result = frames.iter().any(|f| {
+        f.event == "tool_result" && f.data["name"] == "search" && f.data["success"] == true
+    });
     assert!(saw_tool_call, "Should emit tool_call event");
     assert!(saw_tool_result, "Should emit tool_result event");
 }
@@ -259,10 +264,7 @@ async fn test_tool_loop_mixed_internal_external() {
     .unwrap();
 
     match outcome {
-        ToolLoopOutcome::ExternalToolPending {
-            tool_calls,
-            ..
-        } => {
+        ToolLoopOutcome::ExternalToolPending { tool_calls, .. } => {
             assert_eq!(tool_calls.len(), 1);
             assert_eq!(tool_calls[0].name, "external");
         }
@@ -547,11 +549,12 @@ async fn test_tool_loop_tool_call_failure() {
 
     let frames = drain_sse_frames(&mut sse_rx).await;
     let saw_error_result = frames.iter().any(|f| {
-        f.event == "tool_result"
-            && f.data["name"] == "bad_tool"
-            && f.data["success"] == false
+        f.event == "tool_result" && f.data["name"] == "bad_tool" && f.data["success"] == false
     });
-    assert!(saw_error_result, "Should emit tool_result event for bad_tool with success=false");
+    assert!(
+        saw_error_result,
+        "Should emit tool_result event for bad_tool with success=false"
+    );
 }
 
 #[tokio::test]
@@ -593,7 +596,6 @@ async fn test_tool_loop_provider_error() {
         other => panic!("Expected AppError::Inference, got {other:?}"),
     }
 }
-
 
 #[tokio::test]
 async fn test_fallback_main_succeeds() {
@@ -844,7 +846,6 @@ async fn test_fallback_multiple_fallbacks_order() {
     assert_eq!(result, "fb2 ok");
 }
 
-
 /// A mock provider that sends tokens one-by-one with a delay between each,
 /// simulating realistic LLM streaming behavior.
 struct StreamingMockProvider {
@@ -891,7 +892,9 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
         let mut full_text = String::new();
         for token in &self.tokens {
             full_text.push_str(token);
-            let _ = token_tx.send(frona::inference::provider::StreamToken::Text(token.clone())).await;
+            let _ = token_tx
+                .send(frona::inference::provider::StreamToken::Text(token.clone()))
+                .await;
             tokio::time::sleep(self.delay_between).await;
         }
         Ok(frona::inference::provider::InferenceOutput::new(
@@ -918,8 +921,26 @@ async fn test_streaming_tokens_arrive_individually() {
     init_metrics();
 
     let tokens: Vec<&str> = vec![
-        "Hello", " ", "world", ",", " ", "this", " ", "is", " ", "a",
-        " ", "streaming", " ", "test", " ", "with", " ", "many", " ", "tokens",
+        "Hello",
+        " ",
+        "world",
+        ",",
+        " ",
+        "this",
+        " ",
+        "is",
+        " ",
+        "a",
+        " ",
+        "streaming",
+        " ",
+        "test",
+        " ",
+        "with",
+        " ",
+        "many",
+        " ",
+        "tokens",
     ];
     let provider = Arc::new(StreamingMockProvider::new(
         tokens.clone(),
@@ -946,7 +967,7 @@ async fn test_streaming_tokens_arrive_individually() {
             &ctx,
             &metrics,
             &chat_service,
-                "test-msg",
+            "test-msg",
         )
         .await
     });
@@ -1013,7 +1034,6 @@ async fn test_streaming_tokens_arrive_individually() {
     );
 }
 
-
 #[tokio::test]
 async fn test_tool_loop_reasoning_in_completed_outcome() {
     init_metrics();
@@ -1050,7 +1070,9 @@ async fn test_tool_loop_reasoning_in_completed_outcome() {
     .unwrap();
 
     match outcome {
-        ToolLoopOutcome::Completed { text, reasoning, .. } => {
+        ToolLoopOutcome::Completed {
+            text, reasoning, ..
+        } => {
             assert!(text.contains("The answer is 42."));
             let r = reasoning.expect("reasoning should be present");
             assert_eq!(r.content, "Let me think step by step...");
@@ -1061,9 +1083,9 @@ async fn test_tool_loop_reasoning_in_completed_outcome() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let frames = drain_sse_frames(&mut sse_rx).await;
 
-    let saw_reasoning = frames.iter().any(|f| {
-        f.event == "reasoning" && f.data["content"] == "Let me think step by step..."
-    });
+    let saw_reasoning = frames
+        .iter()
+        .any(|f| f.event == "reasoning" && f.data["content"] == "Let me think step by step...");
     assert!(saw_reasoning, "Should emit reasoning SSE event");
 
     let saw_text = frames
@@ -1117,7 +1139,9 @@ async fn test_tool_loop_reasoning_with_tool_calls() {
     .unwrap();
 
     match outcome {
-        ToolLoopOutcome::Completed { text, reasoning, .. } => {
+        ToolLoopOutcome::Completed {
+            text, reasoning, ..
+        } => {
             assert!(text.contains("Found it."));
             let r = reasoning.expect("reasoning should be present from last turn");
             assert_eq!(r.content, "Based on the search results...");
@@ -1129,7 +1153,10 @@ async fn test_tool_loop_reasoning_with_tool_calls() {
     let frames = drain_sse_frames(&mut sse_rx).await;
 
     let saw_reasoning = frames.iter().any(|f| f.event == "reasoning");
-    assert!(saw_reasoning, "Should emit reasoning SSE event after tool call");
+    assert!(
+        saw_reasoning,
+        "Should emit reasoning SSE event after tool call"
+    );
 }
 
 #[tokio::test]
@@ -1174,7 +1201,10 @@ async fn test_tool_loop_no_reasoning_when_absent() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let frames = drain_sse_frames(&mut sse_rx).await;
     let saw_reasoning = frames.iter().any(|f| f.event == "reasoning");
-    assert!(!saw_reasoning, "Should not emit reasoning event for plain text");
+    assert!(
+        !saw_reasoning,
+        "Should not emit reasoning event for plain text"
+    );
 }
 
 #[tokio::test]
@@ -1182,11 +1212,7 @@ async fn test_tool_result_sse_includes_summary() {
     init_metrics();
 
     let provider = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![(
-            "c1".into(),
-            "lookup".into(),
-            serde_json::json!({}),
-        )]),
+        MockResponse::ToolCalls(vec![("c1".into(), "lookup".into(), serde_json::json!({}))]),
         MockResponse::Text("Done.".into()),
     ]));
     let registry = test_registry_with_provider("mock", provider);
@@ -1257,8 +1283,14 @@ async fn test_tool_loop_deduplicates_attachments() {
     let registry = test_registry_with_provider("mock", provider);
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
-    tool_registry.register(Arc::new(MockAttachmentTool::new("produce_file", attachment.clone())));
-    tool_registry.register(Arc::new(MockAttachmentTool::new("complete_task", attachment)));
+    tool_registry.register(Arc::new(MockAttachmentTool::new(
+        "produce_file",
+        attachment.clone(),
+    )));
+    tool_registry.register(Arc::new(MockAttachmentTool::new(
+        "complete_task",
+        attachment,
+    )));
     let (event_sender, _sse_rx, _broadcast) = test_event_sender().await;
     let cancel = CancellationToken::new();
     let ctx = mock_context();

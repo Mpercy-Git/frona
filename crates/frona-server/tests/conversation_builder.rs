@@ -18,8 +18,8 @@ use frona::tool::manager::ToolManager;
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
 use rig_core::completion::message::UserContent;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -40,8 +40,9 @@ fn test_builder(db: &Surreal<Db>) -> DefaultConversationBuilder {
     };
     let user_service = UserService::new(SurrealRepo::new(db.clone()), &config.cache);
     let storage_service = StorageService::new(&config);
-    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> = Arc::new(
+        SurrealRepo::<frona::policy::models::Policy>::new(db.clone()),
+    );
     let policy_service = PolicyService::new(
         policy_repo,
         frona::policy::schema::build_schema(),
@@ -114,7 +115,11 @@ async fn agent_with_tool_calls_single_turn() {
     let builder = test_builder(&db);
     let ctx = test_ctx();
 
-    let agent_msg = agent_message("chat-1", "Here's the answer", Some(MessageStatus::Completed));
+    let agent_msg = agent_message(
+        "chat-1",
+        "Here's the answer",
+        Some(MessageStatus::Completed),
+    );
     let agent_msg_id = agent_msg.id.clone();
 
     let messages = vec![user_message("chat-1", "Search for Rust"), agent_msg];
@@ -131,7 +136,11 @@ async fn agent_with_tool_calls_single_turn() {
     if let RigMessage::Assistant { content, .. } = &result[1] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 2);
-        assert!(items.iter().all(|c| matches!(c, AssistantContent::ToolCall(_))));
+        assert!(
+            items
+                .iter()
+                .all(|c| matches!(c, AssistantContent::ToolCall(_)))
+        );
     } else {
         panic!("Expected assistant message with tool calls");
     }
@@ -139,7 +148,11 @@ async fn agent_with_tool_calls_single_turn() {
     if let RigMessage::User { content } = &result[2] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 2);
-        assert!(items.iter().all(|c| matches!(c, UserContent::ToolResult(_))));
+        assert!(
+            items
+                .iter()
+                .all(|c| matches!(c, UserContent::ToolResult(_)))
+        );
     } else {
         panic!("Expected user message with tool results");
     }
@@ -309,7 +322,9 @@ async fn agent_with_tool_calls_includes_per_turn_reasoning() {
             panic!("first item must be Reasoning, got {:?}", items[0]);
         };
         assert_eq!(r.display_text(), "I should engage with a question.");
-        assert!(matches!(items[1], AssistantContent::Text(t) if t.text == "Let me ask you something."));
+        assert!(
+            matches!(items[1], AssistantContent::Text(t) if t.text == "Let me ask you something.")
+        );
         assert!(matches!(items[2], AssistantContent::ToolCall(_)));
     } else {
         panic!("Expected assistant message at index 1");
@@ -398,7 +413,11 @@ async fn prepends_conversation_summary() {
         .build(&messages, &[], &ctx, Some("earlier conversation"))
         .await;
 
-    assert_eq!(with.len(), without.len() + 1, "summary adds one leading message");
+    assert_eq!(
+        with.len(),
+        without.len() + 1,
+        "summary adds one leading message"
+    );
     let RigMessage::User { .. } = &with[0] else {
         panic!("leading message must be a user message");
     };

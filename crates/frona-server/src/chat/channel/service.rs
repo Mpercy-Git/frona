@@ -6,14 +6,14 @@ use rand::Rng;
 use crate::chat::broadcast::{BroadcastService, EntityAction};
 use crate::core::config::Config;
 use crate::core::error::AppError;
-use crate::core::supervisor::Supervisor;
 use crate::core::principal::Principal;
+use crate::core::supervisor::Supervisor;
 use crate::credential::vault::models::{BindingScope, CredentialTarget};
 use crate::credential::vault::service::{VaultService, project_target};
 use crate::tool::mcp::models::CredentialBinding;
 
 use super::models::{
-    Channel, CreateChannelRequest, ChannelManifest, ChannelStatus, ConfigRef, UpdateChannelRequest,
+    Channel, ChannelManifest, ChannelStatus, ConfigRef, CreateChannelRequest, UpdateChannelRequest,
     UserAddress,
 };
 use super::registry::ChannelRegistry;
@@ -48,7 +48,13 @@ impl ChannelService {
         broadcast: BroadcastService,
         config: Arc<Config>,
     ) -> Self {
-        Self { repo, registry, vault, broadcast, config }
+        Self {
+            repo,
+            registry,
+            vault,
+            broadcast,
+            config,
+        }
     }
 
     pub async fn list_for_user(&self, user_id: &str) -> Result<Vec<Channel>, AppError> {
@@ -83,7 +89,9 @@ impl ChannelService {
             .map(|c| c.handle.to_string())
             .collect();
         let base = crate::core::Handle::try_new(provider).map_err(|e| {
-            AppError::Validation(format!("provider '{provider}' is not a valid handle base: {e}"))
+            AppError::Validation(format!(
+                "provider '{provider}' is not a valid handle base: {e}"
+            ))
         })?;
         if !taken.contains(base.as_str()) {
             return Ok(base);
@@ -91,9 +99,8 @@ impl ChannelService {
         for i in 2..100u32 {
             let candidate = format!("{}-{i}", base.as_str());
             if !taken.contains(&candidate) {
-                return crate::core::Handle::try_new(candidate).map_err(|e| {
-                    AppError::Internal(format!("generated handle invalid: {e}"))
-                });
+                return crate::core::Handle::try_new(candidate)
+                    .map_err(|e| AppError::Internal(format!("generated handle invalid: {e}")));
             }
         }
         Err(AppError::Validation(format!(
@@ -126,7 +133,8 @@ impl ChannelService {
             )));
         }
 
-        let missing = missing_required_fields(&manifest, &req.config, &req.credentials, &self.config);
+        let missing =
+            missing_required_fields(&manifest, &req.config, &req.credentials, &self.config);
         // Created disabled + Disconnected; the operator enables via `start` (the
         // enable-gate re-checks config). `error_message` is informational for the UI.
         let initial_error = if missing.is_empty() {
@@ -159,8 +167,10 @@ impl ChannelService {
         let persisted = self.repo.create(&channel).await?;
 
         let principal = Principal::channel(&persisted.id);
-        self.verify_grants(user_id, &req.credentials, &principal).await?;
-        self.write_bindings(user_id, &persisted.id, req.credentials).await?;
+        self.verify_grants(user_id, &req.credentials, &principal)
+            .await?;
+        self.write_bindings(user_id, &persisted.id, req.credentials)
+            .await?;
 
         self.broadcast.broadcast_entity_updated(
             user_id,
@@ -194,7 +204,8 @@ impl ChannelService {
             self.vault
                 .delete_bindings_for_principal(user_id, &principal)
                 .await?;
-            self.write_bindings(user_id, &channel.id, credentials.clone()).await?;
+            self.write_bindings(user_id, &channel.id, credentials.clone())
+                .await?;
         }
 
         // Refresh the informational missing-config message while disabled.
@@ -251,7 +262,9 @@ impl ChannelService {
         }
 
         let principal = Principal::channel(&channel.id);
-        self.vault.delete_bindings_for_principal(user_id, &principal).await?;
+        self.vault
+            .delete_bindings_for_principal(user_id, &principal)
+            .await?;
         self.repo.delete(&channel.id).await?;
         self.broadcast.broadcast_entity_updated(
             user_id,
@@ -278,7 +291,8 @@ impl ChannelService {
         let missing = self.missing_required(&channel).await?;
         if !missing.is_empty() {
             let msg = format!("missing required field(s): {}", missing.join(", "));
-            self.set_enabled(channel_id, false, Some(msg.clone())).await?;
+            self.set_enabled(channel_id, false, Some(msg.clone()))
+                .await?;
             return Err(AppError::Validation(msg));
         }
         self.set_enabled(channel_id, true, None).await?;
@@ -348,13 +362,13 @@ impl ChannelService {
         Ok(())
     }
 
-    pub async fn resolve_config(
-        &self,
-        channel: &Channel,
-    ) -> Result<serde_json::Value, AppError> {
-        let factory = self.registry.get_factory(&channel.provider).ok_or_else(|| {
-            AppError::Validation(format!("unknown channel provider {:?}", channel.provider))
-        })?;
+    pub async fn resolve_config(&self, channel: &Channel) -> Result<serde_json::Value, AppError> {
+        let factory = self
+            .registry
+            .get_factory(&channel.provider)
+            .ok_or_else(|| {
+                AppError::Validation(format!("unknown channel provider {:?}", channel.provider))
+            })?;
         let manifest = factory.manifest();
 
         let mut out = serde_json::Map::new();
@@ -370,11 +384,13 @@ impl ChannelService {
         }
 
         let principal = Principal::channel(&channel.id);
-        let bindings = self.vault
+        let bindings = self
+            .vault
             .list_bindings_for_principal(&channel.user_id, &principal)
             .await?;
         for binding in bindings {
-            let authorized = self.vault
+            let authorized = self
+                .vault
                 .has_grant_for_item(
                     &channel.user_id,
                     &principal,
@@ -388,8 +404,13 @@ impl ChannelService {
                     binding.vault_item_id, binding.connection_id,
                 )));
             }
-            let secret = self.vault
-                .get_secret(&channel.user_id, &binding.connection_id, &binding.vault_item_id)
+            let secret = self
+                .vault
+                .get_secret(
+                    &channel.user_id,
+                    &binding.connection_id,
+                    &binding.vault_item_id,
+                )
                 .await?;
             for (k, v) in project_target(&secret, &binding.target) {
                 out.insert(k, serde_json::Value::String(v));
@@ -423,9 +444,12 @@ impl ChannelService {
     }
 
     pub async fn missing_required(&self, channel: &Channel) -> Result<Vec<String>, AppError> {
-        let factory = self.registry.get_factory(&channel.provider).ok_or_else(|| {
-            AppError::Validation(format!("unknown channel provider {:?}", channel.provider))
-        })?;
+        let factory = self
+            .registry
+            .get_factory(&channel.provider)
+            .ok_or_else(|| {
+                AppError::Validation(format!("unknown channel provider {:?}", channel.provider))
+            })?;
         let manifest = factory.manifest();
         let bindings = self
             .vault
@@ -488,7 +512,8 @@ impl ChannelService {
         principal: &Principal,
     ) -> Result<(), AppError> {
         for binding in bindings {
-            let ok = self.vault
+            let ok = self
+                .vault
                 .has_grant_for_item(
                     user_id,
                     principal,
@@ -532,11 +557,7 @@ impl ChannelService {
         Ok(code)
     }
 
-    pub async fn cancel_pairing(
-        &self,
-        user_id: &str,
-        channel_id: &str,
-    ) -> Result<(), AppError> {
+    pub async fn cancel_pairing(&self, user_id: &str, channel_id: &str) -> Result<(), AppError> {
         let channel = self.find_owned(user_id, channel_id).await?;
         if pairing_pending(&channel) {
             self.revert_pairing(channel).await?;

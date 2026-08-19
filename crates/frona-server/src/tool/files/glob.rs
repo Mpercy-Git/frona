@@ -25,7 +25,11 @@ impl GlobTool {
         sandbox_manager: Arc<SandboxManager>,
         prompts: PromptLoader,
     ) -> Self {
-        Self { storage, sandbox_manager, prompts }
+        Self {
+            storage,
+            sandbox_manager,
+            prompts,
+        }
     }
 }
 
@@ -45,7 +49,12 @@ impl GlobTool {
 
         let scope_input = scope_arg.unwrap_or(".");
         let resolved = if scope_arg.is_some() {
-            super::resolve_path(scope_input, &ctx.user.handle, &ctx.agent.handle, &self.storage)?
+            super::resolve_path(
+                scope_input,
+                &ctx.user.handle,
+                &ctx.agent.handle,
+                &self.storage,
+            )?
         } else {
             self.storage
                 .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle)

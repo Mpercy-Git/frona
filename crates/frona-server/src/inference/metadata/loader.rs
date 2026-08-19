@@ -171,9 +171,8 @@ fn cache_path(cache_dir: &Path) -> PathBuf {
 /// already swapped in memory; failing to persist just means the next restart
 /// won't have a head start.
 pub fn save_cache(cache_dir: &Path, raw_json: &str) -> Result<(), AppError> {
-    std::fs::create_dir_all(cache_dir).map_err(|e| {
-        AppError::Internal(format!("metadata cache mkdir {cache_dir:?}: {e}"))
-    })?;
+    std::fs::create_dir_all(cache_dir)
+        .map_err(|e| AppError::Internal(format!("metadata cache mkdir {cache_dir:?}: {e}")))?;
     let path = cache_path(cache_dir);
     std::fs::write(&path, raw_json)
         .map_err(|e| AppError::Internal(format!("metadata cache write {path:?}: {e}")))
@@ -390,7 +389,10 @@ mod tests {
         // 400k of those being cache reads. Catalog must subtract cached from
         // input before reaching cost_for. Cost = 600k * $2.5/M (fresh) + 0
         // (no cache_read rate in fixture) + 0 output = $1.5.
-        let (cost, _) = store.compute(&model_ref("openai", "gpt-4o"), &usage(1_000_000, 0, 400_000));
+        let (cost, _) = store.compute(
+            &model_ref("openai", "gpt-4o"),
+            &usage(1_000_000, 0, 400_000),
+        );
         let cost = cost.expect("cost");
         assert!((cost - 1.5).abs() < 1e-9, "got {cost}");
     }

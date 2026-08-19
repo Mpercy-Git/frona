@@ -17,7 +17,11 @@ impl PkmRepo {
             row.validate()?;
         }
 
-        let tx = self.db.clone().begin().await
+        let tx = self
+            .db
+            .clone()
+            .begin()
+            .await
             .map_err(|e| Self::err("consolidation_transition_begin", e))?;
         for row in rows {
             if let Err(error) = tx
@@ -43,7 +47,9 @@ impl PkmRepo {
             let _ = tx.cancel().await;
             return Err(Self::err("consolidation_transition_checkpoint", error));
         }
-        tx.commit().await.map_err(|e| Self::err("consolidation_transition_commit", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| Self::err("consolidation_transition_commit", e))?;
         Ok(())
     }
 }

@@ -100,17 +100,17 @@ mod tests {
             NamedNode::new_unchecked("urn:example:alice"),
             NamedNode::new_unchecked("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
             NamedNode::new_unchecked("urn:example:Person"),
-        ).in_graph(GraphName::DefaultGraph);
+        )
+        .in_graph(GraphName::DefaultGraph);
         store.insert(&triple).unwrap();
 
         assert_eq!(prefixes.expand("example:Person"), "urn:example:Person");
-        assert_eq!(prefixes.compact("urn:example:Person").as_deref(), Some("example:Person"));
+        assert_eq!(
+            prefixes.compact("urn:example:Person").as_deref(),
+            Some("example:Person")
+        );
         assert_eq!(prefixes.display("urn:example:Person"), "example:Person");
         prefixes.validate_term("example:Person").unwrap();
-        assert!(ask(
-            &store,
-            "ASK { example:alice a example:Person }",
-            &prefixes,
-        ).unwrap());
+        assert!(ask(&store, "ASK { example:alice a example:Person }", &prefixes,).unwrap());
     }
 }

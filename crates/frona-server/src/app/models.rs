@@ -1,6 +1,6 @@
-use chrono::{DateTime, Utc};
 use crate::Entity;
 use crate::core::Handle;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
@@ -183,8 +183,7 @@ impl From<App> for AppResponse {
             && matches!(
                 app.status,
                 AppStatus::Running | AppStatus::Serving | AppStatus::Hibernated
-            )
-        {
+            ) {
             Some(format!("/apps/{}/", app.handle))
         } else {
             None

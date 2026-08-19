@@ -1,10 +1,12 @@
 use std::path::Path;
 
-use axum::extract::{Multipart, State};
 use axum::Json;
+use axum::extract::{Multipart, State};
 use tokio::fs;
 
-use crate::storage::{Attachment, VirtualPath, dedup_filename, detect_content_type, validate_relative_path};
+use crate::storage::{
+    Attachment, VirtualPath, dedup_filename, detect_content_type, validate_relative_path,
+};
 
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;
@@ -37,19 +39,17 @@ pub(crate) async fn upload_file(
                 );
             }
             Some("file") | Some("upload") => {
-                let filename = field
-                    .file_name()
-                    .unwrap_or("upload")
-                    .to_string();
+                let filename = field.file_name().unwrap_or("upload").to_string();
                 let bytes = field
                     .bytes()
                     .await
                     .map_err(|e| ApiError(AppError::Validation(e.to_string())))?;
 
                 if bytes.len() > MAX_FILE_SIZE {
-                    return Err(ApiError(AppError::Validation(
-                        format!("File too large (max {}MB)", MAX_FILE_SIZE / 1024 / 1024),
-                    )));
+                    return Err(ApiError(AppError::Validation(format!(
+                        "File too large (max {}MB)",
+                        MAX_FILE_SIZE / 1024 / 1024
+                    ))));
                 }
 
                 file_data = Some((filename, bytes.to_vec()));
@@ -58,11 +58,8 @@ pub(crate) async fn upload_file(
         }
     }
 
-    let (original_filename, bytes) = file_data.ok_or_else(|| {
-        ApiError(AppError::Validation(
-            "Missing file field".into(),
-        ))
-    })?;
+    let (original_filename, bytes) =
+        file_data.ok_or_else(|| ApiError(AppError::Validation("Missing file field".into())))?;
 
     let user_ws = state.storage_service.user_workspace(&auth.handle);
     let base = user_ws.base_path().to_path_buf();

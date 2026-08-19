@@ -51,7 +51,10 @@ impl PackageInstaller for SandboxedPackageInstaller {
         let (warmup_cmd, warmup_args) = match server.package.runtime {
             McpRuntime::Npm => {
                 let pkg = format!("{}@{}", server.package.name, server.package.version);
-                ("npm", vec!["install".to_string(), "--no-save".to_string(), pkg])
+                (
+                    "npm",
+                    vec!["install".to_string(), "--no-save".to_string(), pkg],
+                )
             }
             McpRuntime::Pypi => {
                 let pkg = format!("{}=={}", server.package.name, server.package.version);
@@ -68,7 +71,8 @@ impl PackageInstaller for SandboxedPackageInstaller {
             .append(true)
             .open(&log_path)
             .map_err(|e| AppError::Tool(format!("opening {}: {e}", log_path.display())))?;
-        let log_file_clone = log_file.try_clone()
+        let log_file_clone = log_file
+            .try_clone()
             .map_err(|e| AppError::Tool(format!("cloning log fd: {e}")))?;
 
         let args_refs: Vec<&str> = warmup_args.iter().map(|s| s.as_str()).collect();
@@ -82,9 +86,11 @@ impl PackageInstaller for SandboxedPackageInstaller {
             std::process::Stdio::from(log_file_clone),
         )?;
 
-        let status = child.wait_with_output().await.map_err(|e| {
-            AppError::Tool(format!("MCP package warm-up failed to run: {e}"))
-        })?.status;
+        let status = child
+            .wait_with_output()
+            .await
+            .map_err(|e| AppError::Tool(format!("MCP package warm-up failed to run: {e}")))?
+            .status;
 
         if !status.success() {
             let log_tail = crate::tool::mcp::manager::read_log_file(&log_path, 4096);
@@ -92,7 +98,12 @@ impl PackageInstaller for SandboxedPackageInstaller {
                 "MCP package warm-up for {} exited with {}: {}",
                 server.package.name,
                 status,
-                log_tail.lines().rev().take(10).collect::<Vec<_>>().join("\n"),
+                log_tail
+                    .lines()
+                    .rev()
+                    .take(10)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             )));
         }
 
@@ -201,10 +212,7 @@ impl McpServerService {
         Ok(())
     }
 
-    pub async fn fetch_registry(
-        &self,
-        name: &str,
-    ) -> Result<RegistryServerEntry, AppError> {
+    pub async fn fetch_registry(&self, name: &str) -> Result<RegistryServerEntry, AppError> {
         self.registry.fetch(name).await
     }
 
@@ -236,7 +244,12 @@ impl McpServerService {
             let Ok(candidate) = crate::core::Handle::try_new(&candidate_raw) else {
                 continue;
             };
-            if self.repo.find_by_handle(user_id, &candidate).await?.is_none() {
+            if self
+                .repo
+                .find_by_handle(user_id, &candidate)
+                .await?
+                .is_none()
+            {
                 return Ok(candidate);
             }
         }
@@ -286,7 +299,9 @@ impl McpServerService {
             .to_string_lossy()
             .into_owned();
         std::fs::create_dir_all(&workspace_dir).map_err(|e| {
-            AppError::Tool(format!("creating MCP server workspace {workspace_dir}: {e}"))
+            AppError::Tool(format!(
+                "creating MCP server workspace {workspace_dir}: {e}"
+            ))
         })?;
 
         let (runtime, command, args) = build_invocation(package)?;
@@ -305,7 +320,12 @@ impl McpServerService {
                 .display_name_override
                 .or(entry.title.clone())
                 .unwrap_or_else(|| {
-                    entry.name.rsplit('/').next().unwrap_or(&entry.name).to_string()
+                    entry
+                        .name
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&entry.name)
+                        .to_string()
                 }),
             description: Some(entry.description.clone()),
             repository_url: entry.repository.as_ref().and_then(|r| r.url.clone()),
@@ -315,27 +335,34 @@ impl McpServerService {
             command,
             args,
             env: req.extra_env,
-            transports: entry.packages.iter().filter_map(|p| {
-                let pkg_args = build_invocation(p).map(|(_, _, a)| a).ok()?;
-                Some(match p.transport.kind.as_str() {
-                    "streamable-http" | "sse" => TransportConfig::Http {
-                        args: pkg_args,
-                        env: BTreeMap::from([
-                            ("MCP_TRANSPORT_TYPE".into(), "http".into()),
-                        ]),
-                        port_env_var: p.environment_variables.iter()
-                            .find(|v| v.name.ends_with("_PORT") || v.name == "PORT")
-                            .map(|v| v.name.clone()),
-                        endpoint_path: p.transport.url.as_ref()
-                            .and_then(|u| u.rfind('/').map(|i| u[i..].to_string())),
-                        url: None,
-                    },
-                    _ => TransportConfig::Stdio {
-                        args: pkg_args,
-                        env: Default::default(),
-                    },
+            transports: entry
+                .packages
+                .iter()
+                .filter_map(|p| {
+                    let pkg_args = build_invocation(p).map(|(_, _, a)| a).ok()?;
+                    Some(match p.transport.kind.as_str() {
+                        "streamable-http" | "sse" => TransportConfig::Http {
+                            args: pkg_args,
+                            env: BTreeMap::from([("MCP_TRANSPORT_TYPE".into(), "http".into())]),
+                            port_env_var: p
+                                .environment_variables
+                                .iter()
+                                .find(|v| v.name.ends_with("_PORT") || v.name == "PORT")
+                                .map(|v| v.name.clone()),
+                            endpoint_path: p
+                                .transport
+                                .url
+                                .as_ref()
+                                .and_then(|u| u.rfind('/').map(|i| u[i..].to_string())),
+                            url: None,
+                        },
+                        _ => TransportConfig::Stdio {
+                            args: pkg_args,
+                            env: Default::default(),
+                        },
+                    })
                 })
-            }).collect(),
+                .collect(),
             active_transport: package.transport.kind.clone(),
             status: McpServerStatus::Installed,
             tool_cache: Vec::new(),
@@ -346,7 +373,8 @@ impl McpServerService {
         };
 
         let persisted = self.repo.create(&server).await?;
-        self.write_bindings(user_id, &persisted.id, req.credentials).await?;
+        self.write_bindings(user_id, &persisted.id, req.credentials)
+            .await?;
         self.installer.install(&persisted).await?;
         let sandbox_policy = req.sandbox_policy.unwrap_or_default();
         self.policy_service
@@ -434,11 +462,13 @@ impl McpServerService {
                     validate_credential_bindings(package, &credentials, &server.env)?;
                 }
             }
-            self.verify_grants(user_id, &server.id, &credentials).await?;
+            self.verify_grants(user_id, &server.id, &credentials)
+                .await?;
             self.vault
                 .delete_bindings_for_principal(user_id, &Principal::mcp_server(&server.id))
                 .await?;
-            self.write_bindings(user_id, &server.id, credentials).await?;
+            self.write_bindings(user_id, &server.id, credentials)
+                .await?;
         }
 
         if let Some(description) = req.description {
@@ -473,8 +503,12 @@ impl McpServerService {
         let server = self.load_owned(user_id, server_id).await?;
         let _ = self.manager.stop(server_id).await;
         let principal = Principal::mcp_server(&server.id);
-        self.vault.delete_bindings_for_principal(user_id, &principal).await?;
-        self.vault.delete_grants_for_principal(user_id, &principal).await?;
+        self.vault
+            .delete_bindings_for_principal(user_id, &principal)
+            .await?;
+        self.vault
+            .delete_grants_for_principal(user_id, &principal)
+            .await?;
         self.policy_service
             .reconcile_sandbox_policy(
                 user_id,
@@ -550,7 +584,9 @@ impl McpServerService {
                 server.handle.as_str(),
                 tools.clone(),
             ));
-            self.tool_manager.register_user_tool(user_id, mcp_tool).await;
+            self.tool_manager
+                .register_user_tool(user_id, mcp_tool)
+                .await;
             self.policy_service.invalidate_cache(user_id).await;
         }
 
@@ -565,7 +601,9 @@ impl McpServerService {
         self.repo.update(&server).await?;
 
         let owner_name = format!("mcp__{}", server.handle);
-        self.tool_manager.deregister_user_tool(user_id, &owner_name).await;
+        self.tool_manager
+            .deregister_user_tool(user_id, &owner_name)
+            .await;
         self.policy_service.invalidate_cache(user_id).await;
 
         Ok(())
@@ -585,10 +623,7 @@ impl McpServerService {
         Ok(server)
     }
 
-    async fn resolve_entry(
-        &self,
-        req: &McpServerInstall,
-    ) -> Result<RegistryServerEntry, AppError> {
+    async fn resolve_entry(&self, req: &McpServerInstall) -> Result<RegistryServerEntry, AppError> {
         if let Some(manifest) = &req.manifest {
             return serde_json::from_value(manifest.clone())
                 .map_err(|e| AppError::Validation(format!("invalid MCP server manifest: {e}")));
@@ -599,10 +634,7 @@ impl McpServerService {
         self.registry.fetch(name).await
     }
 
-    async fn resolve_env(
-        &self,
-        server: &McpServer,
-    ) -> Result<BTreeMap<String, String>, AppError> {
+    async fn resolve_env(&self, server: &McpServer) -> Result<BTreeMap<String, String>, AppError> {
         let mut out = server.env.clone();
         let principal = Principal::mcp_server(&server.id);
         let bindings = self
@@ -628,7 +660,11 @@ impl McpServerService {
 
             let secret = self
                 .vault
-                .get_secret(&server.user_id, &binding.connection_id, &binding.vault_item_id)
+                .get_secret(
+                    &server.user_id,
+                    &binding.connection_id,
+                    &binding.vault_item_id,
+                )
                 .await?;
             for (k, v) in
                 crate::credential::vault::service::project_target(&secret, &binding.target)
@@ -645,9 +681,11 @@ fn pick_package(entry: &RegistryServerEntry) -> Option<&RegistryPackage> {
     const PREFERRED_TRANSPORTS: &[&str] = &["stdio", "streamable-http", "sse"];
     for runtime in PREFERRED_RUNTIMES {
         for transport in PREFERRED_TRANSPORTS {
-            if let Some(p) = entry.packages.iter().find(|p| {
-                p.registry_type == *runtime && p.transport.kind == *transport
-            }) {
+            if let Some(p) = entry
+                .packages
+                .iter()
+                .find(|p| p.registry_type == *runtime && p.transport.kind == *transport)
+            {
                 return Some(p);
             }
         }
@@ -742,10 +780,7 @@ fn validate_absolute_paths(paths: &[String]) -> Result<(), AppError> {
 
 fn strip_namespace(tool_id: &str, slug: &str) -> String {
     let prefix = format!("mcp__{slug}__");
-    tool_id
-        .strip_prefix(&prefix)
-        .unwrap_or(tool_id)
-        .to_string()
+    tool_id.strip_prefix(&prefix).unwrap_or(tool_id).to_string()
 }
 
 #[cfg(test)]
@@ -856,7 +891,10 @@ mod tests {
         let (runtime, cmd, args) = build_invocation(&pkg("pypi", "stdio")).unwrap();
         assert_eq!(runtime, McpRuntime::Pypi);
         assert_eq!(cmd, "uvx");
-        assert_eq!(args, vec!["--from", "@example/thing@1.2.3", "@example/thing"]);
+        assert_eq!(
+            args,
+            vec!["--from", "@example/thing@1.2.3", "@example/thing"]
+        );
     }
 
     #[test]
@@ -871,7 +909,9 @@ mod tests {
     fn validate_credential_bindings_accepts_exact_match() {
         let mut p = pkg("npm", "stdio");
         p.environment_variables = vec![secret_env_var("GITHUB_TOKEN")];
-        assert!(validate_credential_bindings(&p, &[binding("GITHUB_TOKEN")], &BTreeMap::new()).is_ok());
+        assert!(
+            validate_credential_bindings(&p, &[binding("GITHUB_TOKEN")], &BTreeMap::new()).is_ok()
+        );
     }
 
     #[test]

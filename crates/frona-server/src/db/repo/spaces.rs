@@ -1,7 +1,7 @@
-use async_trait::async_trait;
 use crate::core::error::AppError;
 use crate::space::models::Space;
 use crate::space::repository::SpaceRepository;
+use async_trait::async_trait;
 
 use super::generic::SurrealRepo;
 
@@ -42,5 +42,4 @@ impl SpaceRepository for SurrealRepo<Space> {
 
         Ok(spaces)
     }
-
 }

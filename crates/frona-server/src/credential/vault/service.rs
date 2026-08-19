@@ -120,12 +120,16 @@ impl VaultService {
             .await?
             .ok_or_else(|| AppError::NotFound("Vault connection not found".into()))?;
         if connection.system_managed {
-            return Err(AppError::Validation("Cannot delete system-managed connections".into()));
+            return Err(AppError::Validation(
+                "Cannot delete system-managed connections".into(),
+            ));
         }
         if connection.user_id != user_id {
             return Err(AppError::Forbidden("Not your vault connection".into()));
         }
-        self.grant_repo.delete_by_connection_id(connection_id).await?;
+        self.grant_repo
+            .delete_by_connection_id(connection_id)
+            .await?;
         self.connection_repo.delete(connection_id).await
     }
 
@@ -324,7 +328,9 @@ impl VaultService {
         principal: &Principal,
     ) -> Result<(), AppError> {
         ensure_non_user_principal(principal)?;
-        self.grant_repo.delete_by_principal(user_id, principal).await
+        self.grant_repo
+            .delete_by_principal(user_id, principal)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -385,7 +391,9 @@ impl VaultService {
         principal: &Principal,
     ) -> Result<(), AppError> {
         ensure_non_user_principal(principal)?;
-        self.binding_repo.delete_by_principal(user_id, principal).await
+        self.binding_repo
+            .delete_by_principal(user_id, principal)
+            .await
     }
 }
 
@@ -396,20 +404,23 @@ pub fn project_target(secret: &VaultSecret, target: &CredentialTarget) -> Vec<(S
             let value = match field {
                 VaultField::Password => secret.password.clone(),
                 VaultField::Username => secret.username.clone(),
-                VaultField::Custom { name } => secret.fields.get(name).cloned()
-                    .or_else(|| secret.fields.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())),
+                VaultField::Custom { name } => secret.fields.get(name).cloned().or_else(|| {
+                    secret
+                        .fields
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                        .map(|(_, v)| v.clone())
+                }),
             };
-            value.map(|v| vec![(env_var.clone(), v)]).unwrap_or_default()
+            value
+                .map(|v| vec![(env_var.clone(), v)])
+                .unwrap_or_default()
         }
     }
 }
 
 impl VaultService {
-
-    pub async fn list_grants(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<VaultGrantResponse>, AppError> {
+    pub async fn list_grants(&self, user_id: &str) -> Result<Vec<VaultGrantResponse>, AppError> {
         let grants = self.grant_repo.find_by_user_id(user_id).await?;
         let mut responses: Vec<VaultGrantResponse> = grants.into_iter().map(Into::into).collect();
 
@@ -418,7 +429,8 @@ impl VaultService {
         for r in &responses {
             let key = format!("{:?}:{}", r.principal.kind, r.principal.id);
             if seen.insert(key)
-                && let Ok(bindings) = self.binding_repo
+                && let Ok(bindings) = self
+                    .binding_repo
                     .find_for_principal(user_id, &r.principal)
                     .await
             {
@@ -439,11 +451,7 @@ impl VaultService {
         Ok(responses)
     }
 
-    pub async fn revoke_grant(
-        &self,
-        user_id: &str,
-        grant_id: &str,
-    ) -> Result<(), AppError> {
+    pub async fn revoke_grant(&self, user_id: &str, grant_id: &str) -> Result<(), AppError> {
         let grant = self
             .grant_repo
             .find_by_id(grant_id)
@@ -453,7 +461,12 @@ impl VaultService {
             return Err(AppError::Forbidden("Not your grant".into()));
         }
         self.binding_repo
-            .delete_for_item(user_id, &grant.principal, &grant.connection_id, &grant.vault_item_id)
+            .delete_for_item(
+                user_id,
+                &grant.principal,
+                &grant.connection_id,
+                &grant.vault_item_id,
+            )
             .await?;
         self.grant_repo.delete(grant_id).await
     }
@@ -481,7 +494,10 @@ impl VaultService {
             if !conn.enabled {
                 continue;
             }
-            match self.search_items(user_id, &conn.id, query, max_results).await {
+            match self
+                .search_items(user_id, &conn.id, query, max_results)
+                .await
+            {
                 Ok(items) => {
                     for item in items {
                         all_results.push((conn.id.clone(), item));
@@ -568,7 +584,9 @@ impl VaultService {
         Ok(())
     }
 
-    fn config_connection_entries(&self) -> Vec<(String, VaultProviderType, String, VaultConnectionConfig)> {
+    fn config_connection_entries(
+        &self,
+    ) -> Vec<(String, VaultProviderType, String, VaultConnectionConfig)> {
         let mut entries = Vec::new();
 
         if let Some(token) = &self.vault_config.onepassword_service_account_token {
@@ -632,7 +650,6 @@ impl VaultService {
             ));
         }
 
-
         entries
     }
 
@@ -647,25 +664,25 @@ impl VaultService {
             CreateLocalItemRequest::BrowserProfile { name } => {
                 (name, "browser".to_string(), CredentialData::BrowserProfile)
             }
-            CreateLocalItemRequest::UsernamePassword { name, username, password } => {
-                (
-                    name,
-                    "local".to_string(),
-                    CredentialData::UsernamePassword {
-                        username,
-                        password_encrypted: encrypt_password(&password, &self.encryption_key)?,
-                    },
-                )
-            }
-            CreateLocalItemRequest::ApiKey { name, api_key } => {
-                (
-                    name,
-                    "local".to_string(),
-                    CredentialData::ApiKey {
-                        key_encrypted: encrypt_password(&api_key, &self.encryption_key)?,
-                    },
-                )
-            }
+            CreateLocalItemRequest::UsernamePassword {
+                name,
+                username,
+                password,
+            } => (
+                name,
+                "local".to_string(),
+                CredentialData::UsernamePassword {
+                    username,
+                    password_encrypted: encrypt_password(&password, &self.encryption_key)?,
+                },
+            ),
+            CreateLocalItemRequest::ApiKey { name, api_key } => (
+                name,
+                "local".to_string(),
+                CredentialData::ApiKey {
+                    key_encrypted: encrypt_password(&api_key, &self.encryption_key)?,
+                },
+            ),
         };
 
         let credential = Credential {
@@ -699,7 +716,9 @@ impl VaultService {
         user_id: &str,
         provider: &str,
     ) -> Result<Option<Credential>, AppError> {
-        self.credential_repo.find_by_user_and_provider(user_id, provider).await
+        self.credential_repo
+            .find_by_user_and_provider(user_id, provider)
+            .await
     }
 
     pub async fn update_credential(
@@ -724,12 +743,18 @@ impl VaultService {
             UpdateLocalItemRequest::BrowserProfile { name } => {
                 (name, "browser".to_string(), CredentialData::BrowserProfile)
             }
-            UpdateLocalItemRequest::UsernamePassword { name, username, password } => {
+            UpdateLocalItemRequest::UsernamePassword {
+                name,
+                username,
+                password,
+            } => {
                 let password_encrypted = if let Some(pw) = password {
                     encrypt_password(&pw, &self.encryption_key)?
                 } else {
                     match &existing.data {
-                        CredentialData::UsernamePassword { password_encrypted, .. } => password_encrypted.clone(),
+                        CredentialData::UsernamePassword {
+                            password_encrypted, ..
+                        } => password_encrypted.clone(),
                         _ => return Err(AppError::Validation("Credential type mismatch".into())),
                     }
                 };
@@ -821,7 +846,10 @@ impl VaultService {
         let config = self.decrypt_config(&connection)?;
 
         let home_dir = if connection.system_managed {
-            self.data_dir.join("system").join("vault").join(connection.id)
+            self.data_dir
+                .join("system")
+                .join("vault")
+                .join(connection.id)
         } else {
             let owner = self
                 .user_service
@@ -863,7 +891,10 @@ impl VaultService {
         let cipher = Aes256Gcm::new_from_slice(&self.encryption_key)
             .map_err(|e| AppError::Internal(format!("AES init failed: {e}")))?;
 
-        let nonce_arr: [u8; 12] = connection.nonce.as_slice().try_into()
+        let nonce_arr: [u8; 12] = connection
+            .nonce
+            .as_slice()
+            .try_into()
             .map_err(|_| AppError::Internal("Invalid nonce length".into()))?;
         let nonce = Nonce::from(nonce_arr);
         let decrypted = cipher
@@ -901,7 +932,8 @@ pub fn decrypt_password(encrypted_b64: &str, key: &[u8; 32]) -> Result<String, A
     }
 
     let (nonce_bytes, encrypted_data) = combined.split_at(12);
-    let nonce_arr: [u8; 12] = nonce_bytes.try_into()
+    let nonce_arr: [u8; 12] = nonce_bytes
+        .try_into()
         .map_err(|_| AppError::Internal("Invalid nonce length".into()))?;
     let nonce = Nonce::from(nonce_arr);
 
@@ -912,8 +944,7 @@ pub fn decrypt_password(encrypted_b64: &str, key: &[u8; 32]) -> Result<String, A
         .decrypt(&nonce, encrypted_data)
         .map_err(|e| AppError::Internal(format!("Decryption failed: {e}")))?;
 
-    String::from_utf8(decrypted)
-        .map_err(|e| AppError::Internal(format!("UTF8 decode failed: {e}")))
+    String::from_utf8(decrypted).map_err(|e| AppError::Internal(format!("UTF8 decode failed: {e}")))
 }
 
 #[cfg(test)]
@@ -946,12 +977,14 @@ mod tests {
         let target = CredentialTarget::Prefix {
             env_var_prefix: "GH".into(),
         };
-        let vars: std::collections::HashMap<_, _> = project_target(&secret, &target)
-            .into_iter()
-            .collect();
+        let vars: std::collections::HashMap<_, _> =
+            project_target(&secret, &target).into_iter().collect();
         assert_eq!(vars.get("GH_USERNAME").map(String::as_str), Some("octocat"));
         assert_eq!(vars.get("GH_PASSWORD").map(String::as_str), Some("ghp_xxx"));
-        assert_eq!(vars.get("GH_API_KEY").map(String::as_str), Some("ghp_custom"));
+        assert_eq!(
+            vars.get("GH_API_KEY").map(String::as_str),
+            Some("ghp_custom")
+        );
     }
 
     #[test]
@@ -973,13 +1006,20 @@ mod tests {
         let target = CredentialTarget::Prefix {
             env_var_prefix: "HOME_ASSISTANT".into(),
         };
-        let vars: HashMap<_, _> = project_target(&secret, &target)
-            .into_iter()
-            .collect();
+        let vars: HashMap<_, _> = project_target(&secret, &target).into_iter().collect();
         assert_eq!(vars.len(), 3);
-        assert_eq!(vars.get("HOME_ASSISTANT_HOSTNAME").map(String::as_str), Some("https://ha.example.com"));
-        assert_eq!(vars.get("HOME_ASSISTANT_TYPE").map(String::as_str), Some("bearer"));
-        assert_eq!(vars.get("HOME_ASSISTANT_CREDENTIAL").map(String::as_str), Some("tok_secret_123"));
+        assert_eq!(
+            vars.get("HOME_ASSISTANT_HOSTNAME").map(String::as_str),
+            Some("https://ha.example.com")
+        );
+        assert_eq!(
+            vars.get("HOME_ASSISTANT_TYPE").map(String::as_str),
+            Some("bearer")
+        );
+        assert_eq!(
+            vars.get("HOME_ASSISTANT_CREDENTIAL").map(String::as_str),
+            Some("tok_secret_123")
+        );
     }
 
     #[test]
@@ -990,7 +1030,10 @@ mod tests {
             field: VaultField::Password,
         };
         let vars = project_target(&secret, &target);
-        assert_eq!(vars, vec![("GITHUB_TOKEN".to_string(), "ghp_xxx".to_string())]);
+        assert_eq!(
+            vars,
+            vec![("GITHUB_TOKEN".to_string(), "ghp_xxx".to_string())]
+        );
     }
 
     #[test]
@@ -1009,10 +1052,15 @@ mod tests {
         let secret = sample_secret();
         let target = CredentialTarget::Single {
             env_var: "API_KEY".into(),
-            field: VaultField::Custom { name: "api_key".into() },
+            field: VaultField::Custom {
+                name: "api_key".into(),
+            },
         };
         let vars = project_target(&secret, &target);
-        assert_eq!(vars, vec![("API_KEY".to_string(), "ghp_custom".to_string())]);
+        assert_eq!(
+            vars,
+            vec![("API_KEY".to_string(), "ghp_custom".to_string())]
+        );
     }
 
     #[test]
@@ -1031,7 +1079,9 @@ mod tests {
         let secret = sample_secret();
         let target = CredentialTarget::Single {
             env_var: "X".into(),
-            field: VaultField::Custom { name: "nonexistent".into() },
+            field: VaultField::Custom {
+                name: "nonexistent".into(),
+            },
         };
         assert!(project_target(&secret, &target).is_empty());
     }

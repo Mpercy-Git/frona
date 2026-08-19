@@ -17,9 +17,7 @@ impl PkmRepo {
         }
         for attempt in 0..CONFLICT_RETRIES {
             match self.try_commit_page_edit_cas(user_id, path, write).await {
-                Err(error)
-                    if Self::is_write_conflict(&error) && attempt + 1 < CONFLICT_RETRIES =>
-                {
+                Err(error) if Self::is_write_conflict(&error) && attempt + 1 < CONFLICT_RETRIES => {
                     tokio::time::sleep(std::time::Duration::from_millis(5 << attempt)).await;
                 }
                 result => return result,
@@ -52,11 +50,7 @@ impl PkmRepo {
                 .bind(("path", path.to_string())),
             "page_edit_read"
         );
-        let rows: Vec<KnowledgeEntity> = tx_try!(
-            tx,
-            response.take(0),
-            "page_edit_read_take"
-        );
+        let rows: Vec<KnowledgeEntity> = tx_try!(tx, response.take(0), "page_edit_read_take");
         let current = rows.into_iter().next();
         let matches_base = match (&write.base, &current) {
             (PageEditBase::Missing, None) => true,
@@ -70,7 +64,10 @@ impl PkmRepo {
                 .map(|entity| (entity.rev, entity.sync_content))
                 .unwrap_or((None, None));
             let _ = tx.cancel().await;
-            return Ok(PageEditCommit::Conflict { head_rev, head_content });
+            return Ok(PageEditCommit::Conflict {
+                head_rev,
+                head_content,
+            });
         }
 
         // A model result can wait for a long time. Check all referenced memories again
@@ -95,16 +92,18 @@ impl PkmRepo {
                     .bind(("mid", memory_id.clone())),
                 "page_edit_memory_source_read"
             );
-            let sources: Vec<String> = tx_try!(
-                tx,
-                response.take(0),
-                "page_edit_memory_source_take"
-            );
+            let sources: Vec<String> =
+                tx_try!(tx, response.take(0), "page_edit_memory_source_take");
             if sources.is_empty() {
                 let head_rev = current.as_ref().and_then(|entity| entity.rev.clone());
-                let head_content = current.as_ref().and_then(|entity| entity.sync_content.clone());
+                let head_content = current
+                    .as_ref()
+                    .and_then(|entity| entity.sync_content.clone());
                 let _ = tx.cancel().await;
-                return Ok(PageEditCommit::Conflict { head_rev, head_content });
+                return Ok(PageEditCommit::Conflict {
+                    head_rev,
+                    head_content,
+                });
             }
         }
 
@@ -112,8 +111,12 @@ impl PkmRepo {
             let name = write.new_page_name.as_deref().unwrap_or(path);
             let aliases = std::collections::HashSet::new();
             let search_text = derive_search_text(name, "", &aliases);
-            let (search_names, search_name_tokens, search_assertions) =
-                derive_resolution_search(name, &aliases, &serde_json::json!({}), std::iter::empty());
+            let (search_names, search_name_tokens, search_assertions) = derive_resolution_search(
+                name,
+                &aliases,
+                &serde_json::json!({}),
+                std::iter::empty(),
+            );
             let entity = KnowledgeEntity {
                 id: new_id(),
                 user_id: user_id.to_string(),
@@ -157,10 +160,8 @@ impl PkmRepo {
                 PageEditMemoryOp::Add { kind, content } => {
                     tx_try!(
                         tx,
-                        Self::insert_human_memory_in_tx(
-                            &tx, user_id, path, *kind, content, now,
-                        )
-                        .await,
+                        Self::insert_human_memory_in_tx(&tx, user_id, path, *kind, content, now,)
+                            .await,
                         "page_edit_memory_add"
                     );
                 }
@@ -172,10 +173,8 @@ impl PkmRepo {
                 } => {
                     let newer_id = tx_try!(
                         tx,
-                        Self::insert_human_memory_in_tx(
-                            &tx, user_id, path, *kind, content, now,
-                        )
-                        .await,
+                        Self::insert_human_memory_in_tx(&tx, user_id, path, *kind, content, now,)
+                            .await,
                         "page_edit_memory_supersede_insert"
                     );
                     let mut response = tx_try!(
@@ -196,11 +195,18 @@ impl PkmRepo {
                     );
                     entity_paths.sort();
                     entity_paths.dedup();
-                    for entity_path in entity_paths.iter().filter(|entity_path| entity_path.as_str() != path) {
+                    for entity_path in entity_paths
+                        .iter()
+                        .filter(|entity_path| entity_path.as_str() != path)
+                    {
                         tx_try!(
                             tx,
                             Self::insert_memory_source_in_tx(
-                                &tx, user_id, &newer_id, entity_path, now,
+                                &tx,
+                                user_id,
+                                &newer_id,
+                                entity_path,
+                                now,
                             )
                             .await,
                             "page_edit_memory_supersede_source_insert"
@@ -236,7 +242,10 @@ impl PkmRepo {
                         "page_edit_memory_supersede_bump"
                     );
                 }
-                PageEditMemoryOp::SetDisposition { memory_id, disposition } => {
+                PageEditMemoryOp::SetDisposition {
+                    memory_id,
+                    disposition,
+                } => {
                     let (ended_at, erroneous_at) = match disposition {
                         Disposition::Outdated => (Some(now), None),
                         Disposition::Erroneous => (None, Some(now)),
@@ -345,9 +354,12 @@ impl PkmRepo {
             entity_path: path.to_string(),
             created_at: now,
         };
-        tx.create::<Option<surrealdb::types::Value>>(("knowledge_entity_source", source.id.clone()))
-            .content(source)
-            .await?;
+        tx.create::<Option<surrealdb::types::Value>>((
+            "knowledge_entity_source",
+            source.id.clone(),
+        ))
+        .content(source)
+        .await?;
         tx.query(
             "UPDATE knowledge_entity SET updated_at = $now
              WHERE user_id = $uid AND path = $path",

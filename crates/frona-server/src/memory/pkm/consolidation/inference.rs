@@ -17,7 +17,7 @@ use crate::tool::AgentTool;
 use crate::tool::registry::ToolFilter;
 use tokio_util::sync::CancellationToken;
 
-use super::prompt::{RenderedPrompt, PromptSpec};
+use super::prompt::{PromptSpec, RenderedPrompt};
 
 /// What domain validation decided about one valid structured submission.
 pub(crate) enum Verdict<A> {
@@ -125,7 +125,13 @@ impl ConsolidationInference {
         user_id: String,
         cancel_token: CancellationToken,
     ) -> Self {
-        Self { harness, model_group, prompts, user_id, cancel_token }
+        Self {
+            harness,
+            model_group,
+            prompts,
+            user_id,
+            cancel_token,
+        }
     }
 
     pub fn prompts(&self) -> &PromptLoader {
@@ -133,7 +139,11 @@ impl ConsolidationInference {
     }
 
     fn usage(&self) -> UsageContext {
-        UsageContext::new(InferenceKind::Memory, &self.user_id, self.model_group.name.clone())
+        UsageContext::new(
+            InferenceKind::Memory,
+            &self.user_id,
+            self.model_group.name.clone(),
+        )
     }
 
     /// Render a stage's system + user prompt pair. Fails rather than returning an empty
@@ -162,17 +172,19 @@ impl ConsolidationInference {
         tools: &[Arc<dyn AgentTool>],
         max_turns: usize,
     ) -> Result<String, AppError> {
-        self.harness.text_inference_with_tools_cancel(
-            agent_id,
-            &self.model_group,
-            system,
-            history,
-            filters,
-            tools,
-            max_turns,
-            self.usage(),
-            self.cancel_token.clone(),
-        ).await
+        self.harness
+            .text_inference_with_tools_cancel(
+                agent_id,
+                &self.model_group,
+                system,
+                history,
+                filters,
+                tools,
+                max_turns,
+                self.usage(),
+                self.cancel_token.clone(),
+            )
+            .await
     }
 
     /// A multi-turn tool conversation: the model proposes, the system validates
@@ -193,7 +205,8 @@ impl ConsolidationInference {
     where
         T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
     {
-        let inner = self.harness
+        let inner = self
+            .harness
             .structured_conversation_with_cancel::<T>(
                 chat_id,
                 agent_id,

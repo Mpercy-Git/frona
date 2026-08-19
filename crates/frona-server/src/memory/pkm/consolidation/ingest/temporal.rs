@@ -10,12 +10,11 @@ pub(super) fn extraction_submission_limit(transcript_turns: usize) -> usize {
 /// Resolve model-normalized time. Ordinary-message timestamps remain hidden. Task lifecycle
 /// timestamps are visible and validated separately, but the exact structured source value
 /// remains authoritative here.
-pub(super) fn resolve_episode(
-    episode: &mut Episode,
-    sources: &[TemporalSource],
-    timezone: &str,
-) {
-    let Some(source) = sources.iter().find(|source| source.handle == episode.anchor.message) else {
+pub(super) fn resolve_episode(episode: &mut Episode, sources: &[TemporalSource], timezone: &str) {
+    let Some(source) = sources
+        .iter()
+        .find(|source| source.handle == episode.anchor.message)
+    else {
         tracing::debug!(
             message = %episode.anchor.message,
             "pkm episodic anchor unresolved"
@@ -64,9 +63,15 @@ pub(super) fn resolve_duration(
     value: &RelativeDuration,
 ) -> Option<(chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>)> {
     use crate::memory::pkm::model::{TemporalDirection::*, TemporalSemantics, TemporalUnit::*};
-    let sign: i64 = match value.direction { Past => -1, Present => 0, Future => 1 };
+    let sign: i64 = match value.direction {
+        Past => -1,
+        Present => 0,
+        Future => 1,
+    };
     let amount = i64::from(value.amount);
-    if value.amount == 0 { return None; }
+    if value.amount == 0 {
+        return None;
+    }
     if value.semantics == TemporalSemantics::Elapsed {
         let delta = match value.unit {
             Minute => Duration::minutes(amount),
@@ -87,15 +92,26 @@ pub(super) fn resolve_duration(
         Day => date + Duration::days(sign * amount),
         Month => {
             let index = i64::from(date.year()) * 12 + i64::from(date.month0()) + sign * amount;
-            NaiveDate::from_ymd_opt((index.div_euclid(12)) as i32, (index.rem_euclid(12) + 1) as u32, 1)?
+            NaiveDate::from_ymd_opt(
+                (index.div_euclid(12)) as i32,
+                (index.rem_euclid(12) + 1) as u32,
+                1,
+            )?
         }
         Year => NaiveDate::from_ymd_opt(date.year() + (sign * amount) as i32, 1, 1)?,
         Hour | Minute => {
-            let delta = if value.unit == Hour { Duration::hours(amount) } else { Duration::minutes(amount) };
+            let delta = if value.unit == Hour {
+                Duration::hours(amount)
+            } else {
+                Duration::minutes(amount)
+            };
             return Some(((anchor + delta * sign as i32).with_timezone(&Utc), None));
         }
     };
-    let start = match anchor.timezone().from_local_datetime(&start_date.and_hms_opt(0, 0, 0)?) {
+    let start = match anchor
+        .timezone()
+        .from_local_datetime(&start_date.and_hms_opt(0, 0, 0)?)
+    {
         LocalResult::Single(value) => value,
         _ => return None,
     };
@@ -119,11 +135,7 @@ pub(super) fn resolve_absolute(
         value.month.unwrap_or(anchor.month()),
         value.day.unwrap_or(anchor.day()),
     )?;
-    let local = date.and_hms_opt(
-        value.hour.unwrap_or(0),
-        value.minute.unwrap_or(0),
-        0,
-    )?;
+    let local = date.and_hms_opt(value.hour.unwrap_or(0), value.minute.unwrap_or(0), 0)?;
     match tz.from_local_datetime(&local) {
         LocalResult::Single(value) => Some((value.with_timezone(&Utc), None)),
         _ => None,

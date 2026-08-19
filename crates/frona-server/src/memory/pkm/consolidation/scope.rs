@@ -50,8 +50,21 @@ pub struct TranscriptEvidenceSource {
 
 #[derive(Debug, Clone)]
 pub enum TranscriptEvidenceKind {
-    UserMessage { message_id: String, chat_id: String },
-    AgentMessage { message_id: String, agent_id: String, chat_id: String },
-    TaskLifecycle { message_id: String, chat_id: String, task_id: String },
-    ExternalNote { note: String },
+    UserMessage {
+        message_id: String,
+        chat_id: String,
+    },
+    AgentMessage {
+        message_id: String,
+        agent_id: String,
+        chat_id: String,
+    },
+    TaskLifecycle {
+        message_id: String,
+        chat_id: String,
+        task_id: String,
+    },
+    ExternalNote {
+        note: String,
+    },
 }

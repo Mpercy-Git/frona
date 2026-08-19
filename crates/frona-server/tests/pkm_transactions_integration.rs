@@ -88,8 +88,15 @@ async fn transaction_rolls_back_when_cancelled() {
         .unwrap();
     tx.cancel().await.unwrap();
 
-    assert_eq!(count_links(&db).await, 1, "cancel rolled back the second create");
-    assert!(page_path_of(&db, "m2").await.is_none(), "m2's link never landed");
+    assert_eq!(
+        count_links(&db).await,
+        1,
+        "cancel rolled back the second create"
+    );
+    assert!(
+        page_path_of(&db, "m2").await.is_none(),
+        "m2's link never landed"
+    );
 }
 
 #[tokio::test]
@@ -117,5 +124,8 @@ async fn transaction_closes_when_its_owner_task_is_aborted() {
     let links = tokio::time::timeout(std::time::Duration::from_secs(1), count_links(&db))
         .await
         .expect("an aborted transaction owner must not leave the database writer locked");
-    assert_eq!(links, 0, "the aborted transaction must roll back its uncommitted row");
+    assert_eq!(
+        links, 0,
+        "the aborted transaction must roll back its uncommitted row"
+    );
 }

@@ -13,8 +13,12 @@ pub(super) fn consolidation_windows(
     max_messages: usize,
     tool_calls: &[ToolCall],
 ) -> Result<Vec<ConsolidationWindow>, AppError> {
-    let in_flight =
-        |m: &MessageResponse| matches!(m.status, Some(MessageStatus::Executing | MessageStatus::Paused));
+    let in_flight = |m: &MessageResponse| {
+        matches!(
+            m.status,
+            Some(MessageStatus::Executing | MessageStatus::Paused)
+        )
+    };
     let t_inflight = messages
         .iter()
         .filter(|m| in_flight(m))
@@ -39,7 +43,9 @@ pub(super) fn consolidation_windows(
         };
         let text = if message.role == MessageRole::Agent {
             crate::memory::pkm::consolidation::transcript::message_text(
-                &message.id, &message.content, tool_calls,
+                &message.id,
+                &message.content,
+                tool_calls,
             )
         } else {
             message.content.trim().to_string()
@@ -53,7 +59,10 @@ pub(super) fn consolidation_windows(
         if !current.is_empty()
             && (current.len() >= max_messages || tokens + message_tokens > max_tokens)
         {
-            let advance_to = current.iter().map(|item: &MessageResponse| item.created_at).max();
+            let advance_to = current
+                .iter()
+                .map(|item: &MessageResponse| item.created_at)
+                .max();
             windows.push((std::mem::take(&mut current), advance_to));
             tokens = 0;
         }
@@ -69,7 +78,10 @@ pub(super) fn consolidation_windows(
         current.push(message);
     }
     if !current.is_empty() {
-        let advance_to = current.iter().map(|item: &MessageResponse| item.created_at).max();
+        let advance_to = current
+            .iter()
+            .map(|item: &MessageResponse| item.created_at)
+            .max();
         windows.push((current, advance_to));
     }
     Ok(windows)

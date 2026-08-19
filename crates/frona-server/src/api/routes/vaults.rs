@@ -27,7 +27,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/vaults/{id}", delete(delete_connection))
         .route("/api/vaults/{id}/toggle", post(toggle_connection))
         .route("/api/vaults/{id}/test", post(test_connection))
-        .route("/api/vaults/{id}/items", get(search_items).post(search_items_inline))
+        .route(
+            "/api/vaults/{id}/items",
+            get(search_items).post(search_items_inline),
+        )
         .route("/api/vaults/{id}/items/{item_id}/fields", get(item_fields))
 }
 
@@ -47,10 +50,7 @@ async fn list_connections(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<VaultConnectionResponse>>, ApiError> {
-    let connections = state
-        .vault_service
-        .list_connections(&auth.user_id)
-        .await?;
+    let connections = state.vault_service.list_connections(&auth.user_id).await?;
     Ok(Json(connections))
 }
 
@@ -138,8 +138,6 @@ async fn search_items_inline(
     Ok(Json(items))
 }
 
-
-
 async fn list_grants(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -153,10 +151,7 @@ async fn revoke_grant(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    state
-        .vault_service
-        .revoke_grant(&auth.user_id, &id)
-        .await?;
+    state.vault_service.revoke_grant(&auth.user_id, &id).await?;
     Ok(Json(serde_json::json!({ "revoked": true })))
 }
 

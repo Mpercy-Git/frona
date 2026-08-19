@@ -16,8 +16,8 @@ use surrealdb::engine::local::{Db, Mem};
 use frona::core::config::{Config, StorageConfig};
 use frona::db::repo::pkm::PkmRepo;
 use frona::memory::pkm::model::{
-    classify_memories, Disposition, EntityCategory, EvidenceSource, EvidenceStrength,
-    LinkOrigin, MemoryEvidence, MemoryKind,
+    Disposition, EntityCategory, EvidenceSource, EvidenceStrength, LinkOrigin, MemoryEvidence,
+    MemoryKind, classify_memories,
 };
 use frona::memory::pkm::ontology::SchemaEdit;
 use frona::memory::pkm::{ConsolidationScope, PkmService};
@@ -25,9 +25,9 @@ use frona::memory::service::MemoryService;
 use frona::storage::StorageService;
 
 use helpers::{
-    MockModelProvider, MockResponse, commit_checkpointed_extract_patch,
-    mark_entity_rendered, mock_context, seed_asserted_entity_link, seed_entity_kinds,
-    seed_reconciled_entity, test_harness, test_model_group, test_registry_with_group,
+    MockModelProvider, MockResponse, commit_checkpointed_extract_patch, mark_entity_rendered,
+    mock_context, seed_asserted_entity_link, seed_entity_kinds, seed_reconciled_entity,
+    test_harness, test_model_group, test_registry_with_group,
 };
 
 fn empty_reconcile() -> serde_json::Value {
@@ -52,29 +52,35 @@ fn classification(name: &str, description: &str, class: &str) -> serde_json::Val
 
 fn adjudication_declarations(target: serde_json::Value) -> Vec<serde_json::Value> {
     std::iter::once(target)
-        .chain((1..10).map(|index| json!({
-            "kind":"class",
-            "term":format!("frona:AdjudicationFixture{index}"),
-            "description":format!("A test-only adjudication fixture class {index}."),
-            "parents":["schema:Thing"]
-        })))
+        .chain((1..10).map(|index| {
+            json!({
+                "kind":"class",
+                "term":format!("frona:AdjudicationFixture{index}"),
+                "description":format!("A test-only adjudication fixture class {index}."),
+                "parents":["schema:Thing"]
+            })
+        }))
         .collect()
 }
 
 fn adjudication_decisions(target: serde_json::Value) -> Vec<serde_json::Value> {
     std::iter::once(target)
-        .chain((1..10).map(|index| json!({
-            "term":format!("frona:AdjudicationFixture{index}"),
-            "decision":"accept_proposal"
-        })))
+        .chain((1..10).map(|index| {
+            json!({
+                "term":format!("frona:AdjudicationFixture{index}"),
+                "decision":"accept_proposal"
+            })
+        }))
         .collect()
 }
 
 fn adjudication_classes(target: serde_json::Value) -> Vec<serde_json::Value> {
     std::iter::once(target)
-        .chain((1..10).map(|index| json!({
-            "class":format!("frona:AdjudicationFixture{index}")
-        })))
+        .chain((1..10).map(|index| {
+            json!({
+                "class":format!("frona:AdjudicationFixture{index}")
+            })
+        }))
         .collect()
 }
 
@@ -186,27 +192,46 @@ async fn full_pass(
 ) -> Result<frona::memory::pkm::ConsolidationStats, frona::core::error::AppError> {
     if !transcript.trim().is_empty() && scope.evidence_sources.is_empty() {
         let chat_id = scope.chat_id.clone().unwrap_or_else(|| "test-chat".into());
-        for (index, line) in transcript.lines().filter(|line| !line.trim().is_empty()).enumerate() {
+        for (index, line) in transcript
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .enumerate()
+        {
             let handle = format!("m{}", index + 1);
             let (text, kind) = if let Some(text) = line.strip_prefix("Agent:") {
-                (text.trim(), frona::memory::pkm::TranscriptEvidenceKind::AgentMessage {
-                    message_id: format!("test-message-{}", index + 1),
-                    agent_id: scope.agent_id.clone(), chat_id: chat_id.clone(),
-                })
+                (
+                    text.trim(),
+                    frona::memory::pkm::TranscriptEvidenceKind::AgentMessage {
+                        message_id: format!("test-message-{}", index + 1),
+                        agent_id: scope.agent_id.clone(),
+                        chat_id: chat_id.clone(),
+                    },
+                )
             } else {
-                (line.strip_prefix("User:").unwrap_or(line).trim(),
+                (
+                    line.strip_prefix("User:").unwrap_or(line).trim(),
                     frona::memory::pkm::TranscriptEvidenceKind::UserMessage {
-                        message_id: format!("test-message-{}", index + 1), chat_id: chat_id.clone(),
-                    })
+                        message_id: format!("test-message-{}", index + 1),
+                        chat_id: chat_id.clone(),
+                    },
+                )
             };
-            scope.evidence_sources.push(frona::memory::pkm::TranscriptEvidenceSource {
-                handle, text: text.to_string(), kind,
-            });
+            scope
+                .evidence_sources
+                .push(frona::memory::pkm::TranscriptEvidenceSource {
+                    handle,
+                    text: text.to_string(),
+                    kind,
+                });
         }
     }
-    let transcript = transcript.lines().filter(|line| !line.trim().is_empty()).enumerate()
+    let transcript = transcript
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
         .map(|(index, line)| format!("[m{}] {line}", index + 1))
-        .collect::<Vec<_>>().join("\n");
+        .collect::<Vec<_>>()
+        .join("\n");
     let batch = service
         .mine_window(scope.clone(), &transcript, harness.clone())
         .await?;
@@ -373,7 +398,10 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
         user_name: "Casey Owner".into(),
         agent_id: "test-agent".into(),
         chat_id: Some("test-chat".into()),
-        vault: service.storage().vault_scope(frona::handle!("testuser"), "Memory").unwrap(),
+        vault: service
+            .storage()
+            .vault_scope(frona::handle!("testuser"), "Memory")
+            .unwrap(),
         temporal_sources: Vec::new(),
         evidence_sources: Vec::new(),
         recall: Default::default(),
@@ -430,7 +458,10 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
     // The extractor is schema-blind, so a concept is untyped until the Classify stage types
     // it - which it does here, because this fixture seeds a real agent and chat. The tag
     // renders the class it was given (the `ontology_*` e2es cover the typing itself).
-    assert!(text.contains("Postgres  [schema:Thing]"), "typed concept tag:\n{text}");
+    assert!(
+        text.contains("Postgres  [schema:Thing]"),
+        "typed concept tag:\n{text}"
+    );
     assert!(text.contains("[playbook]"), "playbook type tag:\n{text}");
     assert!(
         !text.contains("/pages/"),
@@ -472,14 +503,16 @@ async fn playbook_resolve_reads_pending_candidates_and_merges_duplicate_goals() 
     let db = test_db().await;
     seed_identity(&db).await;
     use frona::core::repository::Repository;
-    let message_repo = frona::db::repo::generic::SurrealRepo::<
-        frona::chat::message::models::Message,
-    >::new(db.clone());
+    let message_repo =
+        frona::db::repo::generic::SurrealRepo::<frona::chat::message::models::Message>::new(
+            db.clone(),
+        );
     let mut first_user_message = frona::chat::message::models::Message::builder(
         "test-chat",
         frona::chat::message::models::MessageRole::User,
         "Use yfinance to read the latest daily Close value.".into(),
-    ).build();
+    )
+    .build();
     first_user_message.id = "test-message-1".into();
     first_user_message.created_at = chrono::Utc::now();
     message_repo.create(&first_user_message).await.unwrap();
@@ -487,14 +520,23 @@ async fn playbook_resolve_reads_pending_candidates_and_merges_duplicate_goals() 
         "test-chat",
         frona::chat::message::models::MessageRole::User,
         "Run the same yfinance lookup locally when remote access fails.".into(),
-    ).build();
+    )
+    .build();
     second_user_message.id = "test-message-3".into();
     second_user_message.created_at = first_user_message.created_at + chrono::Duration::seconds(1);
     message_repo.create(&second_user_message).await.unwrap();
     let (tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    mark_clean(&db, &repo, "people/me", "schema:Person", "Casey Owner", json!({})).await;
+    mark_clean(
+        &db,
+        &repo,
+        "people/me",
+        "schema:Person",
+        "Casey Owner",
+        json!({}),
+    )
+    .await;
 
     let extract = json!({
         "new_entities": [],
@@ -543,7 +585,8 @@ async fn playbook_resolve_reads_pending_candidates_and_merges_duplicate_goals() 
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("extract".into(), "submit".into(), extract)]),
         MockResponse::ToolCalls(vec![(
-            "classify".into(), "submit".into(),
+            "classify".into(),
+            "submit".into(),
             json!({
                 "entity":{"name":"Casey Owner","description":"x","aliases":[]},
                 "classes":[{"class":"schema:Person"}],
@@ -551,19 +594,34 @@ async fn playbook_resolve_reads_pending_candidates_and_merges_duplicate_goals() 
                 "declarations":[], "has_keys":[], "inverse_functional_properties":[]
             }),
         )]),
-        MockResponse::ToolCalls(vec![("reconcile".into(), "submit".into(), empty_reconcile())]),
-        MockResponse::ToolCalls(vec![("resolve-first".into(), "submit".into(), first_resolution)]),
         MockResponse::ToolCalls(vec![(
-            "find".into(), "find_playbooks".into(),
+            "reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "resolve-first".into(),
+            "submit".into(),
+            first_resolution,
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "find".into(),
+            "find_playbooks".into(),
             json!({"query":"stock close yfinance"}),
         )]),
         MockResponse::ToolCalls(vec![(
-            "read".into(), "read_playbook".into(),
+            "read".into(),
+            "read_playbook".into(),
             json!({"path":"programming/fetch-stock-close-with-yfinance"}),
         )]),
-        MockResponse::ToolCalls(vec![("resolve-merge".into(), "submit".into(), merged_resolution)]),
         MockResponse::ToolCalls(vec![(
-            "author-playbook".into(), "submit".into(),
+            "resolve-merge".into(),
+            "submit".into(),
+            merged_resolution,
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "author-playbook".into(),
+            "submit".into(),
             json!({
                 "name":"Fetch a stock close price with yfinance",
                 "description":"Fetch the latest daily stock close with yfinance, including local execution when remote access fails.",
@@ -583,35 +641,63 @@ async fn playbook_resolve_reads_pending_candidates_and_merges_duplicate_goals() 
     ).await;
     assert!(result.is_ok(), "{result:?}\n{:?}", mock.histories());
 
-    let canonical = repo.entity_by_path(
-        "test-user", "programming/fetch-stock-close-with-yfinance",
-    ).await.unwrap().expect("canonical Playbook");
+    let canonical = repo
+        .entity_by_path("test-user", "programming/fetch-stock-close-with-yfinance")
+        .await
+        .unwrap()
+        .expect("canonical Playbook");
     assert_eq!(canonical.category, EntityCategory::Playbook);
-    assert!(repo.entity_by_path("test-user", "markets/retrieve-stock-close-price")
-        .await.unwrap().is_none(), "duplicate Playbook survived");
-    let memories = repo.memories_for_entity(
-        "test-user", "programming/fetch-stock-close-with-yfinance",
-    ).await.unwrap();
-    assert_eq!(memories.len(), 2, "both procedure memories must reach the winner");
+    assert!(
+        repo.entity_by_path("test-user", "markets/retrieve-stock-close-price")
+            .await
+            .unwrap()
+            .is_none(),
+        "duplicate Playbook survived"
+    );
+    let memories = repo
+        .memories_for_entity("test-user", "programming/fetch-stock-close-with-yfinance")
+        .await
+        .unwrap();
+    assert_eq!(
+        memories.len(),
+        2,
+        "both procedure memories must reach the winner"
+    );
     let histories = format!("{:?}", mock.histories());
-    assert!(histories.contains("(not authored yet)"),
-        "read_playbook did not expose the pending Playbook: {histories}");
-    let author_history = mock.histories().into_iter().find(|history| history.iter().any(|message| {
-        let rendered = format!("{message:?}");
-        rendered.contains("PATH: programming/fetch-stock-close-with-yfinance")
-            && rendered.contains("SOURCE TRANSCRIPT WINDOWS:")
-    })).expect("Playbook Author request");
+    assert!(
+        histories.contains("(not authored yet)"),
+        "read_playbook did not expose the pending Playbook: {histories}"
+    );
+    let author_history = mock
+        .histories()
+        .into_iter()
+        .find(|history| {
+            history.iter().any(|message| {
+                let rendered = format!("{message:?}");
+                rendered.contains("PATH: programming/fetch-stock-close-with-yfinance")
+                    && rendered.contains("SOURCE TRANSCRIPT WINDOWS:")
+            })
+        })
+        .expect("Playbook Author request");
     let author_history = format!("{author_history:?}");
-    assert!(author_history.contains("[t1 user]") || author_history.contains("[t2 user]"),
-        "Playbook Author did not receive a User-anchored transcript window: {author_history}");
-    assert!(!author_history.contains("(source transcript unavailable)"),
-        "Playbook Author treated User assertion evidence as unavailable: {author_history}");
-    assert!(tmp.path().join(
-        "users/testuser/pkm/Memory/programming/fetch-stock-close-with-yfinance.md",
-    ).is_file());
-    assert!(!tmp.path().join(
-        "users/testuser/pkm/Memory/markets/retrieve-stock-close-price.md",
-    ).exists());
+    assert!(
+        author_history.contains("[t1 user]") || author_history.contains("[t2 user]"),
+        "Playbook Author did not receive a User-anchored transcript window: {author_history}"
+    );
+    assert!(
+        !author_history.contains("(source transcript unavailable)"),
+        "Playbook Author treated User assertion evidence as unavailable: {author_history}"
+    );
+    assert!(
+        tmp.path()
+            .join("users/testuser/pkm/Memory/programming/fetch-stock-close-with-yfinance.md",)
+            .is_file()
+    );
+    assert!(
+        !tmp.path()
+            .join("users/testuser/pkm/Memory/markets/retrieve-stock-close-price.md",)
+            .exists()
+    );
 }
 
 /// Full integrated scenario (one consolidation pass, no ontology layer) - validates
@@ -688,14 +774,21 @@ async fn consolidation_routes_self_memories_persists_aliases_and_updates_user_pr
     let mock = Arc::new(MockModelProvider::new(vec![
         // extract, 2× reconcile (identical), 2× author (identical)
         MockResponse::ToolCalls(vec![("e1".into(), "submit".into(), extract1)]),
-        MockResponse::ToolCalls(vec![("k1".into(), "submit".into(), json!({
-            "entity":{"name":"Former Corp","description":"Casey Owner's employer","aliases":["EXC"]},
-            "classes":[{"class":"schema:Organization"}],
-            "relations":[],"attributes":[],"new_entities":[],"declarations":[],
-            "has_keys":[],"inverse_functional_properties":[]
-        }))]),
-        MockResponse::ToolCalls(vec![("k2".into(), "submit".into(),
-            classification("Casey Owner", "The account owner.", "schema:Person"))]),
+        MockResponse::ToolCalls(vec![(
+            "k1".into(),
+            "submit".into(),
+            json!({
+                "entity":{"name":"Former Corp","description":"Casey Owner's employer","aliases":["EXC"]},
+                "classes":[{"class":"schema:Organization"}],
+                "relations":[],"attributes":[],"new_entities":[],"declarations":[],
+                "has_keys":[],"inverse_functional_properties":[]
+            }),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "k2".into(),
+            "submit".into(),
+            classification("Casey Owner", "The account owner.", "schema:Person"),
+        )]),
         MockResponse::ToolCalls(vec![("r1".into(), "submit".into(), reconcile_self)]),
         MockResponse::ToolCalls(vec![("r2".into(), "submit".into(), empty_reconcile())]),
         MockResponse::Text("page body".into()),
@@ -727,16 +820,24 @@ async fn consolidation_routes_self_memories_persists_aliases_and_updates_user_pr
         user_name: "Casey Owner".into(),
         agent_id: "test-agent".into(),
         chat_id: Some(chat.into()),
-        vault: service.storage().vault_scope(frona::handle!("testuser"), "Memory").unwrap(),
+        vault: service
+            .storage()
+            .vault_scope(frona::handle!("testuser"), "Memory")
+            .unwrap(),
         temporal_sources: Vec::new(),
         evidence_sources: Vec::new(),
         recall: Default::default(),
         timezone: "UTC".into(),
     };
 
-    full_pass(&service, scope("test-chat"), "I'm a backend engineer at Former Corp, we deploy to EXC, I'm on UTC.", harness.clone())
-        .await
-        .unwrap();
+    full_pass(
+        &service,
+        scope("test-chat"),
+        "I'm a backend engineer at Former Corp, we deploy to EXC, I'm on UTC.",
+        harness.clone(),
+    )
+    .await
+    .unwrap();
 
     let self_entity = repo
         .self_entity("test-user")
@@ -770,10 +871,11 @@ async fn consolidation_routes_self_memories_persists_aliases_and_updates_user_pr
             .await
             .unwrap()
             .unwrap()
-        .timezone
-        .as_deref(),
+            .timezone
+            .as_deref(),
         Some("UTC"),
-        "timezone written through to User: {:#?}", mock.histories()
+        "timezone written through to User: {:#?}",
+        mock.histories()
     );
     // <user_profile> reflects the learned self-page enrichment.
     let ctx = mock_context();
@@ -825,8 +927,11 @@ async fn self_entity_injects_user_profile() {
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
     // Seed the reserved self-page + a learned attribute (as reconcile would).
-    repo.ensure_self_entity("test-user", "Casey Owner").await.unwrap();
-    seed_reconciled_entity(&db, 
+    repo.ensure_self_entity("test-user", "Casey Owner")
+        .await
+        .unwrap();
+    seed_reconciled_entity(
+        &db,
         "test-user",
         "people/me",
         "",
@@ -920,8 +1025,11 @@ async fn self_entity_write_through_updates_user_timezone() {
     });
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("c1".into(), "submit".into(), extract)]),
-        MockResponse::ToolCalls(vec![("k".into(), "submit".into(),
-            classification("Old Name", "the account owner", "schema:Person"))]),
+        MockResponse::ToolCalls(vec![(
+            "k".into(),
+            "submit".into(),
+            classification("Old Name", "the account owner", "schema:Person"),
+        )]),
         MockResponse::ToolCalls(vec![("c2".into(), "submit".into(), reconcile)]),
         MockResponse::Text("The account owner is on UTC.".into()),
     ]));
@@ -949,7 +1057,10 @@ async fn self_entity_write_through_updates_user_timezone() {
         user_name: "Old Name".into(),
         agent_id: "test-agent".into(),
         chat_id: Some("test-chat".into()),
-        vault: service.storage().vault_scope(frona::handle!("testuser"), "Memory").unwrap(),
+        vault: service
+            .storage()
+            .vault_scope(frona::handle!("testuser"), "Memory")
+            .unwrap(),
         temporal_sources: Vec::new(),
         evidence_sources: Vec::new(),
         recall: Default::default(),
@@ -1006,14 +1117,7 @@ async fn checkpoint_commit_consumes_short_memory_advances_watermark_and_selects_
 
     assert!(repo.consolidation_watermark("c1").await.unwrap().is_none());
     let t = chrono::Utc::now() - chrono::Duration::hours(1);
-    commit_checkpointed_extract_patch(
-        &repo,
-        "u",
-        &Default::default(),
-        Some(("c1", t)),
-        &[],
-    )
-    .await;
+    commit_checkpointed_extract_patch(&repo, "u", &Default::default(), Some(("c1", t)), &[]).await;
     assert!(
         repo.consolidation_watermark("c1").await.unwrap().is_some(),
         "watermark persisted (upsert)"
@@ -1078,8 +1182,12 @@ async fn replace_chain_classifies_current_and_history() {
         .unwrap();
 
     // 5432 replaced by 5433, 5433 replaced by 5500.
-    repo.add_relation("test-user", &id1, RelationType::Replace, &id2, "corrected").await.unwrap();
-    repo.add_relation("test-user", &id2, RelationType::Replace, &id3, "moved").await.unwrap();
+    repo.add_relation("test-user", &id1, RelationType::Replace, &id2, "corrected")
+        .await
+        .unwrap();
+    repo.add_relation("test-user", &id2, RelationType::Replace, &id3, "moved")
+        .await
+        .unwrap();
 
     let mems = repo.memories_for_entity("u", "services/pg").await.unwrap();
     let (cur, hist) = classify_memories(&mems);
@@ -1087,7 +1195,11 @@ async fn replace_chain_classifies_current_and_history() {
     assert_eq!(cur[0].content, "port is now 5500");
     let mut h: Vec<&str> = hist.iter().map(|m| m.content.as_str()).collect();
     h.sort();
-    assert_eq!(h, vec!["port is now 5433", "port was 5432"], "both older values in History");
+    assert_eq!(
+        h,
+        vec!["port is now 5433", "port was 5432"],
+        "both older values in History"
+    );
 }
 
 /// Crash recovery: a rename that committed in the DB but never finished on disk is
@@ -1157,7 +1269,10 @@ async fn recovery_repairs_a_revision_that_does_not_match_the_file() {
         .vault_scope(frona::handle!("testuser"), "Memory")
         .unwrap();
     let content = "# Casey\n\nCanonical file bytes.";
-    service.storage().write_page(&vault, "people/casey", content).unwrap();
+    service
+        .storage()
+        .write_page(&vault, "people/casey", content)
+        .unwrap();
     repo.set_page_rev("test-user", "people/casey", "stale-revision")
         .await
         .unwrap();
@@ -1174,26 +1289,36 @@ async fn recovery_repairs_a_revision_that_does_not_match_the_file() {
         Some(frona::memory::pkm::sha256_hex(content).as_str()),
         "recovery must make the stored revision match the canonical file bytes",
     );
-    assert_eq!(page.sync_content.as_deref(), Some(content),
-        "legacy file bytes become the durable database projection");
+    assert_eq!(
+        page.sync_content.as_deref(),
+        Some(content),
+        "legacy file bytes become the durable database projection"
+    );
 
     let durable = "# Casey\n\nDatabase-authoritative bytes.";
     let durable_rev = frona::memory::pkm::sha256_hex(durable);
-    repo.set_page_projection(
-        "test-user", "people/casey", durable, &durable_rev,
-    ).await.unwrap();
-    service.storage().write_page(
-        &vault, "people/casey", "# Casey\n\nStale file bytes.",
-    ).unwrap();
+    repo.set_page_projection("test-user", "people/casey", durable, &durable_rev)
+        .await
+        .unwrap();
+    service
+        .storage()
+        .write_page(&vault, "people/casey", "# Casey\n\nStale file bytes.")
+        .unwrap();
 
     service.reconcile_vault().await.unwrap();
 
-    let repaired = repo.entity_by_path("test-user", "people/casey")
-        .await.unwrap().unwrap();
+    let repaired = repo
+        .entity_by_path("test-user", "people/casey")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(repaired.rev.as_deref(), Some(durable_rev.as_str()));
     assert_eq!(repaired.sync_content.as_deref(), Some(durable));
     assert_eq!(
-        service.storage().read_page(&vault, "people/casey").as_deref(),
+        service
+            .storage()
+            .read_page(&vault, "people/casey")
+            .as_deref(),
         Some(durable),
         "recovery replaces a stale mirror from the authoritative database bytes",
     );
@@ -1248,10 +1373,16 @@ async fn recovery_relocates_deduplicates_and_rerenders() {
     let reconcile = json!({"supersessions":[],"attributes":{"port":5433},"description":"the local dev postgres","moves":[]});
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("c1".into(), "submit".into(), extract)]),
-        MockResponse::ToolCalls(vec![("k1".into(), "submit".into(),
-            classification("Casey Owner", "The account owner.", "schema:Person"))]),
-        MockResponse::ToolCalls(vec![("k2".into(), "submit".into(),
-            classification("Postgres", "the dev database", "schema:Thing"))]),
+        MockResponse::ToolCalls(vec![(
+            "k1".into(),
+            "submit".into(),
+            classification("Casey Owner", "The account owner.", "schema:Person"),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "k2".into(),
+            "submit".into(),
+            classification("Postgres", "the dev database", "schema:Thing"),
+        )]),
         MockResponse::ToolCalls(vec![("r1".into(), "submit".into(), empty_reconcile())]),
         MockResponse::ToolCalls(vec![("r2".into(), "submit".into(), reconcile)]),
         MockResponse::Text("Postgres is the local development database.".into()),
@@ -1283,7 +1414,10 @@ async fn recovery_relocates_deduplicates_and_rerenders() {
         user_name: "Casey Owner".into(),
         agent_id: "test-agent".into(),
         chat_id: Some("test-chat".into()),
-        vault: service.storage().vault_scope(frona::handle!("testuser"), "Memory").unwrap(),
+        vault: service
+            .storage()
+            .vault_scope(frona::handle!("testuser"), "Memory")
+            .unwrap(),
         temporal_sources: Vec::new(),
         evidence_sources: Vec::new(),
         recall: Default::default(),
@@ -1294,16 +1428,24 @@ async fn recovery_relocates_deduplicates_and_rerenders() {
         scope,
         "User: my postgres runs on 5433.",
         harness.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     let vault = StorageService::new(&config)
         .user_pkm_path(&frona::handle!("testuser"))
         .join("Memory");
     let pg = vault.join("services/postgres.md");
-    assert!(pg.exists(),
-        "consolidate authored the concept page file: {stats:?}\n{:#?}", mock.histories());
+    assert!(
+        pg.exists(),
+        "consolidate authored the concept page file: {stats:?}\n{:#?}",
+        mock.histories()
+    );
     let content = std::fs::read_to_string(&pg).unwrap();
-    assert!(content.contains("uid:"), "file carries its DB uid in frontmatter");
+    assert!(
+        content.contains("uid:"),
+        "file carries its DB uid in frontmatter"
+    );
 
     // Simulate a crash mid-rename: DB says services/pg, file still at postgres.md,
     // plus a stale duplicate copy left behind by an interrupted move.
@@ -1315,7 +1457,10 @@ async fn recovery_relocates_deduplicates_and_rerenders() {
     service.reconcile_vault().await.unwrap();
 
     let renamed = vault.join("services/pg.md");
-    assert!(renamed.exists(), "file relocated to the DB's canonical path");
+    assert!(
+        renamed.exists(),
+        "file relocated to the DB's canonical path"
+    );
     assert_eq!(
         std::fs::read_to_string(&renamed).unwrap(),
         content,
@@ -1329,9 +1474,15 @@ async fn recovery_relocates_deduplicates_and_rerenders() {
 
     std::fs::remove_file(&renamed).unwrap();
     service.reconcile_vault().await.unwrap();
-    assert!(renamed.exists(), "missing file re-rendered from persisted body");
+    assert!(
+        renamed.exists(),
+        "missing file re-rendered from persisted body"
+    );
     let rebuilt = std::fs::read_to_string(&renamed).unwrap();
-    assert!(rebuilt.contains("title: Postgres"), "deterministic frontmatter");
+    assert!(
+        rebuilt.contains("title: Postgres"),
+        "deterministic frontmatter"
+    );
     assert!(
         rebuilt.contains("Postgres is the local development database."),
         "persisted body restored from the DB, not regenerated:\n{rebuilt}"
@@ -1392,18 +1543,37 @@ async fn recovery_relocates_a_renamed_directory() {
     );
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
     let handle = frona::handle!("testuser");
-    let vault = StorageService::new(&config).user_pkm_path(&handle).join("Memory");
+    let vault = StorageService::new(&config)
+        .user_pkm_path(&handle)
+        .join("Memory");
 
     // Seed two pages under `people/`, each with a `uid`-stamped file on disk.
     let mut moves = Vec::new();
     for (path, name) in [("people/alice", "Alice"), ("people/bob", "Bob")] {
-        repo.upsert_entity_skeleton("test-user", path, EntityCategory::Concept, &["https://schema.org/Person".to_string()], name, "", &[])
+        repo.upsert_entity_skeleton(
+            "test-user",
+            path,
+            EntityCategory::Concept,
+            &["https://schema.org/Person".to_string()],
+            name,
+            "",
+            &[],
+        )
+        .await
+        .unwrap();
+        let id = repo
+            .entity_by_path("test-user", path)
             .await
-            .unwrap();
-        let id = repo.entity_by_path("test-user", path).await.unwrap().unwrap().id;
+            .unwrap()
+            .unwrap()
+            .id;
         let file = vault.join(format!("{path}.md"));
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, format!("---\nuid: {id}\ntitle: {name}\n---\n# {name}\n\nbody\n")).unwrap();
+        std::fs::write(
+            &file,
+            format!("---\nuid: {id}\ntitle: {name}\n---\n# {name}\n\nbody\n"),
+        )
+        .unwrap();
         moves.push((path.to_string(), path.replace("people/", "humans/")));
     }
 
@@ -1419,16 +1589,20 @@ async fn recovery_relocates_a_renamed_directory() {
 
     // Every page under the renamed directory is relocated to its new path (content
     // preserved), and the old paths are gone - no split, no data loss.
-    for (old, new) in [("people/alice", "humans/alice"), ("people/bob", "humans/bob")] {
+    for (old, new) in [
+        ("people/alice", "humans/alice"),
+        ("people/bob", "humans/bob"),
+    ] {
         assert!(vault.join(format!("{new}.md")).exists(), "{new} relocated");
         assert!(!vault.join(format!("{old}.md")).exists(), "{old} removed");
         assert!(
-            std::fs::read_to_string(vault.join(format!("{new}.md"))).unwrap().contains("body"),
+            std::fs::read_to_string(vault.join(format!("{new}.md")))
+                .unwrap()
+                .contains("body"),
             "content preserved for {new}"
         );
     }
 }
-
 
 /// The committed standard-vocabulary fixture. Deliberately *not* the real catalogue:
 /// that is fetched into the image from a pinned release and is not in this repo, so a
@@ -1453,7 +1627,10 @@ fn ontology_scope(service: &PkmService) -> ConsolidationScope {
         user_name: "Casey Owner".into(),
         agent_id: "test-agent".into(),
         chat_id: Some("test-chat".into()),
-        vault: service.storage().vault_scope(frona::handle!("testuser"), "Memory").unwrap(),
+        vault: service
+            .storage()
+            .vault_scope(frona::handle!("testuser"), "Memory")
+            .unwrap(),
         temporal_sources: Vec::new(),
         evidence_sources: Vec::new(),
         recall: Default::default(),
@@ -1547,7 +1724,8 @@ async fn classify_types_entities_and_assemble_mints_schema() {
         ontology_scope(&service),
         "User: postgres is our primary datastore.",
         harness,
-    ).await;
+    )
+    .await;
     assert!(result.is_ok(), "{result:?}\n{:#?}", mock.histories());
 
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
@@ -1556,14 +1734,31 @@ async fn classify_types_entities_and_assemble_mints_schema() {
         .await
         .unwrap()
         .expect("postgres page exists");
-    assert_eq!(pg.kinds, [frona::memory::pkm::ontology::PrefixMap::standard().expand("frona:Service")], "page re-keyed to the ontology class CURIE");
+    assert_eq!(
+        pg.kinds,
+        [frona::memory::pkm::ontology::PrefixMap::standard().expand("frona:Service")],
+        "page re-keyed to the ontology class CURIE"
+    );
 
     // the frona: mint is persisted + versioned in the delta.
-    let onto = repo.ontology_get("test-user").await.unwrap().expect("delta persisted");
+    let onto = repo
+        .ontology_get("test-user")
+        .await
+        .unwrap()
+        .expect("delta persisted");
     assert!(onto.version >= 1, "delta versioned: {}", onto.version);
-    assert!(onto.owl.contains("Service"), "delta declares frona:Service:\n{}", onto.owl);
     assert!(
-        ontology_manager.catalog("test-user").await.unwrap().classes.contains(&"frona:Service".to_string()),
+        onto.owl.contains("Service"),
+        "delta declares frona:Service:\n{}",
+        onto.owl
+    );
+    assert!(
+        ontology_manager
+            .catalog("test-user")
+            .await
+            .unwrap()
+            .classes
+            .contains(&"frona:Service".to_string()),
         "catalog reflects the mint"
     );
 }
@@ -1590,14 +1785,34 @@ async fn classify_discards_a_clashing_submission_without_hiding_facts() {
     };
     let storage = StorageService::new(&config);
     let repo = PkmRepo::new(db.clone(), 8);
-    mark_clean(&db, &repo, "people/me", "schema:Person", "Casey Owner", json!({})).await;
     mark_clean(
-        &db, &repo, "organizations/acme", "schema:Organization", "Acme", json!({}),
-    ).await;
+        &db,
+        &repo,
+        "people/me",
+        "schema:Person",
+        "Casey Owner",
+        json!({}),
+    )
+    .await;
+    mark_clean(
+        &db,
+        &repo,
+        "organizations/acme",
+        "schema:Organization",
+        "Acme",
+        json!({}),
+    )
+    .await;
     repo.create_memory_with_entities(
-        "test-user", "test-agent", "test-chat", MemoryKind::Fact,
-        "Acme is our primary vendor", &["organizations/acme".into()],
-    ).await.unwrap();
+        "test-user",
+        "test-agent",
+        "test-chat",
+        MemoryKind::Fact,
+        "Acme is our primary vendor",
+        &["organizations/acme".into()],
+    )
+    .await
+    .unwrap();
     touch(&db, "organizations/acme", "schema:Organization").await;
 
     // The page keeps proposing the contradictory class through every semantic revision.
@@ -1638,36 +1853,49 @@ async fn classify_discards_a_clashing_submission_without_hiding_facts() {
 
     // Pre-seed a contradictory class: frona:Confused ⊑ Person AND ⊑ Organization
     // (disjoint in frona.ttl). Any page typed with it clashes.
-    ontology_manager.commit(
-        "test-user",
-        &[
-            SchemaEdit::SubClassOf { sub: "frona:Confused".into(), sup: "schema:Person".into() },
-            SchemaEdit::SubClassOf {
-                sub: "frona:Confused".into(),
-                sup: "schema:Organization".into(),
-            },
-        ],
-    )
-    .await
-    .unwrap();
+    ontology_manager
+        .commit(
+            "test-user",
+            &[
+                SchemaEdit::SubClassOf {
+                    sub: "frona:Confused".into(),
+                    sup: "schema:Person".into(),
+                },
+                SchemaEdit::SubClassOf {
+                    sub: "frona:Confused".into(),
+                    sup: "schema:Organization".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
 
     let harness = test_harness(&db, &config, mock.clone());
     let result = full_pass(&service, ontology_scope(&service), "", harness).await;
     assert!(result.is_ok(), "{result:?}\n{:#?}", mock.histories());
     let stats = result.unwrap();
 
-    let mems = repo.memories_for_entity("test-user", "organizations/acme").await.unwrap();
+    let mems = repo
+        .memories_for_entity("test-user", "organizations/acme")
+        .await
+        .unwrap();
     assert!(
         mems.iter().all(|m| m.disposition == Disposition::None),
         "the invalid class must not hide valid facts: {:?}; stats={stats:?}",
-        mems.iter().map(|m| (&m.content, m.disposition)).collect::<Vec<_>>(),
+        mems.iter()
+            .map(|m| (&m.content, m.disposition))
+            .collect::<Vec<_>>(),
     );
     assert_eq!(stats.facts_quarantined, 0);
-    let entity = repo.entity_by_path("test-user", "organizations/acme")
-        .await.unwrap().unwrap();
-    assert_eq!(entity.kinds, [
-        frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization"),
-    ]);
+    let entity = repo
+        .entity_by_path("test-user", "organizations/acme")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        entity.kinds,
+        [frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization"),]
+    );
 }
 
 /// Build an ontology-enabled service over a temporary vault for tests that start with
@@ -1678,7 +1906,12 @@ async fn classify_discards_a_clashing_submission_without_hiding_facts() {
 async fn consolidate_only_service(
     db: &Surreal<Db>,
     mock: Arc<MockModelProvider>,
-) -> (PkmService, Arc<frona::agent::harness::Harness>, Config, tempfile::TempDir) {
+) -> (
+    PkmService,
+    Arc<frona::agent::harness::Harness>,
+    Config,
+    tempfile::TempDir,
+) {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_string_lossy().to_string();
     let config = Config {
@@ -1738,22 +1971,39 @@ async fn classify_that_never_answers_returns_an_error_without_quarantining_the_e
     seed_identity(&db).await;
     // Classify answers with prose and never produces a valid typed submission, so its
     // caller-owned submission budget ends without a candidate.
-    let mut responses = vec![MockResponse::Text("I would rather not classify that.".into())];
+    let mut responses = vec![MockResponse::Text(
+        "I would rather not classify that.".into(),
+    )];
     responses.extend(consolidate_responses().into_iter().skip(1));
     let mock = Arc::new(MockModelProvider::new(responses));
-    let (service, harness, _config, _tmp) =
-        consolidate_only_service(&db, mock.clone()).await;
+    let (service, harness, _config, _tmp) = consolidate_only_service(&db, mock.clone()).await;
     let repo = PkmRepo::new(db.clone(), 8);
 
-    repo.upsert_entity_skeleton("test-user", "organizations/acme", EntityCategory::Concept, &[], "Acme", "a vendor", &[])
-        .await
-        .unwrap();
-    repo.create_memory_with_entities("test-user", "a", "c", MemoryKind::Fact, "Acme is our primary vendor", &["organizations/acme".into()])
-        .await
-        .unwrap();
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "organizations/acme",
+        EntityCategory::Concept,
+        &[],
+        "Acme",
+        "a vendor",
+        &[],
+    )
+    .await
+    .unwrap();
+    repo.create_memory_with_entities(
+        "test-user",
+        "a",
+        "c",
+        MemoryKind::Fact,
+        "Acme is our primary vendor",
+        &["organizations/acme".into()],
+    )
+    .await
+    .unwrap();
 
     let error = full_pass(&service, ontology_scope(&service), "", harness)
-        .await.expect_err("a missing Classify stage submission must remain retryable");
+        .await
+        .expect_err("a missing Classify stage submission must remain retryable");
     assert!(error.to_string().contains("submission budget exhausted"));
     assert_eq!(
         mock.calls(),
@@ -1761,16 +2011,29 @@ async fn classify_that_never_answers_returns_an_error_without_quarantining_the_e
         "each missing answer consumes one caller-owned submission attempt"
     );
 
-    let mems = repo.memories_for_entity("test-user", "organizations/acme").await.unwrap();
+    let mems = repo
+        .memories_for_entity("test-user", "organizations/acme")
+        .await
+        .unwrap();
     assert!(
         mems.iter().all(|m| m.disposition == Disposition::None),
         "the fact is still live: {:?}",
-        mems.iter().map(|m| (&m.content, m.disposition)).collect::<Vec<_>>()
+        mems.iter()
+            .map(|m| (&m.content, m.disposition))
+            .collect::<Vec<_>>()
     );
     let (cur, _) = classify_memories(&mems);
     assert_eq!(cur.len(), 1, "and visible to the projection");
-    let page = repo.entity_by_path("test-user", "organizations/acme").await.unwrap().unwrap();
-    assert!(page.kinds.iter().all(|k| k.trim().is_empty()), "typing was deferred: {:?}", page.kinds);
+    let page = repo
+        .entity_by_path("test-user", "organizations/acme")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        page.kinds.iter().all(|k| k.trim().is_empty()),
+        "typing was deferred: {:?}",
+        page.kinds
+    );
 }
 
 #[tokio::test]
@@ -1779,21 +2042,40 @@ async fn agent_echo_of_historical_memory_is_retired_before_page_projection() {
     seed_identity(&db).await;
     let repo = PkmRepo::new(db.clone(), 8);
     repo.upsert_entity_skeleton(
-        "test-user", "dogs/buddy", EntityCategory::Concept, &[], "Buddy", "Casey Owner's dog", &[],
-    ).await.unwrap();
+        "test-user",
+        "dogs/buddy",
+        EntityCategory::Concept,
+        &[],
+        "Buddy",
+        "Casey Owner's dog",
+        &[],
+    )
+    .await
+    .unwrap();
 
-    let historical = repo.create_sourced_memory(
-        "test-user", MemoryKind::Fact, "Buddy needs ear medication", &["dogs/buddy".into()],
-        vec![frona::memory::pkm::model::MemoryEvidence {
-            strength: frona::memory::pkm::model::EvidenceStrength::Explicit,
-            source: frona::memory::pkm::model::EvidenceSource::UserMessage {
-                message_id: "user-original".into(), chat_id: "chat-old".into(),
-                quote: "Buddy needs ear medication".into(),
-            },
-        }],
-    ).await.unwrap();
-    repo.set_disposition("test-user", &historical, Disposition::Outdated).await.unwrap();
-    mark_entity_rendered(&db, "test-user", "dogs/buddy").await.unwrap();
+    let historical = repo
+        .create_sourced_memory(
+            "test-user",
+            MemoryKind::Fact,
+            "Buddy needs ear medication",
+            &["dogs/buddy".into()],
+            vec![frona::memory::pkm::model::MemoryEvidence {
+                strength: frona::memory::pkm::model::EvidenceStrength::Explicit,
+                source: frona::memory::pkm::model::EvidenceSource::UserMessage {
+                    message_id: "user-original".into(),
+                    chat_id: "chat-old".into(),
+                    quote: "Buddy needs ear medication".into(),
+                },
+            }],
+        )
+        .await
+        .unwrap();
+    repo.set_disposition("test-user", &historical, Disposition::Outdated)
+        .await
+        .unwrap();
+    mark_entity_rendered(&db, "test-user", "dogs/buddy")
+        .await
+        .unwrap();
 
     let extract = json!({
         "new_entities": [], "existing_entity_updates": [], "playbooks": [],
@@ -1818,32 +2100,58 @@ async fn agent_echo_of_historical_memory_is_retired_before_page_projection() {
     });
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
-        MockResponse::ToolCalls(vec![("k".into(), "submit".into(),
-            classification("Buddy", "Casey Owner's dog", "schema:Thing"))]),
-        MockResponse::ToolCalls(vec![("km".into(), "submit".into(),
-            classification("Casey Owner", "The account owner.", "schema:Person"))]),
+        MockResponse::ToolCalls(vec![(
+            "k".into(),
+            "submit".into(),
+            classification("Buddy", "Casey Owner's dog", "schema:Thing"),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "km".into(),
+            "submit".into(),
+            classification("Casey Owner", "The account owner.", "schema:Person"),
+        )]),
         MockResponse::ToolCalls(vec![("r1".into(), "submit".into(), first)]),
         MockResponse::Text("Buddy is Casey Owner's dog.".into()),
         MockResponse::Text("Casey Owner is the account owner.".into()),
     ]));
-    let (service, harness, _config, _tmp) =
-        consolidate_only_service(&db, mock.clone()).await;
+    let (service, harness, _config, _tmp) = consolidate_only_service(&db, mock.clone()).await;
     full_pass(
         &service,
         ontology_scope(&service),
         "Agent: Buddy needs ear medication\nUser: Yes, that is correct",
         harness,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
-    let memories = repo.memories_for_entity("test-user", "dogs/buddy").await.unwrap();
-    assert!(memories.iter().all(|memory| !matches!(
-        memory.evidence.first().map(|item| &item.source),
-        Some(frona::memory::pkm::model::EvidenceSource::AgentMessage { .. })
-    )), "cleanup removed the subordinate Agent echo: {memories:?}\n{:#?}", mock.histories());
-    assert!(memories.iter().any(|memory| memory.id == historical
-        && memory.disposition == Disposition::Outdated), "historical source remains outdated");
-    let page = repo.entity_by_path("test-user", "dogs/buddy").await.unwrap().unwrap();
-    assert_eq!(page.attributes, json!({}), "the first verdict's echo-derived attribute never projected");
+    let memories = repo
+        .memories_for_entity("test-user", "dogs/buddy")
+        .await
+        .unwrap();
+    assert!(
+        memories.iter().all(|memory| !matches!(
+            memory.evidence.first().map(|item| &item.source),
+            Some(frona::memory::pkm::model::EvidenceSource::AgentMessage { .. })
+        )),
+        "cleanup removed the subordinate Agent echo: {memories:?}\n{:#?}",
+        mock.histories()
+    );
+    assert!(
+        memories
+            .iter()
+            .any(|memory| memory.id == historical && memory.disposition == Disposition::Outdated),
+        "historical source remains outdated"
+    );
+    let page = repo
+        .entity_by_path("test-user", "dogs/buddy")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        page.attributes,
+        json!({}),
+        "the first verdict's echo-derived attribute never projected"
+    );
 }
 
 /// A shared ontology-enabled service + harness for the Resolve e2es.
@@ -1897,13 +2205,22 @@ async fn resolve_merges_duplicate_mention() {
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
     repo.upsert_entity_skeleton(
-        "test-user", "people/me", EntityCategory::Concept,
+        "test-user",
+        "people/me",
+        EntityCategory::Concept,
         &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
-        "Casey Owner", "the owner", &[],
-    ).await.unwrap();
+        "Casey Owner",
+        "the owner",
+        &[],
+    )
+    .await
+    .unwrap();
     seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &json!({}))
-        .await.unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
+        .await
+        .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
+        .await
+        .unwrap();
 
     // Two mentions of "Former Corp" at different proposed paths.
     let extract = json!({
@@ -1924,25 +2241,53 @@ async fn resolve_merges_duplicate_mention() {
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
         MockResponse::ToolCalls(vec![("c1".into(), "submit".into(), classify.clone())]),
         MockResponse::ToolCalls(vec![("c2".into(), "submit".into(), classify)]),
-        MockResponse::ToolCalls(vec![("resolve".into(), "submit".into(), json!({
-            "canonical":"orgs/former-corp", "same_as":[],
-            "merge_because":[], "distinct_because":[]
-        }))]),
-        MockResponse::ToolCalls(vec![("reconcile".into(), "submit".into(), empty_reconcile())]),
+        MockResponse::ToolCalls(vec![(
+            "resolve".into(),
+            "submit".into(),
+            json!({
+                "canonical":"orgs/former-corp", "same_as":[],
+                "merge_because":[], "distinct_because":[]
+            }),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
         MockResponse::Text("# Former Corp\n\nFormer Corp is a retailer.".into()),
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock.clone(), &memory_config).await;
-    full_pass(&service, ontology_scope(&service), "Former Corp is a retailer.", harness)
-        .await
-        .unwrap();
+    full_pass(
+        &service,
+        ontology_scope(&service),
+        "Former Corp is a retailer.",
+        harness,
+    )
+    .await
+    .unwrap();
 
     // Exactly one of the two mention pages survives (the other merged in).
-    let a = repo.entity_by_path("test-user", "orgs/former-corp").await.unwrap().is_some();
-    let b = repo.entity_by_path("test-user", "orgs/former-corp-inc").await.unwrap().is_some();
-    assert!(a ^ b, "the duplicate mention was merged into a single canonical page");
+    let a = repo
+        .entity_by_path("test-user", "orgs/former-corp")
+        .await
+        .unwrap()
+        .is_some();
+    let b = repo
+        .entity_by_path("test-user", "orgs/former-corp-inc")
+        .await
+        .unwrap()
+        .is_some();
+    assert!(
+        a ^ b,
+        "the duplicate mention was merged into a single canonical page"
+    );
     // and the fact rode along to the survivor.
-    let survivor = if a { "orgs/former-corp" } else { "orgs/former-corp-inc" };
+    let survivor = if a {
+        "orgs/former-corp"
+    } else {
+        "orgs/former-corp-inc"
+    };
     assert!(
         repo.memories_for_entity("test-user", survivor)
             .await
@@ -1965,21 +2310,47 @@ async fn resolve_type_filter_blocks_cross_type() {
 
     // Pre-seed an established, clean "Mercury" typed as a Person (the singer).
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    repo.upsert_entity_skeleton("test-user", "people/mercury", EntityCategory::Concept, &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")], "Mercury", "the singer", &[])
-        .await
-        .unwrap();
-    seed_reconciled_entity(&db, "test-user", "people/mercury", "", "the singer", &json!({}))
-        .await
-        .unwrap();
-    mark_entity_rendered(&db, "test-user", "people/mercury").await.unwrap();
     repo.upsert_entity_skeleton(
-        "test-user", "people/me", EntityCategory::Concept,
+        "test-user",
+        "people/mercury",
+        EntityCategory::Concept,
         &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
-        "Casey Owner", "the owner", &[],
-    ).await.unwrap();
+        "Mercury",
+        "the singer",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "people/mercury",
+        "",
+        "the singer",
+        &json!({}),
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/mercury")
+        .await
+        .unwrap();
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "people/me",
+        EntityCategory::Concept,
+        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
+        "Casey Owner",
+        "the owner",
+        &[],
+    )
+    .await
+    .unwrap();
     seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &json!({}))
-        .await.unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
+        .await
+        .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
+        .await
+        .unwrap();
 
     // A new mention "Mercury" that the Classify stage types as a Place.
     let extract = json!({
@@ -1998,20 +2369,37 @@ async fn resolve_type_filter_blocks_cross_type() {
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock.clone(), &memory_config).await;
-    let stats = full_pass(&service, ontology_scope(&service), "Mercury is the closest planet to the sun.", harness)
-        .await
-        .unwrap();
+    let stats = full_pass(
+        &service,
+        ontology_scope(&service),
+        "Mercury is the closest planet to the sun.",
+        harness,
+    )
+    .await
+    .unwrap();
 
-    assert!(stats.resolve_sweeps >= 1, "the type-filtered resolve sweep ran: {stats:?}");
-    assert_eq!(stats.resolve_conversations, 0, "disjoint candidates never reach the model");
+    assert!(
+        stats.resolve_sweeps >= 1,
+        "the type-filtered resolve sweep ran: {stats:?}"
+    );
+    assert_eq!(
+        stats.resolve_conversations, 0,
+        "disjoint candidates never reach the model"
+    );
 
     // Neither merged into the other - both survive (different types).
     assert!(
-        repo.entity_by_path("test-user", "places/mercury").await.unwrap().is_some(),
+        repo.entity_by_path("test-user", "places/mercury")
+            .await
+            .unwrap()
+            .is_some(),
         "the Place mention was NOT merged into the same-named Person"
     );
     assert!(
-        repo.entity_by_path("test-user", "people/mercury").await.unwrap().is_some(),
+        repo.entity_by_path("test-user", "people/mercury")
+            .await
+            .unwrap()
+            .is_some(),
         "the established Person page is untouched"
     );
 }
@@ -2028,27 +2416,63 @@ async fn resolve_llm_merges_variant_name() {
 
     // Established, clean canonical "Former Corp" (Organization).
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    repo.upsert_entity_skeleton("test-user", "orgs/former-corp", EntityCategory::Concept, &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization")], "Former Corp", "the retailer", &[])
-        .await
-        .unwrap();
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "orgs/former-corp",
+        EntityCategory::Concept,
+        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
+        "Former Corp",
+        "the retailer",
+        &[],
+    )
+    .await
+    .unwrap();
     repo.create_memory_with_entities(
-        "test-user", "test-agent", "older-chat", MemoryKind::Fact,
-        "Former Corp is a retailer.", &["orgs/former-corp".into()],
-    ).await.unwrap();
-    seed_reconciled_entity(&db, "test-user", "orgs/former-corp", "", "the retailer", &json!({}))
+        "test-user",
+        "test-agent",
+        "older-chat",
+        MemoryKind::Fact,
+        "Former Corp is a retailer.",
+        &["orgs/former-corp".into()],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "orgs/former-corp",
+        "",
+        "the retailer",
+        &json!({}),
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "orgs/former-corp")
         .await
         .unwrap();
-    mark_entity_rendered(&db, "test-user", "orgs/former-corp").await.unwrap();
     for index in 0..70 {
         let path = format!("artifacts/former-corp-{index}");
         repo.upsert_entity_skeleton(
-            "test-user", &path, EntityCategory::Concept,
+            "test-user",
+            &path,
+            EntityCategory::Concept,
             &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:CreativeWork")],
-            &format!("Former Corp artifact {index}"), "an unrelated named artifact", &[],
-        ).await.unwrap();
-        seed_reconciled_entity(&db, 
-            "test-user", &path, "", "an unrelated named artifact", &json!({}),
-        ).await.unwrap();
+            &format!("Former Corp artifact {index}"),
+            "an unrelated named artifact",
+            &[],
+        )
+        .await
+        .unwrap();
+        seed_reconciled_entity(
+            &db,
+            "test-user",
+            &path,
+            "",
+            "an unrelated named artifact",
+            &json!({}),
+        )
+        .await
+        .unwrap();
         mark_entity_rendered(&db, "test-user", &path).await.unwrap();
     }
 
@@ -2092,70 +2516,127 @@ async fn resolve_llm_merges_variant_name() {
         MockResponse::ToolCalls(vec![("c2".into(), "submit".into(), classify)]),
         MockResponse::ToolCalls(vec![("cm".into(), "submit".into(), classify_me)]),
         MockResponse::ToolCalls(vec![(
-            "read-candidate".into(), "read_entity".into(), json!({"path":"orgs/former-corp-inc"}),
+            "read-candidate".into(),
+            "read_entity".into(),
+            json!({"path":"orgs/former-corp-inc"}),
         )]),
-        MockResponse::ToolCalls(vec![("r".into(), "submit".into(), resolve)]),           // adjudication
-        MockResponse::ToolCalls(vec![("reconcile".into(), "submit".into(), empty_reconcile())]),
+        MockResponse::ToolCalls(vec![("r".into(), "submit".into(), resolve)]), // adjudication
         MockResponse::ToolCalls(vec![(
-            "author-search".into(), "search_entities".into(), json!({"query":"Former Corp"}),
+            "reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "author-search".into(),
+            "search_entities".into(),
+            json!({"query":"Former Corp"}),
         )]),
         MockResponse::Text("# Former Corp\n\nFormer Corp reported earnings.".into()),
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock.clone(), &memory_config).await;
-    let stats = full_pass(&service, ontology_scope(&service), "Former Corp Inc reported earnings.", harness)
-        .await
-        .unwrap();
-    assert_eq!(stats.entities_merged, 1, "Resolve accepted one identity merge");
+    let stats = full_pass(
+        &service,
+        ontology_scope(&service),
+        "Former Corp Inc reported earnings.",
+        harness,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stats.entities_merged, 1,
+        "Resolve accepted one identity merge"
+    );
     let histories = mock.histories();
-    assert!(histories.iter().any(|history| history.iter().any(|message| {
-        let rendered = format!("{message:?}");
-        rendered.contains("read-candidate")
-            && rendered.contains("orgs/former-corp-inc")
-            && rendered.contains("the retailer")
-            && rendered.contains("Former Corp Inc reported earnings")
-            && rendered.contains("not authored yet")
-            && !rendered.contains("file not found")
-            && !rendered.contains("tool error")
-    })), "Resolve read_entity returned the effective candidate: {histories:?}");
-    let resolve_tools = histories.iter().zip(mock.tool_histories()).find_map(|(history, tools)| {
-        history.iter().any(|message| format!("{message:?}")
-            .contains("Subject path: orgs/former-corp-inc")).then_some(tools)
-    }).expect("Resolve model request");
-    let tool_names: std::collections::HashSet<_> =
-        resolve_tools.iter().map(|tool| tool.name.as_str()).collect();
+    assert!(
+        histories
+            .iter()
+            .any(|history| history.iter().any(|message| {
+                let rendered = format!("{message:?}");
+                rendered.contains("read-candidate")
+                    && rendered.contains("orgs/former-corp-inc")
+                    && rendered.contains("the retailer")
+                    && rendered.contains("Former Corp Inc reported earnings")
+                    && rendered.contains("not authored yet")
+                    && !rendered.contains("file not found")
+                    && !rendered.contains("tool error")
+            })),
+        "Resolve read_entity returned the effective candidate: {histories:?}"
+    );
+    let resolve_tools = histories
+        .iter()
+        .zip(mock.tool_histories())
+        .find_map(|(history, tools)| {
+            history
+                .iter()
+                .any(|message| {
+                    format!("{message:?}").contains("Subject path: orgs/former-corp-inc")
+                })
+                .then_some(tools)
+        })
+        .expect("Resolve model request");
+    let tool_names: std::collections::HashSet<_> = resolve_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
     assert!(tool_names.contains("search_entities"));
     assert!(tool_names.contains("read_entity"));
     for filesystem_tool in ["read", "grep", "glob", "shell"] {
-        assert!(!tool_names.contains(filesystem_tool),
-            "Resolve must not inspect the eventual filesystem projection: {tool_names:?}");
+        assert!(
+            !tool_names.contains(filesystem_tool),
+            "Resolve must not inspect the eventual filesystem projection: {tool_names:?}"
+        );
     }
-    let author_tools = histories.iter().zip(mock.tool_histories()).find_map(|(history, tools)| {
-        history.iter().any(|message| format!("{message:?}")
-            .contains("Page name: Former Corp")).then_some(tools)
-    }).expect("Page Author model request");
+    let author_tools = histories
+        .iter()
+        .zip(mock.tool_histories())
+        .find_map(|(history, tools)| {
+            history
+                .iter()
+                .any(|message| format!("{message:?}").contains("Page name: Former Corp"))
+                .then_some(tools)
+        })
+        .expect("Page Author model request");
     let author_tool_names: std::collections::HashSet<_> =
         author_tools.iter().map(|tool| tool.name.as_str()).collect();
     assert!(author_tool_names.contains("search_entities"));
     assert!(author_tool_names.contains("read_entity"));
     for filesystem_tool in ["read", "grep", "glob", "shell"] {
-        assert!(!author_tool_names.contains(filesystem_tool),
-            "Page Author must not inspect the eventual filesystem projection: {author_tool_names:?}");
+        assert!(
+            !author_tool_names.contains(filesystem_tool),
+            "Page Author must not inspect the eventual filesystem projection: {author_tool_names:?}"
+        );
     }
-    assert!(histories.iter().any(|history| history.iter().any(|message| {
-        let rendered = format!("{message:?}");
-        rendered.contains("author-search")
-            && rendered.contains("orgs/former-corp")
-            && !rendered.contains("tool error")
-    })), "Page Author searched the effective page state: {histories:?}");
+    assert!(
+        histories
+            .iter()
+            .any(|history| history.iter().any(|message| {
+                let rendered = format!("{message:?}");
+                rendered.contains("author-search")
+                    && rendered.contains("orgs/former-corp")
+                    && !rendered.contains("tool error")
+            })),
+        "Page Author searched the effective page state: {histories:?}"
+    );
 
     // The variant merged into the canonical; the variant name is now an alias.
     assert!(
-        repo.entity_by_path("test-user", "orgs/former-corp-inc").await.unwrap().is_none(),
+        repo.entity_by_path("test-user", "orgs/former-corp-inc")
+            .await
+            .unwrap()
+            .is_none(),
         "the variant-named mention merged into the canonical page"
     );
-    let canon = repo.entity_by_path("test-user", "orgs/former-corp").await.unwrap().unwrap();
-    assert!(canon.aliases.contains("Former Corp Inc"), "variant folded into aliases: {:?}", canon.aliases);
+    let canon = repo
+        .entity_by_path("test-user", "orgs/former-corp")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        canon.aliases.contains("Former Corp Inc"),
+        "variant folded into aliases: {:?}",
+        canon.aliases
+    );
     assert!(
         repo.memories_for_entity("test-user", "orgs/former-corp")
             .await
@@ -2187,10 +2668,19 @@ async fn resolve_accepts_grounded_distinction_evidence() {
         ),
     ] {
         repo.upsert_entity_skeleton(
-            "test-user", path, EntityCategory::Concept, &[px.expand(kind)], name, description, &[],
-        ).await.unwrap();
+            "test-user",
+            path,
+            EntityCategory::Concept,
+            &[px.expand(kind)],
+            name,
+            description,
+            &[],
+        )
+        .await
+        .unwrap();
         seed_reconciled_entity(&db, "test-user", path, "", description, &json!({}))
-            .await.unwrap();
+            .await
+            .unwrap();
         mark_entity_rendered(&db, "test-user", path).await.unwrap();
     }
 
@@ -2236,8 +2726,14 @@ async fn resolve_accepts_grounded_distinction_evidence() {
         MockResponse::ToolCalls(vec![("c".into(), "submit".into(), classify)]),
         MockResponse::ToolCalls(vec![("r1".into(), "submit".into(), ungrounded_distinct)]),
         MockResponse::ToolCalls(vec![("r".into(), "submit".into(), distinct)]),
-        MockResponse::ToolCalls(vec![("reconcile".into(), "submit".into(), empty_reconcile())]),
-        MockResponse::Text("# Example Avatar\n\nA plush puppy avatar representing the assistant.".into()),
+        MockResponse::ToolCalls(vec![(
+            "reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
+        MockResponse::Text(
+            "# Example Avatar\n\nA plush puppy avatar representing the assistant.".into(),
+        ),
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock, &memory_config).await;
@@ -2246,13 +2742,25 @@ async fn resolve_accepts_grounded_distinction_evidence() {
         ontology_scope(&service),
         "The Example Avatar avatar is a plush puppy.",
         harness,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     assert_eq!(stats.entities_merged, 0);
     assert_eq!(stats.resolve_distinct_with_evidence, 1);
     assert_eq!(stats.resolve_evidence_corrections, 1);
-    assert!(repo.entity_by_path("test-user", "assistants/example-avatar").await.unwrap().is_some());
-    assert!(repo.entity_by_path("test-user", "avatars/example-avatar").await.unwrap().is_some());
+    assert!(
+        repo.entity_by_path("test-user", "assistants/example-avatar")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.entity_by_path("test-user", "avatars/example-avatar")
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 /// Evidence discovered by reading the effective page is valid grounding even when the
@@ -2267,10 +2775,19 @@ async fn resolve_accepts_grounding_from_effective_entity_state() {
     let px = frona::memory::pkm::ontology::PrefixMap::standard();
 
     repo.upsert_entity_skeleton(
-        "test-user", "devices/atlas-existing", EntityCategory::Concept,
-        &[px.expand("schema:Product")], "Atlas", "an established Atlas device", &[],
-    ).await.unwrap();
-    mark_entity_rendered(&db, "test-user", "devices/atlas-existing").await.unwrap();
+        "test-user",
+        "devices/atlas-existing",
+        EntityCategory::Concept,
+        &[px.expand("schema:Product")],
+        "Atlas",
+        "an established Atlas device",
+        &[],
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "devices/atlas-existing")
+        .await
+        .unwrap();
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-10",
@@ -2331,36 +2848,67 @@ async fn resolve_accepts_grounding_from_effective_entity_state() {
         MockResponse::ToolCalls(vec![("c2".into(), "submit".into(), classify)]),
         MockResponse::ToolCalls(vec![("cm".into(), "submit".into(), classify_me)]),
         MockResponse::ToolCalls(vec![(
-            "read-atlas".into(), "read_entity".into(), json!({"path":"devices/atlas-new"}),
+            "read-atlas".into(),
+            "read_entity".into(),
+            json!({"path":"devices/atlas-new"}),
         )]),
         MockResponse::ToolCalls(vec![("r".into(), "submit".into(), distinct)]),
-        MockResponse::ToolCalls(vec![("reconcile-1".into(), "submit".into(), empty_reconcile())]),
-        MockResponse::ToolCalls(vec![("reconcile-2".into(), "submit".into(), empty_reconcile())]),
+        MockResponse::ToolCalls(vec![(
+            "reconcile-1".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "reconcile-2".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
         MockResponse::Text("# Atlas\n\nAn established Atlas device with serial B-2.".into()),
         MockResponse::Text("# Atlas\n\nAn Atlas device with serial A-1.".into()),
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock.clone(), &memory_config).await;
     let stats = full_pass(
-        &service, ontology_scope(&service),
-        "Atlas device with serial A-1 and Atlas device with serial B-2.", harness,
-    ).await.unwrap();
+        &service,
+        ontology_scope(&service),
+        "Atlas device with serial A-1 and Atlas device with serial B-2.",
+        harness,
+    )
+    .await
+    .unwrap();
 
-    assert_eq!(stats.resolve_evidence_corrections, 0,
-        "an assertion read from effective state must be accepted without resubmission");
-    assert_eq!(stats.resolve_unresolved_pairs, 0,
-        "tool-grounded attribute evidence must produce a completed Resolve verdict");
+    assert_eq!(
+        stats.resolve_evidence_corrections, 0,
+        "an assertion read from effective state must be accepted without resubmission"
+    );
+    assert_eq!(
+        stats.resolve_unresolved_pairs, 0,
+        "tool-grounded attribute evidence must produce a completed Resolve verdict"
+    );
     assert_eq!(stats.entities_merged, 0);
-    assert!(repo.entity_by_path("test-user", "devices/atlas-existing").await.unwrap().is_some());
-    assert!(repo.entity_by_path("test-user", "devices/atlas-new").await.unwrap().is_some());
+    assert!(
+        repo.entity_by_path("test-user", "devices/atlas-existing")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.entity_by_path("test-user", "devices/atlas-new")
+            .await
+            .unwrap()
+            .is_some()
+    );
     let histories = mock.histories();
-    assert!(histories.iter().any(|history| {
-        let rendered = format!("{history:?}");
-        rendered.contains("Subject path: devices/atlas-existing")
-            && rendered.contains("read-atlas")
-            && rendered.contains("schema:serialNumber")
-            && rendered.contains("A-1")
-    }), "Resolve must read the candidate's effective attribute state");
+    assert!(
+        histories.iter().any(|history| {
+            let rendered = format!("{history:?}");
+            rendered.contains("Subject path: devices/atlas-existing")
+                && rendered.contains("read-atlas")
+                && rendered.contains("schema:serialNumber")
+                && rendered.contains("A-1")
+        }),
+        "Resolve must read the candidate's effective attribute state"
+    );
 }
 
 #[tokio::test]
@@ -2374,39 +2922,79 @@ async fn resolve_revises_a_merge_that_invalidates_the_projected_graph() {
 
     for (path, kind, name, description) in [
         ("people/me", "schema:Person", "Casey Owner", "the owner"),
-        ("records/alex", "frona:NeutralRecord", "Alex", "a corporate registry record"),
-        ("organizations/registry", "schema:Organization", "Registry", "the registry"),
+        (
+            "records/alex",
+            "frona:NeutralRecord",
+            "Alex",
+            "a corporate registry record",
+        ),
+        (
+            "organizations/registry",
+            "schema:Organization",
+            "Registry",
+            "the registry",
+        ),
     ] {
         repo.upsert_entity_skeleton(
-            "test-user", path, EntityCategory::Concept, &[px.expand(kind)], name, description, &[],
-        ).await.unwrap();
+            "test-user",
+            path,
+            EntityCategory::Concept,
+            &[px.expand(kind)],
+            name,
+            description,
+            &[],
+        )
+        .await
+        .unwrap();
         seed_reconciled_entity(&db, "test-user", path, "", description, &json!({}))
-            .await.unwrap();
+            .await
+            .unwrap();
         mark_entity_rendered(&db, "test-user", path).await.unwrap();
     }
     repo.create_memory_with_entities(
-        "test-user", "test-agent", "older-chat", MemoryKind::Fact,
-        "Alex is a registry record.", &["records/alex".into()],
-    ).await.unwrap();
-    seed_asserted_entity_link(&db, 
-        "test-user", "records/alex", "organizations/registry", "frona:registeredBy",
-    ).await.unwrap();
-    mark_entity_rendered(&db, "test-user", "records/alex").await.unwrap();
-    ontology_manager(&db).commit(
         "test-user",
-        &[
-            SchemaEdit::DeclareClass { class: "frona:NeutralRecord".into() },
-            SchemaEdit::DeclareObjectProperty { property: "frona:registeredBy".into() },
-            SchemaEdit::ObjectPropertyDomain {
-                property: "frona:registeredBy".into(),
-                class: "schema:Organization".into(),
-            },
-            SchemaEdit::ObjectPropertyRange {
-                property: "frona:registeredBy".into(),
-                class: "schema:Organization".into(),
-            },
-        ],
-    ).await.unwrap();
+        "test-agent",
+        "older-chat",
+        MemoryKind::Fact,
+        "Alex is a registry record.",
+        &["records/alex".into()],
+    )
+    .await
+    .unwrap();
+    seed_asserted_entity_link(
+        &db,
+        "test-user",
+        "records/alex",
+        "organizations/registry",
+        "frona:registeredBy",
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "records/alex")
+        .await
+        .unwrap();
+    ontology_manager(&db)
+        .commit(
+            "test-user",
+            &[
+                SchemaEdit::DeclareClass {
+                    class: "frona:NeutralRecord".into(),
+                },
+                SchemaEdit::DeclareObjectProperty {
+                    property: "frona:registeredBy".into(),
+                },
+                SchemaEdit::ObjectPropertyDomain {
+                    property: "frona:registeredBy".into(),
+                    class: "schema:Organization".into(),
+                },
+                SchemaEdit::ObjectPropertyRange {
+                    property: "frona:registeredBy".into(),
+                    class: "schema:Organization".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-11",
@@ -2451,19 +3039,38 @@ async fn resolve_revises_a_merge_that_invalidates_the_projected_graph() {
         MockResponse::ToolCalls(vec![("c".into(), "submit".into(), classify)]),
         MockResponse::ToolCalls(vec![("r1".into(), "submit".into(), invalid_merge)]),
         MockResponse::ToolCalls(vec![("r2".into(), "submit".into(), distinct)]),
-        MockResponse::ToolCalls(vec![("reconcile".into(), "submit".into(), empty_reconcile())]),
+        MockResponse::ToolCalls(vec![(
+            "reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
         MockResponse::Text("# Alex\n\nAlex is a person.".into()),
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock.clone(), &memory_config).await;
     let stats = full_pass(
-        &service, ontology_scope(&service), "Alex is a person.", harness,
-    ).await.unwrap();
+        &service,
+        ontology_scope(&service),
+        "Alex is a person.",
+        harness,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(stats.entities_merged, 0);
     assert!(stats.resolve_evidence_corrections >= 1);
-    assert!(repo.entity_by_path("test-user", "people/alex").await.unwrap().is_some());
-    assert!(repo.entity_by_path("test-user", "records/alex").await.unwrap().is_some());
+    assert!(
+        repo.entity_by_path("test-user", "people/alex")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.entity_by_path("test-user", "records/alex")
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 /// Resolve can discover that more than one existing candidate is the same person. The
@@ -2492,7 +3099,9 @@ async fn resolve_coalesces_multiple_existing_candidates() {
     seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &json!({}))
         .await
         .unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
+        .await
+        .unwrap();
 
     for (path, name, fact) in [
         (
@@ -2527,9 +3136,16 @@ async fn resolve_coalesces_multiple_existing_candidates() {
         )
         .await
         .unwrap();
-        seed_reconciled_entity(&db, "test-user", path, "", "a member of Casey Owner's family", &json!({}))
-            .await
-            .unwrap();
+        seed_reconciled_entity(
+            &db,
+            "test-user",
+            path,
+            "",
+            "a member of Casey Owner's family",
+            &json!({}),
+        )
+        .await
+        .unwrap();
         mark_entity_rendered(&db, "test-user", path).await.unwrap();
     }
 
@@ -2590,7 +3206,11 @@ async fn resolve_coalesces_multiple_existing_candidates() {
         MockResponse::ToolCalls(vec![("c2".into(), "submit".into(), classify)]),
         MockResponse::ToolCalls(vec![("cm".into(), "submit".into(), classify_me)]),
         MockResponse::ToolCalls(vec![("r".into(), "submit".into(), resolve)]),
-        MockResponse::ToolCalls(vec![("reconcile".into(), "submit".into(), empty_reconcile())]),
+        MockResponse::ToolCalls(vec![(
+            "reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
         MockResponse::Text("# Jordan Lee Example\n\nJordan is Casey Owner's parent.".into()),
     ]));
 
@@ -2604,16 +3224,33 @@ async fn resolve_coalesces_multiple_existing_candidates() {
     .await
     .unwrap();
 
-    assert_eq!(stats.entities_merged, 2, "the mention and existing duplicate both merge");
-    assert!(repo.entity_by_path("test-user", "people/jordan").await.unwrap().is_none());
-    assert!(repo.entity_by_path("test-user", "people/jordan-example").await.unwrap().is_none());
+    assert_eq!(
+        stats.entities_merged, 2,
+        "the mention and existing duplicate both merge"
+    );
+    assert!(
+        repo.entity_by_path("test-user", "people/jordan")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.entity_by_path("test-user", "people/jordan-example")
+            .await
+            .unwrap()
+            .is_none()
+    );
     let canonical = repo
         .entity_by_path("test-user", "people/jordan-lee-example")
         .await
         .unwrap()
         .expect("canonical Jordan page");
     assert!(canonical.aliases.contains("Jordan"));
-    assert!(canonical.aliases.contains("Jordan Example"), "aliases={:?}", canonical.aliases);
+    assert!(
+        canonical.aliases.contains("Jordan Example"),
+        "aliases={:?}",
+        canonical.aliases
+    );
     let facts: Vec<String> = repo
         .memories_for_entity("test-user", "people/jordan-lee-example")
         .await
@@ -2621,7 +3258,11 @@ async fn resolve_coalesces_multiple_existing_candidates() {
         .into_iter()
         .map(|memory| memory.content)
         .collect();
-    assert_eq!(facts.len(), 3, "all three identities contribute their memories: {facts:?}");
+    assert_eq!(
+        facts.len(),
+        3,
+        "all three identities contribute their memories: {facts:?}"
+    );
 }
 
 /// An evidence-exhausted subject remains available to a later Resolve conversation. A
@@ -2634,8 +3275,8 @@ async fn resolve_later_subject_can_merge_an_unresolved_candidate() {
     let (tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let reservation = frona::memory::pkm::ontology::PrefixMap::standard()
-        .expand("schema:Reservation");
+    let reservation =
+        frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Reservation");
 
     repo.upsert_entity_skeleton(
         "test-user",
@@ -2658,7 +3299,8 @@ async fn resolve_later_subject_can_merge_an_unresolved_candidate() {
     )
     .await
     .unwrap();
-    seed_reconciled_entity(&db, 
+    seed_reconciled_entity(
+        &db,
         "test-user",
         "bookings/canonical",
         "",
@@ -2667,7 +3309,9 @@ async fn resolve_later_subject_can_merge_an_unresolved_candidate() {
     )
     .await
     .unwrap();
-    mark_entity_rendered(&db, "test-user", "bookings/canonical").await.unwrap();
+    mark_entity_rendered(&db, "test-user", "bookings/canonical")
+        .await
+        .unwrap();
 
     let extract = json!({
         "new_entities": [
@@ -2768,7 +3412,11 @@ async fn resolve_later_subject_can_merge_an_unresolved_candidate() {
         MockResponse::ToolCalls(vec![("ra7".into(), "submit".into(), distinct.clone())]),
         MockResponse::ToolCalls(vec![("ra8".into(), "submit".into(), distinct)]),
         MockResponse::ToolCalls(vec![("rb".into(), "submit".into(), resolve.clone())]),
-        MockResponse::ToolCalls(vec![("reconcile".into(), "submit".into(), empty_reconcile())]),
+        MockResponse::ToolCalls(vec![(
+            "reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
         MockResponse::Text(
             "# Canonical Reservation\n\nThe tracked reservation was previously recorded as \
              [[bookings/alias-a|Identity Bridge Two]]."
@@ -2786,8 +3434,14 @@ async fn resolve_later_subject_can_merge_an_unresolved_candidate() {
     .await
     .unwrap();
 
-    assert_eq!(stats.entities_merged, 2, "both aliases merge into the canonical page: {stats:?}");
-    assert_eq!(stats.resolve_sweeps, 2, "one initial and one incremental Resolve sweep");
+    assert_eq!(
+        stats.entities_merged, 2,
+        "both aliases merge into the canonical page: {stats:?}"
+    );
+    assert_eq!(
+        stats.resolve_sweeps, 2,
+        "one initial and one incremental Resolve sweep"
+    );
     assert_eq!(stats.resolve_candidate_evaluations, 3, "stats={stats:?}");
     assert_eq!(stats.resolve_candidate_evaluations_after_first_sweep, 1);
     assert_eq!(stats.resolve_decision_attempts, 2);
@@ -2799,16 +3453,37 @@ async fn resolve_later_subject_can_merge_an_unresolved_candidate() {
     assert_eq!(stats.resolve_merges_with_evidence, 2);
     assert_eq!(stats.resolve_evidence_corrections, 8);
     assert_eq!(stats.resolve_unresolved_pairs, 2);
-    assert!(repo.entity_by_path("test-user", "bookings/alias-a").await.unwrap().is_none());
-    assert!(repo.entity_by_path("test-user", "bookings/alias-b").await.unwrap().is_none());
-    let canonical = repo.entity_by_path("test-user", "bookings/canonical")
-        .await.unwrap().expect("canonical reservation page");
+    assert!(
+        repo.entity_by_path("test-user", "bookings/alias-a")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.entity_by_path("test-user", "bookings/alias-b")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let canonical = repo
+        .entity_by_path("test-user", "bookings/canonical")
+        .await
+        .unwrap()
+        .expect("canonical reservation page");
     assert!(canonical.aliases.contains("Identity Bridge One"));
     assert!(canonical.aliases.contains("Identity Bridge Two"));
-    let facts = repo.memories_for_entity("test-user", "bookings/canonical").await.unwrap();
-    assert_eq!(facts.len(), 3, "both alias memories survive on the canonical page");
+    let facts = repo
+        .memories_for_entity("test-user", "bookings/canonical")
+        .await
+        .unwrap();
+    assert_eq!(
+        facts.len(),
+        3,
+        "both alias memories survive on the canonical page"
+    );
     let authored = std::fs::read_to_string(
-        tmp.path().join("users/testuser/pkm/Memory/bookings/canonical.md"),
+        tmp.path()
+            .join("users/testuser/pkm/Memory/bookings/canonical.md"),
     )
     .expect("canonical page authored");
     assert!(
@@ -2831,8 +3506,8 @@ async fn reconcile_identity_change_resolves_and_reconciles_the_merge_winner() {
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let reservation = frona::memory::pkm::ontology::PrefixMap::standard()
-        .expand("schema:Reservation");
+    let reservation =
+        frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Reservation");
 
     repo.upsert_entity_skeleton(
         "test-user",
@@ -2855,7 +3530,8 @@ async fn reconcile_identity_change_resolves_and_reconciles_the_merge_winner() {
     )
     .await
     .unwrap();
-    seed_reconciled_entity(&db, 
+    seed_reconciled_entity(
+        &db,
         "test-user",
         "bookings/canonical",
         "",
@@ -2868,14 +3544,17 @@ async fn reconcile_identity_change_resolves_and_reconciles_the_merge_winner() {
         "UPDATE knowledge_entity SET search_assertions = $assertions
          WHERE user_id = $uid AND path = $path",
     )
-    .bind(("assertions", vec![
-        json!(["attribute", "schema:email", "bridge-1@example.test"]).to_string(),
-    ]))
+    .bind((
+        "assertions",
+        vec![json!(["attribute", "schema:email", "bridge-1@example.test"]).to_string()],
+    ))
     .bind(("uid", "test-user".to_string()))
     .bind(("path", "bookings/canonical".to_string()))
     .await
     .unwrap();
-    mark_entity_rendered(&db, "test-user", "bookings/canonical").await.unwrap();
+    mark_entity_rendered(&db, "test-user", "bookings/canonical")
+        .await
+        .unwrap();
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-15",
@@ -2938,7 +3617,8 @@ async fn reconcile_identity_change_resolves_and_reconciles_the_merge_winner() {
         MockResponse::ToolCalls(vec![("c1".into(), "submit".into(), classify.clone())]),
         MockResponse::ToolCalls(vec![("cm".into(), "submit".into(), classify_me)]),
         MockResponse::ToolCalls(vec![(
-            "initial-distinct".into(), "submit".into(),
+            "initial-distinct".into(),
+            "submit".into(),
             json!({
                 "canonical":"", "same_as":[],
                 "merge_because":[],
@@ -2953,10 +3633,13 @@ async fn reconcile_identity_change_resolves_and_reconciles_the_merge_winner() {
             }),
         )]),
         MockResponse::ToolCalls(vec![(
-            "reconcile-identity".into(), "submit".into(), reconcile_identity,
+            "reconcile-identity".into(),
+            "submit".into(),
+            reconcile_identity,
         )]),
         MockResponse::ToolCalls(vec![(
-            "incremental-merge".into(), "submit".into(),
+            "incremental-merge".into(),
+            "submit".into(),
             json!({
                 "canonical":"bookings/canonical", "same_as":[],
                 "merge_because":[{
@@ -2971,11 +3654,11 @@ async fn reconcile_identity_change_resolves_and_reconciles_the_merge_winner() {
             }),
         )]),
         MockResponse::ToolCalls(vec![(
-            "reconcile-winner".into(), "submit".into(), empty_reconcile(),
+            "reconcile-winner".into(),
+            "submit".into(),
+            empty_reconcile(),
         )]),
-        MockResponse::Text(
-            "# Identity Bridge One\n\nThe canonical reservation record.".into(),
-        ),
+        MockResponse::Text("# Identity Bridge One\n\nThe canonical reservation record.".into()),
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock.clone(), &memory_config).await;
@@ -2993,18 +3676,24 @@ async fn reconcile_identity_change_resolves_and_reconciles_the_merge_winner() {
         stats.entities_merged,
         1,
         "Reconcile-triggered Resolve merged the identity; calls={} stats={stats:?}\n{:#?}",
-        mock.calls(), mock.histories(),
+        mock.calls(),
+        mock.histories(),
     );
-    assert_eq!(stats.resolve_sweeps, 2, "one initial and one incremental Resolve sweep");
+    assert_eq!(
+        stats.resolve_sweeps, 2,
+        "one initial and one incremental Resolve sweep"
+    );
     assert_eq!(stats.resolve_reconsideration_conversations, 1);
     assert_eq!(
-        stats.resolve_identity_state_changes,
-        2,
+        stats.resolve_identity_state_changes, 2,
         "the duplicate changes once, then the combined winner is reconsidered",
     );
     assert_eq!(stats.resolve_identity_pair_changes, 1);
     assert_eq!(stats.resolve_identity_pair_weakenings, 0);
-    assert_eq!(stats.entities_reconciled, 2, "the merged winner was reconciled again");
+    assert_eq!(
+        stats.entities_reconciled, 2,
+        "the merged winner was reconciled again"
+    );
     assert!(
         repo.entity_by_path("test-user", "bookings/identity-bridge-two")
             .await
@@ -3012,9 +3701,13 @@ async fn reconcile_identity_change_resolves_and_reconciles_the_merge_winner() {
             .is_none(),
         "the reconciled duplicate must not survive",
     );
-    let memories = repo.memories_for_entity("test-user", "bookings/canonical").await.unwrap();
+    let memories = repo
+        .memories_for_entity("test-user", "bookings/canonical")
+        .await
+        .unwrap();
     assert_eq!(
-        memories.len(), 3,
+        memories.len(),
+        3,
         "the winner owns its original memory and both extracted contributions",
     );
 }
@@ -3068,8 +3761,18 @@ async fn missing_update_only_path_never_reaches_classify_or_page_author() {
     .await
     .unwrap();
 
-    assert!(repo.entity_by_path("test-user", "services/retailer").await.unwrap().is_some());
-    assert!(repo.entity_by_path("test-user", "organizations/retailer").await.unwrap().is_none());
+    assert!(
+        repo.entity_by_path("test-user", "services/retailer")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.entity_by_path("test-user", "organizations/retailer")
+            .await
+            .unwrap()
+            .is_none()
+    );
     let vault = tmp.path().join("users/testuser/pkm/Memory");
     assert!(vault.join("services/retailer.md").exists());
     assert!(!vault.join("organizations/retailer.md").exists());
@@ -3082,25 +3785,50 @@ async fn resolve_merges_reversed_sports_event_participants() {
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let sports_event = frona::memory::pkm::ontology::PrefixMap::standard()
-        .expand("schema:SportsEvent");
+    let sports_event =
+        frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:SportsEvent");
 
     for (path, kind, name, description) in [
-        ("people/me", frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person"), "Casey Owner", "the owner"),
-        ("events/exampleland-vs-samplestan", sports_event, "Exampleland vs Samplestan", "The match Casey Owner planned to attend in Example City."),
+        (
+            "people/me",
+            frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person"),
+            "Casey Owner",
+            "the owner",
+        ),
+        (
+            "events/exampleland-vs-samplestan",
+            sports_event,
+            "Exampleland vs Samplestan",
+            "The match Casey Owner planned to attend in Example City.",
+        ),
     ] {
         repo.upsert_entity_skeleton(
-            "test-user", path, EntityCategory::Concept, &[kind], name, description, &[],
-        ).await.unwrap();
+            "test-user",
+            path,
+            EntityCategory::Concept,
+            &[kind],
+            name,
+            description,
+            &[],
+        )
+        .await
+        .unwrap();
     }
-    let planned_memory = repo.create_memory_with_entities(
-        "test-user", "test-agent", "older-chat", MemoryKind::Fact,
-        "Casey Owner planned to attend the Exampleland vs Samplestan match in Example City.",
-        &["events/exampleland-vs-samplestan".into()],
-    ).await.unwrap();
+    let planned_memory = repo
+        .create_memory_with_entities(
+            "test-user",
+            "test-agent",
+            "older-chat",
+            MemoryKind::Fact,
+            "Casey Owner planned to attend the Exampleland vs Samplestan match in Example City.",
+            &["events/exampleland-vs-samplestan".into()],
+        )
+        .await
+        .unwrap();
     for path in ["people/me", "events/exampleland-vs-samplestan"] {
         seed_reconciled_entity(&db, "test-user", path, "", "clean", &json!({}))
-            .await.unwrap();
+            .await
+            .unwrap();
         mark_entity_rendered(&db, "test-user", path).await.unwrap();
     }
 
@@ -3148,7 +3876,9 @@ async fn resolve_merges_reversed_sports_event_participants() {
         MockResponse::ToolCalls(vec![("c".into(), "submit".into(), classify)]),
         MockResponse::ToolCalls(vec![("i".into(), "submit".into(), resolve)]),
         MockResponse::ToolCalls(vec![("r".into(), "submit".into(), empty_reconcile())]),
-        MockResponse::Text("# Exampleland vs Samplestan\n\nCasey Owner attended the match in Example City.".into()),
+        MockResponse::Text(
+            "# Exampleland vs Samplestan\n\nCasey Owner attended the match in Example City.".into(),
+        ),
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock, &memory_config).await;
@@ -3157,23 +3887,48 @@ async fn resolve_merges_reversed_sports_event_participants() {
         ontology_scope(&service),
         "Casey Owner attended Samplestan vs Exampleland — Example City, January 1 2030.",
         harness,
-    ).await.unwrap();
-    assert_eq!(stats.entities_merged, 1, "Resolve accepted one identity merge");
-
-    assert!(repo.entity_by_path(
-        "test-user", "events/samplestan-exampleland-example-city-2030-01-01",
-    ).await.unwrap().is_none());
-    let canonical = repo.entity_by_path("test-user", "events/exampleland-vs-samplestan")
-        .await.unwrap().expect("canonical event page");
-    assert!(
-        canonical.aliases.contains("Samplestan vs Exampleland — Example City, January 1 2030"),
-        "the losing event name survives as an alias: {:?}", canonical.aliases,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stats.entities_merged, 1,
+        "Resolve accepted one identity merge"
     );
-    let memory_ids: std::collections::HashSet<String> = repo.memories_for_entity(
-        "test-user", "events/exampleland-vs-samplestan",
-    ).await.unwrap().into_iter().map(|memory| memory.id).collect();
+
+    assert!(
+        repo.entity_by_path(
+            "test-user",
+            "events/samplestan-exampleland-example-city-2030-01-01",
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let canonical = repo
+        .entity_by_path("test-user", "events/exampleland-vs-samplestan")
+        .await
+        .unwrap()
+        .expect("canonical event page");
+    assert!(
+        canonical
+            .aliases
+            .contains("Samplestan vs Exampleland — Example City, January 1 2030"),
+        "the losing event name survives as an alias: {:?}",
+        canonical.aliases,
+    );
+    let memory_ids: std::collections::HashSet<String> = repo
+        .memories_for_entity("test-user", "events/exampleland-vs-samplestan")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|memory| memory.id)
+        .collect();
     assert!(memory_ids.contains(&planned_memory));
-    assert_eq!(memory_ids.len(), 2, "both chats contribute to the canonical event");
+    assert_eq!(
+        memory_ids.len(),
+        2,
+        "both chats contribute to the canonical event"
+    );
 }
 
 /// The schema-satisfaction loop: the model first submits a contradictory class, the
@@ -3188,13 +3943,30 @@ async fn classify_loop_revises_after_reasoner_rejection() {
     let memory_config = frona::core::config::MemoryConfig::default();
 
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    repo.upsert_entity_skeleton("test-user", "people/me", EntityCategory::Concept, &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")], "Casey Owner", "the owner", &[])
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "people/me",
+        EntityCategory::Concept,
+        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
+        "Casey Owner",
+        "the owner",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "people/me",
+        "",
+        "the owner",
+        &serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
         .await
         .unwrap();
-    seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &serde_json::json!({}))
-        .await
-        .unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-18",
@@ -3226,29 +3998,60 @@ async fn classify_loop_revises_after_reasoner_rejection() {
         test_model_group(),
     ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
-    let service = PkmService::new(db.clone(), storage, registry, prompts, memory_config.clone(), test_user_service(&db), ontology_base());
+    let service = PkmService::new(
+        db.clone(),
+        storage,
+        registry,
+        prompts,
+        memory_config.clone(),
+        test_user_service(&db),
+        ontology_base(),
+    );
     let ontology_manager = ontology_manager(&db);
 
     // Seed the contradictory class so the FIRST submission is guaranteed to clash.
-    ontology_manager.commit(
-        "test-user",
-        &[
-            SchemaEdit::SubClassOf { sub: "frona:Confused".into(), sup: "schema:Person".into() },
-            SchemaEdit::SubClassOf { sub: "frona:Confused".into(), sup: "schema:Organization".into() },
-        ],
+    ontology_manager
+        .commit(
+            "test-user",
+            &[
+                SchemaEdit::SubClassOf {
+                    sub: "frona:Confused".into(),
+                    sup: "schema:Person".into(),
+                },
+                SchemaEdit::SubClassOf {
+                    sub: "frona:Confused".into(),
+                    sup: "schema:Organization".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    let harness = test_harness(&db, &config, mock.clone());
+    full_pass(
+        &service,
+        ontology_scope(&service),
+        "Acme is a company.",
+        harness,
     )
     .await
     .unwrap();
 
-    let harness = test_harness(&db, &config, mock.clone());
-    full_pass(&service, ontology_scope(&service), "Acme is a company.", harness)
+    // The REVISED class was accepted (the loop recovered); the fact is NOT quarantined.
+    let acme = repo
+        .entity_by_path("test-user", "orgs/acme")
+        .await
+        .unwrap()
+        .expect("acme page");
+    assert_eq!(
+        acme.kinds,
+        [frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
+        "loop revised to the consistent class"
+    );
+    let mems = repo
+        .memories_for_entity("test-user", "orgs/acme")
         .await
         .unwrap();
-
-    // The REVISED class was accepted (the loop recovered); the fact is NOT quarantined.
-    let acme = repo.entity_by_path("test-user", "orgs/acme").await.unwrap().expect("acme page");
-    assert_eq!(acme.kinds, [frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization")], "loop revised to the consistent class");
-    let mems = repo.memories_for_entity("test-user", "orgs/acme").await.unwrap();
     assert!(
         mems.iter().all(|m| m.disposition == Disposition::None),
         "no quarantine — the revised classification validated"
@@ -3265,23 +4068,38 @@ async fn classify_validates_minted_entities_in_the_same_submission() {
     let px = frona::memory::pkm::ontology::PrefixMap::standard();
 
     repo.upsert_entity_skeleton(
-        "test-user", "people/me", EntityCategory::Concept,
-        &[px.expand("schema:Person")], "Casey Owner", "the owner", &[],
-    ).await.unwrap();
-    seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &json!({}))
-        .await.unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
-    ontology_manager(&db).commit(
         "test-user",
-        &[
-            SchemaEdit::SubClassOf {
-                sub: "frona:Confused".into(), sup: "schema:Person".into(),
-            },
-            SchemaEdit::SubClassOf {
-                sub: "frona:Confused".into(), sup: "schema:Organization".into(),
-            },
-        ],
-    ).await.unwrap();
+        "people/me",
+        EntityCategory::Concept,
+        &[px.expand("schema:Person")],
+        "Casey Owner",
+        "the owner",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &json!({}))
+        .await
+        .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
+        .await
+        .unwrap();
+    ontology_manager(&db)
+        .commit(
+            "test-user",
+            &[
+                SchemaEdit::SubClassOf {
+                    sub: "frona:Confused".into(),
+                    sup: "schema:Person".into(),
+                },
+                SchemaEdit::SubClassOf {
+                    sub: "frona:Confused".into(),
+                    sup: "schema:Organization".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-19",
@@ -3318,15 +4136,32 @@ async fn classify_validates_minted_entities_in_the_same_submission() {
 
     let (service, harness) = ontology_service(&db, &config, mock.clone(), &memory_config).await;
     full_pass(
-        &service, ontology_scope(&service), "Acme is a company.", harness,
-    ).await.unwrap();
+        &service,
+        ontology_scope(&service),
+        "Acme is a company.",
+        harness,
+    )
+    .await
+    .unwrap();
 
-    assert!(repo.entity_by_path("test-user", "organizations/acme").await.unwrap().is_some());
     assert!(
-        repo.entity_by_path("test-user", "people/confused").await.unwrap().is_none(),
+        repo.entity_by_path("test-user", "organizations/acme")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.entity_by_path("test-user", "people/confused")
+            .await
+            .unwrap()
+            .is_none(),
         "the invalid mint must never be staged or committed",
     );
-    assert_eq!(mock.calls(), 5, "Classify stage must request a corrected complete submission");
+    assert_eq!(
+        mock.calls(),
+        5,
+        "Classify stage must request a corrected complete submission"
+    );
 }
 
 /// A CURIE the schema cannot hold is pushed back and the revision is taken.
@@ -3345,13 +4180,30 @@ async fn term_that_cannot_be_written_is_pushed_back_before_it_reaches_the_schema
     let px = frona::memory::pkm::ontology::PrefixMap::standard();
 
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    repo.upsert_entity_skeleton("test-user", "people/me", EntityCategory::Concept, &[px.expand("schema:Person")], "Casey Owner", "the owner", &[])
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "people/me",
+        EntityCategory::Concept,
+        &[px.expand("schema:Person")],
+        "Casey Owner",
+        "the owner",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "people/me",
+        "",
+        "the owner",
+        &serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
         .await
         .unwrap();
-    seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &serde_json::json!({}))
-        .await
-        .unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-20","path":"devices/device-x","name":"Device X","description":"a soldering iron",
@@ -3394,10 +4246,14 @@ async fn term_that_cannot_be_written_is_pushed_back_before_it_reaches_the_schema
         MockResponse::ToolCalls(vec![("s1".into(), "submit".into(), bad)]),
         MockResponse::ToolCalls(vec![("s2".into(), "submit".into(), good)]),
         MockResponse::ToolCalls(vec![("r".into(), "submit".into(), empty_reconcile())]),
-        MockResponse::ToolCalls(vec![("a".into(), "submit".into(), json!({"decisions":[
-            {"term":"frona:SolderingIron","decision":"declare","parent":"schema:Product"},
-            {"term":"frona:firmwareVersion","decision":"accept_proposal"}
-        ]}))]),
+        MockResponse::ToolCalls(vec![(
+            "a".into(),
+            "submit".into(),
+            json!({"decisions":[
+                {"term":"frona:SolderingIron","decision":"declare","parent":"schema:Product"},
+                {"term":"frona:firmwareVersion","decision":"accept_proposal"}
+            ]}),
+        )]),
         MockResponse::Text("The Device X is a soldering iron.".into()),
     ]));
 
@@ -3409,21 +4265,45 @@ async fn term_that_cannot_be_written_is_pushed_back_before_it_reaches_the_schema
         test_model_group(),
     ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
-    let service = PkmService::new(db.clone(), storage, registry, prompts, memory_config.clone(), test_user_service(&db), ontology_base());
+    let service = PkmService::new(
+        db.clone(),
+        storage,
+        registry,
+        prompts,
+        memory_config.clone(),
+        test_user_service(&db),
+        ontology_base(),
+    );
     let ontology_manager = ontology_manager(&db);
 
     let harness = test_harness(&db, &config, mock.clone());
-    full_pass(&service, ontology_scope(&service), "The Device X is a soldering iron with firmware version 1.0.", harness)
-        .await
-        .unwrap();
+    full_pass(
+        &service,
+        ontology_scope(&service),
+        "The Device X is a soldering iron with firmware version 1.0.",
+        harness,
+    )
+    .await
+    .unwrap();
 
     // The revision was taken: the page carries the writable class.
-    let page = repo.entity_by_path("test-user", "devices/device-x").await.unwrap().expect("device-x page");
-    assert_eq!(page.kinds, [px.expand("frona:SolderingIron")], "the revised class was accepted");
+    let page = repo
+        .entity_by_path("test-user", "devices/device-x")
+        .await
+        .unwrap()
+        .expect("device-x page");
+    assert_eq!(
+        page.kinds,
+        [px.expand("frona:SolderingIron")],
+        "the revised class was accepted"
+    );
 
     // And the point of the whole exercise: nothing unwritable was committed, so the delta
     // still parses. `load` is what every later schema call goes through.
-    let delta = ontology_manager.serialize("test-user").await.expect("the delta must still parse");
+    let delta = ontology_manager
+        .serialize("test-user")
+        .await
+        .expect("the delta must still parse");
     assert!(
         !delta.contains("Soldering Iron"),
         "the unwritable term must not be in the delta: {}",
@@ -3456,13 +4336,30 @@ async fn adjudicated_term_matches_its_proposal_across_spellings() {
     let px = frona::memory::pkm::ontology::PrefixMap::standard();
 
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    repo.upsert_entity_skeleton("test-user", "people/me", EntityCategory::Concept, &[px.expand("schema:Person")], "Casey Owner", "the owner", &[])
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "people/me",
+        EntityCategory::Concept,
+        &[px.expand("schema:Person")],
+        "Casey Owner",
+        "the owner",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "people/me",
+        "",
+        "the owner",
+        &serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
         .await
         .unwrap();
-    seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &serde_json::json!({}))
-        .await
-        .unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-21","path":"orgs/example-tools","name":"Example Tools","description":"a tool maker",
@@ -3502,13 +4399,25 @@ async fn adjudicated_term_matches_its_proposal_across_spellings() {
         test_model_group(),
     ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
-    let service = PkmService::new(db.clone(), storage, registry, prompts, memory_config.clone(), test_user_service(&db), ontology_base());
+    let service = PkmService::new(
+        db.clone(),
+        storage,
+        registry,
+        prompts,
+        memory_config.clone(),
+        test_user_service(&db),
+        ontology_base(),
+    );
     let ontology_manager = ontology_manager(&db);
 
     let harness = test_harness(&db, &config, mock.clone());
     let result = full_pass(
-        &service, ontology_scope(&service), "Example Tools makes soldering irons.", harness,
-    ).await;
+        &service,
+        ontology_scope(&service),
+        "Example Tools makes soldering irons.",
+        harness,
+    )
+    .await;
     assert!(result.is_ok(), "{result:?}\n{:#?}", mock.histories());
 
     // The decision was applied: the term is declared, so the delta is not empty.
@@ -3518,11 +4427,22 @@ async fn adjudicated_term_matches_its_proposal_across_spellings() {
         "the decision must apply across the spelling difference; declared: {declared:?}"
     );
     let delta = ontology_manager.serialize("test-user").await.unwrap();
-    assert!(!delta.is_empty(), "an adjudicated term means a non-empty delta");
+    assert!(
+        !delta.is_empty(),
+        "an adjudicated term means a non-empty delta"
+    );
 
     // And the page is typed with the one repaired spelling, not two near-duplicates.
-    let page = repo.entity_by_path("test-user", "orgs/example-tools").await.unwrap().expect("page");
-    assert!(page.kinds.contains(&px.expand("frona:ToolMaker")), "house spelling: {:?}", page.kinds);
+    let page = repo
+        .entity_by_path("test-user", "orgs/example-tools")
+        .await
+        .unwrap()
+        .expect("page");
+    assert!(
+        page.kinds.contains(&px.expand("frona:ToolMaker")),
+        "house spelling: {:?}",
+        page.kinds
+    );
 }
 
 /// Resolve never applies a merge whose claimed evidence remains absent through the
@@ -3539,9 +4459,17 @@ async fn resolve_exhausted_ungrounded_merge_remains_unresolved() {
         ("people/me", "schema:Person", "Casey Owner"),
         ("orgs/former-corp", "schema:Organization", "Former Corp"),
     ] {
-        repo.upsert_entity_skeleton("test-user", path, EntityCategory::Concept, &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)], name, "x", &[])
-            .await
-            .unwrap();
+        repo.upsert_entity_skeleton(
+            "test-user",
+            path,
+            EntityCategory::Concept,
+            &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)],
+            name,
+            "x",
+            &[],
+        )
+        .await
+        .unwrap();
         seed_reconciled_entity(&db, "test-user", path, "", "x", &serde_json::json!({}))
             .await
             .unwrap();
@@ -3583,7 +4511,11 @@ async fn resolve_exhausted_ungrounded_merge_remains_unresolved() {
         MockResponse::ToolCalls(vec![("r6".into(), "submit".into(), bogus.clone())]),
         MockResponse::ToolCalls(vec![("r7".into(), "submit".into(), bogus.clone())]),
         MockResponse::ToolCalls(vec![("r8".into(), "submit".into(), bogus)]),
-        MockResponse::ToolCalls(vec![("reconcile".into(), "submit".into(), empty_reconcile())]),
+        MockResponse::ToolCalls(vec![(
+            "reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
         MockResponse::Text("# Former Corp Inc\n\nFormer Corp Inc reported earnings.".into()),
     ]));
 
@@ -3595,26 +4527,45 @@ async fn resolve_exhausted_ungrounded_merge_remains_unresolved() {
         test_model_group(),
     ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
-    let service = PkmService::new(db.clone(), storage, registry, prompts, memory_config.clone(), test_user_service(&db), ontology_base());
+    let service = PkmService::new(
+        db.clone(),
+        storage,
+        registry,
+        prompts,
+        memory_config.clone(),
+        test_user_service(&db),
+        ontology_base(),
+    );
     let harness = test_harness(&db, &config, mock.clone());
 
-    let stats = full_pass(&service, ontology_scope(&service), "Former Corp Inc reported earnings.", harness)
-        .await
-        .unwrap();
+    let stats = full_pass(
+        &service,
+        ontology_scope(&service),
+        "Former Corp Inc reported earnings.",
+        harness,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(stats.resolve_evidence_corrections, 8);
     assert_eq!(stats.resolve_unresolved_pairs, 1);
 
     // The unsafe merge was never applied; both identities remain available for repair.
     assert!(
-        repo.entity_by_path("test-user", "orgs/former-corp-inc").await.unwrap().is_some(),
+        repo.entity_by_path("test-user", "orgs/former-corp-inc")
+            .await
+            .unwrap()
+            .is_some(),
         "the mention must survive when Resolve exhausts its evidence corrections"
     );
-    let mention_memories = repo.memories_for_entity("test-user", "orgs/former-corp-inc")
+    let mention_memories = repo
+        .memories_for_entity("test-user", "orgs/former-corp-inc")
         .await
         .unwrap();
     assert!(
-        mention_memories.iter().any(|m| m.content.contains("reported earnings")),
+        mention_memories
+            .iter()
+            .any(|m| m.content.contains("reported earnings")),
         "the unresolved mention keeps its own fact: {mention_memories:?}"
     );
 }
@@ -3630,14 +4581,29 @@ async fn memoryless_entity_is_only_a_resolve_candidate_and_link_target() {
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
     repo.upsert_entity_skeleton(
-        "test-user", "people/me", EntityCategory::Concept,
+        "test-user",
+        "people/me",
+        EntityCategory::Concept,
         &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
-        "Casey Owner", "account owner", &[],
-    ).await.unwrap();
-    seed_reconciled_entity(&db, 
-        "test-user", "people/me", "", "account owner", &serde_json::json!({}),
-    ).await.unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
+        "Casey Owner",
+        "account owner",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "people/me",
+        "",
+        "account owner",
+        &serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
+        .await
+        .unwrap();
 
     let extract = json!({
         "new_entities": [
@@ -3693,12 +4659,20 @@ async fn memoryless_entity_is_only_a_resolve_candidate_and_link_target() {
 
     let storage = StorageService::new(&config);
     let registry = Arc::new(test_registry_with_group(
-        "mock", mock.clone(), &memory_config.model_group, test_model_group(),
+        "mock",
+        mock.clone(),
+        &memory_config.model_group,
+        test_model_group(),
     ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
-        db.clone(), storage.clone(), registry, prompts, memory_config,
-        test_user_service(&db), ontology_base(),
+        db.clone(),
+        storage.clone(),
+        registry,
+        prompts,
+        memory_config,
+        test_user_service(&db),
+        ontology_base(),
     );
     let harness = test_harness(&db, &config, mock.clone());
 
@@ -3712,25 +4686,47 @@ async fn memoryless_entity_is_only_a_resolve_candidate_and_link_target() {
     assert!(
         result.is_ok(),
         "pass failed: {:?}; calls={}; last_history={:?}",
-        result.err(), mock.calls(), mock.last_history(),
+        result.err(),
+        mock.calls(),
+        mock.last_history(),
     );
 
-    assert!(repo.entity_by_path("test-user", "people/sarah").await.unwrap().is_some());
-    assert!(repo.entity_by_path("test-user", "ai-models/claude-fable-5").await.unwrap().is_some(),
-        "a referenced memoryless shell must become a typed database page: links={:?}; histories={:#?}",
-        repo.links_from_entity("test-user", "people/sarah").await.unwrap(), mock.histories());
     assert!(
-        !service.storage().page_exists(
-            &ontology_scope(&service).vault,
-            "ai-models/claude-fable-5",
-        ),
+        repo.entity_by_path("test-user", "people/sarah")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.entity_by_path("test-user", "ai-models/claude-fable-5")
+            .await
+            .unwrap()
+            .is_some(),
+        "a referenced memoryless shell must become a typed database page: links={:?}; histories={:#?}",
+        repo.links_from_entity("test-user", "people/sarah")
+            .await
+            .unwrap(),
+        mock.histories()
+    );
+    assert!(
+        !service
+            .storage()
+            .page_exists(&ontology_scope(&service).vault, "ai-models/claude-fable-5",),
         "a referenced memoryless shell must not be authored to disk"
     );
-    assert!(repo.entity_by_path("test-user", "ai-models/orphan-model").await.unwrap().is_none(),
-        "an unreferenced memoryless shell must not become a knowledge page");
-    assert!(!service.storage().page_exists(
-            &ontology_scope(&service).vault, "ai-models/orphan-model"),
-        "an unreferenced memoryless shell must not be authored");
+    assert!(
+        repo.entity_by_path("test-user", "ai-models/orphan-model")
+            .await
+            .unwrap()
+            .is_none(),
+        "an unreferenced memoryless shell must not become a knowledge page"
+    );
+    assert!(
+        !service
+            .storage()
+            .page_exists(&ontology_scope(&service).vault, "ai-models/orphan-model"),
+        "an unreferenced memoryless shell must not be authored"
+    );
 }
 
 /// The "Map" half of classify: the Classify stage types a stated free-text relation ("works for")
@@ -3748,9 +4744,17 @@ async fn attribute_naming_an_entity_becomes_an_edge_without_inventing_an_inverse
         ("people/me", "schema:Person", "Casey Owner"),
         ("orgs/acme", "schema:Organization", "Acme"),
     ] {
-        repo.upsert_entity_skeleton("test-user", path, EntityCategory::Concept, &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)], name, "x", &[])
-            .await
-            .unwrap();
+        repo.upsert_entity_skeleton(
+            "test-user",
+            path,
+            EntityCategory::Concept,
+            &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)],
+            name,
+            "x",
+            &[],
+        )
+        .await
+        .unwrap();
         seed_reconciled_entity(&db, "test-user", path, "", "x", &serde_json::json!({}))
             .await
             .unwrap();
@@ -3797,38 +4801,67 @@ async fn attribute_naming_an_entity_becomes_an_edge_without_inventing_an_inverse
         test_model_group(),
     ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
-    let service = PkmService::new(db.clone(), storage, registry, prompts, memory_config.clone(), test_user_service(&db), ontology_base());
+    let service = PkmService::new(
+        db.clone(),
+        storage,
+        registry,
+        prompts,
+        memory_config.clone(),
+        test_user_service(&db),
+        ontology_base(),
+    );
     let harness = test_harness(&db, &config, mock.clone());
 
-    full_pass(&service, ontology_scope(&service), "Sarah is an engineer who works for Acme.", harness)
-        .await
-        .unwrap();
+    full_pass(
+        &service,
+        ontology_scope(&service),
+        "Sarah is an engineer who works for Acme.",
+        harness,
+    )
+    .await
+    .unwrap();
 
     // The attribute became an asserted edge under the CURIE object property.
-    let sarah_links = repo.links_from_entity("test-user", "people/sarah").await.unwrap();
+    let sarah_links = repo
+        .links_from_entity("test-user", "people/sarah")
+        .await
+        .unwrap();
     assert!(
         sarah_links
             .iter()
             .any(|l| l.relation == "frona:worksFor" && l.to_entity_path == "orgs/acme"),
         "the attribute was promoted to an edge: {:?}",
-        sarah_links.iter().map(|l| (&l.relation, &l.to_entity_path)).collect::<Vec<_>>()
+        sarah_links
+            .iter()
+            .map(|l| (&l.relation, &l.to_entity_path))
+            .collect::<Vec<_>>()
     );
     // …and stopped being a literal. Holding it both ways is the duplication this whole
     // path exists to remove, so "the edge exists" is only half the assertion.
-    let sarah = repo.entity_by_path("test-user", "people/sarah").await.unwrap().unwrap();
+    let sarah = repo
+        .entity_by_path("test-user", "people/sarah")
+        .await
+        .unwrap()
+        .unwrap();
     let attrs = sarah.attributes.as_object().cloned().unwrap_or_default();
     assert!(
         !attrs.contains_key("employer") && !attrs.contains_key("frona:worksFor"),
         "the fact is stored once, as an edge: {attrs:?}"
     );
     // One directional assertion is not evidence for an inverse axiom.
-    let acme_links = repo.links_from_entity("test-user", "orgs/acme").await.unwrap();
+    let acme_links = repo
+        .links_from_entity("test-user", "orgs/acme")
+        .await
+        .unwrap();
     assert!(
         !acme_links.iter().any(|l| l.origin == LinkOrigin::Inferred
             && l.relation == "frona:employs"
             && l.to_entity_path == "people/sarah"),
         "no unsupported inverse edge: {:?}",
-        acme_links.iter().map(|l| (&l.relation, &l.to_entity_path, l.origin)).collect::<Vec<_>>(),
+        acme_links
+            .iter()
+            .map(|l| (&l.relation, &l.to_entity_path, l.origin))
+            .collect::<Vec<_>>(),
     );
 
     //
@@ -3860,17 +4893,31 @@ async fn attribute_naming_an_entity_becomes_an_edge_without_inventing_an_inverse
     // Re-dirty the page the way anything else would - quarantining and releasing a memory
     // bumps `updated_at` on the pages that render it, which is what puts a page back on
     // reconcile's worklist.
-    let mem = repo.memories_for_entity("test-user", "people/sarah").await.unwrap();
+    let mem = repo
+        .memories_for_entity("test-user", "people/sarah")
+        .await
+        .unwrap();
     let mid = mem[0].id.clone();
-    repo.set_disposition("test-user", &mid, Disposition::Suspect).await.unwrap();
-    repo.set_disposition("test-user", &mid, Disposition::None).await.unwrap();
-
-    service
-        .consolidate(ontology_scope(&service), test_harness(&db, &config, mock.clone()))
+    repo.set_disposition("test-user", &mid, Disposition::Suspect)
+        .await
+        .unwrap();
+    repo.set_disposition("test-user", &mid, Disposition::None)
         .await
         .unwrap();
 
-    let sarah = repo.entity_by_path("test-user", "people/sarah").await.unwrap().unwrap();
+    service
+        .consolidate(
+            ontology_scope(&service),
+            test_harness(&db, &config, mock.clone()),
+        )
+        .await
+        .unwrap();
+
+    let sarah = repo
+        .entity_by_path("test-user", "people/sarah")
+        .await
+        .unwrap()
+        .unwrap();
     let attrs = sarah.attributes.as_object().cloned().unwrap_or_default();
     assert!(
         !attrs.values().any(|v| v.as_str() == Some("Acme")),
@@ -3900,11 +4947,26 @@ async fn seed_mention(
     attribute: (&str, &str),
 ) -> String {
     repo.upsert_entity_skeleton(
-        "test-user", path, EntityCategory::Concept, &[], name, "x", &[],
-    ).await.unwrap();
-    seed_reconciled_entity(&db, 
-        "test-user", path, "", "x", &json!({attribute.0: attribute.1}),
-    ).await.unwrap();
+        "test-user",
+        path,
+        EntityCategory::Concept,
+        &[],
+        name,
+        "x",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        path,
+        "",
+        "x",
+        &json!({attribute.0: attribute.1}),
+    )
+    .await
+    .unwrap();
     repo.create_sourced_memory(
         "test-user",
         MemoryKind::Fact,
@@ -3917,7 +4979,9 @@ async fn seed_mention(
                 quote: fact.into(),
             },
         }],
-    ).await.unwrap()
+    )
+    .await
+    .unwrap()
 }
 
 /// **The gap this closes.** An attribute value names a real entity that has no page, so
@@ -3938,13 +5002,23 @@ async fn attribute_naming_an_unmaterialized_entity_mints_it_and_shares_the_fact(
     let px = frona::memory::pkm::ontology::PrefixMap::standard();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
-    repo.upsert_entity_skeleton("test-user", "people/me", EntityCategory::Concept, &[px.expand("schema:Person")], "Casey Owner", "the owner", &[])
-        .await
-        .unwrap();
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "people/me",
+        EntityCategory::Concept,
+        &[px.expand("schema:Person")],
+        "Casey Owner",
+        "the owner",
+        &[],
+    )
+    .await
+    .unwrap();
     seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &json!({}))
         .await
         .unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
+        .await
+        .unwrap();
 
     // Note what is *not* seeded: there is no `organizations/example-corp`. "Example Corp" exists only as
     // the value of a free-text key.
@@ -3999,12 +5073,28 @@ async fn attribute_naming_an_unmaterialized_entity_mints_it_and_shares_the_fact(
     )]));
 
     let storage = StorageService::new(&config);
-    let registry = Arc::new(test_registry_with_group("mock", mock.clone(), &memory_config.model_group, test_model_group()));
+    let registry = Arc::new(test_registry_with_group(
+        "mock",
+        mock.clone(),
+        &memory_config.model_group,
+        test_model_group(),
+    ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
-    let service = PkmService::new(db.clone(), storage, registry, prompts, memory_config.clone(), test_user_service(&db), ontology_base());
+    let service = PkmService::new(
+        db.clone(),
+        storage,
+        registry,
+        prompts,
+        memory_config.clone(),
+        test_user_service(&db),
+        ontology_base(),
+    );
 
     service
-        .consolidate(ontology_scope(&service), test_harness(&db, &config, mock.clone()))
+        .consolidate(
+            ontology_scope(&service),
+            test_harness(&db, &config, mock.clone()),
+        )
         .await
         .unwrap();
 
@@ -4017,12 +5107,23 @@ async fn attribute_naming_an_unmaterialized_entity_mints_it_and_shares_the_fact(
     assert_eq!(organization.category, EntityCategory::Concept);
     // Created with no kinds and typed by the same commit that declares the schema, so it
     // is never stamped with a term the TBox has not seen.
-    assert_eq!(organization.kinds, [px.expand("schema:Organization")], "typed in the same pass");
+    assert_eq!(
+        organization.kinds,
+        [px.expand("schema:Organization")],
+        "typed in the same pass"
+    );
 
     // It shares the fact rather than starting empty. Same memory, two pages - the fact is
     // stored once and reachable from both.
-    let on_organization = repo.memories_for_entity("test-user", "organizations/example-corp").await.unwrap();
-    assert_eq!(on_organization.len(), 1, "the cited fact reached the new page: {on_organization:?}");
+    let on_organization = repo
+        .memories_for_entity("test-user", "organizations/example-corp")
+        .await
+        .unwrap();
+    assert_eq!(
+        on_organization.len(),
+        1,
+        "the cited fact reached the new page: {on_organization:?}"
+    );
     assert_eq!(on_organization[0].id, fact, "the same memory, not a copy");
     assert!(
         repo.memories_for_entity("test-user", "people/sarah")
@@ -4044,7 +5145,11 @@ async fn attribute_naming_an_unmaterialized_entity_mints_it_and_shares_the_fact(
                 && l.origin == LinkOrigin::Asserted),
         "the value names an entity, so it is an edge"
     );
-    let sarah = repo.entity_by_path("test-user", "people/sarah").await.unwrap().unwrap();
+    let sarah = repo
+        .entity_by_path("test-user", "people/sarah")
+        .await
+        .unwrap()
+        .unwrap();
     let attrs = sarah.attributes.as_object().cloned().unwrap_or_default();
     assert!(
         !attrs.values().any(|v| v.as_str() == Some("Example Corp")),
@@ -4055,12 +5160,16 @@ async fn attribute_naming_an_unmaterialized_entity_mints_it_and_shares_the_fact(
     // by whether a search happened to hit, and written into the schema permanently.
     let declared = ontology_manager(&db).catalog("test-user").await.unwrap();
     assert!(
-        declared.object_properties.contains(&"frona:worksFor".to_string()),
+        declared
+            .object_properties
+            .contains(&"frona:worksFor".to_string()),
         "an OBJECT property: {:?}",
         declared.object_properties
     );
     assert!(
-        !declared.data_properties.contains(&"frona:worksFor".to_string()),
+        !declared
+            .data_properties
+            .contains(&"frona:worksFor".to_string()),
         "and not also a data property: {:?}",
         declared.data_properties
     );
@@ -4082,17 +5191,33 @@ async fn re_minting_the_same_entity_creates_no_duplicate() {
     let px = frona::memory::pkm::ontology::PrefixMap::standard();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
-    repo.upsert_entity_skeleton("test-user", "people/me", EntityCategory::Concept, &[px.expand("schema:Person")], "Casey Owner", "the owner", &[])
-        .await
-        .unwrap();
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "people/me",
+        EntityCategory::Concept,
+        &[px.expand("schema:Person")],
+        "Casey Owner",
+        "the owner",
+        &[],
+    )
+    .await
+    .unwrap();
     seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &json!({}))
         .await
         .unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
+        .await
+        .unwrap();
 
-    let fact =
-        seed_mention(&db, &repo, "people/sarah", "Sarah", "Sarah works at Example Corp", ("employer", "Example Corp"))
-            .await;
+    let fact = seed_mention(
+        &db,
+        &repo,
+        "people/sarah",
+        "Sarah",
+        "Sarah works at Example Corp",
+        ("employer", "Example Corp"),
+    )
+    .await;
     let classify = json!({
         "entity":{"name":"Sarah","description":"x","aliases":[]},
         "classes": [{"class": "schema:Person"}],
@@ -4112,48 +5237,93 @@ async fn re_minting_the_same_entity_creates_no_duplicate() {
 
     let mock = Arc::new(MockModelProvider::new(Vec::new()));
     let storage = StorageService::new(&config);
-    let registry = Arc::new(test_registry_with_group("mock", mock.clone(), &memory_config.model_group, test_model_group()));
+    let registry = Arc::new(test_registry_with_group(
+        "mock",
+        mock.clone(),
+        &memory_config.model_group,
+        test_model_group(),
+    ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
-    let service = PkmService::new(db.clone(), storage, registry, prompts, memory_config.clone(), test_user_service(&db), ontology_base());
+    let service = PkmService::new(
+        db.clone(),
+        storage,
+        registry,
+        prompts,
+        memory_config.clone(),
+        test_user_service(&db),
+        ontology_base(),
+    );
 
     for iteration in 0..2 {
         if iteration == 0 {
             mock.enqueue(MockResponse::ToolCalls(vec![(
-                "c".into(), "submit".into(), classify.clone(),
+                "c".into(),
+                "submit".into(),
+                classify.clone(),
             )]));
         } else {
             mock.enqueue(MockResponse::ToolCalls(vec![(
-                "cm".into(), "submit".into(),
+                "cm".into(),
+                "submit".into(),
                 classification("Example Corp", "Technology company.", "schema:Organization"),
             )]));
             mock.enqueue(MockResponse::ToolCalls(vec![(
-                "cs".into(), "submit".into(), classify.clone(),
+                "cs".into(),
+                "submit".into(),
+                classify.clone(),
             )]));
             mock.enqueue(MockResponse::ToolCalls(vec![(
-                "rm".into(), "submit".into(), empty_reconcile(),
+                "rm".into(),
+                "submit".into(),
+                empty_reconcile(),
             )]));
             mock.enqueue(MockResponse::ToolCalls(vec![(
-                "rs".into(), "submit".into(), empty_reconcile(),
+                "rs".into(),
+                "submit".into(),
+                empty_reconcile(),
             )]));
-            mock.enqueue(MockResponse::Text("Example Corp is a technology company.".into()));
+            mock.enqueue(MockResponse::Text(
+                "Example Corp is a technology company.".into(),
+            ));
             mock.enqueue(MockResponse::Text("Sarah works at Example Corp.".into()));
         }
         // Re-dirty the source page so the second pass classifies it again with the same
         // answer - the same path the resume replay takes.
-        repo.set_disposition("test-user", &fact, Disposition::Suspect).await.unwrap();
-        repo.set_disposition("test-user", &fact, Disposition::None).await.unwrap();
+        repo.set_disposition("test-user", &fact, Disposition::Suspect)
+            .await
+            .unwrap();
+        repo.set_disposition("test-user", &fact, Disposition::None)
+            .await
+            .unwrap();
         let result = service
-            .consolidate(ontology_scope(&service), test_harness(&db, &config, mock.clone()))
+            .consolidate(
+                ontology_scope(&service),
+                test_harness(&db, &config, mock.clone()),
+            )
             .await;
-        assert!(result.is_ok(), "iteration {iteration}: {result:?}\n{:#?}", mock.histories());
+        assert!(
+            result.is_ok(),
+            "iteration {iteration}: {result:?}\n{:#?}",
+            mock.histories()
+        );
     }
 
     assert!(
-        repo.entity_by_path("test-user", "organizations/example-corp").await.unwrap().is_some(),
+        repo.entity_by_path("test-user", "organizations/example-corp")
+            .await
+            .unwrap()
+            .is_some(),
         "the minted page survives the second pass"
     );
-    let on_meta = repo.memories_for_entity("test-user", "organizations/example-corp").await.unwrap();
-    assert_eq!(on_meta.len(), 1, "the fact is attached once, not once per pass: {on_meta:?}");
+    let on_meta = repo
+        .memories_for_entity("test-user", "organizations/example-corp")
+        .await
+        .unwrap();
+    assert_eq!(
+        on_meta.len(),
+        1,
+        "the fact is attached once, not once per pass: {on_meta:?}"
+    );
     assert_eq!(
         repo.links_from_entity("test-user", "people/sarah")
             .await
@@ -4187,10 +5357,19 @@ async fn classify_keeps_every_returned_class_in_the_reasoned_entity() {
     )
     .await
     .unwrap();
-    seed_reconciled_entity(&db, "test-user", "people/me", "", "x", &serde_json::json!({}))
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "people/me",
+        "",
+        "x",
+        &serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
         .await
         .unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-27",
@@ -4228,11 +5407,20 @@ async fn classify_keeps_every_returned_class_in_the_reasoned_entity() {
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock, &memory_config).await;
-    full_pass(&service, ontology_scope(&service), "Sarah is an engineer.", harness)
-        .await
-        .unwrap();
+    full_pass(
+        &service,
+        ontology_scope(&service),
+        "Sarah is an engineer.",
+        harness,
+    )
+    .await
+    .unwrap();
 
-    let declared = ontology_manager(&db).catalog("test-user").await.unwrap().classes;
+    let declared = ontology_manager(&db)
+        .catalog("test-user")
+        .await
+        .unwrap()
+        .classes;
     assert!(
         declared.iter().any(|c| c == "frona:Engineer"),
         "the mint was declared, so the subsumption is live: {declared:?}"
@@ -4241,15 +5429,30 @@ async fn classify_keeps_every_returned_class_in_the_reasoned_entity() {
     // The Classify stage returned both, and both were stamped - but `frona:Engineer ⊑
     // schema:Person` makes `Person` implied, so normalisation retires it rather than
     // storing a class the reasoner derives anyway.
-    let sarah = repo.entity_by_path("test-user", "people/sarah").await.unwrap().expect("page");
-    assert_eq!(sarah.kinds, ["urn:frona:Engineer"], "normalised to the most specific");
+    let sarah = repo
+        .entity_by_path("test-user", "people/sarah")
+        .await
+        .unwrap()
+        .expect("page");
+    assert_eq!(
+        sarah.kinds,
+        ["urn:frona:Engineer"],
+        "normalised to the most specific"
+    );
 
     // Both reach the reasoner, so the page is an instance of each.
     // ...and nothing is lost: the retired class is still entailed.
     let ontology = ontology_manager(&db);
-    for want in ["urn:frona:Engineer", "https://schema.org/Person", "https://schema.org/Thing"] {
+    for want in [
+        "urn:frona:Engineer",
+        "https://schema.org/Person",
+        "https://schema.org/Thing",
+    ] {
         assert!(
-            ontology.entails_type("test-user", "people/sarah", want).await.unwrap(),
+            ontology
+                .entails_type("test-user", "people/sarah", want)
+                .await
+                .unwrap(),
             "still an instance of {want}"
         );
     }
@@ -4263,13 +5466,30 @@ async fn reconcile_rekeys_attributes_to_curies() {
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
-    repo.upsert_entity_skeleton("test-user", "people/me", EntityCategory::Concept, &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")], "Casey Owner", "x", &[])
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "people/me",
+        EntityCategory::Concept,
+        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
+        "Casey Owner",
+        "x",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "people/me",
+        "",
+        "x",
+        &serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
         .await
         .unwrap();
-    seed_reconciled_entity(&db, "test-user", "people/me", "", "x", &serde_json::json!({}))
-        .await
-        .unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-28","path":"services/postgres","name":"Postgres","description":"the db",
@@ -4298,17 +5518,36 @@ async fn reconcile_rekeys_attributes_to_curies() {
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock, &memory_config).await;
-    full_pass(&service, ontology_scope(&service), // must contain what the extract fixture claims to find - grounding drops the rest
-            "Postgres runs on port 5432, admin is admin@pg.local.", harness)
-        .await
-        .unwrap();
+    full_pass(
+        &service,
+        ontology_scope(&service), // must contain what the extract fixture claims to find - grounding drops the rest
+        "Postgres runs on port 5432, admin is admin@pg.local.",
+        harness,
+    )
+    .await
+    .unwrap();
 
-    let pg = repo.entity_by_path("test-user", "services/postgres").await.unwrap().expect("pg page");
+    let pg = repo
+        .entity_by_path("test-user", "services/postgres")
+        .await
+        .unwrap()
+        .expect("pg page");
     let attrs = pg.attributes.as_object().expect("attributes object");
     // bespoke → frona: ; standard → schema: ; originals gone.
-    assert_eq!(attrs.get("frona:port").and_then(|v| v.as_i64()), Some(5432), "{attrs:?}");
-    assert_eq!(attrs.get("schema:email").and_then(|v| v.as_str()), Some("admin@pg.local"), "{attrs:?}");
-    assert!(!attrs.contains_key("port") && !attrs.contains_key("email"), "free-text keys removed: {attrs:?}");
+    assert_eq!(
+        attrs.get("frona:port").and_then(|v| v.as_i64()),
+        Some(5432),
+        "{attrs:?}"
+    );
+    assert_eq!(
+        attrs.get("schema:email").and_then(|v| v.as_str()),
+        Some("admin@pg.local"),
+        "{attrs:?}"
+    );
+    assert!(
+        !attrs.contains_key("port") && !attrs.contains_key("email"),
+        "free-text keys removed: {attrs:?}"
+    );
 }
 
 #[tokio::test]
@@ -4321,22 +5560,37 @@ async fn reconcile_revises_a_graph_edit_before_it_reaches_the_checkpoint() {
     let px = frona::memory::pkm::ontology::PrefixMap::standard();
 
     repo.upsert_entity_skeleton(
-        "test-user", "people/me", EntityCategory::Concept,
-        &[px.expand("schema:Person")], "Casey Owner", "the owner", &[],
-    ).await.unwrap();
-    seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &json!({}))
-        .await.unwrap();
-    mark_entity_rendered(&db, "test-user", "people/me").await.unwrap();
-    ontology_manager(&db).commit(
         "test-user",
-        &[
-            SchemaEdit::DeclareObjectProperty { property: "frona:chip".into() },
-            SchemaEdit::ObjectPropertyDomain {
-                property: "frona:chip".into(),
-                class: "schema:IndividualProduct".into(),
-            },
-        ],
-    ).await.unwrap();
+        "people/me",
+        EntityCategory::Concept,
+        &[px.expand("schema:Person")],
+        "Casey Owner",
+        "the owner",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(&db, "test-user", "people/me", "", "the owner", &json!({}))
+        .await
+        .unwrap();
+    mark_entity_rendered(&db, "test-user", "people/me")
+        .await
+        .unwrap();
+    ontology_manager(&db)
+        .commit(
+            "test-user",
+            &[
+                SchemaEdit::DeclareObjectProperty {
+                    property: "frona:chip".into(),
+                },
+                SchemaEdit::ObjectPropertyDomain {
+                    property: "frona:chip".into(),
+                    class: "schema:IndividualProduct".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
 
     let extract = json!({
         "new_entities": [{
@@ -4379,16 +5633,28 @@ async fn reconcile_revises_a_graph_edit_before_it_reaches_the_checkpoint() {
         ontology_scope(&service),
         "Example Phone uses a 2nm chip.",
         harness,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
-    let page = repo.entity_by_path("test-user", "phones/example-phone")
-        .await.unwrap().expect("the corrected page");
+    let page = repo
+        .entity_by_path("test-user", "phones/example-phone")
+        .await
+        .unwrap()
+        .expect("the corrected page");
     assert!(
-        !page.attributes.as_object().is_some_and(|attributes| attributes.contains_key("frona:chip")),
+        !page
+            .attributes
+            .as_object()
+            .is_some_and(|attributes| attributes.contains_key("frona:chip")),
         "the rejected literal must never reach staged or committed state: {:?}",
         page.attributes,
     );
-    assert_eq!(mock.calls(), 5, "Reconcile must request one corrected submission");
+    assert_eq!(
+        mock.calls(),
+        5,
+        "Reconcile must request one corrected submission"
+    );
 }
 
 #[tokio::test]
@@ -4399,7 +5665,15 @@ async fn reconcile_does_not_apply_a_rejected_fallback_after_its_turn_budget() {
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
-    mark_clean(&db, &repo, "people/me", "schema:Person", "Casey Owner", json!({})).await;
+    mark_clean(
+        &db,
+        &repo,
+        "people/me",
+        "schema:Person",
+        "Casey Owner",
+        json!({}),
+    )
+    .await;
 
     let extract = json!({
         "new_entities": [{
@@ -4480,11 +5754,31 @@ async fn reconcile_does_not_apply_a_rejected_fallback_after_its_turn_budget() {
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
         MockResponse::ToolCalls(vec![("c".into(), "submit".into(), classify)]),
         MockResponse::ToolCalls(vec![("cm".into(), "submit".into(), classify_me)]),
-        MockResponse::ToolCalls(vec![("r1".into(), "submit".into(), invalid_reconcile.clone())]),
-        MockResponse::ToolCalls(vec![("r2".into(), "submit".into(), invalid_reconcile.clone())]),
-        MockResponse::ToolCalls(vec![("r3".into(), "submit".into(), invalid_reconcile.clone())]),
-        MockResponse::ToolCalls(vec![("r4".into(), "submit".into(), invalid_reconcile.clone())]),
-        MockResponse::ToolCalls(vec![("r5".into(), "submit".into(), invalid_reconcile.clone())]),
+        MockResponse::ToolCalls(vec![(
+            "r1".into(),
+            "submit".into(),
+            invalid_reconcile.clone(),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "r2".into(),
+            "submit".into(),
+            invalid_reconcile.clone(),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "r3".into(),
+            "submit".into(),
+            invalid_reconcile.clone(),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "r4".into(),
+            "submit".into(),
+            invalid_reconcile.clone(),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "r5".into(),
+            "submit".into(),
+            invalid_reconcile.clone(),
+        )]),
         MockResponse::ToolCalls(vec![("r6".into(), "submit".into(), invalid_reconcile)]),
         MockResponse::ToolCalls(vec![("r7".into(), "submit".into(), empty_reconcile())]),
         MockResponse::ToolCalls(vec![("a".into(), "submit".into(), adjudicate)]),
@@ -4498,7 +5792,11 @@ async fn reconcile_does_not_apply_a_rejected_fallback_after_its_turn_budget() {
         harness,
     )
     .await;
-    let memories = repo.list_all_memories("test-user").await.unwrap().into_iter()
+    let memories = repo
+        .list_all_memories("test-user")
+        .await
+        .unwrap()
+        .into_iter()
         .filter(|memory| memory.content.contains("golden retriever"))
         .collect::<Vec<_>>();
     let (current, _) = classify_memories(&memories);
@@ -4523,7 +5821,9 @@ async fn reconcile_does_not_apply_a_rejected_fallback_after_its_turn_budget() {
         "Reconcile did not return all validation errors in one response: {histories}",
     );
     assert!(
-        memories.iter().any(|memory| memory.content == "Casey Owner has a golden retriever named Buddy."),
+        memories
+            .iter()
+            .any(|memory| memory.content == "Casey Owner has a golden retriever named Buddy."),
         "the failed proposal must not lose its source memory: {memories:?}",
     );
 }
@@ -4538,7 +5838,11 @@ async fn reconcile_batches_entity_suggestions_and_commits_an_accepted_relation()
 
     for (path, kind, name) in [
         ("people/me", "schema:Person", "Casey Owner"),
-        ("organizations/example-corp", "schema:Organization", "Example Corp"),
+        (
+            "organizations/example-corp",
+            "schema:Organization",
+            "Example Corp",
+        ),
     ] {
         repo.upsert_entity_skeleton(
             "test-user",
@@ -4623,7 +5927,10 @@ async fn reconcile_batches_entity_suggestions_and_commits_an_accepted_relation()
     .await
     .unwrap();
 
-    let links = repo.links_from_entity("test-user", "people/sarah").await.unwrap();
+    let links = repo
+        .links_from_entity("test-user", "people/sarah")
+        .await
+        .unwrap();
     assert!(
         links.iter().any(|link| {
             link.origin == LinkOrigin::Asserted
@@ -4632,7 +5939,11 @@ async fn reconcile_batches_entity_suggestions_and_commits_an_accepted_relation()
         }),
         "accepted advisory relation was not committed: {links:?}"
     );
-    let sarah = repo.entity_by_path("test-user", "people/sarah").await.unwrap().unwrap();
+    let sarah = repo
+        .entity_by_path("test-user", "people/sarah")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         !sarah.attributes.as_object().is_some_and(|attrs| {
             attrs.contains_key("employer") || attrs.contains_key("frona:employer")
@@ -4642,7 +5953,9 @@ async fn reconcile_batches_entity_suggestions_and_commits_an_accepted_relation()
     );
     let catalogue = ontology_manager(&db).catalog("test-user").await.unwrap();
     assert!(
-        catalogue.object_properties.contains(&"frona:worksFor".to_string()),
+        catalogue
+            .object_properties
+            .contains(&"frona:worksFor".to_string()),
         "the accepted relation must be declared in the ontology: {:?}",
         catalogue.object_properties
     );
@@ -4656,7 +5969,15 @@ async fn reconcile_returns_a_failed_relation_to_the_model_before_it_can_be_stage
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
-    mark_clean(&db, &repo, "people/me", "schema:Person", "Casey Owner", json!({})).await;
+    mark_clean(
+        &db,
+        &repo,
+        "people/me",
+        "schema:Person",
+        "Casey Owner",
+        json!({}),
+    )
+    .await;
     repo.upsert_entity_skeleton(
         "test-user",
         "organizations/example-corp",
@@ -4668,10 +5989,19 @@ async fn reconcile_returns_a_failed_relation_to_the_model_before_it_can_be_stage
     )
     .await
     .unwrap();
-    seed_reconciled_entity(&db, "test-user", "organizations/example-corp", "", "x", &json!({}))
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "organizations/example-corp",
+        "",
+        "x",
+        &json!({}),
+    )
+    .await
+    .unwrap();
+    mark_entity_rendered(&db, "test-user", "organizations/example-corp")
         .await
         .unwrap();
-    mark_entity_rendered(&db, "test-user", "organizations/example-corp").await.unwrap();
 
     let extract = json!({
         "new_entities": [{
@@ -4753,16 +6083,32 @@ async fn reconcile_returns_a_failed_relation_to_the_model_before_it_can_be_stage
     .await;
     assert!(result.is_ok(), "{result:?}\n{:?}", mock.histories());
 
-    let links = repo.links_from_entity("test-user", "people/sarah").await.unwrap();
-    assert!(links.iter().any(|link| {
-        link.origin == LinkOrigin::Asserted
-            && link.relation == "frona:worksFor"
-            && link.to_entity_path == "organizations/example-corp"
-    }), "the corrected relation was not committed: {links:?}\n{:?}", mock.histories());
+    let links = repo
+        .links_from_entity("test-user", "people/sarah")
+        .await
+        .unwrap();
+    assert!(
+        links.iter().any(|link| {
+            link.origin == LinkOrigin::Asserted
+                && link.relation == "frona:worksFor"
+                && link.to_entity_path == "organizations/example-corp"
+        }),
+        "the corrected relation was not committed: {links:?}\n{:?}",
+        mock.histories()
+    );
     let histories = format!("{:?}", mock.histories());
-    assert!(histories.contains("value_supported_by_cited_memory"), "the failed rule was not returned to Reconcile");
-    assert!(histories.contains("Example Corp (Example Corporation)"), "feedback omitted the failed value");
-    assert!(histories.contains("Sarah currently works at Example Corp"), "feedback omitted supporting memory text");
+    assert!(
+        histories.contains("value_supported_by_cited_memory"),
+        "the failed rule was not returned to Reconcile"
+    );
+    assert!(
+        histories.contains("Example Corp (Example Corporation)"),
+        "feedback omitted the failed value"
+    );
+    assert!(
+        histories.contains("Sarah currently works at Example Corp"),
+        "feedback omitted supporting memory text"
+    );
 }
 
 #[tokio::test]
@@ -4775,7 +6121,11 @@ async fn reconcile_does_not_duplicate_a_pending_classify_promotion() {
 
     for (path, kind, name) in [
         ("people/me", "schema:Person", "Casey Owner"),
-        ("organizations/example-corp", "schema:Organization", "Example Corp"),
+        (
+            "organizations/example-corp",
+            "schema:Organization",
+            "Example Corp",
+        ),
     ] {
         mark_clean(&db, &repo, path, kind, name, json!({})).await;
     }
@@ -4849,12 +6199,19 @@ async fn reconcile_does_not_duplicate_a_pending_classify_promotion() {
     .await
     .unwrap();
 
-    let links = repo.links_from_entity("test-user", "people/sarah").await.unwrap();
+    let links = repo
+        .links_from_entity("test-user", "people/sarah")
+        .await
+        .unwrap();
     let asserted: Vec<_> = links
         .iter()
         .filter(|link| link.origin == frona::memory::pkm::model::LinkOrigin::Asserted)
         .collect();
-    assert_eq!(asserted.len(), 1, "one source attribute yields one asserted fact: {asserted:?}");
+    assert_eq!(
+        asserted.len(),
+        1,
+        "one source attribute yields one asserted fact: {asserted:?}"
+    );
     assert_eq!(asserted[0].relation, "schema:worksFor");
     assert_eq!(asserted[0].to_entity_path, "organizations/example-corp");
 }
@@ -4873,17 +6230,34 @@ async fn mark_clean(
     name: &str,
     attrs: serde_json::Value,
 ) {
-    repo.upsert_entity_skeleton("test-user", path, EntityCategory::Concept, &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)], name, "x", &[])
+    repo.upsert_entity_skeleton(
+        "test-user",
+        path,
+        EntityCategory::Concept,
+        &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)],
+        name,
+        "x",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(&db, "test-user", path, "", "x", &attrs)
         .await
         .unwrap();
-    seed_reconciled_entity(&db, "test-user", path, "", "x", &attrs).await.unwrap();
     mark_entity_rendered(&db, "test-user", path).await.unwrap();
 }
 
 /// Mark a clean page dirty again so the next pass picks it up - re-setting the kind
 /// bumps `updated_at` past `rendered_at` without disturbing the attributes just seeded.
 async fn touch(db: &Surreal<Db>, path: &str, kind: &str) {
-    seed_entity_kinds(&db, "test-user", path, &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)]).await.unwrap();
+    seed_entity_kinds(
+        &db,
+        "test-user",
+        path,
+        &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)],
+    )
+    .await
+    .unwrap();
 }
 
 /// **Align + re-key.** The pass proposes a `frona:` term; the adjudicator recognises it
@@ -4899,9 +6273,25 @@ async fn assemble_align_stamps_the_standard_term_and_retypes_prior_entities() {
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
-    mark_clean(&db, &repo, "people/me", "schema:Person", "Casey Owner", json!({})).await;
+    mark_clean(
+        &db,
+        &repo,
+        "people/me",
+        "schema:Person",
+        "Casey Owner",
+        json!({}),
+    )
+    .await;
     // A previous pass left this page on the (undeclared) frona: term.
-    mark_clean(&db, &repo, "orgs/oldco", "frona:Company", "Oldco", json!({})).await;
+    mark_clean(
+        &db,
+        &repo,
+        "orgs/oldco",
+        "frona:Company",
+        "Oldco",
+        json!({}),
+    )
+    .await;
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-29","path":"orgs/newco","name":"Newco","description":"a company",
@@ -4947,16 +6337,26 @@ async fn assemble_align_stamps_the_standard_term_and_retypes_prior_entities() {
         ontology_base(),
     );
     let harness = test_harness(&db, &config, mock.clone());
-    full_pass(&service, ontology_scope(&service), "Newco is a company.", harness)
-        .await
-        .unwrap();
+    full_pass(
+        &service,
+        ontology_scope(&service),
+        "Newco is a company.",
+        harness,
+    )
+    .await
+    .unwrap();
 
-    let newco = repo.entity_by_path("test-user", "orgs/newco").await.unwrap().unwrap();
+    let newco = repo
+        .entity_by_path("test-user", "orgs/newco")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         newco.kinds.contains(
             &frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization"),
         ),
-        "stamped with the ADJUDICATED term: {:?}", newco.kinds,
+        "stamped with the ADJUDICATED term: {:?}",
+        newco.kinds,
     );
     assert!(
         !newco.kinds.contains(
@@ -4964,12 +6364,21 @@ async fn assemble_align_stamps_the_standard_term_and_retypes_prior_entities() {
         ),
         "the proposed term was replaced: {:?}", newco.kinds,
     );
-    let oldco = repo.entity_by_path("test-user", "orgs/oldco").await.unwrap().unwrap();
+    let oldco = repo
+        .entity_by_path("test-user", "orgs/oldco")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        oldco.kinds, [frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
+        oldco.kinds,
+        [frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
         "a prior pass's page moved off the superseded term too"
     );
-    let onto = repo.ontology_get("test-user").await.unwrap().expect("delta persisted");
+    let onto = repo
+        .ontology_get("test-user")
+        .await
+        .unwrap()
+        .expect("delta persisted");
     assert!(
         onto.owl.contains("Company") && onto.owl.contains("Organization"),
         "the equivalence axiom is recorded:\n{}",
@@ -4987,7 +6396,15 @@ async fn assemble_restrict_commits_when_existing_values_satisfy_the_facet() {
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
-    mark_clean(&db, &repo, "people/me", "schema:Person", "Casey Owner", json!({})).await;
+    mark_clean(
+        &db,
+        &repo,
+        "people/me",
+        "schema:Person",
+        "Casey Owner",
+        json!({}),
+    )
+    .await;
     // An existing service with a valid replica count. `frona:replicas` is NOT
     // in the bundled ontology - that matters: a property the base already bounds (like
     // `frona:port`) would fail its base facet during classify and never reach adjudicate.
@@ -5064,18 +6481,29 @@ async fn assemble_restrict_commits_when_existing_values_satisfy_the_facet() {
     );
     let harness = test_harness(&db, &config, mock.clone());
     let stats = full_pass(
-        &service, ontology_scope(&service), "Db serves the app with 8 replicas.", harness,
+        &service,
+        ontology_scope(&service),
+        "Db serves the app with 8 replicas.",
+        harness,
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
 
-    let onto = repo.ontology_get("test-user").await.unwrap().expect("delta persisted");
+    let onto = repo
+        .ontology_get("test-user")
+        .await
+        .unwrap()
+        .expect("delta persisted");
     assert!(
         onto.owl.contains("replicas") && onto.owl.contains("64"),
         "the facet is committed:\n{}\n{:#?}",
-        onto.owl, mock.histories()
+        onto.owl,
+        mock.histories()
     );
-    assert_eq!(stats.facts_quarantined, 0, "valid existing data needs no quarantine");
+    assert_eq!(
+        stats.facts_quarantined, 0,
+        "valid existing data needs no quarantine"
+    );
 }
 
 /// A data property first minted by Reconcile must join the same staged T-box as the
@@ -5089,8 +6517,24 @@ async fn reconcile_minted_data_property_is_declared_before_assemble_commit() {
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
-    mark_clean(&db, &repo, "people/me", "schema:Person", "Casey Owner", json!({})).await;
-    mark_clean(&db, &repo, "services/db", "schema:SoftwareApplication", "Db", json!({})).await;
+    mark_clean(
+        &db,
+        &repo,
+        "people/me",
+        "schema:Person",
+        "Casey Owner",
+        json!({}),
+    )
+    .await;
+    mark_clean(
+        &db,
+        &repo,
+        "services/db",
+        "schema:SoftwareApplication",
+        "Db",
+        json!({}),
+    )
+    .await;
     touch(&db, "services/db", "schema:SoftwareApplication").await;
 
     let extract = json!({
@@ -5128,27 +6572,50 @@ async fn reconcile_minted_data_property_is_declared_before_assemble_commit() {
 
     let storage = StorageService::new(&config);
     let registry = Arc::new(test_registry_with_group(
-        "mock", mock.clone(), &memory_config.model_group, test_model_group(),
+        "mock",
+        mock.clone(),
+        &memory_config.model_group,
+        test_model_group(),
     ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
-        db.clone(), storage, registry, prompts, memory_config,
-        test_user_service(&db), ontology_base(),
+        db.clone(),
+        storage,
+        registry,
+        prompts,
+        memory_config,
+        test_user_service(&db),
+        ontology_base(),
     );
     full_pass(
         &service,
         ontology_scope(&service),
         "Db uses strict mode.",
         test_harness(&db, &config, mock.clone()),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
-    let page = repo.entity_by_path("test-user", "services/db").await.unwrap().unwrap();
-    assert_eq!(page.attributes["frona:strictConnectionPolicyForE2e"], "strict");
-    let ontology = repo.ontology_get("test-user").await.unwrap().expect("delta persisted");
+    let page = repo
+        .entity_by_path("test-user", "services/db")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        page.attributes["frona:strictConnectionPolicyForE2e"],
+        "strict"
+    );
+    let ontology = repo
+        .ontology_get("test-user")
+        .await
+        .unwrap()
+        .expect("delta persisted");
     assert!(
         ontology.owl.contains("strictConnectionPolicyForE2e"),
         "property declaration missing; calls={}; last_history={:?}:\n{}",
-        mock.calls(), mock.last_history(), ontology.owl,
+        mock.calls(),
+        mock.last_history(),
+        ontology.owl,
     );
 }
 
@@ -5165,7 +6632,15 @@ async fn assemble_restrict_that_invalidates_existing_entities_is_rejected() {
     };
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
-    mark_clean(&db, &repo, "people/me", "schema:Person", "Casey Owner", json!({})).await;
+    mark_clean(
+        &db,
+        &repo,
+        "people/me",
+        "schema:Person",
+        "Casey Owner",
+        json!({}),
+    )
+    .await;
     // Distinct names on purpose: near-identical ones would look like duplicates to
     // resolve's matcher, which would then burn the adjudicate response on a merge
     // verdict instead.
@@ -5219,9 +6694,14 @@ async fn assemble_restrict_that_invalidates_existing_entities_is_rejected() {
         ontology_base(),
     );
     let harness = test_harness(&db, &config, mock.clone());
-    full_pass(&service, ontology_scope(&service), "Alpha serves the app.", harness)
-        .await
-        .expect("a rejected ontology edit is discarded when no revision remains");
+    full_pass(
+        &service,
+        ontology_scope(&service),
+        "Alpha serves the app.",
+        harness,
+    )
+    .await
+    .expect("a rejected ontology edit is discarded when no revision remains");
 
     let onto = repo.ontology_get("test-user").await.unwrap();
     let owl = onto.map(|o| o.owl).unwrap_or_default();
@@ -5241,7 +6721,15 @@ async fn assemble_defer_keeps_the_validated_baseline_declaration() {
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
-    mark_clean(&db, &repo, "people/me", "schema:Person", "Casey Owner", json!({})).await;
+    mark_clean(
+        &db,
+        &repo,
+        "people/me",
+        "schema:Person",
+        "Casey Owner",
+        json!({}),
+    )
+    .await;
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-30","path":"things/widget","name":"Widget","description":"a thing",
@@ -5286,16 +6774,36 @@ async fn assemble_defer_keeps_the_validated_baseline_declaration() {
         ontology_base(),
     );
     let harness = test_harness(&db, &config, mock.clone());
-    full_pass(&service, ontology_scope(&service), "Widget is a thing.", harness)
-        .await
-        .unwrap();
+    full_pass(
+        &service,
+        ontology_scope(&service),
+        "Widget is a thing.",
+        harness,
+    )
+    .await
+    .unwrap();
 
-    let page = repo.entity_by_path("test-user", "things/widget").await.unwrap().unwrap();
-    assert!(page.kinds.contains(
-        &frona::memory::pkm::ontology::PrefixMap::standard().expand("frona:Widget"),
-    ), "the deferred term is still in use on the page: {:?}", page.kinds);
-    let owl = repo.ontology_get("test-user").await.unwrap().map(|o| o.owl).unwrap_or_default();
-    assert!(owl.contains("Widget"), "the safe baseline remains declared:\n{owl}");
+    let page = repo
+        .entity_by_path("test-user", "things/widget")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        page.kinds
+            .contains(&frona::memory::pkm::ontology::PrefixMap::standard().expand("frona:Widget"),),
+        "the deferred term is still in use on the page: {:?}",
+        page.kinds
+    );
+    let owl = repo
+        .ontology_get("test-user")
+        .await
+        .unwrap()
+        .map(|o| o.owl)
+        .unwrap_or_default();
+    assert!(
+        owl.contains("Widget"),
+        "the safe baseline remains declared:\n{owl}"
+    );
 }
 
 /// A temporary reminder is persisted as a grounded episode and must not leak into the
@@ -5341,11 +6849,9 @@ async fn episodic_reminder_is_grounded_without_current_attributes() {
             "entities": ["dogs/buddy"]
         }]
     });
-    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "extract".into(),
-        "submit".into(),
-        extract,
-    )])]));
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        ("extract".into(), "submit".into(), extract),
+    ])]));
     let registry = Arc::new(test_registry_with_group(
         "mock",
         mock.clone(),
@@ -5370,7 +6876,10 @@ async fn episodic_reminder_is_grounded_without_current_attributes() {
         user_name: "Casey Owner".into(),
         agent_id: "test-agent".into(),
         chat_id: Some("test-chat".into()),
-        vault: service.storage().vault_scope(frona::handle!("testuser"), "Memory").unwrap(),
+        vault: service
+            .storage()
+            .vault_scope(frona::handle!("testuser"), "Memory")
+            .unwrap(),
         temporal_sources: vec![frona::memory::pkm::TemporalSource {
             handle: "m1".into(),
             text: "I will give Buddy ear medication next week.".into(),
@@ -5382,7 +6891,8 @@ async fn episodic_reminder_is_grounded_without_current_attributes() {
             handle: "m1".into(),
             text: "I will give Buddy ear medication next week.".into(),
             kind: frona::memory::pkm::TranscriptEvidenceKind::UserMessage {
-                message_id: "message-1".into(), chat_id: "test-chat".into(),
+                message_id: "message-1".into(),
+                chat_id: "test-chat".into(),
             },
         }],
         recall: Default::default(),
@@ -5396,12 +6906,29 @@ async fn episodic_reminder_is_grounded_without_current_attributes() {
 
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
     commit_checkpointed_extract_patch(&repo, "test-user", &batch, None, &[]).await;
-    assert!(repo.entity_by_path("test-user", "dogs/buddy").await.unwrap().is_none());
-    let record = repo.latest_consolidation_record("test-user").await.unwrap().unwrap();
+    assert!(
+        repo.entity_by_path("test-user", "dogs/buddy")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let record = repo
+        .latest_consolidation_record("test-user")
+        .await
+        .unwrap()
+        .unwrap();
     let effective = frona::db::repo::pkm::PkmConsolidationStore::new(Arc::new(repo.clone()))
         .scoped(&record.consolidation_id, "test-user");
-    let page = effective.working_entity("dogs/buddy").await.unwrap().unwrap();
-    assert_eq!(page.attributes, json!({}), "an episode created no current attributes");
+    let page = effective
+        .working_entity("dogs/buddy")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        page.attributes,
+        json!({}),
+        "an episode created no current attributes"
+    );
     assert_eq!(page.identity_evidence.len(), 1);
     let memories = repo.list_all_memories("test-user").await.unwrap();
     assert_eq!(memories.len(), 1);
@@ -5414,16 +6941,30 @@ async fn episodic_reminder_is_grounded_without_current_attributes() {
         frona::memory::pkm::model::EvidenceSource::UserMessage { message_id, chat_id, quote }
         if message_id == "message-1" && chat_id == "test-chat"
             && quote == "I will give Buddy ear medication next week"));
-    let episode = memories[0].episode.as_ref().expect("episodic metadata persisted");
-    assert_eq!(episode.status, frona::memory::pkm::model::EpisodeStatus::Planned);
+    let episode = memories[0]
+        .episode
+        .as_ref()
+        .expect("episodic metadata persisted");
+    assert_eq!(
+        episode.status,
+        frona::memory::pkm::model::EpisodeStatus::Planned
+    );
     assert_eq!(episode.anchor.quote, "next week");
     assert_eq!(
         episode.resolved_start,
-        Some(chrono::DateTime::parse_from_rfc3339("2030-01-07T08:00:00Z").unwrap().into())
+        Some(
+            chrono::DateTime::parse_from_rfc3339("2030-01-07T08:00:00Z")
+                .unwrap()
+                .into()
+        )
     );
     assert_eq!(
         episode.resolved_end,
-        Some(chrono::DateTime::parse_from_rfc3339("2030-01-14T08:00:00Z").unwrap().into())
+        Some(
+            chrono::DateTime::parse_from_rfc3339("2030-01-14T08:00:00Z")
+                .unwrap()
+                .into()
+        )
     );
 }
 
@@ -5561,11 +7102,14 @@ async fn task_lifecycle_episodes_require_the_applicable_task_dates() {
         ontology_base(),
     );
     let scheduled_at = chrono::DateTime::parse_from_rfc3339("2030-01-01T10:00:00.000Z")
-        .unwrap().with_timezone(&chrono::Utc);
+        .unwrap()
+        .with_timezone(&chrono::Utc);
     let target_at = chrono::DateTime::parse_from_rfc3339("2030-01-02T10:00:00.000Z")
-        .unwrap().with_timezone(&chrono::Utc);
+        .unwrap()
+        .with_timezone(&chrono::Utc);
     let completed_at = chrono::DateTime::parse_from_rfc3339("2030-01-03T10:00:00.000Z")
-        .unwrap().with_timezone(&chrono::Utc);
+        .unwrap()
+        .with_timezone(&chrono::Utc);
     let transcript = concat!(
         "[m1] [task scheduled event_at=2030-01-01T10:00:00.000Z ",
         "target_at=2030-01-02T10:00:00.000Z] Buddy's ear medication\n",
@@ -5614,31 +7158,57 @@ async fn task_lifecycle_episodes_require_the_applicable_task_dates() {
         timezone: "America/Los_Angeles".into(),
     };
 
-    let batch = service.mine_window(
-        scope,
-        transcript,
-        test_harness(&db, &config, mock.clone()),
-    ).await.unwrap();
+    let batch = service
+        .mine_window(scope, transcript, test_harness(&db, &config, mock.clone()))
+        .await
+        .unwrap();
 
     let repo = PkmRepo::new(db, memory_config.pkm_search_top_k);
     commit_checkpointed_extract_patch(&repo, "test-user", &batch, None, &[]).await;
     let memories = repo.list_all_memories("test-user").await.unwrap();
     assert_eq!(memories.len(), 2);
-    let planned = memories.iter().find(|memory| memory.episode.as_ref()
-        .is_some_and(|episode| episode.status == frona::memory::pkm::model::EpisodeStatus::Planned))
+    let planned = memories
+        .iter()
+        .find(|memory| {
+            memory.episode.as_ref().is_some_and(|episode| {
+                episode.status == frona::memory::pkm::model::EpisodeStatus::Planned
+            })
+        })
         .expect("planned task episode");
-    let occurred = memories.iter().find(|memory| memory.episode.as_ref()
-        .is_some_and(|episode| episode.status == frona::memory::pkm::model::EpisodeStatus::Occurred))
+    let occurred = memories
+        .iter()
+        .find(|memory| {
+            memory.episode.as_ref().is_some_and(|episode| {
+                episode.status == frona::memory::pkm::model::EpisodeStatus::Occurred
+            })
+        })
         .expect("occurred task episode");
-    assert_eq!(planned.episode.as_ref().unwrap().absolute, Some(frona::memory::pkm::model::AbsoluteTime {
-        year: Some(2030), month: Some(1), day: Some(2), hour: Some(10), minute: Some(0),
-    }));
-    assert_eq!(occurred.episode.as_ref().unwrap().absolute, Some(frona::memory::pkm::model::AbsoluteTime {
-        year: Some(2030), month: Some(1), day: Some(3), hour: Some(10), minute: Some(0),
-    }));
+    assert_eq!(
+        planned.episode.as_ref().unwrap().absolute,
+        Some(frona::memory::pkm::model::AbsoluteTime {
+            year: Some(2030),
+            month: Some(1),
+            day: Some(2),
+            hour: Some(10),
+            minute: Some(0),
+        })
+    );
+    assert_eq!(
+        occurred.episode.as_ref().unwrap().absolute,
+        Some(frona::memory::pkm::model::AbsoluteTime {
+            year: Some(2030),
+            month: Some(1),
+            day: Some(3),
+            hour: Some(10),
+            minute: Some(0),
+        })
+    );
     let histories = format!("{:?}", mock.histories());
     assert!(
-        histories.matches("task_episode_missing_absolute_time").count() >= 2,
+        histories
+            .matches("task_episode_missing_absolute_time")
+            .count()
+            >= 2,
         "Extract did not return both missing task dates in one correction: {histories}",
     );
 }

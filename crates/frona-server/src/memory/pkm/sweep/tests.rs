@@ -6,15 +6,17 @@ fn consolidation_window(
     max_tokens: usize,
     max_messages: usize,
 ) -> Result<(Vec<MessageResponse>, Option<DateTime<Utc>>), AppError> {
-    Ok(consolidation_windows(messages, watermark, max_tokens, max_messages, &[])?
-        .into_iter()
-        .next()
-        .unwrap_or_default())
+    Ok(
+        consolidation_windows(messages, watermark, max_tokens, max_messages, &[])?
+            .into_iter()
+            .next()
+            .unwrap_or_default(),
+    )
 }
 
-use crate::chat::message::models::MessageStatus;
 use crate::agent::task::models::{Task, TaskKind, TaskStatus};
 use crate::chat::broadcast::BroadcastService;
+use crate::chat::message::models::MessageStatus;
 use crate::core::repository::Repository;
 use crate::db::repo::generic::SurrealRepo;
 use crate::inference::tool_call::ToolCall;
@@ -68,7 +70,11 @@ fn window_stops_before_the_in_flight_boundary() {
     ];
     let (new, advance) = consolidation_window(msgs, at(150), 1_000, 100).unwrap();
     assert_eq!(new.len(), 2, "only the terminal prefix");
-    assert_eq!(advance, Some(at(250)), "watermark holds below the in-flight message");
+    assert_eq!(
+        advance,
+        Some(at(250)),
+        "watermark holds below the in-flight message"
+    );
 }
 
 #[test]
@@ -79,7 +85,10 @@ fn window_empty_when_only_in_flight_is_past_watermark() {
     ];
     let (new, advance) = consolidation_window(msgs, at(150), 1_000, 100).unwrap();
     assert!(new.is_empty());
-    assert_eq!(advance, None, "watermark does not advance past the in-flight message");
+    assert_eq!(
+        advance, None,
+        "watermark does not advance past the in-flight message"
+    );
 }
 
 #[test]
@@ -150,14 +159,15 @@ fn windows_count_tool_turn_text_toward_the_token_limit() {
     call.message_id = first.id.clone();
     call.turn_text = Some("firmware procedure ".repeat(50));
     let first_text = crate::memory::pkm::consolidation::transcript::message_text(
-        &first.id, &first.content, std::slice::from_ref(&call),
+        &first.id,
+        &first.content,
+        std::slice::from_ref(&call),
     );
     let first_tokens = crate::inference::context::estimate_tokens("Agent: ")
         + crate::inference::context::estimate_tokens(&first_text);
 
-    let windows = consolidation_windows(
-        vec![first, second], at(150), first_tokens, 100, &[call],
-    ).unwrap();
+    let windows =
+        consolidation_windows(vec![first, second], at(150), first_tokens, 100, &[call]).unwrap();
 
     assert_eq!(windows.len(), 2);
     assert_eq!(windows[0].0[0].id, "message-research");
@@ -193,18 +203,34 @@ fn completed_tasks_attach_to_the_next_agent_result_message() {
 
     let links = completed_task_result_links(&[first, second, result, later]);
 
-    assert_eq!(links.get("parent-result"), Some(&vec!["task-1".into(), "task-2".into()]));
+    assert_eq!(
+        links.get("parent-result"),
+        Some(&vec!["task-1".into(), "task-2".into()])
+    );
     assert!(!links.contains_key("later-agent"));
 }
 
 fn stored_task(id: &str, chat_id: &str, source_chat_id: Option<&str>) -> Task {
     Task {
-        id:id.into(), user_id:"user".into(), agent_id:"agent".into(), space_id:None,
-        chat_id:Some(chat_id.into()), title:id.into(), description:String::new(),
-        status:TaskStatus::Completed,
-        kind:TaskKind::Direct { source_chat_id:source_chat_id.map(str::to_string) },
-        run_at:None, result_summary:None, error_message:None, quarantined:false,
-        result_schema:None, result_description:None, created_at:at(1), updated_at:at(1),
+        id: id.into(),
+        user_id: "user".into(),
+        agent_id: "agent".into(),
+        space_id: None,
+        chat_id: Some(chat_id.into()),
+        title: id.into(),
+        description: String::new(),
+        status: TaskStatus::Completed,
+        kind: TaskKind::Direct {
+            source_chat_id: source_chat_id.map(str::to_string),
+        },
+        run_at: None,
+        result_summary: None,
+        error_message: None,
+        quarantined: false,
+        result_schema: None,
+        result_description: None,
+        created_at: at(1),
+        updated_at: at(1),
     }
 }
 
@@ -237,12 +263,23 @@ fn task_target_uses_run_time_and_recurring_fire_time() {
 
 fn stored_call(id: &str, chat_id: &str, turn: u32) -> ToolCall {
     ToolCall {
-        id:id.into(), chat_id:chat_id.into(), message_id:format!("message-{id}"), turn,
-        provider_call_id:format!("provider-{id}"), name:"web_fetch".into(),
-        arguments:serde_json::json!({"url":format!("https://example.test/{id}")}),
-        result:format!("result {id}"), success:true, duration_ms:1, hitl:None,
-        task_event:None, system_prompt:None, description:None, turn_text:None,
-        turn_reasoning:None, created_at:at(turn as i64),
+        id: id.into(),
+        chat_id: chat_id.into(),
+        message_id: format!("message-{id}"),
+        turn,
+        provider_call_id: format!("provider-{id}"),
+        name: "web_fetch".into(),
+        arguments: serde_json::json!({"url":format!("https://example.test/{id}")}),
+        result: format!("result {id}"),
+        success: true,
+        duration_ms: 1,
+        hitl: None,
+        task_event: None,
+        system_prompt: None,
+        description: None,
+        turn_text: None,
+        turn_reasoning: None,
+        created_at: at(turn as i64),
     }
 }
 
@@ -252,22 +289,53 @@ async fn task_tree_collection_reads_direct_and_nested_task_chats() {
     db.use_ns("test").use_db("test").await.unwrap();
     let task_repo = SurrealRepo::<Task>::new(db.clone());
     let tool_repo = SurrealRepo::<ToolCall>::new(db);
-    task_repo.create(&stored_task("root", "root-chat", None)).await.unwrap();
-    task_repo.create(&stored_task("child", "child-chat", Some("root-chat"))).await.unwrap();
-    task_repo.create(&stored_task("grandchild", "grandchild-chat", Some("child-chat"))).await.unwrap();
-    task_repo.create(&stored_task("other", "other-chat", None)).await.unwrap();
-    tool_repo.create(&stored_call("root-call", "root-chat", 1)).await.unwrap();
-    tool_repo.create(&stored_call("child-call", "child-chat", 2)).await.unwrap();
-    tool_repo.create(&stored_call("grandchild-call", "grandchild-chat", 3)).await.unwrap();
-    tool_repo.create(&stored_call("other-call", "other-chat", 4)).await.unwrap();
-    let service = crate::agent::task::service::TaskService::new(
-        task_repo, BroadcastService::new(),
-    );
+    task_repo
+        .create(&stored_task("root", "root-chat", None))
+        .await
+        .unwrap();
+    task_repo
+        .create(&stored_task("child", "child-chat", Some("root-chat")))
+        .await
+        .unwrap();
+    task_repo
+        .create(&stored_task(
+            "grandchild",
+            "grandchild-chat",
+            Some("child-chat"),
+        ))
+        .await
+        .unwrap();
+    task_repo
+        .create(&stored_task("other", "other-chat", None))
+        .await
+        .unwrap();
+    tool_repo
+        .create(&stored_call("root-call", "root-chat", 1))
+        .await
+        .unwrap();
+    tool_repo
+        .create(&stored_call("child-call", "child-chat", 2))
+        .await
+        .unwrap();
+    tool_repo
+        .create(&stored_call("grandchild-call", "grandchild-chat", 3))
+        .await
+        .unwrap();
+    tool_repo
+        .create(&stored_call("other-call", "other-chat", 4))
+        .await
+        .unwrap();
+    let service = crate::agent::task::service::TaskService::new(task_repo, BroadcastService::new());
 
     let calls = collect_task_tree_tool_calls(&["root".into()], &service, &tool_repo)
-        .await.unwrap();
+        .await
+        .unwrap();
 
-    assert_eq!(calls.iter().map(|call| call.id.as_str()).collect::<Vec<_>>(), vec![
-        "root-call", "child-call", "grandchild-call",
-    ]);
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| call.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["root-call", "child-call", "grandchild-call",]
+    );
 }

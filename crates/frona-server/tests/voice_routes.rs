@@ -1,13 +1,13 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use frona::storage::StorageService;
-use frona::db::init as db;
 use frona::api::routes::voice;
 use frona::core::config::Config;
 use frona::core::metrics::setup_metrics_recorder;
 use frona::core::state::AppState;
-use surrealdb::engine::local::{Db, Mem};
+use frona::db::init as db;
+use frona::storage::StorageService;
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 use tower::ServiceExt;
 
 async fn test_db() -> Surreal<Db> {
@@ -34,10 +34,19 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     };
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
     let metrics = setup_metrics_recorder();
-    let state = AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics, resource_manager);
+    let state = AppState::new(
+        db,
+        &config,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics,
+        resource_manager,
+    );
     (state, tmp)
 }
 
@@ -111,10 +120,19 @@ async fn twilio_callback_valid_token_returns_xml() {
 
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
     let metrics = setup_metrics_recorder();
-    let state = AppState::new(db.clone(), &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics, resource_manager);
+    let state = AppState::new(
+        db.clone(),
+        &config,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics,
+        resource_manager,
+    );
 
     // Persist the user so the AppState's token_service can round-trip the token
     // through the ApiToken DB row it creates for access tokens.
@@ -173,8 +191,16 @@ async fn twilio_callback_valid_token_returns_xml() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
-    assert!(ct.contains("application/xml"), "Expected XML content-type, got: {ct}");
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        ct.contains("application/xml"),
+        "Expected XML content-type, got: {ct}"
+    );
 
     let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     let body_str = std::str::from_utf8(&body).unwrap();

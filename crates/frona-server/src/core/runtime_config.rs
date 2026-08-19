@@ -134,7 +134,10 @@ impl RuntimeConfigStore {
             .map_err(db_error)?;
         let row: Option<serde_json::Value> = result.take(0).map_err(db_error)?;
         Ok(row.and_then(|value| {
-            value.get("value").and_then(|value| value.as_str()).map(String::from)
+            value
+                .get("value")
+                .and_then(|value| value.as_str())
+                .map(String::from)
         }))
     }
 
@@ -157,7 +160,9 @@ impl RuntimeConfigStore {
 
 fn encode<T: Serialize>(key: &str, value: &T) -> Result<String, AppError> {
     serde_json::to_string(value).map_err(|error| {
-        AppError::Internal(format!("runtime config '{key}' could not be encoded: {error}"))
+        AppError::Internal(format!(
+            "runtime config '{key}' could not be encoded: {error}"
+        ))
     })
 }
 
@@ -193,25 +198,74 @@ mod tests {
     #[tokio::test]
     async fn typed_values_round_trip_and_list_by_prefix() {
         let store = store().await;
-        let value = Value { state: "pending".into(), version: 1 };
+        let value = Value {
+            state: "pending".into(),
+            version: 1,
+        };
         store.set("pkm.reset.u1", &value).await.unwrap();
-        store.set("other", &Value { state: "other".into(), version: 2 }).await.unwrap();
+        store
+            .set(
+                "other",
+                &Value {
+                    state: "other".into(),
+                    version: 2,
+                },
+            )
+            .await
+            .unwrap();
 
-        assert_eq!(store.get::<Value>("pkm.reset.u1").await.unwrap(), Some(value.clone()));
-        assert_eq!(store.list_prefix::<Value>("pkm.reset.").await.unwrap(), vec![("pkm.reset.u1".into(), value)]);
+        assert_eq!(
+            store.get::<Value>("pkm.reset.u1").await.unwrap(),
+            Some(value.clone())
+        );
+        assert_eq!(
+            store.list_prefix::<Value>("pkm.reset.").await.unwrap(),
+            vec![("pkm.reset.u1".into(), value)]
+        );
     }
 
     #[tokio::test]
     async fn compare_exchange_creates_replaces_and_deletes_exact_values() {
         let store = store().await;
-        let pending = Value { state: "pending".into(), version: 1 };
-        let running = Value { state: "running".into(), version: 1 };
+        let pending = Value {
+            state: "pending".into(),
+            version: 1,
+        };
+        let running = Value {
+            state: "running".into(),
+            version: 1,
+        };
 
-        assert!(store.compare_exchange("job", None, Some(&pending)).await.unwrap());
-        assert!(!store.compare_exchange("job", None, Some(&pending)).await.unwrap());
-        assert!(!store.compare_exchange("job", Some(&running), Some(&pending)).await.unwrap());
-        assert!(store.compare_exchange("job", Some(&pending), Some(&running)).await.unwrap());
-        assert!(store.compare_exchange("job", Some(&running), None).await.unwrap());
+        assert!(
+            store
+                .compare_exchange("job", None, Some(&pending))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .compare_exchange("job", None, Some(&pending))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .compare_exchange("job", Some(&running), Some(&pending))
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .compare_exchange("job", Some(&pending), Some(&running))
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .compare_exchange("job", Some(&running), None)
+                .await
+                .unwrap()
+        );
         assert_eq!(store.get::<Value>("job").await.unwrap(), None);
     }
 
@@ -224,9 +278,15 @@ mod tests {
             let store = store.clone();
             let barrier = barrier.clone();
             tasks.push(tokio::spawn(async move {
-                let value = Value { state: "pending".into(), version };
+                let value = Value {
+                    state: "pending".into(),
+                    version,
+                };
                 barrier.wait().await;
-                store.compare_exchange("one-job", None, Some(&value)).await.unwrap()
+                store
+                    .compare_exchange("one-job", None, Some(&value))
+                    .await
+                    .unwrap()
             }));
         }
         barrier.wait().await;
@@ -239,9 +299,18 @@ mod tests {
     #[tokio::test]
     async fn raw_strings_remain_compatible() {
         let store = store().await;
-        store.set_raw("encryption_secret", "not-json").await.unwrap();
-        assert_eq!(store.get_raw("encryption_secret").await.unwrap().as_deref(), Some("not-json"));
+        store
+            .set_raw("encryption_secret", "not-json")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_raw("encryption_secret").await.unwrap().as_deref(),
+            Some("not-json")
+        );
         assert!(store.get::<Value>("encryption_secret").await.is_err());
-        assert_eq!(store.get_raw("encryption_secret").await.unwrap().as_deref(), Some("not-json"));
+        assert_eq!(
+            store.get_raw("encryption_secret").await.unwrap().as_deref(),
+            Some("not-json")
+        );
     }
 }

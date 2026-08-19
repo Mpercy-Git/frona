@@ -29,7 +29,8 @@ pub const INFERENCE_RETRY_OVERHEAD_MS: &str = "frona_inference_retry_overhead_ms
 pub const INFERENCE_RETRIES_TOTAL: &str = "frona_inference_retries_total";
 pub const MODEL_METADATA_LOOKUP_MISSES_TOTAL: &str = "frona_model_metadata_lookup_misses_total";
 pub const MODEL_METADATA_ENTRIES: &str = "frona_model_metadata_entries";
-pub const MODEL_METADATA_REFRESH_AGE_SECONDS: &str = "frona_model_metadata_refresh_seconds_since_last";
+pub const MODEL_METADATA_REFRESH_AGE_SECONDS: &str =
+    "frona_model_metadata_refresh_seconds_since_last";
 
 /// Latency reading captured by the retry layer for a single recorded call.
 /// `retry_overhead_ms` + `retry_count` describe retries within the recorded
@@ -76,7 +77,8 @@ impl UsageService {
     ) {
         let (cost_usd, pricing_version) = self.catalog.compute(model_ref, usage);
         if cost_usd.is_none() {
-            counter!(MODEL_METADATA_LOOKUP_MISSES_TOTAL, "model_ref" => model_ref.as_str()).increment(1);
+            counter!(MODEL_METADATA_LOOKUP_MISSES_TOTAL, "model_ref" => model_ref.as_str())
+                .increment(1);
         }
         let row = build_row(
             usage_ctx,
@@ -109,24 +111,25 @@ impl UsageService {
         let Some(chat_id) = row.chat_id.as_ref() else {
             return;
         };
-        self.broadcast.broadcast_usage_recorded(crate::chat::broadcast::UsageRecorded {
-            chat_id: chat_id.clone(),
-            user_id: row.user_id.clone(),
-            agent_id: row.agent_id.clone(),
-            message_id: row.message_id.clone(),
-            kind_tag: row.kind_tag.clone(),
-            model_ref: row.model_ref.clone(),
-            input_tokens: row.input_tokens,
-            cached_input_tokens: row.cached_input_tokens,
-            output_tokens: row.output_tokens,
-            cost_usd: row.cost_usd,
-            duration_ms: row.duration_ms,
-            ttft_ms: row.ttft_ms,
-            output_tokens_per_second: row.output_tokens_per_second,
-            retry_overhead_ms: row.retry_overhead_ms,
-            retry_count: row.retry_count,
-            fallback_index: row.fallback_index,
-        });
+        self.broadcast
+            .broadcast_usage_recorded(crate::chat::broadcast::UsageRecorded {
+                chat_id: chat_id.clone(),
+                user_id: row.user_id.clone(),
+                agent_id: row.agent_id.clone(),
+                message_id: row.message_id.clone(),
+                kind_tag: row.kind_tag.clone(),
+                model_ref: row.model_ref.clone(),
+                input_tokens: row.input_tokens,
+                cached_input_tokens: row.cached_input_tokens,
+                output_tokens: row.output_tokens,
+                cost_usd: row.cost_usd,
+                duration_ms: row.duration_ms,
+                ttft_ms: row.ttft_ms,
+                output_tokens_per_second: row.output_tokens_per_second,
+                retry_overhead_ms: row.retry_overhead_ms,
+                retry_count: row.retry_count,
+                fallback_index: row.fallback_index,
+            });
     }
 }
 
@@ -183,7 +186,8 @@ fn emit_metrics(row: &InferenceUsage) {
         histogram!(INFERENCE_OUTPUT_TOKENS_PER_SECOND, &latency_labels).record(tps);
     }
     if row.retry_overhead_ms > 0 {
-        histogram!(INFERENCE_RETRY_OVERHEAD_MS, &latency_labels).record(row.retry_overhead_ms as f64);
+        histogram!(INFERENCE_RETRY_OVERHEAD_MS, &latency_labels)
+            .record(row.retry_overhead_ms as f64);
     }
 }
 

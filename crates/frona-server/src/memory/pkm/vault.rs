@@ -29,7 +29,11 @@ impl VaultScope {
         user_id: &str,
         handle: &Handle,
     ) -> Result<Self, AppError> {
-        let directory = users.user_config(user_id).await?.memory.shared_vault_directory;
+        let directory = users
+            .user_config(user_id)
+            .await?
+            .memory
+            .shared_vault_directory;
         storage.vault_scope(handle.clone(), &directory)
     }
 
@@ -37,14 +41,22 @@ impl VaultScope {
     /// lookup; [`PkmStorage::vault_scope`] is the convenience that supplies the root.
     pub fn new(handle: Handle, directory: &str, root: PathBuf) -> Result<Self, AppError> {
         let directory = PkmStorage::validate_directory(directory)?.to_string();
-        Ok(Self { handle, directory, root })
+        Ok(Self {
+            handle,
+            directory,
+            root,
+        })
     }
 
     /// A scope whose directory bypasses validation - for tests that must prove the
     /// storage-layer backstop still refuses a bad value that reached it anyway.
     #[cfg(test)]
     pub fn new_unchecked(handle: Handle, directory: &str, root: PathBuf) -> Self {
-        Self { handle, directory: directory.to_string(), root }
+        Self {
+            handle,
+            directory: directory.to_string(),
+            root,
+        }
     }
 
     pub fn handle(&self) -> &Handle {
@@ -71,7 +83,10 @@ impl VaultScope {
     /// has to reconstruct it, because it gets that wrong (reading `.../me` before retrying
     /// `.../me.md`).
     pub fn abs_page_file(&self, page_path: &str) -> String {
-        format!("{}.md", self.root.join(self.vault_path(page_path)).display())
+        format!(
+            "{}.md",
+            self.root.join(self.vault_path(page_path)).display()
+        )
     }
 
     /// The absolute file for a path already in vault-relative form (`<directory>/…`),

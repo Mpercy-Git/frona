@@ -19,19 +19,19 @@ use frona::chat::message::models::{Message, MessageRole, MessageStatus};
 use frona::chat::models::Chat;
 use frona::core::config::{Config, DatabaseConfig, MemoryConfig, StorageConfig};
 use frona::core::repository::Repository;
-use frona::db::repo::generic::SurrealRepo;
 use frona::core::state::AppState;
 use frona::db::repo::chats::SurrealChatRepo;
+use frona::db::repo::generic::SurrealRepo;
 use frona::db::repo::messages::SurrealMessageRepo;
 use frona::db::repo::pkm::{PkmConsolidationStore, PkmRepo};
 use frona::db::repo::tool_calls::SurrealToolCallRepo;
 use frona::inference::config::ModelRegistryConfig;
 use frona::inference::tool_call::ToolCall;
-use frona::memory::pkm::{
-    ConsolidationStageState, KnowledgeConsolidationRecord, ConsolidationWorkState, PkmService,
-};
 use frona::memory::pkm::model::{
     ClassificationProgress, EntityCategory, KnowledgeConsolidationEntity,
+};
+use frona::memory::pkm::{
+    ConsolidationStageState, ConsolidationWorkState, KnowledgeConsolidationRecord, PkmService,
 };
 use frona::storage::StorageService;
 
@@ -214,7 +214,10 @@ async fn seed_chat(db: &Surreal<Db>) -> Chat {
         created_at: Utc::now() - Duration::hours(3),
         updated_at: Utc::now() - Duration::hours(3),
     };
-    SurrealChatRepo::new(db.clone()).create(&chat).await.unwrap();
+    SurrealChatRepo::new(db.clone())
+        .create(&chat)
+        .await
+        .unwrap();
     chat
 }
 
@@ -351,7 +354,10 @@ async fn sweep_consolidates_an_idle_chat_once_and_persists_the_pass() {
 
     run_sweep(&ctx).await;
 
-    let page = repo.entity_by_path("u1", "services/postgres").await.unwrap();
+    let page = repo
+        .entity_by_path("u1", "services/postgres")
+        .await
+        .unwrap();
     let paths = repo.list_all_entity_paths("u1").await.unwrap();
     let page = page.unwrap_or_else(|| {
         panic!(
@@ -366,7 +372,8 @@ async fn sweep_consolidates_an_idle_chat_once_and_persists_the_pass() {
     // dangling `agent_id` - with no agent row, classify failed silently and left the
     // page untyped while every other assertion in this test still passed.
     assert_eq!(
-        page.kinds, ["https://schema.org/SoftwareApplication"],
+        page.kinds,
+        ["https://schema.org/SoftwareApplication"],
         "the Classify stage typed the page during the sweep"
     );
     assert!(
@@ -383,18 +390,26 @@ async fn sweep_consolidates_an_idle_chat_once_and_persists_the_pass() {
     // it is `warn!`-and-continue, so a failure there leaves every other assertion in
     // this test passing while the stored ontology silently stays empty. That is exactly
     // how a broken seed-set query reached production.
-    let stored = repo.ontology_get("u1").await.unwrap().expect("an ontology row exists");
+    let stored = repo
+        .ontology_get("u1")
+        .await
+        .unwrap()
+        .expect("an ontology row exists");
     assert!(
         !stored.effective_ontology.is_empty(),
         "the effective ontology was saved, not skipped over a swallowed error"
     );
     assert!(
-        stored.seeds.contains(&"https://schema.org/SoftwareApplication".to_string()),
+        stored
+            .seeds
+            .contains(&"https://schema.org/SoftwareApplication".to_string()),
         "and it was cut from the classes the vault actually uses: {:?}",
         stored.seeds
     );
     assert!(
-        stored.effective_ontology.contains("schema.org/SoftwareApplication"),
+        stored
+            .effective_ontology
+            .contains("schema.org/SoftwareApplication"),
         "the class the page was typed with is in the stored ontology"
     );
     assert!(
@@ -412,14 +427,20 @@ async fn sweep_consolidates_an_idle_chat_once_and_persists_the_pass() {
         .await
         .unwrap()
         .expect("the pass left a record");
-    let mined = repo.current_memories_for_entity("u1", "services/postgres").await.unwrap();
+    let mined = repo
+        .current_memories_for_entity("u1", "services/postgres")
+        .await
+        .unwrap();
     assert_eq!(
         record.stats.memories_added,
         mined.len(),
         "extract's count is banked once, not twice: {:?}",
         record.stats
     );
-    assert_eq!(record.stats.entities_created, 1, "and so is the page it minted");
+    assert_eq!(
+        record.stats.entities_created, 1,
+        "and so is the page it minted"
+    );
     assert_eq!(
         record.stats.entities_reconciled, 1,
         "the clean pass must reconcile its checkpoint-staged page before final commit"
@@ -442,8 +463,14 @@ async fn sweep_consolidates_an_idle_chat_once_and_persists_the_pass() {
 
 #[tokio::test]
 async fn in_flight_message_is_deferred_then_consolidated_after_it_completes() {
-    let mut responses = consolidate_page_responses("postgres", "Dev Postgres port is 5433", 2, "m1");
-    responses.extend(consolidate_page_responses("redis", "Redis is on 6380", 1, "m1"));
+    let mut responses =
+        consolidate_page_responses("postgres", "Dev Postgres port is 5433", 2, "m1");
+    responses.extend(consolidate_page_responses(
+        "redis",
+        "Redis is on 6380",
+        1,
+        "m1",
+    ));
     let mock = Arc::new(MockModelProvider::new(responses));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
@@ -510,12 +537,23 @@ async fn in_flight_message_is_deferred_then_consolidated_after_it_completes() {
     let redis = repo.entity_by_path("u1", "services/redis").await.unwrap();
     let latest = repo.latest_consolidation_record("u1").await.unwrap();
     let paths = repo.list_all_entity_paths("u1").await.unwrap();
-    assert!(redis.is_some(),
-         "the completed message is consolidated on the next sweep (deferred, not lost); \
+    assert!(
+        redis.is_some(),
+        "the completed message is consolidated on the next sweep (deferred, not lost); \
          first_calls={calls_after_first}, calls={}, paths={paths:?}, checkpoint={latest:?}, \
-         history={:?}", mock.calls(), mock.last_history());
-    let wm2 = repo.consolidation_watermark(&chat.id).await.unwrap().unwrap();
-    assert!(wm2 > wm, "watermark advanced past the now-completed message");
+         history={:?}",
+        mock.calls(),
+        mock.last_history()
+    );
+    let wm2 = repo
+        .consolidation_watermark(&chat.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        wm2 > wm,
+        "watermark advanced past the now-completed message"
+    );
     assert!(
         mock.calls() > calls_after_first,
         "the deferred message triggered a second consolidation"
@@ -530,7 +568,8 @@ async fn in_flight_message_is_deferred_then_consolidated_after_it_completes() {
 #[tokio::test]
 async fn playbook_author_reconstructs_invocation_from_procedural_evidence() {
     const COMMAND: &str = "bash /data/agents/ops/restart-postgres.sh --force";
-    const TOOL_TURN_TEXT: &str = "The researched restart procedure uses the recorded force command.";
+    const TOOL_TURN_TEXT: &str =
+        "The researched restart procedure uses the recorded force command.";
 
     let extract = json!({
         "new_entities": [{"id":"fixture-page-2",
@@ -581,17 +620,25 @@ async fn playbook_author_reconstructs_invocation_from_procedural_evidence() {
     let classify_postgres = json!({"entity":{"name":"Postgres","description":"svc","aliases":[]},
         "classes": [{"class": "schema:SoftwareApplication"}], "relations": []});
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m2", "query":"restart postgres force"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m2", "query":"restart postgres force"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
         MockResponse::ToolCalls(vec![("k1".into(), "submit".into(), classify_self)]),
         MockResponse::ToolCalls(vec![("k2".into(), "submit".into(), classify_postgres)]),
-        MockResponse::ToolCalls(vec![("r".into(), "submit".into(), json!({
-            "name":"Postgres", "description":"svc", "relations":[],
-            "entity_relations":[], "outdated":[], "attributes":{},
-            "attribute_sources":[], "moves":[]
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "r".into(),
+            "submit".into(),
+            json!({
+                "name":"Postgres", "description":"svc", "relations":[],
+                "entity_relations":[], "outdated":[], "attributes":{},
+                "attribute_sources":[], "moves":[]
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("pr".into(), "submit".into(), resolve)]),
         // Named `submit` deliberately: the playbook stage uses a real tool loop that
         // dispatches on the tool name. A wrong name reproduces the "no playbook page"
@@ -614,7 +661,15 @@ async fn playbook_author_reconstructs_invocation_from_procedural_evidence() {
     )
     .await;
     let agent_at = old + Duration::seconds(1);
-    let msg_id = add_message(&ctx.db, &chat.id, MessageRole::Agent, "done", agent_at, None).await;
+    let msg_id = add_message(
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "done",
+        agent_at,
+        None,
+    )
+    .await;
 
     // A successful, path-bearing `shell` call attached to the procedural memory's source
     // agent message. Playbook Author reconstructs this evidence from the repositories.
@@ -667,7 +722,10 @@ async fn playbook_author_reconstructs_invocation_from_procedural_evidence() {
         "the `[id]` citation token is substituted, not left in the prose:\n{}",
         playbook.body
     );
-    let author_request = mock.histories().into_iter().map(|history| format!("{history:#?}"))
+    let author_request = mock
+        .histories()
+        .into_iter()
+        .map(|history| format!("{history:#?}"))
         .find(|history| history.contains("SOURCE TRANSCRIPT WINDOWS"))
         .expect("Playbook Author request");
     assert!(author_request.contains(TOOL_TURN_TEXT), "{author_request}");
@@ -677,8 +735,15 @@ async fn playbook_author_reconstructs_invocation_from_procedural_evidence() {
     // page with nothing on it - the shape that broke in production, where reading
     // attribute keys blew up on the first page that had none and took the whole
     // effective ontology down with it.
-    assert!(playbook.attributes.as_object().is_none_or(|m| m.is_empty()), "no attributes");
-    let stored = repo.ontology_get("u1").await.unwrap().expect("an ontology row exists");
+    assert!(
+        playbook.attributes.as_object().is_none_or(|m| m.is_empty()),
+        "no attributes"
+    );
+    let stored = repo
+        .ontology_get("u1")
+        .await
+        .unwrap()
+        .expect("an ontology row exists");
     assert!(
         !stored.effective_ontology.is_empty(),
         "the effective ontology survived a page with no attributes — saving it is \
@@ -703,9 +768,9 @@ async fn ingest_only_sweep_stops_before_classify() {
             "sources":[{"message":"m1","quote":"Postgres is a database","strength":"explicit"}]
         }]
     });
-    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "extract".into(), "submit".into(), extract,
-    )])]));
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        ("extract".into(), "submit".into(), extract),
+    ])]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     add_message(
@@ -730,14 +795,32 @@ async fn ingest_only_sweep_stops_before_classify() {
 
     assert_eq!(mock.calls(), 1, "only Extract called the model");
     let repo = PkmRepo::new(ctx.db.clone(), 8);
-    assert!(repo.entity_by_path("u1", "services/postgres").await.unwrap().is_none(),
-        "Extract must not materialize a page");
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    assert!(
+        repo.entity_by_path("u1", "services/postgres")
+            .await
+            .unwrap()
+            .is_none(),
+        "Extract must not materialize a page"
+    );
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     let ConsolidationStageState::Ingest(_) = &record.state else {
         panic!("extract-only checkpoint advanced past ingest")
     };
-    assert!(working_entity(&repo, &record, "services/postgres").await.is_some());
-    assert!(repo.consolidation_watermark(&chat.id).await.unwrap().is_some());
+    assert!(
+        working_entity(&repo, &record, "services/postgres")
+            .await
+            .is_some()
+    );
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 /// An Agent answer copied from a successful foreground memory lookup is recall context,
@@ -762,55 +845,115 @@ async fn ingest_omits_agent_answer_grounded_in_prior_recall() {
     });
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("initial".into(), "submit".into(), recalled)]),
-        MockResponse::ToolCalls(vec![("drop".into(), "submit".into(), json!({
-            "new_entities":[], "existing_entity_updates":[], "playbooks":[], "memories":[]
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "drop".into(),
+            "submit".into(),
+            json!({
+                "new_entities":[], "existing_entity_updates":[], "playbooks":[], "memories":[]
+            }),
+        )]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
-        "Casey Owner's phone number is 555-0100.", at, None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id: "recall-search".into(), chat_id: chat.id.clone(), message_id: message_id.clone(),
-        turn: 1, provider_call_id: "provider-recall".into(), name: "memory_search".into(),
-        arguments: json!({"query":"Casey Owner phone number"}),
-        result: "Casey Owner — phone number is 555-0100".into(), success: true,
-        duration_ms: 2, hitl: None, task_event: None, system_prompt: None,
-        description: None, turn_text: None, turn_reasoning: None, created_at: at,
-    }).await.unwrap();
-    let page_path = ctx.pkm.storage()
-        .vault_scope(frona::handle!("testuser"), "Memory").unwrap()
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Casey Owner's phone number is 555-0100.",
+        at,
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "recall-search".into(),
+            chat_id: chat.id.clone(),
+            message_id: message_id.clone(),
+            turn: 1,
+            provider_call_id: "provider-recall".into(),
+            name: "memory_search".into(),
+            arguments: json!({"query":"Casey Owner phone number"}),
+            result: "Casey Owner — phone number is 555-0100".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
+    let page_path = ctx
+        .pkm
+        .storage()
+        .vault_scope(frona::handle!("testuser"), "Memory")
+        .unwrap()
         .abs_page_file("people/casey-owner");
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id: "recall-read".into(), chat_id: chat.id.clone(), message_id: message_id.clone(),
-        turn: 2, provider_call_id: "provider-read".into(), name: "read".into(),
-        arguments: json!({"path":page_path}),
-        result: "# Casey Owner\nCasey Owner's phone number is 555-0100.".into(), success: true,
-        duration_ms: 2, hitl: None, task_event: None, system_prompt: None,
-        description: None, turn_text: None, turn_reasoning: None, created_at: at,
-    }).await.unwrap();
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "recall-read".into(),
+            chat_id: chat.id.clone(),
+            message_id: message_id.clone(),
+            turn: 2,
+            provider_call_id: "provider-read".into(),
+            name: "read".into(),
+            arguments: json!({"path":page_path}),
+            result: "# Casey Owner\nCasey Owner's phone number is 555-0100.".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service,
-        &ctx.state.contact_service,
-        &ctx.state.agent_service,
-        &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     assert!(repo.list_all_memories("u1").await.unwrap().is_empty());
-    assert!(repo.consolidation_watermark(&chat.id).await.unwrap().is_some());
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     let ConsolidationStageState::Ingest(_) = &record.state else {
         panic!("extract-only checkpoint advanced past ingest")
     };
-    assert!(working_entity(&repo, &record, "people/casey-owner").await.is_none());
+    assert!(
+        working_entity(&repo, &record, "people/casey-owner")
+            .await
+            .is_none()
+    );
     assert_eq!(record.stats.grounding_corrections, 1);
     assert!(record.stats.agent_evidence_no_tool_drops >= 1);
-    assert_eq!(mock.calls(), 2, "recall-only Agent memories receive one correction turn");
+    assert_eq!(
+        mock.calls(),
+        2,
+        "recall-only Agent memories receive one correction turn"
+    );
 
     let histories = mock.histories();
     let request = format!("{:?}", histories.first().expect("initial Extract request"));
@@ -821,8 +964,12 @@ async fn ingest_omits_agent_answer_grounded_in_prior_recall() {
     assert!(request.contains("people/casey-owner.md"));
     assert!(!request.contains("result preview"));
     assert!(!request.contains("555-0100\n  result"));
-    let tool_names = mock.tool_histories().into_iter().flatten()
-        .map(|tool| tool.name).collect::<Vec<_>>();
+    let tool_names = mock
+        .tool_histories()
+        .into_iter()
+        .flatten()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
     assert!(tool_names.iter().any(|name| name == "read_recall_result"));
 }
 
@@ -842,51 +989,95 @@ async fn ingest_persists_agent_memory_with_durable_web_evidence() {
         }]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m1", "query":"Acme released version 4.2"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m1", "query":"Acme released version 4.2"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("extract".into(), "submit".into(), extract)]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
-        "Research complete.", at, None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id: "web-release".into(), chat_id: chat.id.clone(), message_id,
-        turn: 1, provider_call_id: "provider-web".into(), name: "web_search".into(),
-        arguments: json!({"query":"Acme 4.2 release"}),
-        result: "Acme released version 4.2. https://acme.example/releases/4.2".into(),
-        success: true, duration_ms: 2, hitl: None, task_event: None, system_prompt: None,
-        description: None, turn_text: Some("Acme released version 4.2.".into()),
-        turn_reasoning: None, created_at: at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Research complete.",
+        at,
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "web-release".into(),
+            chat_id: chat.id.clone(),
+            message_id,
+            turn: 1,
+            provider_call_id: "provider-web".into(),
+            name: "web_search".into(),
+            arguments: json!({"query":"Acme 4.2 release"}),
+            result: "Acme released version 4.2. https://acme.example/releases/4.2".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: Some("Acme released version 4.2.".into()),
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service,
-        &ctx.state.contact_service,
-        &ctx.state.agent_service,
-        &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     let initial_request = format!("{:#?}", mock.histories().first().expect("Extract request"));
-    assert!(initial_request.contains("Acme released version 4.2"), "{initial_request}");
-    assert!(initial_request.contains("Research complete"), "{initial_request}");
+    assert!(
+        initial_request.contains("Acme released version 4.2"),
+        "{initial_request}"
+    );
+    assert!(
+        initial_request.contains("Research complete"),
+        "{initial_request}"
+    );
 
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     let memories = repo.list_all_memories("u1").await.unwrap();
     assert_eq!(memories.len(), 1);
-    assert!(memories[0].evidence.iter().any(|item| matches!(
-        &item.source,
-        frona::memory::pkm::model::EvidenceSource::WebSearch { tool_call_id, query, url, .. }
-            if tool_call_id == "web-release"
-                && query.as_deref() == Some("Acme 4.2 release")
-                && url.is_none()
-    )), "persisted evidence: {:?}", memories[0].evidence);
-    assert!(repo.consolidation_watermark(&chat.id).await.unwrap().is_some());
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    assert!(
+        memories[0].evidence.iter().any(|item| matches!(
+            &item.source,
+            frona::memory::pkm::model::EvidenceSource::WebSearch { tool_call_id, query, url, .. }
+                if tool_call_id == "web-release"
+                    && query.as_deref() == Some("Acme 4.2 release")
+                    && url.is_none()
+        )),
+        "persisted evidence: {:?}",
+        memories[0].evidence
+    );
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.stats.agent_evidence_strong_matches, 1);
 }
 
@@ -929,9 +1120,13 @@ async fn ingest_retains_accepted_tool_evidence_when_a_later_correction_omits_tha
         }]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m1", "query":"Acme released version 4.2"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m1", "query":"Acme released version 4.2"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("initial".into(), "submit".into(), initial)]),
         MockResponse::ToolCalls(vec![("corrected".into(), "submit".into(), correction)]),
     ]));
@@ -939,44 +1134,84 @@ async fn ingest_retains_accepted_tool_evidence_when_a_later_correction_omits_tha
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let agent_message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
-        "Acme released version 4.2.", at, None,
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Acme released version 4.2.",
+        at,
+        None,
+    )
+    .await;
     add_message(
-        &ctx.db, &chat.id, MessageRole::User,
-        "My budget is 20k", at + Duration::seconds(1), None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"web-release-stable".into(), chat_id:chat.id.clone(), message_id:agent_message_id,
-        turn:1, provider_call_id:"provider-web-stable".into(), name:"web_search".into(),
-        arguments:json!({"query":"Acme 4.2 release"}),
-        result:"Acme released version 4.2. https://acme.example/releases/4.2".into(),
-        success:true, duration_ms:2, hitl:None, task_event:None, system_prompt:None,
-        description:None, turn_text:None, turn_reasoning:None, created_at:at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "My budget is 20k",
+        at + Duration::seconds(1),
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "web-release-stable".into(),
+            chat_id: chat.id.clone(),
+            message_id: agent_message_id,
+            turn: 1,
+            provider_call_id: "provider-web-stable".into(),
+            name: "web_search".into(),
+            arguments: json!({"query":"Acme 4.2 release"}),
+            result: "Acme released version 4.2. https://acme.example/releases/4.2".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service,
-        &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     let correction_request = format!("{:#?}", mock.last_history());
     assert_eq!(mock.calls(), 3, "history: {correction_request}");
-    assert!(correction_request.contains("`release` -> e1:chunk1, m1"),
-        "accepted memory feedback must keep its stable evidence references: {correction_request}");
-    assert!(correction_request.contains("`budget` -> m2"),
-        "repair feedback must show the current evidence reference: {correction_request}");
+    assert!(
+        correction_request.contains("`release` -> e1:chunk1, m1"),
+        "accepted memory feedback must keep its stable evidence references: {correction_request}"
+    );
+    assert!(
+        correction_request.contains("`budget` -> m2"),
+        "repair feedback must show the current evidence reference: {correction_request}"
+    );
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     let memories = repo.list_all_memories("u1").await.unwrap();
     assert_eq!(memories.len(), 2);
-    let release = memories.iter().find(|memory| memory.content.contains("version 4.2"))
+    let release = memories
+        .iter()
+        .find(|memory| memory.content.contains("version 4.2"))
         .expect("accepted release memory");
     assert!(release.evidence.iter().any(|item| matches!(
         &item.source,
         frona::memory::pkm::model::EvidenceSource::WebSearch { tool_call_id, .. }
             if tool_call_id == "web-release-stable"
     )));
-    assert!(repo.consolidation_watermark(&chat.id).await.unwrap().is_some());
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -1021,51 +1256,111 @@ async fn ingest_repairs_unaccounted_research_by_appending_a_grounded_memory() {
     });
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("initial".into(), "submit".into(), initial)]),
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m2", "query":"Compute Box 64 GB unified memory"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m2", "query":"Compute Box 64 GB unified memory"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("repair".into(), "submit".into(), repaired)]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     add_message(
-        &ctx.db, &chat.id, MessageRole::User,
-        "I am comparing AI accelerators.", at, None,
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "I am comparing AI accelerators.",
+        at,
+        None,
+    )
+    .await;
     let message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
-        "Compute Box has 64 GB of unified memory.", at + Duration::seconds(1), None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"compute-box-spec".into(), chat_id:chat.id.clone(), message_id,
-        turn:1, provider_call_id:"provider-compute-box".into(), name:"web_fetch".into(),
-        arguments:json!({"url":"https://example.test/compute-box"}),
-        result:"Compute Box has 64 GB of unified memory.".into(), success:true,
-        duration_ms:2, hitl:None, task_event:None, system_prompt:None,
-        description:None, turn_text:None, turn_reasoning:None,
-        created_at:at + Duration::seconds(1),
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Compute Box has 64 GB of unified memory.",
+        at + Duration::seconds(1),
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "compute-box-spec".into(),
+            chat_id: chat.id.clone(),
+            message_id,
+            turn: 1,
+            provider_call_id: "provider-compute-box".into(),
+            name: "web_fetch".into(),
+            arguments: json!({"url":"https://example.test/compute-box"}),
+            result: "Compute Box has 64 GB of unified memory.".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at + Duration::seconds(1),
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service,
-        &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    assert_eq!(mock.calls(), 3, "unaccounted research must receive a repair turn");
+    assert_eq!(
+        mock.calls(),
+        3,
+        "unaccounted research must receive a repair turn"
+    );
     let initial_request = format!("{:#?}", mock.histories().first().unwrap());
-    assert!(initial_request.contains("Research messages with successful non-recall tool executions"));
-    assert!(initial_request.contains("`m2`"), "research ledger missing from initial request: {initial_request}");
-    let memories = PkmRepo::new(ctx.db.clone(), 8).list_all_memories("u1").await.unwrap();
-    assert_eq!(memories.len(), 2, "repair appends research without losing accepted memory");
-    assert!(memories.iter().any(|memory| memory.content.contains("64 GB")));
-    let stats = PkmRepo::new(ctx.db.clone(), 8).latest_consolidation_record("u1")
-        .await.unwrap().unwrap().stats.research_coverage;
+    assert!(
+        initial_request.contains("Research messages with successful non-recall tool executions")
+    );
+    assert!(
+        initial_request.contains("`m2`"),
+        "research ledger missing from initial request: {initial_request}"
+    );
+    let memories = PkmRepo::new(ctx.db.clone(), 8)
+        .list_all_memories("u1")
+        .await
+        .unwrap();
+    assert_eq!(
+        memories.len(),
+        2,
+        "repair appends research without losing accepted memory"
+    );
+    assert!(
+        memories
+            .iter()
+            .any(|memory| memory.content.contains("64 GB"))
+    );
+    let stats = PkmRepo::new(ctx.db.clone(), 8)
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap()
+        .stats
+        .research_coverage;
     assert_eq!(stats.messages, 1);
     assert_eq!(stats.extracted, 1);
     assert_eq!(stats.memories_added_by_repair, 1);
     let feedback = format!("{:#?}", mock.last_history());
-    assert!(feedback.contains("research_message_unaccounted"), "history={feedback}");
+    assert!(
+        feedback.contains("research_message_unaccounted"),
+        "history={feedback}"
+    );
 }
 
 #[tokio::test]
@@ -1097,46 +1392,92 @@ async fn ingest_rebinds_a_unique_agent_quote_to_its_actual_message() {
         }]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m2", "query":"Compute Box 64 GB unified memory"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m2", "query":"Compute Box 64 GB unified memory"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("extract".into(), "submit".into(), extract)]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let research_message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
-        "Compute Box has 64 GB of unified memory.", at, None,
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Compute Box has 64 GB of unified memory.",
+        at,
+        None,
+    )
+    .await;
     add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
-        "The comparison is complete.", at + Duration::seconds(1), None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"compute-box-source".into(), chat_id:chat.id.clone(), message_id:research_message_id.clone(),
-        turn:1, provider_call_id:"provider-compute-box-source".into(), name:"web_fetch".into(),
-        arguments:json!({"url":"https://example.test/compute-box"}),
-        result:"Compute Box has 64 GB of unified memory.".into(), success:true,
-        duration_ms:2, hitl:None, task_event:None, system_prompt:None,
-        description:None, turn_text:None, turn_reasoning:None, created_at:at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "The comparison is complete.",
+        at + Duration::seconds(1),
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "compute-box-source".into(),
+            chat_id: chat.id.clone(),
+            message_id: research_message_id.clone(),
+            turn: 1,
+            provider_call_id: "provider-compute-box-source".into(),
+            name: "web_fetch".into(),
+            arguments: json!({"url":"https://example.test/compute-box"}),
+            result: "Compute Box has 64 GB of unified memory.".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service,
-        &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    assert_eq!(mock.calls(), 2, "a unique source-handle error is repaired without another model turn; history={:#?}", mock.last_history());
-    let memories = PkmRepo::new(ctx.db.clone(), 8).list_all_memories("u1").await.unwrap();
+    assert_eq!(
+        mock.calls(),
+        2,
+        "a unique source-handle error is repaired without another model turn; history={:#?}",
+        mock.last_history()
+    );
+    let memories = PkmRepo::new(ctx.db.clone(), 8)
+        .list_all_memories("u1")
+        .await
+        .unwrap();
     assert_eq!(memories.len(), 1);
     assert!(memories[0].evidence.iter().any(|evidence| matches!(
         &evidence.source,
         frona::memory::pkm::model::EvidenceSource::AgentMessage { message_id, .. }
             if message_id == &research_message_id
     )));
-    let stats = PkmRepo::new(ctx.db.clone(), 8).latest_consolidation_record("u1")
-        .await.unwrap().unwrap().stats.research_coverage;
+    let stats = PkmRepo::new(ctx.db.clone(), 8)
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap()
+        .stats
+        .research_coverage;
     assert_eq!(stats.citation_repairs, 1);
 }
 
@@ -1175,9 +1516,13 @@ async fn ingest_can_split_a_mixed_research_claim_without_losing_supported_facts(
         ]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m1", "query":"Compute Box 64 GB Accelerator A 32 GB Accelerator B 48 GB"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m1", "query":"Compute Box 64 GB Accelerator A 32 GB Accelerator B 48 GB"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("initial".into(), "submit".into(), initial)]),
         MockResponse::ToolCalls(vec![("split".into(), "submit".into(), repaired)]),
     ]));
@@ -1185,106 +1530,201 @@ async fn ingest_can_split_a_mixed_research_claim_without_losing_supported_facts(
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
-        "Compute Box has 64 GB, Accelerator A has 32 GB, and Accelerator B has 48 GB.", at, None,
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Compute Box has 64 GB, Accelerator A has 32 GB, and Accelerator B has 48 GB.",
+        at,
+        None,
+    )
+    .await;
     for (id, turn, result) in [
         ("a-compute-box", 1, "Compute Box has 64 GB."),
         ("b-accelerator-a", 2, "Accelerator A has 32 GB."),
     ] {
-        SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-            id:id.into(), chat_id:chat.id.clone(), message_id:message_id.clone(),
-            turn, provider_call_id:format!("provider-{id}"), name:"web_fetch".into(),
-            arguments:json!({"url":format!("https://example.test/{id}")}),
-            result:result.into(), success:true, duration_ms:2, hitl:None,
-            task_event:None, system_prompt:None, description:None, turn_text:None,
-            turn_reasoning:None, created_at:at + Duration::milliseconds(i64::from(turn)),
-        }).await.unwrap();
+        SurrealToolCallRepo::new(ctx.db.clone())
+            .create(&ToolCall {
+                id: id.into(),
+                chat_id: chat.id.clone(),
+                message_id: message_id.clone(),
+                turn,
+                provider_call_id: format!("provider-{id}"),
+                name: "web_fetch".into(),
+                arguments: json!({"url":format!("https://example.test/{id}")}),
+                result: result.into(),
+                success: true,
+                duration_ms: 2,
+                hitl: None,
+                task_event: None,
+                system_prompt: None,
+                description: None,
+                turn_text: None,
+                turn_reasoning: None,
+                created_at: at + Duration::milliseconds(i64::from(turn)),
+            })
+            .await
+            .unwrap();
     }
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service,
-        &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    let memories = PkmRepo::new(ctx.db.clone(), 8).list_all_memories("u1").await.unwrap();
-    assert_eq!(memories.len(), 2, "one rejected mixed claim can become two supported memories");
-    assert!(memories.iter().any(|memory| memory.content == "Compute Box has 64 GB."));
-    assert!(memories.iter().any(|memory| memory.content == "Accelerator A has 32 GB."));
-    assert!(!memories.iter().any(|memory| memory.content.contains("48 GB")));
-    let stats = PkmRepo::new(ctx.db.clone(), 8).latest_consolidation_record("u1")
-        .await.unwrap().unwrap().stats.research_coverage;
+    let memories = PkmRepo::new(ctx.db.clone(), 8)
+        .list_all_memories("u1")
+        .await
+        .unwrap();
+    assert_eq!(
+        memories.len(),
+        2,
+        "one rejected mixed claim can become two supported memories"
+    );
+    assert!(
+        memories
+            .iter()
+            .any(|memory| memory.content == "Compute Box has 64 GB.")
+    );
+    assert!(
+        memories
+            .iter()
+            .any(|memory| memory.content == "Accelerator A has 32 GB.")
+    );
+    assert!(
+        !memories
+            .iter()
+            .any(|memory| memory.content.contains("48 GB"))
+    );
+    let stats = PkmRepo::new(ctx.db.clone(), 8)
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap()
+        .stats
+        .research_coverage;
     assert_eq!(stats.mixed_claim_splits, 1);
 }
 
 #[tokio::test]
 async fn ingest_returns_all_missing_critical_values_in_one_grounding_feedback() {
-    let submission = |content: &str| json!({
-        "new_entities": [{"id":"fixture-page-8",
-            "path":"routes/sfo-sea", "name":"SFO to SEA", "description":"A flight route",
-            "sources":[{"message":"m1","quote":"Flights","strength":"explicit"}],
-            "aliases":[], "candidate_attributes":[]
-        }],
-        "existing_entity_updates": [], "playbooks": [],
-        "research_dispositions": [{
-            "message":"m1", "result":"extracted", "reason":"Flight schedule retained.",
-            "claims":[{
-                "claim":content, "result":"extracted", "contribution_ids":["flights"]
-            }]
-        }],
-        "memories": [{
-            "id":"flights", "kind":"fact", "content":content, "entities":["routes/sfo-sea"],
-            "sources":[{
-                "message":"m1", "quote":"Flights EX101 and EX202 depart at 9:00 AM",
-                "strength":"explicit"
+    let submission = |content: &str| {
+        json!({
+            "new_entities": [{"id":"fixture-page-8",
+                "path":"routes/sfo-sea", "name":"SFO to SEA", "description":"A flight route",
+                "sources":[{"message":"m1","quote":"Flights","strength":"explicit"}],
+                "aliases":[], "candidate_attributes":[]
             }],
-            "tool_evidence":[{
-                "message":"m1", "evidence_id":"m1:tool1",
-                "quote":"EXA101 and EXA202 depart at 09:00AM"
+            "existing_entity_updates": [], "playbooks": [],
+            "research_dispositions": [{
+                "message":"m1", "result":"extracted", "reason":"Flight schedule retained.",
+                "claims":[{
+                    "claim":content, "result":"extracted", "contribution_ids":["flights"]
+                }]
+            }],
+            "memories": [{
+                "id":"flights", "kind":"fact", "content":content, "entities":["routes/sfo-sea"],
+                "sources":[{
+                    "message":"m1", "quote":"Flights EX101 and EX202 depart at 9:00 AM",
+                    "strength":"explicit"
+                }],
+                "tool_evidence":[{
+                    "message":"m1", "evidence_id":"m1:tool1",
+                    "quote":"EXA101 and EXA202 depart at 09:00AM"
+                }]
             }]
-        }]
-    });
+        })
+    };
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m1", "query":"SFO SEA flights"
-        }))]),
-        MockResponse::ToolCalls(vec![("invalid".into(), "submit".into(), submission(
-            "Flights EX101 and EX202 depart at 9:00 AM."
-        ))]),
-        MockResponse::ToolCalls(vec![("corrected".into(), "submit".into(), submission(
-            "Flights EXA101 and EXA202 depart at 09:00AM."
-        ))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m1", "query":"SFO SEA flights"
+            }),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "invalid".into(),
+            "submit".into(),
+            submission("Flights EX101 and EX202 depart at 9:00 AM."),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "corrected".into(),
+            "submit".into(),
+            submission("Flights EXA101 and EXA202 depart at 09:00AM."),
+        )]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
-        "Flights EX101 and EX202 depart at 9:00 AM.", at, None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"flight-search".into(), chat_id:chat.id.clone(), message_id,
-        turn:1, provider_call_id:"provider-flight-search".into(), name:"web_search".into(),
-        arguments:json!({"query":"SFO SEA flights"}),
-        result:"EXA101 and EXA202 depart at 09:00AM.".into(), success:true,
-        duration_ms:2, hitl:None, task_event:None, system_prompt:None,
-        description:None, turn_text:None, turn_reasoning:None, created_at:at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Flights EX101 and EX202 depart at 9:00 AM.",
+        at,
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "flight-search".into(),
+            chat_id: chat.id.clone(),
+            message_id,
+            turn: 1,
+            provider_call_id: "provider-flight-search".into(),
+            name: "web_search".into(),
+            arguments: json!({"query":"SFO SEA flights"}),
+            result: "EXA101 and EXA202 depart at 09:00AM.".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(mock.calls(), 3);
     let histories = mock.histories();
     let correction = format!("{:?}", histories.get(2).expect("corrected Extract request"));
-    assert!(correction.contains("missing critical values"), "{correction}");
+    assert!(
+        correction.contains("missing critical values"),
+        "{correction}"
+    );
     assert!(correction.contains("EX101"), "{correction}");
     assert!(correction.contains("EX202"), "{correction}");
-    assert!(correction.contains("comparison ignores case, spaces, and punctuation"), "{correction}");
-    let memories = PkmRepo::new(ctx.db.clone(), 8).list_all_memories("u1").await.unwrap();
+    assert!(
+        correction.contains("comparison ignores case, spaces, and punctuation"),
+        "{correction}"
+    );
+    let memories = PkmRepo::new(ctx.db.clone(), 8)
+        .list_all_memories("u1")
+        .await
+        .unwrap();
     assert_eq!(memories.len(), 1);
-    assert_eq!(memories[0].content, "Flights EXA101 and EXA202 depart at 09:00AM.");
+    assert_eq!(
+        memories[0].content,
+        "Flights EXA101 and EXA202 depart at 09:00AM."
+    );
 }
 
 #[tokio::test]
@@ -1307,42 +1747,82 @@ async fn ingest_persists_agent_memory_with_successful_curl_web_page_evidence() {
         }]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m1", "query":"Example Domain documentation examples"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m1", "query":"Example Domain documentation examples"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("extract".into(), "submit".into(), extract)]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
-        "Example Domain is for use in documentation examples.", at, None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"curl-example".into(), chat_id:chat.id.clone(), message_id,
-        turn:1, provider_call_id:"provider-shell".into(), name:"shell".into(),
-        arguments:json!({"command":"curl https://example.com"}),
-        result:"Example Domain is for use in documentation examples.".into(),
-        success:true, duration_ms:2, hitl:None, task_event:None, system_prompt:None,
-        description:None, turn_text:None, turn_reasoning:None, created_at:at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Example Domain is for use in documentation examples.",
+        at,
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "curl-example".into(),
+            chat_id: chat.id.clone(),
+            message_id,
+            turn: 1,
+            provider_call_id: "provider-shell".into(),
+            name: "shell".into(),
+            arguments: json!({"command":"curl https://example.com"}),
+            result: "Example Domain is for use in documentation examples.".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     let memories = repo.list_all_memories("u1").await.unwrap();
     assert_eq!(memories.len(), 1);
-    assert!(memories[0].evidence.iter().any(|item| matches!(
-        &item.source,
-        frona::memory::pkm::model::EvidenceSource::WebPage { tool_call_id, url, .. }
-            if tool_call_id == "curl-example"
-                && url.as_deref() == Some("https://example.com")
-    )), "persisted evidence: {:?}", memories[0].evidence);
-    assert_eq!(repo.latest_consolidation_record("u1").await.unwrap().unwrap()
-        .stats.agent_evidence_strong_matches, 1);
+    assert!(
+        memories[0].evidence.iter().any(|item| matches!(
+            &item.source,
+            frona::memory::pkm::model::EvidenceSource::WebPage { tool_call_id, url, .. }
+                if tool_call_id == "curl-example"
+                    && url.as_deref() == Some("https://example.com")
+        )),
+        "persisted evidence: {:?}",
+        memories[0].evidence
+    );
+    assert_eq!(
+        repo.latest_consolidation_record("u1")
+            .await
+            .unwrap()
+            .unwrap()
+            .stats
+            .agent_evidence_strong_matches,
+        1
+    );
 }
 
 #[tokio::test]
@@ -1363,36 +1843,71 @@ async fn ingest_keeps_a_procedure_with_two_citations_from_one_agent_message() {
         }]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m1", "query":"Stop Postgres then start Postgres"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m1", "query":"Stop Postgres then start Postgres"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("extract".into(), "submit".into(), extract)]),
     ]));
     let ctx = setup(mock).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
-        "Stop Postgres, then start Postgres.", at, None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"restart-result".into(), chat_id:chat.id.clone(), message_id,
-        turn:1, provider_call_id:"provider-restart".into(), name:"shell".into(),
-        arguments:json!({"command":"service postgres restart"}),
-        result:"Stop Postgres, then start Postgres.".into(), success:true, duration_ms:2,
-        hitl:None, task_event:None, system_prompt:None, description:None,
-        turn_text:None, turn_reasoning:None, created_at:at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Stop Postgres, then start Postgres.",
+        at,
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "restart-result".into(),
+            chat_id: chat.id.clone(),
+            message_id,
+            turn: 1,
+            provider_call_id: "provider-restart".into(),
+            name: "shell".into(),
+            arguments: json!({"command":"service postgres restart"}),
+            result: "Stop Postgres, then start Postgres.".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     let memories = repo.list_all_memories("u1").await.unwrap();
-    assert_eq!(memories.len(), 1,
-        "two citations from one Agent message must remain one valid assertion source");
-    assert_eq!(memories[0].kind, frona::memory::pkm::model::MemoryKind::Procedural);
+    assert_eq!(
+        memories.len(),
+        1,
+        "two citations from one Agent message must remain one valid assertion source"
+    );
+    assert_eq!(
+        memories[0].kind,
+        frona::memory::pkm::model::MemoryKind::Procedural
+    );
 }
 
 #[tokio::test]
@@ -1410,38 +1925,83 @@ async fn ingest_drops_agent_memory_when_the_only_execution_failed() {
         }]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m1", "query":"Acme closed at 42"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m1", "query":"Acme closed at 42"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("extract".into(), "submit".into(), extract)]),
-        MockResponse::ToolCalls(vec![("drop".into(), "submit".into(), json!({
-            "new_entities":[], "existing_entity_updates":[], "playbooks":[], "memories":[]
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "drop".into(),
+            "submit".into(),
+            json!({
+                "new_entities":[], "existing_entity_updates":[], "playbooks":[], "memories":[]
+            }),
+        )]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent, "Acme closed at $42.", at, None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"failed-price".into(), chat_id:chat.id.clone(), message_id,
-        turn:1, provider_call_id:"provider-failed".into(), name:"python".into(),
-        arguments:json!({"code":"fetch_price('ACME')"}), result:"network timeout".into(),
-        success:false, duration_ms:2, hitl:None, task_event:None, system_prompt:None,
-        description:None, turn_text:None, turn_reasoning:None, created_at:at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Acme closed at $42.",
+        at,
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "failed-price".into(),
+            chat_id: chat.id.clone(),
+            message_id,
+            turn: 1,
+            provider_call_id: "provider-failed".into(),
+            name: "python".into(),
+            arguments: json!({"code":"fetch_price('ACME')"}),
+            result: "network timeout".into(),
+            success: false,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     assert!(repo.list_all_memories("u1").await.unwrap().is_empty());
-    assert!(repo.latest_consolidation_record("u1").await.unwrap().unwrap()
-        .stats.agent_evidence_no_tool_drops >= 1);
-    assert_eq!(mock.calls(), 3,
-        "the failed execution search returns no admissible evidence and Extract corrects the memory");
+    assert!(
+        repo.latest_consolidation_record("u1")
+            .await
+            .unwrap()
+            .unwrap()
+            .stats
+            .agent_evidence_no_tool_drops
+            >= 1
+    );
+    assert_eq!(
+        mock.calls(),
+        3,
+        "the failed execution search returns no admissible evidence and Extract corrects the memory"
+    );
     assert!(format!("{:#?}", mock.last_history()).contains("agent_claim_without_tool_evidence"));
 }
 
@@ -1476,34 +2036,74 @@ async fn ingest_requires_a_scheduled_task_handle_to_copy_its_event_time() {
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = DateTime::parse_from_rfc3339("2026-07-18T20:48:27Z")
-        .unwrap().with_timezone(&Utc);
+        .unwrap()
+        .with_timezone(&Utc);
     let message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent, "The reminder is scheduled.", at, None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"schedule-reminder".into(), chat_id:chat.id.clone(), message_id,
-        turn:1, provider_call_id:"provider-schedule".into(), name:"create_recurring_task".into(),
-        arguments:json!({"title":"Drink water at 08:00"}),
-        result:json!({"task_id":"task-hydration"}).to_string(), success:true, duration_ms:2,
-        hitl:None, task_event:None, system_prompt:None, description:None, turn_text:None,
-        turn_reasoning:None, created_at:at + Duration::milliseconds(1),
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "The reminder is scheduled.",
+        at,
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "schedule-reminder".into(),
+            chat_id: chat.id.clone(),
+            message_id,
+            turn: 1,
+            provider_call_id: "provider-schedule".into(),
+            name: "create_recurring_task".into(),
+            arguments: json!({"title":"Drink water at 08:00"}),
+            result: json!({"task_id":"task-hydration"}).to_string(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at + Duration::milliseconds(1),
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    assert_eq!(mock.calls(), 2, "the missing task date should require one correction");
+    assert_eq!(
+        mock.calls(),
+        2,
+        "the missing task date should require one correction"
+    );
     assert!(format!("{:#?}", mock.histories()).contains("task_episode_missing_absolute_time"));
-    let memories = PkmRepo::new(ctx.db.clone(), 8).list_all_memories("u1").await.unwrap();
+    let memories = PkmRepo::new(ctx.db.clone(), 8)
+        .list_all_memories("u1")
+        .await
+        .unwrap();
     assert_eq!(memories.len(), 1);
     assert!(memories[0].evidence.iter().any(|item| matches!(
         &item.source,
         frona::memory::pkm::model::EvidenceSource::TaskLifecycle { task_id, .. }
             if task_id == "task-hydration"
     )));
-    assert_eq!(memories[0].episode.as_ref().and_then(|episode| episode.absolute.as_ref())
-        .and_then(|absolute| absolute.minute), Some(48));
+    assert_eq!(
+        memories[0]
+            .episode
+            .as_ref()
+            .and_then(|episode| episode.absolute.as_ref())
+            .and_then(|absolute| absolute.minute),
+        Some(48)
+    );
 }
 
 #[tokio::test]
@@ -1526,37 +2126,81 @@ async fn ingest_resume_commits_tool_evidence_checkpoint_and_watermark_once() {
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let message_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent, "Acme released version 4.2.", at, None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id: "web-release-resume".into(), chat_id: chat.id.clone(), message_id,
-        turn: 1, provider_call_id: "provider-web-resume".into(), name: "web_search".into(),
-        arguments: json!({"query":"Acme 4.2 release"}),
-        result: "Acme released version 4.2. https://acme.example/releases/4.2".into(),
-        success: true, duration_ms: 2, hitl: None, task_event: None, system_prompt: None,
-        description: None, turn_text: None, turn_reasoning: None, created_at: at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Acme released version 4.2.",
+        at,
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "web-release-resume".into(),
+            chat_id: chat.id.clone(),
+            message_id,
+            turn: 1,
+            provider_call_id: "provider-web-resume".into(),
+            name: "web_search".into(),
+            arguments: json!({"query":"Acme 4.2 release"}),
+            result: "Acme released version 4.2. https://acme.example/releases/4.2".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        ctx.pkm.run_extraction_sweep(
-            &ctx.state.chat_service, &ctx.state.contact_service,
-            &ctx.state.agent_service, &ctx.harness,
-        ),
-    ).await.is_err());
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            ctx.pkm.run_extraction_sweep(
+                &ctx.state.chat_service,
+                &ctx.state.contact_service,
+                &ctx.state.agent_service,
+                &ctx.harness,
+            ),
+        )
+        .await
+        .is_err()
+    );
 
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     assert!(repo.list_all_memories("u1").await.unwrap().is_empty());
-    assert!(repo.consolidation_watermark(&chat.id).await.unwrap().is_none());
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
-    mock.enqueue(MockResponse::ToolCalls(vec![("search-resume".into(), "search_tool_evidence".into(), json!({
-        "message_id":"m1", "query":"Acme released version 4.2"
-    }))]));
-    mock.enqueue(MockResponse::ToolCalls(vec![("extract-resume".into(), "submit".into(), extract)]));
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service,
-        &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    mock.enqueue(MockResponse::ToolCalls(vec![(
+        "search-resume".into(),
+        "search_tool_evidence".into(),
+        json!({
+            "message_id":"m1", "query":"Acme released version 4.2"
+        }),
+    )]));
+    mock.enqueue(MockResponse::ToolCalls(vec![(
+        "extract-resume".into(),
+        "submit".into(),
+        extract,
+    )]));
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     let memories = repo.list_all_memories("u1").await.unwrap();
     assert_eq!(memories.len(), 1);
@@ -1565,16 +2209,29 @@ async fn ingest_resume_commits_tool_evidence_checkpoint_and_watermark_once() {
         frona::memory::pkm::model::EvidenceSource::WebSearch { tool_call_id, .. }
             if tool_call_id == "web-release-resume"
     )));
-    assert!(repo.consolidation_watermark(&chat.id).await.unwrap().is_some());
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     let calls = mock.calls();
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service,
-        &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
     assert_eq!(mock.calls(), calls);
-    assert_eq!(repo.list_all_memories("u1").await.unwrap().len(), 1,
-        "a committed evidence-bearing window is not duplicated on resume");
+    assert_eq!(
+        repo.list_all_memories("u1").await.unwrap().len(),
+        1,
+        "a committed evidence-bearing window is not duplicated on resume"
+    );
 }
 
 #[tokio::test]
@@ -1594,23 +2251,49 @@ async fn ingest_accepts_multilingual_user_confirmation_without_tool_evidence() {
             ]
         }]
     });
-    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "extract".into(), "submit".into(), extract,
-    )])]));
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        ("extract".into(), "submit".into(), extract),
+    ])]));
     let ctx = setup(mock).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
-    add_message(&ctx.db, &chat.id, MessageRole::Agent, "You live in Exampletown.", at, None).await;
-    add_message(&ctx.db, &chat.id, MessageRole::User, "Sí, eso es correcto.", at + Duration::seconds(1), None).await;
+    add_message(
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "You live in Exampletown.",
+        at,
+        None,
+    )
+    .await;
+    add_message(
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Sí, eso es correcto.",
+        at + Duration::seconds(1),
+        None,
+    )
+    .await;
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    let memories = PkmRepo::new(ctx.db.clone(), 8).list_all_memories("u1").await.unwrap();
+    let memories = PkmRepo::new(ctx.db.clone(), 8)
+        .list_all_memories("u1")
+        .await
+        .unwrap();
     assert_eq!(memories.len(), 1);
     assert!(memories[0].evidence.iter().any(|item| matches!(
-        item.source, frona::memory::pkm::model::EvidenceSource::UserConfirmation { .. }
+        item.source,
+        frona::memory::pkm::model::EvidenceSource::UserConfirmation { .. }
     )));
 }
 
@@ -1630,37 +2313,71 @@ async fn ingest_treats_resolved_hitl_text_as_user_confirmation() {
             ]
         }]
     });
-    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "extract".into(),"submit".into(),extract,
-    )])]));
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        ("extract".into(), "submit".into(), extract),
+    ])]));
     let ctx = setup(mock).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     let message_id = add_message(
-        &ctx.db,&chat.id,MessageRole::Agent,"Acme is the production service.",at,None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"hitl-confirm".into(),chat_id:chat.id.clone(),message_id,turn:1,
-        provider_call_id:"provider-hitl".into(),name:"ask_user_question".into(),arguments:json!({}),
-        result:"Sí, correcto".into(),success:true,duration_ms:2,
-        hitl:Some(frona::inference::hitl::Hitl {
-            prompt:"Is Acme the production service?".into(),url:String::new(),
-            request:frona::inference::hitl::HitlRequest::Question { options:vec![] },
-            status:frona::inference::tool_call::ToolStatus::Resolved,
-            response:Some(frona::inference::hitl::HitlResponse::Choice("Sí, correcto".into())),
-            delivery:None,
-        }),task_event:None,system_prompt:None,description:None,turn_text:None,
-        turn_reasoning:None,created_at:at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Acme is the production service.",
+        at,
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "hitl-confirm".into(),
+            chat_id: chat.id.clone(),
+            message_id,
+            turn: 1,
+            provider_call_id: "provider-hitl".into(),
+            name: "ask_user_question".into(),
+            arguments: json!({}),
+            result: "Sí, correcto".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: Some(frona::inference::hitl::Hitl {
+                prompt: "Is Acme the production service?".into(),
+                url: String::new(),
+                request: frona::inference::hitl::HitlRequest::Question { options: vec![] },
+                status: frona::inference::tool_call::ToolStatus::Resolved,
+                response: Some(frona::inference::hitl::HitlResponse::Choice(
+                    "Sí, correcto".into(),
+                )),
+                delivery: None,
+            }),
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service,&ctx.state.contact_service,&ctx.state.agent_service,&ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    let memories = PkmRepo::new(ctx.db.clone(),8).list_all_memories("u1").await.unwrap();
-    assert_eq!(memories.len(),1);
+    let memories = PkmRepo::new(ctx.db.clone(), 8)
+        .list_all_memories("u1")
+        .await
+        .unwrap();
+    assert_eq!(memories.len(), 1);
     assert!(memories[0].evidence.iter().any(|item| matches!(
-        item.source,frona::memory::pkm::model::EvidenceSource::UserConfirmation { .. }
+        item.source,
+        frona::memory::pkm::model::EvidenceSource::UserConfirmation { .. }
     )));
 }
 
@@ -1698,34 +2415,81 @@ async fn ingest_uses_tool_evidence_from_a_previous_parallel_window() {
     });
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("first".into(), "submit".into(), empty)]),
-        MockResponse::ToolCalls(vec![("search-second".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m1", "query":"Acme released version 4.2"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search-second".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m1", "query":"Acme released version 4.2"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("second".into(), "submit".into(), grounded)]),
     ]));
-    let ctx = setup_with_memory_config(mock, MemoryConfig {
-        pkm_extract_max_messages: 1,
-        pkm_consolidation_concurrency: 1,
-        ..MemoryConfig::default()
-    }).await;
+    let ctx = setup_with_memory_config(
+        mock,
+        MemoryConfig {
+            pkm_extract_max_messages: 1,
+            pkm_consolidation_concurrency: 1,
+            ..MemoryConfig::default()
+        },
+    )
+    .await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(2);
-    let first_id = add_message(&ctx.db, &chat.id, MessageRole::Agent, "I checked the Acme release feed.", at, None).await;
-    add_message(&ctx.db, &chat.id, MessageRole::Agent, "Acme released version 4.2.", at + Duration::minutes(1), None).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"prior-web".into(), chat_id:chat.id.clone(), message_id:first_id, turn:1,
-        provider_call_id:"provider-prior".into(), name:"web_fetch".into(),
-        arguments:json!({"url":"https://acme.example/releases"}),
-        result:"Acme released version 4.2.".into(), success:true, duration_ms:2,
-        hitl:None, task_event:None, system_prompt:None, description:None, turn_text:None,
-        turn_reasoning:None, created_at:at,
-    }).await.unwrap();
+    let first_id = add_message(
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "I checked the Acme release feed.",
+        at,
+        None,
+    )
+    .await;
+    add_message(
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Acme released version 4.2.",
+        at + Duration::minutes(1),
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "prior-web".into(),
+            chat_id: chat.id.clone(),
+            message_id: first_id,
+            turn: 1,
+            provider_call_id: "provider-prior".into(),
+            name: "web_fetch".into(),
+            arguments: json!({"url":"https://acme.example/releases"}),
+            result: "Acme released version 4.2.".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    let memories = PkmRepo::new(ctx.db.clone(), 8).list_all_memories("u1").await.unwrap();
+    let memories = PkmRepo::new(ctx.db.clone(), 8)
+        .list_all_memories("u1")
+        .await
+        .unwrap();
     assert_eq!(memories.len(), 1);
     assert!(memories[0].evidence.iter().any(|item| matches!(
         &item.source,
@@ -1746,7 +2510,9 @@ async fn ingest_revises_a_full_batch_to_cite_structured_tool_evidence() {
                 "evidence_id":"m2:tool1",
                 "quote":"environment=prod status=green failed_checks=0",
             })]
-        } else { Vec::new() };
+        } else {
+            Vec::new()
+        };
         json!({
             "new_entities":[{"id":"fixture-page-15",
                 "path":"services/postgres","name":"Postgres","description":"A database service",
@@ -1772,44 +2538,106 @@ async fn ingest_revises_a_full_batch_to_cite_structured_tool_evidence() {
     };
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("initial".into(), "submit".into(), submission(false))]),
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m2", "query":"prod status green"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m2", "query":"prod status green"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("grounded".into(), "submit".into(), submission(true))]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
-    add_message(&ctx.db, &chat.id, MessageRole::User, "I use Postgres.", at, None).await;
+    add_message(
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "I use Postgres.",
+        at,
+        None,
+    )
+    .await;
     let agent_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent, "The production deployment succeeded.",
-        at + Duration::seconds(1), None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"deploy-result".into(),chat_id:chat.id.clone(),message_id:agent_id,turn:1,
-        provider_call_id:"provider-deploy".into(),name:"shell".into(),arguments:json!({"command":"deploy prod"}),
-        result:"environment=prod status=green failed_checks=0".into(),success:true,duration_ms:2,
-        hitl:None,task_event:None,system_prompt:None,description:None,turn_text:None,
-        turn_reasoning:None,created_at:at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "The production deployment succeeded.",
+        at + Duration::seconds(1),
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "deploy-result".into(),
+            chat_id: chat.id.clone(),
+            message_id: agent_id,
+            turn: 1,
+            provider_call_id: "provider-deploy".into(),
+            name: "shell".into(),
+            arguments: json!({"command":"deploy prod"}),
+            result: "environment=prod status=green failed_checks=0".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    assert_eq!(mock.calls(), 3, "Agent evidence is searched before the corrected submission; history={:#?}", mock.last_history());
-    let tools = mock.tool_histories().into_iter().flatten()
-        .map(|tool| tool.name).collect::<Vec<_>>();
+    assert_eq!(
+        mock.calls(),
+        3,
+        "Agent evidence is searched before the corrected submission; history={:#?}",
+        mock.last_history()
+    );
+    let tools = mock
+        .tool_histories()
+        .into_iter()
+        .flatten()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
     assert!(tools.iter().any(|name| name == "search_tool_evidence"));
     assert!(!tools.iter().any(|name| name == "read_tool_execution"));
-    let memories = PkmRepo::new(ctx.db.clone(), 8).list_all_memories("u1").await.unwrap();
-    assert_eq!(memories.len(), 2, "the accepted User memory survives the Agent correction");
-    assert!(memories.iter().any(|memory| memory.evidence.iter().any(|item| matches!(
-        &item.source,
-        frona::memory::pkm::model::EvidenceSource::ToolResult { tool_call_id, .. }
-            if tool_call_id == "deploy-result"
-    ))));
-    let record = PkmRepo::new(ctx.db.clone(), 8).latest_consolidation_record("u1").await.unwrap().unwrap();
+    let memories = PkmRepo::new(ctx.db.clone(), 8)
+        .list_all_memories("u1")
+        .await
+        .unwrap();
+    assert_eq!(
+        memories.len(),
+        2,
+        "the accepted User memory survives the Agent correction"
+    );
+    assert!(
+        memories
+            .iter()
+            .any(|memory| memory.evidence.iter().any(|item| matches!(
+                &item.source,
+                frona::memory::pkm::model::EvidenceSource::ToolResult { tool_call_id, .. }
+                    if tool_call_id == "deploy-result"
+            )))
+    );
+    let record = PkmRepo::new(ctx.db.clone(), 8)
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.stats.agent_evidence_lookup_calls, 1);
     assert_eq!(record.stats.grounding_corrections, 1);
     assert!(record.stats.agent_evidence_fallback_retains >= 1);
@@ -1823,7 +2651,9 @@ async fn ingest_corrects_tool_evidence_without_a_matching_agent_source() {
                 "message":"m2", "evidence_id":"m2:tool1",
                 "quote":"Model Alpha V1 has a mixture-of-experts architecture"
             })]
-        } else { Vec::new() };
+        } else {
+            Vec::new()
+        };
         json!({
             "new_entities":[{"id":"fixture-page-16",
                 "path":"models/qwen3-235b", "name":"Model Alpha V1",
@@ -1852,111 +2682,200 @@ async fn ingest_corrects_tool_evidence_without_a_matching_agent_source() {
         })
     };
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m2", "query":"Model Alpha V1 mixture of experts"
-        }))]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m2", "query":"Model Alpha V1 mixture of experts"
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("invalid".into(), "submit".into(), submission(true))]),
-        MockResponse::ToolCalls(vec![("corrected".into(), "submit".into(), submission(false))]),
+        MockResponse::ToolCalls(vec![(
+            "corrected".into(),
+            "submit".into(),
+            submission(false),
+        )]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     add_message(
-        &ctx.db, &chat.id, MessageRole::User,
-        "Model Alpha V1 is a mixture-of-experts model.", at, None,
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Model Alpha V1 is a mixture-of-experts model.",
+        at,
+        None,
+    )
+    .await;
     let agent_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent,
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
         "Model Alpha V1 has a mixture-of-experts architecture.",
-        at + Duration::seconds(1), None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"model-alpha-search".into(), chat_id:chat.id.clone(), message_id:agent_id, turn:1,
-        provider_call_id:"provider-model-alpha".into(), name:"web_search".into(),
-        arguments:json!({"query":"Model Alpha V1 architecture"}),
-        result:"Model Alpha V1 has a mixture-of-experts architecture".into(),
-        success:true, duration_ms:2, hitl:None, task_event:None, system_prompt:None,
-        description:None, turn_text:None, turn_reasoning:None, created_at:at,
-    }).await.unwrap();
+        at + Duration::seconds(1),
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "model-alpha-search".into(),
+            chat_id: chat.id.clone(),
+            message_id: agent_id,
+            turn: 1,
+            provider_call_id: "provider-model-alpha".into(),
+            name: "web_search".into(),
+            arguments: json!({"query":"Model Alpha V1 architecture"}),
+            result: "Model Alpha V1 has a mixture-of-experts architecture".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(mock.calls(), 3, "history={:#?}", mock.last_history());
     let history = format!("{:#?}", mock.last_history());
-    assert!(history.contains("tool_evidence_without_agent_source"), "history={history}");
+    assert!(
+        history.contains("tool_evidence_without_agent_source"),
+        "history={history}"
+    );
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     assert_eq!(repo.list_all_memories("u1").await.unwrap().len(), 1);
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.stats.grounding_corrections, 1);
 }
 
 #[tokio::test]
 async fn ingest_validates_supplied_tool_evidence_when_user_evidence_is_also_present() {
-    let submission = |tool_quote: &str| json!({
-        "new_entities":[{"id":"fixture-page-17",
-            "path":"products/example-cable","name":"Example cable",
-            "description":"A display cable",
-            "sources":[{"message":"m1","quote":"Example cable","strength":"explicit"}],
-            "aliases":[],"candidate_attributes":[]
-        }],
-        "existing_entity_updates":[],"playbooks":[],
-        "research_dispositions":[{
-            "message":"m2", "result":"extracted", "reason":"Availability retained.",
-            "claims":[{
-                "claim":"Example cable is available.", "result":"extracted",
-                "contribution_ids":["example-cable-memory"]
+    let submission = |tool_quote: &str| {
+        json!({
+            "new_entities":[{"id":"fixture-page-17",
+                "path":"products/example-cable","name":"Example cable",
+                "description":"A display cable",
+                "sources":[{"message":"m1","quote":"Example cable","strength":"explicit"}],
+                "aliases":[],"candidate_attributes":[]
+            }],
+            "existing_entity_updates":[],"playbooks":[],
+            "research_dispositions":[{
+                "message":"m2", "result":"extracted", "reason":"Availability retained.",
+                "claims":[{
+                    "claim":"Example cable is available.", "result":"extracted",
+                    "contribution_ids":["example-cable-memory"]
+                }]
+            }],
+            "memories":[{
+                "id":"example-cable-memory","kind":"fact","content":"Example cable is available.",
+                "entities":["products/example-cable"],
+                "sources":[
+                    {"message":"m1","quote":"Example cable","strength":"explicit"},
+                    {"message":"m2","quote":"Example cable is available","strength":"derived"}
+                ],
+                "tool_evidence":[{
+                    "message":"m2","evidence_id":"m2:tool1","quote":tool_quote
+                }]
             }]
-        }],
-        "memories":[{
-            "id":"example-cable-memory","kind":"fact","content":"Example cable is available.",
-            "entities":["products/example-cable"],
-            "sources":[
-                {"message":"m1","quote":"Example cable","strength":"explicit"},
-                {"message":"m2","quote":"Example cable is available","strength":"derived"}
-            ],
-            "tool_evidence":[{
-                "message":"m2","evidence_id":"m2:tool1","quote":tool_quote
-            }]
-        }]
-    });
+        })
+    };
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(), "search_tool_evidence".into(), json!({
-            "message_id":"m2", "query":"Example cable available"
-        }))]),
         MockResponse::ToolCalls(vec![(
-            "invalid".into(), "submit".into(), submission("unsupported evidence span"),
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m2", "query":"Example cable available"
+            }),
         )]),
         MockResponse::ToolCalls(vec![(
-            "corrected".into(), "submit".into(), submission("Example cable is available"),
+            "invalid".into(),
+            "submit".into(),
+            submission("unsupported evidence span"),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "corrected".into(),
+            "submit".into(),
+            submission("Example cable is available"),
         )]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     add_message(
-        &ctx.db, &chat.id, MessageRole::User, "Find a Example cable.", at, None,
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Find a Example cable.",
+        at,
+        None,
+    )
+    .await;
     let agent_id = add_message(
-        &ctx.db, &chat.id, MessageRole::Agent, "Example cable is available.",
-        at + Duration::seconds(1), None,
-    ).await;
-    SurrealToolCallRepo::new(ctx.db.clone()).create(&ToolCall {
-        id:"example-cable-search".into(), chat_id:chat.id.clone(), message_id:agent_id, turn:1,
-        provider_call_id:"provider-example-cable".into(), name:"web_search".into(),
-        arguments:json!({"query":"Example cable"}), result:"Example cable is available.".into(),
-        success:true, duration_ms:2, hitl:None, task_event:None, system_prompt:None,
-        description:None, turn_text:None, turn_reasoning:None, created_at:at,
-    }).await.unwrap();
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "Example cable is available.",
+        at + Duration::seconds(1),
+        None,
+    )
+    .await;
+    SurrealToolCallRepo::new(ctx.db.clone())
+        .create(&ToolCall {
+            id: "example-cable-search".into(),
+            chat_id: chat.id.clone(),
+            message_id: agent_id,
+            turn: 1,
+            provider_call_id: "provider-example-cable".into(),
+            name: "web_search".into(),
+            arguments: json!({"query":"Example cable"}),
+            result: "Example cable is available.".into(),
+            success: true,
+            duration_ms: 2,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: at,
+        })
+        .await
+        .unwrap();
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(mock.calls(), 3);
     let history = format!("{:#?}", mock.last_history());
-    assert!(history.contains("tool_evidence_quote_not_found"), "history={history}");
+    assert!(
+        history.contains("tool_evidence_quote_not_found"),
+        "history={history}"
+    );
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     let memories = repo.list_all_memories("u1").await.unwrap();
     assert_eq!(memories.len(), 1);
@@ -1967,7 +2886,11 @@ async fn ingest_validates_supplied_tool_evidence_when_user_evidence_is_also_pres
             | frona::memory::pkm::model::EvidenceSource::ToolResult { tool_call_id, .. }
             if tool_call_id == "example-cable-search"
     )));
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.stats.grounding_corrections, 1);
 }
 
@@ -2002,40 +2925,87 @@ async fn ingest_returns_unsupported_agent_contributions_for_correction() {
         ]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("search".into(),"search_tool_evidence".into(),json!({
-            "message_id":"m2", "query":"100 Gbps uplink"
-        }))]),
-        MockResponse::ToolCalls(vec![("extract".into(),"submit".into(),extract)]),
-        MockResponse::ToolCalls(vec![("corrected".into(),"submit".into(),corrected)]),
+        MockResponse::ToolCalls(vec![(
+            "search".into(),
+            "search_tool_evidence".into(),
+            json!({
+                "message_id":"m2", "query":"100 Gbps uplink"
+            }),
+        )]),
+        MockResponse::ToolCalls(vec![("extract".into(), "submit".into(), extract)]),
+        MockResponse::ToolCalls(vec![("corrected".into(), "submit".into(), corrected)]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
-    add_message(&ctx.db,&chat.id,MessageRole::User,"I use the Acme Router.",at,None).await;
-    add_message(&ctx.db,&chat.id,MessageRole::Agent,"It has a 100 Gbps uplink.",at + Duration::seconds(1),None).await;
+    add_message(
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "I use the Acme Router.",
+        at,
+        None,
+    )
+    .await;
+    add_message(
+        &ctx.db,
+        &chat.id,
+        MessageRole::Agent,
+        "It has a 100 Gbps uplink.",
+        at + Duration::seconds(1),
+        None,
+    )
+    .await;
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service,&ctx.state.contact_service,&ctx.state.agent_service,&ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    assert_eq!(mock.calls(), 3,
-        "unsupported memories must receive a correction turn; history={:#?}", mock.last_history());
+    assert_eq!(
+        mock.calls(),
+        3,
+        "unsupported memories must receive a correction turn; history={:#?}",
+        mock.last_history()
+    );
     let feedback = format!("{:#?}", mock.last_history());
-    assert!(feedback.contains("agent_claim_without_tool_evidence"),
-        "the correction must state why the memory cannot be accepted: {feedback}");
-    assert!(feedback.contains("invalid_memory_kind"),
-        "the same correction must include independent structural memory errors: {feedback}");
+    assert!(
+        feedback.contains("agent_claim_without_tool_evidence"),
+        "the correction must state why the memory cannot be accepted: {feedback}"
+    );
+    assert!(
+        feedback.contains("invalid_memory_kind"),
+        "the same correction must include independent structural memory errors: {feedback}"
+    );
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     let memories = repo.list_all_memories("u1").await.unwrap();
     assert_eq!(memories.len(), 1);
     assert_eq!(memories[0].content, "The user uses the Acme Router.");
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
-    let ConsolidationStageState::Ingest(_) = &record.state else { panic!("expected ingest") };
-    let entity = working_entity(&repo, &record, "devices/acme-router").await
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
+    let ConsolidationStageState::Ingest(_) = &record.state else {
+        panic!("expected ingest")
+    };
+    let entity = working_entity(&repo, &record, "devices/acme-router")
+        .await
         .expect("User memory keeps entity");
-    assert!(entity.contributions.iter().all(|contribution| {
-        contribution.attributes.as_object().is_some_and(|attributes| attributes.is_empty())
-    }), "unsupported Agent attribute is removed");
+    assert!(
+        entity.contributions.iter().all(|contribution| {
+            contribution
+                .attributes
+                .as_object()
+                .is_some_and(|attributes| attributes.is_empty())
+        }),
+        "unsupported Agent attribute is removed"
+    );
 }
 
 #[tokio::test]
@@ -2063,29 +3033,56 @@ async fn ingest_groups_all_memory_admission_errors_in_one_correction() {
         ]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("initial".into(),"submit".into(),initial)]),
-        MockResponse::ToolCalls(vec![("corrected".into(),"submit".into(),corrected)]),
+        MockResponse::ToolCalls(vec![("initial".into(), "submit".into(), initial)]),
+        MockResponse::ToolCalls(vec![("corrected".into(), "submit".into(), corrected)]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     add_message(
-        &ctx.db, &chat.id, MessageRole::User,
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
         "Postgres runs on 5433. Redis runs on 6380. Nginx runs on 8080.",
-        Utc::now() - Duration::hours(1), None,
-    ).await;
+        Utc::now() - Duration::hours(1),
+        None,
+    )
+    .await;
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    assert_eq!(mock.calls(), 2,
-        "all memory admission errors must be returned in one correction turn");
+    assert_eq!(
+        mock.calls(),
+        2,
+        "all memory admission errors must be returned in one correction turn"
+    );
     let feedback = format!("{:#?}", mock.last_history());
-    for reason in ["invalid_memory_kind", "empty_memory_content", "memory_has_no_usable_entity"] {
-        assert!(feedback.contains(reason), "grouped feedback is missing {reason}: {feedback}");
+    for reason in [
+        "invalid_memory_kind",
+        "empty_memory_content",
+        "memory_has_no_usable_entity",
+    ] {
+        assert!(
+            feedback.contains(reason),
+            "grouped feedback is missing {reason}: {feedback}"
+        );
     }
-    let memories = PkmRepo::new(ctx.db.clone(), 8).list_all_memories("u1").await.unwrap();
-    assert_eq!(memories.len(), 3, "the corrected valid memories must all survive extraction");
+    let memories = PkmRepo::new(ctx.db.clone(), 8)
+        .list_all_memories("u1")
+        .await
+        .unwrap();
+    assert_eq!(
+        memories.len(),
+        3,
+        "the corrected valid memories must all survive extraction"
+    );
 }
 
 #[tokio::test]
@@ -2101,32 +3098,62 @@ async fn ingest_returns_previously_rejected_memories_for_correction() {
         "new_entities":[], "existing_entity_updates":[], "playbooks":[], "memories":[]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::ToolCalls(vec![("repeated".into(),"submit".into(),repeated)]),
-        MockResponse::ToolCalls(vec![("drop".into(),"submit".into(),empty)]),
+        MockResponse::ToolCalls(vec![("repeated".into(), "submit".into(), repeated)]),
+        MockResponse::ToolCalls(vec![("drop".into(), "submit".into(), empty)]),
     ]));
     let ctx = setup(mock.clone()).await;
     let repo = PkmRepo::new(ctx.db.clone(), 8);
-    let rejected_id = repo.create_memory_with_entities(
-        "u1", "a1", "old-chat", frona::memory::pkm::model::MemoryKind::Fact,
-        "Postgres runs on 5432.", &["services/postgres".into()],
-    ).await.unwrap();
+    let rejected_id = repo
+        .create_memory_with_entities(
+            "u1",
+            "a1",
+            "old-chat",
+            frona::memory::pkm::model::MemoryKind::Fact,
+            "Postgres runs on 5432.",
+            &["services/postgres".into()],
+        )
+        .await
+        .unwrap();
     repo.set_disposition(
-        "u1", &rejected_id, frona::memory::pkm::model::Disposition::Erroneous,
-    ).await.unwrap();
+        "u1",
+        &rejected_id,
+        frona::memory::pkm::model::Disposition::Erroneous,
+    )
+    .await
+    .unwrap();
     let chat = seed_chat(&ctx.db).await;
     add_message(
-        &ctx.db, &chat.id, MessageRole::User, "Postgres runs on 5432.",
-        Utc::now() - Duration::hours(1), None,
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Postgres runs on 5432.",
+        Utc::now() - Duration::hours(1),
+        None,
+    )
+    .await;
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service, &ctx.state.contact_service, &ctx.state.agent_service, &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    assert_eq!(mock.calls(), 2, "re-learn suppression must use a model correction turn");
+    assert_eq!(
+        mock.calls(),
+        2,
+        "re-learn suppression must use a model correction turn"
+    );
     assert!(format!("{:#?}", mock.last_history()).contains("memory_was_previously_rejected"));
     let memories = repo.list_all_memories("u1").await.unwrap();
-    assert_eq!(memories.len(), 1, "the rejected memory remains only as its original tombstone");
+    assert_eq!(
+        memories.len(),
+        1,
+        "the rejected memory remains only as its original tombstone"
+    );
 }
 
 /// An alias is optional identity metadata. If the model suggests one that the cited
@@ -2148,9 +3175,9 @@ async fn ingest_discards_an_unsupported_optional_alias_without_resubmission() {
             "sources":[{"message":"m1","quote":"Postgres is a database","strength":"explicit"}]
         }]
     });
-    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "extract".into(), "submit".into(), extract,
-    )])]));
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        ("extract".into(), "submit".into(), extract),
+    ])]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     add_message(
@@ -2173,45 +3200,63 @@ async fn ingest_discards_an_unsupported_optional_alias_without_resubmission() {
         .await
         .unwrap();
 
-    assert_eq!(mock.calls(), 1, "an optional unsupported alias needs no correction turn");
+    assert_eq!(
+        mock.calls(),
+        1,
+        "an optional unsupported alias needs no correction turn"
+    );
     let repo = PkmRepo::new(ctx.db.clone(), 8);
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     let ConsolidationStageState::Ingest(_) = &record.state else {
         panic!("extract-only checkpoint advanced past ingest")
     };
-    let entity = working_entity(&repo, &record, "services/postgres").await
+    let entity = working_entity(&repo, &record, "services/postgres")
+        .await
         .expect("the grounded entity survives optional alias cleanup");
-    assert!(entity.aliases.is_empty(), "the unsupported alias is not stored");
+    assert!(
+        entity.aliases.is_empty(),
+        "the unsupported alias is not stored"
+    );
     assert_eq!(record.stats.grounding_corrections, 0);
-    assert_eq!(record.stats.grounding_items_dropped, 1,
-        "the atomically committed checkpoint counts deterministic alias cleanup");
+    assert_eq!(
+        record.stats.grounding_items_dropped, 1,
+        "the atomically committed checkpoint counts deterministic alias cleanup"
+    );
 }
 
 /// Grounding correction metrics are part of the extraction window commit. A crash after
 /// advancing the watermark must therefore neither lose nor replay the correction count.
 #[tokio::test]
 async fn ingest_commits_grounding_corrections_with_the_window_checkpoint() {
-    let submission = |quote: &str| json!({
-        "new_entities": [{"id":"fixture-page-21",
-            "path":"services/postgres", "name":"Postgres", "description":"database",
-            "sources":[{"message":"m1","quote":"Postgres","strength":"explicit"}],
-            "aliases":[], "candidate_attributes":[]
-        }],
-        "existing_entity_updates": [],
-        "playbooks": [],
-        "memories": [{
-            "kind":"fact", "content":"Postgres is a database",
-            "entities":["services/postgres"],
-            "sources":[{"message":"m1","quote":quote,"strength":"explicit"}]
-        }]
-    });
+    let submission = |quote: &str| {
+        json!({
+            "new_entities": [{"id":"fixture-page-21",
+                "path":"services/postgres", "name":"Postgres", "description":"database",
+                "sources":[{"message":"m1","quote":"Postgres","strength":"explicit"}],
+                "aliases":[], "candidate_attributes":[]
+            }],
+            "existing_entity_updates": [],
+            "playbooks": [],
+            "memories": [{
+                "kind":"fact", "content":"Postgres is a database",
+                "entities":["services/postgres"],
+                "sources":[{"message":"m1","quote":quote,"strength":"explicit"}]
+            }]
+        })
+    };
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![(
-            "extract-invalid".into(), "submit".into(),
+            "extract-invalid".into(),
+            "submit".into(),
             submission("Postgres is a relational database"),
         )]),
         MockResponse::ToolCalls(vec![(
-            "extract-corrected".into(), "submit".into(),
+            "extract-corrected".into(),
+            "submit".into(),
             submission("Postgres is a database"),
         )]),
     ]));
@@ -2239,7 +3284,11 @@ async fn ingest_commits_grounding_corrections_with_the_window_checkpoint() {
 
     assert_eq!(mock.calls(), 2);
     let repo = PkmRepo::new(ctx.db.clone(), 8);
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.stats.grounding_corrections, 1);
     assert_eq!(record.stats.grounding_items_dropped, 0);
 
@@ -2252,39 +3301,49 @@ async fn ingest_commits_grounding_corrections_with_the_window_checkpoint() {
         )
         .await
         .unwrap();
-    let resumed = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
-    assert_eq!(resumed.stats.grounding_corrections, 1,
-        "a consumed extraction window must not count its correction twice on resume");
+    let resumed = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resumed.stats.grounding_corrections, 1,
+        "a consumed extraction window must not count its correction twice on resume"
+    );
 }
 
 #[tokio::test]
 async fn ingest_validates_the_complete_batch_with_stable_evidence_on_every_correction() {
-    let submission = |budget: &str, database_quote: &str| json!({
-        "new_entities": [{"id":"fixture-page-22",
-            "path":"services/postgres", "name":"Postgres", "description":"database",
-            "sources":[{"message":"m2","quote":"Postgres","strength":"explicit"}],
-            "aliases":[], "candidate_attributes":[]
-        }],
-        "existing_entity_updates": [], "playbooks": [],
-        "memories": [
-            {
-                "id":"budget", "kind":"fact", "content":budget, "entities":["people/me"],
-                "sources":[{"message":"m1","quote":"My budget is 20k","strength":"explicit"}]
-            },
-            {
-                "id":"database", "kind":"fact", "content":"Postgres is a database",
-                "entities":["services/postgres"],
-                "sources":[{"message":"m2","quote":database_quote,"strength":"explicit"}]
-            }
-        ]
-    });
+    let submission = |budget: &str, database_quote: &str| {
+        json!({
+            "new_entities": [{"id":"fixture-page-22",
+                "path":"services/postgres", "name":"Postgres", "description":"database",
+                "sources":[{"message":"m2","quote":"Postgres","strength":"explicit"}],
+                "aliases":[], "candidate_attributes":[]
+            }],
+            "existing_entity_updates": [], "playbooks": [],
+            "memories": [
+                {
+                    "id":"budget", "kind":"fact", "content":budget, "entities":["people/me"],
+                    "sources":[{"message":"m1","quote":"My budget is 20k","strength":"explicit"}]
+                },
+                {
+                    "id":"database", "kind":"fact", "content":"Postgres is a database",
+                    "entities":["services/postgres"],
+                    "sources":[{"message":"m2","quote":database_quote,"strength":"explicit"}]
+                }
+            ]
+        })
+    };
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![(
-            "initial".into(), "submit".into(),
+            "initial".into(),
+            "submit".into(),
             submission("My budget is $20,000", "Postgres is a relational database"),
         )]),
         MockResponse::ToolCalls(vec![(
-            "corrected".into(), "submit".into(),
+            "corrected".into(),
+            "submit".into(),
             submission("My budget is 20k", "Postgres is a database"),
         )]),
     ]));
@@ -2292,36 +3351,81 @@ async fn ingest_validates_the_complete_batch_with_stable_evidence_on_every_corre
     let chat = seed_chat(&ctx.db).await;
     let at = Utc::now() - Duration::hours(1);
     add_message(
-        &ctx.db, &chat.id, MessageRole::User, "My budget is 20k",
-        at, None,
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "My budget is 20k",
+        at,
+        None,
+    )
+    .await;
     add_message(
-        &ctx.db, &chat.id, MessageRole::User, "Postgres is a database",
-        at + Duration::seconds(1), None,
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Postgres is a database",
+        at + Duration::seconds(1),
+        None,
+    )
+    .await;
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service,
-        &ctx.state.contact_service,
-        &ctx.state.agent_service,
-        &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
-    assert_eq!(mock.calls(), 2, "all current errors must be returned in one correction");
+    assert_eq!(
+        mock.calls(),
+        2,
+        "all current errors must be returned in one correction"
+    );
     let correction = format!("{:#?}", mock.last_history());
-    assert!(correction.contains("$20,000"), "feedback must report the value mismatch: {correction}");
-    assert!(correction.contains("Postgres is a relational database"),
-        "feedback must report the invalid quote: {correction}");
-    assert!(correction.contains("budget"), "feedback must identify the memory under repair: {correction}");
-    assert!(correction.contains("database"), "feedback must identify the memory under repair: {correction}");
+    assert!(
+        correction.contains("$20,000"),
+        "feedback must report the value mismatch: {correction}"
+    );
+    assert!(
+        correction.contains("Postgres is a relational database"),
+        "feedback must report the invalid quote: {correction}"
+    );
+    assert!(
+        correction.contains("budget"),
+        "feedback must identify the memory under repair: {correction}"
+    );
+    assert!(
+        correction.contains("database"),
+        "feedback must identify the memory under repair: {correction}"
+    );
 
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     let memories = repo.list_all_memories("u1").await.unwrap();
     assert_eq!(memories.len(), 2);
-    assert!(memories.iter().any(|memory| memory.content == "My budget is 20k"));
-    assert!(memories.iter().any(|memory| memory.content == "Postgres is a database"));
-    assert!(repo.consolidation_watermark(&chat.id).await.unwrap().is_some());
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    assert!(
+        memories
+            .iter()
+            .any(|memory| memory.content == "My budget is 20k")
+    );
+    assert!(
+        memories
+            .iter()
+            .any(|memory| memory.content == "Postgres is a database")
+    );
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.stats.grounding_corrections, 1);
     assert_eq!(record.stats.grounding_items_dropped, 0);
 }
@@ -2330,52 +3434,72 @@ async fn ingest_validates_the_complete_batch_with_stable_evidence_on_every_corre
 /// applied. Drift elsewhere is ignored without spending another model submission.
 #[tokio::test]
 async fn ingest_applies_only_allowed_grounding_corrections() {
-    let submission = |content: &str, quote: &str| json!({
-        "new_entities": [{"id":"fixture-page-23",
-            "path":"services/postgres", "name":"Postgres", "description":"database",
-            "sources":[{"message":"m1","quote":"Postgres","strength":"explicit"}],
-            "aliases":[], "candidate_attributes":[]
-        }],
-        "existing_entity_updates": [], "playbooks": [],
-        "memories": [{
-            "kind":"fact", "content":content, "entities":["services/postgres"],
-            "sources":[{"message":"m1","quote":quote,"strength":"explicit"}]
-        }]
-    });
+    let submission = |content: &str, quote: &str| {
+        json!({
+            "new_entities": [{"id":"fixture-page-23",
+                "path":"services/postgres", "name":"Postgres", "description":"database",
+                "sources":[{"message":"m1","quote":"Postgres","strength":"explicit"}],
+                "aliases":[], "candidate_attributes":[]
+            }],
+            "existing_entity_updates": [], "playbooks": [],
+            "memories": [{
+                "kind":"fact", "content":content, "entities":["services/postgres"],
+                "sources":[{"message":"m1","quote":quote,"strength":"explicit"}]
+            }]
+        })
+    };
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![(
-            "initial".into(), "submit".into(),
-            submission("Postgres is a database", "Postgres is a relational database"),
+            "initial".into(),
+            "submit".into(),
+            submission(
+                "Postgres is a database",
+                "Postgres is a relational database",
+            ),
         )]),
         MockResponse::ToolCalls(vec![(
-            "drift".into(), "submit".into(),
+            "drift".into(),
+            "submit".into(),
             submission("Postgres is very reliable", "Postgres is a database"),
         )]),
         MockResponse::ToolCalls(vec![(
-            "fixed".into(), "submit".into(),
+            "fixed".into(),
+            "submit".into(),
             submission("Postgres is a database", "Postgres is a database"),
         )]),
     ]));
     let ctx = setup(mock.clone()).await;
     let chat = seed_chat(&ctx.db).await;
     add_message(
-        &ctx.db, &chat.id, MessageRole::User, "Postgres is a database",
-        Utc::now() - Duration::hours(1), None,
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Postgres is a database",
+        Utc::now() - Duration::hours(1),
+        None,
+    )
+    .await;
 
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service,
-        &ctx.state.contact_service,
-        &ctx.state.agent_service,
-        &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(mock.calls(), 2);
     let repo = PkmRepo::new(ctx.db.clone(), 8);
     let memories = repo.list_all_memories("u1").await.unwrap();
     assert_eq!(memories.len(), 1);
     assert_eq!(memories[0].content, "Postgres is a database");
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.stats.grounding_corrections, 1);
 }
 
@@ -2383,33 +3507,49 @@ async fn ingest_applies_only_allowed_grounding_corrections() {
 /// sweep commits them in order through the ordinary checkpoint transactions.
 #[tokio::test]
 async fn one_chat_runs_multiple_ingest_windows_concurrently() {
-    let extracted = |quote: &str| json!({
-        "new_entities": [{"id":"fixture-page-24",
-            "path":"services/postgres", "name":"Postgres", "description":"database",
-            "sources":[{"message":"m1","quote":"Postgres","strength":"explicit"}],
-            "aliases":["PG"], "candidate_attributes":[]
-        }],
-        "existing_entity_updates": [],
-        "playbooks": [],
-        "memories": [{
-            "kind":"fact", "content":"Postgres is a database",
-            "entities":["services/postgres"],
-            "sources":[{"message":"m1","quote":quote,"strength":"explicit"}]
-        }]
-    });
+    let extracted = |quote: &str| {
+        json!({
+            "new_entities": [{"id":"fixture-page-24",
+                "path":"services/postgres", "name":"Postgres", "description":"database",
+                "sources":[{"message":"m1","quote":"Postgres","strength":"explicit"}],
+                "aliases":["PG"], "candidate_attributes":[]
+            }],
+            "existing_entity_updates": [],
+            "playbooks": [],
+            "memories": [{
+                "kind":"fact", "content":"Postgres is a database",
+                "entities":["services/postgres"],
+                "sources":[{"message":"m1","quote":quote,"strength":"explicit"}]
+            }]
+        })
+    };
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Barrier(barrier.clone(), Box::new(MockResponse::ToolCalls(vec![(
-            "extract-1".into(), "submit".into(), extracted("Postgres is a relational database"),
-        )]))),
-        MockResponse::Barrier(barrier, Box::new(MockResponse::ToolCalls(vec![(
-            "extract-2".into(), "submit".into(), extracted("Postgres is a relational database"),
-        )]))),
+        MockResponse::Barrier(
+            barrier.clone(),
+            Box::new(MockResponse::ToolCalls(vec![(
+                "extract-1".into(),
+                "submit".into(),
+                extracted("Postgres is a relational database"),
+            )])),
+        ),
+        MockResponse::Barrier(
+            barrier,
+            Box::new(MockResponse::ToolCalls(vec![(
+                "extract-2".into(),
+                "submit".into(),
+                extracted("Postgres is a relational database"),
+            )])),
+        ),
         MockResponse::ToolCalls(vec![(
-            "extract-1-fixed".into(), "submit".into(), extracted("Postgres is a database"),
+            "extract-1-fixed".into(),
+            "submit".into(),
+            extracted("Postgres is a database"),
         )]),
         MockResponse::ToolCalls(vec![(
-            "extract-2-fixed".into(), "submit".into(), extracted("Postgres is a database"),
+            "extract-2-fixed".into(),
+            "submit".into(),
+            extracted("Postgres is a database"),
         )]),
     ]));
     let memory_config = MemoryConfig {
@@ -2421,14 +3561,24 @@ async fn one_chat_runs_multiple_ingest_windows_concurrently() {
     let chat = seed_chat(&ctx.db).await;
     let first = Utc::now() - Duration::hours(2);
     add_message(
-        &ctx.db, &chat.id, MessageRole::User, "Postgres is a database",
-        first, Some(MessageStatus::Completed),
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Postgres is a database",
+        first,
+        Some(MessageStatus::Completed),
+    )
+    .await;
     let second = first + Duration::minutes(1);
     add_message(
-        &ctx.db, &chat.id, MessageRole::User, "Postgres is a database",
-        second, Some(MessageStatus::Completed),
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Postgres is a database",
+        second,
+        Some(MessageStatus::Completed),
+    )
+    .await;
 
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -2438,17 +3588,32 @@ async fn one_chat_runs_multiple_ingest_windows_concurrently() {
             &ctx.state.agent_service,
             &ctx.harness,
         ),
-    ).await.expect("both windows must be in flight together").unwrap();
+    )
+    .await
+    .expect("both windows must be in flight together")
+    .unwrap();
 
     assert_eq!(mock.calls(), 4);
     let repo = PkmRepo::new(ctx.db.clone(), 8);
-    let watermark = repo.consolidation_watermark(&chat.id).await.unwrap().unwrap();
+    let watermark = repo
+        .consolidation_watermark(&chat.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(watermark, second, "ordered commits reach the final window");
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     let ConsolidationStageState::Ingest(_) = &record.state else {
         panic!("extract-only checkpoint advanced past ingest")
     };
-    assert!(working_entity(&repo, &record, "services/postgres").await.is_some());
+    assert!(
+        working_entity(&repo, &record, "services/postgres")
+            .await
+            .is_some()
+    );
     assert_eq!(record.stats.grounding_corrections, 2);
     assert_eq!(record.stats.grounding_items_dropped, 2);
 }
@@ -2474,7 +3639,11 @@ async fn later_ingest_window_cannot_commit_ahead_of_an_unfinished_window() {
     });
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::Pending,
-        MockResponse::ToolCalls(vec![("extract-2".into(), "submit".into(), extracted.clone())]),
+        MockResponse::ToolCalls(vec![(
+            "extract-2".into(),
+            "submit".into(),
+            extracted.clone(),
+        )]),
     ]));
     let memory_config = MemoryConfig {
         pkm_extract_max_messages: 1,
@@ -2485,59 +3654,105 @@ async fn later_ingest_window_cannot_commit_ahead_of_an_unfinished_window() {
     let chat = seed_chat(&ctx.db).await;
     let first = Utc::now() - Duration::hours(2);
     add_message(
-        &ctx.db, &chat.id, MessageRole::User, "Postgres is a database",
-        first, Some(MessageStatus::Completed),
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Postgres is a database",
+        first,
+        Some(MessageStatus::Completed),
+    )
+    .await;
     let second = first + Duration::minutes(1);
     add_message(
-        &ctx.db, &chat.id, MessageRole::User, "Postgres is a database",
-        second, Some(MessageStatus::Completed),
-    ).await;
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Postgres is a database",
+        second,
+        Some(MessageStatus::Completed),
+    )
+    .await;
 
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        ctx.pkm.run_extraction_sweep(
-            &ctx.state.chat_service,
-            &ctx.state.contact_service,
-            &ctx.state.agent_service,
-            &ctx.harness,
-        ),
-    ).await.is_err(), "the first model request deliberately remains in flight");
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            ctx.pkm.run_extraction_sweep(
+                &ctx.state.chat_service,
+                &ctx.state.contact_service,
+                &ctx.state.agent_service,
+                &ctx.harness,
+            ),
+        )
+        .await
+        .is_err(),
+        "the first model request deliberately remains in flight"
+    );
 
     assert_eq!(mock.calls(), 2, "the later window was mined speculatively");
     let repo = PkmRepo::new(ctx.db.clone(), 8);
-    assert!(repo.consolidation_watermark(&chat.id).await.unwrap().is_none());
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     if let Some(record) = repo.latest_consolidation_record("u1").await.unwrap() {
         let ConsolidationStageState::Ingest(_) = &record.state else {
             panic!("cancelled extraction stays at ingest")
         };
-        assert!(working_entity(&repo, &record, "services/postgres").await.is_none(),
-            "later output was not committed out of order");
-        assert_eq!(record.stats.grounding_items_dropped, 0,
-            "a completed but uncommitted later window must not add its metrics");
+        assert!(
+            working_entity(&repo, &record, "services/postgres")
+                .await
+                .is_none(),
+            "later output was not committed out of order"
+        );
+        assert_eq!(
+            record.stats.grounding_items_dropped, 0,
+            "a completed but uncommitted later window must not add its metrics"
+        );
     }
 
     mock.enqueue(MockResponse::ToolCalls(vec![(
-        "extract-retry-1".into(), "submit".into(), extracted.clone(),
+        "extract-retry-1".into(),
+        "submit".into(),
+        extracted.clone(),
     )]));
     mock.enqueue(MockResponse::ToolCalls(vec![(
-        "extract-retry-2".into(), "submit".into(), extracted,
+        "extract-retry-2".into(),
+        "submit".into(),
+        extracted,
     )]));
-    ctx.pkm.run_extraction_sweep(
-        &ctx.state.chat_service,
-        &ctx.state.contact_service,
-        &ctx.state.agent_service,
-        &ctx.harness,
-    ).await.unwrap();
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
     assert_eq!(mock.calls(), 4, "resume replays both uncommitted windows");
-    assert_eq!(repo.consolidation_watermark(&chat.id).await.unwrap(), Some(second));
-    let record = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    assert_eq!(
+        repo.consolidation_watermark(&chat.id).await.unwrap(),
+        Some(second)
+    );
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     let ConsolidationStageState::Ingest(_) = &record.state else {
         panic!("extract-only resume remains at ingest")
     };
-    assert!(working_entity(&repo, &record, "services/postgres").await.is_some());
-    assert_eq!(record.stats.grounding_items_dropped, 2,
-        "the two replayed and committed windows each add their metrics once");
+    assert!(
+        working_entity(&repo, &record, "services/postgres")
+            .await
+            .is_some()
+    );
+    assert_eq!(
+        record.stats.grounding_items_dropped, 2,
+        "the two replayed and committed windows each add their metrics once"
+    );
 }
 
 #[tokio::test]
@@ -2562,8 +3777,12 @@ async fn sweep_preserves_a_parked_classify_checkpoint_when_no_chat_needs_mining(
     };
     repo.save_consolidation_record(&record).await.unwrap();
     let mut row = KnowledgeConsolidationEntity::pending(
-        &consolidation_id, "u1", "people/me", EntityCategory::Concept,
-        Vec::new(), Default::default(),
+        &consolidation_id,
+        "u1",
+        "people/me",
+        EntityCategory::Concept,
+        Vec::new(),
+        Default::default(),
     );
     row.progress.classification = ClassificationProgress::Accepted {
         decision: json!({"entity":{"name":"Casey Owner","description":"Account owner","aliases":[]},
@@ -2586,7 +3805,11 @@ async fn sweep_preserves_a_parked_classify_checkpoint_when_no_chat_needs_mining(
         .unwrap();
 
     assert_eq!(mock.calls(), 0, "a pure resume must not call Extract");
-    let parked = repo.latest_consolidation_record("u1").await.unwrap().unwrap();
+    let parked = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
     let ConsolidationStageState::Classify(_) = &parked.state else {
         panic!("the sweep moved a parked Classify checkpoint back to Ingest")
     };
@@ -2621,27 +3844,29 @@ async fn two_chats_touching_one_entity_land_on_a_single_entity() {
         })
     };
     let mock = Arc::new(MockModelProvider::new(vec![
+        MockResponse::ToolCalls(vec![("e1".into(), "submit".into(), extract("postgres"))]),
+        MockResponse::ToolCalls(vec![("e2".into(), "submit".into(), extract("postgres"))]),
         MockResponse::ToolCalls(vec![(
-            "e1".into(),
+            "k1".into(),
             "submit".into(),
-            extract("postgres"),
-        )]),
-        MockResponse::ToolCalls(vec![(
-            "e2".into(),
-            "submit".into(),
-            extract("postgres"),
-        )]),
-        MockResponse::ToolCalls(vec![("k1".into(), "submit".into(),
             json!({"entity":{"name":"Casey Owner","description":"Account owner","aliases":[]},
-                "classes":[{"class":"schema:SoftwareApplication"}],"relations":[]}))]),
-        MockResponse::ToolCalls(vec![("k2".into(), "submit".into(),
+                "classes":[{"class":"schema:SoftwareApplication"}],"relations":[]}),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "k2".into(),
+            "submit".into(),
             json!({"entity":{"name":"Postgres","description":"svc","aliases":[]},
-                "classes":[{"class":"schema:SoftwareApplication"}],"relations":[]}))]),
-        MockResponse::ToolCalls(vec![("r".into(), "submit".into(), json!({
-            "name":"Postgres", "description":"svc", "relations":[],
-            "entity_relations":[], "outdated":[], "attributes":{},
-            "attribute_sources":[], "moves":[]
-        }))]),
+                "classes":[{"class":"schema:SoftwareApplication"}],"relations":[]}),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "r".into(),
+            "submit".into(),
+            json!({
+                "name":"Postgres", "description":"svc", "relations":[],
+                "entity_relations":[], "outdated":[], "attributes":{},
+                "attribute_sources":[], "moves":[]
+            }),
+        )]),
         MockResponse::Text("Postgres details.".into()),
     ]));
 
@@ -2669,7 +3894,10 @@ async fn two_chats_touching_one_entity_land_on_a_single_entity() {
     run_sweep(&ctx).await;
 
     let repo = PkmRepo::new(ctx.db.clone(), 8);
-    let page = repo.entity_by_path("u1", "services/postgres").await.unwrap();
+    let page = repo
+        .entity_by_path("u1", "services/postgres")
+        .await
+        .unwrap();
     assert!(
         page.is_some(),
         "both chats mined into the one page; paths={:?}; calls={}; history={:?}",

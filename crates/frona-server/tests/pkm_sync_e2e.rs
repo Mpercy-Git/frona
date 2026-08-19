@@ -16,17 +16,17 @@ use surrealdb::engine::local::{Db, Mem};
 use frona::core::config::{Config, StorageConfig};
 use frona::db::repo::pkm::{PkmConsolidationStore, PkmRepo};
 use frona::inference::error::InferenceError;
-use frona::memory::pkm::{PkmStorage, sha256_hex};
 use frona::memory::pkm::model::{
-    Disposition, EvidenceSource, EvidenceStrength, MemoryEvidence, MemoryKind, EntityCategory,
-    EntityOrigin, classify_memories,
+    Disposition, EntityCategory, EntityOrigin, EvidenceSource, EvidenceStrength, MemoryEvidence,
+    MemoryKind, classify_memories,
 };
 use frona::memory::pkm::sync::{EditGate, EditOp, EditResult, PkmSyncService};
+use frona::memory::pkm::{PkmStorage, sha256_hex};
 use frona::storage::StorageService;
 
 use helpers::{
-    MockModelProvider, MockResponse, seed_asserted_entity_link, test_harness,
-    test_model_group, test_registry_with_group,
+    MockModelProvider, MockResponse, seed_asserted_entity_link, test_harness, test_model_group,
+    test_registry_with_group,
 };
 
 const U: &str = "test-user";
@@ -102,9 +102,17 @@ async fn setup(
 /// Author a Memory page to disk + DB (skeleton, file bytes, rev) - what the author
 /// stage does. Returns the file's rev.
 async fn author(repo: &PkmRepo, storage: &PkmStorage, path: &str, body: &str) -> String {
-    repo.upsert_entity_skeleton(U, path, EntityCategory::Concept, &["https://schema.org/Person".to_string()], "Bob", "", &[])
-        .await
-        .unwrap();
+    repo.upsert_entity_skeleton(
+        U,
+        path,
+        EntityCategory::Concept,
+        &["https://schema.org/Person".to_string()],
+        "Bob",
+        "",
+        &[],
+    )
+    .await
+    .unwrap();
     storage.write_page(&vault(storage), path, body).unwrap();
     let rev = sha256_hex(body);
     repo.set_page_rev(U, path, &rev).await.unwrap();
@@ -113,9 +121,17 @@ async fn author(repo: &PkmRepo, storage: &PkmStorage, path: &str, body: &str) ->
 
 /// Seed an authored Memory page with one memory and a known rev.
 async fn seed_page(repo: &PkmRepo, path: &str, content: &str, rev: &str) -> String {
-    repo.upsert_entity_skeleton(U, path, EntityCategory::Concept, &["https://schema.org/Person".to_string()], "Bob", "", &[])
-        .await
-        .unwrap();
+    repo.upsert_entity_skeleton(
+        U,
+        path,
+        EntityCategory::Concept,
+        &["https://schema.org/Person".to_string()],
+        "Bob",
+        "",
+        &[],
+    )
+    .await
+    .unwrap();
     let mem = repo
         .create_memory_with_entities(U, "a", "c", MemoryKind::Fact, content, &[path.to_string()])
         .await
@@ -142,7 +158,11 @@ async fn writeback_on_existing_page_supersedes_and_recomputes_rev() {
     let ops = json!({ "ops": [
         {"op":"supersede","kind":"fact","content":"Bob works at Globex","memory_id":"m1","note":"moved"}
     ]});
-    mock.enqueue(MockResponse::ToolCalls(vec![("c1".into(), "submit".into(), ops)]));
+    mock.enqueue(MockResponse::ToolCalls(vec![(
+        "c1".into(),
+        "submit".into(),
+        ops,
+    )]));
 
     let r = sync
         .apply_edit(
@@ -167,7 +187,10 @@ async fn writeback_on_existing_page_supersedes_and_recomputes_rev() {
     let (cur, hist) = classify_memories(&mems);
     assert_eq!(cur.len(), 1);
     assert_eq!(cur[0].content, "Bob works at Globex");
-    assert!(matches!(cur[0].evidence[0].source, EvidenceSource::HumanEdit { .. }), "write-back mints Human evidence");
+    assert!(
+        matches!(cur[0].evidence[0].source, EvidenceSource::HumanEdit { .. }),
+        "write-back mints Human evidence"
+    );
     assert_eq!(hist.len(), 1, "old value demoted to history");
     assert_eq!(hist[0].content, "Bob works at Acme");
 }
@@ -186,12 +209,24 @@ async fn check_edit_and_apply_edit_agree_on_an_unrendered_page() {
     let mock = Arc::new(MockModelProvider::new(vec![])); // no LLM - conflict short-circuits
     let (.., harness, repo, _, sync) = setup(mock).await;
     // A page with no rev at all: skeleton created, never authored/projected.
-    repo.upsert_entity_skeleton(U, "people/carol", EntityCategory::Concept, &["https://schema.org/Person".to_string()], "Carol", "", &[])
-        .await
-        .unwrap();
+    repo.upsert_entity_skeleton(
+        U,
+        "people/carol",
+        EntityCategory::Concept,
+        &["https://schema.org/Person".to_string()],
+        "Carol",
+        "",
+        &[],
+    )
+    .await
+    .unwrap();
 
     // The gate says Conflict with an empty head…
-    match sync.check_edit(U, &handle(), "Memory/people/carol", None).await.unwrap() {
+    match sync
+        .check_edit(U, &handle(), "Memory/people/carol", None)
+        .await
+        .unwrap()
+    {
         EditGate::Conflict { head_rev, .. } => assert!(head_rev.is_empty()),
         other => panic!("gate: expected Conflict on an unrendered page, got {other:?}"),
     }
@@ -214,7 +249,10 @@ async fn check_edit_and_apply_edit_agree_on_an_unrendered_page() {
         other => panic!("apply: expected Conflict on an unrendered page, got {other:?}"),
     }
     assert!(
-        repo.memories_for_entity(U, "people/carol").await.unwrap().is_empty(),
+        repo.memories_for_entity(U, "people/carol")
+            .await
+            .unwrap()
+            .is_empty(),
         "a conflicting edit writes nothing back"
     );
 }
@@ -245,7 +283,10 @@ async fn cas_conflict_on_stale_base_rev_does_not_write() {
     // Untouched: still one Agent memory, no Human write-back.
     let mems = repo.memories_for_entity(U, "people/bob").await.unwrap();
     assert_eq!(mems.len(), 1);
-    assert!(matches!(mems[0].evidence[0].source, EvidenceSource::AgentMessage { .. }));
+    assert!(matches!(
+        mems[0].evidence[0].source,
+        EvidenceSource::AgentMessage { .. }
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -312,19 +353,41 @@ async fn concurrent_edits_with_one_base_revision_accept_only_one() {
         .count();
 
     assert_eq!(accepted, 1, "only one edit can consume a base revision");
-    assert_eq!(conflicts, 1, "the other concurrent edit must see a conflict");
-    let accepted_rev = results.iter().find_map(|result| match result {
-        EditResult::Accepted { rev } => Some(rev),
-        _ => None,
-    }).unwrap();
-    let (head_rev, head_content) = results.iter().find_map(|result| match result {
-        EditResult::Conflict { head_rev, head_content } => Some((head_rev, head_content)),
-        _ => None,
-    }).unwrap();
-    assert_eq!(head_rev, accepted_rev, "the conflict must identify the accepted head");
-    assert_eq!(sha256_hex(head_content), *head_rev, "the conflict content must match its revision");
     assert_eq!(
-        repo.memories_for_entity(U, "people/bob").await.unwrap().len(),
+        conflicts, 1,
+        "the other concurrent edit must see a conflict"
+    );
+    let accepted_rev = results
+        .iter()
+        .find_map(|result| match result {
+            EditResult::Accepted { rev } => Some(rev),
+            _ => None,
+        })
+        .unwrap();
+    let (head_rev, head_content) = results
+        .iter()
+        .find_map(|result| match result {
+            EditResult::Conflict {
+                head_rev,
+                head_content,
+            } => Some((head_rev, head_content)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        head_rev, accepted_rev,
+        "the conflict must identify the accepted head"
+    );
+    assert_eq!(
+        sha256_hex(head_content),
+        *head_rev,
+        "the conflict content must match its revision"
+    );
+    assert_eq!(
+        repo.memories_for_entity(U, "people/bob")
+            .await
+            .unwrap()
+            .len(),
         1,
         "the rejected edit must not leave memory mutations",
     );
@@ -332,11 +395,9 @@ async fn concurrent_edits_with_one_base_revision_accept_only_one() {
 
 #[tokio::test]
 async fn accepted_edit_remains_pullable_when_file_projection_is_missing() {
-    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "c1".into(),
-        "submit".into(),
-        json!({ "ops": [] }),
-    )])]));
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        ("c1".into(), "submit".into(), json!({ "ops": [] })),
+    ])]));
     let (.., harness, repo, storage, sync) = setup(mock).await;
     let base_rev = author(&repo, &storage, "people/bob", "# Bob\n\nOriginal.").await;
     let accepted_content = "# Bob\n\nAccepted human edit.";
@@ -364,7 +425,11 @@ async fn accepted_edit_remains_pullable_when_file_projection_is_missing() {
         .get_pages(U, &handle(), &["Memory/people/bob".into()])
         .await
         .unwrap();
-    assert_eq!(pages.len(), 1, "the database keeps the accepted sync head durable");
+    assert_eq!(
+        pages.len(),
+        1,
+        "the database keeps the accepted sync head durable"
+    );
     assert_eq!(pages[0].rev, accepted_rev);
     assert_eq!(pages[0].content, accepted_content);
 }
@@ -373,11 +438,7 @@ async fn accepted_edit_remains_pullable_when_file_projection_is_missing() {
 async fn new_page_create_can_retry_after_writeback_failure() {
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::Error(InferenceError::InferenceFailed("invalid request".into())),
-        MockResponse::ToolCalls(vec![(
-            "c2".into(),
-            "submit".into(),
-            json!({ "ops": [] }),
-        )]),
+        MockResponse::ToolCalls(vec![("c2".into(), "submit".into(), json!({ "ops": [] }))]),
     ]));
     let (.., harness, repo, _, sync) = setup(mock).await;
     let edit = || EditOp::Upsert {
@@ -387,10 +448,15 @@ async fn new_page_create_can_retry_after_writeback_failure() {
     };
 
     assert!(
-        sync.apply_edit(&harness, U, &handle(), edit()).await.is_err(),
+        sync.apply_edit(&harness, U, &handle(), edit())
+            .await
+            .is_err(),
         "the first write-back must expose the provider failure",
     );
-    let retry = sync.apply_edit(&harness, U, &handle(), edit()).await.unwrap();
+    let retry = sync
+        .apply_edit(&harness, U, &handle(), edit())
+        .await
+        .unwrap();
 
     assert!(
         matches!(retry, EditResult::Created { .. }),
@@ -414,26 +480,40 @@ async fn delete_retires_memories_and_drops_from_manifest() {
     assert_eq!(sync.manifest(U).await.unwrap().len(), 1);
 
     let r = sync
-        .apply_edit(&harness, U, &handle(), EditOp::Delete { path: "Memory/people/bob".into() })
+        .apply_edit(
+            &harness,
+            U,
+            &handle(),
+            EditOp::Delete {
+                path: "Memory/people/bob".into(),
+            },
+        )
         .await
         .unwrap();
     assert_eq!(r, EditResult::Removed);
 
     // Page gone from the manifest; its memories retired erroneous (kept for suppression).
-    assert!(sync.manifest(U).await.unwrap().is_empty(), "no longer pulled");
-    assert!(repo.entity_by_path(U, "people/bob").await.unwrap().is_none());
+    assert!(
+        sync.manifest(U).await.unwrap().is_empty(),
+        "no longer pulled"
+    );
+    assert!(
+        repo.entity_by_path(U, "people/bob")
+            .await
+            .unwrap()
+            .is_none()
+    );
     let mems = repo.memories_for_entity(U, "people/bob").await.unwrap();
     assert!(!mems.is_empty() && mems.iter().all(|m| m.disposition == Disposition::Erroneous));
 }
 
 #[tokio::test]
 async fn new_page_from_human_extracts_source_human_memories() {
-    let ops = json!({ "ops": [ {"op":"add","kind":"fact","content":"Carol leads the platform team"} ]});
-    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "c1".into(),
-        "submit".into(),
-        ops,
-    )])]));
+    let ops =
+        json!({ "ops": [ {"op":"add","kind":"fact","content":"Carol leads the platform team"} ]});
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        ("c1".into(), "submit".into(), ops),
+    ])]));
     let (.., harness, repo, _, sync) = setup(mock).await;
 
     let r = sync
@@ -453,7 +533,10 @@ async fn new_page_from_human_extracts_source_human_memories() {
 
     let mems = repo.memories_for_entity(U, "people/carol").await.unwrap();
     assert!(!mems.is_empty());
-    assert!(mems.iter().all(|m| matches!(m.evidence[0].source, EvidenceSource::HumanEdit { .. })));
+    assert!(
+        mems.iter()
+            .all(|m| matches!(m.evidence[0].source, EvidenceSource::HumanEdit { .. }))
+    );
 }
 
 /// Seed the user + their `system` builtin agent (handle `system`) - the identity a
@@ -521,11 +604,9 @@ async fn external_ingest_runs_as_system_agent_and_mines_memories() {
              "sources":[{"message":"m1","quote":"Alexandria Quill works at Globex","strength":"explicit"}]}
         ]
     });
-    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "c1".into(),
-        "submit".into(),
-        extract,
-    )])]));
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        ("c1".into(), "submit".into(), extract),
+    ])]));
     let (db, harness, repo, _, sync) = setup(mock.clone()).await;
     seed_user_and_system_agent(&db).await;
 
@@ -543,13 +624,19 @@ async fn external_ingest_runs_as_system_agent_and_mines_memories() {
         )
         .await
         .unwrap();
-    assert!(matches!(r, EditResult::Indexed | EditResult::Unchanged), "external note indexed: {r:?}");
+    assert!(
+        matches!(r, EditResult::Indexed | EditResult::Unchanged),
+        "external note indexed: {r:?}"
+    );
 
     // The extraction ran and stored the memory before publication. This only happens if
     // `system_agent(user_id)` resolved; otherwise extract_external errors and is swallowed.
     let mems = repo.list_all_memories(U).await.unwrap();
-    assert!(!mems.is_empty(),
-        "the note was mined into people/alex (system agent resolved): {:#?}", mock.histories());
+    assert!(
+        !mems.is_empty(),
+        "the note was mined into people/alex (system agent resolved): {:#?}",
+        mock.histories()
+    );
     assert!(
         mems.iter().all(|m| matches!(&m.evidence[0].source, EvidenceSource::ExternalNote { note, .. } if note == "Work Notes/standup")),
         "mined memories are External, tagged with the note path"
@@ -557,9 +644,14 @@ async fn external_ingest_runs_as_system_agent_and_mines_memories() {
     let record = repo.latest_consolidation_record(U).await.unwrap().unwrap();
     let pending = PkmConsolidationStore::new(Arc::new(repo.clone()))
         .scoped(&record.consolidation_id, U)
-        .working_entity("people/alex").await.unwrap().unwrap();
-    assert!(pending.source_memory_ids.contains(&mems[0].id),
-        "the pending entity retains the extracted memory link until publication");
+        .working_entity("people/alex")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        pending.source_memory_ids.contains(&mems[0].id),
+        "the pending entity retains the extracted memory link until publication"
+    );
 }
 
 #[tokio::test]
@@ -588,21 +680,44 @@ async fn external_note_retries_extraction_after_failure() {
     };
 
     assert_eq!(
-        sync.apply_edit(&harness, U, &handle(), edit()).await.unwrap(),
+        sync.apply_edit(&harness, U, &handle(), edit())
+            .await
+            .unwrap(),
         EditResult::Indexed,
     );
-    let failed_page = repo.entity_by_path(U, "Work Notes/standup").await.unwrap().unwrap();
-    assert_eq!(failed_page.rev, failed_page.mirrored_rev, "accepted note was mirrored");
-    assert_eq!(failed_page.extracted_rev, None, "failed extraction was not marked complete");
-    let retry = sync.apply_edit(&harness, U, &handle(), edit()).await.unwrap();
+    let failed_page = repo
+        .entity_by_path(U, "Work Notes/standup")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        failed_page.rev, failed_page.mirrored_rev,
+        "accepted note was mirrored"
+    );
+    assert_eq!(
+        failed_page.extracted_rev, None,
+        "failed extraction was not marked complete"
+    );
+    let retry = sync
+        .apply_edit(&harness, U, &handle(), edit())
+        .await
+        .unwrap();
 
-    assert_eq!(retry, EditResult::Indexed, "the unchanged note must retry failed extraction");
+    assert_eq!(
+        retry,
+        EditResult::Indexed,
+        "the unchanged note must retry failed extraction"
+    );
     assert_eq!(mock.calls(), 2, "the retry must reach extraction again");
     assert!(
         !repo.list_all_memories(U).await.unwrap().is_empty(),
         "the successful retry must store the derived memory",
     );
-    let extracted_page = repo.entity_by_path(U, "Work Notes/standup").await.unwrap().unwrap();
+    let extracted_page = repo
+        .entity_by_path(U, "Work Notes/standup")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(extracted_page.rev, extracted_page.extracted_rev);
 }
 
@@ -653,7 +768,11 @@ async fn external_note_preserves_previous_memories_when_reextraction_fails() {
     .unwrap();
     let old_rev = sha256_hex("Alexandria Quill works at Globex.");
     let new_rev = sha256_hex("Alexandria Quill now works at Initech.");
-    let failed_page = repo.entity_by_path(U, "Work Notes/standup").await.unwrap().unwrap();
+    let failed_page = repo
+        .entity_by_path(U, "Work Notes/standup")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(failed_page.rev.as_deref(), Some(new_rev.as_str()));
     assert_eq!(failed_page.mirrored_rev.as_deref(), Some(new_rev.as_str()));
     assert_eq!(failed_page.extracted_rev.as_deref(), Some(old_rev.as_str()));
@@ -670,17 +789,19 @@ async fn external_note_preserves_previous_memories_when_reextraction_fails() {
 
 #[tokio::test]
 async fn external_note_replaces_memories_and_completes_all_revisions_atomically() {
-    let extraction = |company: &str| json!({
-        "new_entities": [
-            {"id":"fixture-page-1","path":"people/alex","kind":"person","name":"Alexandria Quill","description":"a colleague",
-             "sources":[{"message":"m1","quote":format!("Alexandria Quill works at {company}"),"strength":"explicit"}],
-             "aliases":[],"candidate_attributes":[]}
-        ],
-        "memories": [
-            {"kind":"fact","content":format!("Alexandria Quill works at {company}"),"entities":["people/alex"],
-             "sources":[{"message":"m1","quote":format!("Alexandria Quill works at {company}"),"strength":"explicit"}]}
-        ]
-    });
+    let extraction = |company: &str| {
+        json!({
+            "new_entities": [
+                {"id":"fixture-page-1","path":"people/alex","kind":"person","name":"Alexandria Quill","description":"a colleague",
+                 "sources":[{"message":"m1","quote":format!("Alexandria Quill works at {company}"),"strength":"explicit"}],
+                 "aliases":[],"candidate_attributes":[]}
+            ],
+            "memories": [
+                {"kind":"fact","content":format!("Alexandria Quill works at {company}"),"entities":["people/alex"],
+                 "sources":[{"message":"m1","quote":format!("Alexandria Quill works at {company}"),"strength":"explicit"}]}
+            ]
+        })
+    };
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("c1".into(), "submit".into(), extraction("Globex"))]),
         MockResponse::ToolCalls(vec![("c2".into(), "submit".into(), extraction("Initech"))]),
@@ -694,33 +815,61 @@ async fn external_note_replaces_memories_and_completes_all_revisions_atomically(
     };
 
     sync.apply_edit(
-        &harness, U, &handle(), push("Alexandria Quill works at Globex."),
-    ).await.unwrap();
+        &harness,
+        U,
+        &handle(),
+        push("Alexandria Quill works at Globex."),
+    )
+    .await
+    .unwrap();
     let old_memory = repo.list_all_memories(U).await.unwrap()[0].id.clone();
     let current = "Alexandria Quill works at Initech.";
-    sync.apply_edit(&harness, U, &handle(), push(current)).await.unwrap();
+    sync.apply_edit(&harness, U, &handle(), push(current))
+        .await
+        .unwrap();
 
     let memories = repo.list_all_memories(U).await.unwrap();
-    assert_eq!(memories.len(), 1, "replacement commits one current derived memory");
+    assert_eq!(
+        memories.len(),
+        1,
+        "replacement commits one current derived memory"
+    );
     assert_ne!(memories[0].id, old_memory, "old derived memory was removed");
     assert_eq!(memories[0].content, "Alexandria Quill works at Initech");
-    let page = repo.entity_by_path(U, "Work Notes/standup").await.unwrap().unwrap();
+    let page = repo
+        .entity_by_path(U, "Work Notes/standup")
+        .await
+        .unwrap()
+        .unwrap();
     let current_rev = sha256_hex(current);
     assert_eq!(page.rev.as_deref(), Some(current_rev.as_str()));
     assert_eq!(page.mirrored_rev, page.rev);
     assert_eq!(page.extracted_rev, page.rev);
     assert_eq!(
-        sync.apply_edit(&harness, U, &handle(), push(current)).await.unwrap(),
+        sync.apply_edit(&harness, U, &handle(), push(current))
+            .await
+            .unwrap(),
         EditResult::Unchanged,
     );
-    assert_eq!(mock.calls(), 2, "a complete revision does not run extraction again");
+    assert_eq!(
+        mock.calls(),
+        2,
+        "a complete revision does not run extraction again"
+    );
 }
 
 /// Create a plain Agent-sourced memory on `people/bob` (a write-back target).
 async fn add_mem(repo: &PkmRepo, content: &str) -> String {
-    repo.create_memory_with_entities(U, "a", "c", MemoryKind::Fact, content, &["people/bob".into()])
-        .await
-        .unwrap()
+    repo.create_memory_with_entities(
+        U,
+        "a",
+        "c",
+        MemoryKind::Fact,
+        content,
+        &["people/bob".into()],
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -728,13 +877,24 @@ async fn manifest_lists_rendered_pages_with_vault_paths_and_revs() {
     let (.., repo, storage, sync) = setup(Arc::new(MockModelProvider::new(vec![]))).await;
     let rev = author(&repo, &storage, "people/bob", "# Bob\n\nbody").await;
     // A skeleton with no rev yet must NOT appear in the manifest.
-    repo.upsert_entity_skeleton(U, "people/unrendered", EntityCategory::Concept, &["https://schema.org/Person".to_string()], "X", "", &[])
-        .await
-        .unwrap();
+    repo.upsert_entity_skeleton(
+        U,
+        "people/unrendered",
+        EntityCategory::Concept,
+        &["https://schema.org/Person".to_string()],
+        "X",
+        "",
+        &[],
+    )
+    .await
+    .unwrap();
 
     let m = sync.manifest(U).await.unwrap();
     assert_eq!(m.len(), 1, "only the rendered page");
-    assert_eq!(m[0].path, "Memory/people/bob", "vault path (directory-prefixed)");
+    assert_eq!(
+        m[0].path, "Memory/people/bob",
+        "vault path (directory-prefixed)"
+    );
     assert_eq!(m[0].rev, rev);
 }
 
@@ -744,13 +904,20 @@ async fn get_pages_returns_content_for_requested_paths_and_skips_unknown() {
     let rev = author(&repo, &storage, "people/bob", "# Bob\n\nfile bytes").await;
 
     let got = sync
-        .get_pages(U, &handle(), &["Memory/people/bob".into(), "Memory/people/nope".into()])
+        .get_pages(
+            U,
+            &handle(),
+            &["Memory/people/bob".into(), "Memory/people/nope".into()],
+        )
         .await
         .unwrap();
     assert_eq!(got.len(), 1, "unknown path skipped");
     assert_eq!(got[0].path, "Memory/people/bob");
     assert_eq!(got[0].rev, rev);
-    assert_eq!(got[0].content, "# Bob\n\nfile bytes", "on-disk bytes returned");
+    assert_eq!(
+        got[0].content, "# Bob\n\nfile bytes",
+        "on-disk bytes returned"
+    );
 }
 
 #[tokio::test]
@@ -760,8 +927,13 @@ async fn bootstrap_via_manifest_then_all_entities() {
     author(&repo, &storage, "people/bob", "bob").await;
     author(&repo, &storage, "projects/phoenix", "phoenix").await;
 
-    let paths: Vec<String> =
-        sync.manifest(U).await.unwrap().into_iter().map(|e| e.path).collect();
+    let paths: Vec<String> = sync
+        .manifest(U)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.path)
+        .collect();
     let got = sync.get_pages(U, &handle(), &paths).await.unwrap();
     assert_eq!(got.len(), 2, "every page fetched on bootstrap");
 }
@@ -779,7 +951,11 @@ async fn set_memory_directory_upserts_and_validates() {
     sync.set_memory_directory(U, "Brain").await.unwrap();
     assert_eq!(sync.memory_directory(U).await.unwrap(), "Brain", "created");
     sync.set_memory_directory(U, "Knowledge").await.unwrap();
-    assert_eq!(sync.memory_directory(U).await.unwrap(), "Knowledge", "updated in place");
+    assert_eq!(
+        sync.memory_directory(U).await.unwrap(),
+        "Knowledge",
+        "updated in place"
+    );
     // A non-segment name is rejected.
     assert!(sync.set_memory_directory(U, "a/b").await.is_err());
     assert!(sync.set_memory_directory(U, "..").await.is_err());
@@ -792,16 +968,30 @@ async fn check_edit_gates_on_rev() {
     let rev = author(&repo, &storage, "people/bob", "# Bob\n\nv1").await;
 
     // Matching base_rev → Apply (with head bytes for the diff).
-    match sync.check_edit(U, &handle(), "Memory/people/bob", Some(&rev)).await.unwrap() {
-        EditGate::Apply { clean_path, head_content } => {
+    match sync
+        .check_edit(U, &handle(), "Memory/people/bob", Some(&rev))
+        .await
+        .unwrap()
+    {
+        EditGate::Apply {
+            clean_path,
+            head_content,
+        } => {
             assert_eq!(clean_path, "people/bob");
             assert_eq!(head_content, "# Bob\n\nv1");
         }
         other => panic!("expected Apply, got {other:?}"),
     }
     // Stale base_rev → Conflict carrying the current head.
-    match sync.check_edit(U, &handle(), "Memory/people/bob", Some("stale")).await.unwrap() {
-        EditGate::Conflict { head_rev, head_content } => {
+    match sync
+        .check_edit(U, &handle(), "Memory/people/bob", Some("stale"))
+        .await
+        .unwrap()
+    {
+        EditGate::Conflict {
+            head_rev,
+            head_content,
+        } => {
             assert_eq!(head_rev, rev);
             assert_eq!(head_content, "# Bob\n\nv1");
         }
@@ -809,11 +999,19 @@ async fn check_edit_gates_on_rev() {
     }
     // Unknown path → New.
     assert_eq!(
-        sync.check_edit(U, &handle(), "Memory/people/carol", None).await.unwrap(),
-        EditGate::New { clean_path: "people/carol".into() }
+        sync.check_edit(U, &handle(), "Memory/people/carol", None)
+            .await
+            .unwrap(),
+        EditGate::New {
+            clean_path: "people/carol".into()
+        }
     );
     // A path outside the Memory directory → validation error.
-    assert!(sync.check_edit(U, &handle(), "Work Notes/x", None).await.is_err());
+    assert!(
+        sync.check_edit(U, &handle(), "Work Notes/x", None)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -823,14 +1021,42 @@ async fn rename_moves_a_single_page() {
 
     // A `.md` source is a single-page rename → Accepted with the moved file's rev.
     let r = sync
-        .rename(U, &handle(), "Memory/people/bob.md", "Memory/people/robert.md")
+        .rename(
+            U,
+            &handle(),
+            "Memory/people/bob.md",
+            "Memory/people/robert.md",
+        )
         .await
         .unwrap();
-    assert!(matches!(r, EditResult::Accepted { .. }), "single-page rename → Accepted, got {r:?}");
-    assert!(repo.entity_by_path(U, "people/robert").await.unwrap().is_some(), "record moved");
-    assert!(repo.entity_by_path(U, "people/bob").await.unwrap().is_none(), "old record gone");
-    assert!(storage.read_page(&vault(&storage), "people/robert").is_some(), "file moved");
-    assert!(storage.read_page(&vault(&storage), "people/bob").is_none(), "old file gone");
+    assert!(
+        matches!(r, EditResult::Accepted { .. }),
+        "single-page rename → Accepted, got {r:?}"
+    );
+    assert!(
+        repo.entity_by_path(U, "people/robert")
+            .await
+            .unwrap()
+            .is_some(),
+        "record moved"
+    );
+    assert!(
+        repo.entity_by_path(U, "people/bob")
+            .await
+            .unwrap()
+            .is_none(),
+        "old record gone"
+    );
+    assert!(
+        storage
+            .read_page(&vault(&storage), "people/robert")
+            .is_some(),
+        "file moved"
+    );
+    assert!(
+        storage.read_page(&vault(&storage), "people/bob").is_none(),
+        "old file gone"
+    );
 }
 
 #[tokio::test]
@@ -845,13 +1071,40 @@ async fn rename_dir_moves_every_page_under_the_prefix() {
         .rename(U, &handle(), "Memory/people", "Memory/humans")
         .await
         .unwrap();
-    assert!(matches!(r, EditResult::Renamed { count: 2 }), "dir rename → Renamed{{count:2}}, got {r:?}");
-    assert!(repo.entity_by_path(U, "humans/bob").await.unwrap().is_some());
-    assert!(repo.entity_by_path(U, "humans/alice").await.unwrap().is_some());
-    assert!(repo.entity_by_path(U, "people/bob").await.unwrap().is_none(), "old paths gone");
-    assert!(storage.read_page(&vault(&storage), "humans/bob").is_some(), "file moved");
+    assert!(
+        matches!(r, EditResult::Renamed { count: 2 }),
+        "dir rename → Renamed{{count:2}}, got {r:?}"
+    );
+    assert!(
+        repo.entity_by_path(U, "humans/bob")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.entity_by_path(U, "humans/alice")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.entity_by_path(U, "people/bob")
+            .await
+            .unwrap()
+            .is_none(),
+        "old paths gone"
+    );
+    assert!(
+        storage.read_page(&vault(&storage), "humans/bob").is_some(),
+        "file moved"
+    );
     // A page outside the renamed directory is untouched.
-    assert!(repo.entity_by_path(U, "places/paris").await.unwrap().is_some());
+    assert!(
+        repo.entity_by_path(U, "places/paris")
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -864,9 +1117,18 @@ async fn rename_dir_rejects_when_a_target_is_occupied() {
         .rename(U, &handle(), "Memory/people", "Memory/humans")
         .await
         .unwrap_err();
-    assert!(matches!(err, frona::core::error::AppError::Conflict(_)), "occupied target → Conflict, got {err:?}");
+    assert!(
+        matches!(err, frona::core::error::AppError::Conflict(_)),
+        "occupied target → Conflict, got {err:?}"
+    );
     // Rejected up front - nothing moved.
-    assert!(repo.entity_by_path(U, "people/bob").await.unwrap().is_some(), "source untouched on conflict");
+    assert!(
+        repo.entity_by_path(U, "people/bob")
+            .await
+            .unwrap()
+            .is_some(),
+        "source untouched on conflict"
+    );
 }
 
 #[tokio::test]
@@ -875,18 +1137,30 @@ async fn rename_rewrites_wikilinks_in_the_server_mirror() {
     author(&repo, &storage, "people/bob", "# Bob").await;
     // A linker page whose body references bob, plus the DB edge that records the link.
     author(&repo, &storage, "services/db", "See [[Memory/people/bob]].").await;
-    seed_asserted_entity_link(&db, U, "services/db", "people/bob", "related").await.unwrap();
-
-    sync
-        .rename(U, &handle(), "Memory/people/bob.md", "Memory/people/robert.md")
+    seed_asserted_entity_link(&db, U, "services/db", "people/bob", "related")
         .await
         .unwrap();
+
+    sync.rename(
+        U,
+        &handle(),
+        "Memory/people/bob.md",
+        "Memory/people/robert.md",
+    )
+    .await
+    .unwrap();
 
     // The server fixed its *own* mirror, not just the DB edge - the client rewrites
     // its vault copy separately.
     let linker = storage.read_page(&vault(&storage), "services/db").unwrap();
-    assert!(linker.contains("[[Memory/people/robert]]"), "link repointed to new path: {linker}");
-    assert!(!linker.contains("[[Memory/people/bob]]"), "old link gone: {linker}");
+    assert!(
+        linker.contains("[[Memory/people/robert]]"),
+        "link repointed to new path: {linker}"
+    );
+    assert!(
+        !linker.contains("[[Memory/people/bob]]"),
+        "old link gone: {linker}"
+    );
 }
 
 #[tokio::test]
@@ -898,10 +1172,19 @@ async fn external_mirror_index_and_delete() {
     let path = "Work Notes/standup";
     let rev = sha256_hex(note);
 
-    let accepted = repo.upsert_external_page(U, path, note, &rev).await.unwrap();
+    let accepted = repo
+        .upsert_external_page(U, path, note, &rev)
+        .await
+        .unwrap();
     assert_eq!(accepted.rev, rev);
-    assert!(accepted.mirror_pending, "new note needs its first mirror write");
-    assert!(accepted.extraction_pending, "new note needs its first extraction");
+    assert!(
+        accepted.mirror_pending,
+        "new note needs its first mirror write"
+    );
+    assert!(
+        accepted.extraction_pending,
+        "new note needs its first extraction"
+    );
     storage.write_user_note(&handle(), path, note).unwrap();
 
     // Seed a memory derived from this note (source = External { note = path }) so the
@@ -913,35 +1196,62 @@ async fn external_mirror_index_and_delete() {
         &["people/alex".to_string()],
         vec![MemoryEvidence {
             strength: EvidenceStrength::Explicit,
-            source: EvidenceSource::ExternalNote { note: path.to_string(), quote: "Alex works at Globex".into() },
+            source: EvidenceSource::ExternalNote {
+                note: path.to_string(),
+                quote: "Alex works at Globex".into(),
+            },
         }],
     )
     .await
     .unwrap();
-    assert_eq!(repo.memories_for_entity(U, "people/alex").await.unwrap().len(), 1, "derived memory seeded");
+    assert_eq!(
+        repo.memories_for_entity(U, "people/alex")
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "derived memory seeded"
+    );
 
     let page = repo.entity_by_path(U, path).await.unwrap().unwrap();
     assert_eq!(page.origin, EntityOrigin::External);
-    assert!(storage.memory_root(&handle()).join(format!("{path}.md")).is_file(),
-        "mirrored under root, not Memory/");
+    assert!(
+        storage
+            .memory_root(&handle())
+            .join(format!("{path}.md"))
+            .is_file(),
+        "mirrored under root, not Memory/"
+    );
     let hits = repo.search_entities(U, "postgres deploy").await.unwrap();
     assert!(
-        hits.iter().any(|hh| hh.path == path && hh.origin == EntityOrigin::External),
+        hits.iter()
+            .any(|hh| hh.path == path && hh.origin == EntityOrigin::External),
         "external note is searchable and tagged External"
     );
 
     // Re-upsert identical content keeps the same pending state. Accepting the
     // content revision alone must not claim that mirror or extraction succeeded.
-    let same = repo.upsert_external_page(U, path, note, &rev).await.unwrap();
+    let same = repo
+        .upsert_external_page(U, path, note, &rev)
+        .await
+        .unwrap();
     assert_eq!(same, accepted, "same rev preserves its durable progress");
 
     // Delete → page + mirror gone, and the note's derived memories dropped.
     repo.delete_external_page(U, path).await.unwrap();
     storage.delete_user_note(&handle(), path).unwrap();
     assert!(repo.entity_by_path(U, path).await.unwrap().is_none());
-    assert!(!storage.memory_root(&handle()).join(format!("{path}.md")).exists());
     assert!(
-        repo.memories_for_entity(U, "people/alex").await.unwrap().is_empty(),
+        !storage
+            .memory_root(&handle())
+            .join(format!("{path}.md"))
+            .exists()
+    );
+    assert!(
+        repo.memories_for_entity(U, "people/alex")
+            .await
+            .unwrap()
+            .is_empty(),
         "delete_external_page dropped the note's derived memories"
     );
 }
@@ -969,20 +1279,28 @@ async fn writeback_add_mints_a_human_memory() {
         )
         .await
         .unwrap();
-    assert!(matches!(r, EditResult::Accepted { .. }), "write-back applied: {r:?}");
+    assert!(
+        matches!(r, EditResult::Accepted { .. }),
+        "write-back applied: {r:?}"
+    );
     let mems = repo.memories_for_entity(U, "people/bob").await.unwrap();
     assert_eq!(mems.len(), 1);
-    assert!(matches!(mems[0].evidence[0].source, EvidenceSource::HumanEdit { .. }), "minted as a human fact");
+    assert!(
+        matches!(mems[0].evidence[0].source, EvidenceSource::HumanEdit { .. }),
+        "minted as a human fact"
+    );
     assert_eq!(mems[0].content, "Bob's backups run nightly");
 }
 
 #[tokio::test]
 async fn writeback_does_not_adopt_file_when_a_memory_mutation_fails() {
-    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "c1".into(),
-        "submit".into(),
-        json!({ "ops": [{"op":"add","kind":"fact","content":"Bob's backups run nightly"}] }),
-    )])]));
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        (
+            "c1".into(),
+            "submit".into(),
+            json!({ "ops": [{"op":"add","kind":"fact","content":"Bob's backups run nightly"}] }),
+        ),
+    ])]));
     let (db, harness, repo, storage, sync) = setup(mock).await;
     let original = "# Bob\n\nOriginal.";
     let rev = author(&repo, &storage, "people/bob", original).await;
@@ -1005,7 +1323,10 @@ async fn writeback_does_not_adopt_file_when_a_memory_mutation_fails() {
         )
         .await;
 
-    assert!(result.is_err(), "a failed canonical memory mutation must fail the edit");
+    assert!(
+        result.is_err(),
+        "a failed canonical memory mutation must fail the edit"
+    );
     assert_eq!(
         storage.read_page(&vault(&storage), "people/bob").as_deref(),
         Some(original),
@@ -1038,19 +1359,18 @@ async fn writeback_outdated_and_wrong_set_disposition() {
             {"op":"wrong","memory_id":"m1"}
         ]}),
     )]));
-    sync
-        .apply_edit(
-            &harness,
-            U,
-            &handle(),
-            EditOp::Upsert {
-                path: "Memory/people/bob".into(),
-                base_rev: Some(rev),
-                content: "# Bob\n\nedited".into(),
-            },
-        )
-        .await
-        .unwrap();
+    sync.apply_edit(
+        &harness,
+        U,
+        &handle(),
+        EditOp::Upsert {
+            path: "Memory/people/bob".into(),
+            base_rev: Some(rev),
+            content: "# Bob\n\nedited".into(),
+        },
+    )
+    .await
+    .unwrap();
     let mems = repo.memories_for_entity(U, "people/bob").await.unwrap();
     let disp = |id: &str| mems.iter().find(|m| m.id == id).unwrap().disposition;
     assert_eq!(disp(&m1), Disposition::Outdated);
@@ -1083,9 +1403,16 @@ async fn writeback_rejects_ops_referencing_unknown_model_local_ids() {
         )
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("unknown model-local m id `ghost`"));
+    assert!(
+        error
+            .to_string()
+            .contains("unknown model-local m id `ghost`")
+    );
     let mems = repo.memories_for_entity(U, "people/bob").await.unwrap();
-    assert!(mems.is_empty(), "a rejected write-back must not mutate memories");
+    assert!(
+        mems.is_empty(),
+        "a rejected write-back must not mutate memories"
+    );
 }
 
 #[tokio::test]
@@ -1100,18 +1427,22 @@ async fn writeback_drops_add_ops_with_unknown_kinds() {
             {"op":"add","kind":"not-a-kind","content":"ignored"}
         ]}),
     )]));
-    sync
-        .apply_edit(
-            &harness,
-            U,
-            &handle(),
-            EditOp::Upsert {
-                path: "Memory/people/bob".into(),
-                base_rev: Some(rev),
-                content: "# Bob\n\nedited".into(),
-            },
-        )
-        .await
-        .unwrap();
-    assert!(repo.memories_for_entity(U, "people/bob").await.unwrap().is_empty());
+    sync.apply_edit(
+        &harness,
+        U,
+        &handle(),
+        EditOp::Upsert {
+            path: "Memory/people/bob".into(),
+            base_rev: Some(rev),
+            content: "# Bob\n\nedited".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        repo.memories_for_entity(U, "people/bob")
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

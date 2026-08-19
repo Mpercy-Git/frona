@@ -231,9 +231,7 @@ impl TokenService {
         let expires_in_days = req.expires_in_days.unwrap_or(30);
         let ttl_secs = expires_in_days.saturating_mul(86_400);
         let scopes = req.scopes.unwrap_or_default();
-        let principal = req
-            .principal
-            .unwrap_or_else(|| Principal::user(&user.id));
+        let principal = req.principal.unwrap_or_else(|| Principal::user(&user.id));
 
         let created = self
             .create_token(

@@ -43,12 +43,12 @@ impl PkmOperationCoordinator {
             .clone()
     }
 
-    pub(crate) fn try_begin_consolidation(
-        &self,
-        user_id: &str,
-    ) -> Option<ConsolidationGuard> {
+    pub(crate) fn try_begin_consolidation(&self, user_id: &str) -> Option<ConsolidationGuard> {
         let operations = self.user(user_id);
-        let mut state = operations.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = operations
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if state.reset_blocked {
             return None;
         }
@@ -70,7 +70,10 @@ impl PkmOperationCoordinator {
 
     pub(crate) fn try_begin_write(&self, user_id: &str) -> Option<NormalWriteGuard> {
         let operations = self.user(user_id);
-        let state = operations.state.lock().unwrap_or_else(|error| error.into_inner());
+        let state = operations
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if state.reset_blocked {
             return None;
         }
@@ -82,14 +85,13 @@ impl PkmOperationCoordinator {
     /// Serialize the short commit-and-file-finalization section for one page. Model
     /// inference happens before this lock. Database compare-and-set remains the
     /// authority when another process writes the same page.
-    pub(crate) async fn begin_page_edit(
-        &self,
-        user_id: &str,
-        path: &str,
-    ) -> OwnedMutexGuard<()> {
+    pub(crate) async fn begin_page_edit(&self, user_id: &str, path: &str) -> OwnedMutexGuard<()> {
         let operations = self.user(user_id);
         let page = {
-            let mut pages = operations.page_edits.lock().unwrap_or_else(|error| error.into_inner());
+            let mut pages = operations
+                .page_edits
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             pages.retain(|_, page| page.strong_count() > 0);
             match pages.get(path).and_then(Weak::upgrade) {
                 Some(page) => page,
@@ -105,7 +107,10 @@ impl PkmOperationCoordinator {
 
     pub(crate) fn mark_reset_pending(&self, user_id: &str) {
         let operations = self.user(user_id);
-        let mut state = operations.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = operations
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         state.reset_blocked = true;
         if let Some((_, cancellation)) = &state.active_consolidation {
             cancellation.cancel();
@@ -121,7 +126,10 @@ impl PkmOperationCoordinator {
 
     pub(crate) fn clear_reset(&self, user_id: &str) {
         let operations = self.user(user_id);
-        let mut state = operations.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = operations
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         state.reset_blocked = false;
     }
 }
@@ -142,10 +150,16 @@ impl ConsolidationGuard {
 
 impl Drop for ConsolidationGuard {
     fn drop(&mut self) {
-        let mut state = self.operations.state.lock().unwrap_or_else(|error| error.into_inner());
-        if state.active_consolidation.as_ref().is_some_and(|(generation, _)| {
-            *generation == self.generation
-        }) {
+        let mut state = self
+            .operations
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state
+            .active_consolidation
+            .as_ref()
+            .is_some_and(|(generation, _)| *generation == self.generation)
+        {
             state.active_consolidation = None;
         }
     }

@@ -2,14 +2,14 @@ mod helpers;
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
 use chrono::{Duration, Utc};
 use frona::api::routes;
+use frona::auth::models::RegisterRequest;
 use frona::chat::message::models::{Message, MessageRole};
 use frona::chat::models::Chat;
-use frona::auth::models::RegisterRequest;
 use frona::core::config::{Config, MemoryBackend};
 use frona::core::metrics::setup_metrics_recorder;
 use frona::core::repository::Repository;
@@ -23,13 +23,12 @@ use frona::inference::config::ModelRegistryConfig;
 use frona::memory::pkm::PkmService;
 use frona::storage::StorageService;
 use serde_json::json;
-use surrealdb::engine::local::Mem;
 use surrealdb::Surreal;
+use surrealdb::engine::local::Mem;
 use tower::ServiceExt;
 
 use helpers::{
-    MockModelProvider, MockResponse, test_harness, test_model_group,
-    test_registry_with_group,
+    MockModelProvider, MockResponse, test_harness, test_model_group, test_registry_with_group,
 };
 
 fn resources() -> std::path::PathBuf {
@@ -61,7 +60,11 @@ async fn register(state: &AppState, handle: &str) -> (String, String, frona::cor
     (response.token, response.user.id, response.user.handle)
 }
 
-async fn rows(db: &Surreal<surrealdb::engine::local::Db>, table: &str, user_id: &str) -> Vec<serde_json::Value> {
+async fn rows(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    table: &str,
+    user_id: &str,
+) -> Vec<serde_json::Value> {
     let mut response = db
         .query(format!("SELECT * FROM {table} WHERE user_id = $user_id"))
         .bind(("user_id", user_id.to_string()))
@@ -113,7 +116,10 @@ async fn seed_chat_sources(
         created_at: old,
         updated_at: old,
     };
-    SurrealChatRepo::new(db.clone()).create(&chat).await.unwrap();
+    SurrealChatRepo::new(db.clone())
+        .create(&chat)
+        .await
+        .unwrap();
     let mut message = Message::builder(
         &chat.id,
         MessageRole::User,
@@ -122,7 +128,10 @@ async fn seed_chat_sources(
     .build();
     message.created_at = old;
     let message_id = message.id.clone();
-    SurrealMessageRepo::new(db.clone()).create(&message).await.unwrap();
+    SurrealMessageRepo::new(db.clone())
+        .create(&message)
+        .await
+        .unwrap();
     (chat.id, message_id)
 }
 
@@ -233,8 +242,8 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
         test_model_group(),
     ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources().join("prompts"));
-    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/ontology");
+    let fixture =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ontology");
     let pkm = PkmService::new(
         db.clone(),
         state.storage_service.clone(),
@@ -250,46 +259,67 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
     state.pkm_service = Some(pkm.clone());
     let harness = test_harness(&db, &config, mock.clone());
     let seeded_repo = PkmRepo::new(db.clone(), 8);
-    seeded_repo.upsert_entity_skeleton(
-        &user_id,
-        "people/alice",
-        frona::memory::pkm::model::EntityCategory::Concept,
-        &[],
-        "Alice",
-        "Derived memory",
-        &[],
-    ).await.unwrap();
-    seeded_repo.create_memory_with_entities(
-        &user_id,
-        "source-agent",
-        &chat_id,
-        frona::memory::pkm::model::MemoryKind::Fact,
-        "Alice has derived memory.",
-        &["people/alice".into()],
-    ).await.unwrap();
-    seeded_repo.remember(&user_id, &chat_id, "source").await.unwrap();
-    seeded_repo.upsert_entity_skeleton(
-        &other_user_id,
-        "people/bob",
-        frona::memory::pkm::model::EntityCategory::Concept,
-        &[],
-        "Bob",
-        "Other derived memory",
-        &[],
-    ).await.unwrap();
-    seeded_repo.create_memory_with_entities(
-        &other_user_id,
-        "other-agent",
-        "other-chat",
-        frona::memory::pkm::model::MemoryKind::Fact,
-        "Bob has other derived memory.",
-        &["people/bob".into()],
-    ).await.unwrap();
-    seeded_repo.remember(&other_user_id, "other-chat", "other source").await.unwrap();
+    seeded_repo
+        .upsert_entity_skeleton(
+            &user_id,
+            "people/alice",
+            frona::memory::pkm::model::EntityCategory::Concept,
+            &[],
+            "Alice",
+            "Derived memory",
+            &[],
+        )
+        .await
+        .unwrap();
+    seeded_repo
+        .create_memory_with_entities(
+            &user_id,
+            "source-agent",
+            &chat_id,
+            frona::memory::pkm::model::MemoryKind::Fact,
+            "Alice has derived memory.",
+            &["people/alice".into()],
+        )
+        .await
+        .unwrap();
+    seeded_repo
+        .remember(&user_id, &chat_id, "source")
+        .await
+        .unwrap();
+    seeded_repo
+        .upsert_entity_skeleton(
+            &other_user_id,
+            "people/bob",
+            frona::memory::pkm::model::EntityCategory::Concept,
+            &[],
+            "Bob",
+            "Other derived memory",
+            &[],
+        )
+        .await
+        .unwrap();
+    seeded_repo
+        .create_memory_with_entities(
+            &other_user_id,
+            "other-agent",
+            "other-chat",
+            frona::memory::pkm::model::MemoryKind::Fact,
+            "Bob has other derived memory.",
+            &["people/bob".into()],
+        )
+        .await
+        .unwrap();
+    seeded_repo
+        .remember(&other_user_id, "other-chat", "other source")
+        .await
+        .unwrap();
     db.query("UPDATE knowledge_short_memory SET validated = true WHERE user_id IN [$user, $other]")
         .bind(("user", user_id.clone()))
         .bind(("other", other_user_id.clone()))
-        .await.unwrap().check().unwrap();
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
 
     let user_root = state.storage_service.user_pkm_path(&handle);
     let other_root = state.storage_service.user_pkm_path(&other_handle);
@@ -300,13 +330,22 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
     std::fs::write(user_root.join("Work Notes/source.md"), "external").unwrap();
     std::fs::write(other_root.join("Memory/bob.md"), "other managed").unwrap();
 
-    state.set_runtime_config("pkm-reset-e2e-keep", "plain-source-value").await.unwrap();
-    assert!(pkm.ontology_manager().is_ready(), "ontology fixture did not load");
+    state
+        .set_runtime_config("pkm-reset-e2e-keep", "plain-source-value")
+        .await
+        .unwrap();
+    assert!(
+        pkm.ontology_manager().is_ready(),
+        "ontology fixture did not load"
+    );
     let candidates = PkmRepo::new(db.clone(), 8)
         .chats_needing_consolidation(Utc::now() - Duration::minutes(5))
         .await
         .unwrap();
-    assert!(candidates.contains(&chat_id), "seeded chat is not eligible: {candidates:?}");
+    assert!(
+        candidates.contains(&chat_id),
+        "seeded chat is not eligible: {candidates:?}"
+    );
 
     let running = {
         let pkm = pkm.clone();
@@ -315,13 +354,8 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
         let agent_service = state.agent_service.clone();
         let harness = harness.clone();
         tokio::spawn(async move {
-            pkm.run_consolidation_sweep(
-                &chat_service,
-                &contact_service,
-                &agent_service,
-                &harness,
-            )
-            .await
+            pkm.run_consolidation_sweep(&chat_service, &contact_service, &agent_service, &harness)
+                .await
         })
     };
     let started = tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -332,7 +366,10 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
     .await;
     if started.is_err() {
         if running.is_finished() {
-            panic!("controlled consolidation stopped before inference: {:?}", running.await);
+            panic!(
+                "controlled consolidation stopped before inference: {:?}",
+                running.await
+            );
         }
         panic!("controlled consolidation did not reach inference");
     }
@@ -364,7 +401,10 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    assert!(!running.is_finished(), "the endpoint waited for the consolidation guard");
+    assert!(
+        !running.is_finished(),
+        "the endpoint waited for the consolidation guard"
+    );
 
     let active_status = app
         .clone()
@@ -378,9 +418,14 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
         )
         .await
         .unwrap();
-    let active_body = axum::body::to_bytes(active_status.into_body(), 4096).await.unwrap();
+    let active_body = axum::body::to_bytes(active_status.into_body(), 4096)
+        .await
+        .unwrap();
     let active_body: serde_json::Value = serde_json::from_slice(&active_body).unwrap();
-    assert!(matches!(active_body["reset"]["status"].as_str(), Some("pending" | "running")));
+    assert!(matches!(
+        active_body["reset"]["status"].as_str(),
+        Some("pending" | "running")
+    ));
 
     tokio::time::timeout(std::time::Duration::from_secs(2), running)
         .await
@@ -408,28 +453,50 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
     assert!(user_root.join("Work Notes/source.md").exists());
     assert_eq!(rows(&db, "chat", &user_id).await.len(), 1);
     let messages: Vec<serde_json::Value> = {
-        let mut response = db.query("SELECT * FROM message WHERE chat_id = $chat")
-            .bind(("chat", chat_id.clone())).await.unwrap();
+        let mut response = db
+            .query("SELECT * FROM message WHERE chat_id = $chat")
+            .bind(("chat", chat_id.clone()))
+            .await
+            .unwrap();
         response.take(0).unwrap()
     };
     assert_eq!(messages.len(), 1);
     let tool_calls: Vec<serde_json::Value> = {
-        let mut response = db.query("SELECT * FROM tool_call WHERE chat_id = $chat")
-            .bind(("chat", chat_id.clone())).await.unwrap();
+        let mut response = db
+            .query("SELECT * FROM tool_call WHERE chat_id = $chat")
+            .bind(("chat", chat_id.clone()))
+            .await
+            .unwrap();
         response.take(0).unwrap()
     };
     assert_eq!(tool_calls.len(), 1);
-    assert_eq!(state.get_runtime_config("pkm-reset-e2e-keep").await.unwrap().as_deref(), Some("plain-source-value"));
+    assert_eq!(
+        state
+            .get_runtime_config("pkm-reset-e2e-keep")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("plain-source-value")
+    );
     assert!(rows(&db, "chat_summary", &user_id).await.is_empty());
 
     assert_eq!(rows(&db, "knowledge_entity", &other_user_id).await.len(), 1);
     assert_eq!(rows(&db, "knowledge_memory", &other_user_id).await.len(), 1);
-    assert_eq!(rows(&db, "knowledge_short_memory", &other_user_id).await[0]["validated"], true);
+    assert_eq!(
+        rows(&db, "knowledge_short_memory", &other_user_id).await[0]["validated"],
+        true
+    );
     assert!(other_root.join("Memory/bob.md").exists());
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert!(rows(&db, "knowledge_entity", &user_id).await.is_empty());
-    assert!(PkmRepo::new(db.clone(), 8).consolidation_watermark(&chat_id).await.unwrap().is_none());
+    assert!(
+        PkmRepo::new(db.clone(), 8)
+            .consolidation_watermark(&chat_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     let status = app
         .oneshot(
@@ -443,7 +510,9 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
         .await
         .unwrap();
     assert_eq!(status.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(status.into_body(), 4096).await.unwrap();
+    let body = axum::body::to_bytes(status.into_body(), 4096)
+        .await
+        .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body, serde_json::json!({"available": true, "reset": null}));
 
@@ -459,8 +528,18 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
     .await
     .unwrap();
     let repo = PkmRepo::new(db.clone(), 8);
-    assert!(repo.entity_by_path(&user_id, "services/reset-service").await.unwrap().is_some());
-    assert!(repo.consolidation_watermark(&chat_id).await.unwrap().is_some());
+    assert!(
+        repo.entity_by_path(&user_id, "services/reset-service")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        repo.consolidation_watermark(&chat_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
     let short = rows(&db, "knowledge_short_memory", &user_id).await;
     assert_eq!(short.len(), 1);
     assert_eq!(short[0]["validated"], true);

@@ -30,7 +30,12 @@ impl StoreAgentMemoryTool {
 
 #[agent_tool(name = "store_agent_memory")]
 impl StoreAgentMemoryTool {
-    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let memory = str_arg(&arguments, "memory")
             .ok_or_else(|| AppError::Validation("Missing 'memory' parameter".into()))?;
 
@@ -102,7 +107,12 @@ impl StoreUserMemoryTool {
 
 #[agent_tool]
 impl StoreUserMemoryTool {
-    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let memory = str_arg(&arguments, "memory")
             .ok_or_else(|| AppError::Validation("Missing 'memory' parameter".into()))?;
 

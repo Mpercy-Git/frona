@@ -9,7 +9,10 @@ use axum::{Json, Router};
 use futures::stream::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::chat::message::models::{MessageQuery, MessageResponse, PaginatedMessagesResponse, ResolveToolRequest, SendMessageRequest, UpdateMessageRequest};
+use crate::chat::message::models::{
+    MessageQuery, MessageResponse, PaginatedMessagesResponse, ResolveToolRequest,
+    SendMessageRequest, UpdateMessageRequest,
+};
 use crate::credential::presign::presign_response;
 
 use super::super::error::ApiError;
@@ -30,15 +33,9 @@ pub fn router() -> Router<AppState> {
             "/api/chats/{chat_id}/tool-calls/resolve",
             post(resolve_tool_calls),
         )
-        .route(
-            "/api/chats/{chat_id}/cancel",
-            post(cancel_generation),
-        )
+        .route("/api/chats/{chat_id}/cancel", post(cancel_generation))
         .route("/api/stream", get(event_stream))
-        .route(
-            "/api/messages/{id}",
-            axum::routing::patch(patch_message),
-        )
+        .route("/api/messages/{id}", axum::routing::patch(patch_message))
 }
 
 async fn patch_message(
@@ -75,7 +72,13 @@ async fn list_messages(
 ) -> Result<Json<PaginatedMessagesResponse>, ApiError> {
     let mut result = state
         .chat_service
-        .list_messages_paginated(&auth.user_id, &chat_id, query.before, query.after, query.limit)
+        .list_messages_paginated(
+            &auth.user_id,
+            &chat_id,
+            query.before,
+            query.after,
+            query.limit,
+        )
         .await?;
 
     for msg in &mut result.messages {
@@ -122,9 +125,12 @@ async fn resolve_tool_calls(
             .get_tool_call(&resolution.tool_call_id)
             .await
             .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::from(crate::core::error::AppError::NotFound(
-                format!("Tool call not found: {}", resolution.tool_call_id),
-            )))?;
+            .ok_or_else(|| {
+                ApiError::from(crate::core::error::AppError::NotFound(format!(
+                    "Tool call not found: {}",
+                    resolution.tool_call_id
+                )))
+            })?;
 
         // Typed HitlResponse routes through the resolve_hitl dispatcher, which
         // runs the tool's on_resume side-effect and synthesizes the result text.
@@ -152,11 +158,7 @@ async fn resolve_tool_calls(
                     }
                 });
             }
-            if let Ok(Some(msg)) = state
-                .chat_service
-                .find_message(&te.message_id)
-                .await
-            {
+            if let Ok(Some(msg)) = state.chat_service.find_message(&te.message_id).await {
                 last_msg = Some(msg.into());
             }
             continue;
@@ -164,12 +166,14 @@ async fn resolve_tool_calls(
 
         use crate::chat::message::models::ToolResolutionAction;
         let result = if resolution.action == ToolResolutionAction::Fail {
-            state.chat_service
+            state
+                .chat_service
                 .deny_tool_call(&resolution.tool_call_id, resolution.response.clone())
                 .await
                 .map_err(ApiError::from)?
         } else {
-            state.chat_service
+            state
+                .chat_service
                 .resolve_tool_call(&resolution.tool_call_id, resolution.response.clone())
                 .await
                 .map_err(ApiError::from)?
@@ -182,9 +186,11 @@ async fn resolve_tool_calls(
         }
     }
 
-    let msg = last_msg.ok_or_else(|| ApiError::from(
-        crate::core::error::AppError::Validation("No resolutions provided".into()),
-    ))?;
+    let msg = last_msg.ok_or_else(|| {
+        ApiError::from(crate::core::error::AppError::Validation(
+            "No resolutions provided".into(),
+        ))
+    })?;
 
     Ok(Json(msg))
 }
@@ -195,7 +201,10 @@ async fn event_stream(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
 
-    state.broadcast_service.register_session(&auth.user_id, tx).await;
+    state
+        .broadcast_service
+        .register_session(&auth.user_id, tx)
+        .await;
 
     let stream = UnboundedReceiverStream::new(rx);
     Sse::new(stream).keep_alive(KeepAlive::default())

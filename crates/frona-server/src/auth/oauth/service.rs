@@ -37,13 +37,9 @@ impl OAuthService {
         repo: Arc<dyn OAuthRepository>,
         http: reqwest::Client,
     ) -> Result<Self, AppError> {
-        let authority = config
-            .sso
-            .authority
-            .clone()
-            .ok_or_else(|| {
-                AppError::Validation("FRONA_SSO_AUTHORITY is required when SSO is enabled".into())
-            })?;
+        let authority = config.sso.authority.clone().ok_or_else(|| {
+            AppError::Validation("FRONA_SSO_AUTHORITY is required when SSO is enabled".into())
+        })?;
         let client_id = config.sso.client_id.clone().ok_or_else(|| {
             AppError::Validation("FRONA_SSO_CLIENT_ID is required when SSO is enabled".into())
         })?;
@@ -89,16 +85,13 @@ impl OAuthService {
             .map_err(|e| AppError::Internal(format!("Invalid redirect URI: {e}")))
     }
 
-    pub async fn get_authorization_url(
-        &self,
-    ) -> Result<(String, String, String), AppError> {
+    pub async fn get_authorization_url(&self) -> Result<(String, String, String), AppError> {
         let http_client = self.http.clone();
         let issuer_url = self.issuer_url()?;
 
-        let provider_metadata =
-            CoreProviderMetadata::discover_async(issuer_url, &http_client)
-                .await
-                .map_err(|e| AppError::Internal(format!("OIDC discovery failed: {e}")))?;
+        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, &http_client)
+            .await
+            .map_err(|e| AppError::Internal(format!("OIDC discovery failed: {e}")))?;
 
         let client = openidconnect::core::CoreClient::from_provider_metadata(
             provider_metadata,
@@ -138,20 +131,22 @@ impl OAuthService {
         _keypair_svc: &KeyPairService,
         _token_svc: &TokenService,
     ) -> Result<(User, bool), AppError> {
-        let (_nonce_secret, nonce) = self
-            .pending_states
-            .lock()
-            .await
-            .remove(state)
-            .ok_or_else(|| AppError::Auth { message: "Invalid or expired SSO state".into(), code: AuthErrorCode::CsrfFailed })?;
+        let (_nonce_secret, nonce) =
+            self.pending_states
+                .lock()
+                .await
+                .remove(state)
+                .ok_or_else(|| AppError::Auth {
+                    message: "Invalid or expired SSO state".into(),
+                    code: AuthErrorCode::CsrfFailed,
+                })?;
 
         let http_client = self.http.clone();
         let issuer_url = self.issuer_url()?;
 
-        let provider_metadata =
-            CoreProviderMetadata::discover_async(issuer_url, &http_client)
-                .await
-                .map_err(|e| AppError::Internal(format!("OIDC discovery failed: {e}")))?;
+        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, &http_client)
+            .await
+            .map_err(|e| AppError::Internal(format!("OIDC discovery failed: {e}")))?;
 
         let client = CoreClient::from_provider_metadata(
             provider_metadata,
@@ -170,12 +165,18 @@ impl OAuthService {
         let id_token = token_response
             .extra_fields()
             .id_token()
-            .ok_or_else(|| AppError::Auth { message: "No ID token in response".into(), code: AuthErrorCode::TokenFailed })?;
+            .ok_or_else(|| AppError::Auth {
+                message: "No ID token in response".into(),
+                code: AuthErrorCode::TokenFailed,
+            })?;
 
         let id_token_verifier = client.id_token_verifier();
         let claims = id_token
             .claims(&id_token_verifier, &nonce)
-            .map_err(|e| AppError::Auth { message: format!("ID token validation failed: {e}"), code: AuthErrorCode::TokenInvalid })?;
+            .map_err(|e| AppError::Auth {
+                message: format!("ID token validation failed: {e}"),
+                code: AuthErrorCode::TokenInvalid,
+            })?;
 
         let external_sub = claims.subject().to_string();
         let mut external_email = claims
@@ -183,8 +184,14 @@ impl OAuthService {
             .map(|e| AuthService::normalize_email(e.as_str()));
         let mut external_name = pick_name(
             claims.name().and_then(|n| n.get(None)).map(|n| n.as_str()),
-            claims.given_name().and_then(|n| n.get(None)).map(|n| n.as_str()),
-            claims.family_name().and_then(|n| n.get(None)).map(|n| n.as_str()),
+            claims
+                .given_name()
+                .and_then(|n| n.get(None))
+                .map(|n| n.as_str()),
+            claims
+                .family_name()
+                .and_then(|n| n.get(None))
+                .map(|n| n.as_str()),
             claims.preferred_username().map(|n| n.as_str()),
         );
 
@@ -238,8 +245,12 @@ impl OAuthService {
                         .map(|e| AuthService::normalize_email(e.as_str()));
                     let info_name = pick_name(
                         info.name().and_then(|n| n.get(None)).map(|n| n.as_str()),
-                        info.given_name().and_then(|n| n.get(None)).map(|n| n.as_str()),
-                        info.family_name().and_then(|n| n.get(None)).map(|n| n.as_str()),
+                        info.given_name()
+                            .and_then(|n| n.get(None))
+                            .map(|n| n.as_str()),
+                        info.family_name()
+                            .and_then(|n| n.get(None))
+                            .map(|n| n.as_str()),
                         info.preferred_username().map(|n| n.as_str()),
                     );
                     if external_name.is_none() {

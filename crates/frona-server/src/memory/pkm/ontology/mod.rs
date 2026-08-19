@@ -43,8 +43,8 @@ pub(crate) mod schema;
 pub(crate) mod sparql;
 mod validation;
 
-mod composition;
 mod commit;
+mod composition;
 mod inspection;
 mod lifecycle;
 mod planning;
@@ -55,13 +55,11 @@ pub(crate) use catalogue::{OntologyCatalogue, OntologyScope, VocabHit};
 pub(crate) use composition::{ComposedOntology, UserOntology};
 pub use inspection::OntologyExport;
 pub(crate) use planning::TypePlan;
-pub(crate) use validation::{
-    EditImpact, GraphValidation, ValidationDiagnostic,
-};
 pub use prefixes::PrefixMap;
 pub(crate) use prefixes::{TermKind, individual_iri, path_from_individual};
 pub use schema::{AlignKind, Catalog, Characteristic, OverrideTarget, SchemaEdit};
 pub use validation::Violation;
+pub(crate) use validation::{EditImpact, GraphValidation, ValidationDiagnostic};
 #[cfg(test)]
 pub(crate) use validation::{ValidationDiagnosticKind, ViolationSource};
 

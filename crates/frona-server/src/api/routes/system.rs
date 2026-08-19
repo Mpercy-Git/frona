@@ -20,17 +20,24 @@ pub fn router() -> Router<AppState> {
 
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     if state.is_shutting_down() {
-        (StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"status": "draining"})))
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"status": "draining"})),
+        )
     } else {
         (StatusCode::OK, axum::Json(json!({"status": "ok"})))
     }
 }
 
-async fn info_handler(_auth: AuthUser, State(state): State<AppState>) -> axum::Json<serde_json::Value> {
+async fn info_handler(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+) -> axum::Json<serde_json::Value> {
     use sysinfo::System;
     let mut sys = System::new();
     sys.refresh_memory();
-    let total_memory = sys.cgroup_limits()
+    let total_memory = sys
+        .cgroup_limits()
         .map(|cg| cg.total_memory)
         .unwrap_or_else(|| sys.total_memory());
     let cpus = System::physical_core_count().unwrap_or(0);

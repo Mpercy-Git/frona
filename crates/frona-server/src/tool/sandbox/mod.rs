@@ -8,8 +8,8 @@ use crate::core::error::AppError;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use self::driver::{SandboxConfig, SandboxOutput, create_driver, execute_sandboxed};
 use self::driver::resource_monitor::SystemResourceManager;
+use self::driver::{SandboxConfig, SandboxOutput, create_driver, execute_sandboxed};
 use crate::auth::ephemeral_token::EphemeralTokenGuard;
 use crate::core::Principal;
 
@@ -57,10 +57,7 @@ pub struct SandboxFactory {
 }
 
 impl SandboxFactory {
-    pub fn new(
-        sandbox_disabled: bool,
-        resource_manager: Arc<SystemResourceManager>,
-    ) -> Self {
+    pub fn new(sandbox_disabled: bool, resource_manager: Arc<SystemResourceManager>) -> Self {
         Self {
             driver: Arc::from(create_driver(sandbox_disabled)),
             shared_read_paths: Vec::new(),
@@ -203,7 +200,11 @@ impl SandboxManager {
 
         let skill_read_paths: Vec<String> = self
             .skill_service
-            .list(&ctx.user.handle, &ctx.agent.handle, ctx.agent.skills.as_deref())
+            .list(
+                &ctx.user.handle,
+                &ctx.agent.handle,
+                ctx.agent.skills.as_deref(),
+            )
             .await
             .into_iter()
             .map(|s| s.path)
@@ -262,9 +263,7 @@ impl SandboxManager {
         )
         .await?;
 
-        sandbox = sandbox.with_read_files(vec![
-            token_guard.path().to_string_lossy().into_owned(),
-        ]);
+        sandbox = sandbox.with_read_files(vec![token_guard.path().to_string_lossy().into_owned()]);
 
         {
             let mut extra_vars = ctx.vault_env_vars.read().await.clone();
@@ -276,10 +275,7 @@ impl SandboxManager {
                 "FRONA_TOKEN_FILE".to_string(),
                 token_guard.path().to_string_lossy().into_owned(),
             ));
-            extra_vars.push((
-                "FRONA_API_URL".to_string(),
-                self.api_base_url.clone(),
-            ));
+            extra_vars.push(("FRONA_API_URL".to_string(), self.api_base_url.clone()));
             sandbox = sandbox.with_extra_env_vars(extra_vars);
         }
 
@@ -670,7 +666,8 @@ impl Sandbox {
     fn base_config(&self) -> Result<SandboxConfig, AppError> {
         self.setup()?;
 
-        let canonical_path = std::fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
+        let canonical_path =
+            std::fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
 
         let mut additional_path_dirs = Vec::new();
         let mut env_vars = Vec::new();
@@ -688,9 +685,21 @@ impl Sandbox {
         additional_path_dirs.extend(node_path_dirs);
         env_vars.extend(node_env);
 
-        env_vars.push(("HOME".to_string(), canonical_path.to_string_lossy().into_owned()));
-        env_vars.push(("XDG_CONFIG_HOME".to_string(), canonical_path.join(".config").to_string_lossy().into_owned()));
-        env_vars.push(("XDG_CACHE_HOME".to_string(), canonical_path.join(".cache").to_string_lossy().into_owned()));
+        env_vars.push((
+            "HOME".to_string(),
+            canonical_path.to_string_lossy().into_owned(),
+        ));
+        env_vars.push((
+            "XDG_CONFIG_HOME".to_string(),
+            canonical_path
+                .join(".config")
+                .to_string_lossy()
+                .into_owned(),
+        ));
+        env_vars.push((
+            "XDG_CACHE_HOME".to_string(),
+            canonical_path.join(".cache").to_string_lossy().into_owned(),
+        ));
 
         env_vars.extend(self.extra_env_vars.clone());
 
@@ -738,8 +747,9 @@ impl Sandbox {
 
         cmd.env_clear();
 
-        const PASSTHROUGH_VARS: &[&str] =
-            &["TERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "USER", "LOGNAME", "TMPDIR", "SHELL"];
+        const PASSTHROUGH_VARS: &[&str] = &[
+            "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "USER", "LOGNAME", "TMPDIR", "SHELL",
+        ];
 
         for key in PASSTHROUGH_VARS {
             if let Ok(val) = std::env::var(key) {
@@ -866,9 +876,21 @@ pub fn node_env_vars(workspace: &Path) -> (Vec<String>, Vec<(String, String)>) {
         path_dirs.push(bin.to_string_lossy().into_owned());
     }
     let env = vec![
-        ("NPM_CONFIG_PREFIX".into(), node_prefix.to_string_lossy().into_owned()),
-        ("NPM_CONFIG_CACHE".into(), workspace.join(".npm-cache").to_string_lossy().into_owned()),
-        ("NODE_PATH".into(), workspace.join("node_modules").to_string_lossy().into_owned()),
+        (
+            "NPM_CONFIG_PREFIX".into(),
+            node_prefix.to_string_lossy().into_owned(),
+        ),
+        (
+            "NPM_CONFIG_CACHE".into(),
+            workspace.join(".npm-cache").to_string_lossy().into_owned(),
+        ),
+        (
+            "NODE_PATH".into(),
+            workspace
+                .join("node_modules")
+                .to_string_lossy()
+                .into_owned(),
+        ),
     ];
     (path_dirs, env)
 }
@@ -958,7 +980,10 @@ mod tests {
         };
         ws.setup().unwrap();
 
-        assert!(rel_path.join(".venv").exists(), "venv should exist at the workspace root");
+        assert!(
+            rel_path.join(".venv").exists(),
+            "venv should exist at the workspace root"
+        );
         assert!(
             rel_path.join(".venv").join("bin").join("python3").exists(),
             "venv should contain bin/python3"
@@ -979,7 +1004,10 @@ mod tests {
         let result = ws
             .execute(
                 "bash",
-                &["-c", "echo $HOME; echo $XDG_CONFIG_HOME; echo $XDG_CACHE_HOME"],
+                &[
+                    "-c",
+                    "echo $HOME; echo $XDG_CONFIG_HOME; echo $XDG_CACHE_HOME",
+                ],
                 10,
                 None,
                 None,
@@ -992,8 +1020,14 @@ mod tests {
         let lines: Vec<&str> = result.stdout.trim().lines().collect();
         assert_eq!(lines.len(), 3, "expected 3 lines, got: {:?}", lines);
         assert_eq!(lines[0], canonical.to_string_lossy());
-        assert_eq!(lines[1], canonical.join(".config").to_string_lossy().as_ref());
-        assert_eq!(lines[2], canonical.join(".cache").to_string_lossy().as_ref());
+        assert_eq!(
+            lines[1],
+            canonical.join(".config").to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            lines[2],
+            canonical.join(".cache").to_string_lossy().as_ref()
+        );
 
         let _ = std::fs::remove_dir_all(&ws.path);
     }
@@ -1005,11 +1039,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&ws.path);
 
         let result = ws
-            .execute("bash", &["-c", "echo $FRONA_TEST_SECRET"], 10, None, None, None)
+            .execute(
+                "bash",
+                &["-c", "echo $FRONA_TEST_SECRET"],
+                10,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
 
-        assert_eq!(result.stdout.trim(), "", "parent env vars must not leak into sandbox");
+        assert_eq!(
+            result.stdout.trim(),
+            "",
+            "parent env vars must not leak into sandbox"
+        );
 
         unsafe { std::env::remove_var("FRONA_TEST_SECRET") };
         let _ = std::fs::remove_dir_all(&ws.path);
@@ -1064,7 +1109,6 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&ws.path);
     }
-
 
     #[test]
     fn canonicalize_existing_file() {

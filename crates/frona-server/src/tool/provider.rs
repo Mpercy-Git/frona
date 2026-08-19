@@ -160,14 +160,20 @@ mod tests {
         ids.sort();
         let len_before = ids.len();
         ids.dedup();
-        assert_eq!(len_before, ids.len(), "duplicate provider ids in BUILTIN_PROVIDERS");
+        assert_eq!(
+            len_before,
+            ids.len(),
+            "duplicate provider ids in BUILTIN_PROVIDERS"
+        );
     }
 
     #[test]
     fn provider_ids_are_snake_case() {
         for spec in BUILTIN_PROVIDERS {
             assert!(
-                spec.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                spec.id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
                 "provider id `{}` must be snake_case",
                 spec.id
             );

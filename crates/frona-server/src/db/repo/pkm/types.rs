@@ -99,7 +99,8 @@ impl IngestBatch {
         self.entities.append(&mut other.entities);
         self.entity_updates.append(&mut other.entity_updates);
         self.memories.append(&mut other.memories);
-        self.playbook_candidates.append(&mut other.playbook_candidates);
+        self.playbook_candidates
+            .append(&mut other.playbook_candidates);
         self.grounding_corrections += other.grounding_corrections;
         self.grounding_items_dropped += other.grounding_items_dropped;
         self.recall_result_lookups += other.recall_result_lookups;

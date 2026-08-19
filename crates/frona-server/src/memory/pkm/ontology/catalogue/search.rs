@@ -29,7 +29,12 @@ pub(super) fn normalize(name: &str) -> String {
         }
         _ => name,
     };
-    trimmed.replace(['_', '-'], " ").split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    trimmed
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Compare `needle` to `candidate` with the candidate's spaces ignored, so a query written

@@ -17,8 +17,16 @@ pub struct NotifyHumanTool {
 }
 
 impl NotifyHumanTool {
-    pub fn new(vault_service: VaultService, prompts: PromptLoader, public_base_url: String) -> Self {
-        Self { vault_service, prompts, public_base_url }
+    pub fn new(
+        vault_service: VaultService,
+        prompts: PromptLoader,
+        public_base_url: String,
+    ) -> Self {
+        Self {
+            vault_service,
+            prompts,
+            public_base_url,
+        }
     }
 
     fn url_for_chat(&self, chat_id: &str) -> String {
@@ -28,7 +36,12 @@ impl NotifyHumanTool {
 
 #[agent_tool(files("ask_user_question", "request_user_takeover"))]
 impl NotifyHumanTool {
-    async fn execute(&self, tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let chat = active_chat(ctx)?;
         match tool_name {
             "request_user_takeover" => {
@@ -53,7 +66,10 @@ impl NotifyHumanTool {
                         format!("{reason}\n\nTake over: {debugger_url}")
                     },
                     url: self.url_for_chat(&chat.id),
-                    request: HitlRequest::Takeover { reason, debugger_url },
+                    request: HitlRequest::Takeover {
+                        reason,
+                        debugger_url,
+                    },
                     status: ToolStatus::Pending,
                     response: None,
                     delivery: None,

@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::agent::prompt::PromptLoader;
-use crate::core::error::AppError;
 #[cfg(test)]
 use crate::agent::skill::service::SkillService;
 #[cfg(test)]
 use crate::auth::token::service::TokenService;
+use crate::core::error::AppError;
 #[cfg(test)]
 use crate::credential::keypair::service::KeyPairService;
 #[cfg(test)]
@@ -93,7 +93,12 @@ impl AgentTool for CliTool {
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let args_map = arguments
             .as_object()
             .ok_or_else(|| AppError::Tool("Arguments must be a JSON object".to_string()))?;
@@ -156,9 +161,7 @@ impl AgentTool for CliTool {
         } else if output.resource_killed {
             result.push_str("Process killed: resource limit exceeded.\n");
         } else if output.timed_out {
-            result.push_str(&format!(
-                "Process timed out after {timeout} seconds.\n"
-            ));
+            result.push_str(&format!("Process timed out after {timeout} seconds.\n"));
         }
 
         if let Some(code) = output.exit_code
@@ -184,7 +187,11 @@ impl AgentTool for CliTool {
         }
 
         let failed = output.timed_out || output.exit_code.is_some_and(|c| c != 0);
-        Ok(if failed { ToolOutput::error(result) } else { ToolOutput::text(result) })
+        Ok(if failed {
+            ToolOutput::error(result)
+        } else {
+            ToolOutput::text(result)
+        })
     }
 }
 
@@ -205,9 +212,15 @@ pub fn load_cli_tool_config(prompts: &PromptLoader, path: &str) -> Option<CliToo
         })
         .unwrap_or_default();
 
-    let stdin = yaml.get("stdin").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let stdin = yaml
+        .get("stdin")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let timeout_secs = yaml.get("timeout_secs").and_then(|v| v.as_u64());
-    let provider = yaml.get("provider").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let provider = yaml
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     let parameters: HashMap<String, Value> = yaml
         .get("parameters")
@@ -266,14 +279,13 @@ mod tests {
         use crate::db::repo::generic::SurrealRepo;
 
         let db: surrealdb::Surreal<surrealdb::engine::local::Db> =
-            surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(()).await.unwrap();
+            surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+                .await
+                .unwrap();
         db.use_ns("test").use_db("test").await.unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
 
-        let keypair = KeyPairService::new(
-            "test-secret",
-            Arc::new(SurrealRepo::new(db.clone())),
-        );
+        let keypair = KeyPairService::new("test-secret", Arc::new(SurrealRepo::new(db.clone())));
         let user_service = crate::auth::user_service::UserService::new(
             SurrealRepo::new(db.clone()),
             &crate::core::config::CacheConfig::default(),
@@ -291,7 +303,10 @@ mod tests {
     #[test]
     fn test_substitute_placeholders() {
         let mut args = Map::new();
-        args.insert("command".to_string(), Value::String("echo hello".to_string()));
+        args.insert(
+            "command".to_string(),
+            Value::String("echo hello".to_string()),
+        );
 
         let result = CliTool::substitute("${command}", &args);
         assert_eq!(result, "echo hello");
@@ -322,7 +337,7 @@ mod tests {
     fn mock_skill_service() -> SkillService {
         use crate::agent::skill::registry::SkillRegistryClient;
         use crate::agent::skill::resolver::SkillResolver;
-        use crate::core::config::{Config, CacheConfig};
+        use crate::core::config::{CacheConfig, Config};
 
         let config = Config::default();
         let storage = crate::storage::StorageService::new(&config);
@@ -339,11 +354,15 @@ mod tests {
     async fn mock_policy_service() -> PolicyService {
         use crate::db::repo::generic::SurrealRepo;
         use crate::policy::repository::PolicyRepository;
-        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(()).await.unwrap();
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
         let schema = crate::policy::schema::build_schema();
         let repo: std::sync::Arc<dyn PolicyRepository> =
-            std::sync::Arc::new(SurrealRepo::<crate::policy::models::Policy>::new(db.clone()));
+            std::sync::Arc::new(SurrealRepo::<crate::policy::models::Policy>::new(
+                db.clone(),
+            ));
         let tool_manager = std::sync::Arc::new(crate::tool::manager::ToolManager::new(false));
         let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
         let user_service = crate::auth::UserService::new(
@@ -398,7 +417,11 @@ mod tests {
     async fn mock_sandbox_manager() -> Arc<SandboxManager> {
         let factory = Arc::new(crate::tool::sandbox::SandboxFactory::new(
             false,
-            Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)),
+            Arc::new(
+                crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                    60.0, 60.0, 60.0, 60.0,
+                ),
+            ),
         ));
         let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
         let (tokens, keypair) = mock_token_services().await;
@@ -501,7 +524,11 @@ mod tests {
         let (tokens, keypair) = mock_token_services().await;
         let factory = Arc::new(crate::tool::sandbox::SandboxFactory::new(
             false,
-            Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)),
+            Arc::new(
+                crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                    60.0, 60.0, 60.0, 60.0,
+                ),
+            ),
         ));
         let wm = Arc::new(SandboxManager::new(
             factory,

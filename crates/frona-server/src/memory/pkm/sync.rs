@@ -13,9 +13,9 @@ use crate::agent::harness::Harness;
 use crate::agent::prompt::PromptLoader;
 use crate::auth::user_service::UserService;
 use crate::core::Handle;
-use crate::core::user_config::{UserConfigPatch, UserMemoryConfig};
 use crate::core::config::MemoryConfig;
 use crate::core::error::AppError;
+use crate::core::user_config::{UserConfigPatch, UserMemoryConfig};
 use crate::db::repo::pkm::{
     PageEditBase, PageEditCommit, PageEditMemoryOp, PageEditWrite, PkmRepo,
 };
@@ -23,13 +23,13 @@ use crate::inference::ModelProviderRegistry;
 use crate::inference::config::ModelGroup;
 use crate::inference::usage::{InferenceKind, UsageContext};
 
-use super::projection;
-use super::rename;
 use super::consolidation::{
-    ConsolidationScope, ConsolidationContext, Ingest, PromptIds, ConsolidationInference, PromptSpec,
+    ConsolidationContext, ConsolidationInference, ConsolidationScope, Ingest, PromptIds, PromptSpec,
 };
 use super::model::{Disposition, MemoryKind};
+use super::projection;
 use super::projection::sha256_hex;
+use super::rename;
 use super::storage::PkmStorage;
 use super::vault::VaultScope;
 
@@ -40,11 +40,17 @@ use super::vault::VaultScope;
 pub enum EditGate {
     /// `base_rev` matches head → safe to apply to this existing page. Carries the
     /// current head bytes so the write-back can diff incoming against them.
-    Apply { clean_path: String, head_content: String },
+    Apply {
+        clean_path: String,
+        head_content: String,
+    },
     /// No such page → a human-authored **new** page (extract memories from body).
     New { clean_path: String },
     /// Stale `base_rev` → the client must pull head and reapply.
-    Conflict { head_rev: String, head_content: String },
+    Conflict {
+        head_rev: String,
+        head_content: String,
+    },
 }
 
 /// The unified diff a human edit yields - a `similar` line diff of the current head
@@ -88,15 +94,24 @@ impl EditOp {
 /// The per-item outcome of an `/sync/edits` push.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditResult {
-    Accepted { rev: String },
-    Created { rev: String },
-    Conflict { head_rev: String, head_content: String },
+    Accepted {
+        rev: String,
+    },
+    Created {
+        rev: String,
+    },
+    Conflict {
+        head_rev: String,
+        head_content: String,
+    },
     Removed,
     Indexed,
     Unchanged,
     /// A directory rename moved `count` pages under the source prefix. Per-page revs
     /// aren't returned - the client re-diffs the manifest to pick up the new paths.
-    Renamed { count: usize },
+    Renamed {
+        count: usize,
+    },
 }
 
 /// The LLM write-back schema - memory ops distilled from a human's diff.
@@ -222,9 +237,10 @@ impl PkmSyncService {
     /// the user-config CAS. Takes effect on the next render/manifest - DB page paths
     /// stay clean, so renaming is a re-projection.
     pub async fn set_memory_directory(&self, user_id: &str, name: &str) -> Result<(), AppError> {
-        let _operation = self.operations.try_begin_write(user_id).ok_or_else(|| {
-            AppError::Conflict("PKM reset is in progress".into())
-        })?;
+        let _operation = self
+            .operations
+            .try_begin_write(user_id)
+            .ok_or_else(|| AppError::Conflict("PKM reset is in progress".into()))?;
         let clean = PkmStorage::validate_directory(name)?.to_string();
         let current = self.user_service.user_config(user_id).await?;
         let patch = UserConfigPatch {
@@ -302,11 +318,9 @@ impl PkmSyncService {
         base_rev: Option<&str>,
     ) -> Result<EditGate, AppError> {
         let vault = self.vault(user_id, handle).await?;
-        let clean = vault
-            .page_from_any(vault_path)
-            .ok_or_else(|| {
-                AppError::Validation(format!("path not under the Memory directory: {vault_path}"))
-            })?;
+        let clean = vault.page_from_any(vault_path).ok_or_else(|| {
+            AppError::Validation(format!("path not under the Memory directory: {vault_path}"))
+        })?;
         match self.repo.entity_by_path(user_id, &clean).await? {
             None => Ok(EditGate::New { clean_path: clean }),
             Some(page) => {
@@ -341,9 +355,10 @@ impl PkmSyncService {
         handle: &Handle,
         op: EditOp,
     ) -> Result<EditResult, AppError> {
-        let _operation = self.operations.try_begin_write(user_id).ok_or_else(|| {
-            AppError::Conflict("PKM reset is in progress".into())
-        })?;
+        let _operation = self
+            .operations
+            .try_begin_write(user_id)
+            .ok_or_else(|| AppError::Conflict("PKM reset is in progress".into()))?;
         let vault = self.vault(user_id, handle).await?;
         // Route by prefix: a path under the Memory directory is Internal (bidirectional
         // write-back); anything else is External (User Vault) → read-only ingest.
@@ -355,7 +370,9 @@ impl PkmSyncService {
             EditOp::Delete { .. } => {
                 // Retire the facts (global, non-destructive) and drop the projection
                 // node + file so the page vanishes from the manifest immediately.
-                self.repo.mark_entity_memories_erroneous(user_id, &clean).await?;
+                self.repo
+                    .mark_entity_memories_erroneous(user_id, &clean)
+                    .await?;
                 self.repo.delete_entity(user_id, &clean).await?;
                 let _ = self.storage.delete_page(&vault, &clean);
                 Ok(EditResult::Removed)
@@ -368,14 +385,30 @@ impl PkmSyncService {
                 base_rev,
                 content,
             } => {
-                let gate = self.check_edit(user_id, handle, &path, base_rev.as_deref()).await?;
+                let gate = self
+                    .check_edit(user_id, handle, &path, base_rev.as_deref())
+                    .await?;
                 let (clean_path, head_content, base, new_page_name, created) = match gate {
                     EditGate::New { clean_path } => {
-                        let name = clean_path.rsplit('/').next().unwrap_or(&clean_path).to_string();
-                        (clean_path, String::new(), PageEditBase::Missing, Some(name), true)
+                        let name = clean_path
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&clean_path)
+                            .to_string();
+                        (
+                            clean_path,
+                            String::new(),
+                            PageEditBase::Missing,
+                            Some(name),
+                            true,
+                        )
                     }
-                    EditGate::Apply { clean_path, head_content } => {
-                        let expected = base_rev.expect("an applied edit has a matching base revision");
+                    EditGate::Apply {
+                        clean_path,
+                        head_content,
+                    } => {
+                        let expected =
+                            base_rev.expect("an applied edit has a matching base revision");
                         (
                             clean_path,
                             head_content,
@@ -384,8 +417,14 @@ impl PkmSyncService {
                             false,
                         )
                     }
-                    EditGate::Conflict { head_rev, head_content } => {
-                        return Ok(EditResult::Conflict { head_rev, head_content });
+                    EditGate::Conflict {
+                        head_rev,
+                        head_content,
+                    } => {
+                        return Ok(EditResult::Conflict {
+                            head_rev,
+                            head_content,
+                        });
                     }
                 };
 
@@ -407,7 +446,11 @@ impl PkmSyncService {
                 // Keep the file finalization ordered with same-process edits. The
                 // repository CAS is still required for writers in other processes.
                 let _page_edit = self.operations.begin_page_edit(user_id, &clean_path).await;
-                match self.repo.commit_page_edit_cas(user_id, &clean_path, &write).await? {
+                match self
+                    .repo
+                    .commit_page_edit_cas(user_id, &clean_path, &write)
+                    .await?
+                {
                     PageEditCommit::Applied => {
                         self.storage.write_page(&vault, &clean_path, &content)?;
                         if created {
@@ -416,7 +459,10 @@ impl PkmSyncService {
                             Ok(EditResult::Accepted { rev })
                         }
                     }
-                    PageEditCommit::Conflict { head_rev, head_content } => Ok(EditResult::Conflict {
+                    PageEditCommit::Conflict {
+                        head_rev,
+                        head_content,
+                    } => Ok(EditResult::Conflict {
                         head_rev: head_rev.unwrap_or_default(),
                         head_content: head_content
                             .or_else(|| self.storage.read_page(&vault, &clean_path))
@@ -445,7 +491,8 @@ impl PkmSyncService {
                 // Serialize same-process pushes for this note. The durable revision
                 // checks below also reject stale work from another process.
                 let _page_edit = self.operations.begin_page_edit(user_id, &path).await;
-                let progress = self.repo
+                let progress = self
+                    .repo
                     .upsert_external_page(user_id, &path, &content, &rev)
                     .await?;
                 if progress.is_complete() {
@@ -453,7 +500,8 @@ impl PkmSyncService {
                 }
                 if progress.mirror_pending {
                     self.storage.write_user_note(handle, &path, &content)?;
-                    if !self.repo
+                    if !self
+                        .repo
                         .mark_external_page_mirrored(user_id, &path, &progress.rev)
                         .await?
                     {
@@ -464,9 +512,9 @@ impl PkmSyncService {
                 // the new batch and extracted revision commit together. Extraction is
                 // non-fatal because the accepted note remains mirrored and searchable.
                 if progress.extraction_pending
-                    && let Err(e) = self.extract_external(
-                        harness, user_id, handle, &path, &content, &progress.rev,
-                    ).await
+                    && let Err(e) = self
+                        .extract_external(harness, user_id, handle, &path, &content, &progress.rev)
+                        .await
                 {
                     tracing::warn!(error = %e, note = %path, "pkm sync: external extraction failed");
                 }
@@ -529,18 +577,18 @@ impl PkmSyncService {
             llm,
         ));
         let transcript = super::consolidation::transcript::external_note(content);
-        let batch = Ingest::new(ctx.clone())
-            .run(&transcript)
-            .await?;
+        let batch = Ingest::new(ctx.clone()).run(&transcript).await?;
         let mut checkpoint = ctx.record().await;
         checkpoint.stats.absorb_ingest_batch(&batch);
-        self.repo.commit_external_extract_patch_with_checkpoint(
-            user_id,
-            note_path,
-            expected_rev,
-            &batch,
-            &checkpoint,
-        ).await?;
+        self.repo
+            .commit_external_extract_patch_with_checkpoint(
+                user_id,
+                note_path,
+                expected_rev,
+                &batch,
+                &checkpoint,
+            )
+            .await?;
         Ok(())
     }
 
@@ -570,7 +618,12 @@ impl PkmSyncService {
         let prompt_ids = PromptIds::new("m", memories.iter().map(|memory| memory.id.clone()));
         let mut mem_lines = String::new();
         for m in &memories {
-            mem_lines.push_str(&format!("{} | {:?} | {}\n", prompt_ids.local(&m.id), m.kind, m.content));
+            mem_lines.push_str(&format!(
+                "{} | {:?} | {}\n",
+                prompt_ids.local(&m.id),
+                m.kind,
+                m.content
+            ));
         }
         if mem_lines.is_empty() {
             mem_lines.push_str("(none)");
@@ -614,7 +667,8 @@ impl PkmSyncService {
             match op.op.trim() {
                 "add" => {
                     let content = op.content.trim();
-                    if let Some(kind) = MemoryKind::parse(&op.kind).filter(|_| !content.is_empty()) {
+                    if let Some(kind) = MemoryKind::parse(&op.kind).filter(|_| !content.is_empty())
+                    {
                         planned.push(PageEditMemoryOp::Add {
                             kind,
                             content: content.to_string(),
@@ -654,7 +708,9 @@ impl PkmSyncService {
                         });
                     }
                 }
-                other => tracing::warn!(op = %other, path = %clean_path, "pkm writeback: unknown op, ignored"),
+                other => {
+                    tracing::warn!(op = %other, path = %clean_path, "pkm writeback: unknown op, ignored")
+                }
             }
         }
         planned
@@ -679,9 +735,10 @@ impl PkmSyncService {
         from_path: &str,
         to_path: &str,
     ) -> Result<EditResult, AppError> {
-        let _operation = self.operations.try_begin_write(user_id).ok_or_else(|| {
-            AppError::Conflict("PKM reset is in progress".into())
-        })?;
+        let _operation = self
+            .operations
+            .try_begin_write(user_id)
+            .ok_or_else(|| AppError::Conflict("PKM reset is in progress".into()))?;
         let vault = self.vault(user_id, handle).await?;
         if from_path.trim_end_matches('/').ends_with(".md") {
             self.rename_one(user_id, &vault, from_path, to_path).await
@@ -692,14 +749,25 @@ impl PkmSyncService {
 
     /// Resolve a vault path to a clean Memory page path (strips the directory prefix);
     /// errors if it isn't under the Memory directory.
-    fn vault_to_page(&self, vault: &VaultScope, vault_path: &str, role: &str) -> Result<String, AppError> {
-        vault
-            .page_from_any(vault_path)
-            .ok_or_else(|| AppError::Validation(format!("rename {role} not in Memory: {vault_path}")))
+    fn vault_to_page(
+        &self,
+        vault: &VaultScope,
+        vault_path: &str,
+        role: &str,
+    ) -> Result<String, AppError> {
+        vault.page_from_any(vault_path).ok_or_else(|| {
+            AppError::Validation(format!("rename {role} not in Memory: {vault_path}"))
+        })
     }
 
     /// Single-page rename - conflicts (non-destructively) if the target page exists.
-    async fn rename_one(&self, user_id: &str, vault: &VaultScope, from_path: &str, to_path: &str) -> Result<EditResult, AppError> {
+    async fn rename_one(
+        &self,
+        user_id: &str,
+        vault: &VaultScope,
+        from_path: &str,
+        to_path: &str,
+    ) -> Result<EditResult, AppError> {
         let from = self.vault_to_page(vault, from_path, "source")?;
         let to = self.vault_to_page(vault, to_path, "target")?;
         if let Some(occupant) = self.repo.entity_by_path(user_id, &to).await? {
@@ -715,7 +783,13 @@ impl PkmSyncService {
     /// Directory rename - remap every page under `<from>/` to `<to>/`. Rejects up
     /// front (before any write) if a target path is occupied by a page that isn't
     /// itself part of the move.
-    async fn rename_dir(&self, user_id: &str, vault: &VaultScope, from_path: &str, to_path: &str) -> Result<EditResult, AppError> {
+    async fn rename_dir(
+        &self,
+        user_id: &str,
+        vault: &VaultScope,
+        from_path: &str,
+        to_path: &str,
+    ) -> Result<EditResult, AppError> {
         let from = self.vault_to_page(vault, from_path, "source")?;
         let to = self.vault_to_page(vault, to_path, "target")?;
         let prefix = format!("{from}/");
@@ -731,12 +805,18 @@ impl PkmSyncService {
             })
             .collect();
         if moves.is_empty() {
-            return Err(AppError::NotFound(format!("no pages under directory: {from_path}")));
+            return Err(AppError::NotFound(format!(
+                "no pages under directory: {from_path}"
+            )));
         }
         let moving: HashSet<&str> = moves.iter().map(|(old, _)| old.as_str()).collect();
         for (_, new) in &moves {
-            if !moving.contains(new.as_str()) && self.repo.entity_by_path(user_id, new).await?.is_some() {
-                return Err(AppError::Conflict(format!("rename target already exists: {new}")));
+            if !moving.contains(new.as_str())
+                && self.repo.entity_by_path(user_id, new).await?.is_some()
+            {
+                return Err(AppError::Conflict(format!(
+                    "rename target already exists: {new}"
+                )));
             }
         }
         // Phase 1 - atomic: rename every page's record + edges in one transaction, so
@@ -754,10 +834,8 @@ impl PkmSyncService {
         // Then, once every page is at its final path, rewrite the mirror's
         // `[[wikilinks]]` to reflect each move (a linker may itself have been moved).
         for (old, new) in &moves {
-            rename::rewrite_links_after_move(
-                &self.repo, &self.storage, vault, user_id, old, new,
-            )
-            .await;
+            rename::rewrite_links_after_move(&self.repo, &self.storage, vault, user_id, old, new)
+                .await;
         }
         Ok(EditResult::Renamed { count: moves.len() })
     }
@@ -766,15 +844,22 @@ impl PkmSyncService {
     /// file, re-stamp its rev so the manifest reflects the new path. Returns the rev.
     /// Move one page `from → to` - the shared rename (DB edges, file, inbound wikilinks)
     /// plus the rev re-stamp the manifest needs. Returns the new rev.
-    async fn move_page(&self, user_id: &str, vault: &VaultScope, from: &str, to: &str) -> Result<String, AppError> {
-        rename::page_everywhere(&self.repo, &self.storage, vault, user_id, from, to)
-            .await?;
+    async fn move_page(
+        &self,
+        user_id: &str,
+        vault: &VaultScope,
+        from: &str,
+        to: &str,
+    ) -> Result<String, AppError> {
+        rename::page_everywhere(&self.repo, &self.storage, vault, user_id, from, to).await?;
         // The rename moved the file, so the only way this is `None` is a projection that
         // was already missing - the client re-fetches on the mismatch, and boot recovery
         // re-renders it.
-        Ok(projection::restamp_rev(&self.repo, &self.storage, vault, user_id, to)
-            .await?
-            .unwrap_or_default())
+        Ok(
+            projection::restamp_rev(&self.repo, &self.storage, vault, user_id, to)
+                .await?
+                .unwrap_or_default(),
+        )
     }
 }
 
@@ -785,10 +870,20 @@ mod tests {
     #[test]
     fn writeback_diff_shows_delta_and_ignores_history() {
         let head = "---\nuid: 1\n---\n\n# Bob\n\nWorks at Acme.\n\n## History\n\n- (Fact) old\n";
-        let incoming = "---\nuid: 1\n---\n\n# Bob\n\nWorks at Globex.\n\n## History\n\n- (Fact) DIFFERENT\n";
+        let incoming =
+            "---\nuid: 1\n---\n\n# Bob\n\nWorks at Globex.\n\n## History\n\n- (Fact) DIFFERENT\n";
         let d = writeback_diff(head, incoming);
-        assert!(d.contains("-Works at Acme."), "shows the removed line:\n{d}");
-        assert!(d.contains("+Works at Globex."), "shows the added line:\n{d}");
-        assert!(!d.contains("DIFFERENT"), "History is stripped, not diffed:\n{d}");
+        assert!(
+            d.contains("-Works at Acme."),
+            "shows the removed line:\n{d}"
+        );
+        assert!(
+            d.contains("+Works at Globex."),
+            "shows the added line:\n{d}"
+        );
+        assert!(
+            !d.contains("DIFFERENT"),
+            "History is stripped, not diffed:\n{d}"
+        );
     }
 }

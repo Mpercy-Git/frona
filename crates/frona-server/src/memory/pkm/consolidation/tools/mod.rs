@@ -27,7 +27,11 @@ impl EntityToolView {
         tool_budget: usize,
         tool_calls: Arc<std::sync::atomic::AtomicUsize>,
     ) -> Self {
-        Self { entities: entities.into(), tool_budget, tool_calls }
+        Self {
+            entities: entities.into(),
+            tool_budget,
+            tool_calls,
+        }
     }
 
     fn spend_tool_call(&self) -> Option<ToolOutput> {
@@ -39,10 +43,15 @@ impl EntityToolView {
         )))
     }
 
-    pub(crate) fn entities(&self) -> &[KnowledgeEntity] { &self.entities }
+    pub(crate) fn entities(&self) -> &[KnowledgeEntity] {
+        &self.entities
+    }
 
     pub(crate) fn entity(&self, path: &str) -> Option<KnowledgeEntity> {
-        self.entities.iter().find(|entity| entity.path == path).cloned()
+        self.entities
+            .iter()
+            .find(|entity| entity.path == path)
+            .cloned()
     }
 }
 
@@ -50,16 +59,22 @@ fn spend_entity_tool_call(
     overlay: &Option<Arc<EntityToolView>>,
     budget: &Option<Arc<std::sync::atomic::AtomicUsize>>,
 ) -> Option<ToolOutput> {
-    if let Some(output) = overlay.as_ref().and_then(|overlay| overlay.spend_tool_call()) {
+    if let Some(output) = overlay
+        .as_ref()
+        .and_then(|overlay| overlay.spend_tool_call())
+    {
         return Some(output);
     }
     let budget = budget.as_ref()?;
     use std::sync::atomic::Ordering;
-    budget.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining|
-        remaining.checked_sub(1)
-    ).err().map(|_| ToolOutput::text(
-        "Research-tool budget exhausted. Submit the best complete result now."
-    ))
+    budget
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .err()
+        .map(|_| {
+            ToolOutput::text("Research-tool budget exhausted. Submit the best complete result now.")
+        })
 }
 
 /// Search the entity view: committed entities overlaid with the current consolidation.
@@ -83,7 +98,9 @@ impl SearchEntitiesTool {
             return Ok(output);
         }
         let Some(query) = str_arg(&arguments, "query") else {
-            return Ok(ToolOutput::text("Provide a `query` naming the entity to look for."));
+            return Ok(ToolOutput::text(
+                "Provide a `query` naming the entity to look for.",
+            ));
         };
         let hits = if let Some(overlay) = &self.overlay {
             let needle = crate::memory::pkm::model::normalize_identity_name(query);
@@ -91,10 +108,14 @@ impl SearchEntitiesTool {
                 .entities()
                 .iter()
                 .filter(|entity| {
-                    crate::memory::pkm::model::normalize_identity_name(&entity.name).contains(&needle)
-                        || crate::memory::pkm::model::normalize_identity_name(&entity.description).contains(&needle)
-                        || entity.aliases.iter().any(|alias|
-                            crate::memory::pkm::model::normalize_identity_name(alias).contains(&needle))
+                    crate::memory::pkm::model::normalize_identity_name(&entity.name)
+                        .contains(&needle)
+                        || crate::memory::pkm::model::normalize_identity_name(&entity.description)
+                            .contains(&needle)
+                        || entity.aliases.iter().any(|alias| {
+                            crate::memory::pkm::model::normalize_identity_name(alias)
+                                .contains(&needle)
+                        })
                 })
                 .map(|entity| crate::memory::pkm::model::EntityHit {
                     path: entity.path.clone(),
@@ -111,8 +132,9 @@ impl SearchEntitiesTool {
                 .collect();
             hits.sort_by_key(|hit| {
                 let exact = crate::memory::pkm::model::normalize_identity_name(&hit.name) == needle
-                    || hit.aliases.iter().any(|alias|
-                        crate::memory::pkm::model::normalize_identity_name(alias) == needle);
+                    || hit.aliases.iter().any(|alias| {
+                        crate::memory::pkm::model::normalize_identity_name(alias) == needle
+                    });
                 !exact
             });
             hits
@@ -131,8 +153,15 @@ impl SearchEntitiesTool {
             .take(ENTITY_HIT_CAP)
             .map(|hit| {
                 let kinds = px.display_joined(&hit.kinds);
-                let kinds = if kinds.is_empty() { "untyped".to_string() } else { kinds };
-                format!("{} — {} [{}] — {}", hit.path, hit.name, kinds, hit.description)
+                let kinds = if kinds.is_empty() {
+                    "untyped".to_string()
+                } else {
+                    kinds
+                };
+                format!(
+                    "{} — {} [{}] — {}",
+                    hit.path, hit.name, kinds, hit.description
+                )
             })
             .collect();
         Ok(ToolOutput::text(lines.join("\n")))
@@ -162,12 +191,17 @@ impl ReadEntityTool {
             return Ok(output);
         }
         let Some(path) = str_arg(&arguments, "path") else {
-            return Ok(ToolOutput::text("Provide the exact `path` returned by `search_entities` or supplied in the stage input."));
+            return Ok(ToolOutput::text(
+                "Provide the exact `path` returned by `search_entities` or supplied in the stage input.",
+            ));
         };
         let entity = if let Some(overlay) = &self.overlay {
             overlay.entity(path)
         } else {
-            self.repo.entity_by_path(path).await?.map(|entity| entity.as_knowledge_entity())
+            self.repo
+                .entity_by_path(path)
+                .await?
+                .map(|entity| entity.as_knowledge_entity())
         };
         let Some(entity) = entity else {
             return Ok(ToolOutput::text(format!(
@@ -179,7 +213,11 @@ impl ReadEntityTool {
         let aliases = {
             let mut aliases: Vec<_> = entity.aliases.iter().cloned().collect();
             aliases.sort();
-            if aliases.is_empty() { "(none)".to_string() } else { aliases.join(", ") }
+            if aliases.is_empty() {
+                "(none)".to_string()
+            } else {
+                aliases.join(", ")
+            }
         };
         let attributes = serde_json::to_string_pretty(&entity.attributes)
             .unwrap_or_else(|_| entity.attributes.to_string());
@@ -189,9 +227,16 @@ impl ReadEntityTool {
             entity.search_assertions.join("\n")
         };
         let mut memories_by_id = std::collections::BTreeMap::new();
-        for memory in self.memories.memories_for_entity(&self.user_id, &entity.path).await?
+        for memory in self
+            .memories
+            .memories_for_entity(&self.user_id, &entity.path)
+            .await?
             .into_iter()
-            .chain(self.memories.memories_by_ids(&self.user_id, &entity.source_memory_ids).await?)
+            .chain(
+                self.memories
+                    .memories_by_ids(&self.user_id, &entity.source_memory_ids)
+                    .await?,
+            )
         {
             memories_by_id.insert(memory.id.clone(), memory);
         }
@@ -201,7 +246,11 @@ impl ReadEntityTool {
         } else {
             memories.iter().map(memory_bullet).collect::<String>()
         };
-        let body = if entity.body.trim().is_empty() { "(not authored yet)" } else { &entity.body };
+        let body = if entity.body.trim().is_empty() {
+            "(not authored yet)"
+        } else {
+            &entity.body
+        };
         Ok(ToolOutput::text(format!(
             "path={}\ncategory={:?}\nname={}\ndescription={}\naliases={}\ntypes={}\nidentity_evidence={}\nattributes:\n{}\nassertions:\n{}\nsource_memories:\n{}\nbody:\n{}",
             entity.path,
@@ -209,7 +258,11 @@ impl ReadEntityTool {
             entity.name,
             entity.description,
             aliases,
-            if kinds.is_empty() { "(untyped)" } else { &kinds },
+            if kinds.is_empty() {
+                "(untyped)"
+            } else {
+                &kinds
+            },
             prompt_evidence(&entity.identity_evidence),
             attributes,
             assertions,

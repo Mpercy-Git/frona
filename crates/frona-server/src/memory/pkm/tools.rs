@@ -25,7 +25,10 @@ pub fn all(
     prompts: PromptLoader,
     user_service: UserService,
 ) -> Vec<Arc<dyn crate::tool::AgentTool>> {
-    let vault = VaultResolver { storage, user_service };
+    let vault = VaultResolver {
+        storage,
+        user_service,
+    };
     vec![
         Arc::new(RememberTool {
             repo: repo.clone(),
@@ -36,7 +39,11 @@ pub fn all(
             prompts: prompts.clone(),
             vault: vault.clone(),
         }),
-        Arc::new(CitePageTool { repo, prompts, vault }),
+        Arc::new(CitePageTool {
+            repo,
+            prompts,
+            vault,
+        }),
     ]
 }
 
@@ -55,8 +62,13 @@ struct VaultResolver {
 
 impl VaultResolver {
     async fn for_caller(&self, ctx: &InferenceContext) -> Result<VaultScope, AppError> {
-        VaultScope::resolve(&self.user_service, &self.storage, &ctx.user.id, &ctx.user.handle)
-            .await
+        VaultScope::resolve(
+            &self.user_service,
+            &self.storage,
+            &ctx.user.id,
+            &ctx.user.handle,
+        )
+        .await
     }
 }
 
@@ -81,9 +93,7 @@ impl RememberTool {
     ) -> Result<ToolOutput, AppError> {
         let content = arg(&arguments, "content")?;
         let chat = active_chat(ctx)?;
-        self.repo
-            .remember(&ctx.user.id, &chat.id, content)
-            .await?;
+        self.repo.remember(&ctx.user.id, &chat.id, content).await?;
         Ok(ToolOutput::text(format!("Remembered: {content}")))
     }
 }
@@ -133,7 +143,10 @@ impl SearchTool {
                     (tag, vault.abs_page_file(&h.path))
                 }
             };
-            out.push_str(&format!("- {}  [{tag}]\n  {}\n  {abspath}\n\n", h.name, h.description));
+            out.push_str(&format!(
+                "- {}  [{tag}]\n  {}\n  {abspath}\n\n",
+                h.name, h.description
+            ));
         }
         Ok(ToolOutput::text(out))
     }

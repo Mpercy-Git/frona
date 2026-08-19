@@ -14,7 +14,7 @@ use oxigraph::store::Store;
 use oxrdf::{Literal, NamedNode, NamedOrBlankNode, Term, Triple};
 
 use crate::core::error::AppError;
-use crate::memory::pkm::model::{KnowledgeEntity, KnowledgeEntityLink, EntityCategory};
+use crate::memory::pkm::model::{EntityCategory, KnowledgeEntity, KnowledgeEntityLink};
 
 use super::prefixes::{KB_NAMESPACE, PrefixMap, individual_iri, path_from_individual};
 use super::sparql;
@@ -43,10 +43,7 @@ pub(super) fn eligible_entity_paths(entities: &[KnowledgeEntity]) -> HashSet<&st
         .collect()
 }
 
-pub(super) fn link_is_eligible(
-    link: &KnowledgeEntityLink,
-    eligible_paths: &HashSet<&str>,
-) -> bool {
+pub(super) fn link_is_eligible(link: &KnowledgeEntityLink, eligible_paths: &HashSet<&str>) -> bool {
     eligible_paths.contains(link.from_entity_path.as_str())
         && eligible_paths.contains(link.to_entity_path.as_str())
 }
@@ -78,7 +75,11 @@ pub fn build_abox_triples(
             if !kind.trim().is_empty()
                 && let Some(kind_iri) = valid_iri(&prefixes.expand(kind))
             {
-                triples.push(Triple::new(subj(&iri), nn(RDF_TYPE), Term::NamedNode(nn(&kind_iri))));
+                triples.push(Triple::new(
+                    subj(&iri),
+                    nn(RDF_TYPE),
+                    Term::NamedNode(nn(&kind_iri)),
+                ));
             }
         }
         if let Some(map) = entity.attributes.as_object() {
@@ -183,15 +184,17 @@ pub fn extract_inferred(
     let mut edges: Vec<(String, String, String)> = Vec::new();
     if let QueryResults::Solutions(sols) = sparql::query(store, &query, prefixes)? {
         for sol in sols {
-            let sol = sol.map_err(|e| AppError::Internal(format!("ontology: inferred sol: {e}")))?;
+            let sol =
+                sol.map_err(|e| AppError::Internal(format!("ontology: inferred sol: {e}")))?;
             let (Some(Term::NamedNode(s)), Some(Term::NamedNode(p)), Some(Term::NamedNode(o))) =
                 (sol.get("s"), sol.get("p"), sol.get("o"))
             else {
                 continue;
             };
-            let (Some(from), Some(to)) =
-                (path_from_individual(s.as_str()), path_from_individual(o.as_str()))
-            else {
+            let (Some(from), Some(to)) = (
+                path_from_individual(s.as_str()),
+                path_from_individual(o.as_str()),
+            ) else {
                 continue;
             };
             // Self-loops are never useful entity edges, and `eq-ref` makes one of these
@@ -325,7 +328,10 @@ mod tests {
             .collect()
     }
 
-    fn extract(closure_edges: &[(&str, &str, &str)], asserted_edges: &[(&str, &str, &str)]) -> InferredGraph {
+    fn extract(
+        closure_edges: &[(&str, &str, &str)],
+        asserted_edges: &[(&str, &str, &str)],
+    ) -> InferredGraph {
         extract_inferred(
             &closure(closure_edges),
             &asserted(asserted_edges),
@@ -348,7 +354,10 @@ mod tests {
             &[("people/sarah", WORKS_FOR, "orgs/acme")],
         );
         assert!(g.links.is_empty(), "the mirror adds nothing: {:?}", g.links);
-        assert_eq!(g.same_as, [("people/sarah".to_string(), "people/sarah-2".to_string())]);
+        assert_eq!(
+            g.same_as,
+            [("people/sarah".to_string(), "people/sarah-2".to_string())]
+        );
     }
 
     /// A genuinely derived edge survives. `knows` declared symmetric puts the reverse
@@ -365,7 +374,11 @@ mod tests {
         );
         assert_eq!(
             g.links,
-            [("people/bob".to_string(), "people/alice".to_string(), "frona:knows".to_string())],
+            [(
+                "people/bob".to_string(),
+                "people/alice".to_string(),
+                "frona:knows".to_string()
+            )],
             "the symmetric reverse is new knowledge"
         );
     }
@@ -382,7 +395,11 @@ mod tests {
             ],
             &[],
         );
-        assert!(g.links.is_empty(), "sameAs is not an entity edge: {:?}", g.links);
+        assert!(
+            g.links.is_empty(),
+            "sameAs is not an entity edge: {:?}",
+            g.links
+        );
         assert_eq!(
             g.same_as,
             [("people/sarah".to_string(), "people/sarah-2".to_string())],
@@ -417,6 +434,10 @@ mod tests {
         assert_eq!(ids.canonical("a"), "a");
         assert_eq!(ids.canonical("b"), "a");
         assert_eq!(ids.canonical("c"), "a", "c reaches a through b");
-        assert_eq!(ids.canonical("z"), "z", "an entity in no class is its own representative");
+        assert_eq!(
+            ids.canonical("z"),
+            "z",
+            "an entity in no class is its own representative"
+        );
     }
 }

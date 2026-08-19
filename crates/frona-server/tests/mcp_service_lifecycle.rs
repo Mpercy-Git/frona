@@ -7,8 +7,8 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use frona::core::error::AppError;
 use frona::core::Principal;
+use frona::core::error::AppError;
 use frona::credential::vault::models::*;
 use frona::credential::vault::service::VaultService;
 use frona::db::init::setup_schema;
@@ -16,7 +16,9 @@ use frona::db::repo::generic::SurrealRepo;
 use frona::tool::mcp::metadata::{
     RegistryEnvVar, RegistryPackage, RegistryServerEntry, RegistryTransport,
 };
-use frona::tool::mcp::models::{CredentialBinding, McpServerInstall, McpServerStatus, McpServerUpdate, McpServer};
+use frona::tool::mcp::models::{
+    CredentialBinding, McpServer, McpServerInstall, McpServerStatus, McpServerUpdate,
+};
 use frona::tool::mcp::registry::McpRegistryClient;
 use frona::tool::mcp::repository::McpServerRepository;
 use frona::tool::mcp::service::{McpServerService, NoopPackageInstaller};
@@ -60,7 +62,10 @@ fn sample_entry(env_vars: Vec<RegistryEnvVar>) -> RegistryServerEntry {
             identifier: "@example/workspace-mcp".into(),
             version: Some("1.0.0".into()),
             runtime_hint: None,
-            transport: RegistryTransport { kind: "stdio".into(), url: None },
+            transport: RegistryTransport {
+                kind: "stdio".into(),
+                url: None,
+            },
             runtime_arguments: vec![],
             package_arguments: vec![],
             environment_variables: env_vars,
@@ -89,8 +94,12 @@ fn secret_env_var(name: &str) -> RegistryEnvVar {
 
 async fn build_test_harness(
     env_vars: Vec<RegistryEnvVar>,
-) -> (surrealdb::Surreal<surrealdb::engine::local::Db>, VaultService, McpServerService, tempfile::TempDir)
-{
+) -> (
+    surrealdb::Surreal<surrealdb::engine::local::Db>,
+    VaultService,
+    McpServerService,
+    tempfile::TempDir,
+) {
     let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
         .await
         .unwrap();
@@ -124,14 +133,18 @@ async fn build_test_harness(
     );
     vault.sync_config_connections().await.unwrap();
 
-    let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(true, // sandbox_disabled: we never actually start servers in these tests
-        Arc::new(frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        )),
+    let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(
+        true, // sandbox_disabled: we never actually start servers in these tests
+        Arc::new(
+            frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                80.0, 80.0, 90.0, 90.0,
+            ),
+        ),
     ));
     let policy_schema = frona::policy::schema::build_schema();
-    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> = Arc::new(
+        SurrealRepo::<frona::policy::models::Policy>::new(db.clone()),
+    );
     let policy_tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = frona::auth::UserService::new(
@@ -139,14 +152,21 @@ async fn build_test_harness(
         &frona::core::config::CacheConfig::default(),
     );
     let policy_service = frona::policy::service::PolicyService::new(
-        policy_repo, policy_schema, policy_tool_manager, storage.clone(), user_service.clone(),
+        policy_repo,
+        policy_schema,
+        policy_tool_manager,
+        storage.clone(),
+        user_service.clone(),
     );
     let skill_service = frona::agent::skill::service::SkillService::new(
         frona::agent::skill::registry::SkillRegistryClient::new(
             frona::build_http_client(),
             "/tmp/frona-test-lifecycle-cache",
         ),
-        frona::agent::skill::resolver::SkillResolver::new("/tmp/frona-test-lifecycle-shared", storage.clone()),
+        frona::agent::skill::resolver::SkillResolver::new(
+            "/tmp/frona-test-lifecycle-shared",
+            storage.clone(),
+        ),
         storage.clone(),
         "/tmp/frona-test-lifecycle-skills",
         &frona::core::config::CacheConfig::default(),
@@ -173,7 +193,14 @@ async fn build_test_harness(
         300,
         "UTC".to_string(),
     ));
-    let manager = Arc::new(McpManager::new(sandbox_manager, test_storage, 4100, 4200, user_service, frona::build_http_client()));
+    let manager = Arc::new(McpManager::new(
+        sandbox_manager,
+        test_storage,
+        4100,
+        4200,
+        user_service,
+        frona::build_http_client(),
+    ));
     let mcp_repo: Arc<dyn McpServerRepository> =
         Arc::new(SurrealRepo::<McpServer>::new(db.clone()));
     let registry: Arc<dyn McpRegistryClient> = Arc::new(FakeRegistry {
@@ -185,10 +212,8 @@ async fn build_test_harness(
         "test-secret",
         Arc::new(SurrealRepo::new(db.clone())),
     );
-    let user_service = frona::auth::UserService::new(
-        SurrealRepo::new(db.clone()),
-        &Default::default(),
-    );
+    let user_service =
+        frona::auth::UserService::new(SurrealRepo::new(db.clone()), &Default::default());
     let token_service = frona::auth::token::service::TokenService::new(
         Arc::new(SurrealRepo::new(db.clone())),
         frona::auth::jwt::JwtService::new(),
@@ -272,7 +297,10 @@ async fn install_rejects_when_binding_has_no_matching_grant() {
         sandbox_policy: None,
         handle: None,
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Forbidden(_)),
         "expected Forbidden for missing grant, got {err:?}"
@@ -293,7 +321,10 @@ async fn install_allows_missing_binding_for_declared_secret() {
         sandbox_policy: None,
         handle: None,
     };
-    let server = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    let server = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
     assert_eq!(server.status, McpServerStatus::Installed);
 }
 
@@ -314,7 +345,10 @@ async fn install_rejects_extraneous_binding() {
         sandbox_policy: None,
         handle: None,
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Validation(_)),
         "expected Validation for extraneous binding, got {err:?}"
@@ -337,7 +371,10 @@ async fn install_rejects_relative_extra_paths() {
         }),
         handle: None,
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Validation(_)));
 }
 
@@ -354,16 +391,21 @@ async fn install_succeeds_with_empty_env_entry() {
         sandbox_policy: None,
         handle: None,
     };
-    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    let persisted = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
     assert_eq!(persisted.user_id, "user1");
     // Derived from registry entry title (which the test harness sets to the
     // package id's tail) via sanitize_to_handle.
     assert_eq!(persisted.handle.as_str(), "workspace-mcp");
     assert_eq!(persisted.command, "npx");
-    assert_eq!(persisted.args, vec!["--yes", "@example/workspace-mcp@1.0.0"]);
+    assert_eq!(
+        persisted.args,
+        vec!["--yes", "@example/workspace-mcp@1.0.0"]
+    );
 
-    let mcp_repo: Arc<dyn McpServerRepository> =
-        Arc::new(SurrealRepo::<McpServer>::new(db));
+    let mcp_repo: Arc<dyn McpServerRepository> = Arc::new(SurrealRepo::<McpServer>::new(db));
     let list = mcp_repo.find_by_user("user1").await.unwrap();
     assert_eq!(list.len(), 1);
 }
@@ -392,14 +434,8 @@ async fn uninstall_sweeps_bindings_and_grants() {
 
     // Post-install, write a grant + binding directly against the server's
     // principal to prove uninstall sweeps them even if they were added later.
-    let cred_id = seed_credential_and_grant(
-        &vault,
-        "user1",
-        principal.clone(),
-        "gh",
-        "ghp_xxx",
-    )
-    .await;
+    let cred_id =
+        seed_credential_and_grant(&vault, "user1", principal.clone(), "gh", "ghp_xxx").await;
     vault
         .create_binding(
             "user1",
@@ -440,7 +476,10 @@ async fn uninstall_sweeps_bindings_and_grants() {
         .list_bindings_for_principal("user1", &principal)
         .await
         .unwrap();
-    assert!(remaining_grants.is_empty(), "grants should be swept on uninstall");
+    assert!(
+        remaining_grants.is_empty(),
+        "grants should be swept on uninstall"
+    );
 }
 
 #[tokio::test]
@@ -474,9 +513,18 @@ async fn update_extra_env_replaces_value() {
         ),
         ..Default::default()
     };
-    let result = service.update("user1", &persisted.id, update).await.unwrap();
-    assert_eq!(result.server.env.get("LOG_LEVEL").map(String::as_str), Some("debug"));
-    assert!(!result.restart_required, "not running, so no restart needed");
+    let result = service
+        .update("user1", &persisted.id, update)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.server.env.get("LOG_LEVEL").map(String::as_str),
+        Some("debug")
+    );
+    assert!(
+        !result.restart_required,
+        "not running, so no restart needed"
+    );
 }
 
 #[tokio::test]

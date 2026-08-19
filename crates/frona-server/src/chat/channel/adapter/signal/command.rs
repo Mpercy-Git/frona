@@ -1,12 +1,12 @@
+use presage::Manager;
 use presage::libsignal_service::content::ContentBody;
-use presage::libsignal_service::protocol::ServiceId;
 use presage::libsignal_service::proto::{
-    body_range, BodyRange, DataMessage, GroupContextV2, ReceiptMessage, TypingMessage,
+    BodyRange, DataMessage, GroupContextV2, ReceiptMessage, TypingMessage, body_range,
     receipt_message, typing_message,
 };
+use presage::libsignal_service::protocol::ServiceId;
 use presage::manager::Registered;
 use presage::store::Store;
-use presage::Manager;
 use tokio::sync::oneshot;
 
 use crate::chat::channel::adapter::markdown::{self, SignalStyle, SignalText};
@@ -59,9 +59,16 @@ pub async fn handle<S: Store>(
 ) {
     let now = now_ms();
     match cmd {
-        SignalCommand::SendText { target, chunks, msg_id, reply } => {
+        SignalCommand::SendText {
+            target,
+            chunks,
+            msg_id,
+            reply,
+        } => {
             let signal_chat = target_label(&target);
-            let r = send_text_chunks(mgr, target, chunks, now).await.map(|()| now);
+            let r = send_text_chunks(mgr, target, chunks, now)
+                .await
+                .map(|()| now);
             match &r {
                 Ok(ts) => tracing::info!(
                     channel_id = %channel_id,
@@ -199,13 +206,9 @@ async fn send_typing<S: Store>(
                 action: Some(proto_action as i32),
                 group_id: Some(master_key.to_vec()),
             };
-            mgr.send_message_to_group(
-                &master_key,
-                ContentBody::TypingMessage(typing),
-                ts,
-            )
-            .await
-            .map_err(into_app_error)
+            mgr.send_message_to_group(&master_key, ContentBody::TypingMessage(typing), ts)
+                .await
+                .map_err(into_app_error)
         }
     }
 }
@@ -214,9 +217,7 @@ fn into_app_error<E: std::fmt::Display>(e: E) -> AppError {
     AppError::Internal(format!("Signal send: {e}"))
 }
 
-pub fn classify_signal_error<S: std::error::Error>(
-    e: &presage::Error<S>,
-) -> ChannelError {
+pub fn classify_signal_error<S: std::error::Error>(e: &presage::Error<S>) -> ChannelError {
     use presage::Error;
     let msg = format!("Signal send: {e}");
     match e {

@@ -22,8 +22,12 @@ impl KeePassVaultProvider {
     }
 
     fn open_db(&self) -> Result<Database, AppError> {
-        let mut file = File::open(&self.file_path)
-            .map_err(|e| AppError::Tool(format!("Failed to open KeePass file '{}': {e}", self.file_path)))?;
+        let mut file = File::open(&self.file_path).map_err(|e| {
+            AppError::Tool(format!(
+                "Failed to open KeePass file '{}': {e}",
+                self.file_path
+            ))
+        })?;
 
         let key = DatabaseKey::new().with_password(&self.master_password);
 

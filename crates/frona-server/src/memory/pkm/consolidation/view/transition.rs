@@ -7,7 +7,10 @@ pub(crate) struct EntityTransition {
 
 impl EntityTransition {
     pub(crate) fn new(checkpoint: KnowledgeConsolidationRecord) -> Self {
-        Self { rows: Vec::new(), checkpoint }
+        Self {
+            rows: Vec::new(),
+            checkpoint,
+        }
     }
 
     pub(crate) fn with_row(mut self, row: KnowledgeConsolidationEntity) -> Self {

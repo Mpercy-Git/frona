@@ -1,7 +1,6 @@
 use super::*;
 
 impl PkmRepo {
-
     /// The user's ontology delta row (OWL blob + version), or `None` if the user
     /// has minted nothing yet (their TBox is exactly the shared reference base).
     pub async fn ontology_get(&self, user_id: &str) -> Result<Option<KnowledgeOntology>, AppError> {
@@ -70,11 +69,7 @@ impl PkmRepo {
                 .bind(("uid", user_id.to_string())),
             "schema_types_read"
         );
-        let rows: Vec<KnowledgeOntology> = tx_try!(
-            tx,
-            response.take(0),
-            "schema_types_read_take"
-        );
+        let rows: Vec<KnowledgeOntology> = tx_try!(tx, response.take(0), "schema_types_read_take");
         let current = rows.into_iter().next();
         if current.as_ref().map(|o| o.version).unwrap_or(0) != expected_version {
             let _ = tx.cancel().await;
@@ -132,11 +127,8 @@ impl PkmRepo {
                 .bind(("path", offered.path.clone())),
                 "schema_types_page_read"
             );
-            let existing: Vec<String> = tx_try!(
-                tx,
-                response.take(0),
-                "schema_types_page_read_take"
-            );
+            let existing: Vec<String> =
+                tx_try!(tx, response.take(0), "schema_types_page_read_take");
             match existing {
                 ids if ids.is_empty() => {
                     let mut entity = offered.clone();
@@ -184,11 +176,8 @@ impl PkmRepo {
                     .bind(("path", offered.path.clone())),
                     "schema_types_page_source_read"
                 );
-                let existing_source: Vec<String> = tx_try!(
-                    tx,
-                    response.take(0),
-                    "schema_types_page_source_read_take"
-                );
+                let existing_source: Vec<String> =
+                    tx_try!(tx, response.take(0), "schema_types_page_source_read_take");
                 match existing_source {
                     ids if !ids.is_empty() => {}
                     _ => {
@@ -269,21 +258,24 @@ impl PkmRepo {
                 .bind(("path", entity_path.clone())),
                 "schema_types_coalesced_alias_read"
             );
-            let entities: Vec<KnowledgeEntity> = tx_try!(
-                tx,
-                response.take(0),
-                "schema_types_coalesced_alias_take"
-            );
+            let entities: Vec<KnowledgeEntity> =
+                tx_try!(tx, response.take(0), "schema_types_coalesced_alias_take");
             let Some(mut canonical) = entities.into_iter().next() else {
                 continue;
             };
-            canonical.aliases.extend(aliases.iter().filter(|alias| **alias != canonical.name).cloned());
-            canonical.search_text = derive_search_text(
-                &canonical.name, &canonical.description, &canonical.aliases,
+            canonical.aliases.extend(
+                aliases
+                    .iter()
+                    .filter(|alias| **alias != canonical.name)
+                    .cloned(),
             );
+            canonical.search_text =
+                derive_search_text(&canonical.name, &canonical.description, &canonical.aliases);
             let (search_names, search_name_tokens, mut search_assertions) =
                 derive_resolution_search(
-                    &canonical.name, &canonical.aliases, &canonical.attributes,
+                    &canonical.name,
+                    &canonical.aliases,
+                    &canonical.attributes,
                     std::iter::empty(),
                 );
             search_assertions.extend(canonical.search_assertions);
@@ -409,11 +401,8 @@ impl PkmRepo {
                     .bind(("path", ops.path.clone())),
                 "schema_types_attr_read"
             );
-            let rows: Vec<KnowledgeEntity> = tx_try!(
-                tx,
-                response.take(0),
-                "schema_types_attr_take"
-            );
+            let rows: Vec<KnowledgeEntity> =
+                tx_try!(tx, response.take(0), "schema_types_attr_take");
             let entity = match rows.into_iter().next() {
                 Some(page) => page,
                 // Merged away by resolve between proposal and commit - its attributes went
@@ -450,11 +439,7 @@ impl PkmRepo {
                         .bind(("rel", relation.clone())),
                     "schema_types_promote_read"
                 );
-                let hits: Vec<String> = tx_try!(
-                    tx,
-                    response.take(0),
-                    "schema_types_promote_take"
-                );
+                let hits: Vec<String> = tx_try!(tx, response.take(0), "schema_types_promote_take");
                 if !hits.is_empty() {
                     continue;
                 }
@@ -514,8 +499,10 @@ impl PkmRepo {
             // this transaction. Subsequent phases shadow live rows with these working
             // rows, so leaving the extraction-only candidate here would make them read
             // stale, untyped data despite a successful ontology commit.
-            let mut overlay_paths: std::collections::BTreeSet<String> = materialize.iter()
-                .map(|entity| entity.path.clone()).collect();
+            let mut overlay_paths: std::collections::BTreeSet<String> = materialize
+                .iter()
+                .map(|entity| entity.path.clone())
+                .collect();
             overlay_paths.extend(types.iter().map(|(path, _)| path.clone()));
             overlay_paths.extend(attributes.iter().map(|ops| ops.path.clone()));
             for offered_path in overlay_paths {
@@ -528,11 +515,8 @@ impl PkmRepo {
                     .bind(("path", offered_path.clone())),
                     "schema_types_overlay_page_read"
                 );
-                let rows: Vec<KnowledgeEntity> = tx_try!(
-                    tx,
-                    response.take(0),
-                    "schema_types_overlay_page_take"
-                );
+                let rows: Vec<KnowledgeEntity> =
+                    tx_try!(tx, response.take(0), "schema_types_overlay_page_take");
                 let Some(entity) = rows.into_iter().next() else {
                     continue;
                 };
@@ -547,16 +531,17 @@ impl PkmRepo {
                     .bind(("path", offered_path.clone())),
                     "schema_types_overlay_read"
                 );
-                let rows: Vec<KnowledgeConsolidationEntity> = tx_try!(
-                    tx,
-                    response.take(0),
-                    "schema_types_overlay_take"
-                );
+                let rows: Vec<KnowledgeConsolidationEntity> =
+                    tx_try!(tx, response.take(0), "schema_types_overlay_take");
                 let mut working = match rows.into_iter().next() {
                     Some(row) => row,
                     None => KnowledgeConsolidationEntity::pending(
-                        &record.consolidation_id, user_id, &entity.path, entity.category,
-                        Vec::new(), entity.source_memory_ids.iter().cloned().collect(),
+                        &record.consolidation_id,
+                        user_id,
+                        &entity.path,
+                        entity.category,
+                        Vec::new(),
+                        entity.source_memory_ids.iter().cloned().collect(),
                     ),
                 };
                 working.category = entity.category;
@@ -590,11 +575,8 @@ impl PkmRepo {
                         .bind(("path", path.clone())),
                         "schema_types_overlay_coalesced_read"
                     );
-                    let rows: Vec<KnowledgeConsolidationEntity> = tx_try!(
-                        tx,
-                        response.take(0),
-                        "schema_types_overlay_coalesced_take"
-                    );
+                    let rows: Vec<KnowledgeConsolidationEntity> =
+                        tx_try!(tx, response.take(0), "schema_types_overlay_coalesced_take");
                     let losing = rows.into_iter().next();
                     if let Some(losing) = losing {
                         let mut response = tx_try!(
@@ -607,11 +589,8 @@ impl PkmRepo {
                             .bind(("path", canonical.clone())),
                             "schema_types_overlay_canonical_read"
                         );
-                        let entities: Vec<KnowledgeEntity> = tx_try!(
-                            tx,
-                            response.take(0),
-                            "schema_types_overlay_canonical_take"
-                        );
+                        let entities: Vec<KnowledgeEntity> =
+                            tx_try!(tx, response.take(0), "schema_types_overlay_canonical_take");
                         if let Some(mut entity) = entities.into_iter().next() {
                             for evidence in losing.identity_evidence {
                                 if !entity.identity_evidence.contains(&evidence) {
@@ -681,7 +660,9 @@ impl PkmRepo {
             );
         }
 
-        tx.commit().await.map_err(|e| Self::err("schema_types_commit", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| Self::err("schema_types_commit", e))?;
         Ok(true)
     }
 
@@ -703,7 +684,8 @@ impl PkmRepo {
             Some(existing) => {
                 for attempt in 0..CONFLICT_RETRIES {
                     let result = async {
-                        let mut response = self.db
+                        let mut response = self
+                            .db
                             .query(
                                 "UPDATE type::record('knowledge_ontology', $id)
                                  SET owl = $owl, format = $fmt, version = $ver, updated_at = $now
@@ -723,13 +705,15 @@ impl PkmRepo {
                             .take(0)
                             .map_err(|e| Self::err("ontology_update_take", e))?;
                         Ok::<_, AppError>(!updated.is_empty())
-                    }.await;
+                    }
+                    .await;
                     match result {
                         Err(error)
                             if Self::is_write_conflict(&error)
                                 && attempt + 1 < CONFLICT_RETRIES =>
                         {
-                            tokio::time::sleep(std::time::Duration::from_millis(5 << attempt)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(5 << attempt))
+                                .await;
                         }
                         Ok(true) => return Ok(Some(new_version)),
                         Ok(false) => return Ok(None),
@@ -839,5 +823,4 @@ impl PkmRepo {
         }
         Ok(true)
     }
-
 }

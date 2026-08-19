@@ -16,17 +16,16 @@ use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::tool::{AgentTool, InferenceContext, ToolOutput, str_arg};
 
-use crate::memory::pkm::ontology::{
-    OntologyManager, PrefixMap, SchemaEdit, ValidationDiagnostic,
-};
 use crate::memory::pkm::ontology::sparql::{self, term_lexical};
+use crate::memory::pkm::ontology::{OntologyManager, PrefixMap, SchemaEdit, ValidationDiagnostic};
 
 #[derive(Clone)]
 pub struct OntologyToolOverlay {
     pub entities: Vec<crate::memory::pkm::model::KnowledgeEntity>,
     pub proposed_edits: Vec<SchemaEdit>,
     pub abox: Vec<Triple>,
-    pub diagnostics: Arc<std::sync::RwLock<std::collections::HashMap<String, ValidationDiagnostic>>>,
+    pub diagnostics:
+        Arc<std::sync::RwLock<std::collections::HashMap<String, ValidationDiagnostic>>>,
     pub prefixes: PrefixMap,
     pub tool_budget: usize,
     pub tool_calls: Arc<std::sync::atomic::AtomicUsize>,
@@ -60,11 +59,7 @@ impl OntologyToolProfile {
                 "validation_details",
                 "test_edit",
             ],
-            Self::Resolve => &[
-                "inspect_ontology_terms",
-                "search_entities",
-                "read_entity",
-            ],
+            Self::Resolve => &["inspect_ontology_terms", "search_entities", "read_entity"],
             Self::Assemble => &[
                 "ontology_sparql",
                 "ontology_term_search",
@@ -94,11 +89,15 @@ pub(crate) fn build_ontology_tools_with_overlay(
     let view = context.view.clone();
     let user_id = context.scope.user_id.clone();
     let prompts = context.llm.prompts().clone();
-    let page_overlay = overlay.as_ref().map(|overlay| Arc::new(
-        crate::memory::pkm::consolidation::tools::EntityToolView::new(
-            overlay.entities.clone(), overlay.tool_budget, overlay.tool_calls.clone(),
+    let page_overlay = overlay.as_ref().map(|overlay| {
+        Arc::new(
+            crate::memory::pkm::consolidation::tools::EntityToolView::new(
+                overlay.entities.clone(),
+                overlay.tool_budget,
+                overlay.tool_calls.clone(),
+            ),
         )
-    ));
+    });
     let mut tools: Vec<Arc<dyn AgentTool>> = Vec::new();
     if profile.includes("ontology_sparql") {
         tools.push(Arc::new(OntologySparqlTool {
@@ -128,20 +127,28 @@ pub(crate) fn build_ontology_tools_with_overlay(
         }));
     }
     if profile.includes("search_entities") {
-        tools.push(Arc::new(crate::memory::pkm::consolidation::tools::SearchEntitiesTool {
-            prompts: prompts.clone(),
-            repo: view.clone(),
-            overlay: page_overlay.clone(),
-            budget: None,
-            prefixes: prefixes.clone(),
-        }));
+        tools.push(Arc::new(
+            crate::memory::pkm::consolidation::tools::SearchEntitiesTool {
+                prompts: prompts.clone(),
+                repo: view.clone(),
+                overlay: page_overlay.clone(),
+                budget: None,
+                prefixes: prefixes.clone(),
+            },
+        ));
     }
     if profile.includes("read_entity") {
-        tools.push(Arc::new(crate::memory::pkm::consolidation::tools::ReadEntityTool {
-            prompts: prompts.clone(), repo: view, memories: repo,
-            user_id: user_id.clone(), overlay: page_overlay, budget: None,
-            prefixes: prefixes.clone(),
-        }));
+        tools.push(Arc::new(
+            crate::memory::pkm::consolidation::tools::ReadEntityTool {
+                prompts: prompts.clone(),
+                repo: view,
+                memories: repo,
+                user_id: user_id.clone(),
+                overlay: page_overlay,
+                budget: None,
+                prefixes: prefixes.clone(),
+            },
+        ));
     }
     if profile.includes("usage_impact") {
         tools.push(Arc::new(UsageImpactTool {
@@ -153,11 +160,17 @@ pub(crate) fn build_ontology_tools_with_overlay(
     }
     if profile.includes("validation_details") {
         tools.push(Arc::new(ValidationDetailsTool {
-            prompts: prompts.clone(), overlay: overlay.clone(),
+            prompts: prompts.clone(),
+            overlay: overlay.clone(),
         }));
     }
     if profile.includes("test_edit") {
-        tools.push(Arc::new(TestEditTool { prompts, manager, user_id, overlay }));
+        tools.push(Arc::new(TestEditTool {
+            prompts,
+            manager,
+            user_id,
+            overlay,
+        }));
     }
     tools
 }
@@ -175,14 +188,21 @@ impl ValidationDetailsTool {
         arguments: Value,
         _ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        if let Some(output) = spend_tool_call(&self.overlay) { return Ok(output); }
+        if let Some(output) = spend_tool_call(&self.overlay) {
+            return Ok(output);
+        }
         let Some(id) = str_arg(&arguments, "diagnostic_id") else {
-            return Ok(ToolOutput::text("Provide a `diagnostic_id` from validation feedback."));
+            return Ok(ToolOutput::text(
+                "Provide a `diagnostic_id` from validation feedback.",
+            ));
         };
         let Some(overlay) = &self.overlay else {
             return Ok(ToolOutput::text("No active projection diagnostics."));
         };
-        let diagnostics = overlay.diagnostics.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let diagnostics = overlay
+            .diagnostics
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(diagnostic) = diagnostics.get(id) else {
             return Ok(ToolOutput::text(format!("Unknown diagnostic `{id}`.")));
         };
@@ -215,17 +235,15 @@ impl OntologySparqlTool {
         arguments: Value,
         _ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        if let Some(output) = spend_tool_call(&self.overlay) { return Ok(output); }
+        if let Some(output) = spend_tool_call(&self.overlay) {
+            return Ok(output);
+        }
         let Some(query) = str_arg(&arguments, "query") else {
             return Ok(ToolOutput::text("Provide a `query` (a SPARQL SELECT/ASK)."));
         };
         let result = if let Some(overlay) = &self.overlay {
             self.manager
-                .reason_user_with_proposed(
-                    &self.user_id,
-                    &overlay.proposed_edits,
-                    &overlay.abox,
-                )
+                .reason_user_with_proposed(&self.user_id, &overlay.proposed_edits, &overlay.abox)
                 .await
                 .and_then(|pass| sparql::query(&pass.reasoned.store, query, &self.prefixes))
         } else {
@@ -257,7 +275,9 @@ impl OntologyTermSearchTool {
         arguments: Value,
         _ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        if let Some(output) = spend_tool_call(&self.overlay) { return Ok(output); }
+        if let Some(output) = spend_tool_call(&self.overlay) {
+            return Ok(output);
+        }
         let Some(term) = str_arg(&arguments, "term") else {
             return Ok(ToolOutput::text("Provide a `term` to search the ontology."));
         };
@@ -311,7 +331,9 @@ impl InspectOntologyTermsTool {
         arguments: Value,
         _ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        if let Some(output) = spend_tool_call(&self.overlay) { return Ok(output); }
+        if let Some(output) = spend_tool_call(&self.overlay) {
+            return Ok(output);
+        }
         let Some(values) = arguments.get("terms").and_then(Value::as_array) else {
             return Ok(ToolOutput::text("Provide `terms` as an array of CURIEs."));
         };
@@ -352,7 +374,9 @@ fn active_terms(
     overlay: &Option<Arc<OntologyToolOverlay>>,
     prefixes: &PrefixMap,
 ) -> HashSet<String> {
-    let Some(overlay) = overlay else { return HashSet::new() };
+    let Some(overlay) = overlay else {
+        return HashSet::new();
+    };
     let mut active = HashSet::new();
     for entity in &overlay.entities {
         active.extend(entity.kinds.iter().map(|term| prefixes.expand(term)));
@@ -390,9 +414,13 @@ impl UsageImpactTool {
         arguments: Value,
         _ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        if let Some(output) = spend_tool_call(&self.overlay) { return Ok(output); }
+        if let Some(output) = spend_tool_call(&self.overlay) {
+            return Ok(output);
+        }
         let Some(term) = str_arg(&arguments, "term") else {
-            return Ok(ToolOutput::text("Provide a `term` (a class or relation CURIE)."));
+            return Ok(ToolOutput::text(
+                "Provide a `term` (a class or relation CURIE).",
+            ));
         };
         let (entities, links) = if let Some(overlay) = &self.overlay {
             let px = &overlay.prefixes;
@@ -435,9 +463,13 @@ impl TestEditTool {
         arguments: Value,
         _ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        if let Some(output) = spend_tool_call(&self.overlay) { return Ok(output); }
+        if let Some(output) = spend_tool_call(&self.overlay) {
+            return Ok(output);
+        }
         let Some(edits_json) = arguments.get("edits") else {
-            return Ok(ToolOutput::text("Provide `edits` (an array of schema edits)."));
+            return Ok(ToolOutput::text(
+                "Provide `edits` (an array of schema edits).",
+            ));
         };
         let edits: Vec<SchemaEdit> = match serde_json::from_value(edits_json.clone()) {
             Ok(e) => e,
@@ -490,7 +522,11 @@ fn format_results(results: QueryResults<'static>, cap: usize) -> String {
     match results {
         QueryResults::Boolean(b) => b.to_string(),
         QueryResults::Solutions(sols) => {
-            let vars: Vec<String> = sols.variables().iter().map(|v| v.as_str().to_string()).collect();
+            let vars: Vec<String> = sols
+                .variables()
+                .iter()
+                .map(|v| v.as_str().to_string())
+                .collect();
             let mut lines = vec![vars.join("\t")];
             for (i, sol) in sols.enumerate() {
                 if i >= cap {

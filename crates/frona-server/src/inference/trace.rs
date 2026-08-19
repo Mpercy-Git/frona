@@ -181,13 +181,7 @@ pub fn record_stage_state(stage: &str, phase: &str, item: &str, state: &serde_js
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn record_stage_state(
-    _stage: &str,
-    _phase: &str,
-    _item: &str,
-    _state: &serde_json::Value,
-) {
-}
+pub fn record_stage_state(_stage: &str, _phase: &str, _item: &str, _state: &serde_json::Value) {}
 
 #[cfg(test)]
 mod tests {

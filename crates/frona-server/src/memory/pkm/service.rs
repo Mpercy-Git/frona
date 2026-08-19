@@ -128,7 +128,9 @@ impl PkmService {
         }
         .run(&[path.to_string()])
         .await;
-        self.repo.delete_consolidation_entities(&consolidation_id).await?;
+        self.repo
+            .delete_consolidation_entities(&consolidation_id)
+            .await?;
         Ok(outcome.pages_built == 1)
     }
 
@@ -140,12 +142,8 @@ impl PkmService {
         scope: ConsolidationScope,
         harness: Arc<crate::agent::harness::Harness>,
     ) -> Result<ConsolidationStats, AppError> {
-        self.consolidate_with_cancel(
-            scope,
-            harness,
-            tokio_util::sync::CancellationToken::new(),
-        )
-        .await
+        self.consolidate_with_cancel(scope, harness, tokio_util::sync::CancellationToken::new())
+            .await
     }
 
     pub(super) async fn consolidate_with_cancel(
@@ -243,11 +241,15 @@ impl PkmService {
             && record.attempts >= self.memory_config.pkm_consolidation_max_attempts
         {
             if !matches!(record.state, ConsolidationStageState::Ingest(_)) {
-                match self.repo.recover_or_fail_consolidation(
-                    record,
-                    &error.to_string(),
-                    self.memory_config.pkm_consolidation_checkpoint_failure_cap,
-                ).await {
+                match self
+                    .repo
+                    .recover_or_fail_consolidation(
+                        record,
+                        &error.to_string(),
+                        self.memory_config.pkm_consolidation_checkpoint_failure_cap,
+                    )
+                    .await
+                {
                     Ok(recovered) => {
                         let terminal = matches!(recovered.state, ConsolidationStageState::Failed);
                         *record = recovered;
@@ -285,8 +287,7 @@ impl PkmService {
             .memory_config
             .pkm_consolidation_retry_base_secs
             .saturating_mul(1u64 << record.attempts.min(16));
-        record.next_attempt_at =
-            chrono::Utc::now() + chrono::Duration::seconds(backoff as i64);
+        record.next_attempt_at = chrono::Utc::now() + chrono::Duration::seconds(backoff as i64);
         tracing::warn!(
             error = %error,
             user = %record.user_id,
@@ -302,9 +303,7 @@ impl PkmService {
 
     /// The background model group (`memory.model_group` → `primary`). Resolved lazily
     /// so a missing group degrades here rather than blocking startup.
-    fn consolidation_model_group(
-        &self,
-    ) -> Result<crate::inference::config::ModelGroup, AppError> {
+    fn consolidation_model_group(&self) -> Result<crate::inference::config::ModelGroup, AppError> {
         resolve_model_group(&self.registry, &self.memory_config.model_group)
             .ok_or_else(|| {
                 AppError::Internal(format!(
@@ -346,7 +345,10 @@ impl PkmService {
     pub async fn reconcile_vault(&self) -> Result<(), AppError> {
         let mut by_user = std::collections::HashMap::new();
         for page in self.repo.all_internal_entities().await? {
-            by_user.entry(page.user_id.clone()).or_insert_with(Vec::new).push(page);
+            by_user
+                .entry(page.user_id.clone())
+                .or_insert_with(Vec::new)
+                .push(page);
         }
         let mut report = recovery::ReconcileReport::default();
         for (user_id, pages) in by_user {
@@ -359,7 +361,8 @@ impl PkmService {
                 &self.user_service,
                 &user_id,
                 &pages,
-            ).await?;
+            )
+            .await?;
             report.relocated += user_report.relocated;
             report.rerendered += user_report.rerendered;
             report.deduped += user_report.deduped;
@@ -374,5 +377,4 @@ impl PkmService {
         }
         Ok(())
     }
-
 }

@@ -1,9 +1,9 @@
 use heck::ToSnakeCase;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Expr, ImplItem, ItemImpl, Lit, Meta, Token};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
+use syn::{DeriveInput, Expr, ImplItem, ItemImpl, Lit, Meta, Token, parse_macro_input};
 
 mod migration;
 
@@ -15,9 +15,8 @@ pub fn derive_channel_factory(input: TokenStream) -> TokenStream {
     let adapter_name = &input.ident;
     let factory_name = quote::format_ident!("{}Factory", adapter_name);
 
-    let attrs = parse_channel_attrs(&input.attrs).unwrap_or_else(|err| {
-        panic!("#[channel(...)] attribute parse error: {err}")
-    });
+    let attrs = parse_channel_attrs(&input.attrs)
+        .unwrap_or_else(|err| panic!("#[channel(...)] attribute parse error: {err}"));
     let id = attrs.id;
     let manifest_rel_path = format!("/../../resources/channels/{id}.yaml");
 
@@ -87,10 +86,12 @@ fn parse_channel_attrs(attrs: &[syn::Attribute]) -> syn::Result<ChannelAttrs> {
     let attr = attrs
         .iter()
         .find(|a| a.path().is_ident("channel"))
-        .ok_or_else(|| syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "#[channel(id = \"...\")] attribute is required",
-        ))?;
+        .ok_or_else(|| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "#[channel(id = \"...\")] attribute is required",
+            )
+        })?;
 
     let mut id: Option<String> = None;
     let mut from: Option<syn::Type> = None;
@@ -103,18 +104,15 @@ fn parse_channel_attrs(attrs: &[syn::Attribute]) -> syn::Result<ChannelAttrs> {
             let value: syn::Type = meta.value()?.parse()?;
             from = Some(value);
         } else {
-            return Err(meta.error(
-                "unknown #[channel] argument; expected one of: id, from",
-            ));
+            return Err(meta.error("unknown #[channel] argument; expected one of: id, from"));
         }
         Ok(())
     })?;
 
     Ok(ChannelAttrs {
-        id: id.ok_or_else(|| syn::Error::new(
-            attr.span(),
-            "#[channel] missing required `id = \"...\"`",
-        ))?,
+        id: id.ok_or_else(|| {
+            syn::Error::new(attr.span(), "#[channel] missing required `id = \"...\"`")
+        })?,
         from,
     })
 }
@@ -204,7 +202,10 @@ impl Parse for AgentToolArgs {
                     files = Some(file_list);
                 }
                 other => {
-                    return Err(syn::Error::new(ident.span(), format!("unknown agent_tool argument: {other}")));
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown agent_tool argument: {other}"),
+                    ));
                 }
             }
 

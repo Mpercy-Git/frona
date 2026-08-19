@@ -60,7 +60,10 @@ pub struct AdjudicationPartition {
 /// checkpoints and scripted tests reproducible.
 pub fn partition_proposals(proposals: &[Proposal]) -> AdjudicationPartition {
     if proposals.len() < ADJUDICATION_BATCH_MIN {
-        return AdjudicationPartition { batches: Vec::new(), final_tail: proposals.to_vec() };
+        return AdjudicationPartition {
+            batches: Vec::new(),
+            final_tail: proposals.to_vec(),
+        };
     }
     let mut parent = HashMap::<String, String>::new();
     for proposal in proposals {
@@ -74,7 +77,9 @@ pub fn partition_proposals(proposals: &[Proposal]) -> AdjudicationPartition {
         let mut current = term.to_string();
         let mut seen = HashSet::new();
         while seen.insert(current.clone()) {
-            let Some(next) = parent.get(&current) else { break };
+            let Some(next) = parent.get(&current) else {
+                break;
+            };
             current = next.clone();
         }
         current
@@ -84,7 +89,9 @@ pub fn partition_proposals(proposals: &[Proposal]) -> AdjudicationPartition {
         let mut seen = HashSet::new();
         let mut depth = 0usize;
         while seen.insert(current.to_string()) {
-            let Some(next) = parent.get(current) else { break };
+            let Some(next) = parent.get(current) else {
+                break;
+            };
             depth += 1;
             current = next;
         }
@@ -95,17 +102,25 @@ pub fn partition_proposals(proposals: &[Proposal]) -> AdjudicationPartition {
         let anchor = if proposal.kind == ProposalKind::Class {
             root(&proposal.term)
         } else {
-            proposal.proposed_edits.iter().find_map(|edit| match edit {
-                SchemaEdit::ObjectPropertyDomain { class, .. }
-                | SchemaEdit::ObjectPropertyRange { class, .. } => Some(root(class)),
-                _ => None,
-            }).unwrap_or_else(|| "~unanchored".into())
+            proposal
+                .proposed_edits
+                .iter()
+                .find_map(|edit| match edit {
+                    SchemaEdit::ObjectPropertyDomain { class, .. }
+                    | SchemaEdit::ObjectPropertyRange { class, .. } => Some(root(class)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "~unanchored".into())
         };
         groups.entry(anchor).or_default().push(proposal.clone());
     }
     let mut ordered = Vec::new();
     for (_, mut group) in groups {
-        group.sort_by(|a, b| depth(&a.term).cmp(&depth(&b.term)).then(a.term.cmp(&b.term)));
+        group.sort_by(|a, b| {
+            depth(&a.term)
+                .cmp(&depth(&b.term))
+                .then(a.term.cmp(&b.term))
+        });
         ordered.extend(group);
     }
     let mut batches = Vec::new();
@@ -120,7 +135,10 @@ pub fn partition_proposals(proposals: &[Proposal]) -> AdjudicationPartition {
         };
         batches.push(ordered.drain(..take).collect());
     }
-    AdjudicationPartition { batches, final_tail: ordered }
+    AdjudicationPartition {
+        batches,
+        final_tail: ordered,
+    }
 }
 
 /// The model's decision for one proposal.
@@ -217,12 +235,17 @@ impl Decision {
     /// exactly the escape hatch for a bad one, so validating it would seal the hatch.
     pub fn proposed_terms(&self) -> Vec<&str> {
         match self {
-            Decision::Declare { parent, datatype, domain, range, inverse, .. } => {
-                [parent, datatype, domain, range, inverse]
-                    .into_iter()
-                    .filter_map(|o| present_str(o))
-                    .collect()
-            }
+            Decision::Declare {
+                parent,
+                datatype,
+                domain,
+                range,
+                inverse,
+                ..
+            } => [parent, datatype, domain, range, inverse]
+                .into_iter()
+                .filter_map(|o| present_str(o))
+                .collect(),
             Decision::Align { standard } => vec![standard.trim()],
             Decision::Merge { into } => vec![into.trim()],
             Decision::Restrict { datatype, .. } => vec![datatype.trim()],
@@ -235,19 +258,29 @@ impl Decision {
     /// already-existing term.
     pub fn edits(&self, term: &str, kind: ProposalKind) -> Vec<SchemaEdit> {
         match self {
-            Decision::Declare { parent, datatype, domain, range, inverse, characteristics } => {
+            Decision::Declare {
+                parent,
+                datatype,
+                domain,
+                range,
+                inverse,
+                characteristics,
+            } => {
                 let mut out = Vec::new();
                 match kind {
                     // A parent is what makes a mint useful (it inherits the standard
                     // hierarchy); a bare declaration is the fallback when none is given.
                     ProposalKind::Class => match present(parent) {
-                        Some(sup) => {
-                            out.push(SchemaEdit::SubClassOf { sub: term.into(), sup })
-                        }
+                        Some(sup) => out.push(SchemaEdit::SubClassOf {
+                            sub: term.into(),
+                            sup,
+                        }),
                         None => out.push(SchemaEdit::DeclareClass { class: term.into() }),
                     },
                     ProposalKind::ObjectProperty => {
-                        out.push(SchemaEdit::DeclareObjectProperty { property: term.into() });
+                        out.push(SchemaEdit::DeclareObjectProperty {
+                            property: term.into(),
+                        });
                         if let Some(class) = present(domain) {
                             out.push(SchemaEdit::ObjectPropertyDomain {
                                 property: term.into(),
@@ -282,7 +315,9 @@ impl Decision {
                         }
                     }
                     ProposalKind::DataProperty => {
-                        out.push(SchemaEdit::DeclareDataProperty { property: term.into() });
+                        out.push(SchemaEdit::DeclareDataProperty {
+                            property: term.into(),
+                        });
                         if let Some(datatype) = present(datatype) {
                             out.push(SchemaEdit::RestrictDatatype {
                                 property: term.into(),
@@ -309,10 +344,17 @@ impl Decision {
             // not the proposal it was raised against. The term the model was looking at
             // when it noticed is not necessarily the term the axiom is about.
             Decision::Amend { target } => {
-                vec![SchemaEdit::AmendOverride { target: target.clone() }]
+                vec![SchemaEdit::AmendOverride {
+                    target: target.clone(),
+                }]
             }
             Decision::AcceptProposal | Decision::Merge { .. } | Decision::Defer => Vec::new(),
-            Decision::Restrict { datatype, min, max, pattern } => {
+            Decision::Restrict {
+                datatype,
+                min,
+                max,
+                pattern,
+            } => {
                 vec![SchemaEdit::RestrictDatatype {
                     property: term.into(),
                     datatype: datatype.trim().to_string(),
@@ -430,7 +472,9 @@ mod tests {
     fn multiple_data_violations_are_rejected() {
         let impact = EditImpact {
             incoherence: vec![],
-            data_violations: (0..6).map(|i| facet_violation(&format!("services/{i}"))).collect(),
+            data_violations: (0..6)
+                .map(|i| facet_violation(&format!("services/{i}")))
+                .collect(),
         };
         assert_eq!(gate(&impact), GateOutcome::DataViolations { affected: 6 });
     }
@@ -451,7 +495,8 @@ mod tests {
     #[test]
     fn declaring_a_class_lowers_to_a_subclass_axiom_when_a_parent_is_given() {
         assert_eq!(
-            declare(Some("schema:SoftwareApplication")).edits("frona:Database", ProposalKind::Class),
+            declare(Some("schema:SoftwareApplication"))
+                .edits("frona:Database", ProposalKind::Class),
             vec![SchemaEdit::SubClassOf {
                 sub: "frona:Database".into(),
                 sup: "schema:SoftwareApplication".into()
@@ -459,12 +504,16 @@ mod tests {
         );
         assert_eq!(
             declare(None).edits("frona:Database", ProposalKind::Class),
-            vec![SchemaEdit::DeclareClass { class: "frona:Database".into() }]
+            vec![SchemaEdit::DeclareClass {
+                class: "frona:Database".into()
+            }]
         );
         // the model may send "" for "not applicable" - that is not a parent named "".
         assert_eq!(
             declare(Some("   ")).edits("frona:Database", ProposalKind::Class),
-            vec![SchemaEdit::DeclareClass { class: "frona:Database".into() }]
+            vec![SchemaEdit::DeclareClass {
+                class: "frona:Database".into()
+            }]
         );
     }
 
@@ -504,7 +553,9 @@ mod tests {
         assert_eq!(
             d.edits("frona:partOf", ProposalKind::ObjectProperty),
             vec![
-                SchemaEdit::DeclareObjectProperty { property: "frona:partOf".into() },
+                SchemaEdit::DeclareObjectProperty {
+                    property: "frona:partOf".into()
+                },
                 SchemaEdit::PropertyCharacteristic {
                     property: "frona:partOf".into(),
                     characteristic: Characteristic::Transitive,
@@ -532,7 +583,11 @@ mod tests {
             ],
         };
         let edits = d.edits("frona:knows", ProposalKind::ObjectProperty);
-        assert_eq!(edits.len(), 3, "declaration + two distinct characteristics: {edits:?}");
+        assert_eq!(
+            edits.len(),
+            3,
+            "declaration + two distinct characteristics: {edits:?}"
+        );
     }
 
     /// Characteristics are an object-property notion. A class or data property that
@@ -550,11 +605,15 @@ mod tests {
         };
         assert_eq!(
             d.edits("frona:Database", ProposalKind::Class),
-            vec![SchemaEdit::DeclareClass { class: "frona:Database".into() }]
+            vec![SchemaEdit::DeclareClass {
+                class: "frona:Database".into()
+            }]
         );
         assert_eq!(
             d.edits("frona:port", ProposalKind::DataProperty),
-            vec![SchemaEdit::DeclareDataProperty { property: "frona:port".into() }]
+            vec![SchemaEdit::DeclareDataProperty {
+                property: "frona:port".into()
+            }]
         );
     }
 
@@ -562,7 +621,9 @@ mod tests {
     /// entities are stamped with the standard term directly (never mint-then-realign).
     #[test]
     fn align_lowers_to_an_equivalence_and_renames_the_term() {
-        let d = Decision::Align { standard: "schema:Organization".into() };
+        let d = Decision::Align {
+            standard: "schema:Organization".into(),
+        };
         assert_eq!(
             d.edits("frona:Company", ProposalKind::Class),
             vec![SchemaEdit::Align {
@@ -576,7 +637,9 @@ mod tests {
 
     #[test]
     fn merge_renames_without_declaring_anything() {
-        let d = Decision::Merge { into: "frona:Database".into() };
+        let d = Decision::Merge {
+            into: "frona:Database".into(),
+        };
         assert!(d.edits("frona:Db", ProposalKind::Class).is_empty());
         assert_eq!(d.rename_target(), Some("frona:Database"));
     }
@@ -590,7 +653,9 @@ mod tests {
             property: "frona:partOf".into(),
             characteristic: Characteristic::Transitive,
         };
-        let d = Decision::Amend { target: target.clone() };
+        let d = Decision::Amend {
+            target: target.clone(),
+        };
         let expected = vec![SchemaEdit::AmendOverride { target }];
 
         for (term, kind) in [
@@ -598,9 +663,17 @@ mod tests {
             ("frona:alsoUnrelated", ProposalKind::ObjectProperty),
             ("frona:port", ProposalKind::DataProperty),
         ] {
-            assert_eq!(d.edits(term, kind), expected, "independent of {term}/{kind:?}");
+            assert_eq!(
+                d.edits(term, kind),
+                expected,
+                "independent of {term}/{kind:?}"
+            );
         }
-        assert_eq!(d.rename_target(), None, "nothing is re-keyed by loosening an axiom");
+        assert_eq!(
+            d.rename_target(),
+            None,
+            "nothing is re-keyed by loosening an axiom"
+        );
         assert_eq!(d.label(), "amend");
     }
 
@@ -610,15 +683,23 @@ mod tests {
     #[test]
     fn every_override_target_passes_through_to_the_schema_edit() {
         for target in [
-            OverrideTarget::Disjoint { a: "frona:Tool".into(), b: "frona:Service".into() },
-            OverrideTarget::Facet { property: "frona:port".into() },
+            OverrideTarget::Disjoint {
+                a: "frona:Tool".into(),
+                b: "frona:Service".into(),
+            },
+            OverrideTarget::Facet {
+                property: "frona:port".into(),
+            },
             OverrideTarget::Characteristic {
                 property: "frona:knows".into(),
                 characteristic: Characteristic::Symmetric,
             },
         ] {
             assert_eq!(
-                Decision::Amend { target: target.clone() }.edits("frona:X", ProposalKind::Class),
+                Decision::Amend {
+                    target: target.clone()
+                }
+                .edits("frona:X", ProposalKind::Class),
                 vec![SchemaEdit::AmendOverride { target }]
             );
         }
@@ -628,7 +709,11 @@ mod tests {
     /// back next pass.
     #[test]
     fn defer_is_inert() {
-        assert!(Decision::Defer.edits("frona:Whatever", ProposalKind::Class).is_empty());
+        assert!(
+            Decision::Defer
+                .edits("frona:Whatever", ProposalKind::Class)
+                .is_empty()
+        );
         assert_eq!(Decision::Defer.rename_target(), None);
     }
 
@@ -660,11 +745,26 @@ mod tests {
 
     fn proposal(index: usize, parent: Option<&str>) -> Proposal {
         let term = format!("frona:Class{index}");
-        let proposed_edits = parent.map(|sup| vec![SchemaEdit::SubClassOf {
-            sub: term.clone(), sup: sup.into(),
-        }]).unwrap_or_else(|| vec![SchemaEdit::DeclareClass { class: term.clone() }]);
-        Proposal { term, kind: ProposalKind::Class, usage_entities: 1, usage_links: 0,
-            description: "test class".into(), proposed_edits }
+        let proposed_edits = parent
+            .map(|sup| {
+                vec![SchemaEdit::SubClassOf {
+                    sub: term.clone(),
+                    sup: sup.into(),
+                }]
+            })
+            .unwrap_or_else(|| {
+                vec![SchemaEdit::DeclareClass {
+                    class: term.clone(),
+                }]
+            });
+        Proposal {
+            term,
+            kind: ProposalKind::Class,
+            usage_entities: 1,
+            usage_links: 0,
+            description: "test class".into(),
+            proposed_edits,
+        }
     }
 
     #[test]
@@ -690,12 +790,19 @@ mod tests {
     fn parent_precedes_child_inside_a_hierarchy_partition() {
         let mut proposals: Vec<_> = (0..10).map(|i| proposal(i, Some("schema:Thing"))).collect();
         proposals[1].proposed_edits = vec![SchemaEdit::SubClassOf {
-            sub: proposals[1].term.clone(), sup: proposals[0].term.clone(),
+            sub: proposals[1].term.clone(),
+            sup: proposals[0].term.clone(),
         }];
         let partition = partition_proposals(&proposals);
         let batch = &partition.batches[0];
-        let parent = batch.iter().position(|p| p.term == proposals[0].term).unwrap();
-        let child = batch.iter().position(|p| p.term == proposals[1].term).unwrap();
+        let parent = batch
+            .iter()
+            .position(|p| p.term == proposals[0].term)
+            .unwrap();
+        let child = batch
+            .iter()
+            .position(|p| p.term == proposals[1].term)
+            .unwrap();
         assert!(parent < child, "parent must be adjudicated before child");
     }
 }

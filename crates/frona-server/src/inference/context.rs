@@ -12,24 +12,30 @@ pub fn estimate_tokens(text: &str) -> usize {
 
 pub fn estimate_message_tokens(msg: &RigMessage) -> usize {
     let content_len: usize = match msg {
-        RigMessage::User { content } => {
-            content.iter().map(|c| -> usize {
+        RigMessage::User { content } => content
+            .iter()
+            .map(|c| -> usize {
                 match c {
                     rig_core::completion::message::UserContent::Text(t) => t.text.len(),
-                    rig_core::completion::message::UserContent::ToolResult(tr) => {
-                        tr.content.iter().map(|c| -> usize {
+                    rig_core::completion::message::UserContent::ToolResult(tr) => tr
+                        .content
+                        .iter()
+                        .map(|c| -> usize {
                             match c {
-                                rig_core::completion::message::ToolResultContent::Text(t) => t.text.len(),
+                                rig_core::completion::message::ToolResultContent::Text(t) => {
+                                    t.text.len()
+                                }
                                 _ => 100,
                             }
-                        }).sum::<usize>()
-                    }
+                        })
+                        .sum::<usize>(),
                     _ => 100,
                 }
-            }).sum::<usize>()
-        }
-        RigMessage::Assistant { content, .. } => {
-            content.iter().map(|c| -> usize {
+            })
+            .sum::<usize>(),
+        RigMessage::Assistant { content, .. } => content
+            .iter()
+            .map(|c| -> usize {
                 match c {
                     rig_core::completion::AssistantContent::Text(t) => t.text.len(),
                     rig_core::completion::AssistantContent::ToolCall(tc) => {
@@ -37,8 +43,8 @@ pub fn estimate_message_tokens(msg: &RigMessage) -> usize {
                     }
                     _ => 100,
                 }
-            }).sum::<usize>()
-        }
+            })
+            .sum::<usize>(),
         RigMessage::System { content } => content.len(),
     };
 

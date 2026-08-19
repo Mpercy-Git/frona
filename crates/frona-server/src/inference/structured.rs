@@ -103,9 +103,8 @@ where
             if let AssistantContent::ToolCall(tc) = content
                 && tc.function.name == provider::SUBMIT_TOOL_NAME
             {
-                return deserialize_submission::<T>(tc.function.arguments.clone()).map_err(|e| {
-                    AppError::Internal(format!("structured_with_tools submit: {e}"))
-                });
+                return deserialize_submission::<T>(tc.function.arguments.clone())
+                    .map_err(|e| AppError::Internal(format!("structured_with_tools submit: {e}")));
             }
         }
 
@@ -161,7 +160,8 @@ pub async fn text_inference_with_tools(
     max_turns: usize,
 ) -> Result<String, AppError> {
     let tool_defs = tool_loop::to_rig_tool_definitions(
-        tool_registry.definitions(), tool_registry.mcp_bridge_mode(),
+        tool_registry.definitions(),
+        tool_registry.mcp_bridge_mode(),
     );
     for _ in 0..max_turns.max(1) {
         let (contents, _usage) = retry::inference_with_retry_and_fallback(
@@ -175,16 +175,18 @@ pub async fn text_inference_with_tools(
         )
         .await
         .map_err(|e| AppError::Internal(format!("text_with_tools inference: {e}")))?;
-        let has_tool_calls = contents.iter().any(|content|
-            matches!(content, AssistantContent::ToolCall(_))
-        );
+        let has_tool_calls = contents
+            .iter()
+            .any(|content| matches!(content, AssistantContent::ToolCall(_)));
         if !has_tool_calls {
             return provider::extract_text_from_choice(&contents)
                 .map_err(|e| AppError::Internal(format!("text_with_tools response: {e}")));
         }
         tool_loop::process_model_response(&contents, &mut chat_history).await;
         for content in &contents {
-            let AssistantContent::ToolCall(tc) = content else { continue };
+            let AssistantContent::ToolCall(tc) = content else {
+                continue;
+            };
             let text = match tool_registry
                 .execute(&tc.function.name, tc.function.arguments.clone(), ctx)
                 .await
@@ -236,10 +238,17 @@ fn deserialize_submission<T: serde::de::DeserializeOwned>(
         Ok(v) => return Ok(v),
         Err(e) => e,
     };
-    if let Some(inner) = args.as_object().filter(|o| o.len() == 1).and_then(|o| o.values().next())
+    if let Some(inner) = args
+        .as_object()
+        .filter(|o| o.len() == 1)
+        .and_then(|o| o.values().next())
         && let Ok(v) = serde_json::from_value::<T>(inner.clone())
     {
-        let key = args.as_object().and_then(|o| o.keys().next()).cloned().unwrap_or_default();
+        let key = args
+            .as_object()
+            .and_then(|o| o.keys().next())
+            .cloned()
+            .unwrap_or_default();
         tracing::debug!(wrapper = %key, "unwrapped a submission nested one level down");
         return Ok(v);
     }
@@ -395,7 +404,11 @@ where
                 AssistantContent::ToolCall(tc)
                     if tc.function.name == provider::SUBMIT_TOOL_NAME =>
                 {
-                    Some((tc.id.clone(), tc.call_id.clone(), tc.function.arguments.clone()))
+                    Some((
+                        tc.id.clone(),
+                        tc.call_id.clone(),
+                        tc.function.arguments.clone(),
+                    ))
                 }
                 _ => None,
             });
@@ -430,7 +443,9 @@ where
                                     id: tc.id.clone(),
                                     call_id: tc.call_id.clone(),
                                     content: rig_core::OneOrMany::one(
-                                        rig_core::completion::message::ToolResultContent::text(&text),
+                                        rig_core::completion::message::ToolResultContent::text(
+                                            &text,
+                                        ),
                                     ),
                                 },
                             ),
@@ -519,10 +534,20 @@ mod submission_tests {
     /// The measured failure: the answer is one level down under a key the model invented.
     #[test]
     fn a_submission_nested_under_a_wrapper_key_is_unwrapped() {
-        for key in ["result", "data", "output", "classification", "anything_at_all"] {
+        for key in [
+            "result",
+            "data",
+            "output",
+            "classification",
+            "anything_at_all",
+        ] {
             let args = serde_json::json!({ key: { "classes": ["schema:Person"] } });
             let got: Classification = deserialize_submission(args).expect(key);
-            assert_eq!(got.classes, ["schema:Person"], "wrapper `{key}` not unwrapped");
+            assert_eq!(
+                got.classes,
+                ["schema:Person"],
+                "wrapper `{key}` not unwrapped"
+            );
         }
     }
 
@@ -532,7 +557,13 @@ mod submission_tests {
     fn a_correct_submission_is_taken_as_is() {
         let args = serde_json::json!({ "classes": ["schema:Person"], "relations": ["a"] });
         let got: Classification = deserialize_submission(args).unwrap();
-        assert_eq!(got, Classification { classes: vec!["schema:Person".into()], relations: vec!["a".into()] });
+        assert_eq!(
+            got,
+            Classification {
+                classes: vec!["schema:Person".into()],
+                relations: vec!["a".into()]
+            }
+        );
     }
 
     /// A single-key object that *is* the answer must not be mistaken for an envelope. Here

@@ -1,7 +1,7 @@
+use crate::chat::models::{ChatResponse, CreateChatRequest, UpdateChatRequest};
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use crate::chat::models::{ChatResponse, CreateChatRequest, UpdateChatRequest};
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -51,7 +51,10 @@ async fn update_chat(
     Path(id): Path<String>,
     Json(req): Json<UpdateChatRequest>,
 ) -> Result<Json<ChatResponse>, ApiError> {
-    let chat = state.chat_service.update_chat(&auth.user_id, &id, req).await?;
+    let chat = state
+        .chat_service
+        .update_chat(&auth.user_id, &id, req)
+        .await?;
     Ok(Json(chat))
 }
 
@@ -80,10 +83,7 @@ async fn archive_chat(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ChatResponse>, ApiError> {
-    let chat = state
-        .chat_service
-        .archive_chat(&auth.user_id, &id)
-        .await?;
+    let chat = state.chat_service.archive_chat(&auth.user_id, &id).await?;
     Ok(Json(chat))
 }
 

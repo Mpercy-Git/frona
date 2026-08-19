@@ -10,23 +10,22 @@
 
 use std::io::Cursor;
 
+use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn;
 use horned_owl::io::rdf::writer::write_to_rdf_format;
 use horned_owl::model::{
     AnnotatedComponent, Annotation, AnnotationAssertion, AnnotationSubject, AnnotationValue,
-    ArcStr, AsymmetricObjectProperty, Build, ClassExpression, Component,
-    DataPropertyRange, DataRange, DeclareClass, DeclareDataProperty, DeclareObjectProperty,
-    DisjointClasses, EquivalentClasses, EquivalentDataProperties, EquivalentObjectProperties,
-    FacetRestriction, FunctionalObjectProperty, InverseObjectProperties, IrreflexiveObjectProperty,
+    ArcStr, AsymmetricObjectProperty, Build, ClassExpression, Component, DataPropertyRange,
+    DataRange, DeclareClass, DeclareDataProperty, DeclareObjectProperty, DisjointClasses,
+    EquivalentClasses, EquivalentDataProperties, EquivalentObjectProperties, FacetRestriction,
+    FunctionalObjectProperty, InverseObjectProperties, IrreflexiveObjectProperty,
     Literal as HLiteral, MutableOntology, ObjectPropertyDomain, ObjectPropertyExpression,
-    ObjectPropertyRange,
-    SubClassOf, SubObjectPropertyExpression, SubObjectPropertyOf, SymmetricObjectProperty,
-    TransitiveObjectProperty,
+    ObjectPropertyRange, SubClassOf, SubObjectPropertyExpression, SubObjectPropertyOf,
+    SymmetricObjectProperty, TransitiveObjectProperty,
 };
-use horned_owl::vocab::Facet as OwlFacet;
-use horned_owl::io::ParserConfiguration;
 use horned_owl::ontology::component_mapped::ComponentMappedOntology;
 use horned_owl::ontology::set::SetOntology;
+use horned_owl::vocab::Facet as OwlFacet;
 use oxigraph::io::RdfFormat;
 use oxigraph::store::Store;
 use oxrdf::Triple;
@@ -71,7 +70,10 @@ pub enum SchemaEdit {
     /// Assert an OWL characteristic of an object property - what the relation
     /// *means*, beyond which terms it connects. Declares the property when it is a
     /// `frona:` mint. See [`Characteristic`].
-    PropertyCharacteristic { property: String, characteristic: Characteristic },
+    PropertyCharacteristic {
+        property: String,
+        characteristic: Characteristic,
+    },
     /// The subject of `property` must be a `class`.
     ObjectPropertyDomain { property: String, class: String },
     /// The object of `property` must be a `class`.
@@ -89,7 +91,11 @@ pub enum SchemaEdit {
     },
     /// Align a `frona:` proposal to a standard term: an equivalence axiom. The ABox
     /// re-key (usage of `frona` → `standard`) is applied in code by Assemble, not here.
-    Align { frona: String, standard: String, kind: AlignKind },
+    Align {
+        frona: String,
+        standard: String,
+        kind: AlignKind,
+    },
     /// Loosen one of the user's **own delta** axioms; base masking is not supported.
     /// Removes the matching axiom from the delta.
     AmendOverride { target: OverrideTarget },
@@ -155,13 +161,20 @@ pub enum OverrideTarget {
     /// constrain: a wrong `Transitive` or `Symmetric` writes edges into the entity graph on
     /// every reasoning pass, and adding edges rarely trips anything the gate can see, so
     /// it commits almost unconditionally. Retraction is the only thing that stops it.
-    Characteristic { property: String, characteristic: Characteristic },
+    Characteristic {
+        property: String,
+        characteristic: Characteristic,
+    },
 }
 
 /// Parse a stored OFN delta into the horned-owl model. An empty/blank string is
 /// the empty ontology.
 pub fn parse_delta(ofn: &str) -> Result<Delta, AppError> {
-    let doc = if ofn.trim().is_empty() { EMPTY_DELTA_OFN } else { ofn };
+    let doc = if ofn.trim().is_empty() {
+        EMPTY_DELTA_OFN
+    } else {
+        ofn
+    };
     let (onto, _prefixes): (Delta, _) =
         ofn::reader::read(Cursor::new(doc.as_bytes()), ParserConfiguration::default())
             .map_err(|e| AppError::Internal(format!("ontology: parse delta OFN: {e}")))?;
@@ -203,8 +216,8 @@ pub fn delta_triples(ofn: &str) -> Result<Vec<Triple>, AppError> {
     let cmo = to_cmo(&onto);
     let ttl = write_to_rdf_format(Vec::<u8>::new(), &cmo, "ttl")
         .map_err(|e| AppError::Internal(format!("ontology: delta to turtle: {e}")))?;
-    let store = Store::new()
-        .map_err(|e| AppError::Internal(format!("ontology: delta store: {e}")))?;
+    let store =
+        Store::new().map_err(|e| AppError::Internal(format!("ontology: delta store: {e}")))?;
     store
         .load_from_reader(RdfFormat::Turtle, ttl.as_slice())
         .map_err(|e| AppError::Internal(format!("ontology: parse delta turtle: {e}")))?;
@@ -244,7 +257,11 @@ pub fn catalog(ofn: &str, prefixes: &PrefixMap) -> Result<Catalog, AppError> {
             _ => {}
         }
     }
-    for v in [&mut cat.classes, &mut cat.object_properties, &mut cat.data_properties] {
+    for v in [
+        &mut cat.classes,
+        &mut cat.object_properties,
+        &mut cat.data_properties,
+    ] {
         v.sort();
         v.dedup();
     }
@@ -286,19 +303,24 @@ pub fn retractable(ofn: &str, prefixes: &PrefixMap) -> Result<Vec<OverrideTarget
                     _ => None,
                 }
             }
-            Component::DataPropertyRange(r) => {
-                Some(OverrideTarget::Facet { property: curie(r.dp.0.as_ref()) })
+            Component::DataPropertyRange(r) => Some(OverrideTarget::Facet {
+                property: curie(r.dp.0.as_ref()),
+            }),
+            Component::FunctionalObjectProperty(a) => {
+                named(&a.0).map(|p| characteristic_target(p, Characteristic::Functional))
             }
-            Component::FunctionalObjectProperty(a) => named(&a.0)
-                .map(|p| characteristic_target(p, Characteristic::Functional)),
-            Component::TransitiveObjectProperty(a) => named(&a.0)
-                .map(|p| characteristic_target(p, Characteristic::Transitive)),
-            Component::SymmetricObjectProperty(a) => named(&a.0)
-                .map(|p| characteristic_target(p, Characteristic::Symmetric)),
-            Component::AsymmetricObjectProperty(a) => named(&a.0)
-                .map(|p| characteristic_target(p, Characteristic::Asymmetric)),
-            Component::IrreflexiveObjectProperty(a) => named(&a.0)
-                .map(|p| characteristic_target(p, Characteristic::Irreflexive)),
+            Component::TransitiveObjectProperty(a) => {
+                named(&a.0).map(|p| characteristic_target(p, Characteristic::Transitive))
+            }
+            Component::SymmetricObjectProperty(a) => {
+                named(&a.0).map(|p| characteristic_target(p, Characteristic::Symmetric))
+            }
+            Component::AsymmetricObjectProperty(a) => {
+                named(&a.0).map(|p| characteristic_target(p, Characteristic::Asymmetric))
+            }
+            Component::IrreflexiveObjectProperty(a) => {
+                named(&a.0).map(|p| characteristic_target(p, Characteristic::Irreflexive))
+            }
             _ => None,
         };
         if let Some(t) = target
@@ -311,7 +333,10 @@ pub fn retractable(ofn: &str, prefixes: &PrefixMap) -> Result<Vec<OverrideTarget
 }
 
 fn characteristic_target(property: String, characteristic: Characteristic) -> OverrideTarget {
-    OverrideTarget::Characteristic { property, characteristic }
+    OverrideTarget::Characteristic {
+        property,
+        characteristic,
+    }
 }
 
 fn insert_edit(onto: &mut Delta, b: &Build<ArcStr>, px: &PrefixMap, edit: &SchemaEdit) {
@@ -335,9 +360,7 @@ fn insert_edit(onto: &mut Delta, b: &Build<ArcStr>, px: &PrefixMap, edit: &Schem
             onto.insert(AnnotationAssertion {
                 subject: AnnotationSubject::IRI(b.iri(px.expand(term))),
                 ann: Annotation {
-                    ap: b.annotation_property(
-                        "http://www.w3.org/2000/01/rdf-schema#comment",
-                    ),
+                    ap: b.annotation_property("http://www.w3.org/2000/01/rdf-schema#comment"),
                     av: AnnotationValue::Literal(HLiteral::Simple {
                         literal: comment.trim().to_string(),
                     }),
@@ -351,7 +374,10 @@ fn insert_edit(onto: &mut Delta, b: &Build<ArcStr>, px: &PrefixMap, edit: &Schem
         SchemaEdit::SubClassOf { sub, sup } => {
             mint_class(onto, sub);
             mint_class(onto, sup);
-            onto.insert(SubClassOf { sub: cls(sub).into(), sup: cls(sup).into() });
+            onto.insert(SubClassOf {
+                sub: cls(sub).into(),
+                sup: cls(sup).into(),
+            });
         }
         SchemaEdit::EquivalentClasses { a, b: bb } => {
             mint_class(onto, a);
@@ -380,14 +406,20 @@ fn insert_edit(onto: &mut Delta, b: &Build<ArcStr>, px: &PrefixMap, edit: &Schem
         SchemaEdit::EquivalentProperties { a, b: bb } => {
             mint_op(onto, a);
             mint_op(onto, bb);
-            onto.insert(EquivalentObjectProperties(vec![op(a).into(), op(bb).into()]));
+            onto.insert(EquivalentObjectProperties(vec![
+                op(a).into(),
+                op(bb).into(),
+            ]));
         }
         SchemaEdit::InverseProperties { a, b: bb } => {
             mint_op(onto, a);
             mint_op(onto, bb);
             onto.insert(InverseObjectProperties(op(a), op(bb)));
         }
-        SchemaEdit::PropertyCharacteristic { property, characteristic } => {
+        SchemaEdit::PropertyCharacteristic {
+            property,
+            characteristic,
+        } => {
             mint_op(onto, property);
             let ope = op(property).into();
             match characteristic {
@@ -411,14 +443,26 @@ fn insert_edit(onto: &mut Delta, b: &Build<ArcStr>, px: &PrefixMap, edit: &Schem
         SchemaEdit::ObjectPropertyDomain { property, class } => {
             mint_op(onto, property);
             mint_class(onto, class);
-            onto.insert(ObjectPropertyDomain { ope: op(property).into(), ce: cls(class).into() });
+            onto.insert(ObjectPropertyDomain {
+                ope: op(property).into(),
+                ce: cls(class).into(),
+            });
         }
         SchemaEdit::ObjectPropertyRange { property, class } => {
             mint_op(onto, property);
             mint_class(onto, class);
-            onto.insert(ObjectPropertyRange { ope: op(property).into(), ce: cls(class).into() });
+            onto.insert(ObjectPropertyRange {
+                ope: op(property).into(),
+                ce: cls(class).into(),
+            });
         }
-        SchemaEdit::RestrictDatatype { property, datatype, min, max, pattern } => {
+        SchemaEdit::RestrictDatatype {
+            property,
+            datatype,
+            min,
+            max,
+            pattern,
+        } => {
             if is_mint(px, property) {
                 onto.insert(DeclareDataProperty(dp(property)));
             }
@@ -429,13 +473,22 @@ fn insert_edit(onto: &mut Delta, b: &Build<ArcStr>, px: &PrefixMap, edit: &Schem
             };
             let mut facets = Vec::new();
             if let Some(mn) = min {
-                facets.push(FacetRestriction { f: OwlFacet::MinInclusive, l: dlit(&mn.to_string(), &dt_iri) });
+                facets.push(FacetRestriction {
+                    f: OwlFacet::MinInclusive,
+                    l: dlit(&mn.to_string(), &dt_iri),
+                });
             }
             if let Some(mx) = max {
-                facets.push(FacetRestriction { f: OwlFacet::MaxInclusive, l: dlit(&mx.to_string(), &dt_iri) });
+                facets.push(FacetRestriction {
+                    f: OwlFacet::MaxInclusive,
+                    l: dlit(&mx.to_string(), &dt_iri),
+                });
             }
             if let Some(pat) = pattern {
-                facets.push(FacetRestriction { f: OwlFacet::Pattern, l: dlit(pat, XSD_STRING) });
+                facets.push(FacetRestriction {
+                    f: OwlFacet::Pattern,
+                    l: dlit(pat, XSD_STRING),
+                });
             }
             // OFN's `DatatypeRestriction` requires **at least one** facet/value pair, so an
             // unbounded range has to be the bare datatype. Emitting `DatatypeRestriction(<dt>)`
@@ -450,16 +503,29 @@ fn insert_edit(onto: &mut Delta, b: &Build<ArcStr>, px: &PrefixMap, edit: &Schem
             } else {
                 DataRange::DatatypeRestriction(dt, facets)
             };
-            onto.insert(DataPropertyRange { dp: dp(property), dr });
+            onto.insert(DataPropertyRange {
+                dp: dp(property),
+                dr,
+            });
         }
-        SchemaEdit::Align { frona, standard, kind } => match kind {
+        SchemaEdit::Align {
+            frona,
+            standard,
+            kind,
+        } => match kind {
             AlignKind::Class => {
                 mint_class(onto, frona);
-                onto.insert(EquivalentClasses(vec![cls(frona).into(), cls(standard).into()]));
+                onto.insert(EquivalentClasses(vec![
+                    cls(frona).into(),
+                    cls(standard).into(),
+                ]));
             }
             AlignKind::ObjectProperty => {
                 mint_op(onto, frona);
-                onto.insert(EquivalentObjectProperties(vec![op(frona).into(), op(standard).into()]));
+                onto.insert(EquivalentObjectProperties(vec![
+                    op(frona).into(),
+                    op(standard).into(),
+                ]));
             }
             AlignKind::DataProperty => {
                 if is_mint(px, frona) {
@@ -500,7 +566,10 @@ fn override_matches(target: &OverrideTarget, cmp: &Component<ArcStr>, px: &Prefi
         }
         // Matched on the characteristic *and* the property: a property may carry several,
         // and loosening one must not silently take the rest with it.
-        OverrideTarget::Characteristic { property, characteristic } => {
+        OverrideTarget::Characteristic {
+            property,
+            characteristic,
+        } => {
             let iri = px.expand(property);
             let named = |ope: &ObjectPropertyExpression<ArcStr>| match ope {
                 ObjectPropertyExpression::ObjectProperty(p) => p.0.as_ref() == iri,
@@ -512,7 +581,9 @@ fn override_matches(target: &OverrideTarget, cmp: &Component<ArcStr>, px: &Prefi
                 (Characteristic::Transitive, Component::TransitiveObjectProperty(a)) => named(&a.0),
                 (Characteristic::Symmetric, Component::SymmetricObjectProperty(a)) => named(&a.0),
                 (Characteristic::Asymmetric, Component::AsymmetricObjectProperty(a)) => named(&a.0),
-                (Characteristic::Irreflexive, Component::IrreflexiveObjectProperty(a)) => named(&a.0),
+                (Characteristic::Irreflexive, Component::IrreflexiveObjectProperty(a)) => {
+                    named(&a.0)
+                }
                 _ => false,
             }
         }
@@ -533,412 +604,504 @@ fn is_mint(px: &PrefixMap, curie: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-        use super::*;
+    use super::*;
 
-        fn px() -> PrefixMap {
-            PrefixMap::standard()
-        }
+    fn px() -> PrefixMap {
+        PrefixMap::standard()
+    }
 
-        #[test]
+    #[test]
     fn empty_delta_round_trips() {
-            let onto = parse_delta("").unwrap();
-            let ofn = serialize_delta(&onto).unwrap();
-            // re-parses cleanly; mints nothing and carries no schema axioms (an
-            // ontology-header component may survive the round-trip - that is inert).
-            let cat = catalog(&ofn, &px()).unwrap();
-            assert_eq!(cat, Catalog::default(), "empty delta mints nothing");
-            let triples = delta_triples(&ofn).unwrap();
-            let has_axiom = triples.iter().any(|t| {
-                let p = t.predicate.as_str();
-                p.contains("subClassOf")
-                    || p.contains("equivalentClass")
-                    || p.contains("disjointWith")
-                    || p.contains("inverseOf")
-            });
-            assert!(!has_axiom, "empty delta has no schema axioms: {triples:?}");
-        }
+        let onto = parse_delta("").unwrap();
+        let ofn = serialize_delta(&onto).unwrap();
+        // re-parses cleanly; mints nothing and carries no schema axioms (an
+        // ontology-header component may survive the round-trip - that is inert).
+        let cat = catalog(&ofn, &px()).unwrap();
+        assert_eq!(cat, Catalog::default(), "empty delta mints nothing");
+        let triples = delta_triples(&ofn).unwrap();
+        let has_axiom = triples.iter().any(|t| {
+            let p = t.predicate.as_str();
+            p.contains("subClassOf")
+                || p.contains("equivalentClass")
+                || p.contains("disjointWith")
+                || p.contains("inverseOf")
+        });
+        assert!(!has_axiom, "empty delta has no schema axioms: {triples:?}");
+    }
 
-        #[test]
+    #[test]
     fn rdfs_comment_round_trips_and_lowers_to_a_searchable_triple() {
-            let comment = "A device whose firmware the person intends to update.";
-            let ofn = apply_edits(
-                "",
-                &[
-                    SchemaEdit::DeclareObjectProperty {
-                        property: "frona:firmwareUpdateTarget".into(),
-                    },
-                    SchemaEdit::AnnotateComment {
-                        term: "frona:firmwareUpdateTarget".into(),
-                        comment: comment.into(),
-                    },
-                ],
-                &px(),
-            ).unwrap();
+        let comment = "A device whose firmware the person intends to update.";
+        let ofn = apply_edits(
+            "",
+            &[
+                SchemaEdit::DeclareObjectProperty {
+                    property: "frona:firmwareUpdateTarget".into(),
+                },
+                SchemaEdit::AnnotateComment {
+                    term: "frona:firmwareUpdateTarget".into(),
+                    comment: comment.into(),
+                },
+            ],
+            &px(),
+        )
+        .unwrap();
 
-            assert!(ofn.contains("AnnotationAssertion"), "comment is persisted in OFN: {ofn}");
-            assert!(ofn.contains(comment), "comment text survives serialization: {ofn}");
-            let roundtrip = apply_edits(&ofn, &[], &px()).unwrap();
-            assert!(roundtrip.contains(comment), "comment survives parse and reload: {roundtrip}");
+        assert!(
+            ofn.contains("AnnotationAssertion"),
+            "comment is persisted in OFN: {ofn}"
+        );
+        assert!(
+            ofn.contains(comment),
+            "comment text survives serialization: {ofn}"
+        );
+        let roundtrip = apply_edits(&ofn, &[], &px()).unwrap();
+        assert!(
+            roundtrip.contains(comment),
+            "comment survives parse and reload: {roundtrip}"
+        );
 
-            let triples = delta_triples(&roundtrip).unwrap();
-            assert!(triples.iter().any(|triple| {
+        let triples = delta_triples(&roundtrip).unwrap();
+        assert!(triples.iter().any(|triple| {
                 triple.subject.to_string().contains("urn:frona:firmwareUpdateTarget")
                     && triple.predicate.as_str()
                         == "http://www.w3.org/2000/01/rdf-schema#comment"
                     && matches!(&triple.object, oxrdf::Term::Literal(value) if value.value() == comment)
             }), "rdfs:comment is available to RDF search: {triples:?}");
+    }
+
+    #[test]
+    fn subclass_edit_lowers_to_triples_and_catalogs() {
+        let ofn = apply_edits(
+            "",
+            &[SchemaEdit::SubClassOf {
+                sub: "frona:Database".into(),
+                sup: "schema:SoftwareApplication".into(),
+            }],
+            &px(),
+        )
+        .unwrap();
+
+        let triples = delta_triples(&ofn).unwrap();
+        let has_subclass = triples.iter().any(|t| {
+            t.subject.to_string().contains("urn:frona:Database")
+                && t.predicate.as_str().contains("subClassOf")
+                && t.object
+                    .to_string()
+                    .contains("schema.org/SoftwareApplication")
+        });
+        assert!(has_subclass, "subClassOf edge present in {triples:?}");
+
+        let cat = catalog(&ofn, &px()).unwrap();
+        assert_eq!(cat.classes, vec!["frona:Database".to_string()]);
+    }
+
+    fn asserts(ofn: &str, needle: &str) -> bool {
+        ofn.lines().any(|l| l.contains(needle))
+    }
+
+    fn amend(target: OverrideTarget) -> SchemaEdit {
+        SchemaEdit::AmendOverride { target }
+    }
+
+    fn characteristic(property: &str, characteristic: Characteristic) -> SchemaEdit {
+        SchemaEdit::PropertyCharacteristic {
+            property: property.into(),
+            characteristic,
         }
+    }
 
-        #[test]
-        fn subclass_edit_lowers_to_triples_and_catalogs() {
-            let ofn = apply_edits(
-                "",
-                &[SchemaEdit::SubClassOf {
-                    sub: "frona:Database".into(),
-                    sup: "schema:SoftwareApplication".into(),
-                }],
-                &px(),
-            )
-            .unwrap();
+    /// The retraction that matters most: `Transitive` and `Symmetric` *derive* edges, and
+    /// adding edges rarely trips anything the gate can see, so a wrong one commits almost
+    /// unconditionally and then writes false edges on every reasoning pass. Nothing but
+    /// removing the axiom stops it.
+    #[test]
+    fn characteristic_can_be_retracted_after_it_was_committed() {
+        let ofn = apply_edits(
+            "",
+            &[characteristic("frona:partOf", Characteristic::Transitive)],
+            &px(),
+        )
+        .unwrap();
+        assert!(
+            asserts(&ofn, "TransitiveObjectProperty"),
+            "committed first: {ofn}"
+        );
 
-            let triples = delta_triples(&ofn).unwrap();
-            let has_subclass = triples.iter().any(|t| {
-                t.subject.to_string().contains("urn:frona:Database")
-                    && t.predicate.as_str().contains("subClassOf")
-                    && t.object.to_string().contains("schema.org/SoftwareApplication")
-            });
-            assert!(has_subclass, "subClassOf edge present in {triples:?}");
-
-            let cat = catalog(&ofn, &px()).unwrap();
-            assert_eq!(cat.classes, vec!["frona:Database".to_string()]);
-        }
-
-        fn asserts(ofn: &str, needle: &str) -> bool {
-            ofn.lines().any(|l| l.contains(needle))
-        }
-
-        fn amend(target: OverrideTarget) -> SchemaEdit {
-            SchemaEdit::AmendOverride { target }
-        }
-
-        fn characteristic(property: &str, characteristic: Characteristic) -> SchemaEdit {
-            SchemaEdit::PropertyCharacteristic { property: property.into(), characteristic }
-        }
-
-        /// The retraction that matters most: `Transitive` and `Symmetric` *derive* edges, and
-        /// adding edges rarely trips anything the gate can see, so a wrong one commits almost
-        /// unconditionally and then writes false edges on every reasoning pass. Nothing but
-        /// removing the axiom stops it.
-        #[test]
-        fn characteristic_can_be_retracted_after_it_was_committed() {
-            let ofn = apply_edits(
-                "",
-                &[characteristic("frona:partOf", Characteristic::Transitive)],
-                &px(),
-            )
-            .unwrap();
-            assert!(asserts(&ofn, "TransitiveObjectProperty"), "committed first: {ofn}");
-
-            let ofn = apply_edits(
-                &ofn,
-                &[amend(OverrideTarget::Characteristic {
-                    property: "frona:partOf".into(),
-                    characteristic: Characteristic::Transitive,
-                })],
-                &px(),
-            )
-            .unwrap();
-            assert!(!asserts(&ofn, "TransitiveObjectProperty"), "and retracted: {ofn}");
-            // The reasoner is what actually has to stop deriving, so check the lowering too.
-            let triples = delta_triples(&ofn).unwrap();
-            assert!(
-                !triples.iter().any(|t| t.object.to_string().contains("TransitiveProperty")),
-                "the axiom is gone from the triples the reasoner reads: {triples:?}"
-            );
-        }
-
-        /// A property may carry several characteristics. Loosening one must not take the rest
-        /// with it - that would silently retract claims nobody asked to withdraw.
-        #[test]
-        fn retracting_one_characteristic_leaves_the_others_asserted() {
-            let ofn = apply_edits(
-                "",
-                &[
-                    characteristic("frona:parentOf", Characteristic::Asymmetric),
-                    characteristic("frona:parentOf", Characteristic::Irreflexive),
-                ],
-                &px(),
-            )
-            .unwrap();
-            let ofn = apply_edits(
-                &ofn,
-                &[amend(OverrideTarget::Characteristic {
-                    property: "frona:parentOf".into(),
-                    characteristic: Characteristic::Asymmetric,
-                })],
-                &px(),
-            )
-            .unwrap();
-            assert!(!asserts(&ofn, "AsymmetricObjectProperty"), "the named one went: {ofn}");
-            assert!(asserts(&ofn, "IrreflexiveObjectProperty"), "the other stayed: {ofn}");
-        }
-
-        #[test]
-        fn retracting_a_characteristic_is_scoped_to_its_property() {
-            let ofn = apply_edits(
-                "",
-                &[
-                    characteristic("frona:partOf", Characteristic::Transitive),
-                    characteristic("frona:ancestorOf", Characteristic::Transitive),
-                ],
-                &px(),
-            )
-            .unwrap();
-            let ofn = apply_edits(
-                &ofn,
-                &[amend(OverrideTarget::Characteristic {
-                    property: "frona:partOf".into(),
-                    characteristic: Characteristic::Transitive,
-                })],
-                &px(),
-            )
-            .unwrap();
-            // The *axiom*, not the declaration: retracting a characteristic does not
-            // un-declare the property, and entities are still keyed by it.
-            let transitive_on = |p: &str| {
-                ofn.lines().any(|l| l.contains("TransitiveObjectProperty") && l.contains(p))
-            };
-            assert!(!transitive_on("urn:frona:partOf"), "partOf's axiom went: {ofn}");
-            assert!(transitive_on("urn:frona:ancestorOf"), "ancestorOf's stayed: {ofn}");
-            assert!(
-                asserts(&ofn, "Declaration(ObjectProperty(<urn:frona:partOf>))"),
-                "and partOf is still a declared property: {ofn}"
-            );
-        }
-
-        /// A disjointness committed while nothing held both classes is exactly the axiom that
-        /// starts blocking legitimate classifications later - and `classify` responds by
-        /// quarantining the entity's facts, so without retraction those facts stay hidden.
-        #[test]
-        fn disjointness_can_be_retracted_in_either_pair_order() {
-            for (a, b) in [("frona:Tool", "frona:Service"), ("frona:Service", "frona:Tool")] {
-                let ofn = apply_edits(
-                    "",
-                    &[SchemaEdit::DisjointClasses {
-                        a: "frona:Tool".into(),
-                        b: "frona:Service".into(),
-                    }],
-                    &px(),
-                )
-                .unwrap();
-                assert!(asserts(&ofn, "DisjointClasses"), "committed: {ofn}");
-                let ofn = apply_edits(
-                    &ofn,
-                    &[amend(OverrideTarget::Disjoint { a: a.into(), b: b.into() })],
-                    &px(),
-                )
-                .unwrap();
-                assert!(
-                    !asserts(&ofn, "DisjointClasses"),
-                    "named as ({a}, {b}) — order is not part of the axiom: {ofn}"
-                );
-            }
-        }
-
-        /// A datatype with **no** bounds - which is what a plain `declare` with a datatype is,
-        /// and so the overwhelmingly common case - must still produce OFN that parses back.
-        ///
-        /// It did not. `DatatypeRestriction` requires at least one facet/value pair, so a
-        /// facet-less one serialized to `DatatypeRestriction(<xsd:anyURI> )` and every
-        /// subsequent read of that delta failed with `expected IRI`. Since `load`, `apply_edits`
-        /// and `catalog` all go through that parse, one such edit disabled the entire schema
-        /// layer for a user: nothing could be declared afterwards, so every term stayed
-        /// undeclared and every entity untyped - with no error anywhere near the cause.
-        ///
-        /// The round trip is the assertion. Serializing is not the hard part; reading it back is.
-        #[test]
-        fn datatype_range_with_no_facets_still_parses_back() {
-            let declare = |property: &str, datatype: &str| SchemaEdit::RestrictDatatype {
-                property: property.into(),
-                datatype: datatype.into(),
-                min: None,
-                max: None,
-                pattern: None,
-            };
-            let ofn = apply_edits("", &[declare("frona:firmwareDownloadUrl", "xsd:anyURI")], &px())
-                .unwrap();
-            assert!(asserts(&ofn, "DataPropertyRange"), "committed: {ofn}");
-            assert!(
-                !ofn.contains("DatatypeRestriction"),
-                "an unbounded range is the bare datatype, not an empty restriction: {ofn}"
-            );
-
-            // The delta is only useful if it can be read again - a second edit has to parse the
-            // first, which is exactly what was failing.
-            let ofn = apply_edits(&ofn, &[declare("frona:releaseDate", "xsd:date")], &px())
-                .expect("a committed delta must parse on the next edit");
-            for t in ["frona:firmwareDownloadUrl", "frona:releaseDate"] {
-                assert!(catalog(&ofn, &px()).unwrap().data_properties.contains(&t.to_string()), "{ofn}");
-            }
-
-            let bounded = apply_edits(
-                "",
-                &[SchemaEdit::RestrictDatatype {
-                    property: "frona:port".into(),
-                    datatype: "xsd:integer".into(),
-                    min: Some(1),
-                    max: Some(65535),
-                    pattern: None,
-                }],
-                &px(),
-            )
-            .unwrap();
-            assert!(bounded.contains("DatatypeRestriction"), "bounds still restrict: {bounded}");
-        }
-
-        #[test]
-        fn datatype_facet_can_be_retracted() {
-            let ofn = apply_edits(
-                "",
-                &[SchemaEdit::RestrictDatatype {
-                    property: "frona:port".into(),
-                    datatype: "xsd:integer".into(),
-                    min: Some(1),
-                    max: Some(1024),
-                    pattern: None,
-                }],
-                &px(),
-            )
-            .unwrap();
-            assert!(asserts(&ofn, "DataPropertyRange"), "committed: {ofn}");
-            let ofn = apply_edits(
-                &ofn,
-                &[amend(OverrideTarget::Facet { property: "frona:port".into() })],
-                &px(),
-            )
-            .unwrap();
-            assert!(!asserts(&ofn, "DataPropertyRange"), "retracted: {ofn}");
-            // The property itself survives - loosening a bound is not un-declaring the term,
-            // and entities are still keyed by it.
-            let cat = catalog(&ofn, &px()).unwrap();
-            assert!(cat.data_properties.contains(&"frona:port".to_string()), "{cat:?}");
-        }
-
-        /// What Assemble is shown, so it can name an axiom an earlier pass committed. Every
-        /// entry has to round-trip: naming it back as an `Amend` must retract that axiom, or
-        /// the list is advice the model cannot act on.
-        #[test]
-        fn every_retractable_axiom_round_trips_through_an_amend() {
-            let ofn = apply_edits(
-                "",
-                &[
-                    SchemaEdit::DisjointClasses { a: "frona:Tool".into(), b: "frona:Service".into() },
-                    SchemaEdit::RestrictDatatype {
-                        property: "frona:port".into(),
-                        datatype: "xsd:integer".into(),
-                        min: Some(1),
-                        max: None,
-                        pattern: None,
-                    },
-                    characteristic("frona:partOf", Characteristic::Transitive),
-                    characteristic("frona:knows", Characteristic::Symmetric),
-                    characteristic("frona:parentOf", Characteristic::Irreflexive),
-                    // Declarations and subsumptions are NOT retractable - withdrawing
-                    // vocabulary would strand the entities typed by it.
-                    SchemaEdit::SubClassOf { sub: "frona:Db".into(), sup: "schema:Thing".into() },
-                    SchemaEdit::DeclareClass { class: "frona:Loose".into() },
-                ],
-                &px(),
-            )
-            .unwrap();
-
-            let targets = retractable(&ofn, &px()).unwrap();
-            assert_eq!(targets.len(), 5, "constraints and derivations only: {targets:?}");
-            assert!(targets.contains(&OverrideTarget::Facet { property: "frona:port".into() }));
-            assert!(targets.contains(&OverrideTarget::Characteristic {
+        let ofn = apply_edits(
+            &ofn,
+            &[amend(OverrideTarget::Characteristic {
                 property: "frona:partOf".into(),
                 characteristic: Characteristic::Transitive,
-            }));
+            })],
+            &px(),
+        )
+        .unwrap();
+        assert!(
+            !asserts(&ofn, "TransitiveObjectProperty"),
+            "and retracted: {ofn}"
+        );
+        // The reasoner is what actually has to stop deriving, so check the lowering too.
+        let triples = delta_triples(&ofn).unwrap();
+        assert!(
+            !triples
+                .iter()
+                .any(|t| t.object.to_string().contains("TransitiveProperty")),
+            "the axiom is gone from the triples the reasoner reads: {triples:?}"
+        );
+    }
 
-            // Naming each one back retracts it, and retracting all of them empties the
-            // constraint layer while leaving the vocabulary standing.
-            let mut ofn = ofn;
-            for t in targets {
-                ofn = apply_edits(&ofn, &[amend(t.clone())], &px()).unwrap();
-                assert!(
-                    !retractable(&ofn, &px()).unwrap().contains(&t),
-                    "{t:?} survived being named: {ofn}"
-                );
-            }
-            assert!(retractable(&ofn, &px()).unwrap().is_empty(), "{ofn}");
-            let cat = catalog(&ofn, &px()).unwrap();
-            assert!(cat.classes.contains(&"frona:Loose".to_string()), "terms survive: {cat:?}");
-        }
+    /// A property may carry several characteristics. Loosening one must not take the rest
+    /// with it - that would silently retract claims nobody asked to withdraw.
+    #[test]
+    fn retracting_one_characteristic_leaves_the_others_asserted() {
+        let ofn = apply_edits(
+            "",
+            &[
+                characteristic("frona:parentOf", Characteristic::Asymmetric),
+                characteristic("frona:parentOf", Characteristic::Irreflexive),
+            ],
+            &px(),
+        )
+        .unwrap();
+        let ofn = apply_edits(
+            &ofn,
+            &[amend(OverrideTarget::Characteristic {
+                property: "frona:parentOf".into(),
+                characteristic: Characteristic::Asymmetric,
+            })],
+            &px(),
+        )
+        .unwrap();
+        assert!(
+            !asserts(&ofn, "AsymmetricObjectProperty"),
+            "the named one went: {ofn}"
+        );
+        assert!(
+            asserts(&ofn, "IrreflexiveObjectProperty"),
+            "the other stayed: {ofn}"
+        );
+    }
 
-        /// A delta that has only declared things has nothing to loosen - the list is empty
-        /// rather than absent, so the prompt can say "nothing to amend" honestly.
-        #[test]
-        fn delta_with_no_constraints_offers_nothing_to_retract() {
+    #[test]
+    fn retracting_a_characteristic_is_scoped_to_its_property() {
+        let ofn = apply_edits(
+            "",
+            &[
+                characteristic("frona:partOf", Characteristic::Transitive),
+                characteristic("frona:ancestorOf", Characteristic::Transitive),
+            ],
+            &px(),
+        )
+        .unwrap();
+        let ofn = apply_edits(
+            &ofn,
+            &[amend(OverrideTarget::Characteristic {
+                property: "frona:partOf".into(),
+                characteristic: Characteristic::Transitive,
+            })],
+            &px(),
+        )
+        .unwrap();
+        // The *axiom*, not the declaration: retracting a characteristic does not
+        // un-declare the property, and entities are still keyed by it.
+        let transitive_on = |p: &str| {
+            ofn.lines()
+                .any(|l| l.contains("TransitiveObjectProperty") && l.contains(p))
+        };
+        assert!(
+            !transitive_on("urn:frona:partOf"),
+            "partOf's axiom went: {ofn}"
+        );
+        assert!(
+            transitive_on("urn:frona:ancestorOf"),
+            "ancestorOf's stayed: {ofn}"
+        );
+        assert!(
+            asserts(&ofn, "Declaration(ObjectProperty(<urn:frona:partOf>))"),
+            "and partOf is still a declared property: {ofn}"
+        );
+    }
+
+    /// A disjointness committed while nothing held both classes is exactly the axiom that
+    /// starts blocking legitimate classifications later - and `classify` responds by
+    /// quarantining the entity's facts, so without retraction those facts stay hidden.
+    #[test]
+    fn disjointness_can_be_retracted_in_either_pair_order() {
+        for (a, b) in [
+            ("frona:Tool", "frona:Service"),
+            ("frona:Service", "frona:Tool"),
+        ] {
             let ofn = apply_edits(
                 "",
-                &[SchemaEdit::SubClassOf {
-                    sub: "frona:Database".into(),
-                    sup: "schema:SoftwareApplication".into(),
+                &[SchemaEdit::DisjointClasses {
+                    a: "frona:Tool".into(),
+                    b: "frona:Service".into(),
                 }],
                 &px(),
             )
             .unwrap();
-            assert!(retractable(&ofn, &px()).unwrap().is_empty());
-            assert!(retractable("", &px()).unwrap().is_empty(), "and an empty delta likewise");
-        }
-
-        /// Retraction is a no-op against an axiom the delta never held. It must not throw, and
-        /// it must not disturb anything else: Assemble can name a target from a stale view.
-        #[test]
-        fn amending_an_axiom_that_was_never_asserted_changes_nothing() {
-            let before = apply_edits(
-                "",
-                &[characteristic("frona:partOf", Characteristic::Transitive)],
-                &px(),
-            )
-            .unwrap();
-            let after = apply_edits(
-                &before,
-                &[
-                    amend(OverrideTarget::Characteristic {
-                        property: "frona:partOf".into(),
-                        characteristic: Characteristic::Symmetric, // never asserted
-                    }),
-                    amend(OverrideTarget::Facet { property: "frona:nothing".into() }),
-                    amend(OverrideTarget::Disjoint { a: "frona:A".into(), b: "frona:B".into() }),
-                ],
-                &px(),
-            )
-            .unwrap();
-            assert!(asserts(&after, "TransitiveObjectProperty"), "untouched: {after}");
-        }
-
-        #[test]
-        fn edits_accumulate_across_applies() {
-            let ofn = apply_edits(
-                "",
-                &[SchemaEdit::DeclareClass { class: "frona:Service".into() }],
-                &px(),
-            )
-            .unwrap();
+            assert!(asserts(&ofn, "DisjointClasses"), "committed: {ofn}");
             let ofn = apply_edits(
                 &ofn,
-                &[SchemaEdit::InverseProperties {
-                    a: "frona:worksFor".into(),
-                    b: "frona:employs".into(),
-                }],
+                &[amend(OverrideTarget::Disjoint {
+                    a: a.into(),
+                    b: b.into(),
+                })],
                 &px(),
             )
             .unwrap();
-            let cat = catalog(&ofn, &px()).unwrap();
-            assert!(cat.classes.contains(&"frona:Service".to_string()));
-            assert!(cat.object_properties.contains(&"frona:worksFor".to_string()));
-            assert!(cat.object_properties.contains(&"frona:employs".to_string()));
+            assert!(
+                !asserts(&ofn, "DisjointClasses"),
+                "named as ({a}, {b}) — order is not part of the axiom: {ofn}"
+            );
+        }
+    }
+
+    /// A datatype with **no** bounds - which is what a plain `declare` with a datatype is,
+    /// and so the overwhelmingly common case - must still produce OFN that parses back.
+    ///
+    /// It did not. `DatatypeRestriction` requires at least one facet/value pair, so a
+    /// facet-less one serialized to `DatatypeRestriction(<xsd:anyURI> )` and every
+    /// subsequent read of that delta failed with `expected IRI`. Since `load`, `apply_edits`
+    /// and `catalog` all go through that parse, one such edit disabled the entire schema
+    /// layer for a user: nothing could be declared afterwards, so every term stayed
+    /// undeclared and every entity untyped - with no error anywhere near the cause.
+    ///
+    /// The round trip is the assertion. Serializing is not the hard part; reading it back is.
+    #[test]
+    fn datatype_range_with_no_facets_still_parses_back() {
+        let declare = |property: &str, datatype: &str| SchemaEdit::RestrictDatatype {
+            property: property.into(),
+            datatype: datatype.into(),
+            min: None,
+            max: None,
+            pattern: None,
+        };
+        let ofn = apply_edits(
+            "",
+            &[declare("frona:firmwareDownloadUrl", "xsd:anyURI")],
+            &px(),
+        )
+        .unwrap();
+        assert!(asserts(&ofn, "DataPropertyRange"), "committed: {ofn}");
+        assert!(
+            !ofn.contains("DatatypeRestriction"),
+            "an unbounded range is the bare datatype, not an empty restriction: {ofn}"
+        );
+
+        // The delta is only useful if it can be read again - a second edit has to parse the
+        // first, which is exactly what was failing.
+        let ofn = apply_edits(&ofn, &[declare("frona:releaseDate", "xsd:date")], &px())
+            .expect("a committed delta must parse on the next edit");
+        for t in ["frona:firmwareDownloadUrl", "frona:releaseDate"] {
+            assert!(
+                catalog(&ofn, &px())
+                    .unwrap()
+                    .data_properties
+                    .contains(&t.to_string()),
+                "{ofn}"
+            );
         }
 
+        let bounded = apply_edits(
+            "",
+            &[SchemaEdit::RestrictDatatype {
+                property: "frona:port".into(),
+                datatype: "xsd:integer".into(),
+                min: Some(1),
+                max: Some(65535),
+                pattern: None,
+            }],
+            &px(),
+        )
+        .unwrap();
+        assert!(
+            bounded.contains("DatatypeRestriction"),
+            "bounds still restrict: {bounded}"
+        );
+    }
+
+    #[test]
+    fn datatype_facet_can_be_retracted() {
+        let ofn = apply_edits(
+            "",
+            &[SchemaEdit::RestrictDatatype {
+                property: "frona:port".into(),
+                datatype: "xsd:integer".into(),
+                min: Some(1),
+                max: Some(1024),
+                pattern: None,
+            }],
+            &px(),
+        )
+        .unwrap();
+        assert!(asserts(&ofn, "DataPropertyRange"), "committed: {ofn}");
+        let ofn = apply_edits(
+            &ofn,
+            &[amend(OverrideTarget::Facet {
+                property: "frona:port".into(),
+            })],
+            &px(),
+        )
+        .unwrap();
+        assert!(!asserts(&ofn, "DataPropertyRange"), "retracted: {ofn}");
+        // The property itself survives - loosening a bound is not un-declaring the term,
+        // and entities are still keyed by it.
+        let cat = catalog(&ofn, &px()).unwrap();
+        assert!(
+            cat.data_properties.contains(&"frona:port".to_string()),
+            "{cat:?}"
+        );
+    }
+
+    /// What Assemble is shown, so it can name an axiom an earlier pass committed. Every
+    /// entry has to round-trip: naming it back as an `Amend` must retract that axiom, or
+    /// the list is advice the model cannot act on.
+    #[test]
+    fn every_retractable_axiom_round_trips_through_an_amend() {
+        let ofn = apply_edits(
+            "",
+            &[
+                SchemaEdit::DisjointClasses {
+                    a: "frona:Tool".into(),
+                    b: "frona:Service".into(),
+                },
+                SchemaEdit::RestrictDatatype {
+                    property: "frona:port".into(),
+                    datatype: "xsd:integer".into(),
+                    min: Some(1),
+                    max: None,
+                    pattern: None,
+                },
+                characteristic("frona:partOf", Characteristic::Transitive),
+                characteristic("frona:knows", Characteristic::Symmetric),
+                characteristic("frona:parentOf", Characteristic::Irreflexive),
+                // Declarations and subsumptions are NOT retractable - withdrawing
+                // vocabulary would strand the entities typed by it.
+                SchemaEdit::SubClassOf {
+                    sub: "frona:Db".into(),
+                    sup: "schema:Thing".into(),
+                },
+                SchemaEdit::DeclareClass {
+                    class: "frona:Loose".into(),
+                },
+            ],
+            &px(),
+        )
+        .unwrap();
+
+        let targets = retractable(&ofn, &px()).unwrap();
+        assert_eq!(
+            targets.len(),
+            5,
+            "constraints and derivations only: {targets:?}"
+        );
+        assert!(targets.contains(&OverrideTarget::Facet {
+            property: "frona:port".into()
+        }));
+        assert!(targets.contains(&OverrideTarget::Characteristic {
+            property: "frona:partOf".into(),
+            characteristic: Characteristic::Transitive,
+        }));
+
+        // Naming each one back retracts it, and retracting all of them empties the
+        // constraint layer while leaving the vocabulary standing.
+        let mut ofn = ofn;
+        for t in targets {
+            ofn = apply_edits(&ofn, &[amend(t.clone())], &px()).unwrap();
+            assert!(
+                !retractable(&ofn, &px()).unwrap().contains(&t),
+                "{t:?} survived being named: {ofn}"
+            );
+        }
+        assert!(retractable(&ofn, &px()).unwrap().is_empty(), "{ofn}");
+        let cat = catalog(&ofn, &px()).unwrap();
+        assert!(
+            cat.classes.contains(&"frona:Loose".to_string()),
+            "terms survive: {cat:?}"
+        );
+    }
+
+    /// A delta that has only declared things has nothing to loosen - the list is empty
+    /// rather than absent, so the prompt can say "nothing to amend" honestly.
+    #[test]
+    fn delta_with_no_constraints_offers_nothing_to_retract() {
+        let ofn = apply_edits(
+            "",
+            &[SchemaEdit::SubClassOf {
+                sub: "frona:Database".into(),
+                sup: "schema:SoftwareApplication".into(),
+            }],
+            &px(),
+        )
+        .unwrap();
+        assert!(retractable(&ofn, &px()).unwrap().is_empty());
+        assert!(
+            retractable("", &px()).unwrap().is_empty(),
+            "and an empty delta likewise"
+        );
+    }
+
+    /// Retraction is a no-op against an axiom the delta never held. It must not throw, and
+    /// it must not disturb anything else: Assemble can name a target from a stale view.
+    #[test]
+    fn amending_an_axiom_that_was_never_asserted_changes_nothing() {
+        let before = apply_edits(
+            "",
+            &[characteristic("frona:partOf", Characteristic::Transitive)],
+            &px(),
+        )
+        .unwrap();
+        let after = apply_edits(
+            &before,
+            &[
+                amend(OverrideTarget::Characteristic {
+                    property: "frona:partOf".into(),
+                    characteristic: Characteristic::Symmetric, // never asserted
+                }),
+                amend(OverrideTarget::Facet {
+                    property: "frona:nothing".into(),
+                }),
+                amend(OverrideTarget::Disjoint {
+                    a: "frona:A".into(),
+                    b: "frona:B".into(),
+                }),
+            ],
+            &px(),
+        )
+        .unwrap();
+        assert!(
+            asserts(&after, "TransitiveObjectProperty"),
+            "untouched: {after}"
+        );
+    }
+
+    #[test]
+    fn edits_accumulate_across_applies() {
+        let ofn = apply_edits(
+            "",
+            &[SchemaEdit::DeclareClass {
+                class: "frona:Service".into(),
+            }],
+            &px(),
+        )
+        .unwrap();
+        let ofn = apply_edits(
+            &ofn,
+            &[SchemaEdit::InverseProperties {
+                a: "frona:worksFor".into(),
+                b: "frona:employs".into(),
+            }],
+            &px(),
+        )
+        .unwrap();
+        let cat = catalog(&ofn, &px()).unwrap();
+        assert!(cat.classes.contains(&"frona:Service".to_string()));
+        assert!(
+            cat.object_properties
+                .contains(&"frona:worksFor".to_string())
+        );
+        assert!(cat.object_properties.contains(&"frona:employs".to_string()));
+    }
 }

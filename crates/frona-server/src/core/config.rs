@@ -34,15 +34,23 @@ pub struct ServerConfig {
     pub backend_url: Option<String>,
     #[schemars(description = "Override URL for the frontend (if different from base_url).")]
     pub frontend_url: Option<String>,
-    #[schemars(description = "Externally-reachable URL of this server (e.g. ngrok tunnel, public domain). Used as the default callback target for inbound webhooks and external service callbacks when no per-feature override is set.")]
+    #[schemars(
+        description = "Externally-reachable URL of this server (e.g. ngrok tunnel, public domain). Used as the default callback target for inbound webhooks and external service callbacks when no per-feature override is set."
+    )]
     pub external_url: Option<String>,
     #[schemars(description = "Maximum request body size in bytes.")]
     pub max_body_size_bytes: usize,
-    #[schemars(description = "Graceful shutdown timeout in seconds. Server force-exits after this duration.")]
+    #[schemars(
+        description = "Graceful shutdown timeout in seconds. Server force-exits after this duration."
+    )]
     pub shutdown_timeout_secs: u64,
-    #[schemars(description = "Seconds to buffer SSE events after a client disconnects, allowing reconnects to receive missed events. 0 disables.")]
+    #[schemars(
+        description = "Seconds to buffer SSE events after a client disconnects, allowing reconnects to receive missed events. 0 disables."
+    )]
     pub sse_pending_events_secs: u64,
-    #[schemars(description = "Server-default IANA timezone (e.g. \"America/Los_Angeles\"). Used when a user has no timezone set and no per-task override is provided. Leave empty to auto-detect from TZ env var, /etc/localtime, or fall back to UTC.")]
+    #[schemars(
+        description = "Server-default IANA timezone (e.g. \"America/Los_Angeles\"). Used when a user has no timezone set and no per-task override is provided. Leave empty to auto-detect from TZ env var, /etc/localtime, or fall back to UTC."
+    )]
     pub timezone: String,
 }
 
@@ -104,11 +112,17 @@ impl Default for ServerConfig {
 #[surreal(crate = "surrealdb::types")]
 #[serde(default)]
 pub struct SandboxLimits {
-    #[schemars(description = "Per-principal CPU usage limit as percentage of total system CPU. Kill sandboxed process if exceeded.")]
+    #[schemars(
+        description = "Per-principal CPU usage limit as percentage of total system CPU. Kill sandboxed process if exceeded."
+    )]
     pub max_cpu_pct: f64,
-    #[schemars(description = "Per-principal memory usage limit as percentage of total system memory. Kill sandboxed process if exceeded.")]
+    #[schemars(
+        description = "Per-principal memory usage limit as percentage of total system memory. Kill sandboxed process if exceeded."
+    )]
     pub max_memory_pct: f64,
-    #[schemars(description = "Default timeout in seconds for sandboxed execution. 0 means no timeout.")]
+    #[schemars(
+        description = "Default timeout in seconds for sandboxed execution. 0 means no timeout."
+    )]
     pub timeout_secs: u64,
 }
 
@@ -125,15 +139,23 @@ impl Default for SandboxLimits {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct SandboxConfig {
-    #[schemars(description = "Disable filesystem sandboxing for CLI tools. Enable only if your OS does not support Landlock.")]
+    #[schemars(
+        description = "Disable filesystem sandboxing for CLI tools. Enable only if your OS does not support Landlock."
+    )]
     pub disabled: bool,
     #[serde(flatten)]
     pub default_limits: SandboxLimits,
-    #[schemars(description = "Global CPU usage limit across all sandboxed processes as percentage of total system CPU.")]
+    #[schemars(
+        description = "Global CPU usage limit across all sandboxed processes as percentage of total system CPU."
+    )]
     pub max_total_cpu_pct: f64,
-    #[schemars(description = "Global memory usage limit across all sandboxed processes as percentage of total system memory.")]
+    #[schemars(
+        description = "Global memory usage limit across all sandboxed processes as percentage of total system memory."
+    )]
     pub max_total_memory_pct: f64,
-    #[schemars(description = "Grant all sandbox principals outbound network access by default. Override with forbid policies.")]
+    #[schemars(
+        description = "Grant all sandbox principals outbound network access by default. Override with forbid policies."
+    )]
     pub default_network_access: bool,
 }
 
@@ -160,9 +182,13 @@ pub struct AuthConfig {
     pub refresh_token_expiry_secs: u64,
     #[schemars(description = "Presigned URL expiry in seconds.")]
     pub presign_expiry_secs: u64,
-    #[schemars(description = "Ephemeral principal token lifetime in seconds (stateless; injected into sandboxed processes).")]
+    #[schemars(
+        description = "Ephemeral principal token lifetime in seconds (stateless; injected into sandboxed processes)."
+    )]
     pub ephemeral_token_expiry_secs: u64,
-    #[schemars(description = "Allow anyone to sign up from the registration page. When off, only admins can add users.")]
+    #[schemars(
+        description = "Allow anyone to sign up from the registration page. When off, only admins can add users."
+    )]
     pub allow_registration: bool,
 }
 
@@ -259,7 +285,6 @@ impl Default for BrowserConfig {
 }
 
 impl BrowserConfig {
-
     pub fn http_base_url(&self) -> String {
         self.ws_url
             .replace("ws://", "http://")
@@ -296,17 +321,23 @@ pub struct SearchConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct StorageConfig {
-    #[schemars(description = "Root data directory. Per-user state lives at `{data_dir}/users/{user_handle}/...`.")]
+    #[schemars(
+        description = "Root data directory. Per-user state lives at `{data_dir}/users/{user_handle}/...`."
+    )]
     pub data_dir: String,
-    #[schemars(description = "Path to shared configuration resources (read-only, ships with the binary).")]
+    #[schemars(
+        description = "Path to shared configuration resources (read-only, ships with the binary)."
+    )]
     pub shared_config_dir: String,
     #[schemars(description = "Path for installed skills directory.")]
     pub skills_dir: String,
     #[schemars(description = "Path for system cache directory.")]
     pub cache_dir: String,
-    #[schemars(description = "Path for your own ontologies. Loaded alongside the bundled \
+    #[schemars(
+        description = "Path for your own ontologies. Loaded alongside the bundled \
         ones and trusted the same, so a file here can retype or untype pages. Need not \
-        exist.")]
+        exist."
+    )]
     pub ontology_dir: String,
 }
 
@@ -356,7 +387,9 @@ impl Default for SchedulerConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, surrealdb::types::SurrealValue)]
+#[derive(
+    Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, surrealdb::types::SurrealValue,
+)]
 #[surreal(crate = "surrealdb::types")]
 #[serde(default)]
 pub struct RetryConfig {
@@ -412,7 +445,9 @@ impl Default for ShareConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct ChannelConfig {
-    #[schemars(description = "Default retry policy for failed channel connections. Per-channel overrides take precedence.")]
+    #[schemars(
+        description = "Default retry policy for failed channel connections. Per-channel overrides take precedence."
+    )]
     pub retry: RetryConfig,
 }
 
@@ -599,9 +634,7 @@ pub enum ProviderModel {
     Generic,
     #[serde(skip)]
     #[schemars(skip)]
-    Custom {
-        name: String,
-    },
+    Custom { name: String },
 }
 
 impl From<&str> for ProviderModel {
@@ -619,18 +652,41 @@ impl From<String> for ProviderModel {
 impl ProviderModel {
     pub fn from_name(name: &str) -> Self {
         match name {
-            "anthropic" => Self::Anthropic { params: Default::default() },
-            "ollama" => Self::Ollama { params: Default::default() },
-            "openai" => Self::OpenAI { api: None, params: Default::default() },
-            "groq" => Self::Groq { params: Default::default() },
-            "openrouter" => Self::OpenRouter { params: Default::default() },
-            "deepseek" => Self::DeepSeek { params: Default::default() },
-            "xai" => Self::XAI { params: Default::default() },
-            "together" => Self::Together { params: Default::default() },
-            "hyperbolic" => Self::Hyperbolic { params: Default::default() },
-            "gemini" => Self::Gemini { params: Default::default() },
+            "anthropic" => Self::Anthropic {
+                params: Default::default(),
+            },
+            "ollama" => Self::Ollama {
+                params: Default::default(),
+            },
+            "openai" => Self::OpenAI {
+                api: None,
+                params: Default::default(),
+            },
+            "groq" => Self::Groq {
+                params: Default::default(),
+            },
+            "openrouter" => Self::OpenRouter {
+                params: Default::default(),
+            },
+            "deepseek" => Self::DeepSeek {
+                params: Default::default(),
+            },
+            "xai" => Self::XAI {
+                params: Default::default(),
+            },
+            "together" => Self::Together {
+                params: Default::default(),
+            },
+            "hyperbolic" => Self::Hyperbolic {
+                params: Default::default(),
+            },
+            "gemini" => Self::Gemini {
+                params: Default::default(),
+            },
             "generic" => Self::Generic,
-            name => Self::Custom { name: name.to_string() },
+            name => Self::Custom {
+                name: name.to_string(),
+            },
         }
     }
 
@@ -749,7 +805,9 @@ pub struct VaultConfig {
     pub bitwarden_client_secret: Option<String>,
     #[schemars(description = "Bitwarden master password (for vault unlock).")]
     pub bitwarden_master_password: Option<String>,
-    #[schemars(description = "Bitwarden server URL (for self-hosted instances, leave empty for cloud).")]
+    #[schemars(
+        description = "Bitwarden server URL (for self-hosted instances, leave empty for cloud)."
+    )]
     pub bitwarden_server_url: Option<String>,
     #[schemars(description = "HashiCorp Vault server address.")]
     pub hashicorp_address: Option<String>,
@@ -762,7 +820,6 @@ pub struct VaultConfig {
     #[schemars(description = "KeePass database password.")]
     pub keepass_password: Option<String>,
 }
-
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
@@ -814,16 +871,22 @@ impl Default for CacheConfig {
 pub struct McpConfig {
     #[schemars(description = "Whether MCP server support is enabled.")]
     pub enabled: bool,
-    #[schemars(description = "Path for shared package caches (npm, uv). Defaults to `{data_dir}/system/mcp-cache`.")]
+    #[schemars(
+        description = "Path for shared package caches (npm, uv). Defaults to `{data_dir}/system/mcp-cache`."
+    )]
     #[serde(default)]
     pub cache_path: Option<String>,
     #[schemars(description = "Maximum number of MCP servers a user may have installed.")]
     pub max_servers_per_user: u32,
-    #[schemars(description = "Seconds to wait for an MCP server's initialize handshake before failing.")]
+    #[schemars(
+        description = "Seconds to wait for an MCP server's initialize handshake before failing."
+    )]
     pub startup_timeout_secs: u64,
     #[schemars(description = "Interval in seconds between MCP server liveness checks.")]
     pub health_check_interval_secs: u64,
-    #[schemars(description = "Maximum process restart attempts before marking an MCP server as failed.")]
+    #[schemars(
+        description = "Maximum process restart attempts before marking an MCP server as failed."
+    )]
     pub max_restart_attempts: u32,
     #[schemars(description = "Default transport for new MCP servers: 'stdio' or 'http'.")]
     pub default_transport: String,
@@ -831,7 +894,9 @@ pub struct McpConfig {
     pub port_range_start: u16,
     #[schemars(description = "End of the port range for local HTTP MCP servers (exclusive).")]
     pub port_range_end: u16,
-    #[schemars(description = "When true, expose MCP tools via the mcpctl CLI bridge instead of individual tool definitions. Reduces LLM context token usage.")]
+    #[schemars(
+        description = "When true, expose MCP tools via the mcpctl CLI bridge instead of individual tool definitions. Reduces LLM context token usage."
+    )]
     pub bridge_mode: bool,
 }
 
@@ -888,9 +953,13 @@ pub struct Config {
 pub struct SignalConfig {
     #[schemars(description = "Maximum number of pending signal watches per user.")]
     pub max_pending_per_user: usize,
-    #[schemars(description = "Default safety cap on the number of candidates a one-shot watch can be evaluated against before auto-failing. Sweep cadence is driven by scheduler.poll_secs.")]
+    #[schemars(
+        description = "Default safety cap on the number of candidates a one-shot watch can be evaluated against before auto-failing. Sweep cadence is driven by scheduler.poll_secs."
+    )]
     pub default_max_evaluations: u32,
-    #[schemars(description = "Default safety cap on the number of fires a continuous-mode watch can absorb before auto-completing. Higher than the one-shot default because continuous watches stream over time.")]
+    #[schemars(
+        description = "Default safety cap on the number of fires a continuous-mode watch can absorb before auto-completing. Higher than the one-shot default because continuous watches stream over time."
+    )]
     pub default_max_continuous_evaluations: u32,
 }
 
@@ -920,15 +989,21 @@ pub enum MemoryBackend {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryConfig {
-    #[schemars(description = "Which memory backend to run: `basic` or `pkm`. Unset (null) \
+    #[schemars(
+        description = "Which memory backend to run: `basic` or `pkm`. Unset (null) \
         resolves to `basic` at boot; the setup wizard writes `pkm` for fresh installs and \
-        existing installs opt in explicitly, so upgrades stay on `basic` unless changed.")]
+        existing installs opt in explicitly, so upgrades stay on `basic` unless changed."
+    )]
     pub backend: Option<MemoryBackend>,
-    #[schemars(description = "Model group for memory background work (basic compaction / pkm consolidation). Falls back to `primary` if undefined.")]
+    #[schemars(
+        description = "Model group for memory background work (basic compaction / pkm consolidation). Falls back to `primary` if undefined."
+    )]
     pub model_group: String,
     #[schemars(description = "basic: skip user/agent memory compaction below this many tokens.")]
     pub basic_compaction_token_threshold: usize,
-    #[schemars(description = "basic: interval in seconds between user/agent memory compaction runs.")]
+    #[schemars(
+        description = "basic: interval in seconds between user/agent memory compaction runs."
+    )]
     pub basic_compaction_secs: u64,
     #[schemars(description = "basic: interval in seconds between space memory compaction runs.")]
     pub basic_space_compaction_secs: u64,
@@ -942,11 +1017,17 @@ pub struct MemoryConfig {
     pub pkm_short_memory_top_n: usize,
     #[schemars(description = "pkm: token budget for the `<short_memory>` block.")]
     pub pkm_short_memory_token_cap: usize,
-    #[schemars(description = "pkm: token budget for the `<available_playbooks>` index; playbooks past the cap (lowest use_count first) are dropped.")]
+    #[schemars(
+        description = "pkm: token budget for the `<available_playbooks>` index; playbooks past the cap (lowest use_count first) are dropped."
+    )]
     pub pkm_playbook_index_token_cap: usize,
-    #[schemars(description = "pkm: how often (seconds) the consolidation sweep scans for idle chats.")]
+    #[schemars(
+        description = "pkm: how often (seconds) the consolidation sweep scans for idle chats."
+    )]
     pub pkm_consolidate_secs: u64,
-    #[schemars(description = "pkm: how long (seconds) a chat must be quiet before it's consolidated.")]
+    #[schemars(
+        description = "pkm: how long (seconds) a chat must be quiet before it's consolidated."
+    )]
     pub pkm_consolidate_idle_secs: u64,
     #[schemars(
         description = "pkm: how many consolidation model calls run at once — chats being \
@@ -954,21 +1035,35 @@ pub struct MemoryConfig {
         history does not open one request per chat/page simultaneously."
     )]
     pub pkm_consolidation_concurrency: usize,
-    #[schemars(description = "pkm classify and resolve: maximum exploration-tool turns per structured conversation.")]
+    #[schemars(
+        description = "pkm classify and resolve: maximum exploration-tool turns per structured conversation."
+    )]
     pub pkm_consolidation_max_tool_turns: usize,
-    #[schemars(description = "pkm classify, resolve, and reconcile: maximum structured submission attempts per conversation.")]
+    #[schemars(
+        description = "pkm classify, resolve, and reconcile: maximum structured submission attempts per conversation."
+    )]
     pub pkm_consolidation_max_submissions: usize,
-    #[schemars(description = "pkm playbook resolve and author: maximum exploration-tool turns per structured conversation.")]
+    #[schemars(
+        description = "pkm playbook resolve and author: maximum exploration-tool turns per structured conversation."
+    )]
     pub pkm_playbook_max_tool_turns: usize,
-    #[schemars(description = "pkm playbook resolve and author: maximum structured submission attempts per conversation.")]
+    #[schemars(
+        description = "pkm playbook resolve and author: maximum structured submission attempts per conversation."
+    )]
     pub pkm_playbook_max_submissions: usize,
-    #[schemars(description = "pkm: maximum estimated transcript tokens sent to extract in one request.")]
+    #[schemars(
+        description = "pkm: maximum estimated transcript tokens sent to extract in one request."
+    )]
     pub pkm_extract_max_tokens: usize,
     #[schemars(description = "pkm: maximum messages consumed by one extract request.")]
     pub pkm_extract_max_messages: usize,
-    #[schemars(description = "pkm extract: number of same-chat Agent messages searched backward for successful tool evidence supporting an Agent-sourced memory.")]
+    #[schemars(
+        description = "pkm extract: number of same-chat Agent messages searched backward for successful tool evidence supporting an Agent-sourced memory."
+    )]
     pub pkm_extract_agent_evidence_lookback_messages: usize,
-    #[schemars(description = "pkm extract: token cap returned by each scoped tool-evidence search or read.")]
+    #[schemars(
+        description = "pkm extract: token cap returned by each scoped tool-evidence search or read."
+    )]
     pub pkm_extract_agent_evidence_result_token_cap: usize,
     #[schemars(
         description = "pkm: how many times a consolidation stage may fail before its pass \
@@ -981,7 +1076,9 @@ pub struct MemoryConfig {
         adjudication batch, including the initial submission and guardrail revisions."
     )]
     pub pkm_adjudication_max_attempts_per_batch: usize,
-    #[schemars(description = "pkm: fatal post-extraction checkpoint resets allowed before the pass is marked Failed. With 2, the first fatal failure restarts at Classify and the second fails terminally.")]
+    #[schemars(
+        description = "pkm: fatal post-extraction checkpoint resets allowed before the pass is marked Failed. With 2, the first fatal failure restarts at Classify and the second fails terminally."
+    )]
     pub pkm_consolidation_checkpoint_failure_cap: u32,
     #[schemars(
         description = "pkm: base backoff (seconds) between retries of a failed \
@@ -1037,25 +1134,28 @@ pub struct LoadedConfig {
 
 impl Config {
     pub fn load() -> LoadedConfig {
-        let data_dir = std::env::var("FRONA_SERVER_DATA_DIR")
-            .unwrap_or_else(|_| "data".into());
+        let data_dir = std::env::var("FRONA_SERVER_DATA_DIR").unwrap_or_else(|_| "data".into());
 
         let config_path = config_file_path();
 
         let yaml_content = std::fs::read_to_string(&config_path).ok();
 
         let mut builder = config::Config::builder()
-            .set_default("database.path", format!("{data_dir}/db")).unwrap()
-            .set_default("storage.data_dir", data_dir.clone()).unwrap()
-            .set_default("storage.skills_dir", format!("{data_dir}/skills")).unwrap()
-            .set_default("storage.cache_dir", format!("{data_dir}/system/cache")).unwrap()
-            .set_default("storage.ontology_dir", format!("{data_dir}/ontology")).unwrap();
+            .set_default("database.path", format!("{data_dir}/db"))
+            .unwrap()
+            .set_default("storage.data_dir", data_dir.clone())
+            .unwrap()
+            .set_default("storage.skills_dir", format!("{data_dir}/skills"))
+            .unwrap()
+            .set_default("storage.cache_dir", format!("{data_dir}/system/cache"))
+            .unwrap()
+            .set_default("storage.ontology_dir", format!("{data_dir}/ontology"))
+            .unwrap();
 
         if let Some(ref content) = yaml_content {
             let expanded = expand_env_vars(content);
-            builder = builder.add_source(
-                config::File::from_str(&expanded, config::FileFormat::Yaml),
-            );
+            builder =
+                builder.add_source(config::File::from_str(&expanded, config::FileFormat::Yaml));
         }
 
         // FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
@@ -1104,7 +1204,10 @@ impl Config {
 
         if let Ok(mut v) = serde_json::to_value(&config) {
             redact_config_for_log(&mut v);
-            tracing::debug!("Effective config:\n{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+            tracing::debug!(
+                "Effective config:\n{}",
+                serde_json::to_string_pretty(&v).unwrap_or_default()
+            );
         }
 
         LoadedConfig { config, models }
@@ -1159,10 +1262,8 @@ pub fn resolve_server_timezone(server: &mut ServerConfig) {
 }
 
 pub fn config_file_path() -> String {
-    let data_dir = std::env::var("FRONA_SERVER_DATA_DIR")
-        .unwrap_or_else(|_| "data".into());
-    std::env::var("FRONA_CONFIG")
-        .unwrap_or_else(|_| format!("{data_dir}/config.yaml"))
+    let data_dir = std::env::var("FRONA_SERVER_DATA_DIR").unwrap_or_else(|_| "data".into());
+    std::env::var("FRONA_CONFIG").unwrap_or_else(|_| format!("{data_dir}/config.yaml"))
 }
 
 /// Redact sensitive fields in a config JSON value for logging (replaces with "[redacted]").
@@ -1199,8 +1300,7 @@ pub fn redact_config_for_api(value: &mut serde_json::Value) {
         }
     }
 
-    if has_default_secret
-        && let Some(auth) = value.get_mut("auth").and_then(|a| a.as_object_mut())
+    if has_default_secret && let Some(auth) = value.get_mut("auth").and_then(|a| a.as_object_mut())
     {
         auth.insert(
             "encryption_secret".into(),
@@ -1234,7 +1334,9 @@ fn redact(value: &mut serde_json::Value, path: &[&str]) {
     match path {
         [] => {}
         [key] => {
-            if let Some(v) = value.get_mut(*key) && !v.is_null() {
+            if let Some(v) = value.get_mut(*key)
+                && !v.is_null()
+            {
                 *v = serde_json::Value::String("[redacted]".into());
             }
         }
@@ -1320,19 +1422,18 @@ pub fn persist_config(value: &mut serde_json::Value, path: &str) -> Result<(), S
         return Ok(());
     }
 
-    let json_str = serde_json::to_string(value)
-        .map_err(|e| format!("Failed to serialize config: {e}"))?;
+    let json_str =
+        serde_json::to_string(value).map_err(|e| format!("Failed to serialize config: {e}"))?;
     let yaml_val: serde_yaml::Value = serde_yaml::from_str(&json_str)
         .map_err(|e| format!("Failed to convert config to YAML: {e}"))?;
-    let yaml_str = serde_yaml::to_string(&yaml_val)
-        .map_err(|e| format!("Failed to serialize config: {e}"))?;
+    let yaml_str =
+        serde_yaml::to_string(&yaml_val).map_err(|e| format!("Failed to serialize config: {e}"))?;
 
     if let Some(parent) = std::path::Path::new(path).parent() {
         std::fs::create_dir_all(parent).ok();
     }
 
-    std::fs::write(path, &yaml_str)
-        .map_err(|e| format!("Failed to write config file: {e}"))
+    std::fs::write(path, &yaml_str).map_err(|e| format!("Failed to write config file: {e}"))
 }
 
 /// Deep-merge `patch` into `base`.
@@ -1347,7 +1448,9 @@ pub fn deep_merge(base: &mut serde_json::Value, patch: serde_json::Value) {
                 if value.is_null() {
                     base_map.remove(&key);
                 } else if value.is_object()
-                    && value.as_object().is_some_and(|o| o.contains_key("is_set") && o.len() == 1)
+                    && value
+                        .as_object()
+                        .is_some_and(|o| o.contains_key("is_set") && o.len() == 1)
                 {
                 } else if let Some(existing) = base_map.get_mut(&key) {
                     if existing.is_object() && value.is_object() {
@@ -1413,7 +1516,10 @@ mod tests {
     fn defaults_are_sensible() {
         let config = Config::default();
         assert_eq!(config.server.port, 3001);
-        assert_eq!(config.auth.encryption_secret, "dev-secret-change-in-production");
+        assert_eq!(
+            config.auth.encryption_secret,
+            "dev-secret-change-in-production"
+        );
         assert_eq!(config.database.path, "data/db");
         assert_eq!(config.storage.data_dir, "data");
         assert_eq!(config.storage.skills_dir, "data/skills");
@@ -1444,7 +1550,8 @@ mod tests {
                 serde_json::to_value(OpenAICompatParams {
                     top_p: Some(0.8),
                     ..Default::default()
-                }).unwrap(),
+                })
+                .unwrap(),
                 serde_json::json!({ "top_p": 0.8 }),
             ),
             (
@@ -1452,7 +1559,8 @@ mod tests {
                 serde_json::to_value(GeminiThinkingConfig {
                     thinking_budget: 1024,
                     include_thoughts: None,
-                }).unwrap(),
+                })
+                .unwrap(),
                 serde_json::json!({ "thinking_budget": 1024 }),
             ),
             (
@@ -1460,7 +1568,8 @@ mod tests {
                 serde_json::to_value(AnthropicParams {
                     top_k: Some(40),
                     ..Default::default()
-                }).unwrap(),
+                })
+                .unwrap(),
                 serde_json::json!({ "top_k": 40 }),
             ),
             (
@@ -1468,7 +1577,8 @@ mod tests {
                 serde_json::to_value(OllamaParams {
                     num_ctx: Some(8192),
                     ..Default::default()
-                }).unwrap(),
+                })
+                .unwrap(),
                 serde_json::json!({ "num_ctx": 8192 }),
             ),
             (
@@ -1476,7 +1586,8 @@ mod tests {
                 serde_json::to_value(GeminiParams {
                     candidate_count: Some(1),
                     ..Default::default()
-                }).unwrap(),
+                })
+                .unwrap(),
                 serde_json::json!({ "candidate_count": 1 }),
             ),
             (
@@ -1484,7 +1595,8 @@ mod tests {
                 serde_json::to_value(ProviderModel::OpenAI {
                     api: None,
                     params: OpenAICompatParams::default(),
-                }).unwrap(),
+                })
+                .unwrap(),
                 serde_json::json!({ "provider": "openai" }),
             ),
         ];
@@ -1500,7 +1612,10 @@ mod tests {
         // becomes browser__ws_url, which separator("__") resolves to browser.ws_url.
         unsafe { std::env::set_var("FRONA_BROWSER_WS_URL", "ws://custom:9999") };
         let loaded = Config::load();
-        assert_eq!(loaded.config.browser.as_ref().unwrap().ws_url, "ws://custom:9999");
+        assert_eq!(
+            loaded.config.browser.as_ref().unwrap().ws_url,
+            "ws://custom:9999"
+        );
         unsafe { std::env::remove_var("FRONA_BROWSER_WS_URL") };
     }
 
@@ -1577,7 +1692,10 @@ mod tests {
 
     #[test]
     fn browser_config_http_base_url() {
-        let config = BrowserConfig { ws_url: "ws://localhost:3333".into(), ..Default::default() };
+        let config = BrowserConfig {
+            ws_url: "ws://localhost:3333".into(),
+            ..Default::default()
+        };
         assert_eq!(config.http_base_url(), "http://localhost:3333");
     }
 
@@ -1611,9 +1729,12 @@ mod tests {
             "auth": { "encryption_secret": "dev-secret-change-in-production" },
         });
         strip_defaults(&mut value);
-        assert_eq!(value, serde_json::json!({
-            "server": { "port": 8080 },
-        }));
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "server": { "port": 8080 },
+            })
+        );
     }
 
     #[test]
@@ -1622,9 +1743,12 @@ mod tests {
             "server": { "cors_origins": "https://example.com" },
         });
         strip_defaults(&mut value);
-        assert_eq!(value, serde_json::json!({
-            "server": { "cors_origins": "https://example.com" },
-        }));
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "server": { "cors_origins": "https://example.com" },
+            })
+        );
     }
 
     #[test]
@@ -1645,11 +1769,14 @@ mod tests {
             },
         });
         strip_defaults(&mut value);
-        assert_eq!(value, serde_json::json!({
-            "providers": {
-                "openai": { "api_key": "sk-123" },
-            },
-        }));
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "providers": {
+                    "openai": { "api_key": "sk-123" },
+                },
+            })
+        );
     }
 
     #[test]
@@ -1683,15 +1810,18 @@ mod tests {
             },
         });
         strip_defaults(&mut value);
-        assert_eq!(value, serde_json::json!({
-            "models": {
-                "coding": {
-                    "main": "anthropic/claude-opus-4-6",
-                    "max_tokens": 32000,
-                    "context_window": 200000,
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "models": {
+                    "coding": {
+                        "main": "anthropic/claude-opus-4-6",
+                        "max_tokens": 32000,
+                        "context_window": 200000,
+                    },
                 },
-            },
-        }));
+            })
+        );
     }
 
     #[test]
@@ -1738,5 +1868,4 @@ mod tests {
 
         assert!(!path.exists());
     }
-
 }

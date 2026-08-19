@@ -63,7 +63,9 @@ impl PkmRepo {
             extracted_rev: None,
             related_playbooks: Vec::new(),
             search_text: body.to_string(),
-            search_names, search_name_tokens, search_assertions,
+            search_names,
+            search_name_tokens,
+            search_assertions,
             attributes: serde_json::json!({}),
             use_count: 0,
             aliases,
@@ -91,8 +93,13 @@ impl PkmRepo {
         expected_rev: &str,
     ) -> Result<bool, AppError> {
         self.mark_external_page_revision(
-            user_id, path, expected_rev, "mirrored_rev", "external_mirror_cas",
-        ).await
+            user_id,
+            path,
+            expected_rev,
+            "mirrored_rev",
+            "external_mirror_cas",
+        )
+        .await
     }
 
     async fn mark_external_page_revision(
@@ -103,7 +110,8 @@ impl PkmRepo {
         field: &str,
         context: &str,
     ) -> Result<bool, AppError> {
-        let mut response = self.db
+        let mut response = self
+            .db
             .query(format!(
                 "UPDATE knowledge_entity SET {field} = $rev
                  WHERE user_id = $uid AND path = $path
@@ -117,7 +125,8 @@ impl PkmRepo {
             .await
             .and_then(|response| response.check())
             .map_err(|error| Self::err(context, error))?;
-        let updated: Vec<surrealdb::types::Value> = response.take(0)
+        let updated: Vec<surrealdb::types::Value> = response
+            .take(0)
             .map_err(|error| Self::err(context, error))?;
         Ok(!updated.is_empty())
     }
@@ -148,7 +157,9 @@ impl PkmRepo {
             .bind(("note", note.to_string()))
             .await
             .map_err(|e| Self::err("external_derived", e))?;
-        let ids: Vec<String> = q.take(0).map_err(|e| Self::err("external_derived_take", e))?;
+        let ids: Vec<String> = q
+            .take(0)
+            .map_err(|e| Self::err("external_derived_take", e))?;
         for id in ids {
             self.delete_memory(user_id, &id).await?;
         }

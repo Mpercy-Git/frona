@@ -59,21 +59,34 @@ pub(crate) struct ProposalSet {
 impl ProposalSet {
     pub(crate) fn provisional_has_keys(&self) -> Vec<HasKeyMarker> {
         let mut out = Vec::new();
-        for marker in self.by_path.values().flat_map(|proposal| &proposal.has_keys) {
-            if !out.contains(marker) { out.push(marker.clone()); }
+        for marker in self
+            .by_path
+            .values()
+            .flat_map(|proposal| &proposal.has_keys)
+        {
+            if !out.contains(marker) {
+                out.push(marker.clone());
+            }
         }
         out
     }
 
     pub(crate) fn provisional_inverse_functional_properties(&self) -> BTreeSet<String> {
-        self.by_path.values()
+        self.by_path
+            .values()
             .flat_map(|proposal| proposal.inverse_functional_properties.iter().cloned())
             .collect()
     }
 
     pub(crate) fn referenced_targets(&self) -> HashSet<String> {
-        self.by_path.values()
-            .flat_map(|proposal| proposal.promoted.iter().map(|(_, _, target)| target.clone()))
+        self.by_path
+            .values()
+            .flat_map(|proposal| {
+                proposal
+                    .promoted
+                    .iter()
+                    .map(|(_, _, target)| target.clone())
+            })
             .collect()
     }
 
@@ -109,7 +122,8 @@ impl ProposalSet {
     }
 
     pub(crate) fn stage_entity(&mut self, entity: KnowledgeConsolidationEntity) {
-        self.input_entities.insert(entity.path.clone(), entity.clone());
+        self.input_entities
+            .insert(entity.path.clone(), entity.clone());
         self.staged_entities.insert(entity.path.clone(), entity);
     }
 
@@ -118,14 +132,17 @@ impl ProposalSet {
     }
 
     pub(crate) fn input_entity(&self, path: &str) -> Option<KnowledgeConsolidationEntity> {
-        self.input_entities.get(path).cloned().map(|entity| self.project_entity(entity))
+        self.input_entities
+            .get(path)
+            .cloned()
+            .map(|entity| self.project_entity(entity))
     }
 
-    pub(crate) fn entity_draft(
-        &self,
-    ) -> crate::memory::pkm::consolidation::view::EntityDraft {
+    pub(crate) fn entity_draft(&self) -> crate::memory::pkm::consolidation::view::EntityDraft {
         crate::memory::pkm::consolidation::view::EntityDraft::from_rows(
-            self.input_entities.values().cloned()
+            self.input_entities
+                .values()
+                .cloned()
                 .map(|entity| self.project_entity(entity)),
         )
     }
@@ -133,29 +150,41 @@ impl ProposalSet {
     /// Build the A-box-visible entity set. Extractor attributes remain evidence until a
     /// Classify proposal maps them to a validated data property; only committed
     /// baseline attributes and accepted mappings may participate in reasoning.
-    pub(crate) fn reasoning_entities(&self, live_entities: Vec<KnowledgeEntity>) -> Vec<KnowledgeEntity> {
-        let live_by_path: HashMap<_, _> = live_entities.iter()
+    pub(crate) fn reasoning_entities(
+        &self,
+        live_entities: Vec<KnowledgeEntity>,
+    ) -> Vec<KnowledgeEntity> {
+        let live_by_path: HashMap<_, _> = live_entities
+            .iter()
             .cloned()
             .map(|entity| (entity.path.clone(), entity))
             .collect();
         let staged_paths: HashSet<_> = self.input_entities.keys().cloned().collect();
-        let mut entities: Vec<_> = self.input_entities.values()
+        let mut entities: Vec<_> = self
+            .input_entities
+            .values()
             // Extraction-only identity shells are Resolve evidence, not entity assertions.
             // If a classified relation points at one, the asserted edge itself introduces
             // that IRI into the A-box; merely naming a candidate must not do so.
             .filter(|entity| !(entity.entity_id.is_none() && entity.source_memory_ids.is_empty()))
-            .cloned().map(|mut entity| {
-            if !self.reconciled_paths.contains(&entity.path) {
-                entity.attributes = live_by_path.get(&entity.path)
-                    .map(|live| live.attributes.clone())
-                    .unwrap_or_else(|| serde_json::json!({}));
-            }
-            self.project_reasoning_entity(entity).as_knowledge_entity()
-        }).collect();
-        entities.extend(live_entities.into_iter()
-            .filter(|entity| !staged_paths.contains(&entity.path))
-            .map(|entity| KnowledgeConsolidationEntity::from_committed("baseline", entity))
-            .map(|entity| self.project_reasoning_entity(entity).as_knowledge_entity()));
+            .cloned()
+            .map(|mut entity| {
+                if !self.reconciled_paths.contains(&entity.path) {
+                    entity.attributes = live_by_path
+                        .get(&entity.path)
+                        .map(|live| live.attributes.clone())
+                        .unwrap_or_else(|| serde_json::json!({}));
+                }
+                self.project_reasoning_entity(entity).as_knowledge_entity()
+            })
+            .collect();
+        entities.extend(
+            live_entities
+                .into_iter()
+                .filter(|entity| !staged_paths.contains(&entity.path))
+                .map(|entity| KnowledgeConsolidationEntity::from_committed("baseline", entity))
+                .map(|entity| self.project_reasoning_entity(entity).as_knowledge_entity()),
+        );
         entities
     }
 
@@ -174,7 +203,8 @@ impl ProposalSet {
     ) -> (Vec<KnowledgeEntity>, Vec<KnowledgeEntityLink>) {
         let entities = self.reasoning_entities(live_entities);
         for entity in &entities {
-            let from = live_links.iter()
+            let from = live_links
+                .iter()
                 .filter(|link| link.from_entity_path == entity.path)
                 .cloned()
                 .collect();
@@ -184,23 +214,30 @@ impl ProposalSet {
         (entities, live_links)
     }
 
-    fn project_reasoning_entity(&self, entity: KnowledgeConsolidationEntity) -> KnowledgeConsolidationEntity {
+    fn project_reasoning_entity(
+        &self,
+        entity: KnowledgeConsolidationEntity,
+    ) -> KnowledgeConsolidationEntity {
         let path = entity.path.clone();
         let mut entity = self.project_entity(entity);
-        let (Some(raw), Some(proposal)) =
-            (self.input_entities.get(&path), self.by_path.get(&path))
+        let (Some(raw), Some(proposal)) = (self.input_entities.get(&path), self.by_path.get(&path))
         else {
             return entity;
         };
-        let (Some(raw_attributes), Some(projected_attributes)) =
-            (raw.attributes.as_object(), entity.attributes.as_object_mut())
-        else {
+        let (Some(raw_attributes), Some(projected_attributes)) = (
+            raw.attributes.as_object(),
+            entity.attributes.as_object_mut(),
+        ) else {
             return entity;
         };
         for (from, to) in &proposal.attr_rekeys {
-            let Some(value) = raw_attributes.get(from) else { continue; };
+            let Some(value) = raw_attributes.get(from) else {
+                continue;
+            };
             match projected_attributes.get_mut(to) {
-                Some(existing) => crate::memory::pkm::model::merge_consolidation_attribute_values(existing, value),
+                Some(existing) => {
+                    crate::memory::pkm::model::merge_consolidation_attribute_values(existing, value)
+                }
                 None => {
                     projected_attributes.insert(to.clone(), value.clone());
                 }
@@ -214,7 +251,8 @@ impl ProposalSet {
     }
 
     pub(crate) fn memory_paths(&self, memory_id: &str) -> Vec<String> {
-        self.input_entities.values()
+        self.input_entities
+            .values()
             .filter(|entity| entity.source_memory_ids.iter().any(|id| id == memory_id))
             .map(|entity| entity.path.clone())
             .collect()
@@ -250,13 +288,18 @@ impl ProposalSet {
 
     /// Materialize the entity fields already accepted by earlier Consolidator iterations.
     /// Reconcile must consume this view rather than the persisted pre-commit entity.
-    pub(crate) fn project_entity(&self, mut entity: KnowledgeConsolidationEntity) -> KnowledgeConsolidationEntity {
+    pub(crate) fn project_entity(
+        &self,
+        mut entity: KnowledgeConsolidationEntity,
+    ) -> KnowledgeConsolidationEntity {
         if let Some(shape) = self.entity_shapes.get(&entity.path) {
             entity.name = shape.name.clone();
             entity.description = shape.description.clone();
             entity.aliases = shape.aliases.iter().cloned().collect();
             entity.search_text = crate::memory::pkm::model::derive_search_text(
-                &entity.name, &entity.description, &entity.aliases,
+                &entity.name,
+                &entity.description,
+                &entity.aliases,
             );
         }
         let Some(proposal) = self.by_path.get(&entity.path) else {
@@ -293,9 +336,10 @@ impl ProposalSet {
             return links;
         };
         for (old, new) in &proposal.rekeys {
-            for link in links.iter_mut().filter(|link| {
-                link.origin == LinkOrigin::Asserted && link.relation == *old
-            }) {
+            for link in links
+                .iter_mut()
+                .filter(|link| link.origin == LinkOrigin::Asserted && link.relation == *old)
+            {
                 link.relation = new.clone();
             }
         }
@@ -313,7 +357,8 @@ impl ProposalSet {
                 from_entity_path: path.to_string(),
                 to_entity_path: target.clone(),
                 relation: relation.clone(),
-                source_memory_ids: proposal.promoted_sources
+                source_memory_ids: proposal
+                    .promoted_sources
                     .get(&(relation.clone(), target.clone()))
                     .cloned()
                     .unwrap_or_default(),
@@ -321,11 +366,13 @@ impl ProposalSet {
                 created_at: Utc::now(),
             });
         }
-        links.retain(|link| !proposal.retracted.iter().any(|(relation, target)| {
-            link.origin == LinkOrigin::Asserted
-                && link.relation == *relation
-                && link.to_entity_path == *target
-        }));
+        links.retain(|link| {
+            !proposal.retracted.iter().any(|(relation, target)| {
+                link.origin == LinkOrigin::Asserted
+                    && link.relation == *relation
+                    && link.to_entity_path == *target
+            })
+        });
         links
     }
 
@@ -366,18 +413,23 @@ impl ProposalSet {
         let mut edits = Vec::new();
         for declaration in declarations {
             self.declaration_descriptions.insert(
-                declaration.term().to_string(), declaration.description().to_string(),
+                declaration.term().to_string(),
+                declaration.description().to_string(),
             );
             edits.extend(declaration.edits());
         }
         if let Some(attributes) = attributes.as_object() {
             for key in attributes.keys() {
-                let Ok(property) = px.repair_term(key, TermKind::Property) else { continue };
+                let Ok(property) = px.repair_term(key, TermKind::Property) else {
+                    continue;
+                };
                 if px.expand(&property).starts_with("urn:frona:")
-                    && !edits.iter().any(|edit| matches!(
-                        edit, SchemaEdit::DeclareDataProperty { property: held }
-                            if px.expand(held) == px.expand(&property)
-                    ))
+                    && !edits.iter().any(|edit| {
+                        matches!(
+                            edit, SchemaEdit::DeclareDataProperty { property: held }
+                                if px.expand(held) == px.expand(&property)
+                        )
+                    })
                 {
                     edits.push(SchemaEdit::DeclareDataProperty { property });
                 }
@@ -385,7 +437,9 @@ impl ProposalSet {
         }
         let proposal = self.by_path.entry(path.to_string()).or_default();
         for edit in edits {
-            if !proposal.edits.contains(&edit) { proposal.edits.push(edit); }
+            if !proposal.edits.contains(&edit) {
+                proposal.edits.push(edit);
+            }
         }
         self.rebuild_edits();
     }
@@ -435,17 +489,26 @@ impl ProposalSet {
                 promotion.source_memory_ids.clone(),
             );
             if px.expand(property).starts_with("urn:frona:") {
-                let declaration = promotion.declaration.as_ref()
-                    .and_then(|value| serde_json::from_value::<OntologyDeclaration>(value.clone()).ok());
+                let declaration = promotion.declaration.as_ref().and_then(|value| {
+                    serde_json::from_value::<OntologyDeclaration>(value.clone()).ok()
+                });
                 if let Some(declaration) = declaration {
                     self.declaration_descriptions.insert(
-                        declaration.term().to_string(), declaration.description().to_string());
+                        declaration.term().to_string(),
+                        declaration.description().to_string(),
+                    );
                     for edit in declaration.edits() {
-                        if !proposal.edits.contains(&edit) { proposal.edits.push(edit); }
+                        if !proposal.edits.contains(&edit) {
+                            proposal.edits.push(edit);
+                        }
                     }
                 } else {
-                    let edit = SchemaEdit::DeclareObjectProperty { property: property.clone() };
-                    if !proposal.edits.contains(&edit) { proposal.edits.push(edit); }
+                    let edit = SchemaEdit::DeclareObjectProperty {
+                        property: property.clone(),
+                    };
+                    if !proposal.edits.contains(&edit) {
+                        proposal.edits.push(edit);
+                    }
                 }
             }
         }
@@ -519,7 +582,9 @@ impl ProposalSet {
                 }
             }
             into_page.contributions.extend(from_entity.contributions);
-            into_page.identity_evidence.extend(from_entity.identity_evidence);
+            into_page
+                .identity_evidence
+                .extend(from_entity.identity_evidence);
             for kind in from_entity.kinds {
                 if !into_page.kinds.contains(&kind) {
                     into_page.kinds.push(kind);
@@ -536,14 +601,17 @@ impl ProposalSet {
                     into_page.related_playbooks.push(playbook);
                 }
             }
-            if let (Some(from_attributes), Some(into_attributes)) =
-                (from_entity.attributes.as_object(), into_page.attributes.as_object_mut())
-            {
+            if let (Some(from_attributes), Some(into_attributes)) = (
+                from_entity.attributes.as_object(),
+                into_page.attributes.as_object_mut(),
+            ) {
                 for (property, value) in from_attributes {
                     match into_attributes.get_mut(property) {
-                        Some(held) => crate::memory::pkm::model::merge_consolidation_attribute_values(
-                            held, value,
-                        ),
+                        Some(held) => {
+                            crate::memory::pkm::model::merge_consolidation_attribute_values(
+                                held, value,
+                            )
+                        }
                         None => {
                             into_attributes.insert(property.clone(), value.clone());
                         }
@@ -604,7 +672,10 @@ impl ProposalSet {
                     }
                 }
                 for property in from_proposal.inverse_functional_properties {
-                    if !into_proposal.inverse_functional_properties.contains(&property) {
+                    if !into_proposal
+                        .inverse_functional_properties
+                        .contains(&property)
+                    {
                         into_proposal.inverse_functional_properties.push(property);
                     }
                 }
@@ -626,10 +697,12 @@ impl ProposalSet {
                 }
             } else {
                 let canonical = self.input_entities.get(into);
-                let name = canonical.map(|entity| entity.name.clone())
+                let name = canonical
+                    .map(|entity| entity.name.clone())
                     .filter(|name| !name.is_empty())
                     .unwrap_or_else(|| from_shape.name.clone());
-                let description = canonical.map(|entity| entity.description.clone())
+                let description = canonical
+                    .map(|entity| entity.description.clone())
                     .filter(|description| !description.is_empty())
                     .unwrap_or(from_shape.description);
                 let mut aliases = canonical
@@ -643,9 +716,14 @@ impl ProposalSet {
                         aliases.push(alias);
                     }
                 }
-                self.entity_shapes.insert(into.to_string(), EntityShape {
-                    name, description, aliases,
-                });
+                self.entity_shapes.insert(
+                    into.to_string(),
+                    EntityShape {
+                        name,
+                        description,
+                        aliases,
+                    },
+                );
             }
         }
         self.reconciled_paths.remove(from);
@@ -655,12 +733,17 @@ impl ProposalSet {
             && canonical.entity_id.is_none()
             && !canonical.source_memory_ids.is_empty()
         {
-            self.staged_entities.insert(into.to_string(), canonical.clone());
+            self.staged_entities
+                .insert(into.to_string(), canonical.clone());
         }
         for (path, p) in self.by_path.iter_mut() {
             let mut retargeted_sources = HashMap::new();
             for ((property, target), sources) in std::mem::take(&mut p.promoted_sources) {
-                let target = if target == from { into.to_string() } else { target };
+                let target = if target == from {
+                    into.to_string()
+                } else {
+                    target
+                };
                 if target != *path {
                     retargeted_sources.insert((property, target), sources);
                 }
@@ -694,5 +777,4 @@ impl ProposalSet {
         }
         out
     }
-
 }

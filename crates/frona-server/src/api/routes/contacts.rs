@@ -2,9 +2,9 @@ use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
 
-use crate::contact::models::{ContactResponse, CreateContactRequest, UpdateContactRequest};
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
+use crate::contact::models::{ContactResponse, CreateContactRequest, UpdateContactRequest};
 use crate::core::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -39,7 +39,10 @@ async fn update_contact(
     Path(id): Path<String>,
     Json(req): Json<UpdateContactRequest>,
 ) -> Result<Json<ContactResponse>, ApiError> {
-    let contact = state.contact_service.update(&auth.user_id, &id, req).await?;
+    let contact = state
+        .contact_service
+        .update(&auth.user_id, &id, req)
+        .await?;
     Ok(Json(contact))
 }
 

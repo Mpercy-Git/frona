@@ -300,10 +300,7 @@ pub async fn init(path: &str) -> Result<Surreal<Db>, surrealdb::Error> {
                     tracing::error!("Failed to open database after {elapsed:.0?}: {e}");
                     std::process::exit(1);
                 }
-                tracing::warn!(
-                    "Database locked, retrying ({:.0?} elapsed): {e}",
-                    elapsed
-                );
+                tracing::warn!("Database locked, retrying ({:.0?} elapsed): {e}", elapsed);
                 tokio::time::sleep(interval).await;
             }
         }

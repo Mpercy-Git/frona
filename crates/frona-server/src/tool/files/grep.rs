@@ -27,7 +27,11 @@ impl GrepTool {
         sandbox_manager: Arc<SandboxManager>,
         prompts: PromptLoader,
     ) -> Self {
-        Self { storage, sandbox_manager, prompts }
+        Self {
+            storage,
+            sandbox_manager,
+            prompts,
+        }
     }
 }
 
@@ -47,7 +51,12 @@ impl GrepTool {
 
         let scope_input = scope_arg.unwrap_or(".");
         let resolved = if scope_arg.is_some() {
-            super::resolve_path(scope_input, &ctx.user.handle, &ctx.agent.handle, &self.storage)?
+            super::resolve_path(
+                scope_input,
+                &ctx.user.handle,
+                &ctx.agent.handle,
+                &self.storage,
+            )?
         } else {
             self.storage
                 .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle)
@@ -78,7 +87,10 @@ impl GrepTool {
         };
 
         let scope_root = if resolved.is_file() {
-            resolved.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| resolved.clone())
+            resolved
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| resolved.clone())
         } else {
             resolved.clone()
         };
@@ -99,9 +111,19 @@ impl GrepTool {
                     continue;
                 }
                 let trimmed: String = line.chars().take(MAX_LINE_CHARS).collect();
-                let suffix = if line.chars().count() > MAX_LINE_CHARS { "…" } else { "" };
+                let suffix = if line.chars().count() > MAX_LINE_CHARS {
+                    "…"
+                } else {
+                    ""
+                };
                 let rel = file.strip_prefix(&scope_root).unwrap_or(&file);
-                results.push(format!("{}:{}:{}{}", rel.display(), line_no, trimmed, suffix));
+                results.push(format!(
+                    "{}:{}:{}{}",
+                    rel.display(),
+                    line_no,
+                    trimmed,
+                    suffix
+                ));
                 if results.len() >= MAX_MATCHES {
                     truncated = true;
                     break;

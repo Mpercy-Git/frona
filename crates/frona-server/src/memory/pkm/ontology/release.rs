@@ -58,7 +58,11 @@ pub enum Invalid {
     NoManifest,
     Unreadable(String),
     Missing(String),
-    Corrupt { file: String, expected: String, found: String },
+    Corrupt {
+        file: String,
+        expected: String,
+        found: String,
+    },
 }
 
 impl std::fmt::Display for Invalid {
@@ -67,7 +71,11 @@ impl std::fmt::Display for Invalid {
             Self::NoManifest => write!(f, "no {MANIFEST}"),
             Self::Unreadable(e) => write!(f, "unreadable {MANIFEST}: {e}"),
             Self::Missing(name) => write!(f, "{name} is listed in {MANIFEST} but absent"),
-            Self::Corrupt { file, expected, found } => write!(
+            Self::Corrupt {
+                file,
+                expected,
+                found,
+            } => write!(
                 f,
                 "{file} does not match {MANIFEST}: expected {}, found {}",
                 &expected[..expected.len().min(12)],
@@ -177,9 +185,8 @@ pub async fn fetch_latest(dir: &Path) -> Result<String, AppError> {
 
     let staging = dir.with_extension("partial");
     let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging).map_err(|e| {
-        AppError::Internal(format!("ontology: create {}: {e}", staging.display()))
-    })?;
+    std::fs::create_dir_all(&staging)
+        .map_err(|e| AppError::Internal(format!("ontology: create {}: {e}", staging.display())))?;
 
     for asset in &wanted {
         let bytes = client
@@ -191,16 +198,18 @@ pub async fn fetch_latest(dir: &Path) -> Result<String, AppError> {
             .bytes()
             .await
             .map_err(|e| AppError::Internal(format!("ontology: read {}: {e}", asset.name)))?;
-        std::fs::write(staging.join(&asset.name), &bytes).map_err(|e| {
-            AppError::Internal(format!("ontology: write {}: {e}", asset.name))
-        })?;
+        std::fs::write(staging.join(&asset.name), &bytes)
+            .map_err(|e| AppError::Internal(format!("ontology: write {}: {e}", asset.name)))?;
     }
 
     // Verify *before* publishing. A release that fails its own manifest is a bad
     // release, and installing it would only move the problem to the next boot.
     verify(&staging).map_err(|e| {
         let _ = std::fs::remove_dir_all(&staging);
-        AppError::Internal(format!("ontology: downloaded release {} is invalid: {e}", release.tag_name))
+        AppError::Internal(format!(
+            "ontology: downloaded release {} is invalid: {e}",
+            release.tag_name
+        ))
     })?;
 
     let _ = std::fs::remove_dir_all(dir);
@@ -221,8 +230,7 @@ mod tests {
     use std::io::Write;
 
     fn artifact(dir: &Path, name: &str, content: &str) -> String {
-        let mut enc =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(content.as_bytes()).unwrap();
         std::fs::write(dir.join(name), enc.finish().unwrap()).unwrap();
         format!("{:x}", Sha256::digest(content.as_bytes()))
@@ -266,7 +274,10 @@ mod tests {
         std::fs::write(tmp.path().join("a.ttl.gz"), &recompressed).unwrap();
 
         manifest(tmp.path(), &[("a.ttl.gz", &first)]);
-        assert!(verify(tmp.path()).is_ok(), "same content, so it still verifies");
+        assert!(
+            verify(tmp.path()).is_ok(),
+            "same content, so it still verifies"
+        );
     }
 
     /// The case the check exists for: a truncated artifact parses fine and simply holds

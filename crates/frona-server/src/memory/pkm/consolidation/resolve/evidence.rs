@@ -3,12 +3,10 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use frona_text::GroundingText;
 use serde::{Deserialize, Serialize};
 
+use crate::memory::pkm::consolidation::candidates::RankedCandidate;
 use crate::memory::pkm::consolidation::classify::HasKeyMarker;
 use crate::memory::pkm::consolidation::prompt_evidence;
-use crate::memory::pkm::consolidation::candidates::RankedCandidate;
-use crate::memory::pkm::model::{
-    EntityHit, KnowledgeConsolidationEntity, normalize_identity_name,
-};
+use crate::memory::pkm::model::{EntityHit, KnowledgeConsolidationEntity, normalize_identity_name};
 
 /// Resolve's output - the identity verdict for one mention.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -151,8 +149,18 @@ pub(crate) fn resolution_pair_fingerprint(
         })
     }
     let mut entities = vec![
-        entity(&subject.path, &subject.name, &subject.aliases, &subject.kinds),
-        entity(&candidate.path, &candidate.name, &candidate.aliases, &candidate.kinds),
+        entity(
+            &subject.path,
+            &subject.name,
+            &subject.aliases,
+            &subject.kinds,
+        ),
+        entity(
+            &candidate.path,
+            &candidate.name,
+            &candidate.aliases,
+            &candidate.kinds,
+        ),
     ];
     entities.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
     let mut matches = matches.to_vec();
@@ -167,42 +175,58 @@ pub(crate) fn resolution_pair_key(a: &str, b: &str) -> String {
 }
 
 pub(crate) fn pair_change_requires_judgment(old: Option<&str>, new: &str) -> bool {
-    let Some(old) = old else { return true; };
-    if old == new { return false; }
+    let Some(old) = old else {
+        return true;
+    };
+    if old == new {
+        return false;
+    }
     let (Ok(old), Ok(new)): (Result<serde_json::Value, _>, Result<serde_json::Value, _>) =
         (serde_json::from_str(old), serde_json::from_str(new))
     else {
         return true;
     };
-    if old.get("entities") != new.get("entities") { return true; }
+    if old.get("entities") != new.get("entities") {
+        return true;
+    }
 
     fn atoms(value: &serde_json::Value) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
-        for matched in value.get("identity_matches").and_then(|v| v.as_array())
-            .into_iter().flatten()
+        for matched in value
+            .get("identity_matches")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
         {
             let kind = matched.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             match kind {
                 "has_key" => {
                     let class = matched.get("class").and_then(|v| v.as_str()).unwrap_or("");
-                    for (property, values) in matched.get("properties")
-                        .and_then(|v| v.as_object()).into_iter().flatten()
+                    for (property, values) in matched
+                        .get("properties")
+                        .and_then(|v| v.as_object())
+                        .into_iter()
+                        .flatten()
                     {
                         for value in values.as_array().into_iter().flatten() {
-                            out.insert(serde_json::json!([
-                                kind, class, property, value,
-                            ]).to_string());
+                            out.insert(
+                                serde_json::json!([kind, class, property, value,]).to_string(),
+                            );
                         }
                     }
                 }
                 "inverse_functional" => {
-                    let property = matched.get("property").and_then(|v| v.as_str()).unwrap_or("");
-                    for target in matched.get("targets").and_then(|v| v.as_array())
-                        .into_iter().flatten()
+                    let property = matched
+                        .get("property")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    for target in matched
+                        .get("targets")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
                     {
-                        out.insert(serde_json::json!([
-                            kind, property, target,
-                        ]).to_string());
+                        out.insert(serde_json::json!([kind, property, target,]).to_string());
                     }
                 }
                 _ => {}
@@ -239,20 +263,29 @@ impl AssertionValues {
                 serde_json::Value::String(value) => normalize_identity_name(value),
                 value => value.to_string(),
             };
-            if value.is_empty() { continue; }
+            if value.is_empty() {
+                continue;
+            }
             match kind {
                 "attribute" => &mut out.attributes,
                 "relation" => &mut out.relations,
                 _ => continue,
-            }.entry(property.to_string()).or_default().insert(value);
+            }
+            .entry(property.to_string())
+            .or_default()
+            .insert(value);
         }
         out
     }
 
     fn all(&self, property: &str) -> BTreeSet<String> {
-        self.attributes.get(property).into_iter().flatten()
+        self.attributes
+            .get(property)
+            .into_iter()
+            .flatten()
             .chain(self.relations.get(property).into_iter().flatten())
-            .cloned().collect()
+            .cloned()
+            .collect()
     }
 }
 
@@ -273,18 +306,24 @@ pub(crate) fn resolution_identity_fingerprint(
         .collect();
     names.sort();
     names.dedup();
-    let expanded_classes: HashSet<String> = classes.iter()
-        .map(|class| prefixes.expand(class)).collect();
+    let expanded_classes: HashSet<String> =
+        classes.iter().map(|class| prefixes.expand(class)).collect();
     let mut key_values = Vec::new();
     for key in keys {
-        if !expanded_classes.contains(&prefixes.expand(&key.class)) { continue; }
-        let properties: BTreeMap<String, Vec<String>> = key.properties.iter()
+        if !expanded_classes.contains(&prefixes.expand(&key.class)) {
+            continue;
+        }
+        let properties: BTreeMap<String, Vec<String>> = key
+            .properties
+            .iter()
             .map(|property| property.trim())
             .filter(|property| !property.is_empty())
-            .map(|property| (
-                property.to_string(),
-                values.all(property).into_iter().collect(),
-            ))
+            .map(|property| {
+                (
+                    property.to_string(),
+                    values.all(property).into_iter().collect(),
+                )
+            })
             .collect();
         key_values.push(serde_json::json!({
             "class": key.class,
@@ -292,11 +331,20 @@ pub(crate) fn resolution_identity_fingerprint(
         }));
     }
     key_values.sort_by_key(serde_json::Value::to_string);
-    let inverse_values: BTreeMap<String, Vec<String>> = inverse_functional_properties.iter()
-        .map(|property| (
-            property.clone(),
-            values.relations.get(property).into_iter().flatten().cloned().collect(),
-        ))
+    let inverse_values: BTreeMap<String, Vec<String>> = inverse_functional_properties
+        .iter()
+        .map(|property| {
+            (
+                property.clone(),
+                values
+                    .relations
+                    .get(property)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .collect(),
+            )
+        })
         .collect();
     serde_json::json!({
         "path": entity.path,
@@ -304,7 +352,8 @@ pub(crate) fn resolution_identity_fingerprint(
         "classes": classes,
         "has_keys": key_values,
         "inverse_functional_properties": inverse_values,
-    }).to_string()
+    })
+    .to_string()
 }
 
 pub(crate) fn identity_matches(
@@ -326,7 +375,10 @@ pub(crate) fn identity_matches(
             continue;
         }
         let mut properties = BTreeMap::new();
-        for property in key.properties.iter().map(|property| property.trim())
+        for property in key
+            .properties
+            .iter()
+            .map(|property| property.trim())
             .filter(|property| !property.is_empty())
         {
             let ours = subject_values.all(property);
@@ -339,16 +391,24 @@ pub(crate) fn identity_matches(
             properties.insert(property.to_string(), shared);
         }
         if !properties.is_empty() {
-            matches.push(IdentityMatch::HasKey { class: key.class.clone(), properties });
+            matches.push(IdentityMatch::HasKey {
+                class: key.class.clone(),
+                properties,
+            });
         }
     }
     for property in inverse_functional_properties {
-        let Some(ours) = subject_values.relations.get(property) else { continue; };
-        let Some(theirs) = candidate_values.relations.get(property) else { continue; };
+        let Some(ours) = subject_values.relations.get(property) else {
+            continue;
+        };
+        let Some(theirs) = candidate_values.relations.get(property) else {
+            continue;
+        };
         let targets: Vec<String> = ours.intersection(theirs).cloned().collect();
         if !targets.is_empty() {
             matches.push(IdentityMatch::InverseFunctional {
-                property: property.clone(), targets,
+                property: property.clone(),
+                targets,
             });
         }
     }
@@ -411,12 +471,19 @@ impl ResolutionDecisionContext {
                 .get(&candidate.entity.path)
                 .map(String::as_str)
                 .unwrap_or("(none)");
-            let identifying_matches = identifying_matches.get(&candidate.entity.path)
-                .cloned().unwrap_or_default();
-            let identifying_property_matches = serde_json::to_string(&identifying_matches)
-                .unwrap_or_else(|_| "[]".into());
-            let candidate_aliases = candidate.entity.aliases.iter().cloned()
-                .collect::<Vec<_>>().join(", ");
+            let identifying_matches = identifying_matches
+                .get(&candidate.entity.path)
+                .cloned()
+                .unwrap_or_default();
+            let identifying_property_matches =
+                serde_json::to_string(&identifying_matches).unwrap_or_else(|_| "[]".into());
+            let candidate_aliases = candidate
+                .entity
+                .aliases
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
             let candidate_assertions = candidate.entity.search_assertions.join("; ");
             if candidate.evidence.forced
                 || candidate.evidence.exact_name
@@ -430,18 +497,29 @@ impl ResolutionDecisionContext {
             {
                 strong_candidates.insert(candidate.entity.path.clone());
             }
-            candidate_fields.insert(candidate.entity.path.clone(), ResolutionEvidenceFields {
-                name: candidate.entity.name.clone(),
-                aliases: candidate.entity.aliases.iter().cloned().collect::<Vec<_>>().join("\n"),
-                kinds: prefixes.display_joined(&candidate.entity.kinds),
-                description: candidate.entity.description.clone(),
-                identity_evidence: identity_evidence.to_string(),
-                attributes: String::new(),
-                assertions: candidate.entity.search_assertions.join("\n"),
-                identifying_property_matches: identifying_matches.iter()
-                    .map(|matched| serde_json::to_string(matched).unwrap_or_default())
-                    .collect::<Vec<_>>().join("\n"),
-            });
+            candidate_fields.insert(
+                candidate.entity.path.clone(),
+                ResolutionEvidenceFields {
+                    name: candidate.entity.name.clone(),
+                    aliases: candidate
+                        .entity
+                        .aliases
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    kinds: prefixes.display_joined(&candidate.entity.kinds),
+                    description: candidate.entity.description.clone(),
+                    identity_evidence: identity_evidence.to_string(),
+                    attributes: String::new(),
+                    assertions: candidate.entity.search_assertions.join("\n"),
+                    identifying_property_matches: identifying_matches
+                        .iter()
+                        .map(|matched| serde_json::to_string(matched).unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                },
+            );
             candidate_block.push_str(&format!(
                 "- path: {}\n  name: {}\n  aliases: {}\n  type: {}\n  assertions: {}\n  identity signals:\n    forced identity: {}\n    exact name: {}\n    token containment: {}\n    unordered event participants: {}\n    ordered similarity: {:.3}\n    token-order similarity: {:.3}\n    type affinity: {}\n    shared types: {}\n    shared assertions: {}\n    identifying property matches: {}\n  description: {}\n  identity evidence: {}\n",
                 candidate.entity.path, candidate.entity.name,
@@ -462,28 +540,41 @@ impl ResolutionDecisionContext {
             ));
         }
         Self {
-            pair_fingerprints: candidates.iter().map(|candidate| {
-                let matches = identifying_matches.get(&candidate.entity.path)
-                    .map(Vec::as_slice).unwrap_or(&[]);
-                (
-                    resolution_pair_key(&entity.path, &candidate.entity.path),
-                    resolution_pair_fingerprint(entity, &candidate.entity, matches),
-                )
-            }).collect(),
+            pair_fingerprints: candidates
+                .iter()
+                .map(|candidate| {
+                    let matches = identifying_matches
+                        .get(&candidate.entity.path)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    (
+                        resolution_pair_key(&entity.path, &candidate.entity.path),
+                        resolution_pair_fingerprint(entity, &candidate.entity, matches),
+                    )
+                })
+                .collect(),
             candidate_block,
             identity_evidence: prompt_evidence(&entity.identity_evidence),
             kinds_display: prefixes.display_joined(&entity.kinds),
             subject_fields: ResolutionEvidenceFields {
                 name: entity.name.clone(),
-                aliases: entity.aliases.iter().cloned().collect::<Vec<_>>().join("\n"),
+                aliases: entity
+                    .aliases
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 kinds: prefixes.display_joined(&entity.kinds),
                 description: entity.description.clone(),
                 identity_evidence: prompt_evidence(&entity.identity_evidence),
                 attributes: String::new(),
                 assertions: entity.search_assertions.join("\n"),
-                identifying_property_matches: identifying_matches.values().flatten()
+                identifying_property_matches: identifying_matches
+                    .values()
+                    .flatten()
                     .map(|matched| serde_json::to_string(matched).unwrap_or_default())
-                    .collect::<Vec<_>>().join("\n"),
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             },
             candidate_fields,
             strong_candidates,
@@ -501,26 +592,31 @@ impl ResolutionDecisionContext {
             } else {
                 self.candidate_fields.get_mut(&entity.path)
             };
-            let Some(fields) = fields else { continue; };
-            fields.attributes = serde_json::to_string(&entity.attributes)
-                .unwrap_or_else(|_| "{}".into());
+            let Some(fields) = fields else {
+                continue;
+            };
+            fields.attributes =
+                serde_json::to_string(&entity.attributes).unwrap_or_else(|_| "{}".into());
             fields.assertions = entity.search_assertions.join("\n");
         }
         self
     }
-
 }
 
 pub(super) fn attribute_value_contains(value: &serde_json::Value, submitted: &str) -> bool {
     match value {
-        serde_json::Value::Array(values) =>
-            values.iter().any(|value| attribute_value_contains(value, submitted)),
-        serde_json::Value::String(value) =>
-            GroundingText::new(value).resolve_value(submitted).is_ok(),
-        serde_json::Value::Number(value) =>
-            GroundingText::new(&value.to_string()).resolve_value(submitted).is_ok(),
-        serde_json::Value::Bool(value) =>
-            GroundingText::new(&value.to_string()).resolve_value(submitted).is_ok(),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| attribute_value_contains(value, submitted)),
+        serde_json::Value::String(value) => {
+            GroundingText::new(value).resolve_value(submitted).is_ok()
+        }
+        serde_json::Value::Number(value) => GroundingText::new(&value.to_string())
+            .resolve_value(submitted)
+            .is_ok(),
+        serde_json::Value::Bool(value) => GroundingText::new(&value.to_string())
+            .resolve_value(submitted)
+            .is_ok(),
         serde_json::Value::Null | serde_json::Value::Object(_) => false,
     }
 }
@@ -563,7 +659,8 @@ pub(super) fn validate_evidence_reference(
     }
     if let Some(property) = reference.property.as_deref() {
         if reference.field == EvidenceField::Attributes {
-            let supported = serde_json::from_str::<serde_json::Value>(source).ok()
+            let supported = serde_json::from_str::<serde_json::Value>(source)
+                .ok()
                 .and_then(|attributes| attributes.get(property).cloned())
                 .is_some_and(|value| attribute_value_contains(&value, submitted));
             if !supported {
@@ -575,8 +672,12 @@ pub(super) fn validate_evidence_reference(
             return None;
         }
         let same_assertion = source.lines().any(|assertion| {
-            GroundingText::new(assertion).resolve_value(property).is_ok()
-                && GroundingText::new(assertion).resolve_value(submitted).is_ok()
+            GroundingText::new(assertion)
+                .resolve_value(property)
+                .is_ok()
+                && GroundingText::new(assertion)
+                    .resolve_value(submitted)
+                    .is_ok()
         });
         if !same_assertion {
             return Some(format!(
@@ -585,8 +686,7 @@ pub(super) fn validate_evidence_reference(
             ));
         }
     }
-    if reference.property.is_none()
-        && GroundingText::new(source).resolve_value(submitted).is_err()
+    if reference.property.is_none() && GroundingText::new(source).resolve_value(submitted).is_err()
     {
         return Some(format!(
             "{path}: quote {:?} does not occur in supplied {:?}.{:?} for `{candidate}`",
@@ -597,38 +697,56 @@ pub(super) fn validate_evidence_reference(
 }
 
 pub(super) fn evidence_uses_both_sides(evidence: &[ResolutionEvidence]) -> bool {
-    evidence.iter().any(|item| item.side == EvidenceSide::Subject)
-        && evidence.iter().any(|item| item.side == EvidenceSide::Candidate)
+    evidence
+        .iter()
+        .any(|item| item.side == EvidenceSide::Subject)
+        && evidence
+            .iter()
+            .any(|item| item.side == EvidenceSide::Candidate)
 }
 
 pub(super) fn merge_reason_supports(reason: &MergeReason, evidence: &[ResolutionEvidence]) -> bool {
     let has = |field| evidence.iter().any(|item| item.field == field);
     match reason {
-        MergeReason::SameUniqueIdentifier | MergeReason::SameInverseFunctionalValue =>
-            has(EvidenceField::Attributes) || has(EvidenceField::Assertions)
-                || has(EvidenceField::IdentifyingPropertyMatches),
+        MergeReason::SameUniqueIdentifier | MergeReason::SameInverseFunctionalValue => {
+            has(EvidenceField::Attributes)
+                || has(EvidenceField::Assertions)
+                || has(EvidenceField::IdentifyingPropertyMatches)
+        }
         MergeReason::ExplicitSameIdentity => has(EvidenceField::IdentityEvidence),
-        MergeReason::SameGroundedIdentity =>
-            has(EvidenceField::Name) || has(EvidenceField::Aliases)
-                || has(EvidenceField::IdentityEvidence),
-        MergeReason::SameEventIdentity =>
-            has(EvidenceField::Name) || has(EvidenceField::Assertions)
-                || has(EvidenceField::IdentityEvidence),
+        MergeReason::SameGroundedIdentity => {
+            has(EvidenceField::Name)
+                || has(EvidenceField::Aliases)
+                || has(EvidenceField::IdentityEvidence)
+        }
+        MergeReason::SameEventIdentity => {
+            has(EvidenceField::Name)
+                || has(EvidenceField::Assertions)
+                || has(EvidenceField::IdentityEvidence)
+        }
     }
 }
 
-pub(super) fn distinct_reason_supports(reason: &DistinctReason, evidence: &[ResolutionEvidence]) -> bool {
+pub(super) fn distinct_reason_supports(
+    reason: &DistinctReason,
+    evidence: &[ResolutionEvidence],
+) -> bool {
     let has = |field| evidence.iter().any(|item| item.field == field);
     match reason {
-        DistinctReason::ConflictingUniqueIdentifier =>
-            has(EvidenceField::Attributes) || has(EvidenceField::Assertions)
-                || has(EvidenceField::IdentifyingPropertyMatches),
-        DistinctReason::ConflictingEventIdentity =>
-            has(EvidenceField::Name) || has(EvidenceField::Assertions)
-                || has(EvidenceField::IdentityEvidence),
+        DistinctReason::ConflictingUniqueIdentifier => {
+            has(EvidenceField::Attributes)
+                || has(EvidenceField::Assertions)
+                || has(EvidenceField::IdentifyingPropertyMatches)
+        }
+        DistinctReason::ConflictingEventIdentity => {
+            has(EvidenceField::Name)
+                || has(EvidenceField::Assertions)
+                || has(EvidenceField::IdentityEvidence)
+        }
         DistinctReason::ExplicitDistinctIdentity => has(EvidenceField::IdentityEvidence),
-        DistinctReason::RepresentationOrRole | DistinctReason::DifferentEntityRole =>
-            has(EvidenceField::Type) || has(EvidenceField::Description),
+        DistinctReason::RepresentationOrRole | DistinctReason::DifferentEntityRole => {
+            has(EvidenceField::Type) || has(EvidenceField::Description)
+        }
     }
 }
 
@@ -653,13 +771,22 @@ pub(super) fn validate_resolution_evidence(
             errors.push(format!("{base}.candidate: `{candidate}` was not offered"));
             continue;
         }
-        if merge_evidence.insert(candidate.to_string(), because).is_some() {
-            errors.push(format!("{base}.candidate: duplicate evidence for `{candidate}`"));
+        if merge_evidence
+            .insert(candidate.to_string(), because)
+            .is_some()
+        {
+            errors.push(format!(
+                "{base}.candidate: duplicate evidence for `{candidate}`"
+            ));
         }
         if because.evidence.is_empty() {
-            errors.push(format!("{base}.evidence: at least one evidence reference is required"));
+            errors.push(format!(
+                "{base}.evidence: at least one evidence reference is required"
+            ));
         } else if !evidence_uses_both_sides(&because.evidence) {
-            errors.push(format!("{base}.evidence: merge evidence must cite both subject and candidate"));
+            errors.push(format!(
+                "{base}.evidence: merge evidence must cite both subject and candidate"
+            ));
         }
         if !merge_reason_supports(&because.reason, &because.evidence) {
             errors.push(format!(
@@ -669,7 +796,10 @@ pub(super) fn validate_resolution_evidence(
         }
         for (evidence_index, reference) in because.evidence.iter().enumerate() {
             if let Some(error) = validate_evidence_reference(
-                reference, candidate, context, &format!("{base}.evidence[{evidence_index}]"),
+                reference,
+                candidate,
+                context,
+                &format!("{base}.evidence[{evidence_index}]"),
             ) {
                 errors.push(error);
             }
@@ -698,16 +828,27 @@ pub(super) fn validate_resolution_evidence(
             errors.push(format!("{base}.candidate: `{candidate}` was not offered"));
             continue;
         }
-        if distinct_evidence.insert(candidate.to_string(), because).is_some() {
-            errors.push(format!("{base}.candidate: duplicate evidence for `{candidate}`"));
+        if distinct_evidence
+            .insert(candidate.to_string(), because)
+            .is_some()
+        {
+            errors.push(format!(
+                "{base}.candidate: duplicate evidence for `{candidate}`"
+            ));
         }
         if merged.contains(candidate) {
-            errors.push(format!("{base}.candidate: `{candidate}` is also proposed for merge"));
+            errors.push(format!(
+                "{base}.candidate: `{candidate}` is also proposed for merge"
+            ));
         }
         if because.evidence.is_empty() {
-            errors.push(format!("{base}.evidence: at least one evidence reference is required"));
+            errors.push(format!(
+                "{base}.evidence: at least one evidence reference is required"
+            ));
         } else if !evidence_uses_both_sides(&because.evidence) {
-            errors.push(format!("{base}.evidence: distinction evidence must cite both subject and candidate"));
+            errors.push(format!(
+                "{base}.evidence: distinction evidence must cite both subject and candidate"
+            ));
         }
         if !distinct_reason_supports(&because.reason, &because.evidence) {
             errors.push(format!(
@@ -717,7 +858,10 @@ pub(super) fn validate_resolution_evidence(
         }
         for (evidence_index, reference) in because.evidence.iter().enumerate() {
             if let Some(error) = validate_evidence_reference(
-                reference, candidate, context, &format!("{base}.evidence[{evidence_index}]"),
+                reference,
+                candidate,
+                context,
+                &format!("{base}.evidence[{evidence_index}]"),
             ) {
                 errors.push(error);
             }

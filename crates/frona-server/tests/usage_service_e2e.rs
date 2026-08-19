@@ -16,13 +16,12 @@ use frona::chat::broadcast::BroadcastService;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::config::{ModelGroup, RetryConfig};
 use frona::inference::error::InferenceError;
-use frona::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, ModelEntry};
 use frona::inference::metadata::catalog::Cost;
+use frona::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, ModelEntry};
 use frona::inference::provider::{ModelProvider, ModelRef};
 use frona::inference::registry::ModelProviderRegistry;
 use frona::inference::usage::{
-    InferenceKind, InferenceUsage, InferenceUsageRepository, TimeBucket, UsageContext,
-    UsageService,
+    InferenceKind, InferenceUsage, InferenceUsageRepository, TimeBucket, UsageContext, UsageService,
 };
 use frona::inference::{structured_inference, text_inference};
 use rig_core::completion::Message as RigMessage;
@@ -125,11 +124,10 @@ async fn single_success_records_one_row_with_zero_retry_and_no_fallback() {
     init_metrics();
     let (db, svc) = fresh_service().await;
 
-    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text("ok".into())]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider.clone() as Arc<dyn ModelProvider>,
-    )]);
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "ok".into(),
+    )]));
+    let registry = registry_with(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)]);
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
@@ -168,14 +166,15 @@ async fn retry_then_success_records_retry_count_and_overhead() {
     let (db, svc) = fresh_service().await;
 
     let provider = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::RateLimited { retry_after_secs: 0 }),
-        MockResponse::Error(InferenceError::RateLimited { retry_after_secs: 0 }),
+        MockResponse::Error(InferenceError::RateLimited {
+            retry_after_secs: 0,
+        }),
+        MockResponse::Error(InferenceError::RateLimited {
+            retry_after_secs: 0,
+        }),
         MockResponse::Text("recovered".into()),
     ]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider.clone() as Arc<dyn ModelProvider>,
-    )]);
+    let registry = registry_with(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)]);
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
@@ -194,10 +193,7 @@ async fn retry_then_success_records_retry_count_and_overhead() {
     let rows = list_all_rows(&db).await;
     assert_eq!(rows.len(), 1, "still one row — only success is recorded");
     let row = &rows[0];
-    assert_eq!(
-        row.retry_count, 2,
-        "two failed attempts before success"
-    );
+    assert_eq!(row.retry_count, 2, "two failed attempts before success");
     assert_eq!(row.fallback_index, 0, "main model recovered, no fallback");
 }
 
@@ -206,10 +202,12 @@ async fn main_fails_fallback_succeeds_records_fallback_index_and_model_ref() {
     init_metrics();
     let (db, svc) = fresh_service().await;
 
-    let main = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::InferenceFailed("main down".into())),
-    ]));
-    let fb = Arc::new(MockModelProvider::new(vec![MockResponse::Text("ok".into())]));
+    let main = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
+        InferenceError::InferenceFailed("main down".into()),
+    )]));
+    let fb = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "ok".into(),
+    )]));
     let registry = registry_with(vec![
         ("mock", main as Arc<dyn ModelProvider>),
         ("fallback", fb as Arc<dyn ModelProvider>),
@@ -233,7 +231,11 @@ async fn main_fails_fallback_succeeds_records_fallback_index_and_model_ref() {
     assert_eq!(out, "ok");
 
     let rows = list_all_rows(&db).await;
-    assert_eq!(rows.len(), 1, "main failures don't produce rows; only the fallback success does");
+    assert_eq!(
+        rows.len(),
+        1,
+        "main failures don't produce rows; only the fallback success does"
+    );
     let row = &rows[0];
     assert_eq!(row.fallback_index, 1, "fallback index #1 ran");
     assert_eq!(row.model_ref, "fallback/fallback-model");
@@ -244,13 +246,15 @@ async fn second_fallback_records_fallback_index_two() {
     init_metrics();
     let (db, svc) = fresh_service().await;
 
-    let main = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::InferenceFailed("m".into())),
-    ]));
-    let fb1 = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::InferenceFailed("fb1".into())),
-    ]));
-    let fb2 = Arc::new(MockModelProvider::new(vec![MockResponse::Text("ok".into())]));
+    let main = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
+        InferenceError::InferenceFailed("m".into()),
+    )]));
+    let fb1 = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
+        InferenceError::InferenceFailed("fb1".into()),
+    )]));
+    let fb2 = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "ok".into(),
+    )]));
     let registry = registry_with(vec![
         ("mock", main as Arc<dyn ModelProvider>),
         ("fb1", fb1 as Arc<dyn ModelProvider>),
@@ -296,11 +300,9 @@ async fn structured_inference_records_row() {
         x: i32,
     }
 
-    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "id".into(),
-        "submit".into(),
-        serde_json::json!({"x": 1}),
-    )])]));
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        ("id".into(), "submit".into(), serde_json::json!({"x": 1})),
+    ])]));
     let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
@@ -332,10 +334,7 @@ async fn aggregate_by_chat_sums_rows() {
         MockResponse::Text("b".into()),
         MockResponse::Text("c".into()),
     ]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider.clone() as Arc<dyn ModelProvider>,
-    )]);
+    let registry = registry_with(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)]);
 
     // Three calls scoped to the same chat.
     for msg_id in ["m1", "m2", "m3"] {
@@ -352,10 +351,7 @@ async fn aggregate_by_chat_sums_rows() {
     }
 
     let repo: SurrealRepo<InferenceUsage> = SurrealRepo::new(db.clone());
-    let rollup = repo
-        .aggregate_by_chat("c1", None, None)
-        .await
-        .unwrap();
+    let rollup = repo.aggregate_by_chat("c1", None, None).await.unwrap();
     assert_eq!(rollup.calls, 3);
     assert_eq!(rollup.input_tokens, 30); // 10 * 3
     assert_eq!(rollup.output_tokens, 15); // 5 * 3
@@ -375,10 +371,7 @@ async fn aggregate_by_kind_groups_by_kind_tag() {
         MockResponse::Text("title".into()),
         MockResponse::Text("title2".into()),
     ]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider.clone() as Arc<dyn ModelProvider>,
-    )]);
+    let registry = registry_with(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)]);
 
     let chat_ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
     let title_ctx = UsageContext::new(
@@ -424,7 +417,9 @@ async fn aggregate_by_model_groups_by_model_ref() {
         // Second call succeeds (after the failed first call's retry budget).
         MockResponse::Text("main-ok".into()),
     ]));
-    let fb = Arc::new(MockModelProvider::new(vec![MockResponse::Text("fb-ok".into())]));
+    let fb = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "fb-ok".into(),
+    )]));
     let registry = registry_with(vec![
         ("mock", main as Arc<dyn ModelProvider>),
         ("fallback", fb as Arc<dyn ModelProvider>),
@@ -475,10 +470,7 @@ async fn aggregate_by_user_totals_across_chats() {
         MockResponse::Text("b".into()),
         MockResponse::Text("c".into()),
     ]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider.clone() as Arc<dyn ModelProvider>,
-    )]);
+    let registry = registry_with(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)]);
 
     for (chat, msg) in [("c1", "m1"), ("c2", "m2"), ("c3", "m3")] {
         text_inference(
@@ -567,7 +559,8 @@ async fn last_chat_input_tokens_returns_none_when_no_main_chat_rows() {
     let (db, svc) = fresh_service().await;
     let registry = registry_with(vec![(
         "mock",
-        Arc::new(MockModelProvider::new(vec![MockResponse::Text("t".into())])) as Arc<dyn ModelProvider>,
+        Arc::new(MockModelProvider::new(vec![MockResponse::Text("t".into())]))
+            as Arc<dyn ModelProvider>,
     )]);
 
     // Only a Title row; no Chat/ToolTurn - last_chat_input_tokens must be None.
@@ -593,7 +586,10 @@ async fn last_chat_input_tokens_returns_none_when_no_main_chat_rows() {
     let repo: SurrealRepo<InferenceUsage> = SurrealRepo::new(db.clone());
     assert_eq!(repo.last_chat_input_tokens("c1").await.unwrap(), None);
     // Unknown chat id also returns None.
-    assert_eq!(repo.last_chat_input_tokens("nonexistent").await.unwrap(), None);
+    assert_eq!(
+        repo.last_chat_input_tokens("nonexistent").await.unwrap(),
+        None
+    );
 }
 
 // SurrealDB can return `math::percentile` as an array when it receives a scalar
@@ -612,10 +608,7 @@ async fn percentile_query_returns_scalars_after_array_unwrap() {
         MockResponse::Text("d".into()),
         MockResponse::Text("e".into()),
     ]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider as Arc<dyn ModelProvider>,
-    )]);
+    let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     for msg_id in ["m1", "m2", "m3", "m4", "m5"] {
         text_inference(
             &registry,

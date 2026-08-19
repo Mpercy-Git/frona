@@ -333,9 +333,7 @@ pub trait ChannelAdapter: Send + Sync {
 
 pub fn external_chat_id(chat: &Chat) -> Result<&str, AppError> {
     chat.channel_external_id.as_deref().ok_or_else(|| {
-        AppError::Validation(
-            "missing channel_external_id on Chat — cannot deliver outbound".into(),
-        )
+        AppError::Validation("missing channel_external_id on Chat — cannot deliver outbound".into())
     })
 }
 
@@ -437,11 +435,16 @@ mod tests {
         assert_eq!(v, "\"failed\"");
     }
 
-
     #[test]
     fn dispatch_mode_serializes_snake_case() {
-        assert_eq!(serde_json::to_string(&DispatchMode::Message).unwrap(), "\"message\"");
-        assert_eq!(serde_json::to_string(&DispatchMode::Signal).unwrap(), "\"signal\"");
+        assert_eq!(
+            serde_json::to_string(&DispatchMode::Message).unwrap(),
+            "\"message\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DispatchMode::Signal).unwrap(),
+            "\"signal\""
+        );
         assert_eq!(DispatchMode::default(), DispatchMode::Message);
     }
 

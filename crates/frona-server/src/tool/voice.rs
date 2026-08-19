@@ -9,8 +9,8 @@ use crate::agent::prompt::PromptLoader;
 use crate::auth::User;
 use crate::auth::token::models::TokenType;
 use crate::auth::token::service::{CreateTokenRequest, TokenService};
-use crate::call::models::CallDirection;
 use crate::call::CallService;
+use crate::call::models::CallDirection;
 use crate::contact::ContactService;
 use crate::core::Principal;
 use crate::core::config::VoiceConfig;
@@ -40,7 +40,6 @@ pub struct VoiceSessionExtensions {
     pub call_id: Option<String>,
 }
 
-
 #[async_trait]
 pub trait VoiceProvider: Send + Sync {
     fn name(&self) -> &str;
@@ -57,7 +56,6 @@ pub trait VoiceProvider: Send + Sync {
         contact_id: Option<String>,
     ) -> Result<String, AppError>;
 }
-
 
 pub struct TwilioProvider {
     pub account_sid: String,
@@ -130,13 +128,14 @@ impl VoiceProvider for TwilioProvider {
 
         match result {
             TwilioJson::Success(call) => Ok(call.sid),
-            TwilioJson::Fail { status, message, .. } => Err(AppError::Tool(format!(
+            TwilioJson::Fail {
+                status, message, ..
+            } => Err(AppError::Tool(format!(
                 "Twilio API error {status}: {message}"
             ))),
         }
     }
 }
-
 
 pub fn create_voice_provider(
     config: &VoiceConfig,
@@ -144,10 +143,13 @@ pub fn create_voice_provider(
     token_service: TokenService,
     keypair_service: KeyPairService,
 ) -> Option<Arc<dyn VoiceProvider>> {
-    let provider = config
-        .provider
-        .as_deref()
-        .or_else(|| if config.twilio_account_sid.is_some() { Some("twilio") } else { None })?;
+    let provider = config.provider.as_deref().or_else(|| {
+        if config.twilio_account_sid.is_some() {
+            Some("twilio")
+        } else {
+            None
+        }
+    })?;
 
     match provider.to_lowercase().as_str() {
         "twilio" => {
@@ -173,7 +175,6 @@ pub fn create_voice_provider(
     }
 }
 
-
 pub struct VoiceCallTool {
     pub provider: Option<Arc<dyn VoiceProvider>>,
     pub prompts: PromptLoader,
@@ -193,11 +194,18 @@ impl AgentTool for VoiceCallTool {
             .unwrap_or_default()
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let phone_number = arguments
             .get("phone_number")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::Validation("Missing required parameter: phone_number".into()))?;
+            .ok_or_else(|| {
+                AppError::Validation("Missing required parameter: phone_number".into())
+            })?;
 
         let name = arguments
             .get("name")
@@ -220,37 +228,44 @@ impl AgentTool for VoiceCallTool {
         let chat_id = &chat.id;
         let user_id = &ctx.user.id;
 
-        let contact = self.contact_service
+        let contact = self
+            .contact_service
             .find_or_create_by_phone(user_id, phone_number, name)
             .await?;
 
-        let sid = provider.initiate_call(
-            phone_number,
-            chat_id,
-            &ctx.user,
-            &ctx.agent.id,
-            initial_greeting,
-            hints,
-            Some(contact.id.clone()),
-        ).await?;
+        let sid = provider
+            .initiate_call(
+                phone_number,
+                chat_id,
+                &ctx.user,
+                &ctx.agent.id,
+                initial_greeting,
+                hints,
+                Some(contact.id.clone()),
+            )
+            .await?;
         tracing::info!(sid = %sid, to = %phone_number, chat_id = %chat_id, "Voice call initiated");
 
-        let _ = self.call_service
+        let _ = self
+            .call_service
             .create(chat_id, &contact.id, &sid, CallDirection::Outbound)
             .await?;
 
-        let call_connected_block = self.prompts
-            .read_with_vars("active_call.md", &[
-                ("caller_name", &contact.name),
-                ("phone_number", phone_number),
-                ("objective", objective),
-            ])
+        let call_connected_block = self
+            .prompts
+            .read_with_vars(
+                "active_call.md",
+                &[
+                    ("caller_name", &contact.name),
+                    ("phone_number", phone_number),
+                    ("objective", objective),
+                ],
+            )
             .unwrap_or_default();
 
         Ok(ToolOutput::text(call_connected_block).as_pending_external())
     }
 }
-
 
 pub struct SendDtmfTool {
     pub prompts: PromptLoader,
@@ -268,7 +283,12 @@ impl AgentTool for SendDtmfTool {
             .unwrap_or_default()
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        _ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let digits = arguments
             .get("digits")
             .and_then(|v| v.as_str())
@@ -277,7 +297,6 @@ impl AgentTool for SendDtmfTool {
         Ok(ToolOutput::text(digits).as_pending_external())
     }
 }
-
 
 pub struct HangupCallTool {
     pub prompts: PromptLoader,
@@ -295,24 +314,31 @@ impl AgentTool for HangupCallTool {
             .unwrap_or_default()
     }
 
-    async fn execute(&self, _tool_name: &str, _arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        _arguments: Value,
+        _ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         Ok(ToolOutput::text("hangup").as_pending_external())
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::repo::generic::SurrealRepo;
     use crate::core::config::VoiceConfig;
+    use crate::db::repo::generic::SurrealRepo;
 
     async fn test_contact_service() -> ContactService {
         use surrealdb::Surreal;
         use surrealdb::engine::local::Mem;
         let db = Surreal::new::<Mem>(()).await.unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
-        ContactService::new(SurrealRepo::new(db), crate::chat::broadcast::BroadcastService::new())
+        ContactService::new(
+            SurrealRepo::new(db),
+            crate::chat::broadcast::BroadcastService::new(),
+        )
     }
 
     #[test]

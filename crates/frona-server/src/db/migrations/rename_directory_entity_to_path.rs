@@ -76,7 +76,10 @@ mod tests {
 
         rename_directory_entity_to_path(&db).await.unwrap();
 
-        let mut res = db.query("SELECT VALUE policy_text FROM policy").await.unwrap();
+        let mut res = db
+            .query("SELECT VALUE policy_text FROM policy")
+            .await
+            .unwrap();
         let texts: Vec<String> = res.take(0).unwrap();
         assert_eq!(texts.len(), 1);
         assert!(texts[0].contains("Policy::Path::\"/data\""));
@@ -106,7 +109,10 @@ mod tests {
         rename_directory_entity_to_path(&db).await.unwrap();
         rename_directory_entity_to_path(&db).await.unwrap();
 
-        let mut res = db.query("SELECT VALUE policy_text FROM policy").await.unwrap();
+        let mut res = db
+            .query("SELECT VALUE policy_text FROM policy")
+            .await
+            .unwrap();
         let texts: Vec<String> = res.take(0).unwrap();
         assert_eq!(texts.len(), 1);
         assert!(texts[0].contains("Policy::Path::\"/data\""));
@@ -134,7 +140,10 @@ mod tests {
 
         rename_directory_entity_to_path(&db).await.unwrap();
 
-        let mut res = db.query("SELECT VALUE policy_text FROM policy").await.unwrap();
+        let mut res = db
+            .query("SELECT VALUE policy_text FROM policy")
+            .await
+            .unwrap();
         let texts: Vec<String> = res.take(0).unwrap();
         assert!(texts[0].contains("NetworkDestination"));
     }

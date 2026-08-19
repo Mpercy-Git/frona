@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 use dashmap::DashMap;
 use sysinfo::{MemoryRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -236,11 +236,9 @@ impl UsageTracker {
             }
 
             if total_memory > 0 {
-                let (cpu, mem_bytes) = collect_tree_usage(
-                    sysinfo_pid,
-                    &children_map,
-                    |pid| sys.process(pid).map(|p| (p.cpu_usage() as f64, p.memory())),
-                );
+                let (cpu, mem_bytes) = collect_tree_usage(sysinfo_pid, &children_map, |pid| {
+                    sys.process(pid).map(|p| (p.cpu_usage() as f64, p.memory()))
+                });
                 let normalized_cpu = cpu / mgr.num_cpus;
                 per_pid.insert(pid, (normalized_cpu, mem_bytes));
             }
@@ -311,7 +309,11 @@ impl UsageTracker {
                 if aid != agent_id {
                     continue;
                 }
-                if mgr.tracked.get(&pid).is_some_and(|t| t.killed.load(Relaxed)) {
+                if mgr
+                    .tracked
+                    .get(&pid)
+                    .is_some_and(|t| t.killed.load(Relaxed))
+                {
                     continue;
                 }
                 agent_total.cpu += cpu;
@@ -419,11 +421,7 @@ impl Default for UsageTracker {
 /// PIDs whose `lookup` returns `None` are skipped (no contribution) but
 /// their children are still traversed. This separates the traversal logic
 /// from the data source (sysinfo in production, hand-built maps in tests).
-fn collect_tree_usage<F>(
-    root: Pid,
-    children_map: &HashMap<Pid, Vec<Pid>>,
-    lookup: F,
-) -> (f64, u64)
+fn collect_tree_usage<F>(root: Pid, children_map: &HashMap<Pid, Vec<Pid>>, lookup: F) -> (f64, u64)
 where
     F: Fn(Pid) -> Option<(f64, u64)>,
 {
@@ -564,7 +562,6 @@ mod tests {
         let _ = SystemResourceManager::new(80.0, 80.0, 90.0, 90.0).with_num_cpus(0.0);
     }
 
-
     #[test]
     fn usage_smooth_blends_cpu_replaces_mem() {
         let mut u = Usage::new(0.0, 0.0);
@@ -601,7 +598,6 @@ mod tests {
         assert_abs_diff_eq!(u.mem, 0.0, epsilon = 1e-9);
     }
 
-
     #[test]
     fn tracker_defaults_to_default_smoothing_alpha() {
         let t = UsageTracker::new();
@@ -626,7 +622,6 @@ mod tests {
         let _ = UsageTracker::new().with_alpha(1.5);
     }
 
-
     fn children_map(pairs: &[(u32, u32)]) -> HashMap<Pid, Vec<Pid>> {
         let mut m: HashMap<Pid, Vec<Pid>> = HashMap::new();
         for &(parent, child) in pairs {
@@ -637,11 +632,8 @@ mod tests {
         m
     }
 
-    fn lookup_from(
-        rows: &[(u32, f64, u64)],
-    ) -> impl Fn(Pid) -> Option<(f64, u64)> + '_ {
-        let data: HashMap<u32, (f64, u64)> =
-            rows.iter().map(|&(p, c, m)| (p, (c, m))).collect();
+    fn lookup_from(rows: &[(u32, f64, u64)]) -> impl Fn(Pid) -> Option<(f64, u64)> + '_ {
+        let data: HashMap<u32, (f64, u64)> = rows.iter().map(|&(p, c, m)| (p, (c, m))).collect();
         move |pid| {
             let id = pid.as_u32();
             data.get(&id).copied()
@@ -659,11 +651,8 @@ mod tests {
     #[test]
     fn collect_tree_usage_returns_only_root_when_no_children() {
         let children = HashMap::new();
-        let (cpu, mem) = collect_tree_usage(
-            Pid::from_u32(1),
-            &children,
-            lookup_from(&[(1, 50.0, 1024)]),
-        );
+        let (cpu, mem) =
+            collect_tree_usage(Pid::from_u32(1), &children, lookup_from(&[(1, 50.0, 1024)]));
         assert_abs_diff_eq!(cpu, 50.0, epsilon = 1e-9);
         assert_eq!(mem, 1024);
     }
@@ -713,11 +702,8 @@ mod tests {
     #[test]
     fn collect_tree_usage_skips_missing_nodes_but_still_visits_descendants() {
         let children = children_map(&[(1, 2)]);
-        let (cpu, mem) = collect_tree_usage(
-            Pid::from_u32(1),
-            &children,
-            lookup_from(&[(2, 25.0, 500)]),
-        );
+        let (cpu, mem) =
+            collect_tree_usage(Pid::from_u32(1), &children, lookup_from(&[(2, 25.0, 500)]));
         assert_abs_diff_eq!(cpu, 25.0, epsilon = 1e-9);
         assert_eq!(mem, 500);
     }
@@ -763,7 +749,6 @@ mod tests {
         assert_eq!(mem, 150);
     }
 
-
     fn spawn_sleep() -> std::process::Child {
         use std::os::unix::process::CommandExt;
         unsafe {
@@ -782,7 +767,6 @@ mod tests {
         let status = child.wait().expect("failed to wait on child");
         assert!(!status.success(), "process should have been killed");
     }
-
 
     #[test]
     fn test_enforce_agent_limits_below_threshold_no_kill() {
@@ -915,7 +899,6 @@ mod tests {
         let _ = c1.wait();
         let _ = c2.wait();
     }
-
 
     #[test]
     fn test_enforce_global_limits_below_threshold_no_kill() {
@@ -1055,7 +1038,6 @@ mod tests {
         let _ = c1.kill();
         let _ = c1.wait();
     }
-
 
     #[test]
     fn smoothing_absorbs_single_spike_on_agent() {
@@ -1269,7 +1251,12 @@ mod tests {
         manager.register(p1, "agent_1");
         manager.register(p2, "agent_1");
 
-        manager.tracked.get(&p1).unwrap().killed.store(true, Relaxed);
+        manager
+            .tracked
+            .get(&p1)
+            .unwrap()
+            .killed
+            .store(true, Relaxed);
 
         let usage = vec![
             (p1, "agent_1".into(), 200.0, 80.0, 100u64),
@@ -1287,7 +1274,6 @@ mod tests {
         let _ = c1.wait();
         let _ = c2.wait();
     }
-
 
     #[test]
     fn enforce_limits_runs_both_phases_in_one_call() {

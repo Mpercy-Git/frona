@@ -7,7 +7,9 @@ impl OntologyManager {
     /// survive. `load` remains correct without this call; this operation controls when the
     /// settled cut is stored.
     pub(crate) async fn save_effective_ontology(&self, user_id: &str) -> Result<(), AppError> {
-        let Some(catalogue) = self.catalogue() else { return Ok(()) };
+        let Some(catalogue) = self.catalogue() else {
+            return Ok(());
+        };
         let row = self.repo.ontology_get(user_id).await?;
         let (ofn, version) = row
             .as_ref()
@@ -19,7 +21,8 @@ impl OntologyManager {
             &delta_triples,
             &self.repo.ontology_terms(user_id).await?,
         );
-        self.cut_and_store(user_id, &catalogue, row.as_ref(), seeds, version).await?;
+        self.cut_and_store(user_id, &catalogue, row.as_ref(), seeds, version)
+            .await?;
         Ok(())
     }
 
@@ -46,11 +49,7 @@ impl OntologyManager {
     }
 
     /// Apply schema edits and persist, retrying the reload and reapply loop on a CAS miss.
-    pub async fn commit(
-        &self,
-        user_id: &str,
-        edits: &[SchemaEdit],
-    ) -> Result<(), AppError> {
+    pub async fn commit(&self, user_id: &str, edits: &[SchemaEdit]) -> Result<(), AppError> {
         if edits.is_empty() {
             self.load(user_id).await?;
             return Ok(());

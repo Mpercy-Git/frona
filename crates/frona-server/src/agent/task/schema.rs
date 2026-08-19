@@ -19,8 +19,8 @@ impl std::fmt::Debug for ResultSpec {
 impl ResultSpec {
     pub fn new(schema: Value) -> Result<Self, String> {
         Self::enforce_size_cap(&schema)?;
-        let compiled = JSONSchema::compile(&schema)
-            .map_err(|e| format!("invalid JSON Schema: {e}"))?;
+        let compiled =
+            JSONSchema::compile(&schema).map_err(|e| format!("invalid JSON Schema: {e}"))?;
         Ok(Self { schema, compiled })
     }
 
@@ -41,12 +41,9 @@ impl ResultSpec {
     }
 
     pub fn validate_value(&self, value: &Value) -> Result<(), String> {
-        self.compiled.validate(value).map_err(|errors| {
-            errors
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; ")
-        })
+        self.compiled
+            .validate(value)
+            .map_err(|errors| errors.map(|e| e.to_string()).collect::<Vec<_>>().join("; "))
     }
 
     /// Type=string schemas accept the raw input; everything else expects JSON encoding.
@@ -104,7 +101,9 @@ pub fn has_renderable_summary_field(schema: &Value) -> bool {
     if !required.contains(&"summary") {
         return false;
     }
-    let Some(prop) = props.get("summary") else { return false };
+    let Some(prop) = props.get("summary") else {
+        return false;
+    };
     prop.get("type").and_then(|v| v.as_str()) == Some("string")
         || prop
             .get("type")
@@ -176,8 +175,8 @@ mod tests {
 
     #[test]
     fn new_rejects_invalid_pattern() {
-        let err = ResultSpec::new(json!({"type": "string", "pattern": "[unterminated"}))
-            .unwrap_err();
+        let err =
+            ResultSpec::new(json!({"type": "string", "pattern": "[unterminated"})).unwrap_err();
         assert!(err.contains("invalid JSON Schema"));
     }
 
@@ -230,10 +229,11 @@ mod tests {
             "required": ["is_important", "category"]
         }))
         .unwrap();
-        let err = spec
-            .validate(r#"{"is_important":"yes"}"#)
-            .unwrap_err();
-        assert!(err.contains("category"), "error should name missing field: {err}");
+        let err = spec.validate(r#"{"is_important":"yes"}"#).unwrap_err();
+        assert!(
+            err.contains("category"),
+            "error should name missing field: {err}"
+        );
     }
 
     #[test]
@@ -300,7 +300,9 @@ mod tests {
 
     #[test]
     fn is_simple_array_of_scalars() {
-        assert!(is_simple_schema(&json!({"type": "array", "items": {"type": "string"}})));
+        assert!(is_simple_schema(
+            &json!({"type": "array", "items": {"type": "string"}})
+        ));
         assert!(is_simple_schema(
             &json!({"type": ["array", "null"], "items": {"type": "string"}})
         ));
@@ -355,7 +357,10 @@ mod tests {
     #[test]
     fn parse_string_type_takes_raw_input() {
         let spec = ResultSpec::new(json!({"type": "string"})).unwrap();
-        assert_eq!(spec.parse("hello").unwrap(), Value::String("hello".to_string()));
+        assert_eq!(
+            spec.parse("hello").unwrap(),
+            Value::String("hello".to_string())
+        );
     }
 
     #[test]

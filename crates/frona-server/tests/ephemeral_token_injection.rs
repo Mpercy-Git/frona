@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
+use frona::auth::User;
 use frona::auth::ephemeral_token::EphemeralTokenGuard;
 use frona::auth::jwt::JwtService;
 use frona::auth::models::Claims;
 use frona::auth::token::service::TokenService;
-use frona::auth::User;
 use frona::core::{Principal, PrincipalKind};
 use frona::credential::keypair::service::KeyPairService;
 use frona::db::init::setup_schema;
@@ -68,7 +68,10 @@ async fn guard_writes_file_with_agent_principal_and_unlinks_on_drop() {
         .unwrap();
 
         // File exists while the guard is alive.
-        assert!(guard.path().exists(), "token file should exist during guard lifetime");
+        assert!(
+            guard.path().exists(),
+            "token file should exist during guard lifetime"
+        );
 
         // JWT inside decodes with the expected shape.
         let jwt = tokio::fs::read_to_string(guard.path()).await.unwrap();
@@ -85,7 +88,10 @@ async fn guard_writes_file_with_agent_principal_and_unlinks_on_drop() {
     };
 
     // Dropped at end of block — file must be gone.
-    assert!(!path.exists(), "dropping the guard must unlink the token file");
+    assert!(
+        !path.exists(),
+        "dropping the guard must unlink the token file"
+    );
 }
 
 #[tokio::test]
@@ -93,26 +99,12 @@ async fn each_invocation_gets_a_distinct_path() {
     let (tokens, keypair, user, tmp) = setup().await;
     let root = tmp.path().to_path_buf();
 
-    let g1 = EphemeralTokenGuard::issue(
-        &tokens,
-        &keypair,
-        &user,
-        Principal::agent("a"),
-        60,
-        &root,
-    )
-    .await
-    .unwrap();
-    let g2 = EphemeralTokenGuard::issue(
-        &tokens,
-        &keypair,
-        &user,
-        Principal::agent("a"),
-        60,
-        &root,
-    )
-    .await
-    .unwrap();
+    let g1 = EphemeralTokenGuard::issue(&tokens, &keypair, &user, Principal::agent("a"), 60, &root)
+        .await
+        .unwrap();
+    let g2 = EphemeralTokenGuard::issue(&tokens, &keypair, &user, Principal::agent("a"), 60, &root)
+        .await
+        .unwrap();
 
     assert_ne!(
         g1.path(),
@@ -149,12 +141,13 @@ async fn claims_schema_round_trip() {
 
     let jwt = tokio::fs::read_to_string(guard.path()).await.unwrap();
     // Decode unverified payload (base64 middle segment) to inspect JSON shape.
-    let payload = jwt.trim().split('.').nth(1).expect("jwt should have payload");
-    let bytes = base64::Engine::decode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        payload,
-    )
-    .expect("payload must be valid base64");
+    let payload = jwt
+        .trim()
+        .split('.')
+        .nth(1)
+        .expect("jwt should have payload");
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
+        .expect("payload must be valid base64");
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["token_type"], "ephemeral");
     assert_eq!(json["principal"]["kind"], "mcp_server");

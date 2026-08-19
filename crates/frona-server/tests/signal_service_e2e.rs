@@ -24,10 +24,9 @@ use frona::db::init as db_init;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::registry::ModelProviderRegistry;
 use frona::storage::StorageService;
-use helpers::{init_metrics, test_model_group, MockModelProvider, MockResponse};
-use surrealdb::engine::local::{Db, Mem};
+use helpers::{MockModelProvider, MockResponse, init_metrics, test_model_group};
 use surrealdb::Surreal;
-
+use surrealdb::engine::local::{Db, Mem};
 
 fn test_config(tmp: &tempfile::TempDir) -> Config {
     let base = tmp.path().to_string_lossy().to_string();
@@ -65,11 +64,20 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     let config = test_config(&tmp);
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
 
-    let mut state = AppState::new(db.clone(), &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
+    let mut state = AppState::new(
+        db.clone(),
+        &config,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics_handle,
+        resource_manager,
+    );
 
     // Replace the default chat_service with one wired to the mock model
     // provider so run_agent_loop doesn't try to reach a real LLM.
@@ -90,8 +98,8 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.user_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
-            state.presign_service.clone(),
-            state.usage_service.clone(),
+        state.presign_service.clone(),
+        state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
     state.harness = Arc::new(frona::agent::harness::Harness::new(
@@ -100,7 +108,8 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.storage_service.clone(),
         state.agent_service.clone(),
         helpers::test_memory_service(&state, &db),
-        state.skill_service.clone(),        state.task_service.clone(),
+        state.skill_service.clone(),
+        state.task_service.clone(),
         state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
@@ -112,7 +121,9 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.config.clone(),
         state.usage_service.clone(),
     ));
-    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
+        state.harness.clone(),
+    ));
 
     let signal_svc = state.init_signal_service();
     state.policy_service.sync_base_policies().await.unwrap();
@@ -267,8 +278,8 @@ fn make_candidate(
 
 async fn install_forbid_policy(state: &AppState, name: &str, policy_text: &str) {
     use cedar_policy::Policy;
-    let policy = Policy::parse(Some(cedar_policy::PolicyId::new(name)), policy_text)
-        .expect("policy parses");
+    let policy =
+        Policy::parse(Some(cedar_policy::PolicyId::new(name)), policy_text).expect("policy parses");
     state.policy_service.register_managed_policy(policy);
 }
 
@@ -306,10 +317,7 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-    ) -> Result<
-        frona::inference::provider::InferenceOutput,
-        frona::inference::InferenceError,
-    > {
+    ) -> Result<frona::inference::provider::InferenceOutput, frona::inference::InferenceError> {
         self.inference_calls.fetch_add(1, Ordering::SeqCst);
         panic!(
             "ForbidToolsProvider::inference invoked — Signal mode must not enter the agentic tool loop"
@@ -327,9 +335,7 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
         _temperature: Option<f64>,
     ) -> Result<frona::inference::provider::InferenceOutput, frona::inference::InferenceError> {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        panic!(
-            "ForbidToolsProvider::stream_inference invoked — Signal mode must not stream"
-        );
+        panic!("ForbidToolsProvider::stream_inference invoked — Signal mode must not stream");
     }
 
     async fn structured_inference(
@@ -357,7 +363,9 @@ async fn build_state_with_dyn(
     let config = test_config(&tmp);
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
 
@@ -387,8 +395,8 @@ async fn build_state_with_dyn(
         state.user_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
-            state.presign_service.clone(),
-            state.usage_service.clone(),
+        state.presign_service.clone(),
+        state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
     state.harness = Arc::new(frona::agent::harness::Harness::new(
@@ -397,7 +405,8 @@ async fn build_state_with_dyn(
         state.storage_service.clone(),
         state.agent_service.clone(),
         helpers::test_memory_service(&state, &db),
-        state.skill_service.clone(),        state.task_service.clone(),
+        state.skill_service.clone(),
+        state.task_service.clone(),
         state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
@@ -409,7 +418,9 @@ async fn build_state_with_dyn(
         state.config.clone(),
         state.usage_service.clone(),
     ));
-    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
+        state.harness.clone(),
+    ));
 
     let signal_svc = state.init_signal_service();
     state.policy_service.sync_base_policies().await.unwrap();
@@ -520,7 +531,6 @@ async fn signal_extract_never_enters_tool_loop_or_streaming() {
         "Signal extraction must NOT use streaming inference",
     );
 }
-
 
 #[tokio::test]
 async fn register_and_unregister_round_trip() {
@@ -670,11 +680,7 @@ async fn evaluate_stale_task_unregisters_silently() {
     assert_eq!(svc.watch_count("user-1").await, 1);
 
     // Cancel the underlying task - fire should detect stale state.
-    state
-        .task_service
-        .mark_cancelled(&task.id)
-        .await
-        .unwrap();
+    state.task_service.mark_cancelled(&task.id).await.unwrap();
 
     let cand = make_candidate("user-1", vec!["verification_code"], Some("sms"), None);
     let fired = svc.evaluate("user-1", cand).await.unwrap();
@@ -690,9 +696,9 @@ async fn evaluate_stale_task_unregisters_silently() {
 async fn evaluate_budget_exceeded_marks_task_failed() {
     // max_evaluations = 1 → first fire succeeds (eval_count: 0 → 1, threshold
     // not exceeded). Second fire trips the guard (eval_count: 1 → 2, > 1).
-    let provider = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Text("first run ack".into()),
-    ]));
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "first run ack".into(),
+    )]));
     let (state, _tmp) = build_state(provider.clone()).await;
     seed_user_and_agent(&state, "user-1", "agent-1").await;
     let svc = signal_service(&state).await;
@@ -718,9 +724,17 @@ async fn evaluate_budget_exceeded_marks_task_failed() {
     // should mark the task Failed + unregister.
     let cand2 = make_candidate("user-1", vec!["verification_code"], Some("sms"), None);
     let fired2 = svc.evaluate("user-1", cand2).await.unwrap();
-    assert!(fired2.is_empty(), "budget-exceeded fires must not be reported");
+    assert!(
+        fired2.is_empty(),
+        "budget-exceeded fires must not be reported"
+    );
 
-    let reloaded = state.task_service.find_by_id(&task.id).await.unwrap().unwrap();
+    let reloaded = state
+        .task_service
+        .find_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(reloaded.status, TaskStatus::Failed);
     assert_eq!(svc.watch_count("user-1").await, 0);
 }
@@ -766,14 +780,22 @@ async fn evaluate_with_default_policy_fires_and_runs_agent() {
     }
     assert!(provider.calls() >= 1, "agent inference should have run");
 
-    let reloaded = state.task_service.find_by_id(&task.id).await.unwrap().unwrap();
+    let reloaded = state
+        .task_service
+        .find_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(reloaded.chat_id.is_some(), "fire_signal should ensure C₂");
     assert_eq!(
         reloaded.status,
         TaskStatus::Pending,
         "task stays Pending when agent did not call complete_task"
     );
-    if let TaskKind::Signal { evaluation_count, .. } = reloaded.kind {
+    if let TaskKind::Signal {
+        evaluation_count, ..
+    } = reloaded.kind
+    {
         assert_eq!(evaluation_count, 1, "evaluation_count incremented");
     } else {
         panic!("expected Signal kind");
@@ -821,7 +843,11 @@ async fn evaluate_with_forbid_policy_blocks_fire() -> Result<(), AppError> {
     );
     let fired = svc.evaluate("user-1", cand).await?;
     assert!(fired.is_empty(), "policy denial must drop the match");
-    assert_eq!(provider.calls(), 0, "no inference should run on policy denial");
+    assert_eq!(
+        provider.calls(),
+        0,
+        "no inference should run on policy denial"
+    );
     Ok(())
 }
 
@@ -874,7 +900,10 @@ forbid(
     cand.contact = Some(contact.clone());
 
     let fired = svc.evaluate("user-1", cand).await?;
-    assert!(fired.is_empty(), "handle-based policy denial must drop the match");
+    assert!(
+        fired.is_empty(),
+        "handle-based policy denial must drop the match"
+    );
     assert_eq!(provider.calls(), 0);
     Ok(())
 }
@@ -913,13 +942,23 @@ async fn continuous_task_stays_pending_after_match() {
 
     assert_eq!(svc.watch_count("user-1").await, 1);
 
-    let reloaded = state.task_service.find_by_id(&task.id).await.unwrap().unwrap();
+    let reloaded = state
+        .task_service
+        .find_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         reloaded.status,
         TaskStatus::Pending,
         "continuous task stays Pending across matches"
     );
-    if let TaskKind::Signal { evaluation_count, mode, .. } = reloaded.kind {
+    if let TaskKind::Signal {
+        evaluation_count,
+        mode,
+        ..
+    } = reloaded.kind
+    {
         assert_eq!(evaluation_count, 1);
         assert_eq!(mode, frona::agent::task::models::SignalMode::Continuous);
     } else {
@@ -958,7 +997,12 @@ async fn continuous_task_budget_exhaustion_marks_completed_not_failed() {
     let fired2 = svc.evaluate("user-1", cand2).await.unwrap();
     assert!(fired2.is_empty(), "budget-exhausted fires aren't reported");
 
-    let reloaded = state.task_service.find_by_id(&task.id).await.unwrap().unwrap();
+    let reloaded = state
+        .task_service
+        .find_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         reloaded.status,
         TaskStatus::Completed,

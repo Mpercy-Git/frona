@@ -22,8 +22,13 @@ async fn seed_notification(state: &AppState, user_id: &str, title: &str) {
 #[tokio::test]
 async fn list_notifications_empty() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "notif-empty", "notifempty@example.com", "password123").await;
+    let (token, _) = register_user(
+        &state,
+        "notif-empty",
+        "notifempty@example.com",
+        "password123",
+    )
+    .await;
 
     let app = build_app(state);
     let resp = app

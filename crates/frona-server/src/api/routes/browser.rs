@@ -1,9 +1,9 @@
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::Request;
 use axum::response::Response;
 use axum::routing::get;
-use axum::Router;
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
@@ -13,10 +13,7 @@ use super::super::middleware::auth::AuthUser;
 use crate::core::state::AppState;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route(
-        "/api/browser/debugger/{credential_id}",
-        get(debugger_proxy),
-    )
+    Router::new().route("/api/browser/debugger/{credential_id}", get(debugger_proxy))
 }
 
 async fn debugger_proxy(
@@ -29,7 +26,11 @@ async fn debugger_proxy(
         .find_credential_by_id(&credential_id)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::from(crate::core::error::AppError::NotFound("Credential not found".into())))?;
+        .ok_or_else(|| {
+            ApiError::from(crate::core::error::AppError::NotFound(
+                "Credential not found".into(),
+            ))
+        })?;
 
     if credential.user_id != auth.user_id {
         return Err(ApiError::from(crate::core::error::AppError::Forbidden(
@@ -53,13 +54,11 @@ async fn debugger_proxy(
 
     let client = Client::builder(TokioExecutor::new()).build_http();
 
-    let req = Request::get(&target_url)
-        .body(Body::empty())
-        .map_err(|e| {
-            ApiError::from(crate::core::error::AppError::Browser(format!(
-                "Failed to build proxy request: {e}"
-            )))
-        })?;
+    let req = Request::get(&target_url).body(Body::empty()).map_err(|e| {
+        ApiError::from(crate::core::error::AppError::Browser(format!(
+            "Failed to build proxy request: {e}"
+        )))
+    })?;
 
     let resp = client.request(req).await.map_err(|e| {
         ApiError::from(crate::core::error::AppError::Browser(format!(

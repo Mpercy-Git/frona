@@ -52,25 +52,22 @@ impl InferenceError {
         match self {
             InferenceError::RateLimited { .. } | InferenceError::EmptyResponse => true,
             InferenceError::Cancelled(_) => false,
-            InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(http_err)) => {
-                    use rig_core::http_client::Error;
-                    match http_err {
-                        Error::InvalidStatusCode(s)
-                        | Error::InvalidStatusCodeWithMessage(s, _) => {
-                            let code = s.as_u16();
-                            code == 429
-                                || code == 500
-                                || code == 502
-                                || code == 503
-                                || code == 504
-                        }
-                        Error::Instance(_) => true,
-                        _ => false,
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(
+                http_err,
+            )) => {
+                use rig_core::http_client::Error;
+                match http_err {
+                    Error::InvalidStatusCode(s) | Error::InvalidStatusCodeWithMessage(s, _) => {
+                        let code = s.as_u16();
+                        code == 429 || code == 500 || code == 502 || code == 503 || code == 504
                     }
+                    Error::Instance(_) => true,
+                    _ => false,
+                }
             }
-            InferenceError::CompletionFailed(rig_core::completion::CompletionError::ProviderError(msg)) => {
-                !has_non_retryable_status(msg)
-            }
+            InferenceError::CompletionFailed(
+                rig_core::completion::CompletionError::ProviderError(msg),
+            ) => !has_non_retryable_status(msg),
             // A 2xx provider response that Rig cannot deserialize is usually tied to
             // the model's generated response shape. Retrying can produce a decodable
             // completion, while HTTP error statuses continue through the explicit
@@ -78,15 +75,13 @@ impl InferenceError {
             InferenceError::CompletionFailed(
                 rig_core::completion::CompletionError::ProviderResponse(response),
             ) => response.status.is_some_and(|status| status.is_success()),
-            InferenceError::CompletionFailed(
-                rig_core::completion::CompletionError::JsonError(_),
-            ) => true,
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::JsonError(
+                _,
+            )) => true,
             InferenceError::CompletionFailed(_) => false,
             InferenceError::InferenceFailed(msg) | InferenceError::StreamingFailed(msg) => {
                 let lower = msg.to_lowercase();
-                lower.contains("429")
-                    || lower.contains("timeout")
-                    || lower.contains("overloaded")
+                lower.contains("429") || lower.contains("timeout") || lower.contains("overloaded")
             }
             _ => false,
         }
@@ -95,7 +90,9 @@ impl InferenceError {
     pub fn is_rate_limited(&self) -> bool {
         match self {
             InferenceError::RateLimited { .. } => true,
-            InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(http_err)) => {
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(
+                http_err,
+            )) => {
                 use rig_core::http_client::Error;
                 matches!(
                     http_err,
@@ -103,9 +100,9 @@ impl InferenceError {
                     if s.as_u16() == 429
                 )
             }
-            InferenceError::CompletionFailed(rig_core::completion::CompletionError::ProviderError(msg)) => {
-                provider_error_contains_status(msg, &[429])
-            }
+            InferenceError::CompletionFailed(
+                rig_core::completion::CompletionError::ProviderError(msg),
+            ) => provider_error_contains_status(msg, &[429]),
             _ => false,
         }
     }
@@ -119,17 +116,23 @@ impl InferenceError {
             InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(
                 rig_core::http_client::Error::Instance(_),
             )) => "network_error",
-            InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(_)) => "server_error",
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(
+                _,
+            )) => "server_error",
             InferenceError::CompletionFailed(
                 rig_core::completion::CompletionError::ProviderResponse(response),
             ) if response.status.is_some_and(|status| status.is_success()) => {
                 "invalid_provider_response"
             }
-            InferenceError::CompletionFailed(
-                rig_core::completion::CompletionError::JsonError(_),
-            ) => "invalid_provider_response",
-            InferenceError::StreamingFailed(msg) if msg.to_lowercase().contains("timeout") => "timeout",
-            InferenceError::InferenceFailed(msg) if msg.to_lowercase().contains("overloaded") => "overloaded",
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::JsonError(
+                _,
+            )) => "invalid_provider_response",
+            InferenceError::StreamingFailed(msg) if msg.to_lowercase().contains("timeout") => {
+                "timeout"
+            }
+            InferenceError::InferenceFailed(msg) if msg.to_lowercase().contains("overloaded") => {
+                "overloaded"
+            }
             _ => "server_error",
         }
     }
@@ -157,8 +160,8 @@ mod tests {
 
     #[test]
     fn malformed_provider_json_is_retryable() {
-        let json_error = serde_json::from_str::<serde_json::Value>(r#"{"output":"cut off"#)
-            .unwrap_err();
+        let json_error =
+            serde_json::from_str::<serde_json::Value>(r#"{"output":"cut off"#).unwrap_err();
         let error = InferenceError::CompletionFailed(CompletionError::JsonError(json_error));
 
         assert!(error.is_retryable());

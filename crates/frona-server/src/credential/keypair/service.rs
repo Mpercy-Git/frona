@@ -1,10 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aes_gcm::{
-    Aes256Gcm, KeyInit, Nonce,
-    aead::Aead,
-};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::SigningKey;
 use jsonwebtoken::{DecodingKey, EncodingKey};
@@ -70,10 +67,7 @@ impl KeyPairService {
         self.repo.create(&kp).await
     }
 
-    pub async fn get_signing_key(
-        &self,
-        owner: &str,
-    ) -> Result<(EncodingKey, String), AppError> {
+    pub async fn get_signing_key(&self, owner: &str) -> Result<(EncodingKey, String), AppError> {
         {
             let cache = self.signing_cache.read().await;
             if let Some(cached) = cache.get(owner) {
@@ -130,7 +124,10 @@ impl KeyPairService {
             .repo
             .find_by_kid(kid)
             .await?
-            .ok_or_else(|| AppError::Auth { message: format!("Key not found for kid: {kid}"), code: AuthErrorCode::TokenInvalid })?;
+            .ok_or_else(|| AppError::Auth {
+                message: format!("Key not found for kid: {kid}"),
+                code: AuthErrorCode::TokenInvalid,
+            })?;
 
         let key = DecodingKey::from_ed_der(&kp.public_key_bytes);
         self.verifying_cache
@@ -161,7 +158,10 @@ impl KeyPairService {
         let cipher = Aes256Gcm::new_from_slice(&self.encryption_key)
             .map_err(|e| AppError::Internal(format!("AES init failed: {e}")))?;
 
-        let nonce_arr: [u8; 12] = kp.nonce.as_slice().try_into()
+        let nonce_arr: [u8; 12] = kp
+            .nonce
+            .as_slice()
+            .try_into()
             .map_err(|_| AppError::Internal("Invalid nonce length".into()))?;
         let nonce = Nonce::from(nonce_arr);
         let decrypted = cipher

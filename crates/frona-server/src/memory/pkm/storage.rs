@@ -115,7 +115,6 @@ impl PkmStorage {
         Ok(())
     }
 
-
     /// Normalise a page path into a safe relative `<path>.md` (no `..` escape).
     fn rel_md(path: &str) -> Result<String, AppError> {
         let cleaned = path
@@ -133,17 +132,24 @@ impl PkmStorage {
     fn write_file(dir: PathBuf, rel: &str, content: &str) -> Result<(), AppError> {
         let full = dir.join(rel);
         let parent = full.parent().ok_or_else(|| {
-            AppError::Internal(format!("pkm storage: path has no parent: {}", full.display()))
+            AppError::Internal(format!(
+                "pkm storage: path has no parent: {}",
+                full.display()
+            ))
         })?;
         std::fs::create_dir_all(parent)
             .map_err(|e| AppError::Internal(format!("pkm storage: mkdir: {e}")))?;
         let mut staged = tempfile::NamedTempFile::new_in(parent)
             .map_err(|e| AppError::Internal(format!("pkm storage: stage: {e}")))?;
-        staged.write_all(content.as_bytes())
+        staged
+            .write_all(content.as_bytes())
             .map_err(|e| AppError::Internal(format!("pkm storage: stage write: {e}")))?;
-        staged.as_file_mut().sync_all()
+        staged
+            .as_file_mut()
+            .sync_all()
             .map_err(|e| AppError::Internal(format!("pkm storage: stage sync: {e}")))?;
-        staged.persist(&full)
+        staged
+            .persist(&full)
             .map_err(|e| AppError::Internal(format!("pkm storage: replace: {}", e.error)))?;
         std::fs::File::open(parent)
             .and_then(|directory| directory.sync_all())
@@ -156,7 +162,12 @@ impl PkmStorage {
         std::fs::read_to_string(dir.join(rel)).ok()
     }
 
-    pub fn write_page(&self, scope: &VaultScope, path: &str, content: &str) -> Result<(), AppError> {
+    pub fn write_page(
+        &self,
+        scope: &VaultScope,
+        path: &str,
+        content: &str,
+    ) -> Result<(), AppError> {
         let rel = Self::rel_md(path)?;
         Self::write_file(self.memory_dir(scope)?, &rel, content)
     }
@@ -181,18 +192,27 @@ impl PkmStorage {
         let metadata = match std::fs::symlink_metadata(&directory) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(AppError::Internal(format!(
-                "pkm storage: inspect memory directory {}: {error}", directory.display()
-            ))),
+            Err(error) => {
+                return Err(AppError::Internal(format!(
+                    "pkm storage: inspect memory directory {}: {error}",
+                    directory.display()
+                )));
+            }
         };
         if metadata.file_type().is_symlink() {
-            std::fs::remove_file(&directory).map_err(|error| AppError::Internal(format!(
-                "pkm storage: remove memory directory link {}: {error}", directory.display()
-            )))?;
+            std::fs::remove_file(&directory).map_err(|error| {
+                AppError::Internal(format!(
+                    "pkm storage: remove memory directory link {}: {error}",
+                    directory.display()
+                ))
+            })?;
         } else {
-            std::fs::remove_dir_all(&directory).map_err(|error| AppError::Internal(format!(
-                "pkm storage: remove memory directory {}: {error}", directory.display()
-            )))?;
+            std::fs::remove_dir_all(&directory).map_err(|error| {
+                AppError::Internal(format!(
+                    "pkm storage: remove memory directory {}: {error}",
+                    directory.display()
+                ))
+            })?;
         }
         Ok(())
     }
@@ -235,7 +255,9 @@ impl PkmStorage {
     /// probe `reconcile_files` uses before doing any vault walk.
     pub fn page_exists(&self, scope: &VaultScope, path: &str) -> bool {
         Self::rel_md(path).is_ok_and(|rel| {
-            self.memory_dir(scope).map(|base| base.join(rel).exists()).unwrap_or(false)
+            self.memory_dir(scope)
+                .map(|base| base.join(rel).exists())
+                .unwrap_or(false)
         })
     }
 
@@ -251,16 +273,22 @@ impl PkmStorage {
         let file = match std::fs::File::open(&full) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(AppError::Internal(format!(
-                "pkm storage: fingerprint {}: {error}", full.display()
-            ))),
+            Err(error) => {
+                return Err(AppError::Internal(format!(
+                    "pkm storage: fingerprint {}: {error}",
+                    full.display()
+                )));
+            }
         };
         let mut hasher = blake3::Hasher::new();
-        hasher.update_reader(&mut BufReader::new(file)).map_err(|error| {
-            AppError::Internal(format!(
-                "pkm storage: fingerprint {}: {error}", full.display()
-            ))
-        })?;
+        hasher
+            .update_reader(&mut BufReader::new(file))
+            .map_err(|error| {
+                AppError::Internal(format!(
+                    "pkm storage: fingerprint {}: {error}",
+                    full.display()
+                ))
+            })?;
         Ok(Some(*hasher.finalize().as_bytes()))
     }
 
@@ -279,7 +307,11 @@ impl PkmStorage {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for entry in ignore::WalkBuilder::new(&base).hidden(false).build().flatten() {
+        for entry in ignore::WalkBuilder::new(&base)
+            .hidden(false)
+            .build()
+            .flatten()
+        {
             let p = entry.path();
             if p.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
@@ -291,9 +323,7 @@ impl PkmStorage {
             if page_path.is_empty() {
                 continue;
             }
-            let uid = std::fs::read_to_string(p)
-                .ok()
-                .and_then(|c| parse_uid(&c));
+            let uid = std::fs::read_to_string(p).ok().and_then(|c| parse_uid(&c));
             out.push((page_path, uid));
         }
         out
@@ -316,9 +346,12 @@ impl PkmStorage {
             match std::fs::remove_dir(&directory) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
-                Err(error) => return Err(AppError::Internal(format!(
-                    "pkm storage: remove empty directory {}: {error}", directory.display()
-                ))),
+                Err(error) => {
+                    return Err(AppError::Internal(format!(
+                        "pkm storage: remove empty directory {}: {error}",
+                        directory.display()
+                    )));
+                }
             }
         }
         Ok(())
@@ -425,8 +458,15 @@ mod tests {
         assert_eq!(slugify("PostgreSQL 15 (prod)"), "postgresql-15-prod");
         assert_eq!(slugify("  spaced   out  "), "spaced-out");
         assert!(slugify("日本").is_ascii(), "always ASCII");
-        assert!(slugify(&"あ".repeat(200)).chars().count() <= 60, "still capped");
-        assert_eq!(normalize_path("/a/../b.md"), Some("a/b".into()), "no traversal survives");
+        assert!(
+            slugify(&"あ".repeat(200)).chars().count() <= 60,
+            "still capped"
+        );
+        assert_eq!(
+            normalize_path("/a/../b.md"),
+            Some("a/b".into()),
+            "no traversal survives"
+        );
     }
 
     /// A path with no alphanumeric content anywhere still yields `None` - the caller
@@ -464,20 +504,39 @@ mod tests {
             .unwrap();
 
         storage
-            .rewrite_wikilinks(&vault, "people/alice", "services/postgres", "services/company-postgres")
+            .rewrite_wikilinks(
+                &vault,
+                "people/alice",
+                "services/postgres",
+                "services/company-postgres",
+            )
             .unwrap();
 
         let out = storage.read_page(&vault, "people/alice").unwrap();
-        assert!(out.contains("[[Memory/services/company-postgres]]"), "renamed link updated");
-        assert!(!out.contains("[[Memory/services/postgres]]"), "old link gone");
-        assert!(out.contains("[[Memory/services/redis]]"), "unrelated link untouched");
-        assert!(out.contains("[[Memory/services/postgres-2]]"), "prefix-colliding link untouched");
+        assert!(
+            out.contains("[[Memory/services/company-postgres]]"),
+            "renamed link updated"
+        );
+        assert!(
+            !out.contains("[[Memory/services/postgres]]"),
+            "old link gone"
+        );
+        assert!(
+            out.contains("[[Memory/services/redis]]"),
+            "unrelated link untouched"
+        );
+        assert!(
+            out.contains("[[Memory/services/postgres-2]]"),
+            "prefix-colliding link untouched"
+        );
     }
 
     #[test]
     fn reset_deletes_only_the_managed_memory_directory() {
         let (storage, vault, _tmp) = test_storage();
-        storage.write_page(&vault, "people/alice", "managed").unwrap();
+        storage
+            .write_page(&vault, "people/alice", "managed")
+            .unwrap();
         storage
             .write_user_note(vault.handle(), "Work Notes/standup", "external")
             .unwrap();
@@ -495,7 +554,7 @@ mod tests {
     #[test]
     fn page_vault_path_and_from_abs_round_trip() {
         let (_storage, vault, _tmp) = test_storage();
-                assert_eq!(vault.vault_path("people/bob"), "Memory/people/bob");
+        assert_eq!(vault.vault_path("people/bob"), "Memory/people/bob");
         assert_eq!(
             vault.page_from_any("Memory/people/bob").as_deref(),
             Some("people/bob")
@@ -516,13 +575,12 @@ mod tests {
     fn bad_directory_segment_is_refused_by_storage() {
         let (storage, vault, _tmp) = test_storage();
         for bad in ["..", "../escape", "a/b", "  ", ""] {
-            let bad_vault = VaultScope::new_unchecked(
-                vault.handle().clone(),
-                bad,
-                vault.root().to_path_buf(),
-            );
+            let bad_vault =
+                VaultScope::new_unchecked(vault.handle().clone(), bad, vault.root().to_path_buf());
             assert!(
-                storage.write_page(&bad_vault, "people/bob", "body").is_err(),
+                storage
+                    .write_page(&bad_vault, "people/bob", "body")
+                    .is_err(),
                 "write_page must refuse directory {bad:?}"
             );
             assert!(
@@ -549,15 +607,22 @@ mod tests {
     #[test]
     fn move_page_file_preserves_content_and_removes_old() {
         let (storage, vault, _tmp) = test_storage();
-                storage.write_page(&vault, "services/postgres", "# Postgres\n\nbody").unwrap();
+        storage
+            .write_page(&vault, "services/postgres", "# Postgres\n\nbody")
+            .unwrap();
 
         storage
             .move_page_file(&vault, "services/postgres", "services/company-postgres")
             .unwrap();
 
-        assert!(storage.read_page(&vault, "services/postgres").is_none(), "old file gone");
+        assert!(
+            storage.read_page(&vault, "services/postgres").is_none(),
+            "old file gone"
+        );
         assert_eq!(
-            storage.read_page(&vault, "services/company-postgres").as_deref(),
+            storage
+                .read_page(&vault, "services/company-postgres")
+                .as_deref(),
             Some("# Postgres\n\nbody"),
             "content moved intact"
         );

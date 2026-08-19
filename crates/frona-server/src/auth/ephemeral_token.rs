@@ -37,11 +37,7 @@ impl EphemeralTokenGuard {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = tokio::fs::set_permissions(
-                root,
-                std::fs::Permissions::from_mode(0o700),
-            )
-            .await;
+            let _ = tokio::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).await;
         }
 
         // Sandbox drivers (syd, landlock) need absolute paths in allowlists.
@@ -119,9 +115,7 @@ async fn write_atomic_0600(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     // tempfile in the same directory → atomic rename on the same filesystem.
     let tmp_name = format!(
         ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("token"),
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("token"),
         uuid::Uuid::new_v4()
     );
     let tmp_path = parent.join(tmp_name);
@@ -182,10 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_atomic_creates_0600_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "frona-eph-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("frona-eph-test-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let path = dir.join("tok");
         write_atomic_0600(&path, b"jwt-content").await.unwrap();
@@ -209,10 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_stale_removes_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "frona-eph-cleanup-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("frona-eph-cleanup-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         tokio::fs::write(dir.join("a"), b"x").await.unwrap();
         tokio::fs::write(dir.join("b"), b"y").await.unwrap();

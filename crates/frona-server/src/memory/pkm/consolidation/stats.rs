@@ -211,8 +211,7 @@ impl ConsolidationStats {
         self.resolve_fingerprint_skips += o.resolve_fingerprint_skips;
         self.resolve_conversations += o.resolve_conversations;
         self.resolve_reconsiderations += o.resolve_reconsiderations;
-        self.resolve_reconsideration_conversations +=
-            o.resolve_reconsideration_conversations;
+        self.resolve_reconsideration_conversations += o.resolve_reconsideration_conversations;
         self.resolve_merges_after_first_sweep += o.resolve_merges_after_first_sweep;
         self.resolve_identity_state_changes += o.resolve_identity_state_changes;
         self.resolve_identity_pair_changes += o.resolve_identity_pair_changes;
@@ -280,8 +279,7 @@ impl ConsolidationStats {
         self.resolve_fingerprint_skips += other.resolve_fingerprint_skips;
         self.resolve_conversations += other.resolve_conversations;
         self.resolve_reconsiderations += other.resolve_reconsiderations;
-        self.resolve_reconsideration_conversations +=
-            other.resolve_reconsideration_conversations;
+        self.resolve_reconsideration_conversations += other.resolve_reconsideration_conversations;
         self.resolve_merges_after_first_sweep += other.resolve_merges_after_first_sweep;
         self.resolve_identity_state_changes += other.resolve_identity_state_changes;
         self.resolve_identity_pair_changes += other.resolve_identity_pair_changes;

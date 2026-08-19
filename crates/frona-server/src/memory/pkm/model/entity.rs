@@ -121,13 +121,22 @@ pub struct KnowledgeEntity {
 /// deterministic: the model extracts each lifecycle event, while the server connects
 /// events that cite the same task. The planned record remains durable history.
 pub fn terminal_task_plan_ids(memories: &[KnowledgeMemory]) -> HashSet<String> {
-    let terminal_tasks = memories.iter()
+    let terminal_tasks = memories
+        .iter()
         .filter(|memory| {
-            !matches!(memory.disposition, Disposition::Erroneous | Disposition::Suspect)
+            !matches!(
+                memory.disposition,
+                Disposition::Erroneous | Disposition::Suspect
+            )
         })
-        .filter(|memory| memory.episode.as_ref().is_some_and(|episode| {
-            matches!(episode.status, EpisodeStatus::Occurred | EpisodeStatus::Cancelled)
-        }))
+        .filter(|memory| {
+            memory.episode.as_ref().is_some_and(|episode| {
+                matches!(
+                    episode.status,
+                    EpisodeStatus::Occurred | EpisodeStatus::Cancelled
+                )
+            })
+        })
         .flat_map(|memory| memory.evidence.iter())
         .filter_map(|evidence| match &evidence.source {
             EvidenceSource::TaskLifecycle { task_id, .. } => Some(task_id.clone()),
@@ -135,14 +144,25 @@ pub fn terminal_task_plan_ids(memories: &[KnowledgeMemory]) -> HashSet<String> {
         })
         .collect::<HashSet<_>>();
 
-    memories.iter()
-        .filter(|memory| memory.episode.as_ref().is_some_and(|episode| {
-            episode.status == EpisodeStatus::Planned
-        }))
-        .filter(|memory| memory.evidence.iter().any(|evidence| match &evidence.source {
-            EvidenceSource::TaskLifecycle { task_id, .. } => terminal_tasks.contains(task_id),
-            _ => false,
-        }))
+    memories
+        .iter()
+        .filter(|memory| {
+            memory
+                .episode
+                .as_ref()
+                .is_some_and(|episode| episode.status == EpisodeStatus::Planned)
+        })
+        .filter(|memory| {
+            memory
+                .evidence
+                .iter()
+                .any(|evidence| match &evidence.source {
+                    EvidenceSource::TaskLifecycle { task_id, .. } => {
+                        terminal_tasks.contains(task_id)
+                    }
+                    _ => false,
+                })
+        })
         .map(|memory| memory.id.clone())
         .collect()
 }
@@ -160,7 +180,9 @@ pub fn terminal_task_plan_ids(memories: &[KnowledgeMemory]) -> HashSet<String> {
 ///
 /// History-class (`Outdated` / `Replace`) wins over drop-class (`Duplicate`/
 /// `Absorbed`) when a memory carries both.
-pub fn classify_memories(memories: &[KnowledgeMemory]) -> (Vec<&KnowledgeMemory>, Vec<&KnowledgeMemory>) {
+pub fn classify_memories(
+    memories: &[KnowledgeMemory],
+) -> (Vec<&KnowledgeMemory>, Vec<&KnowledgeMemory>) {
     let mut current = Vec::new();
     let mut history = Vec::new();
     let terminal_task_plans = terminal_task_plan_ids(memories);
@@ -168,12 +190,16 @@ pub fn classify_memories(memories: &[KnowledgeMemory]) -> (Vec<&KnowledgeMemory>
         if matches!(m.disposition, Disposition::Erroneous | Disposition::Suspect) {
             continue;
         }
-        let has_replace = m.relations.iter().any(|l| l.relation == RelationType::Replace);
+        let has_replace = m
+            .relations
+            .iter()
+            .any(|l| l.relation == RelationType::Replace);
         let has_drop = m
             .relations
             .iter()
             .any(|l| matches!(l.relation, RelationType::Duplicate | RelationType::Absorbed));
-        if m.disposition == Disposition::Outdated || has_replace
+        if m.disposition == Disposition::Outdated
+            || has_replace
             || terminal_task_plans.contains(&m.id)
         {
             history.push(m);
@@ -200,20 +226,24 @@ pub fn memory_bullet(m: &KnowledgeMemory) -> String {
 }
 
 pub fn memory_evidence_summary(m: &KnowledgeMemory) -> String {
-    m.evidence.iter().map(|item| {
-        let source = match &item.source {
-            EvidenceSource::UserMessage { .. } => "UserMessage",
-            EvidenceSource::UserConfirmation { .. } => "UserConfirmation",
-            EvidenceSource::AgentMessage { .. } => "AgentMessage",
-            EvidenceSource::WebSearch { .. } => "WebSearch",
-            EvidenceSource::WebPage { .. } => "WebPage",
-            EvidenceSource::ToolResult { .. } => "ToolResult",
-            EvidenceSource::TaskLifecycle { .. } => "TaskLifecycle",
-            EvidenceSource::HumanEdit { .. } => "HumanEdit",
-            EvidenceSource::ExternalNote { .. } => "ExternalNote",
-        };
-        format!("{source}/{:?}", item.strength)
-    }).collect::<Vec<_>>().join(", ")
+    m.evidence
+        .iter()
+        .map(|item| {
+            let source = match &item.source {
+                EvidenceSource::UserMessage { .. } => "UserMessage",
+                EvidenceSource::UserConfirmation { .. } => "UserConfirmation",
+                EvidenceSource::AgentMessage { .. } => "AgentMessage",
+                EvidenceSource::WebSearch { .. } => "WebSearch",
+                EvidenceSource::WebPage { .. } => "WebPage",
+                EvidenceSource::ToolResult { .. } => "ToolResult",
+                EvidenceSource::TaskLifecycle { .. } => "TaskLifecycle",
+                EvidenceSource::HumanEdit { .. } => "HumanEdit",
+                EvidenceSource::ExternalNote { .. } => "ExternalNote",
+            };
+            format!("{source}/{:?}", item.strength)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Exponential recency-decay score for a short memory: `exp(-age / half_life)`, in
@@ -243,14 +273,20 @@ pub fn derive_resolution_search(
     attributes: &serde_json::Value,
     relations: impl IntoIterator<Item = (String, String)>,
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
-    let mut names: BTreeSet<String> = aliases.iter()
+    let mut names: BTreeSet<String> = aliases
+        .iter()
         .map(|value| normalize_identity_name(value))
-        .filter(|value| !value.is_empty()).collect();
+        .filter(|value| !value.is_empty())
+        .collect();
     let name = normalize_identity_name(name);
-    if !name.is_empty() { names.insert(name); }
-    let tokens: BTreeSet<String> = names.iter().flat_map(|name|
-        name.split_whitespace().map(str::to_string)
-    ).filter(|token| !token.is_empty()).collect();
+    if !name.is_empty() {
+        names.insert(name);
+    }
+    let tokens: BTreeSet<String> = names
+        .iter()
+        .flat_map(|name| name.split_whitespace().map(str::to_string))
+        .filter(|token| !token.is_empty())
+        .collect();
     let mut assertions = BTreeSet::new();
     if let Some(attributes) = attributes.as_object() {
         for (property, value) in attributes {
@@ -274,7 +310,9 @@ fn flatten_resolution_attribute(
 ) {
     match value {
         serde_json::Value::Array(values) => {
-            for value in values { flatten_resolution_attribute(property, value, out); }
+            for value in values {
+                flatten_resolution_attribute(property, value, out);
+            }
         }
         serde_json::Value::Null | serde_json::Value::Object(_) => {}
         value => {

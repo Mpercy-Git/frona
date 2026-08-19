@@ -324,10 +324,7 @@ mod tests {
 
     #[test]
     fn fetch_entry_finds_exact_name() {
-        let entries = parse_entries(&[
-            sample_entry("x/y", "first"),
-            sample_entry("x/z", "second"),
-        ]);
+        let entries = parse_entries(&[sample_entry("x/y", "first"), sample_entry("x/z", "second")]);
         let hit = fetch_entry(&entries, "x/z").unwrap();
         assert_eq!(hit.description, "second");
         assert!(fetch_entry(&entries, "not/here").is_none());

@@ -49,7 +49,11 @@ impl PromptSpec {
     pub const INGEST: Self = Self {
         dir: "ingest",
         vars: &[
-            "owner_name", "handle", "self_path", "existing_entities", "research_messages",
+            "owner_name",
+            "handle",
+            "self_path",
+            "existing_entities",
+            "research_messages",
             "transcript",
         ],
         reject_vars: Some(&["rejected", "accepted_memories", "memory_repairs"]),
@@ -58,7 +62,15 @@ impl PromptSpec {
     };
     pub const RECONCILE: Self = Self {
         dir: "reconcile",
-        vars: &["path", "kind", "name", "description", "attributes", "relations", "memories"],
+        vars: &[
+            "path",
+            "kind",
+            "name",
+            "description",
+            "attributes",
+            "relations",
+            "memories",
+        ],
         reject_vars: Some(&["rejections"]),
         advisory_vars: Some(&["suggestions"]),
         bad_term_vars: None,
@@ -89,21 +101,25 @@ impl PromptSpec {
     pub const PLAYBOOK_AUTHOR: Self = Self {
         dir: "playbook-author",
         vars: &[
-            "path", "name", "description", "body", "memories", "transcript",
+            "path",
+            "name",
+            "description",
+            "body",
+            "memories",
+            "transcript",
             "invocations",
         ],
         reject_vars: Some(&["rejections"]),
         advisory_vars: None,
         bad_term_vars: None,
     };
-    pub const WRITEBACK: Self =
-        Self {
-            dir: "writeback",
-            vars: &["memories", "diff"],
-            reject_vars: None,
-            advisory_vars: None,
-            bad_term_vars: None,
-        };
+    pub const WRITEBACK: Self = Self {
+        dir: "writeback",
+        vars: &["memories", "diff"],
+        reject_vars: None,
+        advisory_vars: None,
+        bad_term_vars: None,
+    };
     pub const CLASSIFY: Self = Self {
         dir: "classify",
         vars: &[
@@ -131,8 +147,14 @@ impl PromptSpec {
     pub const RESOLVE: Self = Self {
         dir: "resolve",
         vars: &[
-            "path", "name", "aliases", "description", "kind", "identity_evidence",
-            "assertions", "candidates",
+            "path",
+            "name",
+            "aliases",
+            "description",
+            "kind",
+            "identity_evidence",
+            "assertions",
+            "candidates",
         ],
         reject_vars: Some(&["proposed", "subject", "candidates"]),
         advisory_vars: None,
@@ -202,7 +224,10 @@ impl PromptSpec {
         vars: &[(&str, &str)],
     ) -> Result<String, AppError> {
         let declared = self.reject_vars.ok_or_else(|| {
-            AppError::Internal(format!("prompt `{}`: stage declares no reject prompt", self.dir))
+            AppError::Internal(format!(
+                "prompt `{}`: stage declares no reject prompt",
+                self.dir
+            ))
         })?;
         check_vars(self.dir, "reject", declared, vars)?;
         read_with(prompts, &self.reject_path(), vars)
@@ -214,7 +239,10 @@ impl PromptSpec {
         vars: &[(&str, &str)],
     ) -> Result<String, AppError> {
         let declared = self.advisory_vars.ok_or_else(|| {
-            AppError::Internal(format!("prompt `{}`: stage declares no advisory prompt", self.dir))
+            AppError::Internal(format!(
+                "prompt `{}`: stage declares no advisory prompt",
+                self.dir
+            ))
         })?;
         check_vars(self.dir, "promote", declared, vars)?;
         read_with(prompts, &self.advisory_path(), vars)
@@ -260,7 +288,9 @@ fn read(prompts: &PromptLoader, path: &str) -> Result<String, AppError> {
     prompts
         .read(path)
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| AppError::Internal(format!("prompt `{path}`: missing, unrenderable, or empty")))
+        .ok_or_else(|| {
+            AppError::Internal(format!("prompt `{path}`: missing, unrenderable, or empty"))
+        })
 }
 
 fn read_with(
@@ -268,12 +298,15 @@ fn read_with(
     path: &str,
     vars: &[(&str, &str)],
 ) -> Result<String, AppError> {
-    prompts.read_with_vars(path, vars).filter(|s| !s.trim().is_empty()).ok_or_else(|| {
-        AppError::Internal(format!(
-            "prompt `{path}`: failed to render — a placeholder the caller does not supply, \
+    prompts
+        .read_with_vars(path, vars)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "prompt `{path}`: failed to render — a placeholder the caller does not supply, \
              or a missing file. Refusing to call the model with an empty prompt."
-        ))
-    })
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -356,7 +389,9 @@ mod tests {
     fn mismatched_variable_set_is_refused() {
         let loader = prompts();
         assert!(
-            PromptSpec::INGEST.render(&loader, &[("owner_name", "Casey Owner")]).is_err(),
+            PromptSpec::INGEST
+                .render(&loader, &[("owner_name", "Casey Owner")])
+                .is_err(),
             "an incomplete variable set must fail, not render empty"
         );
         assert!(
@@ -367,7 +402,9 @@ mod tests {
              file disagree about the contract"
         );
         assert!(
-            PromptSpec::INGEST.reject(&loader, &[("wrong", "x")]).is_err(),
+            PromptSpec::INGEST
+                .reject(&loader, &[("wrong", "x")])
+                .is_err(),
             "the reject prompt's variables are checked like any other"
         );
     }
@@ -388,8 +425,10 @@ mod tests {
         assert_eq!(on_disk, declared, "PKM prompt directories");
 
         for p in PromptSpec::ALL {
-            let mut want: BTreeSet<String> =
-                ["system.md", "input.md"].iter().map(|f| format!("pkm/{}/{f}", p.dir)).collect();
+            let mut want: BTreeSet<String> = ["system.md", "input.md"]
+                .iter()
+                .map(|f| format!("pkm/{}/{f}", p.dir))
+                .collect();
             if p.reject_vars.is_some() {
                 want.insert(format!("pkm/{}/reject.md", p.dir));
             }
@@ -399,7 +438,10 @@ mod tests {
             if p.advisory_vars.is_some() {
                 want.insert(format!("pkm/{}/promote.md", p.dir));
             }
-            let on_disk: BTreeSet<String> = loader.list_dir(&format!("pkm/{}", p.dir)).into_iter().collect();
+            let on_disk: BTreeSet<String> = loader
+                .list_dir(&format!("pkm/{}", p.dir))
+                .into_iter()
+                .collect();
             assert_eq!(on_disk, want, "stage `{}` directory contents", p.dir);
         }
     }
@@ -452,22 +494,33 @@ mod tests {
             (
                 "bad_term.md",
                 PromptSpec::CLASSIFY
-                    .bad_term(&loader, &sample(PromptSpec::CLASSIFY.bad_term_vars.unwrap()))
+                    .bad_term(
+                        &loader,
+                        &sample(PromptSpec::CLASSIFY.bad_term_vars.unwrap()),
+                    )
                     .expect("classify bad term"),
             ),
         ];
         for (file, correction) in corrections {
             for field in [
-                "entity", "classes", "relations", "attributes", "new_entities",
-                "declarations", "has_keys", "inverse_functional_properties",
+                "entity",
+                "classes",
+                "relations",
+                "attributes",
+                "new_entities",
+                "declarations",
+                "has_keys",
+                "inverse_functional_properties",
             ] {
                 assert!(
                     correction.contains(&format!("`{field}`")),
                     "classify/{file} must request `{field}` again"
                 );
             }
-            assert!(correction.contains("all fields"),
-                "classify/{file} must request the complete submission");
+            assert!(
+                correction.contains("all fields"),
+                "classify/{file} must request the complete submission"
+            );
         }
     }
 
@@ -476,7 +529,9 @@ mod tests {
     #[test]
     fn assemble_example_decides_each_term_once() {
         let loader = prompts();
-        let system = loader.read("pkm/assemble/system.md").expect("assemble system");
+        let system = loader
+            .read("pkm/assemble/system.md")
+            .expect("assemble system");
         let example = system.split("```json").nth(1).expect("JSON example");
         let mut seen = BTreeSet::new();
         for line in example.lines().filter(|line| line.contains("\"term\":")) {
@@ -485,7 +540,10 @@ mod tests {
                 .nth(1)
                 .and_then(|tail| tail.split('"').nth(1))
                 .expect("term value");
-            assert!(seen.insert(term), "assemble example decides `{term}` more than once");
+            assert!(
+                seen.insert(term),
+                "assemble example decides `{term}` more than once"
+            );
         }
     }
 
@@ -512,7 +570,9 @@ mod tests {
     fn ingest_and_reconcile_require_attributes_to_describe_the_underlying_entity() {
         let loader = prompts();
         let extract = loader.read("pkm/ingest/system.md").expect("extract system");
-        let reconcile = loader.read("pkm/reconcile/system.md").expect("reconcile system");
+        let reconcile = loader
+            .read("pkm/reconcile/system.md")
+            .expect("reconcile system");
         let reconcile_input = PromptSpec::RECONCILE
             .render(&loader, &sample(PromptSpec::RECONCILE.vars))
             .expect("render reconcile input")
@@ -522,8 +582,14 @@ mod tests {
             ("extract", extract.as_str()),
             ("reconcile", reconcile.as_str()),
         ] {
-            assert!(prompt.contains("underlying-entity test"), "{name} omits the subject test");
-            assert!(prompt.contains("related entity"), "{name} omits related-entity guidance");
+            assert!(
+                prompt.contains("underlying-entity test"),
+                "{name} omits the subject test"
+            );
+            assert!(
+                prompt.contains("related entity"),
+                "{name} omits related-entity guidance"
+            );
             assert!(prompt.contains("event"), "{name} omits event guidance");
         }
         assert!(
@@ -538,7 +604,9 @@ mod tests {
     #[test]
     fn reconcile_requires_attributes_to_have_the_exact_entity_as_subject() {
         let loader = prompts();
-        let reconcile = loader.read("pkm/reconcile/system.md").expect("reconcile system");
+        let reconcile = loader
+            .read("pkm/reconcile/system.md")
+            .expect("reconcile system");
         let reconcile_input = PromptSpec::RECONCILE
             .render(&loader, &sample(PromptSpec::RECONCILE.vars))
             .expect("render reconcile input")
@@ -556,7 +624,10 @@ mod tests {
             "group that contains",
             "do not store it as an unqualified attribute",
         ] {
-            assert!(reconcile.contains(required), "reconcile omits `{required}` scope guidance");
+            assert!(
+                reconcile.contains(required),
+                "reconcile omits `{required}` scope guidance"
+            );
         }
         assert!(reconcile.contains("only Pro has 64 GB"));
         assert!(reconcile.contains("the core count describes the processor, not the computer"));
@@ -578,7 +649,10 @@ mod tests {
         assert!(extract.contains("emit a separate atomic"));
         assert!(extract.contains("include every participant in its `entities` array"));
         assert!(extract.contains("Project Aurora uses PostgreSQL"));
-        assert!(extract.contains("\"entities\": [\"projects/project-aurora\", \"software/postgresql\"]"));
+        assert!(
+            extract
+                .contains("\"entities\": [\"projects/project-aurora\", \"software/postgresql\"]")
+        );
     }
 
     #[test]
@@ -588,7 +662,10 @@ mod tests {
 
         assert!(extract.contains("cover all existing\nsupported procedure steps"));
         assert!(extract.contains("does not provide procedure coverage"));
-        assert!(extract.contains("preserve every\nearlier part that the correction does not contradict"));
+        assert!(
+            extract
+                .contains("preserve every\nearlier part that the correction does not contradict")
+        );
         assert!(extract.contains("using only its assigned Procedural memories"));
         assert!(extract.contains("narrow the candidate to the outcome"));
     }
@@ -653,6 +730,8 @@ mod tests {
         assert!(extract.contains("copy `event_at`"));
         assert!(extract.contains("recurring schedule with no stated end is a durable `Fact`"));
         assert!(extract.contains("outcome is a new append-only Episodic memory"));
-        assert!(extract.contains("For a task lifecycle source, use the task lifecycle handle and an empty anchor quote"));
+        assert!(extract.contains(
+            "For a task lifecycle source, use the task lifecycle handle and an empty anchor quote"
+        ));
     }
 }

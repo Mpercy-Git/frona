@@ -1,12 +1,12 @@
 use chrono::Utc;
-use frona::db::init as db;
-use frona::db::repo::generic::SurrealRepo;
+use frona::auth::User;
 use frona::auth::oauth::models::OAuthIdentity;
 use frona::auth::oauth::repository::OAuthRepository;
-use frona::auth::User;
 use frona::core::repository::Repository;
-use surrealdb::engine::local::{Db, Mem};
+use frona::db::init as db;
+use frona::db::repo::generic::SurrealRepo;
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -139,7 +139,10 @@ async fn test_email_matching_flow() {
 
     // User found by email — link identity
     use frona::auth::UserRepository;
-    let found_user = user_repo.find_by_email("existing@example.com").await.unwrap();
+    let found_user = user_repo
+        .find_by_email("existing@example.com")
+        .await
+        .unwrap();
     assert!(found_user.is_some());
     let found_user = found_user.unwrap();
     assert_eq!(found_user.id, user.id);

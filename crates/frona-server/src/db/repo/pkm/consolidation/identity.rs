@@ -22,7 +22,11 @@ impl PkmRepo {
                 "pkm/entity_identity_merge: transition scope or identity mismatch".into(),
             ));
         }
-        let tx = self.db.clone().begin().await
+        let tx = self
+            .db
+            .clone()
+            .begin()
+            .await
             .map_err(|e| Self::err("entity_identity_merge_begin", e))?;
         if let Err(e) = tx
             .query("UPSERT type::record('knowledge_consolidation_entity', $id) CONTENT $row")
@@ -56,9 +60,9 @@ impl PkmRepo {
             let _ = tx.cancel().await;
             return Err(Self::err("entity_identity_merge_checkpoint", e));
         }
-        tx.commit().await.map_err(|e| Self::err("entity_identity_merge_commit", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| Self::err("entity_identity_merge_commit", e))?;
         Ok(())
     }
-
-
 }

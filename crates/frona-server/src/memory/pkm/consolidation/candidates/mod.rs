@@ -2,8 +2,10 @@ use std::collections::{BTreeSet, HashSet};
 
 use crate::core::error::AppError;
 use crate::memory::pkm::consolidation::view::EntityViewManager;
-use crate::memory::pkm::model::{KnowledgeConsolidationEntity, EntityCategory, normalize_identity_name};
 use crate::memory::pkm::model::EntityHit;
+use crate::memory::pkm::model::{
+    EntityCategory, KnowledgeConsolidationEntity, normalize_identity_name,
+};
 
 const IDENTITY_SIMILARITY_THRESHOLD: f64 = 0.78;
 pub(crate) const RESOLUTION_RETRIEVAL_LIMIT: i64 = 64;
@@ -23,7 +25,9 @@ impl Subject {
     #[cfg(test)]
     pub(crate) fn new(path: &str, name: &str, kinds: &[&str], assertions: &[&str]) -> Self {
         Self {
-            path: path.into(), names: vec![name.into()], description: String::new(),
+            path: path.into(),
+            names: vec![name.into()],
+            description: String::new(),
             category: EntityCategory::Concept,
             kinds: kinds.iter().map(|kind| (*kind).into()).collect(),
             assertions: assertions.iter().map(|value| (*value).into()).collect(),
@@ -40,32 +44,46 @@ impl Subject {
         assertions: impl IntoIterator<Item = String>,
     ) -> Self {
         Self {
-            path, names: std::iter::once(name).chain(aliases).collect(),
-            description, category,
+            path,
+            names: std::iter::once(name).chain(aliases).collect(),
+            description,
+            category,
             kinds,
             assertions: assertions.into_iter().collect(),
         }
     }
 
-
     pub(crate) fn from_entity(entity: &KnowledgeConsolidationEntity) -> Self {
         Self::from_parts(
-            entity.path.clone(), entity.name.clone(), entity.aliases.iter().cloned(),
-            entity.description.clone(), entity.category, entity.kinds.clone(),
+            entity.path.clone(),
+            entity.name.clone(),
+            entity.aliases.iter().cloned(),
+            entity.description.clone(),
+            entity.category,
+            entity.kinds.clone(),
             entity.search_assertions.iter().cloned(),
         )
     }
 
     fn name_tokens(&self) -> Vec<String> {
-        self.names.iter().flat_map(|name| normalize_identity_name(name).split_whitespace()
-            .map(str::to_string).collect::<Vec<_>>()).collect::<BTreeSet<_>>()
-            .into_iter().collect()
+        self.names
+            .iter()
+            .flat_map(|name| {
+                normalize_identity_name(name)
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     fn query_text(&self) -> String {
         std::iter::once(self.names.join(" "))
             .chain((!self.description.trim().is_empty()).then(|| self.description.clone()))
-            .collect::<Vec<_>>().join(" ")
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -83,7 +101,9 @@ pub(crate) struct Search {
 }
 
 impl Search {
-    pub(crate) fn new(repo: EntityViewManager) -> Self { Self { repo } }
+    pub(crate) fn new(repo: EntityViewManager) -> Self {
+        Self { repo }
+    }
 
     pub(crate) async fn find_candidates<P, F>(
         &self,
@@ -96,14 +116,28 @@ impl Search {
         F: Fn(&Subject, &EntityHit) -> Option<u8>,
     {
         let subject = request.subject;
-        let names: Vec<String> = subject.names.iter().map(|name| normalize_identity_name(name)).collect();
+        let names: Vec<String> = subject
+            .names
+            .iter()
+            .map(|name| normalize_identity_name(name))
+            .collect();
         let assertions: Vec<String> = subject.assertions.iter().cloned().collect();
-        let mut entities = self.repo.resolution_candidates(
-            &names, &subject.name_tokens(), &assertions, &subject.kinds,
-            &subject.query_text(), RESOLUTION_RETRIEVAL_LIMIT,
-        ).await?;
-        let additional_paths: HashSet<_> = request.additional_candidates.iter()
-            .map(|entity| entity.path.as_str()).collect();
+        let mut entities = self
+            .repo
+            .resolution_candidates(
+                &names,
+                &subject.name_tokens(),
+                &assertions,
+                &subject.kinds,
+                &subject.query_text(),
+                RESOLUTION_RETRIEVAL_LIMIT,
+            )
+            .await?;
+        let additional_paths: HashSet<_> = request
+            .additional_candidates
+            .iter()
+            .map(|entity| entity.path.as_str())
+            .collect();
         entities.retain(|entity| !additional_paths.contains(entity.path.as_str()));
         entities.extend(request.additional_candidates);
         let mut forced = HashSet::new();
@@ -113,35 +147,52 @@ impl Search {
                 && let Some(entity) = self.repo.entity_by_path(&path).await?
             {
                 entities.push(EntityHit {
-                    path: entity.path, origin: entity.origin, category: entity.category,
-                    kinds: entity.kinds, name: entity.name, description: entity.description,
-                    aliases: entity.aliases, body: entity.body,
+                    path: entity.path,
+                    origin: entity.origin,
+                    category: entity.category,
+                    kinds: entity.kinds,
+                    name: entity.name,
+                    description: entity.description,
+                    aliases: entity.aliases,
+                    body: entity.body,
                     search_name_tokens: entity.search_name_tokens,
                     search_assertions: entity.search_assertions,
                 });
             }
         }
         let mut seen = HashSet::new();
-        let candidates: Vec<_> = entities.into_iter().map(|mut entity| {
+        let candidates: Vec<_> = entities
+            .into_iter()
+            .map(|mut entity| {
                 prepare(&mut entity);
                 entity
             })
             .filter(|entity| entity.path != subject.path)
             .filter(|entity| entity.category == subject.category)
-            .filter(|entity| request.eligible_paths.as_ref()
-                .is_none_or(|paths| paths.contains(&entity.path)))
-            .filter_map(|entity| compatibility(&subject, &entity).map(|affinity| (entity, affinity)))
+            .filter(|entity| {
+                request
+                    .eligible_paths
+                    .as_ref()
+                    .is_none_or(|paths| paths.contains(&entity.path))
+            })
+            .filter_map(|entity| {
+                compatibility(&subject, &entity).map(|affinity| (entity, affinity))
+            })
             .filter(|(entity, _)| seen.insert(entity.path.clone()))
             .map(|(entity, type_affinity)| {
                 let assertions = entity.search_assertions.iter().cloned().collect();
                 let is_forced = forced.contains(&entity.path);
                 RankedCandidate {
-                    entity, assertions,
+                    entity,
+                    assertions,
                     evidence: CandidateEvidence {
-                        forced: is_forced, type_affinity, ..Default::default()
+                        forced: is_forced,
+                        type_affinity,
+                        ..Default::default()
                     },
                 }
-            }).collect();
+            })
+            .collect();
         let retrieved = candidates.len();
         let ranked = rank_candidates(&subject, candidates, request.limit);
         tracing::debug!(
@@ -215,24 +266,38 @@ impl RankedCandidate {
                     .is_some_and(|(ours, theirs)| ours == theirs);
                 ordered_similarity = ordered_similarity.max(name_similarity(ours, theirs));
                 token_order_similarity = token_order_similarity.max(name_similarity(
-                    &token_order_name(ours), &token_order_name(theirs),
+                    &token_order_name(ours),
+                    &token_order_name(theirs),
                 ));
             }
         }
         let candidate_kinds: HashSet<&str> = self.entity.kinds.iter().map(String::as_str).collect();
-        let mut shared_kinds: Vec<String> = subject.kinds.iter()
+        let mut shared_kinds: Vec<String> = subject
+            .kinds
+            .iter()
             .filter(|kind| candidate_kinds.contains(kind.as_str()))
-            .cloned().collect();
+            .cloned()
+            .collect();
         shared_kinds.sort();
         shared_kinds.dedup();
-        let mut shared_assertions: Vec<String> = subject.assertions
-            .intersection(&self.assertions).cloned().collect();
+        let mut shared_assertions: Vec<String> = subject
+            .assertions
+            .intersection(&self.assertions)
+            .cloned()
+            .collect();
         shared_assertions.sort();
-        let type_affinity = supplied_type_affinity.max(if !shared_kinds.is_empty() { 3 } else { 0 });
+        let type_affinity =
+            supplied_type_affinity.max(if !shared_kinds.is_empty() { 3 } else { 0 });
         self.evidence = CandidateEvidence {
-            exact_name, token_containment, event_participants_match,
-            ordered_similarity, token_order_similarity,
-            shared_kinds, shared_assertions, type_affinity, forced,
+            exact_name,
+            token_containment,
+            event_participants_match,
+            ordered_similarity,
+            token_order_similarity,
+            shared_kinds,
+            shared_assertions,
+            type_affinity,
+            forced,
         };
     }
 
@@ -252,7 +317,9 @@ impl RankedCandidate {
     }
 
     fn score(&self) -> f64 {
-        self.evidence.ordered_similarity.max(self.evidence.token_order_similarity)
+        self.evidence
+            .ordered_similarity
+            .max(self.evidence.token_order_similarity)
     }
 }
 
@@ -262,11 +329,19 @@ pub(crate) fn rank_candidates(
     limit: usize,
 ) -> Vec<RankedCandidate> {
     candidates.retain(|candidate| candidate.entity.path != subject.path);
-    for candidate in &mut candidates { candidate.derive_evidence(subject); }
-    candidates.sort_by(|a, b| b.rank().cmp(&a.rank())
-        .then_with(|| b.score().total_cmp(&a.score()))
-        .then_with(|| a.entity.path.cmp(&b.entity.path)));
-    let forced = candidates.iter().filter(|candidate| candidate.evidence.forced).count();
+    for candidate in &mut candidates {
+        candidate.derive_evidence(subject);
+    }
+    candidates.sort_by(|a, b| {
+        b.rank()
+            .cmp(&a.rank())
+            .then_with(|| b.score().total_cmp(&a.score()))
+            .then_with(|| a.entity.path.cmp(&b.entity.path))
+    });
+    let forced = candidates
+        .iter()
+        .filter(|candidate| candidate.evidence.forced)
+        .count();
     candidates.truncate(limit.max(forced));
     candidates
 }
@@ -285,18 +360,32 @@ fn whole_token_subset(shorter: &str, longer: &str) -> bool {
 }
 
 fn event_participants(value: &str) -> Option<[String; 2]> {
-    let event_name = value.split(['—', '–']).next().unwrap_or(value)
-        .split(" - ").next().unwrap_or(value);
-    let tokens: Vec<&str> = event_name.split(|c: char| !c.is_alphanumeric())
-        .filter(|token| !token.is_empty()).collect();
-    let separator = tokens.iter().position(|token| token.eq_ignore_ascii_case("vs")
-        || token.eq_ignore_ascii_case("v") || token.eq_ignore_ascii_case("versus"))?;
-    if separator == 0 || separator + 1 >= tokens.len() { return None; }
+    let event_name = value
+        .split(['—', '–'])
+        .next()
+        .unwrap_or(value)
+        .split(" - ")
+        .next()
+        .unwrap_or(value);
+    let tokens: Vec<&str> = event_name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+    let separator = tokens.iter().position(|token| {
+        token.eq_ignore_ascii_case("vs")
+            || token.eq_ignore_ascii_case("v")
+            || token.eq_ignore_ascii_case("versus")
+    })?;
+    if separator == 0 || separator + 1 >= tokens.len() {
+        return None;
+    }
     let mut participants = [
         normalize_identity_name(&tokens[..separator].join(" ")),
         normalize_identity_name(&tokens[separator + 1..].join(" ")),
     ];
-    if participants.iter().any(String::is_empty) { return None; }
+    if participants.iter().any(String::is_empty) {
+        return None;
+    }
     participants.sort();
     Some(participants)
 }
@@ -304,7 +393,11 @@ fn event_participants(value: &str) -> Option<[String; 2]> {
 fn name_similarity(a: &str, b: &str) -> f64 {
     let a = normalize_identity_name(a);
     let b = normalize_identity_name(b);
-    if a.is_empty() || b.is_empty() { 0.0 } else { strsim::jaro_winkler(&a, &b) }
+    if a.is_empty() || b.is_empty() {
+        0.0
+    } else {
+        strsim::jaro_winkler(&a, &b)
+    }
 }
 
 #[cfg(test)]

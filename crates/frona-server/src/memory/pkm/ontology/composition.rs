@@ -1,5 +1,5 @@
-use super::*;
 use super::reasoning::Reasoned;
+use super::*;
 
 /// Every IRI a triple set names, in any position. Schema and staged ABox references both
 /// contribute seeds to the effective ontology.
@@ -53,7 +53,13 @@ impl UserOntology {
         delta_triples: Vec<Triple>,
         version: i64,
     ) -> Self {
-        Self { catalogue, effective_ontology, delta_ofn, delta_triples, version }
+        Self {
+            catalogue,
+            effective_ontology,
+            delta_ofn,
+            delta_triples,
+            version,
+        }
     }
 
     pub fn version(&self) -> i64 {
@@ -87,7 +93,9 @@ impl UserOntology {
         let before = seeds.len();
         for extra in extras {
             seeds.extend(
-                referenced_iris(extra).into_iter().filter(|iri| self.catalogue.declares(iri)),
+                referenced_iris(extra)
+                    .into_iter()
+                    .filter(|iri| self.catalogue.declares(iri)),
             );
         }
         seeds.sort();
@@ -112,7 +120,6 @@ impl UserOntology {
     pub fn reason(&self, abox: &[Triple]) -> Result<Reasoned, AppError> {
         reasoning::materialize(self.effective_ontology.triples(), &self.delta_triples, abox)
     }
-
 }
 
 /// A per-pass composition: the shared registry (via the user's `base`) ⊕ the user's
@@ -149,16 +156,22 @@ impl ComposedOntology {
         // A proposal is free to reference a catalogue term the vault has never used -
         // that is what adopting a standard term *is*. Judge it against that term's real
         // ancestors and disjointness, not against a cut that predates it.
-        let effective_ontology =
-            user.effective_ontology_admitting_all(&[&schema_triples, abox]);
-        Ok(Self { schema_triples, effective_ontology })
+        let effective_ontology = user.effective_ontology_admitting_all(&[&schema_triples, abox]);
+        Ok(Self {
+            schema_triples,
+            effective_ontology,
+        })
     }
 
     /// Reason over `effective ⊕ (delta ⊕ proposed) ⊕ abox` → the materialized graph. The
     /// `abox` may itself carry proposed individual types (entities under a proposed,
     /// not-yet-stamped kind), so resolve can type-filter over proposals.
     pub fn reason(&self, abox: &[Triple]) -> Result<Reasoned, AppError> {
-        reasoning::materialize(self.effective_ontology.triples(), &self.schema_triples, abox)
+        reasoning::materialize(
+            self.effective_ontology.triples(),
+            &self.schema_triples,
+            abox,
+        )
     }
 
     /// What this composition reasons under - the user's, widened.
@@ -166,7 +179,6 @@ impl ComposedOntology {
         &self.effective_ontology
     }
 }
-
 
 impl OntologyManager {
     /// The user's delta serialized as OFN.
@@ -188,7 +200,11 @@ impl OntologyManager {
             .catalogue()
             .ok_or_else(|| AppError::Internal("ontology: no catalogue installed yet".into()))?;
         let delta_triples = schema::delta_triples(&ofn)?;
-        let seeds = seed_set(&catalogue, &delta_triples, &self.repo.ontology_terms(user_id).await?);
+        let seeds = seed_set(
+            &catalogue,
+            &delta_triples,
+            &self.repo.ontology_terms(user_id).await?,
+        );
         let fingerprint = catalogue.fingerprint();
 
         // The stored cut is used verbatim when nothing that determines it has moved.
@@ -207,13 +223,23 @@ impl OntologyManager {
                 catalogue.prefixes().clone(),
             )?;
             return Ok(UserOntology::build(
-                catalogue, Arc::new(effective_ontology), ofn, delta_triples, version,
+                catalogue,
+                Arc::new(effective_ontology),
+                ofn,
+                delta_triples,
+                version,
             ));
         }
 
-        let effective_ontology = self.cut_and_store(user_id, &catalogue, row.as_ref(), seeds, version).await?;
+        let effective_ontology = self
+            .cut_and_store(user_id, &catalogue, row.as_ref(), seeds, version)
+            .await?;
         Ok(UserOntology::build(
-            catalogue, effective_ontology, ofn, delta_triples, version,
+            catalogue,
+            effective_ontology,
+            ofn,
+            delta_triples,
+            version,
         ))
     }
 
@@ -300,6 +326,4 @@ impl OntologyManager {
             .await?;
         Ok(effective_ontology)
     }
-
-
 }

@@ -118,9 +118,16 @@ pub enum InferenceKind {
 pub enum CompactionTarget {
     /// User-level memory distillation. `user_id` is on the top-level row.
     User,
-    Chat { agent_id: String, chat_id: String },
-    Agent { agent_id: String },
-    Space { space_id: String },
+    Chat {
+        agent_id: String,
+        chat_id: String,
+    },
+    Agent {
+        agent_id: String,
+    },
+    Space {
+        space_id: String,
+    },
 }
 
 impl InferenceKind {
@@ -149,14 +156,18 @@ impl InferenceKind {
             | Self::Signal { chat_id, .. } => Some(chat_id),
             Self::Router { chat_id, .. } => chat_id.as_deref(),
             Self::Memory => None,
-            Self::Compaction { target: CompactionTarget::Chat { chat_id, .. } } => Some(chat_id),
+            Self::Compaction {
+                target: CompactionTarget::Chat { chat_id, .. },
+            } => Some(chat_id),
             Self::Compaction { .. } => None,
         }
     }
 
     pub fn space_id(&self) -> Option<&str> {
         match self {
-            Self::Compaction { target: CompactionTarget::Space { space_id } } => Some(space_id),
+            Self::Compaction {
+                target: CompactionTarget::Space { space_id },
+            } => Some(space_id),
             _ => None,
         }
     }

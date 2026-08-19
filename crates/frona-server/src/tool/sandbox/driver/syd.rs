@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::core::error::AppError;
 
-use super::{SandboxConfig, SandboxDriver, ETC_READ_ALLOWLIST, linux};
+use super::{ETC_READ_ALLOWLIST, SandboxConfig, SandboxDriver, linux};
 
 pub fn syd_available() -> bool {
     Command::new("syd")
@@ -130,7 +130,12 @@ impl SandboxDriver for SydDriver {
         cmd.arg("--");
         cmd.arg(program);
         cmd.args(args);
-        cmd.current_dir(config.working_dir.as_deref().unwrap_or(&config.workspace_dir));
+        cmd.current_dir(
+            config
+                .working_dir
+                .as_deref()
+                .unwrap_or(&config.workspace_dir),
+        );
 
         Ok(cmd)
     }
@@ -144,22 +149,31 @@ impl SydArgsBuilder {
     fn new() -> Self {
         Self {
             args: vec![
-                "-p".into(), "lib".into(),
+                "-p".into(),
+                "lib".into(),
                 // Relax W^X enforcement so V8 (Node.js) can JIT-compile
-                "-p".into(), "nomem".into(),
-                "-m".into(), "sandbox/read:on".into(),
-                "-m".into(), "sandbox/stat:on".into(),
-                "-m".into(), "sandbox/write:on".into(),
+                "-p".into(),
+                "nomem".into(),
+                "-m".into(),
+                "sandbox/read:on".into(),
+                "-m".into(),
+                "sandbox/stat:on".into(),
+                "-m".into(),
+                "sandbox/write:on".into(),
                 // Allow non-PIE executables (e.g. Node.js)
-                "-m".into(), "trace/allow_unsafe_exec_nopie:1".into(),
+                "-m".into(),
+                "trace/allow_unsafe_exec_nopie:1".into(),
                 // Allow ld.so exec indirection (required by Python/uv)
-                "-m".into(), "trace/allow_unsafe_exec_ldso:1".into(),
+                "-m".into(),
+                "trace/allow_unsafe_exec_ldso:1".into(),
                 // Syd's lib profile strips env vars whose names contain PASSWORD,
                 // CREDENTIAL, TOKEN, or KEY. We manage secrets ourselves via
                 // vault_env_vars, so disable the filter.
-                "-m".into(), "trace/allow_unsafe_env:1".into(),
+                "-m".into(),
+                "trace/allow_unsafe_env:1".into(),
                 // uv uses base64-encoded temp filenames in its cache
-                "-m".into(), "trace/allow_unsafe_filename:1".into(),
+                "-m".into(),
+                "trace/allow_unsafe_filename:1".into(),
             ],
         }
     }
@@ -329,7 +343,9 @@ mod tests {
 
     #[test]
     fn test_filesystem_includes_system_paths() {
-        let args = SydArgsBuilder::new().filesystem_rules(&test_config()).build();
+        let args = SydArgsBuilder::new()
+            .filesystem_rules(&test_config())
+            .build();
         assert!(args.contains(&"allow/read+/usr/***".to_string()));
         assert!(args.contains(&"allow/stat+/usr/***".to_string()));
         assert!(args.contains(&"allow/read+/bin/***".to_string()));
@@ -339,7 +355,9 @@ mod tests {
 
     #[test]
     fn test_filesystem_includes_proc() {
-        let args = SydArgsBuilder::new().filesystem_rules(&test_config()).build();
+        let args = SydArgsBuilder::new()
+            .filesystem_rules(&test_config())
+            .build();
         assert!(args.contains(&"allow/read+/proc/self/***".to_string()));
         assert!(args.contains(&"allow/read+/proc/cpuinfo/***".to_string()));
         assert!(args.contains(&"allow/read+/proc/meminfo/***".to_string()));
@@ -347,7 +365,9 @@ mod tests {
 
     #[test]
     fn test_filesystem_includes_etc_allowlist() {
-        let args = SydArgsBuilder::new().filesystem_rules(&test_config()).build();
+        let args = SydArgsBuilder::new()
+            .filesystem_rules(&test_config())
+            .build();
         assert!(args.contains(&"allow/read+/etc/resolv.conf/***".to_string()));
         assert!(args.contains(&"allow/read+/etc/ssl/***".to_string()));
         assert!(args.contains(&"allow/read+/etc/hosts/***".to_string()));
@@ -355,14 +375,18 @@ mod tests {
 
     #[test]
     fn test_filesystem_workspace_read_and_write() {
-        let args = SydArgsBuilder::new().filesystem_rules(&test_config()).build();
+        let args = SydArgsBuilder::new()
+            .filesystem_rules(&test_config())
+            .build();
         assert!(args.contains(&"allow/read+/workspace/agent_1/***".to_string()));
         assert!(args.contains(&"allow/write+/workspace/agent_1/***".to_string()));
     }
 
     #[test]
     fn test_filesystem_writable_system_paths() {
-        let args = SydArgsBuilder::new().filesystem_rules(&test_config()).build();
+        let args = SydArgsBuilder::new()
+            .filesystem_rules(&test_config())
+            .build();
         assert!(args.contains(&"allow/write+/tmp/***".to_string()));
         assert!(args.contains(&"allow/write+/dev/null".to_string()));
         assert!(args.contains(&"allow/write+/dev/urandom".to_string()));
@@ -385,7 +409,9 @@ mod tests {
         let mut config = test_config();
         config.network_access = false;
 
-        let args = SydArgsBuilder::new().network_rules(&config, &driver.dns_servers, &driver.dest_cache).build();
+        let args = SydArgsBuilder::new()
+            .network_rules(&config, &driver.dns_servers, &driver.dest_cache)
+            .build();
         assert!(args.contains(&"sandbox/net:on".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("allow/net")));
     }
@@ -397,7 +423,9 @@ mod tests {
         config.network_access = true;
         config.allowed_network_destinations = vec![];
 
-        let args = SydArgsBuilder::new().network_rules(&config, &driver.dns_servers, &driver.dest_cache).build();
+        let args = SydArgsBuilder::new()
+            .network_rules(&config, &driver.dns_servers, &driver.dest_cache)
+            .build();
         assert!(!args.contains(&"sandbox/net:on".to_string()));
     }
 
@@ -408,7 +436,9 @@ mod tests {
         config.network_access = true;
         config.allowed_network_destinations = vec!["1.2.3.4".into(), "5.6.7.8".into()];
 
-        let args = SydArgsBuilder::new().network_rules(&config, &driver.dns_servers, &driver.dest_cache).build();
+        let args = SydArgsBuilder::new()
+            .network_rules(&config, &driver.dns_servers, &driver.dest_cache)
+            .build();
         assert!(args.contains(&"sandbox/net:on".to_string()));
         assert!(args.contains(&"allow/net/connect+1.2.3.4/32!0-65535".to_string()));
         assert!(args.contains(&"allow/net/connect+5.6.7.8/32!0-65535".to_string()));
@@ -426,7 +456,9 @@ mod tests {
         config.network_access = true;
         config.allowed_network_destinations = vec!["1.2.3.4".into()];
 
-        let args = SydArgsBuilder::new().network_rules(&config, &driver.dns_servers, &driver.dest_cache).build();
+        let args = SydArgsBuilder::new()
+            .network_rules(&config, &driver.dns_servers, &driver.dest_cache)
+            .build();
         assert!(args.contains(&"allow/net/connect+8.8.8.8/32!53".to_string()));
         assert!(args.contains(&"allow/net/connect+8.8.4.4/32!53".to_string()));
         assert!(!args.contains(&"allow/net/connect+0.0.0.0/0!53".to_string()));
@@ -439,7 +471,9 @@ mod tests {
         config.network_access = true;
         config.allowed_network_destinations = vec!["10.0.0.0/8!443".into()];
 
-        let args = SydArgsBuilder::new().network_rules(&config, &driver.dns_servers, &driver.dest_cache).build();
+        let args = SydArgsBuilder::new()
+            .network_rules(&config, &driver.dns_servers, &driver.dest_cache)
+            .build();
         assert!(args.contains(&"allow/net/connect+10.0.0.0/8!443".to_string()));
     }
 
@@ -448,13 +482,20 @@ mod tests {
         let dir = std::env::temp_dir().join("frona_test_resolv");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("resolv.conf");
-        std::fs::write(&path, "# comment\nnameserver 8.8.8.8\nnameserver 8.8.4.4\nnameserver 2001:4860:4860::8888\n").unwrap();
+        std::fs::write(
+            &path,
+            "# comment\nnameserver 8.8.8.8\nnameserver 8.8.4.4\nnameserver 2001:4860:4860::8888\n",
+        )
+        .unwrap();
 
         let servers = parse_resolv_conf(path.to_str().unwrap());
         assert_eq!(servers.len(), 3);
         assert_eq!(servers[0], "8.8.8.8".parse::<IpAddr>().unwrap());
         assert_eq!(servers[1], "8.8.4.4".parse::<IpAddr>().unwrap());
-        assert_eq!(servers[2], "2001:4860:4860::8888".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            servers[2],
+            "2001:4860:4860::8888".parse::<IpAddr>().unwrap()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -464,7 +505,11 @@ mod tests {
         let dir = std::env::temp_dir().join("frona_test_resolv_invalid");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("resolv.conf");
-        std::fs::write(&path, "search example.com\nnameserver 1.1.1.1\noptions ndots:5\nnameserver notanip\n").unwrap();
+        std::fs::write(
+            &path,
+            "search example.com\nnameserver 1.1.1.1\noptions ndots:5\nnameserver notanip\n",
+        )
+        .unwrap();
 
         let servers = parse_resolv_conf(path.to_str().unwrap());
         assert_eq!(servers.len(), 1);
@@ -476,19 +521,28 @@ mod tests {
     #[test]
     fn test_resolve_destination_plain_ip() {
         let d = test_driver();
-        assert_eq!(resolve_destination("1.2.3.4", &d.dest_cache), vec!["allow/net/connect+1.2.3.4/32!0-65535"]);
+        assert_eq!(
+            resolve_destination("1.2.3.4", &d.dest_cache),
+            vec!["allow/net/connect+1.2.3.4/32!0-65535"]
+        );
     }
 
     #[test]
     fn test_resolve_destination_ipv6() {
         let d = test_driver();
-        assert_eq!(resolve_destination("::1", &d.dest_cache), vec!["allow/net/connect+::1/128!0-65535"]);
+        assert_eq!(
+            resolve_destination("::1", &d.dest_cache),
+            vec!["allow/net/connect+::1/128!0-65535"]
+        );
     }
 
     #[test]
     fn test_resolve_destination_cidr_passthrough() {
         let d = test_driver();
-        assert_eq!(resolve_destination("10.0.0.0/8!443", &d.dest_cache), vec!["allow/net/connect+10.0.0.0/8!443"]);
+        assert_eq!(
+            resolve_destination("10.0.0.0/8!443", &d.dest_cache),
+            vec!["allow/net/connect+10.0.0.0/8!443"]
+        );
     }
 
     #[test]
@@ -511,7 +565,10 @@ mod tests {
     #[test]
     fn test_resolve_destination_bracketed_ipv6_with_port() {
         let d = test_driver();
-        assert_eq!(resolve_destination("[::1]:443", &d.dest_cache), vec!["allow/net/connect+::1/128!443"]);
+        assert_eq!(
+            resolve_destination("[::1]:443", &d.dest_cache),
+            vec!["allow/net/connect+::1/128!443"]
+        );
     }
 
     #[test]
@@ -522,7 +579,9 @@ mod tests {
         config.allowed_network_destinations = vec!["127.0.0.1:8080".into()];
         config.allowed_bind_ports = vec![8080];
 
-        let args = SydArgsBuilder::new().network_rules(&config, &driver.dns_servers, &driver.dest_cache).build();
+        let args = SydArgsBuilder::new()
+            .network_rules(&config, &driver.dns_servers, &driver.dest_cache)
+            .build();
         assert!(args.contains(&"allow/net/bind+0.0.0.0/0!8080".to_string()));
         assert!(args.contains(&"allow/net/bind+::/0!8080".to_string()));
     }
@@ -535,7 +594,9 @@ mod tests {
         config.allowed_network_destinations = vec![];
         config.allowed_bind_ports = vec![8080];
 
-        let args = SydArgsBuilder::new().network_rules(&config, &driver.dns_servers, &driver.dest_cache).build();
+        let args = SydArgsBuilder::new()
+            .network_rules(&config, &driver.dns_servers, &driver.dest_cache)
+            .build();
         // No sandbox/net:on means all network ops allowed, no bind rule needed
         assert!(!args.iter().any(|a| a.starts_with("allow/net/bind")));
     }

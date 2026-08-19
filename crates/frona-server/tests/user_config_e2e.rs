@@ -45,11 +45,21 @@ async fn user_config_default_when_no_row() {
 async fn first_write_creates_via_epoch_cas() {
     let svc = user_service().await;
     let token = svc.user_config(U).await.unwrap().updated_at; // epoch
-    let saved = svc.update_user_config(U, token, patch("Brain")).await.unwrap();
+    let saved = svc
+        .update_user_config(U, token, patch("Brain"))
+        .await
+        .unwrap();
     assert_eq!(saved.memory.shared_vault_directory, "Brain");
-    assert_ne!(saved.updated_at, token, "updated_at advanced off the epoch sentinel");
+    assert_ne!(
+        saved.updated_at, token,
+        "updated_at advanced off the epoch sentinel"
+    );
     assert_eq!(
-        svc.user_config(U).await.unwrap().memory.shared_vault_directory,
+        svc.user_config(U)
+            .await
+            .unwrap()
+            .memory
+            .shared_vault_directory,
         "Brain",
         "the created value is read back"
     );
@@ -59,20 +69,31 @@ async fn first_write_creates_via_epoch_cas() {
 async fn stale_cas_is_rejected() {
     let svc = user_service().await;
     let token = svc.user_config(U).await.unwrap().updated_at;
-    svc.update_user_config(U, token, patch("Brain")).await.unwrap();
+    svc.update_user_config(U, token, patch("Brain"))
+        .await
+        .unwrap();
     let v1 = svc.user_config(U).await.unwrap().updated_at; // real T1
 
     // A fresh write bumps updated_at to T2 (this also proves fresh CAS succeeds).
-    svc.update_user_config(U, v1, patch("Knowledge")).await.unwrap();
+    svc.update_user_config(U, v1, patch("Knowledge"))
+        .await
+        .unwrap();
 
     // Re-using the now-stale T1 must be rejected and must not change the value.
-    let err = svc.update_user_config(U, v1, patch("Vault")).await.unwrap_err();
+    let err = svc
+        .update_user_config(U, v1, patch("Vault"))
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Conflict(_)),
         "stale CAS token → Conflict, got {err:?}"
     );
     assert_eq!(
-        svc.user_config(U).await.unwrap().memory.shared_vault_directory,
+        svc.user_config(U)
+            .await
+            .unwrap()
+            .memory
+            .shared_vault_directory,
         "Knowledge",
         "the rejected write left the stored value untouched"
     );
@@ -83,14 +104,24 @@ async fn cache_invalidated_on_write() {
     let svc = user_service().await;
     // Prime the cache with the synthesized default.
     assert_eq!(
-        svc.user_config(U).await.unwrap().memory.shared_vault_directory,
+        svc.user_config(U)
+            .await
+            .unwrap()
+            .memory
+            .shared_vault_directory,
         "Memory"
     );
     let token = svc.user_config(U).await.unwrap().updated_at;
-    svc.update_user_config(U, token, patch("Brain")).await.unwrap();
+    svc.update_user_config(U, token, patch("Brain"))
+        .await
+        .unwrap();
     // If the write hadn't invalidated the cache, this would still read the default.
     assert_eq!(
-        svc.user_config(U).await.unwrap().memory.shared_vault_directory,
+        svc.user_config(U)
+            .await
+            .unwrap()
+            .memory
+            .shared_vault_directory,
         "Brain"
     );
 }

@@ -17,12 +17,10 @@ use crate::core::error::AppError;
 
 use super::super::attachment;
 use super::super::error::{ChannelError, ChannelErrorKind};
-use super::super::models::{
-    ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
-};
-use super::super::typing::TypingIndicator;
 #[cfg(test)]
 use super::super::models::ChannelFactory;
+use super::super::models::{ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id};
+use super::super::typing::TypingIndicator;
 
 // Discord API cap. https://discord.com/developers/docs/resources/message
 const DISCORD_MAX_MESSAGE_LEN: usize = 2000;
@@ -189,7 +187,9 @@ impl ChannelAdapter for DiscordAdapter {
                     }
                 }
             } else {
-                let url = match attachment::outbound_url(att, ctx, attachment::ChannelMode::Button).await {
+                let url = match attachment::outbound_url(att, ctx, attachment::ChannelMode::Button)
+                    .await
+                {
                     Ok(u) => u,
                     Err(e) => {
                         tracing::warn!(
@@ -263,35 +263,33 @@ impl ChannelAdapter for DiscordAdapter {
         Ok(())
     }
 
-    async fn on_inference_start(
-        &self,
-        chat: &Chat,
-        _ctx: &ChannelCtx,
-    ) -> Result<(), ChannelError> {
-        let Ok(external_id) = external_chat_id(chat) else { return Ok(()) };
-        let Ok(discord_channel_id) = parse_external_id(external_id) else { return Ok(()) };
+    async fn on_inference_start(&self, chat: &Chat, _ctx: &ChannelCtx) -> Result<(), ChannelError> {
+        let Ok(external_id) = external_chat_id(chat) else {
+            return Ok(());
+        };
+        let Ok(discord_channel_id) = parse_external_id(external_id) else {
+            return Ok(());
+        };
 
         let http = self.http.clone();
-        self.typing.start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
-            let http = http.clone();
-            async move {
-                if let Err(e) = discord_channel_id.broadcast_typing(&*http).await {
-                    tracing::debug!(
-                        channel_id = %discord_channel_id,
-                        error = %e,
-                        "Discord broadcast_typing failed (best-effort)",
-                    );
+        self.typing
+            .start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
+                let http = http.clone();
+                async move {
+                    if let Err(e) = discord_channel_id.broadcast_typing(&*http).await {
+                        tracing::debug!(
+                            channel_id = %discord_channel_id,
+                            error = %e,
+                            "Discord broadcast_typing failed (best-effort)",
+                        );
+                    }
                 }
-            }
-        }).await;
+            })
+            .await;
         Ok(())
     }
 
-    async fn on_inference_done(
-        &self,
-        chat: &Chat,
-        _ctx: &ChannelCtx,
-    ) -> Result<(), ChannelError> {
+    async fn on_inference_done(&self, chat: &Chat, _ctx: &ChannelCtx) -> Result<(), ChannelError> {
         self.typing.stop(&chat.id).await;
         Ok(())
     }
@@ -409,11 +407,9 @@ impl EventHandler for DiscordEventHandler {
         };
         let custom_id = component.data.custom_id.clone();
 
-        let parsed = crate::chat::channel::hitl::parse_resolve_callback_data(
-            &custom_id,
-            &self.chat_service,
-        )
-        .await;
+        let parsed =
+            crate::chat::channel::hitl::parse_resolve_callback_data(&custom_id, &self.chat_service)
+                .await;
 
         let (tool_call_id, response) = match parsed {
             Ok(p) => p,
@@ -435,14 +431,13 @@ impl EventHandler for DiscordEventHandler {
         };
 
         let answer_label = crate::chat::channel::hitl::response_display(&response);
-        let outcome = self
-            .hitl
-            .resolve(&tool_call_id, response)
-            .await;
+        let outcome = self.hitl.resolve(&tool_call_id, response).await;
 
         let summary = match &outcome {
             Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) => answer_label,
-            Ok(crate::inference::hitl::ResolveOutcome::AlreadyResolved) => "Already resolved".to_string(),
+            Ok(crate::inference::hitl::ResolveOutcome::AlreadyResolved) => {
+                "Already resolved".to_string()
+            }
             Err(e) => format!("Failed: {e}"),
         };
 
@@ -568,9 +563,9 @@ fn parse_external_id(s: &str) -> Result<ChannelId, AppError> {
             "unrecognised Discord external_id format: {s:?}"
         )));
     }
-    let id: u64 = id_str.parse().map_err(|_| {
-        AppError::Validation(format!("invalid Discord channel id: {id_str}"))
-    })?;
+    let id: u64 = id_str
+        .parse()
+        .map_err(|_| AppError::Validation(format!("invalid Discord channel id: {id_str}")))?;
     Ok(ChannelId::new(id))
 }
 
@@ -645,10 +640,7 @@ mod tests {
 
     #[test]
     fn build_external_chat_id_dm() {
-        assert_eq!(
-            build_external_chat_id(ChannelId::new(42), true),
-            "dm:42",
-        );
+        assert_eq!(build_external_chat_id(ChannelId::new(42), true), "dm:42",);
     }
 
     #[test]
@@ -677,12 +669,6 @@ mod tests {
 
     #[test]
     fn should_not_skip_human_message() {
-        assert!(!should_skip(
-            UserId::new(2),
-            false,
-            "hello",
-            UserId::new(1)
-        ));
+        assert!(!should_skip(UserId::new(2), false, "hello", UserId::new(1)));
     }
-
 }

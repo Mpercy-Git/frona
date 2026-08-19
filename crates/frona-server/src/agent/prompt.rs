@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use crate::agent::skill::resolver::Skill;
 use crate::agent::workspace::AgentPromptLoader;
-use crate::core::template::render_template;
 use crate::core::Handle;
+use crate::core::template::render_template;
 use crate::storage::StorageService;
 
 #[derive(Clone)]
@@ -38,7 +38,10 @@ impl PromptLoader {
         let path = self.base_dir.join(name);
         let raw = std::fs::read_to_string(&path).ok()?;
         let merged = self.merge_vars(vars);
-        let merged_refs: Vec<(&str, &str)> = merged.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let merged_refs: Vec<(&str, &str)> = merged
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         render_template(&raw, &merged_refs).ok()
     }
 
@@ -146,7 +149,12 @@ pub fn build_augmented_system_prompt(
     let skill_items: Vec<(String, String)> = skills
         .iter()
         .filter(|s| !s.disable_model_invocation)
-        .map(|s| (s.name.clone(), format!("{} (file: {}/SKILL.md)", s.description, s.path)))
+        .map(|s| {
+            (
+                s.name.clone(),
+                format!("{} (file: {}/SKILL.md)", s.description, s.path),
+            )
+        })
         .collect();
     append_tagged_section(&mut result, "available_skills", None, &skill_items);
 
@@ -165,8 +173,10 @@ pub fn build_augmented_system_prompt(
         agent_summaries,
     );
 
-    let identity_pairs: Vec<(String, String)> =
-        identity.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let identity_pairs: Vec<(String, String)> = identity
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     append_tagged_section(&mut result, "agent_identity", None, &identity_pairs);
 
     // Date-only keeps this byte-stable within a day so prefix caches stay warm.
@@ -175,7 +185,11 @@ pub fn build_augmented_system_prompt(
     let items = vec![
         (
             "current_date_local".to_string(),
-            format!("{} ({})", now_local.format("%Y-%m-%d"), now_local.format("%A")),
+            format!(
+                "{} ({})",
+                now_local.format("%Y-%m-%d"),
+                now_local.format("%A")
+            ),
         ),
         ("user_timezone".to_string(), user_timezone.to_string()),
     ];
@@ -233,7 +247,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("test.md"), "Hello {{name}}!").unwrap();
         let loader = PromptLoader::new(dir.path()).with_var("name", "Default");
-        let content = loader.read_with_vars("test.md", &[("name", "Override")]).unwrap();
+        let content = loader
+            .read_with_vars("test.md", &[("name", "Override")])
+            .unwrap();
         assert_eq!(content, "Hello Override!");
     }
 
@@ -245,11 +261,16 @@ mod tests {
             "[CALL_CONNECTED: Now speaking with {{caller_name}} ({{phone_number}}). Goal: {{objective}}.]",
         ).unwrap();
         let loader = PromptLoader::new(dir.path());
-        let content = loader.read_with_vars("active_call.md", &[
-            ("caller_name", "Alice"),
-            ("phone_number", "+1234567890"),
-            ("objective", "Schedule meeting"),
-        ]).unwrap();
+        let content = loader
+            .read_with_vars(
+                "active_call.md",
+                &[
+                    ("caller_name", "Alice"),
+                    ("phone_number", "+1234567890"),
+                    ("objective", "Schedule meeting"),
+                ],
+            )
+            .unwrap();
         assert_eq!(
             content,
             "[CALL_CONNECTED: Now speaking with Alice (+1234567890). Goal: Schedule meeting.]"
@@ -276,7 +297,13 @@ mod tests {
             &[],
             "UTC",
         );
-        assert!(prompt.starts_with("BASE_PROMPT_MARKER"), "base prompt leads");
-        assert!(prompt.contains("<temporal_context>"), "dynamic temporal tail present");
+        assert!(
+            prompt.starts_with("BASE_PROMPT_MARKER"),
+            "base prompt leads"
+        );
+        assert!(
+            prompt.contains("<temporal_context>"),
+            "dynamic temporal tail present"
+        );
     }
 }

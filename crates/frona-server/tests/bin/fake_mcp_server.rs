@@ -23,10 +23,7 @@ impl EchoServer {
     }
 
     #[tool(description = "Echo back the provided text.")]
-    fn echo(
-        &self,
-        Parameters(args): Parameters<JsonObject>,
-    ) -> Result<CallToolResult, McpError> {
+    fn echo(&self, Parameters(args): Parameters<JsonObject>) -> Result<CallToolResult, McpError> {
         let text = args
             .get("text")
             .and_then(|v| v.as_str())
@@ -36,10 +33,7 @@ impl EchoServer {
     }
 
     #[tool(description = "Add two integers and return their sum.")]
-    fn add(
-        &self,
-        Parameters(args): Parameters<JsonObject>,
-    ) -> Result<CallToolResult, McpError> {
+    fn add(&self, Parameters(args): Parameters<JsonObject>) -> Result<CallToolResult, McpError> {
         let a = args.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = args.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(CallToolResult::success(vec![Content::text(

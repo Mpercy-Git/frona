@@ -8,21 +8,10 @@ use crate::Entity;
 #[serde(tag = "type")]
 #[surreal(crate = "surrealdb::types")]
 pub enum NotificationData {
-    App {
-        app_handle: String,
-        action: String,
-    },
-    Task {
-        task_id: String,
-    },
-    Agent {
-        agent_id: String,
-        chat_id: String,
-    },
-    Channel {
-        channel_id: String,
-        action: String,
-    },
+    App { app_handle: String, action: String },
+    Task { task_id: String },
+    Agent { agent_id: String, chat_id: String },
+    Channel { channel_id: String, action: String },
     System {},
     Security {},
 }

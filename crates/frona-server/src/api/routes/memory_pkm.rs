@@ -2,7 +2,6 @@
 //! Gated twice: the PAT must carry the `memory` scope, and PKM must be the
 //! active memory backend (`state.pkm_sync` is `Some` only then).
 
-
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -71,7 +70,8 @@ async fn set_config(
     Json(req): Json<SetConfigRequest>,
 ) -> Result<Json<ConfigResponse>, ApiError> {
     let sync = require_sync(&auth, &state)?;
-    sync.set_memory_directory(&auth.user_id, &req.memory_directory).await?;
+    sync.set_memory_directory(&auth.user_id, &req.memory_directory)
+        .await?;
     Ok(Json(ConfigResponse {
         memory_directory: sync.memory_directory(&auth.user_id).await?,
     }))
@@ -141,7 +141,6 @@ async fn pages(
     Ok(Json(PagesResponse { pages }))
 }
 
-
 #[derive(Deserialize)]
 struct EditsRequest {
     edits: Vec<EditItem>,
@@ -187,13 +186,43 @@ struct EditResultItem {
 impl EditResultItem {
     fn from_result(path: String, r: EditResult) -> Self {
         match r {
-            EditResult::Accepted { rev } => Self { path, status: "accepted", rev: Some(rev), ..Default::default() },
-            EditResult::Created { rev } => Self { path, status: "created", rev: Some(rev), ..Default::default() },
-            EditResult::Removed => Self { path, status: "removed", ..Default::default() },
-            EditResult::Indexed => Self { path, status: "indexed", ..Default::default() },
-            EditResult::Unchanged => Self { path, status: "unchanged", ..Default::default() },
-            EditResult::Renamed { count } => Self { path, status: "renamed", count: Some(count), ..Default::default() },
-            EditResult::Conflict { head_rev, head_content } => Self {
+            EditResult::Accepted { rev } => Self {
+                path,
+                status: "accepted",
+                rev: Some(rev),
+                ..Default::default()
+            },
+            EditResult::Created { rev } => Self {
+                path,
+                status: "created",
+                rev: Some(rev),
+                ..Default::default()
+            },
+            EditResult::Removed => Self {
+                path,
+                status: "removed",
+                ..Default::default()
+            },
+            EditResult::Indexed => Self {
+                path,
+                status: "indexed",
+                ..Default::default()
+            },
+            EditResult::Unchanged => Self {
+                path,
+                status: "unchanged",
+                ..Default::default()
+            },
+            EditResult::Renamed { count } => Self {
+                path,
+                status: "renamed",
+                count: Some(count),
+                ..Default::default()
+            },
+            EditResult::Conflict {
+                head_rev,
+                head_content,
+            } => Self {
                 path,
                 status: "conflict",
                 head_rev: Some(head_rev),
@@ -218,14 +247,18 @@ async fn edits(
     let mut results = Vec::with_capacity(req.edits.len());
     for item in req.edits {
         let op = match item.op {
-            EditVerb::Delete => EditOp::Delete { path: item.path.clone() },
+            EditVerb::Delete => EditOp::Delete {
+                path: item.path.clone(),
+            },
             EditVerb::Upsert => EditOp::Upsert {
                 path: item.path.clone(),
                 base_rev: item.base_rev,
                 content: item.content.unwrap_or_default(),
             },
         };
-        let r = sync.apply_edit(&state.harness, &auth.user_id, &auth.handle, op).await?;
+        let r = sync
+            .apply_edit(&state.harness, &auth.user_id, &auth.handle, op)
+            .await?;
         results.push(EditResultItem::from_result(item.path, r));
     }
     Ok(Json(EditsResponse { results }))
@@ -243,6 +276,8 @@ async fn rename(
     Json(req): Json<RenameRequest>,
 ) -> Result<Json<EditResultItem>, ApiError> {
     let sync = require_sync(&auth, &state)?;
-    let r = sync.rename(&auth.user_id, &auth.handle, &req.from, &req.to).await?;
+    let r = sync
+        .rename(&auth.user_id, &auth.handle, &req.from, &req.to)
+        .await?;
     Ok(Json(EditResultItem::from_result(req.to, r)))
 }

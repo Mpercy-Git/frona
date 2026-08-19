@@ -3,14 +3,14 @@ use std::collections::BTreeMap;
 use chrono::{Duration, Utc};
 use frona::agent::models::Agent;
 use frona::agent::repository::AgentRepository;
+use frona::core::repository::Repository;
 use frona::db::init as db;
-use frona::db::repo::generic::SurrealRepo;
 use frona::db::repo::basic_memory::SurrealMemoryEntryRepo;
+use frona::db::repo::generic::SurrealRepo;
 use frona::memory::basic::models::MemoryEntry;
 use frona::memory::basic::repository::MemoryEntryRepository;
-use frona::core::repository::Repository;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -40,7 +40,12 @@ fn make_user_entry(user_id: &str, content: &str) -> MemoryEntry {
     }
 }
 
-fn make_agent(id: &str, user_id: &str, heartbeat_interval: Option<u64>, next_heartbeat_at: Option<chrono::DateTime<Utc>>) -> Agent {
+fn make_agent(
+    id: &str,
+    user_id: &str,
+    heartbeat_interval: Option<u64>,
+    next_heartbeat_at: Option<chrono::DateTime<Utc>>,
+) -> Agent {
     let now = Utc::now();
     Agent {
         id: id.to_string(),
@@ -69,9 +74,15 @@ async fn memory_compaction_discovers_distinct_agent_ids() {
     let db = test_db().await;
     let repo: SurrealMemoryEntryRepo = SurrealRepo::new(db);
 
-    repo.create(&make_entry("agent-a", "memory 1")).await.unwrap();
-    repo.create(&make_entry("agent-b", "memory 2")).await.unwrap();
-    repo.create(&make_entry("agent-a", "memory 3")).await.unwrap();
+    repo.create(&make_entry("agent-a", "memory 1"))
+        .await
+        .unwrap();
+    repo.create(&make_entry("agent-b", "memory 2"))
+        .await
+        .unwrap();
+    repo.create(&make_entry("agent-a", "memory 3"))
+        .await
+        .unwrap();
 
     let mut ids = repo.find_distinct_agent_ids().await.unwrap();
     ids.sort();
@@ -83,9 +94,15 @@ async fn memory_compaction_discovers_distinct_user_ids() {
     let db = test_db().await;
     let repo: SurrealMemoryEntryRepo = SurrealRepo::new(db);
 
-    repo.create(&make_user_entry("user-x", "pref 1")).await.unwrap();
-    repo.create(&make_user_entry("user-y", "pref 2")).await.unwrap();
-    repo.create(&make_user_entry("user-x", "pref 3")).await.unwrap();
+    repo.create(&make_user_entry("user-x", "pref 1"))
+        .await
+        .unwrap();
+    repo.create(&make_user_entry("user-y", "pref 2"))
+        .await
+        .unwrap();
+    repo.create(&make_user_entry("user-x", "pref 3"))
+        .await
+        .unwrap();
 
     let mut ids = repo.find_distinct_user_ids().await.unwrap();
     ids.sort();

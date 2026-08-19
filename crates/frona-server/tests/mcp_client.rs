@@ -1,12 +1,8 @@
 use frona::tool::mcp::client::{McpClient, default_client_info};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{
-    CallToolResult, Content, JsonObject, ServerCapabilities, ServerInfo,
-};
-use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router,
-};
+use rmcp::model::{CallToolResult, Content, JsonObject, ServerCapabilities, ServerInfo};
+use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use tokio::io::duplex;
 
 #[derive(Clone)]
@@ -24,10 +20,7 @@ impl EchoServer {
     }
 
     #[tool(description = "Echo back the provided text.")]
-    fn echo(
-        &self,
-        Parameters(args): Parameters<JsonObject>,
-    ) -> Result<CallToolResult, McpError> {
+    fn echo(&self, Parameters(args): Parameters<JsonObject>) -> Result<CallToolResult, McpError> {
         let text = args
             .get("text")
             .and_then(|v| v.as_str())
@@ -37,10 +30,7 @@ impl EchoServer {
     }
 
     #[tool(description = "Add two integers and return their sum.")]
-    fn add(
-        &self,
-        Parameters(args): Parameters<JsonObject>,
-    ) -> Result<CallToolResult, McpError> {
+    fn add(&self, Parameters(args): Parameters<JsonObject>) -> Result<CallToolResult, McpError> {
         let a = args.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = args.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(CallToolResult::success(vec![Content::text(
@@ -141,9 +131,7 @@ async fn call_tool_with_multiple_args() {
 async fn call_unknown_tool_returns_error() {
     let client = spawn_fake_server().await;
 
-    let result = client
-        .call_tool("nonexistent", serde_json::json!({}))
-        .await;
+    let result = client.call_tool("nonexistent", serde_json::json!({})).await;
 
     assert!(result.is_err(), "calling unknown tool should error");
 
@@ -168,7 +156,10 @@ async fn peer_info_populated_after_connect() {
     let client = spawn_fake_server().await;
 
     let info = client.peer_info();
-    assert!(info.is_some(), "peer_info should be populated after initialize");
+    assert!(
+        info.is_some(),
+        "peer_info should be populated after initialize"
+    );
 
     client.shutdown().await.unwrap();
 }

@@ -1,4 +1,6 @@
-use frona::core::config::{deep_merge, redact_config_for_api, redact_config_for_log, config_file_path, Config};
+use frona::core::config::{
+    Config, config_file_path, deep_merge, redact_config_for_api, redact_config_for_log,
+};
 use serde_json::json;
 
 #[test]
@@ -13,10 +15,7 @@ fn test_redact_config_for_log() {
     let mut value = serde_json::to_value(&config).unwrap();
     redact_config_for_log(&mut value);
 
-    assert_eq!(
-        value["auth"]["encryption_secret"],
-        json!("[redacted]")
-    );
+    assert_eq!(value["auth"]["encryption_secret"], json!("[redacted]"));
 }
 
 #[test]
@@ -25,25 +24,22 @@ fn test_redact_config_for_api() {
     let mut value = serde_json::to_value(&config).unwrap();
     redact_config_for_api(&mut value);
 
-    assert_eq!(
-        value["auth"]["encryption_secret"],
-        json!({"is_set": false})
-    );
+    assert_eq!(value["auth"]["encryption_secret"], json!({"is_set": false}));
 
-    assert_eq!(
-        value["sso"]["client_secret"],
-        json!({"is_set": false})
-    );
+    assert_eq!(value["sso"]["client_secret"], json!({"is_set": false}));
 }
 
 #[test]
 fn test_redact_config_for_api_providers() {
     let mut config = Config::default();
-    config.providers.insert("anthropic".into(), frona::core::config::ModelProviderConfig {
-        api_key: Some("sk-secret".into()),
-        base_url: None,
-        enabled: true,
-    });
+    config.providers.insert(
+        "anthropic".into(),
+        frona::core::config::ModelProviderConfig {
+            api_key: Some("sk-secret".into()),
+            base_url: None,
+            enabled: true,
+        },
+    );
 
     let mut value = serde_json::to_value(&config).unwrap();
     redact_config_for_api(&mut value);
@@ -117,21 +113,39 @@ async fn test_runtime_config_operations() {
     let config = Config::default();
     let storage = frona::storage::StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
-    let state = frona::core::state::AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
+    let state = frona::core::state::AppState::new(
+        db,
+        &config,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics_handle,
+        resource_manager,
+    );
 
     let val = state.get_runtime_config("setup_completed").await.unwrap();
     assert!(val.is_none());
     assert!(!state.get_runtime_config_bool("setup_completed").await);
 
-    state.set_runtime_config("setup_completed", "true").await.unwrap();
+    state
+        .set_runtime_config("setup_completed", "true")
+        .await
+        .unwrap();
     assert!(state.get_runtime_config_bool("setup_completed").await);
 
-    state.set_runtime_config("setup_completed", "false").await.unwrap();
+    state
+        .set_runtime_config("setup_completed", "false")
+        .await
+        .unwrap();
     assert!(!state.get_runtime_config_bool("setup_completed").await);
 
-    state.set_runtime_config("other_flag", "hello").await.unwrap();
+    state
+        .set_runtime_config("other_flag", "hello")
+        .await
+        .unwrap();
     let val = state.get_runtime_config("other_flag").await.unwrap();
     assert_eq!(val, Some("hello".to_string()));
 }
@@ -165,7 +179,11 @@ fn retry_config_survives_strip_defaults_round_trip() {
     });
 
     let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("config.yaml").to_string_lossy().into_owned();
+    let path = tmp
+        .path()
+        .join("config.yaml")
+        .to_string_lossy()
+        .into_owned();
 
     persist_config(&mut value, &path).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
@@ -174,7 +192,10 @@ fn retry_config_survives_strip_defaults_round_trip() {
     assert!(!written.contains("initial_backoff_ms"));
 
     let loaded: Config = ::config::Config::builder()
-        .add_source(::config::File::from_str(&written, ::config::FileFormat::Yaml))
+        .add_source(::config::File::from_str(
+            &written,
+            ::config::FileFormat::Yaml,
+        ))
         .build()
         .unwrap()
         .try_deserialize()
@@ -220,12 +241,19 @@ fn default_config_survives_strip_defaults_round_trip() {
     });
 
     let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("config.yaml").to_string_lossy().into_owned();
+    let path = tmp
+        .path()
+        .join("config.yaml")
+        .to_string_lossy()
+        .into_owned();
     persist_config(&mut value, &path).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
 
     let loaded: Config = ::config::Config::builder()
-        .add_source(::config::File::from_str(&written, ::config::FileFormat::Yaml))
+        .add_source(::config::File::from_str(
+            &written,
+            ::config::FileFormat::Yaml,
+        ))
         .build()
         .unwrap()
         .try_deserialize()

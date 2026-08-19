@@ -1,12 +1,14 @@
-use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use oxrdf::{NamedOrBlankNode, Term};
 
 use crate::core::error::AppError;
 use crate::db::repo::pkm::PkmRepo;
 
-use super::model::{KnowledgeMemory, KnowledgeEntity, KnowledgeEntityLink, KnowledgeEntitySource, EntityHit};
+use super::model::{
+    EntityHit, KnowledgeEntity, KnowledgeEntityLink, KnowledgeEntitySource, KnowledgeMemory,
+};
 use super::ontology::{OntologyManager, UserOntology};
 
 const RDFS_LABEL: &str = "http://www.w3.org/2000/01/rdf-schema#label";
@@ -29,18 +31,38 @@ pub struct OntologyAncestor {
 impl OntologyRead {
     fn from_user(ontology: &UserOntology) -> Self {
         let mut read = Self::default();
-        for triple in ontology.effective_ontology().triples().iter().chain(ontology.delta_triples()) {
-            let NamedOrBlankNode::NamedNode(subject) = &triple.subject else { continue };
+        for triple in ontology
+            .effective_ontology()
+            .triples()
+            .iter()
+            .chain(ontology.delta_triples())
+        {
+            let NamedOrBlankNode::NamedNode(subject) = &triple.subject else {
+                continue;
+            };
             match triple.predicate.as_str() {
-                RDFS_LABEL => if let Term::Literal(label) = &triple.object {
-                    read.labels.entry(subject.as_str().into()).or_insert_with(|| label.value().into());
-                },
-                RDFS_SUBCLASS_OF => if let Term::NamedNode(parent) = &triple.object {
-                    read.parents.entry(subject.as_str().into()).or_default().push(parent.as_str().into());
-                },
-                RDFS_RANGE => if let Term::NamedNode(range) = &triple.object {
-                    read.ranges.entry(subject.as_str().into()).or_insert_with(|| range.as_str().into());
-                },
+                RDFS_LABEL => {
+                    if let Term::Literal(label) = &triple.object {
+                        read.labels
+                            .entry(subject.as_str().into())
+                            .or_insert_with(|| label.value().into());
+                    }
+                }
+                RDFS_SUBCLASS_OF => {
+                    if let Term::NamedNode(parent) = &triple.object {
+                        read.parents
+                            .entry(subject.as_str().into())
+                            .or_default()
+                            .push(parent.as_str().into());
+                    }
+                }
+                RDFS_RANGE => {
+                    if let Term::NamedNode(range) = &triple.object {
+                        read.ranges
+                            .entry(subject.as_str().into())
+                            .or_insert_with(|| range.as_str().into());
+                    }
+                }
                 _ => {}
             }
         }
@@ -48,7 +70,10 @@ impl OntologyRead {
     }
 
     pub fn label(&self, term: &str) -> String {
-        self.labels.get(term).cloned().unwrap_or_else(|| display_term(term))
+        self.labels
+            .get(term)
+            .cloned()
+            .unwrap_or_else(|| display_term(term))
     }
 
     pub fn datatype(&self, property: &str) -> Option<String> {
@@ -74,7 +99,10 @@ impl OntologyRead {
     }
 
     pub fn top_branch(&self, iri: &str) -> String {
-        self.ancestors(iri).last().map(|ancestor| ancestor.iri.clone()).unwrap_or_else(|| iri.into())
+        self.ancestors(iri)
+            .last()
+            .map(|ancestor| ancestor.iri.clone())
+            .unwrap_or_else(|| iri.into())
     }
 }
 
@@ -82,7 +110,9 @@ fn display_term(term: &str) -> String {
     let local = term.rsplit(['#', '/', ':']).next().unwrap_or(term);
     let mut label = String::new();
     for (index, character) in local.chars().enumerate() {
-        if index > 0 && character.is_uppercase() { label.push(' '); }
+        if index > 0 && character.is_uppercase() {
+            label.push(' ');
+        }
         label.push(character);
     }
     label
@@ -124,7 +154,10 @@ impl PkmReadService {
     }
 
     pub async fn entity(&self, user_id: &str, path: &str) -> Result<PkmEntityRead, AppError> {
-        let entity = self.repo.entity_by_path(user_id, path).await?
+        let entity = self
+            .repo
+            .entity_by_path(user_id, path)
+            .await?
             .ok_or_else(|| AppError::NotFound(format!("memory entity not found: {path}")))?;
         Ok(PkmEntityRead {
             entity,

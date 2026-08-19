@@ -6,16 +6,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::models::Agent;
 use crate::agent::task::models::Task;
+use crate::auth::User;
 use crate::chat::broadcast::EventSender;
 use crate::chat::models::Chat;
 use crate::core::error::AppError;
-use crate::auth::User;
 use crate::tool::registry::AgentToolRegistry;
 
 use super::config::ModelGroup;
-use super::usage::UsageService;
 use super::registry::ModelProviderRegistry;
 use super::tool_call::TaskEvent;
+use super::usage::UsageService;
 
 use crate::chat::message::models::Reasoning;
 

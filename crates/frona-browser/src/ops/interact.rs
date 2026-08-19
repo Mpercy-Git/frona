@@ -47,7 +47,12 @@ impl BrowserConnection {
             }}"
         );
         let r = el.call_js_fn(fn_decl, false).await.map_err(Error::Cdp)?;
-        let ok = r.result.value.as_ref().and_then(|v| v.as_bool()).unwrap_or(false);
+        let ok = r
+            .result
+            .value
+            .as_ref()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !ok {
             return Err(Error::ToolFailed {
                 tool: "select",
@@ -124,10 +129,7 @@ async fn try_tag(page: &chromiumoxide::Page, r: &AxRef) -> Result<String> {
     Ok(sel)
 }
 
-async fn tag_and_get_selector(
-    page: &chromiumoxide::Page,
-    bid: BackendNodeId,
-) -> Result<String> {
+async fn tag_and_get_selector(page: &chromiumoxide::Page, bid: BackendNodeId) -> Result<String> {
     let resolved = page
         .execute(ResolveNodeParams::builder().backend_node_id(bid).build())
         .await
@@ -176,4 +178,3 @@ async fn tag_and_get_selector(
             message: "failed to tag element".into(),
         })
 }
-

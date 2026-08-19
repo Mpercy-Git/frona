@@ -81,12 +81,18 @@ impl BitwardenVaultProvider {
             .env("HOME", &self.home_dir)
             .output()
             .await
-            .map_err(|e| AppError::Tool(format!("Failed to run `bw` CLI: {e}. Is the Bitwarden CLI installed?")))?;
+            .map_err(|e| {
+                AppError::Tool(format!(
+                    "Failed to run `bw` CLI: {e}. Is the Bitwarden CLI installed?"
+                ))
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("Not found") || stderr.contains("not found") {
-                return Err(AppError::NotFound(format!("Bitwarden item not found: {stderr}")));
+                return Err(AppError::NotFound(format!(
+                    "Bitwarden item not found: {stderr}"
+                )));
             }
             return Err(AppError::Tool(format!("Bitwarden CLI error: {stderr}")));
         }
@@ -109,10 +115,14 @@ impl BitwardenVaultProvider {
                 .env("HOME", &self.home_dir)
                 .output()
                 .await
-                .map_err(|e| AppError::Tool(format!("Failed to configure Bitwarden server: {e}")))?;
+                .map_err(|e| {
+                    AppError::Tool(format!("Failed to configure Bitwarden server: {e}"))
+                })?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(AppError::Tool(format!("Bitwarden config server failed: {stderr}")));
+                return Err(AppError::Tool(format!(
+                    "Bitwarden config server failed: {stderr}"
+                )));
             }
         }
 

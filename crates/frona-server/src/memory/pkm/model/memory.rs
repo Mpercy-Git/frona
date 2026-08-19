@@ -24,7 +24,9 @@ pub enum MemoryKind {
 
 /// How directly the source supports a memory. This is an extraction judgment; the
 /// grounding pass independently checks that the claimed support is actually present.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb::types", lowercase)]
 pub enum EvidenceStrength {
@@ -34,7 +36,9 @@ pub enum EvidenceStrength {
 }
 
 /// Lifecycle state of a time-bounded episode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb::types", lowercase)]
 pub enum EpisodeStatus {
@@ -44,22 +48,44 @@ pub enum EpisodeStatus {
     Unconfirmed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb::types", lowercase)]
-pub enum TemporalDirection { Past, Present, Future }
+pub enum TemporalDirection {
+    Past,
+    Present,
+    Future,
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb::types", lowercase)]
-pub enum TemporalUnit { Minute, Hour, Day, Week, Month, Year }
+pub enum TemporalUnit {
+    Minute,
+    Hour,
+    Day,
+    Week,
+    Month,
+    Year,
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb::types", lowercase)]
-pub enum TemporalSemantics { Elapsed, Calendar }
+pub enum TemporalSemantics {
+    Elapsed,
+    Calendar,
+}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema,
+)]
 #[surreal(crate = "surrealdb::types")]
 pub struct RelativeDuration {
     pub direction: TemporalDirection,
@@ -68,7 +94,9 @@ pub struct RelativeDuration {
     pub semantics: TemporalSemantics,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema,
+)]
 #[surreal(crate = "surrealdb::types")]
 pub struct AbsoluteTime {
     pub year: Option<i32>,
@@ -78,7 +106,9 @@ pub struct AbsoluteTime {
     pub minute: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema,
+)]
 #[surreal(crate = "surrealdb::types")]
 pub struct Episode {
     pub status: EpisodeStatus,
@@ -89,7 +119,9 @@ pub struct Episode {
     pub resolved_end: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue, schemars::JsonSchema,
+)]
 #[surreal(crate = "surrealdb::types")]
 pub struct TemporalAnchor {
     pub message: String,
@@ -181,9 +213,22 @@ pub struct MemoryRelation {
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb::types", rename_all = "snake_case")]
 pub enum EvidenceSource {
-    UserMessage { message_id: String, chat_id: String, quote: String },
-    UserConfirmation { message_id: String, chat_id: String, quote: String },
-    AgentMessage { message_id: String, agent_id: String, chat_id: String, quote: String },
+    UserMessage {
+        message_id: String,
+        chat_id: String,
+        quote: String,
+    },
+    UserConfirmation {
+        message_id: String,
+        chat_id: String,
+        quote: String,
+    },
+    AgentMessage {
+        message_id: String,
+        agent_id: String,
+        chat_id: String,
+        quote: String,
+    },
     WebSearch {
         message_id: String,
         chat_id: String,
@@ -205,9 +250,19 @@ pub enum EvidenceSource {
         tool_call_id: String,
         quote: String,
     },
-    TaskLifecycle { message_id: String, chat_id: String, task_id: String },
-    HumanEdit { page_path: String, quote: String },
-    ExternalNote { note: String, quote: String },
+    TaskLifecycle {
+        message_id: String,
+        chat_id: String,
+        task_id: String,
+    },
+    HumanEdit {
+        page_path: String,
+        quote: String,
+    },
+    ExternalNote {
+        note: String,
+        quote: String,
+    },
 }
 
 /// How one source supports one memory. Evidence is immutable and consumers inspect the

@@ -64,12 +64,12 @@ async fn migration_stamps_principal_on_old_rows() {
 
     let g1 = principal_of(&db, "g1").await;
     let g1_obj = g1.as_object().expect("principal should be an object");
-    assert_eq!(
-        g1_obj.get("id").and_then(|v| v.as_str()),
-        Some("agent-foo")
-    );
+    assert_eq!(g1_obj.get("id").and_then(|v| v.as_str()), Some("agent-foo"));
     assert!(
-        g1_obj.get("kind").and_then(|v| v.as_object()).is_some_and(|k| k.contains_key("Agent")),
+        g1_obj
+            .get("kind")
+            .and_then(|v| v.as_object())
+            .is_some_and(|k| k.contains_key("Agent")),
         "principal.kind should match SurrealValue's externally-tagged Agent shape"
     );
 
@@ -132,7 +132,11 @@ async fn migration_does_not_overwrite_rows_that_already_have_principal() {
         .expect("principal should still be the mcp_server one");
     assert_eq!(kind, "mcp_server");
     assert_eq!(
-        principal.as_object().unwrap().get("id").and_then(|v| v.as_str()),
+        principal
+            .as_object()
+            .unwrap()
+            .get("id")
+            .and_then(|v| v.as_str()),
         Some("srv1"),
         "existing principal must not be overwritten by agent_id fallback"
     );

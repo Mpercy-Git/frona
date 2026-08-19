@@ -10,8 +10,8 @@ use crate::core::error::AppError;
 use crate::memory::pkm::model::{EntityCategory, classify_memories, decay_score};
 use crate::memory::pkm::projection::{MarkdownPage, compose_page};
 
-use super::context::ConsolidationContext;
 use super::CleanupOutcome;
+use super::context::ConsolidationContext;
 
 pub(super) struct Cleanup {
     pub ctx: Arc<ConsolidationContext>,
@@ -41,9 +41,20 @@ impl Cleanup {
                 continue;
             }
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-            match self.ctx.repo.upsert_entity_skeleton(
-                user_id, &path, EntityCategory::Concept, &[], &name, "", &[],
-            ).await {
+            match self
+                .ctx
+                .repo
+                .upsert_entity_skeleton(
+                    user_id,
+                    &path,
+                    EntityCategory::Concept,
+                    &[],
+                    &name,
+                    "",
+                    &[],
+                )
+                .await
+            {
                 Ok(()) => {
                     tracing::info!(
                         entity = %path,
@@ -65,12 +76,18 @@ impl Cleanup {
         // were all retired as erroneous (e.g. the user deleted it) has nothing to
         // project, so drop its record + file. The memories stay (erroneous,
         // canonical, for re-learn suppression); only the projection node goes.
-        for path in self.ctx
+        for path in self
+            .ctx
             .repo
             .entities_with_no_valid_memories(&self.ctx.scope.user_id)
             .await?
         {
-            if let Err(e) = self.ctx.repo.delete_entity(&self.ctx.scope.user_id, &path).await {
+            if let Err(e) = self
+                .ctx
+                .repo
+                .delete_entity(&self.ctx.scope.user_id, &path)
+                .await
+            {
                 warn!(error = %e, path = %path, "pkm cleanup: entity GC failed");
                 continue;
             }
@@ -86,8 +103,18 @@ impl Cleanup {
         // Dead-weight GC: memories retired via `Duplicate`/`Absorbed` are invisible to
         // every projection (their content lives in the survivor), so delete the rows +
         // their links. `Replace`/`Outdated` (History) and `Erroneous` (suppression) stay.
-        for memory_id in self.ctx.repo.dropped_memory_ids(&self.ctx.scope.user_id).await? {
-            if let Err(e) = self.ctx.repo.delete_memory(&self.ctx.scope.user_id, &memory_id).await {
+        for memory_id in self
+            .ctx
+            .repo
+            .dropped_memory_ids(&self.ctx.scope.user_id)
+            .await?
+        {
+            if let Err(e) = self
+                .ctx
+                .repo
+                .delete_memory(&self.ctx.scope.user_id, &memory_id)
+                .await
+            {
                 warn!(error = %e, memory = %memory_id, "pkm cleanup: dropped-memory GC failed");
             } else {
                 stats.dropped_gced += 1;
@@ -115,17 +142,29 @@ impl Cleanup {
     /// only a completely successful materialization permits the obsolete-file sweep.
     async fn reconcile_entity_files(&self) -> Result<(), AppError> {
         let entities = self.ctx.repo.list_entities(&self.ctx.scope.user_id).await?;
-        let authored = entities.iter().filter(|entity| entity.rev.is_some()).collect::<Vec<_>>();
-        let canonical = authored.iter().map(|entity| entity.path.clone())
+        let authored = entities
+            .iter()
+            .filter(|entity| entity.rev.is_some())
+            .collect::<Vec<_>>();
+        let canonical = authored
+            .iter()
+            .map(|entity| entity.path.clone())
             .collect::<std::collections::BTreeSet<_>>();
         for entity in authored {
-            let links = self.ctx.repo.links_from_entity(
-                &self.ctx.scope.user_id, &entity.path
-            ).await.unwrap_or_default();
+            let links = self
+                .ctx
+                .repo
+                .links_from_entity(&self.ctx.scope.user_id, &entity.path)
+                .await
+                .unwrap_or_default();
             let article = MarkdownPage::parse(&entity.body);
             let file = compose_page(
-                entity, &article, &entity.attributes, &links, &self.prefixes,
-                &self.ctx.scope.vault
+                entity,
+                &article,
+                &entity.attributes,
+                &links,
+                &self.prefixes,
+                &self.ctx.scope.vault,
             );
             self.ctx.write_page_and_rev(&entity.path, &file).await?;
         }
@@ -134,11 +173,17 @@ impl Cleanup {
                 self.ctx.storage.delete_page(&self.ctx.scope.vault, &path)?;
             }
         }
-        self.ctx.storage.remove_empty_page_directories(&self.ctx.scope.vault)
+        self.ctx
+            .storage
+            .remove_empty_page_directories(&self.ctx.scope.vault)
     }
 
     async fn decay_sweep(&self, stats: &mut CleanupOutcome) -> Result<(), AppError> {
-        let rows = self.ctx.repo.list_short_memory(&self.ctx.scope.user_id).await?;
+        let rows = self
+            .ctx
+            .repo
+            .list_short_memory(&self.ctx.scope.user_id)
+            .await?;
         let now = Utc::now();
         for row in rows {
             let age = (now - row.last_accessed_at).num_seconds().max(0) as f32;

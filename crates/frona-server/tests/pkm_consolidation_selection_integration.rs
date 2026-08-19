@@ -132,5 +132,8 @@ async fn validated_short_memory_does_not_retrigger() {
 
     let repo = PkmRepo::new(db.clone(), 8);
     let got = repo.chats_needing_consolidation(idle_cutoff).await.unwrap();
-    assert!(got.is_empty(), "a validated short memory must not re-trigger selection");
+    assert!(
+        got.is_empty(),
+        "a validated short memory must not re-trigger selection"
+    );
 }

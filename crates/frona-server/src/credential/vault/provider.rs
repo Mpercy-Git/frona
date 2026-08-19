@@ -6,10 +6,8 @@ use crate::core::error::AppError;
 
 use super::models::{VaultConnectionConfig, VaultItem, VaultProviderType, VaultSecret};
 use super::providers::{
-    bitwarden::BitwardenVaultProvider,
-    hashicorp::HashicorpVaultProvider,
-    keepass::KeePassVaultProvider,
-    local::LocalVaultProvider,
+    bitwarden::BitwardenVaultProvider, hashicorp::HashicorpVaultProvider,
+    keepass::KeePassVaultProvider, local::LocalVaultProvider,
     onepassword::OnePasswordVaultProvider,
 };
 
@@ -57,15 +55,24 @@ pub fn create_vault_provider(
         },
         VaultProviderType::Hashicorp => match config {
             VaultConnectionConfig::Hashicorp {
+                address,
+                token,
+                mount_path,
+            } => Ok(Box::new(HashicorpVaultProvider::new(
                 address, token, mount_path,
-            } => Ok(Box::new(HashicorpVaultProvider::new(address, token, mount_path)?)),
-            _ => Err(AppError::Validation("Invalid config for HashiCorp Vault".into())),
+            )?)),
+            _ => Err(AppError::Validation(
+                "Invalid config for HashiCorp Vault".into(),
+            )),
         },
         VaultProviderType::KeePass => match config {
             VaultConnectionConfig::KeePass {
                 file_path,
                 master_password,
-            } => Ok(Box::new(KeePassVaultProvider::new(file_path, master_password))),
+            } => Ok(Box::new(KeePassVaultProvider::new(
+                file_path,
+                master_password,
+            ))),
             _ => Err(AppError::Validation("Invalid config for KeePass".into())),
         },
     }
@@ -76,5 +83,9 @@ pub fn create_local_provider(
     encryption_key: [u8; 32],
     user_id: String,
 ) -> Box<dyn VaultProvider> {
-    Box::new(LocalVaultProvider::new(credential_repo, encryption_key, user_id))
+    Box::new(LocalVaultProvider::new(
+        credential_repo,
+        encryption_key,
+        user_id,
+    ))
 }

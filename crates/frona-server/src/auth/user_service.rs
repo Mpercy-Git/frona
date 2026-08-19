@@ -6,8 +6,8 @@ use crate::core::error::AppError;
 use crate::core::repository::Repository;
 use crate::db::repo::users::SurrealUserRepo;
 
-use super::models::{ADMINS_GROUP, User};
 use super::UserRepository;
+use super::models::{ADMINS_GROUP, User};
 use crate::core::user_config::{UserConfig, UserConfigPatch};
 
 #[derive(Clone)]
@@ -29,7 +29,11 @@ impl UserService {
             .max_capacity(cache_config.entity_max_capacity)
             .time_to_live(std::time::Duration::from_secs(cache_config.entity_ttl_secs))
             .build();
-        Self { repo, cache, user_config_cache }
+        Self {
+            repo,
+            cache,
+            user_config_cache,
+        }
     }
 
     /// The user's config, defaulted when they've never customized anything (no row
@@ -86,7 +90,10 @@ impl UserService {
             .map(|u| u.handle)
     }
 
-    pub async fn find_by_handle(&self, handle: &crate::core::Handle) -> Result<Option<User>, AppError> {
+    pub async fn find_by_handle(
+        &self,
+        handle: &crate::core::Handle,
+    ) -> Result<Option<User>, AppError> {
         self.repo.find_by_handle(handle).await
     }
 

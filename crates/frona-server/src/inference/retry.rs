@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use backon::Retryable;
+use rig_core::completion::message::UserContent;
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
-use rig_core::completion::message::UserContent;
 use tokio::sync::mpsc;
 
 use crate::chat::broadcast::EventSender;
@@ -14,11 +14,11 @@ use crate::chat::broadcast::EventSender;
 use super::config::{ModelGroup, RetryConfig};
 use super::context::truncate_history;
 use super::error::InferenceError;
-use super::usage::{UsageService, LatencyMetrics};
 use super::provider::{InferenceOutput, ModelRef, StreamToken};
 use super::registry::ModelProviderRegistry;
 use super::tool_loop::{InferenceEvent, InferenceEventKind};
 use super::usage::UsageContext;
+use super::usage::{LatencyMetrics, UsageService};
 
 /// Result of a retried operation with retry instrumentation. `retry_count` is
 /// the number of failed attempts before the success; `retry_overhead_ms` is
@@ -119,10 +119,24 @@ pub async fn inference_with_retry_and_fallback(
     })
     .await
     {
-        Ok(RetryOutcome { value: InferenceOutput { content, usage, ttft_ms }, retry_count, retry_overhead_ms }) => {
+        Ok(RetryOutcome {
+            value:
+                InferenceOutput {
+                    content,
+                    usage,
+                    ttft_ms,
+                },
+            retry_count,
+            retry_overhead_ms,
+        }) => {
             let duration_ms = start.elapsed().as_millis() as u64;
             tracing::debug!(model = %ref_str, "Completion succeeded");
-            let latency = LatencyMetrics { duration_ms, ttft_ms, retry_overhead_ms, retry_count };
+            let latency = LatencyMetrics {
+                duration_ms,
+                ttft_ms,
+                retry_overhead_ms,
+                retry_count,
+            };
             usage_service
                 .record(usage_ctx, &model_group.main, &usage, 0, latency)
                 .await;
@@ -159,10 +173,24 @@ pub async fn inference_with_retry_and_fallback(
         })
         .await
         {
-            Ok(RetryOutcome { value: InferenceOutput { content, usage, ttft_ms }, retry_count, retry_overhead_ms }) => {
+            Ok(RetryOutcome {
+                value:
+                    InferenceOutput {
+                        content,
+                        usage,
+                        ttft_ms,
+                    },
+                retry_count,
+                retry_overhead_ms,
+            }) => {
                 let duration_ms = start.elapsed().as_millis() as u64;
                 tracing::info!(model = %ref_str, "Fallback succeeded");
-                let latency = LatencyMetrics { duration_ms, ttft_ms, retry_overhead_ms, retry_count };
+                let latency = LatencyMetrics {
+                    duration_ms,
+                    ttft_ms,
+                    retry_overhead_ms,
+                    retry_count,
+                };
                 usage_service
                     .record(usage_ctx, fallback, &usage, (idx + 1) as u8, latency)
                     .await;
@@ -218,7 +246,11 @@ pub async fn structured_inference_with_retry_and_fallback(
     })
     .await
     {
-        Ok(RetryOutcome { value, retry_count, retry_overhead_ms }) => {
+        Ok(RetryOutcome {
+            value,
+            retry_count,
+            retry_overhead_ms,
+        }) => {
             let duration_ms = start.elapsed().as_millis() as u64;
             tracing::info!(model = %ref_str, "Structured extraction succeeded");
             // structured_inference at the rig layer doesn't surface a Usage -
@@ -272,7 +304,11 @@ pub async fn structured_inference_with_retry_and_fallback(
         })
         .await
         {
-            Ok(RetryOutcome { value, retry_count, retry_overhead_ms }) => {
+            Ok(RetryOutcome {
+                value,
+                retry_count,
+                retry_overhead_ms,
+            }) => {
                 let duration_ms = start.elapsed().as_millis() as u64;
                 tracing::info!(model = %ref_str, "Structured extraction fallback succeeded");
                 let latency = LatencyMetrics {
@@ -303,7 +339,10 @@ pub async fn structured_inference_with_retry_and_fallback(
 }
 
 pub enum StreamResult {
-    Contents { content: Vec<AssistantContent>, usage: crate::inference::Usage },
+    Contents {
+        content: Vec<AssistantContent>,
+        usage: crate::inference::Usage,
+    },
     Cancelled,
 }
 

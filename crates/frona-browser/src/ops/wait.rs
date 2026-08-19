@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
+use crate::Result;
 use crate::connection::BrowserConnection;
 use crate::error::Error;
-use crate::Result;
 
 impl BrowserConnection {
     pub async fn wait_for_selector(&self, selector: &str, timeout: Duration) -> Result<()> {

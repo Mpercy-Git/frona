@@ -12,14 +12,12 @@ use crate::chat::models::Chat;
 use crate::core::error::AppError;
 use crate::storage::Attachment;
 
-use super::storage::download_to_attachment;
 use super::super::attachment;
 use super::super::error::{ChannelError, ChannelErrorKind};
-use super::super::models::{
-    ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
-};
 #[cfg(test)]
 use super::super::models::ChannelFactory;
+use super::super::models::{ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id};
+use super::storage::download_to_attachment;
 
 pub(crate) const CLOUD_API_BASE: &str = "https://graph.facebook.com/v18.0";
 
@@ -174,8 +172,7 @@ impl ChannelAdapter for WhatsAppCloudAdapter {
                 attachment::AttachmentKind::Image
                 | attachment::AttachmentKind::Audio
                 | attachment::AttachmentKind::Video => {
-                    let bytes = match attachment::read_attachment_bytes(att, ctx).await
-                    {
+                    let bytes = match attachment::read_attachment_bytes(att, ctx).await {
                         Ok(b) => b,
                         Err(e) => {
                             tracing::warn!(
@@ -210,12 +207,7 @@ impl ChannelAdapter for WhatsAppCloudAdapter {
                         }
                     };
                     if let Err(e) = self
-                        .send_media(
-                            &to,
-                            &att.content_type,
-                            &media_id,
-                            Some(&attachment_body),
-                        )
+                        .send_media(&to, &att.content_type, &media_id, Some(&attachment_body))
                         .await
                     {
                         tracing::warn!(
@@ -239,23 +231,25 @@ impl ChannelAdapter for WhatsAppCloudAdapter {
                     );
                 }
                 attachment::AttachmentKind::Document => {
-                    let url = match attachment::outbound_url(att, ctx, attachment::ChannelMode::Button).await
-                    {
-                        Ok(u) => u,
-                        Err(e) => {
-                            tracing::warn!(
-                                channel_id = %ctx.channel.id,
-                                msg_id = %msg.id,
-                                path = %att.path,
-                                error = %e,
-                                "WhatsApp Cloud: canonical_file_url failed; skipping",
-                            );
-                            if body_consumed && !body.is_empty() && attachment_body == body {
-                                body_consumed = false;
+                    let url =
+                        match attachment::outbound_url(att, ctx, attachment::ChannelMode::Button)
+                            .await
+                        {
+                            Ok(u) => u,
+                            Err(e) => {
+                                tracing::warn!(
+                                    channel_id = %ctx.channel.id,
+                                    msg_id = %msg.id,
+                                    path = %att.path,
+                                    error = %e,
+                                    "WhatsApp Cloud: canonical_file_url failed; skipping",
+                                );
+                                if body_consumed && !body.is_empty() && attachment_body == body {
+                                    body_consumed = false;
+                                }
+                                continue;
                             }
-                            continue;
-                        }
-                    };
+                        };
                     let display_text = attachment::button_label(att);
                     let payload = build_cta_url_payload(&to, &attachment_body, &display_text, &url);
                     if let Err(e) = self.send_message(payload).await {
@@ -386,7 +380,11 @@ impl WhatsAppCloudAdapter {
         if mode != "subscribe" || !token_ok {
             return Ok(StatusCode::FORBIDDEN.into_response());
         }
-        Ok(([(axum::http::header::CONTENT_TYPE, "text/plain")], challenge).into_response())
+        Ok((
+            [(axum::http::header::CONTENT_TYPE, "text/plain")],
+            challenge,
+        )
+            .into_response())
     }
 
     async fn upload_media(
@@ -398,7 +396,9 @@ impl WhatsAppCloudAdapter {
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name(filename.to_string())
             .mime_str(content_type)
-            .map_err(|e| AppError::Validation(format!("invalid content_type {content_type}: {e}")))?;
+            .map_err(|e| {
+                AppError::Validation(format!("invalid content_type {content_type}: {e}"))
+            })?;
         let form = reqwest::multipart::Form::new()
             .text("messaging_product", "whatsapp")
             .text("type", content_type.to_string())
@@ -484,10 +484,7 @@ impl WhatsAppCloudAdapter {
             .send()
             .await
             .map_err(|e| {
-                classify_wa_cloud_error(
-                    &WaCloudError::Transport,
-                    format!("WA send failed: {e}"),
-                )
+                classify_wa_cloud_error(&WaCloudError::Transport, format!("WA send failed: {e}"))
             })?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
@@ -513,7 +510,12 @@ impl WhatsAppCloudAdapter {
                 format!("WA send response parse failed: {e}"),
             )
         })?;
-        Ok(parsed.messages.into_iter().next().map(|m| m.id).unwrap_or_default())
+        Ok(parsed
+            .messages
+            .into_iter()
+            .next()
+            .map(|m| m.id)
+            .unwrap_or_default())
     }
 
     async fn emit_inbound(
@@ -542,7 +544,10 @@ impl WhatsAppCloudAdapter {
                         .find(|c| c.wa_id == message.from)
                         .and_then(|c| c.profile.as_ref())
                         .map(|p| p.name.clone());
-                    let event = match self.build_external_message(ctx, &message, display_name).await {
+                    let event = match self
+                        .build_external_message(ctx, &message, display_name)
+                        .await
+                    {
                         Ok(e) => e,
                         Err(e) => {
                             tracing::warn!(
@@ -669,9 +674,12 @@ impl WhatsAppCloudAdapter {
             .find_by_id(&ctx.channel.user_id)
             .await?
             .map(|u| u.handle)
-            .ok_or_else(|| AppError::Validation(format!(
-                "channel references missing user {:?}", ctx.channel.user_id
-            )))?;
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "channel references missing user {:?}",
+                    ctx.channel.user_id
+                ))
+            })?;
         download_to_attachment(
             &self.http,
             &ctx.storage_service,
@@ -688,11 +696,7 @@ impl WhatsAppCloudAdapter {
     /// should NOT be forwarded into the inbound pipeline. Returns false when
     /// the tap was unparseable / unknown / errored — the caller decides
     /// whether to fall through.
-    async fn try_resolve_interactive(
-        &self,
-        ctx: &ChannelCtx,
-        message: &InboundMessage,
-    ) -> bool {
+    async fn try_resolve_interactive(&self, ctx: &ChannelCtx, message: &InboundMessage) -> bool {
         let Some(interactive) = message.interactive.as_ref() else {
             tracing::warn!(
                 channel_id = %ctx.channel.id,
@@ -724,11 +728,9 @@ impl WhatsAppCloudAdapter {
             return false;
         };
 
-        let parsed = crate::chat::channel::hitl::parse_resolve_callback_data(
-            reply_id,
-            &ctx.chat_service,
-        )
-        .await;
+        let parsed =
+            crate::chat::channel::hitl::parse_resolve_callback_data(reply_id, &ctx.chat_service)
+                .await;
         let (tool_call_id, response) = match parsed {
             Ok(p) => p,
             Err(e) => {
@@ -886,10 +888,9 @@ fn build_interactive_payload(
                 ],
             )
         }
-        HitlKind::Choice { options } if options.is_empty() => build_text_payload(
-            to,
-            &truncate_chars(prompt, WA_BODY_TEXT_MAX),
-        ),
+        HitlKind::Choice { options } if options.is_empty() => {
+            build_text_payload(to, &truncate_chars(prompt, WA_BODY_TEXT_MAX))
+        }
         HitlKind::Choice { options } if options.len() <= WA_REPLY_BUTTONS_MAX => {
             let buttons: Vec<(String, String)> = options
                 .iter()
@@ -991,9 +992,7 @@ fn build_list_payload(
 ) -> serde_json::Value {
     let rows_json: Vec<serde_json::Value> = rows
         .iter()
-        .map(|(id, title)| {
-            serde_json::json!({ "id": id, "title": title })
-        })
+        .map(|(id, title)| serde_json::json!({ "id": id, "title": title }))
         .collect();
     serde_json::json!({
         "messaging_product": "whatsapp",
@@ -1335,7 +1334,10 @@ mod tests {
 
     #[test]
     fn parse_external_id_strips_prefix() {
-        assert_eq!(parse_external_id("wa:+15551234567").unwrap(), "+15551234567");
+        assert_eq!(
+            parse_external_id("wa:+15551234567").unwrap(),
+            "+15551234567"
+        );
         assert!(parse_external_id("sms:+15551234567").is_err());
         assert!(parse_external_id("wa:").is_err());
     }
@@ -1518,7 +1520,11 @@ mod tests {
         let title = v["interactive"]["action"]["buttons"][0]["reply"]["title"]
             .as_str()
             .unwrap();
-        assert!(title.chars().count() <= 20, "got len {}", title.chars().count());
+        assert!(
+            title.chars().count() <= 20,
+            "got len {}",
+            title.chars().count()
+        );
         assert!(title.ends_with('…'));
     }
 
@@ -1615,8 +1621,7 @@ mod tests {
             .to_channel_error("transient".into());
         assert_eq!(e.kind, ChannelErrorKind::Transient);
 
-        let e = WaCloudError::from_http(401, "no body")
-            .to_channel_error("auth".into());
+        let e = WaCloudError::from_http(401, "no body").to_channel_error("auth".into());
         assert_eq!(e.kind, ChannelErrorKind::Unauthorized);
     }
 

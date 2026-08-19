@@ -1,28 +1,28 @@
+pub mod annotate;
 pub mod await_signal;
 pub mod browser;
-pub mod manager;
 pub mod cli;
-pub mod files;
 pub mod create_agent;
-pub mod manage_policy;
+pub mod files;
 pub mod heartbeat;
 pub mod manage_app;
+pub mod manage_policy;
+pub mod manager;
+pub mod mcp;
 pub mod notify_human;
 pub mod produce_file;
+pub mod provider;
 pub mod registry;
 pub mod report_signal;
 pub mod request_credentials;
-pub mod task;
+pub mod sandbox;
 pub mod send_message;
-pub mod annotate;
+pub mod task;
 pub mod task_control;
 pub mod update_identity;
 pub mod voice;
 pub mod web_fetch;
 pub mod web_search;
-pub mod mcp;
-pub mod provider;
-pub mod sandbox;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -54,18 +54,26 @@ pub fn str_arg<'a>(arguments: &'a Value, key: &str) -> Option<&'a str> {
 
 /// Accepts unix timestamp or naive ISO 8601 (interpreted in `tz`). Rejects
 /// offset-bearing strings - the agent must use naive + `timezone` parameter.
-pub fn parse_run_at(value: &Value, tz: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
+pub fn parse_run_at(
+    value: &Value,
+    tz: &str,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
     let dt = match value {
         Value::Number(n) => {
-            let ts = n.as_i64()
+            let ts = n
+                .as_i64()
                 .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?;
-            Some(chrono::DateTime::from_timestamp(ts, 0)
-                .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?)
+            Some(
+                chrono::DateTime::from_timestamp(ts, 0)
+                    .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?,
+            )
         }
         Value::String(s) => {
             if let Ok(ts) = s.parse::<i64>() {
-                Some(chrono::DateTime::from_timestamp(ts, 0)
-                    .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?)
+                Some(
+                    chrono::DateTime::from_timestamp(ts, 0)
+                        .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?,
+                )
             } else {
                 Some(parse_naive_run_at(s, tz)?)
             }
@@ -124,12 +132,19 @@ fn parse_naive_run_at(s: &str, tz: &str) -> Result<chrono::DateTime<chrono::Utc>
 
 /// Resolve a `run_at` datetime from arguments, supporting both `run_at` and `delay_minutes`.
 /// `delay_minutes` takes precedence over `run_at` if both are provided.
-pub fn resolve_run_at(arguments: &Value, tz: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
+pub fn resolve_run_at(
+    arguments: &Value,
+    tz: &str,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
     if let Some(delay) = arguments.get("delay_minutes").and_then(|v| v.as_u64()) {
         if delay == 0 {
-            return Err(AppError::Validation("delay_minutes must be greater than 0".into()));
+            return Err(AppError::Validation(
+                "delay_minutes must be greater than 0".into(),
+            ));
         }
-        return Ok(Some(chrono::Utc::now() + chrono::Duration::minutes(delay as i64)));
+        return Ok(Some(
+            chrono::Utc::now() + chrono::Duration::minutes(delay as i64),
+        ));
     }
 
     match arguments.get("run_at") {
@@ -307,7 +322,12 @@ pub trait AgentTool: Send + Sync {
     fn definition_vars(&self) -> Vec<(&str, &str)> {
         vec![]
     }
-    async fn execute(&self, tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError>;
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError>;
     /// Called after a human resolves a HITL prompt this tool emitted from
     /// `execute`. The tool reads its original `request` payload, validates the
     /// `response` shape, performs any side effect (deploy, bind credential,
@@ -352,7 +372,10 @@ fn build_parameters_json(yaml: &Value) -> Value {
     let properties: Value = if let Value::Object(map) = &params {
         let mut props = serde_json::Map::new();
         for (key, schema) in map {
-            props.insert(key.clone(), serde_json::to_value(schema).unwrap_or(Value::Null));
+            props.insert(
+                key.clone(),
+                serde_json::to_value(schema).unwrap_or(Value::Null),
+            );
         }
         Value::Object(props)
     } else {
@@ -365,13 +388,16 @@ fn build_parameters_json(yaml: &Value) -> Value {
     });
 
     if let Value::Array(arr) = &required {
-        let req: Vec<Value> = arr.iter().map(|v| {
-            if let Value::String(s) = v {
-                Value::String(s.clone())
-            } else {
-                v.clone()
-            }
-        }).collect();
+        let req: Vec<Value> = arr
+            .iter()
+            .map(|v| {
+                if let Value::String(s) = v {
+                    Value::String(s.clone())
+                } else {
+                    v.clone()
+                }
+            })
+            .collect();
         result["required"] = Value::Array(req);
     }
 
@@ -382,7 +408,11 @@ pub fn load_tool_definition(prompts: &PromptLoader, path: &str) -> Option<ToolDe
     load_tool_definition_with_vars(prompts, path, &[])
 }
 
-pub fn load_tool_definition_with_vars(prompts: &PromptLoader, path: &str, vars: &[(&str, &str)]) -> Option<ToolDefinition> {
+pub fn load_tool_definition_with_vars(
+    prompts: &PromptLoader,
+    path: &str,
+    vars: &[(&str, &str)],
+) -> Option<ToolDefinition> {
     let raw = prompts.read_with_vars(path, vars)?;
     let (yaml, body) = parse_frontmatter(&raw)?;
     let id = yaml.get("id")?.as_str()?.to_string();
@@ -415,9 +445,7 @@ mod tests {
 
     #[test]
     fn parse_run_at_unix_timestamp_string() {
-        let dt = parse_run_at(&json!("4000000000"), "UTC")
-            .unwrap()
-            .unwrap();
+        let dt = parse_run_at(&json!("4000000000"), "UTC").unwrap().unwrap();
         assert_eq!(dt.timestamp(), 4_000_000_000);
     }
 
@@ -491,7 +519,10 @@ mod tests {
         let dt = resolve_run_at(&args, "UTC").unwrap().unwrap();
         // Should be ~5min from now, not 2030 - delay_minutes wins.
         let delta = (dt - chrono::Utc::now()).num_minutes();
-        assert!((4..=6).contains(&delta), "expected ~5 min from now, got {delta}");
+        assert!(
+            (4..=6).contains(&delta),
+            "expected ~5 min from now, got {delta}"
+        );
     }
 
     #[test]

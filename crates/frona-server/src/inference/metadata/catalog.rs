@@ -182,7 +182,11 @@ impl ModelCatalogSnapshot {
         let mut entries = HashMap::new();
 
         let claude = ModelEntry {
-            limit: Limit { context: 200_000, output: 32_000, input: None },
+            limit: Limit {
+                context: 200_000,
+                output: 32_000,
+                input: None,
+            },
             attachment: true,
             reasoning: true,
             tool_call: true,
@@ -202,7 +206,11 @@ impl ModelCatalogSnapshot {
         }
 
         let gpt_4x = ModelEntry {
-            limit: Limit { context: 128_000, output: 16_384, input: None },
+            limit: Limit {
+                context: 128_000,
+                output: 16_384,
+                input: None,
+            },
             attachment: true,
             tool_call: true,
             structured_output: true,
@@ -213,7 +221,11 @@ impl ModelCatalogSnapshot {
         }
 
         let o_series = ModelEntry {
-            limit: Limit { context: 200_000, output: 65_536, input: None },
+            limit: Limit {
+                context: 200_000,
+                output: 65_536,
+                input: None,
+            },
             tool_call: true,
             reasoning: true,
             structured_output: true,
@@ -224,7 +236,11 @@ impl ModelCatalogSnapshot {
         }
 
         let gemini_long = ModelEntry {
-            limit: Limit { context: 1_000_000, output: 8_192, input: None },
+            limit: Limit {
+                context: 1_000_000,
+                output: 8_192,
+                input: None,
+            },
             attachment: true,
             tool_call: true,
             structured_output: true,
@@ -242,7 +258,11 @@ impl ModelCatalogSnapshot {
         entries.insert(
             "deepseek-chat".into(),
             ModelEntry {
-                limit: Limit { context: 64_000, output: 8_192, input: None },
+                limit: Limit {
+                    context: 64_000,
+                    output: 8_192,
+                    input: None,
+                },
                 tool_call: true,
                 structured_output: true,
                 ..Default::default()
@@ -251,14 +271,22 @@ impl ModelCatalogSnapshot {
         entries.insert(
             "deepseek-reasoner".into(),
             ModelEntry {
-                limit: Limit { context: 64_000, output: 8_192, input: None },
+                limit: Limit {
+                    context: 64_000,
+                    output: 8_192,
+                    input: None,
+                },
                 tool_call: true,
                 reasoning: true,
                 ..Default::default()
             },
         );
         let dsv4 = ModelEntry {
-            limit: Limit { context: 1_000_000, output: 8_192, input: None },
+            limit: Limit {
+                context: 1_000_000,
+                output: 8_192,
+                input: None,
+            },
             tool_call: true,
             structured_output: true,
             ..Default::default()
@@ -266,15 +294,15 @@ impl ModelCatalogSnapshot {
         entries.insert("deepseek-v4-pro".into(), dsv4.clone());
         entries.insert("deepseek-v4-flash".into(), dsv4);
 
-        for id in [
-            "llama-3.3-70b-versatile",
-            "llama-3.1-70b",
-            "llama-3.1-405b",
-        ] {
+        for id in ["llama-3.3-70b-versatile", "llama-3.1-70b", "llama-3.1-405b"] {
             entries.insert(
                 id.into(),
                 ModelEntry {
-                    limit: Limit { context: 128_000, output: 8_192, input: None },
+                    limit: Limit {
+                        context: 128_000,
+                        output: 8_192,
+                        input: None,
+                    },
                     tool_call: true,
                     ..Default::default()
                 },
@@ -284,7 +312,11 @@ impl ModelCatalogSnapshot {
         entries.insert(
             "grok-2-latest".into(),
             ModelEntry {
-                limit: Limit { context: 131_072, output: 8_192, input: None },
+                limit: Limit {
+                    context: 131_072,
+                    output: 8_192,
+                    input: None,
+                },
                 tool_call: true,
                 ..Default::default()
             },
@@ -293,7 +325,11 @@ impl ModelCatalogSnapshot {
         entries.insert(
             "mistral-large-latest".into(),
             ModelEntry {
-                limit: Limit { context: 128_000, output: 8_192, input: None },
+                limit: Limit {
+                    context: 128_000,
+                    output: 8_192,
+                    input: None,
+                },
                 tool_call: true,
                 structured_output: true,
                 ..Default::default()
@@ -303,7 +339,11 @@ impl ModelCatalogSnapshot {
         entries.insert(
             "command-r-plus".into(),
             ModelEntry {
-                limit: Limit { context: 128_000, output: 4_096, input: None },
+                limit: Limit {
+                    context: 128_000,
+                    output: 4_096,
+                    input: None,
+                },
                 tool_call: true,
                 ..Default::default()
             },
@@ -312,7 +352,11 @@ impl ModelCatalogSnapshot {
         entries.insert(
             "qwen3-vl:32b".into(),
             ModelEntry {
-                limit: Limit { context: 128_000, output: 8_192, input: None },
+                limit: Limit {
+                    context: 128_000,
+                    output: 8_192,
+                    input: None,
+                },
                 attachment: true,
                 tool_call: true,
                 ..Default::default()
@@ -430,7 +474,8 @@ impl ModelCatalogStore {
 
     pub fn swap(&self, next: ModelCatalogSnapshot) {
         self.inner.store(Arc::new(next));
-        self.last_refresh_unix.store(Utc::now().timestamp(), Ordering::Relaxed);
+        self.last_refresh_unix
+            .store(Utc::now().timestamp(), Ordering::Relaxed);
     }
 
     pub fn seconds_since_refresh(&self) -> i64 {
@@ -456,11 +501,25 @@ mod tests {
         let mut entries = HashMap::new();
         entries.insert(
             "openai/gpt-4o".into(),
-            ModelEntry { limit: Limit { context: 128_000, output: 16_384, input: None }, ..Default::default() },
+            ModelEntry {
+                limit: Limit {
+                    context: 128_000,
+                    output: 16_384,
+                    input: None,
+                },
+                ..Default::default()
+            },
         );
         entries.insert(
             "openai/gpt-4o-mini".into(),
-            ModelEntry { limit: Limit { context: 128_000, output: 32_768, input: None }, ..Default::default() },
+            ModelEntry {
+                limit: Limit {
+                    context: 128_000,
+                    output: 32_768,
+                    input: None,
+                },
+                ..Default::default()
+            },
         );
         let snap = ModelCatalogSnapshot {
             version: "test".into(),
@@ -479,7 +538,14 @@ mod tests {
         let mut entries = HashMap::new();
         entries.insert(
             "qwen/qwen3-coder".into(),
-            ModelEntry { limit: Limit { context: 256_000, output: 65_536, input: None }, ..Default::default() },
+            ModelEntry {
+                limit: Limit {
+                    context: 256_000,
+                    output: 65_536,
+                    input: None,
+                },
+                ..Default::default()
+            },
         );
         let snap = ModelCatalogSnapshot {
             version: "test".into(),
@@ -498,7 +564,14 @@ mod tests {
         let mut entries = HashMap::new();
         entries.insert(
             "openai/gpt-4o".into(),
-            ModelEntry { limit: Limit { context: 128_000, output: 16_384, input: None }, ..Default::default() },
+            ModelEntry {
+                limit: Limit {
+                    context: 128_000,
+                    output: 16_384,
+                    input: None,
+                },
+                ..Default::default()
+            },
         );
         let snap = ModelCatalogSnapshot {
             version: "test".into(),

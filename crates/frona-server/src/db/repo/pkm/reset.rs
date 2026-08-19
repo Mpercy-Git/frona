@@ -2,7 +2,11 @@ use crate::db::repo::pkm::*;
 
 impl PkmRepo {
     pub async fn reset_user_derived_memory(&self, user_id: &str) -> Result<(), AppError> {
-        let tx = self.db.clone().begin().await
+        let tx = self
+            .db
+            .clone()
+            .begin()
+            .await
             .map_err(|error| Self::err("reset_user_begin", error))?;
         let result = tx
             .query(
@@ -25,7 +29,9 @@ impl PkmRepo {
             let _ = tx.cancel().await;
             return Err(Self::err("reset_user", error));
         }
-        tx.commit().await.map_err(|error| Self::err("reset_user_commit", error))?;
+        tx.commit()
+            .await
+            .map_err(|error| Self::err("reset_user_commit", error))?;
         Ok(())
     }
 }

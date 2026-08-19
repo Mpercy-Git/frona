@@ -252,16 +252,15 @@ impl ToolManager {
             AgentToolRegistry::new(tools, tool_name_to_owner, definitions, self.mcp_bridge_mode);
 
         if let Some(ctx) = task_ctx {
-            let result_schema = ctx
-                .task
-                .effective_result_schema()
-                .and_then(|v| match crate::agent::task::schema::ResultSpec::new(v) {
+            let result_schema = ctx.task.effective_result_schema().and_then(|v| {
+                match crate::agent::task::schema::ResultSpec::new(v) {
                     Ok(spec) => Some(Arc::new(spec)),
                     Err(e) => {
                         tracing::warn!("failed to compile task.result_schema: {e}");
                         None
                     }
-                });
+                }
+            });
 
             registry.register(Arc::new(crate::tool::task_control::TaskControlTool::new(
                 ctx.storage_service.clone(),
@@ -291,7 +290,11 @@ impl ToolManager {
     pub async fn definitions(&self, user_id: &str) -> Vec<ToolDefinition> {
         let registries = self.user_registries.read().await;
         if let Some(registry) = registries.get(user_id) {
-            registry.definitions().into_iter().map(|(_, def)| def).collect()
+            registry
+                .definitions()
+                .into_iter()
+                .map(|(_, def)| def)
+                .collect()
         } else {
             let temp = UserToolRegistry::new(self.builtins());
             temp.definitions().into_iter().map(|(_, def)| def).collect()
@@ -317,9 +320,9 @@ impl ToolManager {
 fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     use super::browser::tool::BrowserTool;
     use super::cli::CliTool;
+    use super::files::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
     use super::heartbeat::HeartbeatTool;
     use super::notify_human::NotifyHumanTool;
-    use super::files::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
     use super::produce_file::ProduceFileTool;
     use super::request_credentials::RequestCredentialsTool;
     use super::task::TaskTool;
@@ -336,58 +339,98 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             state.config.server.external_or_local_base_url(),
         )),
         Arc::new(super::send_message::SendMessageTool::new(
-            state.chat_service.clone(), state.notification_service.clone(),
-            state.broadcast_service.clone(), state.agent_service.clone(),
-            state.task_service.clone(), prompts.clone(),
+            state.chat_service.clone(),
+            state.notification_service.clone(),
+            state.broadcast_service.clone(),
+            state.agent_service.clone(),
+            state.task_service.clone(),
+            prompts.clone(),
         )),
         Arc::new(ProduceFileTool::new(
-            state.storage_service.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            prompts.clone(),
         )),
         Arc::new(ReadTool::new(
-            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            prompts.clone(),
         )),
         Arc::new(WriteTool::new(
-            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            prompts.clone(),
         )),
         Arc::new(EditTool::new(
-            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            prompts.clone(),
         )),
         Arc::new(GlobTool::new(
-            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            prompts.clone(),
         )),
         Arc::new(GrepTool::new(
-            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            prompts.clone(),
         )),
-        Arc::new(UpdateIdentityTool::new(state.agent_service.clone(), prompts.clone())),
-        Arc::new(BrowserTool::new(state.browser_session_manager.clone(), state.vault_service.clone())),
-        Arc::new(WebFetchTool::new(state.browser_session_manager.clone(), prompts.clone())),
-        Arc::new(WebSearchTool::new(state.search_provider.clone(), prompts.clone())),
-        Arc::new(HeartbeatTool::new(state.agent_service.clone(), state.storage_service.clone(), prompts.clone(), state.config.server.timezone.clone())),
+        Arc::new(UpdateIdentityTool::new(
+            state.agent_service.clone(),
+            prompts.clone(),
+        )),
+        Arc::new(BrowserTool::new(
+            state.browser_session_manager.clone(),
+            state.vault_service.clone(),
+        )),
+        Arc::new(WebFetchTool::new(
+            state.browser_session_manager.clone(),
+            prompts.clone(),
+        )),
+        Arc::new(WebSearchTool::new(
+            state.search_provider.clone(),
+            prompts.clone(),
+        )),
+        Arc::new(HeartbeatTool::new(
+            state.agent_service.clone(),
+            state.storage_service.clone(),
+            prompts.clone(),
+            state.config.server.timezone.clone(),
+        )),
         Arc::new(RequestCredentialsTool::new(
             state.vault_service.clone(),
             prompts.clone(),
             state.config.server.external_or_local_base_url(),
         )),
         Arc::new(super::manage_app::ManageAppTool::new(
-            state.app_service.clone(), prompts.clone(),
-            state.notification_service.clone(), state.broadcast_service.clone(),
+            state.app_service.clone(),
+            prompts.clone(),
+            state.notification_service.clone(),
+            state.broadcast_service.clone(),
             state.storage_service.clone(),
             state.config.server.external_or_local_base_url(),
         )),
         Arc::new(super::create_agent::CreateAgentTool::new(
-            state.agent_service.clone(), state.storage_service.clone(),
-            state.broadcast_service.clone(), prompts.clone(),
+            state.agent_service.clone(),
+            state.storage_service.clone(),
+            state.broadcast_service.clone(),
+            prompts.clone(),
         )),
-        Arc::new(super::manage_policy::ManagePolicyTool::new(state.policy_service.clone(), prompts.clone())),
+        Arc::new(super::manage_policy::ManagePolicyTool::new(
+            state.policy_service.clone(),
+            prompts.clone(),
+        )),
     ];
 
     // The active memory service contributes its own tools (e.g. store-memory).
     tools.extend(state.harness.memory_service.tools());
 
     tools.push(Arc::new(TaskTool::new(
-        state.task_service.clone(), state.agent_service.clone(),
+        state.task_service.clone(),
+        state.agent_service.clone(),
         state.task_executor.clone(),
-        state.policy_service.clone(), prompts.clone(),
+        state.policy_service.clone(),
+        prompts.clone(),
         state.config.server.timezone.clone(),
     )));
 
@@ -413,15 +456,24 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
 
     if state.voice_provider.is_some() {
         tools.push(Arc::new(super::voice::VoiceCallTool {
-            provider: state.voice_provider.clone(), prompts: prompts.clone(),
-            contact_service: state.contact_service.clone(), call_service: state.call_service.clone(),
+            provider: state.voice_provider.clone(),
+            prompts: prompts.clone(),
+            contact_service: state.contact_service.clone(),
+            call_service: state.call_service.clone(),
         }));
-        tools.push(Arc::new(super::voice::SendDtmfTool { prompts: prompts.clone() }));
-        tools.push(Arc::new(super::voice::HangupCallTool { prompts: prompts.clone() }));
+        tools.push(Arc::new(super::voice::SendDtmfTool {
+            prompts: prompts.clone(),
+        }));
+        tools.push(Arc::new(super::voice::HangupCallTool {
+            prompts: prompts.clone(),
+        }));
     }
 
     for tool_config in state.cli_tools_config.iter() {
-        tools.push(Arc::new(CliTool::new(tool_config.clone(), state.sandbox_manager.clone())));
+        tools.push(Arc::new(CliTool::new(
+            tool_config.clone(),
+            state.sandbox_manager.clone(),
+        )));
     }
 
     tools

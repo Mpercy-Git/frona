@@ -12,16 +12,14 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use frona::tool::mcp::models::{
-    McpPackage, McpRuntime, McpServer, McpServerStatus,
-};
-use frona::tool::mcp::{McpManager};
-use frona::tool::sandbox::{SandboxFactory, SandboxManager};
+use frona::tool::mcp::McpManager;
+use frona::tool::mcp::models::{McpPackage, McpRuntime, McpServer, McpServerStatus};
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use frona::tool::sandbox::{SandboxFactory, SandboxManager};
 
 fn fake_server_binary() -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/debug/fake-mcp-server");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/fake-mcp-server");
     if !path.exists() {
         panic!(
             "fake-mcp-server binary not found at {}. Build it first:\n  \
@@ -55,15 +53,21 @@ fn make_server(id: &str, binary: &str, workspace: &str) -> McpServer {
         active_transport: "stdio".into(),
         status: McpServerStatus::Installed,
         tool_cache: vec![],
-        workspace_dir: workspace.to_string(),        installed_at: now,
+        workspace_dir: workspace.to_string(),
+        installed_at: now,
         last_started_at: None,
         updated_at: now,
     }
 }
 
 async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
-    let factory = Arc::new(SandboxFactory::new(true, Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0))));
-    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(()).await.unwrap();
+    let factory = Arc::new(SandboxFactory::new(
+        true,
+        Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
+    ));
+    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+        .await
+        .unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
     let storage = frona::storage::StorageService::new(&frona::core::config::Config {
         storage: frona::core::config::StorageConfig {
@@ -78,7 +82,9 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
     );
     let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
     let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(frona::db::repo::generic::SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+        Arc::new(frona::db::repo::generic::SurrealRepo::<
+            frona::policy::models::Policy,
+        >::new(db.clone()));
     let policy_service = frona::policy::service::PolicyService::new(
         policy_repo,
         frona::policy::schema::build_schema(),
@@ -91,16 +97,21 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
             frona::build_http_client(),
             "/tmp/frona-test-mcp-e2e-cache",
         ),
-        frona::agent::skill::resolver::SkillResolver::new("/tmp/frona-test-mcp-e2e-shared", storage.clone()),
+        frona::agent::skill::resolver::SkillResolver::new(
+            "/tmp/frona-test-mcp-e2e-shared",
+            storage.clone(),
+        ),
         storage.clone(),
         "/tmp/frona-test-mcp-e2e-skills",
         &frona::core::config::CacheConfig::default(),
     );
     let keypair_repo: Arc<dyn frona::credential::keypair::repository::KeyPairRepository> =
         Arc::new(frona::db::repo::generic::SurrealRepo::new(db.clone()));
-    let keypair_service = frona::credential::keypair::service::KeyPairService::new("test-secret", keypair_repo);
-    let token_repo: Arc<frona::db::repo::generic::SurrealRepo<frona::auth::token::models::ApiToken>> =
-        Arc::new(frona::db::repo::generic::SurrealRepo::new(db));
+    let keypair_service =
+        frona::credential::keypair::service::KeyPairService::new("test-secret", keypair_repo);
+    let token_repo: Arc<
+        frona::db::repo::generic::SurrealRepo<frona::auth::token::models::ApiToken>,
+    > = Arc::new(frona::db::repo::generic::SurrealRepo::new(db));
     let token_service = frona::auth::token::service::TokenService::new(
         token_repo,
         frona::auth::jwt::JwtService::new(),

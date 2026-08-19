@@ -1,11 +1,10 @@
 use super::*;
 
-mod external;
 mod edit;
+mod external;
 mod projection;
 
 impl PkmRepo {
-
     pub async fn entity_by_path(
         &self,
         user_id: &str,
@@ -20,7 +19,8 @@ impl PkmRepo {
             .bind(("path", path.to_string()))
             .await
             .map_err(|e| Self::err("entity_by_path", e))?;
-        let rows: Vec<KnowledgeEntity> = q.take(0).map_err(|e| Self::err("page_by_path_take", e))?;
+        let rows: Vec<KnowledgeEntity> =
+            q.take(0).map_err(|e| Self::err("page_by_path_take", e))?;
         Ok(rows.into_iter().next())
     }
 
@@ -62,10 +62,12 @@ impl PkmRepo {
         let mut merged = existing.aliases.clone();
         merged.extend(aliases.iter().cloned());
         let search_text = derive_search_text(&existing.name, &existing.description, &merged);
-        let (search_names, search_name_tokens, mut search_assertions) =
-            derive_resolution_search(
-                &existing.name, &merged, &existing.attributes, std::iter::empty(),
-            );
+        let (search_names, search_name_tokens, mut search_assertions) = derive_resolution_search(
+            &existing.name,
+            &merged,
+            &existing.attributes,
+            std::iter::empty(),
+        );
         search_assertions.extend(existing.search_assertions);
         search_assertions.sort();
         search_assertions.dedup();
@@ -112,8 +114,12 @@ impl PkmRepo {
             let now = Utc::now();
             let alias_set: std::collections::HashSet<String> = aliases.iter().cloned().collect();
             let search_text = derive_search_text(name, description, &alias_set);
-            let (search_names, search_name_tokens, search_assertions) =
-                derive_resolution_search(name, &alias_set, &serde_json::json!({}), std::iter::empty());
+            let (search_names, search_name_tokens, search_assertions) = derive_resolution_search(
+                name,
+                &alias_set,
+                &serde_json::json!({}),
+                std::iter::empty(),
+            );
             let entity = KnowledgeEntity {
                 id: new_id(),
                 user_id: user_id.to_string(),
@@ -132,7 +138,9 @@ impl PkmRepo {
                 extracted_rev: None,
                 related_playbooks: Vec::new(),
                 search_text,
-                search_names, search_name_tokens, search_assertions,
+                search_names,
+                search_name_tokens,
+                search_assertions,
                 attributes: serde_json::json!({}),
                 use_count: 0,
                 aliases: alias_set,
@@ -141,8 +149,11 @@ impl PkmRepo {
                 rendered_at: chrono::DateTime::<Utc>::MIN_UTC,
             };
             let id = entity.id.clone();
-            let created: Result<Option<surrealdb::types::Value>, _> =
-                self.db.create(("knowledge_entity", id)).content(entity).await;
+            let created: Result<Option<surrealdb::types::Value>, _> = self
+                .db
+                .create(("knowledge_entity", id))
+                .content(entity)
+                .await;
             if created.is_err() {
                 // `(user_id, path)` is UNIQUE, and this is a read-then-insert: a
                 // concurrent writer may have created the entity between the two. Losing
@@ -199,7 +210,11 @@ impl PkmRepo {
     /// invisible to `entities_needing_reconciliation`. Reconcile used to compensate by
     /// carrying the set in Rust, which worked inside a pass and was lost the moment one
     /// failed.
-    pub(crate) async fn bump_entities_for_memory(&self, user_id: &str, memory_id: &str) -> Result<(), AppError> {
+    pub(crate) async fn bump_entities_for_memory(
+        &self,
+        user_id: &str,
+        memory_id: &str,
+    ) -> Result<(), AppError> {
         self.db
             .query(
                 "UPDATE knowledge_entity SET updated_at = $now WHERE user_id = $uid AND path IN
@@ -231,10 +246,12 @@ impl PkmRepo {
             return Ok(()); // nothing new
         }
         let search_text = derive_search_text(&existing.name, &existing.description, &merged);
-        let (search_names, search_name_tokens, mut search_assertions) =
-            derive_resolution_search(
-                &existing.name, &merged, &existing.attributes, std::iter::empty(),
-            );
+        let (search_names, search_name_tokens, mut search_assertions) = derive_resolution_search(
+            &existing.name,
+            &merged,
+            &existing.attributes,
+            std::iter::empty(),
+        );
         search_assertions.extend(existing.search_assertions);
         search_assertions.sort();
         search_assertions.dedup();
@@ -260,7 +277,8 @@ impl PkmRepo {
     /// then the entity row itself - atomically, by delegating to the transactional
     /// [`rename_entities`](Self::rename_entities). Caller guarantees `to` is free.
     pub async fn rename_entity(&self, user_id: &str, from: &str, to: &str) -> Result<(), AppError> {
-        self.rename_entities(user_id, &[(from.to_string(), to.to_string())]).await
+        self.rename_entities(user_id, &[(from.to_string(), to.to_string())])
+            .await
     }
 
     /// Rename a batch of entity paths in a **single transaction** - each entity's row plus
@@ -269,7 +287,11 @@ impl PkmRepo {
     /// old/new paths, and boot recovery (which reconciles files to whatever the DB
     /// holds) would cement the split rather than finish the move. Caller guarantees
     /// every `to` is free. No-op on an empty batch.
-    pub async fn rename_entities(&self, user_id: &str, moves: &[(String, String)]) -> Result<(), AppError> {
+    pub async fn rename_entities(
+        &self,
+        user_id: &str,
+        moves: &[(String, String)],
+    ) -> Result<(), AppError> {
         if moves.is_empty() {
             return Ok(());
         }
@@ -329,19 +351,22 @@ impl PkmRepo {
         user_id: &str,
         category: EntityCategory,
     ) -> Result<Vec<String>, AppError> {
-        let mut q = self.db.query(
-            "SELECT VALUE path FROM knowledge_entity
+        let mut q = self
+            .db
+            .query(
+                "SELECT VALUE path FROM knowledge_entity
              WHERE user_id = $uid AND category = $category
                AND (path = 'people/me' OR path IN (
                    SELECT VALUE entity_path FROM knowledge_entity_source WHERE user_id = $uid
                ))
                AND updated_at > rendered_at",
-        )
-        .bind(("uid", user_id.to_string()))
-        .bind(("category", category))
-        .await
-        .map_err(|e| Self::err("needs_reconcile_category", e))?;
-        q.take(0).map_err(|e| Self::err("needs_reconcile_category_take", e))
+            )
+            .bind(("uid", user_id.to_string()))
+            .bind(("category", category))
+            .await
+            .map_err(|e| Self::err("needs_reconcile_category", e))?;
+        q.take(0)
+            .map_err(|e| Self::err("needs_reconcile_category_take", e))
     }
 
     /// Every Internal entity across all users - the canonical set `reconcile_files`
@@ -349,11 +374,14 @@ impl PkmRepo {
     pub async fn all_internal_entities(&self) -> Result<Vec<KnowledgeEntity>, AppError> {
         let mut q = self
             .db
-            .query(format!("{SELECT} FROM knowledge_entity WHERE origin = $origin"))
+            .query(format!(
+                "{SELECT} FROM knowledge_entity WHERE origin = $origin"
+            ))
             .bind(("origin", EntityOrigin::Internal))
             .await
             .map_err(|e| Self::err("all_internal_entities", e))?;
-        q.take(0).map_err(|e| Self::err("all_internal_entities_take", e))
+        q.take(0)
+            .map_err(|e| Self::err("all_internal_entities_take", e))
     }
 
     /// Every entity for a user (any category/origin) - the ABox source for the
@@ -361,7 +389,9 @@ impl PkmRepo {
     pub async fn list_entities(&self, user_id: &str) -> Result<Vec<KnowledgeEntity>, AppError> {
         let mut q = self
             .db
-            .query(format!("{SELECT} FROM knowledge_entity WHERE user_id = $uid"))
+            .query(format!(
+                "{SELECT} FROM knowledge_entity WHERE user_id = $uid"
+            ))
             .bind(("uid", user_id.to_string()))
             .await
             .map_err(|e| Self::err("list_entities", e))?;
@@ -467,5 +497,4 @@ impl PkmRepo {
             .map_err(|e| Self::err("bump_entity_use", e))?;
         Ok(new)
     }
-
 }

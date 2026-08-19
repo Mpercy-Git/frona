@@ -35,45 +35,45 @@
 //!
 //! [`page`]: page::PageAuthor
 
-mod page;
-mod classify;
-mod stages;
-mod progress;
-mod projection;
 mod assemble;
-mod reconcile;
-mod resolve;
+mod classify;
 mod cleanup;
-mod ingest;
 mod context;
 mod driver;
-mod scope;
-mod stats;
-pub(crate) mod transcript;
 mod inference;
+mod ingest;
+mod page;
 mod playbook;
+mod progress;
+mod projection;
 mod prompt;
 mod recall;
+mod reconcile;
+mod resolve;
+mod scope;
+mod stages;
+mod stats;
+pub(crate) mod transcript;
 pub use recall::RecallProjection;
 mod evidence;
 pub use evidence::ToolEvidenceProjection;
-pub(crate) mod view;
-pub(crate) mod checkpoint;
 mod candidates;
+pub(crate) mod checkpoint;
 pub(crate) mod tools;
+pub(crate) mod view;
 
 pub(super) use page::PageAuthor;
 
-pub use checkpoint::{
-    ConsolidationFailure, KnowledgeConsolidationRecord, ConsolidationStageState, IngestState,
-};
 pub use crate::memory::pkm::model::{PendingEntityContribution, PendingPlaybookCandidate};
-pub use progress::ConsolidationWorkState;
+pub use checkpoint::{
+    ConsolidationFailure, ConsolidationStageState, IngestState, KnowledgeConsolidationRecord,
+};
 pub use playbook::PlaybookResolveState;
+pub use progress::ConsolidationWorkState;
 
-use stages::{ResolveWorkState, bad_term_feedback};
 use progress::{ConsolidationProgress, ReconcilePromotion};
 use projection::*;
+use stages::{ResolveWorkState, bad_term_feedback};
 
 pub(crate) use context::ConsolidationContext;
 pub(crate) use inference::{ConsolidationInference, Verdict};
@@ -82,7 +82,9 @@ pub(crate) use prompt::{PromptIds, PromptSpec, prompt_evidence};
 pub(crate) use checkpoint::prepare_ingest_batch;
 pub use driver::Consolidator;
 pub use ingest::Ingest;
-pub use scope::{ConsolidationScope, TemporalSource, TranscriptEvidenceKind, TranscriptEvidenceSource};
+pub use scope::{
+    ConsolidationScope, TemporalSource, TranscriptEvidenceKind, TranscriptEvidenceSource,
+};
 pub use stats::{
     AssembleOutcome, ClassifyOutcome, CleanupOutcome, ConsolidationStats, PageAuthorOutcome,
     PlaybookAuthorOutcome, ReconcileOutcome, ResearchCoverageStats, ResolveOutcome,
@@ -100,5 +102,8 @@ pub use stats::{
 /// Deliberately not a stemmer or a slug: this is for comparing two spellings of the same
 /// text, not for matching paraphrases (see `grounding`) or minting a path (`slugify`).
 pub(super) fn comparison_key(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }

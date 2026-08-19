@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::skill::service::SkillService;
 use crate::agent::task::service::TaskService;
@@ -22,11 +23,10 @@ use crate::inference::tool_call::ToolStatus;
 use crate::inference::usage::UsageContext;
 use crate::memory::service::MemoryService;
 use crate::policy::service::PolicyService;
-use crate::agent::prompt::PromptLoader;
 use crate::storage::StorageService;
+use crate::tool::AgentTool;
 use crate::tool::manager::ToolManager;
 use crate::tool::mcp::McpServerService;
-use crate::tool::AgentTool;
 use crate::tool::registry::ToolFilter;
 use rig_core::completion::Message as RigMessage;
 
@@ -194,10 +194,15 @@ impl Harness {
         cancel_token: CancellationToken,
     ) -> Result<String, AppError> {
         let user_id = &usage_ctx.user_id;
-        let agent = self.agent_service.find_by_id(agent_id).await?
+        let agent = self
+            .agent_service
+            .find_by_id(agent_id)
+            .await?
             .ok_or_else(|| AppError::NotFound(format!("Agent not found: {agent_id}")))?;
-        let mut tools = self.tool_manager
-            .build_agent_registry(user_id, &agent, &self.policy_service, None).await;
+        let mut tools = self
+            .tool_manager
+            .build_agent_registry(user_id, &agent, &self.policy_service, None)
+            .await;
         for filter in tool_filters {
             tools.apply_filter(filter);
         }
@@ -210,11 +215,13 @@ impl Harness {
                 result = self.text_inference(model_group, system, history, usage_ctx) => result,
             };
         }
-        let user = self.user_service.find_by_id(user_id).await?
+        let user = self
+            .user_service
+            .find_by_id(user_id)
+            .await?
             .ok_or_else(|| AppError::NotFound(format!("User not found: {user_id}")))?;
-        let ctx = InferenceContext::new_detached(
-            user, agent, self.shutdown_token.clone(), cancel_token,
-        );
+        let ctx =
+            InferenceContext::new_detached(user, agent, self.shutdown_token.clone(), cancel_token);
         crate::inference::structured::text_inference_with_tools(
             self.chat_service.provider_registry(),
             model_group,
@@ -225,7 +232,8 @@ impl Harness {
             &self.usage_service,
             &usage_ctx,
             max_turns,
-        ).await
+        )
+        .await
     }
 
     /// Agentic structured inference: builds a background `InferenceContext` + a
@@ -422,9 +430,11 @@ impl Harness {
                     .find_chat(chat_id)
                     .await?
                     .ok_or_else(|| AppError::NotFound(format!("Chat not found: {chat_id}")))?;
-                let event_tx =
-                    self.broadcast_service
-                        .create_event_sender(user_id, chat_id, chat.space_id.clone());
+                let event_tx = self.broadcast_service.create_event_sender(
+                    user_id,
+                    chat_id,
+                    chat.space_id.clone(),
+                );
                 InferenceContext::new(
                     user,
                     agent,
@@ -511,14 +521,9 @@ impl Harness {
 
         let builder_system_prompt = builder.system_prompt();
 
-        let mut session = ChatSessionContext::build(
-            self,
-            user_id,
-            chat.clone(),
-            cancel_token.clone(),
-            builder,
-        )
-        .await?;
+        let mut session =
+            ChatSessionContext::build(self, user_id, chat.clone(), cancel_token.clone(), builder)
+                .await?;
 
         let mut prompt_override: Option<String> = None;
         if let Some(mut request) = request
@@ -647,7 +652,10 @@ impl Harness {
         })
         .await?;
 
-        Ok(AgentLoopOutcome { inference, response })
+        Ok(AgentLoopOutcome {
+            inference,
+            response,
+        })
     }
 
     pub async fn resume(
@@ -662,8 +670,16 @@ impl Harness {
             storage_service: self.storage_service.clone(),
             agent_service: self.agent_service.clone(),
         });
-        self.run_turn(user_id, chat_id, message_id, cancel_token, builder, &[], None)
-            .await;
+        self.run_turn(
+            user_id,
+            chat_id,
+            message_id,
+            cancel_token,
+            builder,
+            &[],
+            None,
+        )
+        .await;
         self.active_sessions.remove(chat_id).await;
         Ok(())
     }
@@ -752,16 +768,17 @@ impl Harness {
             | crate::chat::service::ToolResolveResult::AlreadyResolved(m) => m,
         };
 
-        self.broadcast_service.send(crate::chat::broadcast::BroadcastEvent {
-            user_id: user.id.clone(),
-            chat_id: Some(te.chat_id.clone()),
-            space_id: chat.space_id.clone(),
-            kind: crate::chat::broadcast::BroadcastEventKind::Inference(
-                crate::inference::tool_loop::InferenceEventKind::Resume {
-                    message: message_response,
-                },
-            ),
-        });
+        self.broadcast_service
+            .send(crate::chat::broadcast::BroadcastEvent {
+                user_id: user.id.clone(),
+                chat_id: Some(te.chat_id.clone()),
+                space_id: chat.space_id.clone(),
+                kind: crate::chat::broadcast::BroadcastEventKind::Inference(
+                    crate::inference::tool_loop::InferenceEventKind::Resume {
+                        message: message_response,
+                    },
+                ),
+            });
 
         let did_flip = self
             .chat_service
@@ -813,7 +830,10 @@ impl Harness {
         outcome: Result<AgentLoopOutcome, AppError>,
     ) {
         match outcome {
-            Ok(AgentLoopOutcome { inference, mut response }) => match inference {
+            Ok(AgentLoopOutcome {
+                inference,
+                mut response,
+            }) => match inference {
                 InferenceResponse::Completed {
                     text,
                     attachments,

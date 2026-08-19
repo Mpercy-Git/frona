@@ -3,13 +3,13 @@ mod models;
 mod operations;
 mod upload;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{FromRequestParts, Query};
-use axum::http::request::Parts;
 use axum::http::header;
+use axum::http::request::Parts;
 use axum::response::Response;
 use axum::routing::{get, post};
-use axum::Router;
 use tokio::fs;
 use tokio_util::io::ReaderStream;
 
@@ -37,7 +37,10 @@ pub fn router() -> Router<AppState> {
             get(browse::download_agent_file),
         )
         .route("/api/files/browse/user", get(browse::list_user_files))
-        .route("/api/files/browse/user/{*dirpath}", get(browse::list_user_files))
+        .route(
+            "/api/files/browse/user/{*dirpath}",
+            get(browse::list_user_files),
+        )
         .route(
             "/api/files/browse/agent/{agent_id}",
             get(browse::list_agent_files_root),
@@ -64,14 +67,19 @@ impl FromRequestParts<AppState> for FileAuth {
             return Ok(FileAuth::User(auth));
         }
 
-        let query: Query<PresignQuery> =
-            Query::try_from_uri(&parts.uri)
-                .map_err(|_| ApiError(AppError::Auth { message: "Missing authorization".into(), code: AuthErrorCode::InvalidCredentials }))?;
+        let query: Query<PresignQuery> = Query::try_from_uri(&parts.uri).map_err(|_| {
+            ApiError(AppError::Auth {
+                message: "Missing authorization".into(),
+                code: AuthErrorCode::InvalidCredentials,
+            })
+        })?;
 
-        let token = query
-            .presign
-            .as_deref()
-            .ok_or_else(|| ApiError(AppError::Auth { message: "Missing authorization".into(), code: AuthErrorCode::InvalidCredentials }))?;
+        let token = query.presign.as_deref().ok_or_else(|| {
+            ApiError(AppError::Auth {
+                message: "Missing authorization".into(),
+                code: AuthErrorCode::InvalidCredentials,
+            })
+        })?;
 
         let claims = state.presign_service.verify(token).await?;
 
@@ -83,7 +91,10 @@ impl FromRequestParts<AppState> for FileAuth {
     }
 }
 
-pub(super) async fn serve_file(vpath: &VirtualPath, state: &AppState) -> Result<Response, ApiError> {
+pub(super) async fn serve_file(
+    vpath: &VirtualPath,
+    state: &AppState,
+) -> Result<Response, ApiError> {
     let resolved = state.storage_service.resolve_virtual_path(vpath)?;
     serve_path(&resolved).await
 }
@@ -91,9 +102,7 @@ pub(super) async fn serve_file(vpath: &VirtualPath, state: &AppState) -> Result<
 /// Caller is responsible for path traversal / ownership checks.
 pub(super) async fn serve_path(path: &std::path::Path) -> Result<Response, ApiError> {
     if !path.exists() {
-        return Err(ApiError(AppError::NotFound(
-            "File not found".into(),
-        )));
+        return Err(ApiError(AppError::NotFound("File not found".into())));
     }
 
     let filename = path

@@ -42,7 +42,9 @@ impl PkmRepo {
         evidence: Vec<MemoryEvidence>,
     ) -> Result<String, AppError> {
         if entity_paths.is_empty() {
-            return Err(AppError::Validation("memory must belong to ≥1 entity".into()));
+            return Err(AppError::Validation(
+                "memory must belong to ≥1 entity".into(),
+            ));
         }
         // Two chats for the same user are mined concurrently, and both bump the entities
         // they touch - so two transactions naming one entity genuinely collide. The
@@ -131,7 +133,9 @@ impl PkmRepo {
                 "bump_page_ts"
             );
         }
-        tx.commit().await.map_err(|e| Self::err("create_memory_commit", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| Self::err("create_memory_commit", e))?;
         Ok(memory_id)
     }
 
@@ -144,9 +148,17 @@ impl PkmRepo {
         checkpoint: &KnowledgeConsolidationRecord,
     ) -> Result<IngestCounts, AppError> {
         for attempt in 0..CONFLICT_RETRIES {
-            match self.try_commit_extract_window(
-                user_id, batch, watermarks, short_memory_ids, Some(checkpoint), None,
-            ).await {
+            match self
+                .try_commit_extract_window(
+                    user_id,
+                    batch,
+                    watermarks,
+                    short_memory_ids,
+                    Some(checkpoint),
+                    None,
+                )
+                .await
+            {
                 Ok(ExtractCommit::Applied(counts)) => return Ok(counts),
                 Ok(ExtractCommit::Stale) => {
                     return Err(AppError::Database(
@@ -178,9 +190,17 @@ impl PkmRepo {
             rev: expected_rev.to_string(),
         };
         for attempt in 0..CONFLICT_RETRIES {
-            match self.try_commit_extract_window(
-                user_id, batch, &[], &[], Some(checkpoint), Some(&external),
-            ).await {
+            match self
+                .try_commit_extract_window(
+                    user_id,
+                    batch,
+                    &[],
+                    &[],
+                    Some(checkpoint),
+                    Some(&external),
+                )
+                .await
+            {
                 Ok(ExtractCommit::Applied(_)) => return Ok(true),
                 Ok(ExtractCommit::Stale) => return Ok(false),
                 Err(e) if Self::is_write_conflict(&e) && attempt + 1 < CONFLICT_RETRIES => {
@@ -224,11 +244,8 @@ impl PkmRepo {
                 .bind(("rev", external.rev.clone())),
                 "external_extract_head_read"
             );
-            let head: Vec<KnowledgeEntity> = tx_try!(
-                tx,
-                head_response.take(0),
-                "external_extract_head_take"
-            );
+            let head: Vec<KnowledgeEntity> =
+                tx_try!(tx, head_response.take(0), "external_extract_head_take");
             if head.is_empty() {
                 let _ = tx.cancel().await;
                 return Ok(ExtractCommit::Stale);
@@ -261,11 +278,8 @@ impl PkmRepo {
                     .bind(("ids", old_memory_ids.clone())),
                     "external_extract_old_paths_read"
                 );
-                let affected_paths: Vec<String> = tx_try!(
-                    tx,
-                    path_response.take(0),
-                    "external_extract_old_paths_take"
-                );
+                let affected_paths: Vec<String> =
+                    tx_try!(tx, path_response.take(0), "external_extract_old_paths_take");
                 if !affected_paths.is_empty() {
                     tx_try!(
                         tx,
@@ -279,7 +293,8 @@ impl PkmRepo {
                         "external_extract_old_pages_bump"
                     );
                 }
-                let old_memory_records: Vec<RecordId> = old_memory_ids.iter()
+                let old_memory_records: Vec<RecordId> = old_memory_ids
+                    .iter()
                     .map(|id| RecordId::new("knowledge_memory", id.clone()))
                     .collect();
                 tx_try!(
@@ -375,11 +390,18 @@ impl PkmRepo {
                     rows_response.take(0),
                     "extract_window_working_rows_take"
                 );
-                let mut working_rows: std::collections::BTreeMap<String, KnowledgeConsolidationEntity> =
-                    existing_rows.into_iter().map(|row| (row.path.clone(), row)).collect();
+                let mut working_rows: std::collections::BTreeMap<
+                    String,
+                    KnowledgeConsolidationEntity,
+                > = existing_rows
+                    .into_iter()
+                    .map(|row| (row.path.clone(), row))
+                    .collect();
                 let mut changed_paths = std::collections::BTreeSet::new();
                 let memory_ids_for = |path: &str| -> std::collections::BTreeSet<String> {
-                    batch.memories.iter()
+                    batch
+                        .memories
+                        .iter()
                         .filter(|memory| memory.paths.iter().any(|held| held == path))
                         .map(|memory| memory.id.clone())
                         .collect()
@@ -391,16 +413,23 @@ impl PkmRepo {
                         description: entity.description.clone(),
                         aliases: entity.aliases.iter().cloned().collect(),
                         attributes: entity.attributes.clone(),
-                        attribute_evidence: entity.attribute_evidence.iter()
-                            .map(|(key, value)| (key.clone(), value.clone())).collect(),
+                        attribute_evidence: entity
+                            .attribute_evidence
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
                         source_memory_ids: source_memory_ids.clone(),
                         existing_only: false,
                         occurrence_count: 1,
                     };
                     let row = working_rows.entry(entity.path.clone()).or_insert_with(|| {
                         KnowledgeConsolidationEntity::pending(
-                            &record.consolidation_id, user_id, &entity.path,
-                            EntityCategory::Concept, Vec::new(), Default::default(),
+                            &record.consolidation_id,
+                            user_id,
+                            &entity.path,
+                            EntityCategory::Concept,
+                            Vec::new(),
+                            Default::default(),
                         )
                     });
                     row.merge_contribution(contribution);
@@ -418,16 +447,23 @@ impl PkmRepo {
                         description: String::new(),
                         aliases: Default::default(),
                         attributes: entity.attributes.clone(),
-                        attribute_evidence: entity.attribute_evidence.iter()
-                            .map(|(key, value)| (key.clone(), value.clone())).collect(),
+                        attribute_evidence: entity
+                            .attribute_evidence
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
                         source_memory_ids,
                         existing_only: true,
                         occurrence_count: 1,
                     };
                     let row = working_rows.entry(entity.path.clone()).or_insert_with(|| {
                         KnowledgeConsolidationEntity::pending(
-                            &record.consolidation_id, user_id, &entity.path,
-                            EntityCategory::Concept, Vec::new(), Default::default(),
+                            &record.consolidation_id,
+                            user_id,
+                            &entity.path,
+                            EntityCategory::Concept,
+                            Vec::new(),
+                            Default::default(),
                         )
                     });
                     row.merge_contribution(contribution);
@@ -437,14 +473,19 @@ impl PkmRepo {
                     for path in &memory.paths {
                         let row = working_rows.entry(path.clone()).or_insert_with(|| {
                             KnowledgeConsolidationEntity::pending(
-                                &record.consolidation_id, user_id, path,
+                                &record.consolidation_id,
+                                user_id,
+                                path,
                                 EntityCategory::Concept,
                                 vec![PendingEntityContribution {
-                                    name: String::new(), description: String::new(),
-                                    aliases: Default::default(), attributes: serde_json::json!({}),
+                                    name: String::new(),
+                                    description: String::new(),
+                                    aliases: Default::default(),
+                                    attributes: serde_json::json!({}),
                                     attribute_evidence: Default::default(),
                                     source_memory_ids: [memory.id.clone()].into_iter().collect(),
-                                    existing_only: true, occurrence_count: 1,
+                                    existing_only: true,
+                                    occurrence_count: 1,
                                 }],
                                 [memory.id.clone()].into_iter().collect(),
                             )
@@ -457,29 +498,47 @@ impl PkmRepo {
                 }
                 for candidate in &batch.playbook_candidates {
                     let contribution = PendingEntityContribution {
-                        name: candidate.name.clone(), description: candidate.description.clone(),
-                        aliases: Default::default(), attributes: serde_json::json!({}),
+                        name: candidate.name.clone(),
+                        description: candidate.description.clone(),
+                        aliases: Default::default(),
+                        attributes: serde_json::json!({}),
                         attribute_evidence: Default::default(),
                         source_memory_ids: candidate.source_memory_ids.clone(),
-                        existing_only: false, occurrence_count: 1,
+                        existing_only: false,
+                        occurrence_count: 1,
                     };
-                    let row = working_rows.entry(candidate.path.clone()).or_insert_with(|| {
-                        let mut row = KnowledgeConsolidationEntity::pending(
-                            &record.consolidation_id, user_id, &candidate.path,
-                            EntityCategory::Playbook, Vec::new(), Default::default(),
-                        );
-                        row.consolidation_entity_id = candidate.id.clone();
-                        row
-                    });
+                    let row = working_rows
+                        .entry(candidate.path.clone())
+                        .or_insert_with(|| {
+                            let mut row = KnowledgeConsolidationEntity::pending(
+                                &record.consolidation_id,
+                                user_id,
+                                &candidate.path,
+                                EntityCategory::Playbook,
+                                Vec::new(),
+                                Default::default(),
+                            );
+                            row.consolidation_entity_id = candidate.id.clone();
+                            row
+                        });
                     row.category = EntityCategory::Playbook;
                     row.merge_contribution(contribution);
                     changed_paths.insert(candidate.path.clone());
                 }
                 for path in changed_paths {
-                    let Some(mut row) = working_rows.remove(&path) else { continue; };
+                    let Some(mut row) = working_rows.remove(&path) else {
+                        continue;
+                    };
                     let update_only = !row.contributions.is_empty()
-                        && row.contributions.iter().all(|contribution| contribution.existing_only);
-                    if row.contributions.iter().any(|contribution| contribution.existing_only) {
+                        && row
+                            .contributions
+                            .iter()
+                            .all(|contribution| contribution.existing_only);
+                    if row
+                        .contributions
+                        .iter()
+                        .any(|contribution| contribution.existing_only)
+                    {
                         let mut baseline = tx_try!(
                             tx,
                             query tx.query(format!(
@@ -490,20 +549,22 @@ impl PkmRepo {
                             .bind(("path", row.path.clone())),
                             "extract_window_working_baseline_read"
                         );
-                        let entities: Vec<KnowledgeEntity> = tx_try!(
-                            tx,
-                            baseline.take(0),
-                            "extract_window_working_baseline_take"
-                        );
+                        let entities: Vec<KnowledgeEntity> =
+                            tx_try!(tx, baseline.take(0), "extract_window_working_baseline_take");
                         if let Some(entity) = entities.into_iter().next() {
                             for evidence in entity.identity_evidence {
-                                if !row.identity_evidence.contains(&evidence) { row.identity_evidence.push(evidence); }
+                                if !row.identity_evidence.contains(&evidence) {
+                                    row.identity_evidence.push(evidence);
+                                }
                             }
                             row.entity_id = Some(entity.id.clone());
                             row.search_text = entity.search_text;
-                            let mut names: std::collections::BTreeSet<String> = entity.aliases
-                                .iter().map(|name| name.trim().to_lowercase())
-                                .filter(|name| !name.is_empty()).collect();
+                            let mut names: std::collections::BTreeSet<String> = entity
+                                .aliases
+                                .iter()
+                                .map(|name| name.trim().to_lowercase())
+                                .filter(|name| !name.is_empty())
+                                .collect();
                             if !entity.name.trim().is_empty() {
                                 names.insert(entity.name.trim().to_lowercase());
                             }
@@ -558,11 +619,8 @@ impl PkmRepo {
                 .bind(("rev", external.rev.clone())),
                 "external_extract_mark"
             );
-            let updated: Vec<surrealdb::types::Value> = tx_try!(
-                tx,
-                mark_response.take(0),
-                "external_extract_mark_take"
-            );
+            let updated: Vec<surrealdb::types::Value> =
+                tx_try!(tx, mark_response.take(0), "external_extract_mark_take");
             if updated.is_empty() {
                 let _ = tx.cancel().await;
                 return Ok(ExtractCommit::Stale);
@@ -612,5 +670,4 @@ impl PkmRepo {
         let _ = entity_paths;
         Ok(1)
     }
-
 }

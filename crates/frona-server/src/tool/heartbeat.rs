@@ -3,8 +3,8 @@ use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
-use crate::storage::StorageService;
 use crate::core::error::AppError;
+use crate::storage::StorageService;
 use frona_derive::agent_tool;
 
 use super::{InferenceContext, ToolOutput};
@@ -34,7 +34,12 @@ impl HeartbeatTool {
 
 #[agent_tool(files("set_heartbeat"))]
 impl HeartbeatTool {
-    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let interval_minutes = arguments
             .get("interval_minutes")
             .and_then(|v| v.as_u64())
@@ -43,7 +48,9 @@ impl HeartbeatTool {
         let agent_id = &ctx.agent.id;
 
         if interval_minutes > 0 {
-            let ws = self.storage.agent_workspace(&ctx.user.handle, &ctx.agent.handle);
+            let ws = self
+                .storage
+                .agent_workspace(&ctx.user.handle, &ctx.agent.handle);
             match ws.read("HEARTBEAT.md") {
                 Some(content) if !content.trim().is_empty() => {}
                 _ => {
@@ -55,15 +62,16 @@ impl HeartbeatTool {
         }
 
         if interval_minutes == 0 {
-            self.agent_service
-                .set_heartbeat(agent_id, None)
-                .await?;
+            self.agent_service.set_heartbeat(agent_id, None).await?;
 
-            return Ok(ToolOutput::text(serde_json::json!({
-                "message": "Heartbeat disabled.",
-                "heartbeat_interval": null,
-                "next_heartbeat_at": null,
-            }).to_string()));
+            return Ok(ToolOutput::text(
+                serde_json::json!({
+                    "message": "Heartbeat disabled.",
+                    "heartbeat_interval": null,
+                    "next_heartbeat_at": null,
+                })
+                .to_string(),
+            ));
         }
 
         let next = Utc::now() + Duration::minutes(interval_minutes as i64);
@@ -73,7 +81,10 @@ impl HeartbeatTool {
 
         let timezone = ctx.user.resolved_timezone(&self.server_timezone);
         let tz: chrono_tz::Tz = timezone.parse().unwrap_or(chrono_tz::UTC);
-        let next_local = next.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z").to_string();
+        let next_local = next
+            .with_timezone(&tz)
+            .format("%Y-%m-%d %H:%M %Z")
+            .to_string();
 
         Ok(ToolOutput::text(serde_json::json!({
             "message": format!("Heartbeat set to every {} minutes. Next heartbeat at {}.", interval_minutes, next_local),

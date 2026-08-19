@@ -5,14 +5,17 @@ use std::sync::Arc;
 
 use frona::core::error::AppError;
 use frona::core::supervisor::Supervisor;
-use frona::db::init::setup_schema;
-use frona::db::repo::generic::SurrealRepo;
-use frona::tool::mcp::models::{McpServerStatus, McpServer, McpPackage, McpRuntime};
-use frona::tool::mcp::repository::McpServerRepository;
-use frona::tool::mcp::supervisor::McpSupervisor;
-use frona::tool::mcp::{McpManager, McpServerService, NoopPackageInstaller, PrebuiltMcpRegistryClient, PackageInstaller, McpRegistryClient};
 use frona::credential::vault::models::*;
 use frona::credential::vault::service::VaultService;
+use frona::db::init::setup_schema;
+use frona::db::repo::generic::SurrealRepo;
+use frona::tool::mcp::models::{McpPackage, McpRuntime, McpServer, McpServerStatus};
+use frona::tool::mcp::repository::McpServerRepository;
+use frona::tool::mcp::supervisor::McpSupervisor;
+use frona::tool::mcp::{
+    McpManager, McpRegistryClient, McpServerService, NoopPackageInstaller, PackageInstaller,
+    PrebuiltMcpRegistryClient,
+};
 use std::collections::BTreeMap;
 
 async fn build_mcp_supervisor() -> (
@@ -35,15 +38,18 @@ async fn build_mcp_supervisor() -> (
         ..Default::default()
     });
 
-    let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(true, Arc::new(
+    let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(
+        true,
+        Arc::new(
             frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
                 80.0, 80.0, 90.0, 90.0,
             ),
         ),
     ));
     let policy_schema = frona::policy::schema::build_schema();
-    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> = Arc::new(
+        SurrealRepo::<frona::policy::models::Policy>::new(db.clone()),
+    );
     let policy_tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = frona::auth::UserService::new(
@@ -51,14 +57,21 @@ async fn build_mcp_supervisor() -> (
         &frona::core::config::CacheConfig::default(),
     );
     let policy_service = frona::policy::service::PolicyService::new(
-        policy_repo, policy_schema, policy_tool_manager, storage.clone(), user_service.clone(),
+        policy_repo,
+        policy_schema,
+        policy_tool_manager,
+        storage.clone(),
+        user_service.clone(),
     );
     let supervisor_skill_service = frona::agent::skill::service::SkillService::new(
         frona::agent::skill::registry::SkillRegistryClient::new(
             frona::build_http_client(),
             "/tmp/frona-test-supervisor-cache",
         ),
-        frona::agent::skill::resolver::SkillResolver::new("/tmp/frona-test-supervisor-shared", storage.clone()),
+        frona::agent::skill::resolver::SkillResolver::new(
+            "/tmp/frona-test-supervisor-shared",
+            storage.clone(),
+        ),
         storage.clone(),
         "/tmp/frona-test-supervisor-skills",
         &frona::core::config::CacheConfig::default(),
@@ -85,7 +98,14 @@ async fn build_mcp_supervisor() -> (
         300,
         "UTC".to_string(),
     ));
-    let manager = Arc::new(McpManager::new(sandbox_manager, storage_for_mcp.clone(), 4100, 4200, user_service.clone(), frona::build_http_client()));
+    let manager = Arc::new(McpManager::new(
+        sandbox_manager,
+        storage_for_mcp.clone(),
+        4100,
+        4200,
+        user_service.clone(),
+        frona::build_http_client(),
+    ));
     let mcp_repo: Arc<dyn McpServerRepository> =
         Arc::new(SurrealRepo::<McpServer>::new(db.clone()));
     let vault_storage = frona::storage::StorageService::new(&frona::core::config::Config {
@@ -116,10 +136,8 @@ async fn build_mcp_supervisor() -> (
         "test-secret",
         Arc::new(SurrealRepo::new(db.clone())),
     );
-    let user_service = frona::auth::UserService::new(
-        SurrealRepo::new(db.clone()),
-        &Default::default(),
-    );
+    let user_service =
+        frona::auth::UserService::new(SurrealRepo::new(db.clone()), &Default::default());
     let token_service = frona::auth::token::service::TokenService::new(
         Arc::new(SurrealRepo::new(db.clone())),
         frona::auth::jwt::JwtService::new(),
@@ -172,7 +190,8 @@ fn make_server(id: &str, user_id: &str, status: McpServerStatus) -> McpServer {
         active_transport: "stdio".into(),
         status,
         tool_cache: vec![],
-        workspace_dir: "/tmp/test".into(),        installed_at: now,
+        workspace_dir: "/tmp/test".into(),
+        installed_at: now,
         last_started_at: None,
         updated_at: now,
     }
@@ -206,7 +225,10 @@ async fn mark_failed_updates_db_status() {
         .await
         .unwrap();
 
-    supervisor.mark_failed("s1", "too many restarts").await.unwrap();
+    supervisor
+        .mark_failed("s1", "too many restarts")
+        .await
+        .unwrap();
 
     let server = repo.find_by_id("s1").await.unwrap().unwrap();
     assert!(matches!(server.status, McpServerStatus::Failed));

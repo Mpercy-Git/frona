@@ -15,14 +15,14 @@ pub fn parse(content: &str) -> Option<ParsedInvocation> {
     let prefix = chars.next()?;
 
     let (name_with_rest, ctor): (&str, fn(String, String) -> ParsedInvocation) = match prefix {
-        '/' => (
-            &content[1..],
-            |name, rest| ParsedInvocation::Slash { name, rest },
-        ),
-        '@' => (
-            &content[1..],
-            |name, rest| ParsedInvocation::At { name, rest },
-        ),
+        '/' => (&content[1..], |name, rest| ParsedInvocation::Slash {
+            name,
+            rest,
+        }),
+        '@' => (&content[1..], |name, rest| ParsedInvocation::At {
+            name,
+            rest,
+        }),
         _ => return None,
     };
 
@@ -228,18 +228,12 @@ mod tests {
 
     #[test]
     fn shell_split_mixed_quotes_preserve_inner() {
-        assert_eq!(
-            shell_split(r#"a "b 'c' d" e"#),
-            vec!["a", "b 'c' d", "e"]
-        );
+        assert_eq!(shell_split(r#"a "b 'c' d" e"#), vec!["a", "b 'c' d", "e"]);
     }
 
     #[test]
     fn shell_split_backslash_escape_in_double_quotes() {
-        assert_eq!(
-            shell_split(r#""he said \"hi\"""#),
-            vec![r#"he said "hi""#]
-        );
+        assert_eq!(shell_split(r#""he said \"hi\"""#), vec![r#"he said "hi""#]);
     }
 
     #[test]

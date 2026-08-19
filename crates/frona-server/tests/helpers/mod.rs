@@ -9,11 +9,11 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use frona::core::metrics;
 use frona::db::repo::generic::SurrealRepo;
+use frona::inference::Usage;
 use frona::inference::config::{ModelGroup, RetryConfig};
 use frona::inference::error::InferenceError;
 use frona::inference::provider::{ModelProvider, ModelRef, SUBMIT_TOOL_NAME};
 use frona::inference::registry::ModelProviderRegistry;
-use frona::inference::Usage;
 use frona::policy::service::PolicyService;
 use frona::tool::manager::ToolManager;
 use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
@@ -32,16 +32,17 @@ pub async fn seed_reconciled_entity(
     let existing = repo.entity_by_path(user_id, path).await.unwrap().unwrap();
     let name = name.trim();
     let renamed = !name.is_empty() && name != existing.name;
-    let final_name = if renamed { name.to_string() } else { existing.name.clone() };
+    let final_name = if renamed {
+        name.to_string()
+    } else {
+        existing.name.clone()
+    };
     let mut aliases = existing.aliases;
     if renamed {
         aliases.insert(existing.name);
     }
-    let search_text = frona::memory::pkm::model::derive_search_text(
-        &final_name,
-        description,
-        &aliases,
-    );
+    let search_text =
+        frona::memory::pkm::model::derive_search_text(&final_name, description, &aliases);
     db.query(
         "UPDATE type::record('knowledge_entity', $id) SET
             name = $name, description = $description, search_text = $search_text,
@@ -148,15 +149,16 @@ pub async fn commit_checkpointed_extract_patch(
         .map(|(chat_id, until)| (chat_id.to_string(), until))
         .into_iter()
         .collect::<Vec<_>>();
-    let counts = repo.commit_extract_patch_with_checkpoint(
-        user_id,
-        batch,
-        &watermarks,
-        short_memory_ids,
-        &record,
-    )
-    .await
-    .unwrap();
+    let counts = repo
+        .commit_extract_patch_with_checkpoint(
+            user_id,
+            batch,
+            &watermarks,
+            short_memory_ids,
+            &record,
+        )
+        .await
+        .unwrap();
     record.stats.absorb_ingest_counts(&counts);
     repo.save_consolidation_record(&record).await.unwrap();
     counts
@@ -190,7 +192,9 @@ pub fn test_usage_ctx() -> frona::inference::usage::UsageContext {
 pub fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     let schema = frona::policy::schema::build_schema();
     let repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(
+            db.clone(),
+        ));
     let tool_manager = Arc::new(ToolManager::new(false));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = frona::auth::UserService::new(
@@ -199,9 +203,9 @@ pub fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     );
     PolicyService::new(repo, schema, tool_manager, storage, user_service)
 }
+use rig_core::completion::message::{ToolCall, ToolFunction};
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
-use rig_core::completion::message::{ToolCall, ToolFunction};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -314,7 +318,9 @@ impl ModelProvider for MockModelProvider {
         let content = match response {
             MockResponse::Text(t) => vec![AssistantContent::text(&t)],
             MockResponse::TextWithReasoning(text, reasoning) => vec![
-                AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(&reasoning)),
+                AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(
+                    &reasoning,
+                )),
                 AssistantContent::text(&text),
             ],
             MockResponse::ToolCalls(calls) => calls
@@ -328,7 +334,9 @@ impl ModelProvider for MockModelProvider {
             MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
             MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
         };
-        Ok(frona::inference::provider::InferenceOutput::new(content, usage))
+        Ok(frona::inference::provider::InferenceOutput::new(
+            content, usage,
+        ))
     }
 
     async fn stream_inference(
@@ -359,14 +367,24 @@ impl ModelProvider for MockModelProvider {
         };
         let content = match response {
             MockResponse::Text(t) => {
-                let _ = token_tx.send(frona::inference::provider::StreamToken::Text(t.clone())).await;
+                let _ = token_tx
+                    .send(frona::inference::provider::StreamToken::Text(t.clone()))
+                    .await;
                 vec![AssistantContent::text(t)]
             }
             MockResponse::TextWithReasoning(text, reasoning) => {
-                let _ = token_tx.send(frona::inference::provider::StreamToken::Reasoning(reasoning.clone())).await;
-                let _ = token_tx.send(frona::inference::provider::StreamToken::Text(text.clone())).await;
+                let _ = token_tx
+                    .send(frona::inference::provider::StreamToken::Reasoning(
+                        reasoning.clone(),
+                    ))
+                    .await;
+                let _ = token_tx
+                    .send(frona::inference::provider::StreamToken::Text(text.clone()))
+                    .await;
                 vec![
-                    AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(&reasoning)),
+                    AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(
+                        &reasoning,
+                    )),
                     AssistantContent::text(text),
                 ]
             }
@@ -381,7 +399,9 @@ impl ModelProvider for MockModelProvider {
             MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
             MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
         };
-        Ok(frona::inference::provider::InferenceOutput::new(content, usage))
+        Ok(frona::inference::provider::InferenceOutput::new(
+            content, usage,
+        ))
     }
 
     async fn structured_inference(
@@ -402,9 +422,9 @@ impl ModelProvider for MockModelProvider {
         };
         match response {
             MockResponse::ToolCalls(mut calls) => {
-                let (_id, name, args) = calls
-                    .pop()
-                    .ok_or_else(|| InferenceError::InferenceFailed("mock: empty ToolCalls".into()))?;
+                let (_id, name, args) = calls.pop().ok_or_else(|| {
+                    InferenceError::InferenceFailed("mock: empty ToolCalls".into())
+                })?;
                 // Structured output arrives as a call to the submit tool. Enforced here
                 // even though this path could ignore the name, because the REAL tool loop
                 // (`structured_inference_with_tools` / `structured_conversation`)
@@ -659,7 +679,10 @@ pub fn mock_context() -> InferenceContext {
 pub fn test_model_group() -> ModelGroup {
     ModelGroup {
         name: "test".into(),
-        main: ModelRef { provider: "mock".into(), model_id: "test-model".into() },
+        main: ModelRef {
+            provider: "mock".into(),
+            model_id: "test-model".into(),
+        },
         fallbacks: vec![],
         max_tokens: Some(4096),
         temperature: None,
@@ -753,8 +776,8 @@ pub struct SseFrame {
 /// Convert an axum SSE `Event` to its wire-format string by running it
 /// through a one-shot Sse body, the same way axum itself serializes events.
 async fn event_to_string(event: axum::response::sse::Event) -> String {
-    use axum::response::sse::Sse;
     use axum::response::IntoResponse;
+    use axum::response::sse::Sse;
     use http_body_util::BodyExt;
 
     let stream = futures::stream::once(async { Ok::<_, std::convert::Infallible>(event) });
@@ -792,7 +815,10 @@ fn parse_sse_text(payload: &str) -> Option<SseFrame> {
     let joined = data_parts.join("\n");
     let data: Value = serde_json::from_str(&joined).unwrap_or(Value::Null);
 
-    Some(SseFrame { event: event_name, data })
+    Some(SseFrame {
+        event: event_name,
+        data,
+    })
 }
 
 /// Parse a single axum SSE `Event` into an `SseFrame`.
@@ -817,8 +843,8 @@ pub async fn drain_sse_frames(
 /// Create a minimal ChatService backed by an in-memory SurrealDB for tool loop tests.
 pub async fn test_chat_service() -> frona::chat::service::ChatService {
     use frona::db::repo::generic::SurrealRepo;
-    use surrealdb::engine::local::Mem;
     use surrealdb::Surreal;
+    use surrealdb::engine::local::Mem;
 
     let db = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
@@ -837,12 +863,11 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
 
     let storage = frona::storage::StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
-    let user_service = frona::auth::UserService::new(
-        SurrealRepo::new(db.clone()),
-        &config.cache,
-    );
+    let user_service = frona::auth::UserService::new(SurrealRepo::new(db.clone()), &config.cache);
     let agent_service = frona::agent::service::AgentService::new(
         SurrealRepo::new(db.clone()),
         &config.cache,

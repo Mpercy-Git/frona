@@ -48,10 +48,7 @@ pub trait InferenceUsageRepository: Repository<InferenceUsage> {
     /// `input_tokens` of the latest `Chat` / `ToolTurn` row in the chat —
     /// used to rehydrate "context used so far" after a page reload before
     /// the next live SSE `usage_recorded` event fires.
-    async fn last_chat_input_tokens(
-        &self,
-        chat_id: &str,
-    ) -> Result<Option<u64>, AppError>;
+    async fn last_chat_input_tokens(&self, chat_id: &str) -> Result<Option<u64>, AppError>;
 
     async fn aggregate_buckets_by_user(
         &self,

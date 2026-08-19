@@ -53,19 +53,14 @@ async fn install_via_manifest(
         ))
         .await
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "install should succeed"
-    );
+    assert_eq!(resp.status(), StatusCode::OK, "install should succeed");
     body_json(resp).await
 }
 
 #[tokio::test]
 async fn list_servers_empty() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "mcp-list", "mcplist@example.com", "password123").await;
+    let (token, _) = register_user(&state, "mcp-list", "mcplist@example.com", "password123").await;
 
     let app = build_app(state);
     let resp = app
@@ -97,8 +92,13 @@ async fn list_servers_without_auth_returns_401() {
 #[tokio::test]
 async fn install_server_with_manifest_no_secrets() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "mcp-install", "mcpinstall@example.com", "password123").await;
+    let (token, _) = register_user(
+        &state,
+        "mcp-install",
+        "mcpinstall@example.com",
+        "password123",
+    )
+    .await;
 
     let server = install_via_manifest(&state, &token, sample_manifest()).await;
     assert!(server["id"].is_string());
@@ -138,8 +138,13 @@ async fn install_server_allows_missing_secret_binding() {
 #[tokio::test]
 async fn uninstall_server() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "mcp-uninstall", "mcpuninstall@example.com", "password123").await;
+    let (token, _) = register_user(
+        &state,
+        "mcp-uninstall",
+        "mcpuninstall@example.com",
+        "password123",
+    )
+    .await;
 
     let server = install_via_manifest(&state, &token, sample_manifest()).await;
     let id = server["id"].as_str().unwrap();
@@ -204,8 +209,13 @@ async fn update_wrong_owner_returns_403() {
     let (state, _tmp) = test_app_state().await;
     let (owner_token, _) =
         register_user(&state, "mcp-owner", "mcpowner@example.com", "password123").await;
-    let (attacker_token, _) =
-        register_user(&state, "mcp-attacker", "mcpattacker@example.com", "password123").await;
+    let (attacker_token, _) = register_user(
+        &state,
+        "mcp-attacker",
+        "mcpattacker@example.com",
+        "password123",
+    )
+    .await;
 
     let server = install_via_manifest(&state, &owner_token, sample_manifest()).await;
     let id = server["id"].as_str().unwrap();
@@ -225,8 +235,7 @@ async fn update_wrong_owner_returns_403() {
 #[tokio::test]
 async fn stop_installed_server_returns_ok() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "mcp-stop", "mcpstop@example.com", "password123").await;
+    let (token, _) = register_user(&state, "mcp-stop", "mcpstop@example.com", "password123").await;
 
     let server = install_via_manifest(&state, &token, sample_manifest()).await;
     let id = server["id"].as_str().unwrap();

@@ -25,29 +25,28 @@
 
 pub mod model;
 pub mod ontology;
-pub mod sync;
 pub mod read;
+pub mod sync;
 
 mod consolidation;
 mod operations;
 mod projection;
 mod recovery;
 mod rename;
-mod retrieve;
 mod reset;
+mod retrieve;
 mod service;
 mod storage;
 mod sweep;
 mod tools;
 mod vault;
 
-use consolidation::{ConsolidationContext, Consolidator, Ingest, ConsolidationInference};
+use consolidation::{ConsolidationContext, ConsolidationInference, Consolidator, Ingest};
 pub use consolidation::{
-    ConsolidationScope, ConsolidationFailure, KnowledgeConsolidationRecord,
-    ConsolidationStageState,
-    ConsolidationStats, IngestState, ConsolidationWorkState, PlaybookResolveState,
-    PendingEntityContribution, TemporalSource, TranscriptEvidenceKind,
-    TranscriptEvidenceSource, ResearchCoverageStats,
+    ConsolidationFailure, ConsolidationScope, ConsolidationStageState, ConsolidationStats,
+    ConsolidationWorkState, IngestState, KnowledgeConsolidationRecord, PendingEntityContribution,
+    PlaybookResolveState, ResearchCoverageStats, TemporalSource, TranscriptEvidenceKind,
+    TranscriptEvidenceSource,
 };
 pub use model::PendingPlaybookCandidate;
 pub use projection::sha256_hex;
@@ -56,7 +55,6 @@ pub use storage::PkmStorage;
 pub use vault::VaultScope;
 
 use std::sync::Arc;
-
 
 use async_trait::async_trait;
 use surrealdb::Surreal;

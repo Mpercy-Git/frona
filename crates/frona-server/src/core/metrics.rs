@@ -90,11 +90,7 @@ pub fn record_tool_call(
     histogram!(TOOL_CALL_DURATION_SECONDS, &labels).record(duration.as_secs_f64());
 }
 
-pub fn record_policy_evaluation(
-    action: &str,
-    decision: &str,
-    duration: Duration,
-) {
+pub fn record_policy_evaluation(action: &str, decision: &str, duration: Duration) {
     let labels = [
         ("action", action.to_string()),
         ("decision", decision.to_string()),

@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::str::FromStr;
 
 use cedar_policy::{
-    ActionConstraint, Authorizer, Context, Decision, Effect, Entities, EntityUid, Policy,
-    PolicyId, PolicySet, PrincipalConstraint, Request, ResourceConstraint, Schema,
+    ActionConstraint, Authorizer, Context, Decision, Effect, Entities, EntityUid, Policy, PolicyId,
+    PolicySet, PrincipalConstraint, Request, ResourceConstraint, Schema,
 };
 use sha2::{Digest, Sha256};
 
@@ -63,7 +63,11 @@ impl EntityRef {
     }
 
     pub fn to_cedar_uid(&self) -> EntityUid {
-        let s = format!("{}::\"{}\"", self.cedar_type(), self.id().replace('"', "\\\""));
+        let s = format!(
+            "{}::\"{}\"",
+            self.cedar_type(),
+            self.id().replace('"', "\\\"")
+        );
         EntityUid::from_str(&s).expect("valid entity uid")
     }
 }
@@ -157,7 +161,13 @@ impl std::fmt::Display for PolicyReconciliationError {
         match self {
             Self::StalePlan => write!(f, "plan is stale; rerun reconcile"),
             Self::Conflicts(c) => write!(f, "{} group(s) have unresolvable conflicts", c.len()),
-            Self::VerificationFailed { action, resource, expected, actual, .. } => write!(
+            Self::VerificationFailed {
+                action,
+                resource,
+                expected,
+                actual,
+                ..
+            } => write!(
                 f,
                 "post-commit verification failed for action {action} resource {resource:?}: expected {expected:?}, got {actual:?}"
             ),
@@ -244,10 +254,7 @@ struct GroupCtx<'a> {
 
 /// Returns `GroupConflict` if intent isn't reachable using only
 /// delete-our-rows + emit-our-rows.
-pub fn plan_for_group(
-    group: &AccessGroup,
-    ctx: &PlanCtx,
-) -> Result<Vec<Edit>, GroupConflict> {
+pub fn plan_for_group(group: &AccessGroup, ctx: &PlanCtx) -> Result<Vec<Edit>, GroupConflict> {
     let collapsed = maybe_collapse_to_ancestors(group, ctx.hierarchy);
     let group = &collapsed;
     let gctx = GroupCtx {
@@ -261,7 +268,12 @@ pub fn plan_for_group(
                 let Ok(parsed) = parse_first(&p.policy_text) else {
                     return false;
                 };
-                is_owned(&parsed, &group.principal, &group.action, p.user_id.is_none())
+                is_owned(
+                    &parsed,
+                    &group.principal,
+                    &group.action,
+                    p.user_id.is_none(),
+                )
             })
             .collect(),
         principal_uid: group.principal.to_cedar_uid(),
@@ -281,7 +293,13 @@ pub fn plan_for_group(
             ref carveout_resources,
         } => {
             let name = group_policy_name(&group.principal, &group.action);
-            let text = build_carveout_text(&name, &group.principal, &group.action, effect, carveout_resources);
+            let text = build_carveout_text(
+                &name,
+                &group.principal,
+                &group.action,
+                effect,
+                carveout_resources,
+            );
             apply_canonical_emission(&mut pending, &gctx.owned, &name, &text);
         }
         CanonicalShape::PerOverride => {
@@ -563,7 +581,9 @@ pub fn eval_request(
         return Decision::Deny;
     };
     let authorizer = Authorizer::new();
-    authorizer.is_authorized(&req, policy_set, entities).decision()
+    authorizer
+        .is_authorized(&req, policy_set, entities)
+        .decision()
 }
 
 pub fn sentinel_resource(entity_type: &str) -> EntityRef {
@@ -730,8 +750,8 @@ fn plan_override(
                     let row_type = format!("{}", u.type_name());
                     let row_id = u.id().unescaped().to_string();
                     let direct = row_type == ov.resource.cedar_type() && row_id == ov.resource.id();
-                    let via_ancestor = ancestor
-                        .is_some_and(|a| row_type == a.cedar_type() && row_id == a.id());
+                    let via_ancestor =
+                        ancestor.is_some_and(|a| row_type == a.cedar_type() && row_id == a.id());
                     direct || via_ancestor
                 }
                 _ => false,
@@ -800,7 +820,8 @@ fn plan_override(
         Decision::Deny => Effect::Forbid,
     };
     let name = per_resource_policy_name(&group.principal, &group.action, &ov.resource, effect);
-    let text = build_per_resource_text(&name, &group.principal, &group.action, &ov.resource, effect);
+    let text =
+        build_per_resource_text(&name, &group.principal, &group.action, &ov.resource, effect);
     pending.creates.push(NewPolicy {
         name: name.clone(),
         text,
@@ -817,7 +838,14 @@ fn plan_override(
     } else {
         ConflictReason::DenyBlockedByPermit
     };
-    let blockers = collect_blockers(ctx, &pending.deleted_ids(), &group.principal, &group.action, &ov.resource, intent_decision);
+    let blockers = collect_blockers(
+        ctx,
+        &pending.deleted_ids(),
+        &group.principal,
+        &group.action,
+        &ov.resource,
+        intent_decision,
+    );
     Err(GroupConflict {
         principal: group.principal.clone(),
         action: group.action.clone(),
@@ -833,8 +861,7 @@ fn verify_group(
     ctx: &PlanCtx,
 ) -> Result<(), GroupConflict> {
     let group = gctx.group;
-    let set = build_effective_policy_set(ctx, pending)
-        .map_err(|e| db_conflict(group, e))?;
+    let set = build_effective_policy_set(ctx, pending).map_err(|e| db_conflict(group, e))?;
 
     if let Some(default) = group.default {
         let want = match default {
@@ -845,7 +872,14 @@ fn verify_group(
         let resource_type = resource_type_for_action(&group.action);
         let sentinel = sentinel_resource(resource_type);
         let sentinel_uid = sentinel.to_cedar_uid();
-        let actual = eval_request(&set, ctx.schema, &gctx.principal_uid, &gctx.action_uid, &sentinel_uid, ctx.entities);
+        let actual = eval_request(
+            &set,
+            ctx.schema,
+            &gctx.principal_uid,
+            &gctx.action_uid,
+            &sentinel_uid,
+            ctx.entities,
+        );
         if actual != want {
             let reason = if want == Decision::Allow {
                 ConflictReason::AllowBlockedByForbid
@@ -856,7 +890,14 @@ fn verify_group(
                 principal: group.principal.clone(),
                 action: group.action.clone(),
                 failing_resource: None,
-                blockers: collect_blockers(ctx, &pending.deleted_ids(), &group.principal, &group.action, &sentinel, want),
+                blockers: collect_blockers(
+                    ctx,
+                    &pending.deleted_ids(),
+                    &group.principal,
+                    &group.action,
+                    &sentinel,
+                    want,
+                ),
                 reason,
             });
         }
@@ -869,7 +910,14 @@ fn verify_group(
             AccessIntent::Default => continue,
         };
         let resource_uid = ov.resource.to_cedar_uid();
-        let actual = eval_request(&set, ctx.schema, &gctx.principal_uid, &gctx.action_uid, &resource_uid, ctx.entities);
+        let actual = eval_request(
+            &set,
+            ctx.schema,
+            &gctx.principal_uid,
+            &gctx.action_uid,
+            &resource_uid,
+            ctx.entities,
+        );
         if actual != want {
             let reason = if want == Decision::Allow {
                 ConflictReason::AllowBlockedByForbid
@@ -880,7 +928,14 @@ fn verify_group(
                 principal: group.principal.clone(),
                 action: group.action.clone(),
                 failing_resource: Some(ov.resource.clone()),
-                blockers: collect_blockers(ctx, &pending.deleted_ids(), &group.principal, &group.action, &ov.resource, want),
+                blockers: collect_blockers(
+                    ctx,
+                    &pending.deleted_ids(),
+                    &group.principal,
+                    &group.action,
+                    &ov.resource,
+                    want,
+                ),
                 reason,
             });
         }
@@ -978,7 +1033,9 @@ enum ConditionKind {
     None,
     /// `unless { resource == T::"v1" || resource == T::"v2" || ... }` where
     /// every term is a resource-eq with the same entity type.
-    CarveoutUnless { resources: Vec<(String, String)> },
+    CarveoutUnless {
+        resources: Vec<(String, String)>,
+    },
     Other,
 }
 
@@ -1018,8 +1075,14 @@ fn condition_kind(policy: &Policy) -> ConditionKind {
 
 fn collect_resource_or_terms(node: &serde_json::Value, out: &mut Vec<(String, String)>) -> bool {
     if let Some(or) = node.get("||") {
-        let l = or.get("left").map(|v| collect_resource_or_terms(v, out)).unwrap_or(false);
-        let r = or.get("right").map(|v| collect_resource_or_terms(v, out)).unwrap_or(false);
+        let l = or
+            .get("left")
+            .map(|v| collect_resource_or_terms(v, out))
+            .unwrap_or(false);
+        let r = or
+            .get("right")
+            .map(|v| collect_resource_or_terms(v, out))
+            .unwrap_or(false);
         return l && r;
     }
     if let Some(eq) = node.get("==") {
@@ -1043,7 +1106,10 @@ fn match_resource_var_eq(
             return true;
         }
         if let Some(arr) = v.get("unknown").and_then(|u| u.as_array())
-            && let Some(name) = arr.first().and_then(|v| v.get("Value")).and_then(|v| v.as_str())
+            && let Some(name) = arr
+                .first()
+                .and_then(|v| v.get("Value"))
+                .and_then(|v| v.as_str())
             && name == "resource"
         {
             return true;
@@ -1196,7 +1262,10 @@ mod tests {
             default: None,
             overrides: vec![],
         };
-        assert!(matches!(canonical_shape(&group), CanonicalShape::PerOverride));
+        assert!(matches!(
+            canonical_shape(&group),
+            CanonicalShape::PerOverride
+        ));
     }
 
     #[test]
@@ -1211,7 +1280,10 @@ mod tests {
             }],
         };
         match canonical_shape(&group) {
-            CanonicalShape::Carveout { effect, carveout_resources } => {
+            CanonicalShape::Carveout {
+                effect,
+                carveout_resources,
+            } => {
                 assert_eq!(effect, Effect::Forbid);
                 assert_eq!(carveout_resources.len(), 1);
             }
@@ -1251,7 +1323,9 @@ mod tests {
             ],
         };
         match canonical_shape(&group) {
-            CanonicalShape::Carveout { carveout_resources, .. } => {
+            CanonicalShape::Carveout {
+                carveout_resources, ..
+            } => {
                 assert_eq!(carveout_resources.len(), 1);
                 assert_eq!(carveout_resources[0].id(), "gmail.com");
             }
@@ -1380,13 +1454,7 @@ mod tests {
 
     #[test]
     fn build_per_resource_text_emits_canonical() {
-        let text = build_per_resource_text(
-            "test",
-            &agent("a"),
-            "read",
-            &dir("/x"),
-            Effect::Permit,
-        );
+        let text = build_per_resource_text("test", &agent("a"), "read", &dir("/x"), Effect::Permit);
         assert!(text.contains("permit"));
         assert!(text.contains("Policy::Agent"));
         assert!(text.contains("Policy::Path"));

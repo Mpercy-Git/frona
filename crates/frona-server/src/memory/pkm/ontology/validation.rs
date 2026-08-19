@@ -84,7 +84,9 @@ pub fn validate(reasoned: &Reasoned, prefixes: &PrefixMap) -> Vec<Violation> {
         let Ok(QueryResults::Solutions(sols)) = sparql::query(&reasoned.store, &q, prefixes) else {
             continue;
         };
-        let prop = prefixes.compact(&facet.property).unwrap_or_else(|| facet.property.clone());
+        let prop = prefixes
+            .compact(&facet.property)
+            .unwrap_or_else(|| facet.property.clone());
         for sol in sols.flatten() {
             let (Some(Term::NamedNode(s)), Some(Term::Literal(v))) = (sol.get("s"), sol.get("v"))
             else {
@@ -97,7 +99,10 @@ pub fn validate(reasoned: &Reasoned, prefixes: &PrefixMap) -> Vec<Violation> {
             out.push(Violation {
                 source: ViolationSource::Facet,
                 rule: facet_rule(&facet),
-                detail: format!("{prop} on {}: {detail}", path.as_deref().unwrap_or(s.as_str())),
+                detail: format!(
+                    "{prop} on {}: {detail}",
+                    path.as_deref().unwrap_or(s.as_str())
+                ),
                 subject: path,
             });
         }
@@ -128,17 +133,24 @@ pub(super) fn extract_facets(store: &Store, prefixes: &PrefixMap) -> Vec<Facet> 
             Some(Term::NamedNode(dt)),
             Some(Term::NamedNode(facet)),
             Some(val),
-        ) = (sol.get("prop"), sol.get("dt"), sol.get("facet"), sol.get("val"))
+        ) = (
+            sol.get("prop"),
+            sol.get("dt"),
+            sol.get("facet"),
+            sol.get("val"),
+        )
         else {
             continue;
         };
-        let entry = by_prop.entry(prop.as_str().to_string()).or_insert_with(|| Facet {
-            property: prop.as_str().to_string(),
-            datatype: dt.as_str().to_string(),
-            min: None,
-            max: None,
-            pattern: None,
-        });
+        let entry = by_prop
+            .entry(prop.as_str().to_string())
+            .or_insert_with(|| Facet {
+                property: prop.as_str().to_string(),
+                datatype: dt.as_str().to_string(),
+                min: None,
+                max: None,
+                pattern: None,
+            });
         let lex = sparql::term_lexical(val);
         match facet.as_str() {
             XSD_MIN_INCLUSIVE => entry.min = lex.parse().ok(),
@@ -220,12 +232,14 @@ impl GraphValidation {
         let mut groups = std::collections::BTreeMap::<String, ValidationDiagnosticGroup>::new();
         for diagnostic in &self.diagnostics {
             let key = format!("{}|{:?}", diagnostic.rule, diagnostic.causal_axioms);
-            let group = groups.entry(key).or_insert_with(|| ValidationDiagnosticGroup {
-                rule: diagnostic.rule.clone(),
-                causal_axioms: diagnostic.causal_axioms.clone(),
-                affected_count: 0,
-                examples: Vec::new(),
-            });
+            let group = groups
+                .entry(key)
+                .or_insert_with(|| ValidationDiagnosticGroup {
+                    rule: diagnostic.rule.clone(),
+                    causal_axioms: diagnostic.causal_axioms.clone(),
+                    affected_count: 0,
+                    examples: Vec::new(),
+                });
             group.affected_count += diagnostic.affected_count;
             if group.examples.len() < 5 {
                 group.examples.push(diagnostic.clone());
@@ -328,17 +342,20 @@ fn edit_impact(
     };
     let baseline_reasoned =
         reasoning::materialize(effective.triples(), current.delta_triples(), abox)?;
-    let baseline: std::collections::HashSet<_> =
-        validate(&baseline_reasoned, prefixes).iter().map(key).collect();
+    let baseline: std::collections::HashSet<_> = validate(&baseline_reasoned, prefixes)
+        .iter()
+        .map(key)
+        .collect();
     let scratch_reasoned = reasoning::materialize(effective.triples(), &scratch_triples, abox)?;
     let data_violations = validate(&scratch_reasoned, prefixes)
         .into_iter()
-        .filter(|violation| {
-            violation.subject.is_some() && !baseline.contains(&key(violation))
-        })
+        .filter(|violation| violation.subject.is_some() && !baseline.contains(&key(violation)))
         .collect();
 
-    Ok(EditImpact { incoherence, data_violations })
+    Ok(EditImpact {
+        incoherence,
+        data_violations,
+    })
 }
 
 impl OntologyManager {
@@ -354,20 +371,13 @@ impl OntologyManager {
         let prefixes = current.prefixes();
         let abox = abox::build_abox_triples(entities, links, prefixes);
 
-        let baseline = ComposedOntology::with_proposed(
-            &current,
-            prefixes,
-            pending_edits,
-            &abox,
-        )?;
+        let baseline = ComposedOntology::with_proposed(&current, prefixes, pending_edits, &abox)?;
         let baseline_reasoned = baseline.reason(&abox)?;
-        let baseline_keys: std::collections::HashSet<_> = validate(
-            &baseline_reasoned,
-            baseline.effective_ontology().prefixes(),
-        )
-        .into_iter()
-        .map(|violation| (violation.rule, violation.detail, violation.subject))
-        .collect();
+        let baseline_keys: std::collections::HashSet<_> =
+            validate(&baseline_reasoned, baseline.effective_ontology().prefixes())
+                .into_iter()
+                .map(|violation| (violation.rule, violation.detail, violation.subject))
+                .collect();
 
         let mut combined = pending_edits.to_vec();
         for edit in candidate_edits {
@@ -377,54 +387,52 @@ impl OntologyManager {
         }
         let projected = ComposedOntology::with_proposed(&current, prefixes, &combined, &abox)?;
         let reasoned = projected.reason(&abox)?;
-        let mut diagnostics: Vec<_> = validate(
-            &reasoned,
-            projected.effective_ontology().prefixes(),
-        )
-        .into_iter()
-        .enumerate()
-        .map(|(index, violation)| {
-            let key = (
-                violation.rule.clone(),
-                violation.detail.clone(),
-                violation.subject.clone(),
-            );
-            let witness_triples = violation
-                .subject
-                .as_deref()
-                .map(|path| {
-                    abox.iter()
-                        .filter(|triple| match &triple.subject {
-                            NamedOrBlankNode::NamedNode(node) => {
-                                path_from_individual(node.as_str()).as_deref() == Some(path)
-                            }
-                            NamedOrBlankNode::BlankNode(_) => false,
+        let mut diagnostics: Vec<_> =
+            validate(&reasoned, projected.effective_ontology().prefixes())
+                .into_iter()
+                .enumerate()
+                .map(|(index, violation)| {
+                    let key = (
+                        violation.rule.clone(),
+                        violation.detail.clone(),
+                        violation.subject.clone(),
+                    );
+                    let witness_triples = violation
+                        .subject
+                        .as_deref()
+                        .map(|path| {
+                            abox.iter()
+                                .filter(|triple| match &triple.subject {
+                                    NamedOrBlankNode::NamedNode(node) => {
+                                        path_from_individual(node.as_str()).as_deref() == Some(path)
+                                    }
+                                    NamedOrBlankNode::BlankNode(_) => false,
+                                })
+                                .take(5)
+                                .map(ToString::to_string)
+                                .collect()
                         })
-                        .take(5)
-                        .map(ToString::to_string)
-                        .collect()
+                        .unwrap_or_else(|| abox.iter().take(5).map(ToString::to_string).collect());
+                    ValidationDiagnostic {
+                        id: format!("projection-{index}"),
+                        kind: if violation.subject.is_some() {
+                            ValidationDiagnosticKind::AboxViolation
+                        } else {
+                            ValidationDiagnosticKind::TboxIncoherence
+                        },
+                        rule: violation.rule,
+                        detail: violation.detail,
+                        subject: violation.subject,
+                        introduced_by_candidate: !baseline_keys.contains(&key),
+                        causal_axioms: candidate_edits
+                            .iter()
+                            .filter_map(|edit| serde_json::to_string(edit).ok())
+                            .collect(),
+                        witness_triples,
+                        affected_count: 1,
+                    }
                 })
-                .unwrap_or_else(|| abox.iter().take(5).map(ToString::to_string).collect());
-            ValidationDiagnostic {
-                id: format!("projection-{index}"),
-                kind: if violation.subject.is_some() {
-                    ValidationDiagnosticKind::AboxViolation
-                } else {
-                    ValidationDiagnosticKind::TboxIncoherence
-                },
-                rule: violation.rule,
-                detail: violation.detail,
-                subject: violation.subject,
-                introduced_by_candidate: !baseline_keys.contains(&key),
-                causal_axioms: candidate_edits
-                    .iter()
-                    .filter_map(|edit| serde_json::to_string(edit).ok())
-                    .collect(),
-                witness_triples,
-                affected_count: 1,
-            }
-        })
-        .collect();
+                .collect();
 
         let catalog = current.catalog()?;
         let mut declared: std::collections::HashSet<String> = catalog
@@ -454,7 +462,10 @@ impl OntologyManager {
         }
 
         let mut undeclared = Vec::<(String, String, String)>::new();
-        for entity in entities.iter().filter(|entity| abox::entity_is_eligible(entity)) {
+        for entity in entities
+            .iter()
+            .filter(|entity| abox::entity_is_eligible(entity))
+        {
             for kind in &entity.kinds {
                 let iri = prefixes.expand(kind);
                 if iri.starts_with("urn:frona:") && !declared.contains(&iri) {
@@ -471,7 +482,10 @@ impl OntologyManager {
             }
         }
         let eligible_paths = abox::eligible_entity_paths(entities);
-        for link in links.iter().filter(|link| abox::link_is_eligible(link, &eligible_paths)) {
+        for link in links
+            .iter()
+            .filter(|link| abox::link_is_eligible(link, &eligible_paths))
+        {
             let iri = prefixes.expand(&link.relation);
             if iri.starts_with("urn:frona:") && !declared.contains(&iri) {
                 undeclared.push((
@@ -509,7 +523,9 @@ impl OntologyManager {
         edits: &[SchemaEdit],
     ) -> Result<EditImpact, AppError> {
         let current = self.load(user_id).await?;
-        let abox = self.user_abox(user_id, current.effective_ontology()).await?;
+        let abox = self
+            .user_abox(user_id, current.effective_ontology())
+            .await?;
         edit_impact(&current, edits, &abox)
     }
 
@@ -530,6 +546,10 @@ impl OntologyManager {
     ) -> Result<Vec<Triple>, AppError> {
         let entities = self.repo.list_entities(user_id).await?;
         let links = self.repo.asserted_links(user_id).await?;
-        Ok(abox::build_abox_triples(&entities, &links, effective.prefixes()))
+        Ok(abox::build_abox_triples(
+            &entities,
+            &links,
+            effective.prefixes(),
+        ))
     }
 }

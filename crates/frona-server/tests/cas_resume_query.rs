@@ -141,7 +141,10 @@ async fn cas_flips_paused_to_executing_when_no_pending_hitls() {
 
     let result = run_cas(&db, "m1").await;
     assert_eq!(result.len(), 1, "CAS should flip the row");
-    assert_eq!(reload_status(&db, "m1").await, Some(MessageStatus::Executing));
+    assert_eq!(
+        reload_status(&db, "m1").await,
+        Some(MessageStatus::Executing)
+    );
 }
 
 #[tokio::test]
@@ -153,14 +156,13 @@ async fn cas_no_op_when_pending_hitl_present() {
         &make_tool_call("tc1", "m1", Some(ToolStatus::Resolved)),
     )
     .await;
-    create_tc(
-        &db,
-        &make_tool_call("tc2", "m1", Some(ToolStatus::Pending)),
-    )
-    .await;
+    create_tc(&db, &make_tool_call("tc2", "m1", Some(ToolStatus::Pending))).await;
 
     let result = run_cas(&db, "m1").await;
-    assert!(result.is_empty(), "CAS must not flip while a HITL is pending");
+    assert!(
+        result.is_empty(),
+        "CAS must not flip while a HITL is pending"
+    );
     assert_eq!(
         reload_status(&db, "m1").await,
         Some(MessageStatus::Paused),
@@ -192,7 +194,10 @@ async fn cas_no_op_when_status_completed() {
 
     let result = run_cas(&db, "m1").await;
     assert!(result.is_empty());
-    assert_eq!(reload_status(&db, "m1").await, Some(MessageStatus::Completed));
+    assert_eq!(
+        reload_status(&db, "m1").await,
+        Some(MessageStatus::Completed)
+    );
 }
 
 #[tokio::test]
@@ -203,7 +208,10 @@ async fn cas_flips_when_message_has_no_tool_calls_at_all() {
 
     let result = run_cas(&db, "m1").await;
     assert_eq!(result.len(), 1);
-    assert_eq!(reload_status(&db, "m1").await, Some(MessageStatus::Executing));
+    assert_eq!(
+        reload_status(&db, "m1").await,
+        Some(MessageStatus::Executing)
+    );
 }
 
 #[tokio::test]
@@ -212,15 +220,14 @@ async fn cas_ignores_pending_hitls_on_other_messages() {
     create(&db, &make_message("m1", MessageStatus::Paused)).await;
     create(&db, &make_message("m2", MessageStatus::Paused)).await;
     // Pending HITL belongs to a *different* message.
-    create_tc(
-        &db,
-        &make_tool_call("tc1", "m2", Some(ToolStatus::Pending)),
-    )
-    .await;
+    create_tc(&db, &make_tool_call("tc1", "m2", Some(ToolStatus::Pending))).await;
 
     let result = run_cas(&db, "m1").await;
     assert_eq!(result.len(), 1, "m1 has no pending HITLs of its own");
-    assert_eq!(reload_status(&db, "m1").await, Some(MessageStatus::Executing));
+    assert_eq!(
+        reload_status(&db, "m1").await,
+        Some(MessageStatus::Executing)
+    );
     assert_eq!(
         reload_status(&db, "m2").await,
         Some(MessageStatus::Paused),
@@ -242,17 +249,20 @@ async fn cas_dedup_only_one_concurrent_caller_wins() {
     // one should report having flipped the row.
     let db_a = db.clone();
     let db_b = db.clone();
-    let (a, b) =
-        tokio::join!(async move { run_cas(&db_a, "m1").await }, async move {
-            run_cas(&db_b, "m1").await
-        });
+    let (a, b) = tokio::join!(async move { run_cas(&db_a, "m1").await }, async move {
+        run_cas(&db_b, "m1").await
+    });
 
     let total = a.len() + b.len();
     assert_eq!(
-        total, 1,
+        total,
+        1,
         "exactly one of the racing workers must report a flip; got A={} B={}",
         a.len(),
         b.len()
     );
-    assert_eq!(reload_status(&db, "m1").await, Some(MessageStatus::Executing));
+    assert_eq!(
+        reload_status(&db, "m1").await,
+        Some(MessageStatus::Executing)
+    );
 }

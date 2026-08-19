@@ -15,25 +15,27 @@ use tracing::warn;
 pub(super) mod adjudicate;
 
 use crate::core::error::AppError;
-use crate::memory::pkm::model::KnowledgeConsolidationEntity;
-use crate::memory::pkm::consolidation::Verdict;
 use crate::db::repo::pkm::AttributeOps;
-use adjudicate::{
-    AdjudicationResult, Decision, GateOutcome, Proposal, ProposalKind, gate, partition_proposals,
-};
+use crate::memory::pkm::consolidation::Verdict;
 use crate::memory::pkm::consolidation::{AssembleOutcome, PromptSpec};
+use crate::memory::pkm::model::KnowledgeConsolidationEntity;
 use crate::memory::pkm::model::KnowledgeEntity;
 use crate::memory::pkm::ontology::{
     AlignKind, Characteristic, OntologyManager, OverrideTarget, SchemaEdit, TypePlan,
 };
 use crate::tool::registry::ToolFilter;
+use adjudicate::{
+    AdjudicationResult, Decision, GateOutcome, Proposal, ProposalKind, gate, partition_proposals,
+};
 
+use super::{ConsolidationProgress, Consolidator, bad_term_feedback};
 use crate::memory::pkm::consolidation::classify::ProposalSet;
-use super::{Consolidator, ConsolidationProgress, bad_term_feedback};
 
 fn schema_edit_mentions(edit: &SchemaEdit, term: &str) -> bool {
     match edit {
-        SchemaEdit::AnnotateComment { term: annotated, .. } => annotated == term,
+        SchemaEdit::AnnotateComment {
+            term: annotated, ..
+        } => annotated == term,
         SchemaEdit::DeclareClass { class } => class == term,
         SchemaEdit::SubClassOf { sub, .. } => sub == term,
         SchemaEdit::EquivalentClasses { a, .. }
@@ -73,7 +75,10 @@ fn render_override_target(t: &OverrideTarget) -> String {
         OverrideTarget::Facet { property } => {
             format!("facet on {property}   (kind=\"facet\", property=\"{property}\")")
         }
-        OverrideTarget::Characteristic { property, characteristic } => {
+        OverrideTarget::Characteristic {
+            property,
+            characteristic,
+        } => {
             let name = match characteristic {
                 Characteristic::Functional => "functional",
                 Characteristic::Transitive => "transitive",
@@ -115,9 +120,9 @@ impl AssemblePlan {
         self.aligned += other.aligned;
         self.deferred += other.deferred;
         for nomination in other.nominations {
-            if !self.nominations.iter().any(|held| held.term == nomination.term
-                && held.proposed_edits == nomination.proposed_edits)
-            {
+            if !self.nominations.iter().any(|held| {
+                held.term == nomination.term && held.proposed_edits == nomination.proposed_edits
+            }) {
                 self.nominations.push(nomination);
             }
         }
@@ -137,7 +142,10 @@ impl AssemblePlan {
     /// The term an entity is stamped with: the alignment/merge target if the pass
     /// redirected it, else the term classify proposed.
     fn final_term<'a>(&'a self, proposed: &'a str) -> &'a str {
-        self.renames.get(proposed).map(String::as_str).unwrap_or(proposed)
+        self.renames
+            .get(proposed)
+            .map(String::as_str)
+            .unwrap_or(proposed)
     }
 }
 
@@ -166,12 +174,17 @@ impl Consolidator {
             return Ok(0);
         }
 
-        let projected_abox = self.projected_abox(ontology_manager, proposals, Some(entities)).await?;
+        let projected_abox = self
+            .projected_abox(ontology_manager, proposals, Some(entities))
+            .await?;
         // Reconcile changes the proposal overlay, not the original `entities` snapshot.
         // Scan the entity view so a property first introduced by Reconcile is
         // adjudicated before the final A-box/T-box invariant runs.
         let projected_pages = proposals.reasoning_entities(
-            entities.iter().map(KnowledgeConsolidationEntity::as_knowledge_entity).collect(),
+            entities
+                .iter()
+                .map(KnowledgeConsolidationEntity::as_knowledge_entity)
+                .collect(),
         );
         let candidates = self
             .undeclared_terms(ontology_manager, &projected_pages, proposals)
@@ -194,21 +207,26 @@ impl Consolidator {
                             target: nomination.target.clone(),
                         }],
                     };
-                    if !pending.iter().any(|held| held.term == proposal.term
-                        && held.proposed_edits == proposal.proposed_edits)
-                    {
+                    if !pending.iter().any(|held| {
+                        held.term == proposal.term && held.proposed_edits == proposal.proposed_edits
+                    }) {
                         pending.push(proposal);
                     }
                 }
-                let decided_terms: HashSet<_> = banked.decisions.iter()
-                    .map(|decision| decision.term.trim().to_string()).collect();
-                let decided: Vec<_> = pending.iter().filter(|candidate| {
-                    decided_terms.contains(candidate.term.trim())
-                }).cloned().collect();
+                let decided_terms: HashSet<_> = banked
+                    .decisions
+                    .iter()
+                    .map(|decision| decision.term.trim().to_string())
+                    .collect();
+                let decided: Vec<_> = pending
+                    .iter()
+                    .filter(|candidate| decided_terms.contains(candidate.term.trim()))
+                    .cloned()
+                    .collect();
                 if !decided.is_empty() {
-                    let (replayed, rejected) = self.apply_adjudication(
-                        ontology_manager, &decided, banked, &projected_abox,
-                    ).await;
+                    let (replayed, rejected) = self
+                        .apply_adjudication(ontology_manager, &decided, banked, &projected_abox)
+                        .await;
                     if rejected.is_empty() {
                         all.merge(replayed);
                         pending.retain(|candidate| !decided_terms.contains(candidate.term.trim()));
@@ -223,20 +241,26 @@ impl Consolidator {
                     pending = partition.final_tail;
                     break;
                 };
-                let completed: HashSet<String> = batch.iter().map(|candidate| candidate.term.clone()).collect();
+                let completed: HashSet<String> = batch
+                    .iter()
+                    .map(|candidate| candidate.term.clone())
+                    .collect();
                 let mut nominations = Vec::new();
                 let initial_rejection = replay_rejection.take();
-                match self.adjudicate_schema(
-                    ontology_manager,
-                    proposals,
-                    progress,
-                    AdjudicationInput {
-                        candidates: &batch,
-                        projected_abox: &projected_abox,
-                        accepted_edits: &all.edits,
-                        initial_rejection: initial_rejection.as_deref(),
-                    },
-                ).await {
+                match self
+                    .adjudicate_schema(
+                        ontology_manager,
+                        proposals,
+                        progress,
+                        AdjudicationInput {
+                            candidates: &batch,
+                            projected_abox: &projected_abox,
+                            accepted_edits: &all.edits,
+                            initial_rejection: initial_rejection.as_deref(),
+                        },
+                    )
+                    .await
+                {
                     Ok(mut outcome) => {
                         nominations.append(&mut outcome.nominations);
                         all.merge(outcome);
@@ -245,34 +269,42 @@ impl Consolidator {
                 }
                 pending.retain(|candidate| !completed.contains(&candidate.term));
                 for nomination in nominations {
-                    if !pending.iter().any(|held| held.term == nomination.term
-                        && held.proposed_edits == nomination.proposed_edits)
-                    {
+                    if !pending.iter().any(|held| {
+                        held.term == nomination.term
+                            && held.proposed_edits == nomination.proposed_edits
+                    }) {
                         pending.push(nomination);
                     }
                 }
                 // Rebuild pending declarations from the state produced by the previous
                 // patch before choosing the next hierarchy partition.
                 for candidate in &mut pending {
-                    let refreshed: Vec<_> = all.edits.iter()
+                    let refreshed: Vec<_> = all
+                        .edits
+                        .iter()
                         .filter(|edit| schema_edit_mentions(edit, &candidate.term))
-                        .cloned().collect();
-                    if !refreshed.is_empty() { candidate.proposed_edits = refreshed; }
+                        .cloned()
+                        .collect();
+                    if !refreshed.is_empty() {
+                        candidate.proposed_edits = refreshed;
+                    }
                 }
             }
             if replay_rejection.is_some() && !pending.is_empty() {
                 let initial_rejection = replay_rejection.take();
-                let outcome = self.adjudicate_schema(
-                    ontology_manager,
-                    proposals,
-                    progress,
-                    AdjudicationInput {
-                        candidates: &pending,
-                        projected_abox: &projected_abox,
-                        accepted_edits: &all.edits,
-                        initial_rejection: initial_rejection.as_deref(),
-                    },
-                ).await?;
+                let outcome = self
+                    .adjudicate_schema(
+                        ontology_manager,
+                        proposals,
+                        progress,
+                        AdjudicationInput {
+                            candidates: &pending,
+                            projected_abox: &projected_abox,
+                            accepted_edits: &all.edits,
+                            initial_rejection: initial_rejection.as_deref(),
+                        },
+                    )
+                    .await?;
                 all.merge(outcome);
                 pending.clear();
             }
@@ -280,7 +312,9 @@ impl Consolidator {
             for candidate in pending {
                 let mut trial = all.edits.clone();
                 for edit in &candidate.proposed_edits {
-                    if !trial.contains(edit) { trial.push(edit.clone()); }
+                    if !trial.contains(edit) {
+                        trial.push(edit.clone());
+                    }
                 }
                 let impact = ontology_manager
                     .test_edits_with_abox(
@@ -297,17 +331,19 @@ impl Consolidator {
                 all.note(&candidate.term, &Decision::AcceptProposal);
             }
             if !rejected_tail.is_empty() {
-                let outcome = self.adjudicate_schema(
-                    ontology_manager,
-                    proposals,
-                    progress,
-                    AdjudicationInput {
-                        candidates: &rejected_tail,
-                        projected_abox: &projected_abox,
-                        accepted_edits: &all.edits,
-                        initial_rejection: replay_rejection.as_deref(),
-                    },
-                ).await?;
+                let outcome = self
+                    .adjudicate_schema(
+                        ontology_manager,
+                        proposals,
+                        progress,
+                        AdjudicationInput {
+                            candidates: &rejected_tail,
+                            projected_abox: &projected_abox,
+                            accepted_edits: &all.edits,
+                            initial_rejection: replay_rejection.as_deref(),
+                        },
+                    )
+                    .await?;
                 all.merge(outcome);
             }
             all
@@ -326,11 +362,7 @@ impl Consolidator {
             .test_edits_with_abox(
                 &self.ctx.scope.user_id,
                 &outcome.edits,
-                &validation_abox(
-                    &projected_abox,
-                    &outcome.edits,
-                    &self.prefixes,
-                ),
+                &validation_abox(&projected_abox, &outcome.edits, &self.prefixes),
             )
             .await?;
         if !final_impact.incoherence.is_empty() || !final_impact.data_violations.is_empty() {
@@ -344,7 +376,9 @@ impl Consolidator {
         // stamped against it have to land together: an entity typed with a term the TBox
         // never declared is an entity the reasoner cannot place, and that is exactly what
         // this stage produced whenever adjudication failed half-way through.
-        let stamped = self.commit(ontology_manager, entities, proposals, &outcome, progress).await?;
+        let stamped = self
+            .commit(ontology_manager, entities, proposals, &outcome, progress)
+            .await?;
 
         tracing::info!(
             declared = outcome.declared,
@@ -368,8 +402,16 @@ impl Consolidator {
     ) -> Result<Vec<Triple>, AppError> {
         let user_id = &self.ctx.scope.user_id;
         let entities = match seed_entities {
-            Some(entities) => entities.iter().map(KnowledgeConsolidationEntity::as_knowledge_entity).collect(),
-            None => self.ctx.view.list_entities().await?.into_iter()
+            Some(entities) => entities
+                .iter()
+                .map(KnowledgeConsolidationEntity::as_knowledge_entity)
+                .collect(),
+            None => self
+                .ctx
+                .view
+                .list_entities()
+                .await?
+                .into_iter()
                 .map(|entity| entity.as_knowledge_entity())
                 .collect(),
         };
@@ -484,23 +526,32 @@ impl Consolidator {
 
         let mut out = Vec::with_capacity(terms.len());
         for (term, kind) in terms {
-            let (usage_entities, usage_links) =
-                ontology_manager.usage_impact(user_id, &term).await.unwrap_or((0, 0));
-            let mut proposed_edits: Vec<_> = proposals.proposed_edits.iter()
+            let (usage_entities, usage_links) = ontology_manager
+                .usage_impact(user_id, &term)
+                .await
+                .unwrap_or((0, 0));
+            let mut proposed_edits: Vec<_> = proposals
+                .proposed_edits
+                .iter()
                 .filter(|edit| schema_edit_mentions(edit, &term))
-                .cloned().collect();
+                .cloned()
+                .collect();
             if proposed_edits.is_empty() {
                 proposed_edits.push(match kind {
-                    ProposalKind::Class => SchemaEdit::DeclareClass { class: term.clone() },
-                    ProposalKind::ObjectProperty => {
-                        SchemaEdit::DeclareObjectProperty { property: term.clone() }
-                    }
-                    ProposalKind::DataProperty => {
-                        SchemaEdit::DeclareDataProperty { property: term.clone() }
-                    }
+                    ProposalKind::Class => SchemaEdit::DeclareClass {
+                        class: term.clone(),
+                    },
+                    ProposalKind::ObjectProperty => SchemaEdit::DeclareObjectProperty {
+                        property: term.clone(),
+                    },
+                    ProposalKind::DataProperty => SchemaEdit::DeclareDataProperty {
+                        property: term.clone(),
+                    },
                 });
             }
-            let model_description = proposals.declaration_descriptions.iter()
+            let model_description = proposals
+                .declaration_descriptions
+                .iter()
                 .find(|(declared, _)| px.expand(declared) == px.expand(&term))
                 .map(|(_, description)| description.clone());
             let description = model_description.clone().unwrap_or_else(||
@@ -511,7 +562,14 @@ impl Consolidator {
                     comment,
                 });
             }
-            out.push(Proposal { term, kind, usage_entities, usage_links, description, proposed_edits });
+            out.push(Proposal {
+                term,
+                kind,
+                usage_entities,
+                usage_links,
+                description,
+                proposed_edits,
+            });
         }
         out
     }
@@ -556,7 +614,12 @@ impl Consolidator {
             .collect();
         let candidates = &candidates[..];
 
-        let durable = self.ctx.view.list_entities().await?.into_iter()
+        let durable = self
+            .ctx
+            .view
+            .list_entities()
+            .await?
+            .into_iter()
             .map(|entity| entity.as_knowledge_entity())
             .collect();
         let entities = proposals.reasoning_entities(durable);
@@ -577,22 +640,39 @@ impl Consolidator {
             ));
             let expanded = px.expand(&c.term);
             let examples: Vec<String> = match c.kind {
-                ProposalKind::Class => entities.iter().filter(|entity| {
-                    entity.kinds.iter().any(|kind| px.expand(kind) == expanded)
-                }).take(5).map(|entity| format!(
-                    "  entity={} name={:?} kinds={:?} attributes={}",
-                    entity.path, entity.name, entity.kinds, entity.attributes,
-                )).collect(),
-                ProposalKind::DataProperty => entities.iter().filter(|entity| {
-                    entity.attributes.as_object().is_some_and(|attrs| attrs.keys().any(|key| {
-                        px.expand(key) == expanded
-                    }))
-                }).take(5).map(|entity| format!(
-                    "  entity={} name={:?} attributes={}", entity.path, entity.name, entity.attributes,
-                )).collect(),
-                ProposalKind::ObjectProperty => projected_abox.iter().filter(|triple| {
-                    triple.predicate.as_str() == expanded
-                }).take(5).map(|triple| format!("  triple={triple}")).collect(),
+                ProposalKind::Class => entities
+                    .iter()
+                    .filter(|entity| entity.kinds.iter().any(|kind| px.expand(kind) == expanded))
+                    .take(5)
+                    .map(|entity| {
+                        format!(
+                            "  entity={} name={:?} kinds={:?} attributes={}",
+                            entity.path, entity.name, entity.kinds, entity.attributes,
+                        )
+                    })
+                    .collect(),
+                ProposalKind::DataProperty => entities
+                    .iter()
+                    .filter(|entity| {
+                        entity
+                            .attributes
+                            .as_object()
+                            .is_some_and(|attrs| attrs.keys().any(|key| px.expand(key) == expanded))
+                    })
+                    .take(5)
+                    .map(|entity| {
+                        format!(
+                            "  entity={} name={:?} attributes={}",
+                            entity.path, entity.name, entity.attributes,
+                        )
+                    })
+                    .collect(),
+                ProposalKind::ObjectProperty => projected_abox
+                    .iter()
+                    .filter(|triple| triple.predicate.as_str() == expanded)
+                    .take(5)
+                    .map(|triple| format!("  triple={triple}"))
+                    .collect(),
             };
             if !examples.is_empty() {
                 block.push_str(&examples.join("\n"));
@@ -603,7 +683,10 @@ impl Consolidator {
         // only the terms *this* pass used, so without this the model can see that an edit
         // was rejected but not the committed axiom doing the rejecting - which is what
         // The model must see committed constraints so it can amend the one that rejects an edit.
-        let in_force = ontology_manager.retractable(user_id).await.unwrap_or_default();
+        let in_force = ontology_manager
+            .retractable(user_id)
+            .await
+            .unwrap_or_default();
         let mut axioms = String::new();
         for t in &in_force {
             axioms.push_str(&format!("- {}\n", render_override_target(t)));
@@ -612,7 +695,14 @@ impl Consolidator {
             PromptSpec::ASSEMBLE,
             &[
                 ("proposals", &block),
-                ("axioms", if axioms.is_empty() { "(none)\n" } else { &axioms }),
+                (
+                    "axioms",
+                    if axioms.is_empty() {
+                        "(none)\n"
+                    } else {
+                        &axioms
+                    },
+                ),
             ],
         )?;
         let overlay = std::sync::Arc::new(
@@ -626,19 +716,21 @@ impl Consolidator {
                 tool_calls: Default::default(),
             },
         );
-        let tools = crate::memory::pkm::consolidation::tools::ontology::build_ontology_tools_with_overlay(
-            ontology_manager.clone(),
-            &self.ctx,
-            self.prefixes.clone(),
-            Some(overlay),
-            crate::memory::pkm::consolidation::tools::ontology::OntologyToolProfile::Assemble,
-        );
+        let tools =
+            crate::memory::pkm::consolidation::tools::ontology::build_ontology_tools_with_overlay(
+                ontology_manager.clone(),
+                &self.ctx,
+                self.prefixes.clone(),
+                Some(overlay),
+                crate::memory::pkm::consolidation::tools::ontology::OntologyToolProfile::Assemble,
+            );
         let mut input = rendered.input;
         if let Some(rejection) = initial_rejection {
             input.push_str("\n\nThe checkpointed adjudication is no longer valid against the reconstructed graph. Revise these rejected decisions:\n");
             input.push_str(rejection);
         }
-        let mut convo = self.ctx
+        let mut convo = self
+            .ctx
             .llm
             .conversation::<AdjudicationResult>(
                 self.ctx.scope.chat_id.as_deref(),
@@ -660,47 +752,59 @@ impl Consolidator {
         let best_so_far = &most_edits;
         let prefixes = &px;
         let refined = convo
-            .refine(self.config.pkm_adjudication_max_attempts_per_batch, move |submission: AdjudicationResult| async move {
-                // Before the guardrail: is every CURIE the model *chose* writable? An
-                // unwritable one is not an edit the gate should weigh - committed, it makes
-                // the delta unparseable, and the gate has nothing to say about that because
-                // expansion never fails. Checked here so it costs a revision, not a schema.
-                if let Some(feedback) = bad_term_feedback(
-                    &self.ctx,
-                    PromptSpec::ASSEMBLE,
-                    prefixes,
-                    submission.decisions.iter().flat_map(|d| d.decision.proposed_terms()),
-                )? {
-                    return Ok(Verdict::Revise { feedback, keep: None });
-                }
-                let (outcome, rejected) =
-                    self.gate_submission(
-                        ontology_manager,
-                        candidates,
-                        &submission,
-                        projected_abox,
-                        accepted_edits,
-                    )
-                    .await?;
-                let improved = outcome.edits.len() >= best_so_far.load(Ordering::Relaxed);
-                if improved {
-                    best_so_far.store(outcome.edits.len(), Ordering::Relaxed);
-                }
-                // Nothing left to amend: stop with this round if it is the better one,
-                // otherwise fall back to the round that already won.
-                if rejected.is_empty() {
-                    return Ok(if improved {
-                        Verdict::Accept((outcome, submission))
-                    } else {
-                        Verdict::Abandon
-                    });
-                }
-                let feedback = self.ctx.llm.reject(
-                    PromptSpec::ASSEMBLE,
-                    &[("rejections", rejected.join("\n").as_str())],
-                )?;
-                Ok(Verdict::Revise { feedback, keep: improved.then_some((outcome, submission)) })
-            })
+            .refine(
+                self.config.pkm_adjudication_max_attempts_per_batch,
+                move |submission: AdjudicationResult| async move {
+                    // Before the guardrail: is every CURIE the model *chose* writable? An
+                    // unwritable one is not an edit the gate should weigh - committed, it makes
+                    // the delta unparseable, and the gate has nothing to say about that because
+                    // expansion never fails. Checked here so it costs a revision, not a schema.
+                    if let Some(feedback) = bad_term_feedback(
+                        &self.ctx,
+                        PromptSpec::ASSEMBLE,
+                        prefixes,
+                        submission
+                            .decisions
+                            .iter()
+                            .flat_map(|d| d.decision.proposed_terms()),
+                    )? {
+                        return Ok(Verdict::Revise {
+                            feedback,
+                            keep: None,
+                        });
+                    }
+                    let (outcome, rejected) = self
+                        .gate_submission(
+                            ontology_manager,
+                            candidates,
+                            &submission,
+                            projected_abox,
+                            accepted_edits,
+                        )
+                        .await?;
+                    let improved = outcome.edits.len() >= best_so_far.load(Ordering::Relaxed);
+                    if improved {
+                        best_so_far.store(outcome.edits.len(), Ordering::Relaxed);
+                    }
+                    // Nothing left to amend: stop with this round if it is the better one,
+                    // otherwise fall back to the round that already won.
+                    if rejected.is_empty() {
+                        return Ok(if improved {
+                            Verdict::Accept((outcome, submission))
+                        } else {
+                            Verdict::Abandon
+                        });
+                    }
+                    let feedback = self.ctx.llm.reject(
+                        PromptSpec::ASSEMBLE,
+                        &[("rejections", rejected.join("\n").as_str())],
+                    )?;
+                    Ok(Verdict::Revise {
+                        feedback,
+                        keep: improved.then_some((outcome, submission)),
+                    })
+                },
+            )
             .await;
 
         // Gave up, out of budget, or never answered - commit whatever cleared the gate.
@@ -738,7 +842,13 @@ impl Consolidator {
         projected_abox: &[Triple],
     ) -> (AssemblePlan, Vec<String>) {
         match self
-            .gate_submission(ontology_manager, candidates, &submission, projected_abox, &[])
+            .gate_submission(
+                ontology_manager,
+                candidates,
+                &submission,
+                projected_abox,
+                &[],
+            )
             .await
         {
             Ok((outcome, rejected)) => match self
@@ -785,13 +895,19 @@ impl Consolidator {
             if px.expand(a) == px.expand(b) {
                 return true;
             }
-            match (px.repair_term(a, kind.term_kind()), px.repair_term(b, kind.term_kind())) {
+            match (
+                px.repair_term(a, kind.term_kind()),
+                px.repair_term(b, kind.term_kind()),
+            ) {
                 (Ok(x), Ok(y)) => px.expand(&x) == px.expand(&y),
                 _ => false,
             }
         };
 
-        let mut outcome = AssemblePlan { edits: accepted_edits.to_vec(), ..Default::default() };
+        let mut outcome = AssemblePlan {
+            edits: accepted_edits.to_vec(),
+            ..Default::default()
+        };
         let mut rejected: Vec<String> = Vec::new();
         let mut unanswered: Vec<&str> = Vec::new();
         for c in candidates {
@@ -816,10 +932,14 @@ impl Consolidator {
             };
             // A structural rewrite must not discard the Classify-authored intent.
             // Comments describe the proposed term itself and survive declare/align/merge.
-            for annotation in c.proposed_edits.iter().filter(|edit| {
-                matches!(edit, SchemaEdit::AnnotateComment { .. })
-            }) {
-                if !edits.contains(annotation) { edits.push(annotation.clone()); }
+            for annotation in c
+                .proposed_edits
+                .iter()
+                .filter(|edit| matches!(edit, SchemaEdit::AnnotateComment { .. }))
+            {
+                if !edits.contains(annotation) {
+                    edits.push(annotation.clone());
+                }
             }
             // The stage holding the source-memory context owns semantic minting.
             // Adjudication may accept, align, merge, amend, or weaken that declaration,
@@ -852,12 +972,13 @@ impl Consolidator {
                     trial.push(e);
                 }
             }
-            let impact =
-                ontology_manager.test_edits_with_abox(
+            let impact = ontology_manager
+                .test_edits_with_abox(
                     user_id,
                     &trial,
                     &validation_abox(projected_abox, &trial, &px),
-                ).await?;
+                )
+                .await?;
             match gate(&impact) {
                 GateOutcome::Commit { .. } => {
                     outcome.edits = trial;
@@ -892,13 +1013,17 @@ impl Consolidator {
         }
         for nomination in &submission.amendment_nominations {
             let term = nomination.term.trim();
-            if term.is_empty() || nomination.evidence.trim().is_empty() { continue; }
+            if term.is_empty() || nomination.evidence.trim().is_empty() {
+                continue;
+            }
             let proposed_edits = vec![SchemaEdit::AmendOverride {
                 target: nomination.target.clone(),
             }];
-            if !outcome.nominations.iter().any(|held| {
-                held.term == term && held.proposed_edits == proposed_edits
-            }) {
+            if !outcome
+                .nominations
+                .iter()
+                .any(|held| held.term == term && held.proposed_edits == proposed_edits)
+            {
                 outcome.nominations.push(Proposal {
                     term: term.into(),
                     kind: nomination.term_kind,
@@ -964,12 +1089,16 @@ impl Consolidator {
         // any lookup - comparing them raw silently matches nothing, which reads as
         // "no prior entities used it".
         let px = self.prefixes.clone();
-        let pages_by_path: BTreeMap<&str, &KnowledgeConsolidationEntity> =
-            entities.iter().chain(proposals.staged_entities.values())
-                .map(|entity| (entity.path.as_str(), entity)).collect();
+        let pages_by_path: BTreeMap<&str, &KnowledgeConsolidationEntity> = entities
+            .iter()
+            .chain(proposals.staged_entities.values())
+            .map(|entity| (entity.path.as_str(), entity))
+            .collect();
 
         for attempt in 0..SCHEMA_COMMIT_ATTEMPTS {
-            let planned = ontology_manager.plan_schema(user_id, &outcome.edits).await?;
+            let planned = ontology_manager
+                .plan_schema(user_id, &outcome.edits)
+                .await?;
             // Entity path → the kinds it should end up with. A `BTreeMap` so an entity touched
             // by both a retype and a stamp accumulates rather than having one overwrite
             // the other, and so the write order is stable.
@@ -991,13 +1120,18 @@ impl Consolidator {
             let mut paths: Vec<&String> = proposals.by_path.keys().collect();
             paths.sort();
             for path in paths {
-                let Some(p) = proposals.by_path.get(path) else { continue };
+                let Some(p) = proposals.by_path.get(path) else {
+                    continue;
+                };
                 let Some(entity) = pages_by_path.get(path.as_str()).copied() else {
                     continue;
                 };
                 // Start from whatever the retype pass already decided for this entity, so a
                 // entity that is both realigned and stamped sees both.
-                let mut kinds = types.get(path).cloned().unwrap_or_else(|| entity.kinds.clone());
+                let mut kinds = types
+                    .get(path)
+                    .cloned()
+                    .unwrap_or_else(|| entity.kinds.clone());
                 // Every proposed class through the gate on its own: one being refused
                 // does not sink the others, and an entity that gained at least one counts.
                 let mut gained = false;
@@ -1036,9 +1170,7 @@ impl Consolidator {
                         rekeys: p
                             .attr_rekeys
                             .iter()
-                            .map(|(from, to)| {
-                                (from.clone(), outcome.final_term(to).to_string())
-                            })
+                            .map(|(from, to)| (from.clone(), outcome.final_term(to).to_string()))
                             .collect(),
                         promoted: p
                             .promoted
@@ -1063,11 +1195,18 @@ impl Consolidator {
             }
 
             let types: Vec<(String, Vec<String>)> = types.into_iter().collect();
-            let merge_targets: std::collections::HashSet<String> = progress.resolved_into()
-                .values().map(|path| progress.canonical_path(path)).collect();
-            let materialize: Vec<KnowledgeEntity> = proposals.input_entities.values()
-                .filter(|entity| proposals.by_path.contains_key(&entity.path)
-                    || merge_targets.contains(&entity.path))
+            let merge_targets: std::collections::HashSet<String> = progress
+                .resolved_into()
+                .values()
+                .map(|path| progress.canonical_path(path))
+                .collect();
+            let materialize: Vec<KnowledgeEntity> = proposals
+                .input_entities
+                .values()
+                .filter(|entity| {
+                    proposals.by_path.contains_key(&entity.path)
+                        || merge_targets.contains(&entity.path)
+                })
                 .cloned()
                 .map(|entity| proposals.project_entity(entity))
                 .map(|entity| entity.as_knowledge_entity())
@@ -1079,37 +1218,54 @@ impl Consolidator {
                 "pkm assemble: committing mapped properties"
             );
             let mut completed_checkpoint = self.ctx.record().await;
-            completed_checkpoint.stats.entities_created += proposals.staged_entities.values()
+            completed_checkpoint.stats.entities_created += proposals
+                .staged_entities
+                .values()
                 .filter(|entity| proposals.by_path.contains_key(&entity.path))
                 .filter(|entity| !progress.resolved_into().contains_key(&entity.path))
                 .count();
             completed_checkpoint.state = completed_checkpoint.state.next();
             completed_checkpoint.attempts = 0;
             completed_checkpoint.updated_at = chrono::Utc::now();
-            let coalesced_sources: Vec<(String, String, String)> = progress.resolved_into().iter()
-                .flat_map(|(from, into)| progress.entity_row(from).into_iter()
-                    .flat_map(move |row| row.source_memory_ids.iter()
-                        .map(move |memory_id| (
-                            from.clone(),
-                            progress.canonical_path(into),
-                            memory_id.clone(),
-                        ))))
+            let coalesced_sources: Vec<(String, String, String)> = progress
+                .resolved_into()
+                .iter()
+                .flat_map(|(from, into)| {
+                    progress.entity_row(from).into_iter().flat_map(move |row| {
+                        row.source_memory_ids.iter().map(move |memory_id| {
+                            (
+                                from.clone(),
+                                progress.canonical_path(into),
+                                memory_id.clone(),
+                            )
+                        })
+                    })
+                })
                 .collect();
-            let coalesced_aliases: Vec<(String, Vec<String>)> = progress.resolved_into().iter()
-                .filter_map(|(from, into)| progress.entity_row(from).map(|row| {
-                    let mut aliases = row.aliases.clone();
-                    if !row.name.trim().is_empty() {
-                        aliases.insert(row.name.clone());
-                    }
-                    (progress.canonical_path(into), aliases.into_iter().collect())
-                }))
+            let coalesced_aliases: Vec<(String, Vec<String>)> = progress
+                .resolved_into()
+                .iter()
+                .filter_map(|(from, into)| {
+                    progress.entity_row(from).map(|row| {
+                        let mut aliases = row.aliases.clone();
+                        if !row.name.trim().is_empty() {
+                            aliases.insert(row.name.clone());
+                        }
+                        (progress.canonical_path(into), aliases.into_iter().collect())
+                    })
+                })
                 .collect();
-            let relation_type_renames: Vec<(String, String)> = outcome.renames.iter()
-                .map(|(from, to)| (from.clone(), to.clone())).collect();
-            let mut working_outcomes: Vec<(String, Option<String>)> = progress.resolved_into()
-                .iter().map(|(from, into)| (from.clone(), Some(into.clone()))).collect();
-            working_outcomes.extend(progress.discarded_paths()
-                .map(|path| (path.clone(), None)));
+            let relation_type_renames: Vec<(String, String)> = outcome
+                .renames
+                .iter()
+                .map(|(from, to)| (from.clone(), to.clone()))
+                .collect();
+            let mut working_outcomes: Vec<(String, Option<String>)> = progress
+                .resolved_into()
+                .iter()
+                .map(|(from, into)| (from.clone(), Some(into.clone())))
+                .collect();
+            working_outcomes.extend(progress.discarded_paths().map(|path| (path.clone(), None)));
             if self
                 .ctx
                 .repo
@@ -1133,7 +1289,10 @@ impl Consolidator {
                 self.ctx.adopt_committed_record(completed_checkpoint).await;
                 return Ok(stamped);
             }
-            warn!(attempt = attempt + 1, "pkm assemble: schema CAS miss, re-planning");
+            warn!(
+                attempt = attempt + 1,
+                "pkm assemble: schema CAS miss, re-planning"
+            );
         }
         Err(AppError::Conflict(
             "assemble: schema commit exceeded its CAS retry budget".into(),
@@ -1142,15 +1301,19 @@ impl Consolidator {
 }
 
 fn format_edit_impact(impact: &crate::memory::pkm::ontology::EditImpact) -> String {
-    let mut diagnostics = impact.incoherence.iter()
+    let mut diagnostics = impact
+        .incoherence
+        .iter()
         .map(|detail| format!("T-Box: {detail}"))
         .collect::<Vec<_>>();
-    diagnostics.extend(impact.data_violations.iter().map(|violation| format!(
-        "A-Box: rule={} subject={} detail={}",
-        violation.rule,
-        violation.subject.as_deref().unwrap_or("unknown"),
-        violation.detail,
-    )));
+    diagnostics.extend(impact.data_violations.iter().map(|violation| {
+        format!(
+            "A-Box: rule={} subject={} detail={}",
+            violation.rule,
+            violation.subject.as_deref().unwrap_or("unknown"),
+            violation.detail,
+        )
+    }));
     diagnostics.join("; ")
 }
 
@@ -1169,12 +1332,26 @@ fn validation_abox(
     let mut class_pairs = Vec::new();
     for edit in edits {
         match edit {
-            SchemaEdit::Align { frona, standard, kind: AlignKind::Class }
-            | SchemaEdit::EquivalentClasses { a: frona, b: standard } => {
+            SchemaEdit::Align {
+                frona,
+                standard,
+                kind: AlignKind::Class,
+            }
+            | SchemaEdit::EquivalentClasses {
+                a: frona,
+                b: standard,
+            } => {
                 class_pairs.push((prefixes.expand(frona), prefixes.expand(standard)));
             }
-            SchemaEdit::Align { frona, standard, kind: AlignKind::DataProperty | AlignKind::ObjectProperty }
-            | SchemaEdit::EquivalentProperties { a: frona, b: standard } => {
+            SchemaEdit::Align {
+                frona,
+                standard,
+                kind: AlignKind::DataProperty | AlignKind::ObjectProperty,
+            }
+            | SchemaEdit::EquivalentProperties {
+                a: frona,
+                b: standard,
+            } => {
                 property_pairs.push((prefixes.expand(frona), prefixes.expand(standard)));
             }
             _ => {}
@@ -1198,7 +1375,9 @@ fn validation_abox(
                         oxrdf::NamedNode::new_unchecked(replacement),
                         triple.object.clone(),
                     );
-                    if !out.contains(&alias) { out.push(alias); }
+                    if !out.contains(&alias) {
+                        out.push(alias);
+                    }
                 }
             }
             if triple.predicate.as_str() == rdf_type
@@ -1218,12 +1397,16 @@ fn validation_abox(
                             triple.predicate.clone(),
                             oxrdf::Term::NamedNode(oxrdf::NamedNode::new_unchecked(replacement)),
                         );
-                        if !out.contains(&alias) { out.push(alias); }
+                        if !out.contains(&alias) {
+                            out.push(alias);
+                        }
                     }
                 }
             }
         }
-        if out.len() == before { break; }
+        if out.len() == before {
+            break;
+        }
     }
     out
 }
@@ -1238,8 +1421,11 @@ fn validate_declaration_strengthening(
     if !matches!(decision, Decision::Declare { .. }) {
         return Ok(());
     }
-    let added: Vec<_> = decision.edits(&proposal.term, proposal.kind).into_iter()
-        .filter(|edit| !proposal.proposed_edits.contains(edit)).collect();
+    let added: Vec<_> = decision
+        .edits(&proposal.term, proposal.kind)
+        .into_iter()
+        .filter(|edit| !proposal.proposed_edits.contains(edit))
+        .collect();
     if added.is_empty() {
         return Ok(());
     }
@@ -1251,24 +1437,34 @@ fn validate_declaration_strengthening(
             for edit in accepted_edits.iter().chain(proposal.proposed_edits.iter()) {
                 let pair = match edit {
                     SchemaEdit::EquivalentProperties { a, b } => Some((a, b)),
-                    SchemaEdit::Align { frona, standard, kind: AlignKind::ObjectProperty } => {
-                        Some((frona, standard))
-                    }
+                    SchemaEdit::Align {
+                        frona,
+                        standard,
+                        kind: AlignKind::ObjectProperty,
+                    } => Some((frona, standard)),
                     _ => None,
                 };
                 if let Some((a, b)) = pair {
                     let (a, b) = (expand(a), expand(b));
-                    if terms.contains(&a) { terms.insert(b.clone()); }
-                    if terms.contains(&b) { terms.insert(a); }
+                    if terms.contains(&a) {
+                        terms.insert(b.clone());
+                    }
+                    if terms.contains(&b) {
+                        terms.insert(a);
+                    }
                 }
             }
-            if terms.len() == before { break; }
+            if terms.len() == before {
+                break;
+            }
         }
         terms
     };
     let assertions_for = |property: &str| {
         let aliases = equivalent_properties(property);
-        projected_abox.iter().filter(|triple| aliases.contains(triple.predicate.as_str()))
+        projected_abox
+            .iter()
+            .filter(|triple| aliases.contains(triple.predicate.as_str()))
             .collect::<Vec<_>>()
     };
     let has_type = |term: &oxrdf::NamedOrBlankNode, class: &str| {
@@ -1286,35 +1482,41 @@ fn validate_declaration_strengthening(
             SchemaEdit::ObjectPropertyDomain { property, class } => {
                 let assertions = assertions_for(property);
                 !assertions.is_empty()
-                    && assertions.iter().all(|triple| has_type(&triple.subject, class))
+                    && assertions
+                        .iter()
+                        .all(|triple| has_type(&triple.subject, class))
             }
             SchemaEdit::ObjectPropertyRange { property, class } => {
                 let assertions = assertions_for(property);
-                !assertions.is_empty() && assertions.iter().all(|triple| {
-                    match &triple.object {
-                        oxrdf::Term::NamedNode(object) => has_type(
-                            &oxrdf::NamedOrBlankNode::NamedNode(object.clone()), class,
-                        ),
+                !assertions.is_empty()
+                    && assertions.iter().all(|triple| match &triple.object {
+                        oxrdf::Term::NamedNode(object) => {
+                            has_type(&oxrdf::NamedOrBlankNode::NamedNode(object.clone()), class)
+                        }
                         _ => false,
-                    }
-                })
+                    })
             }
             SchemaEdit::InverseProperties { a, b } => {
                 let a = assertions_for(a);
                 let b_aliases = equivalent_properties(b);
-                !a.is_empty() && a.iter().all(|forward| {
-                    let oxrdf::Term::NamedNode(object) = &forward.object else { return false; };
-                    projected_abox.iter().any(|reverse| {
-                        reverse.subject == oxrdf::NamedOrBlankNode::NamedNode(object.clone())
-                            && reverse.object == oxrdf::Term::from(forward.subject.clone())
-                            && b_aliases.contains(reverse.predicate.as_str())
+                !a.is_empty()
+                    && a.iter().all(|forward| {
+                        let oxrdf::Term::NamedNode(object) = &forward.object else {
+                            return false;
+                        };
+                        projected_abox.iter().any(|reverse| {
+                            reverse.subject == oxrdf::NamedOrBlankNode::NamedNode(object.clone())
+                                && reverse.object == oxrdf::Term::from(forward.subject.clone())
+                                && b_aliases.contains(reverse.predicate.as_str())
+                        })
                     })
-                })
             }
             _ => false,
         };
         if !supported {
-            return Err(format!("added axiom {edit:?} is not supported by the projected ABox"));
+            return Err(format!(
+                "added axiom {edit:?} is not supported by the projected ABox"
+            ));
         }
     }
     Ok(())

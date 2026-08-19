@@ -104,9 +104,7 @@ impl VaultConnectionRepository for SurrealRepo<VaultConnection> {
     }
 
     async fn find_system_managed(&self) -> Result<Vec<VaultConnection>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM vault_connection WHERE system_managed = true"
-        );
+        let query = format!("{SELECT_CLAUSE} FROM vault_connection WHERE system_managed = true");
         let mut result = self
             .db()
             .query(&query)

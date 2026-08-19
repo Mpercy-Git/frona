@@ -6,8 +6,7 @@ use super::*;
 
 const FALSE_POSITIVE_RULE: &str = "rdfs-datatype-range";
 
-pub const CLASH_RULES: &[&str] =
-    &["cax-dw", "cls-nothing2", "prp-pdw", "prp-asyp", "prp-irp"];
+pub const CLASH_RULES: &[&str] = &["cax-dw", "cls-nothing2", "prp-pdw", "prp-asyp", "prp-irp"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Diagnostic {
@@ -29,7 +28,9 @@ pub(crate) struct Reasoned {
 
 impl Reasoned {
     pub fn clashes(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.diagnostics.iter().filter(|diagnostic| diagnostic.is_clash())
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.is_clash())
     }
 }
 
@@ -60,10 +61,14 @@ pub(super) fn materialize(
         .collect();
 
     let closure = reasoner.view_output();
-    let store =
-        Store::new().map_err(|error| AppError::Internal(format!("ontology: reasoned store: {error}")))?;
+    let store = Store::new()
+        .map_err(|error| AppError::Internal(format!("ontology: reasoned store: {error}")))?;
     store
-        .extend(closure.iter().map(|triple| triple.clone().in_graph(GraphName::DefaultGraph)))
+        .extend(
+            closure
+                .iter()
+                .map(|triple| triple.clone().in_graph(GraphName::DefaultGraph)),
+        )
         .map_err(|error| AppError::Internal(format!("ontology: load closure: {error}")))?;
 
     Ok(Reasoned { store, diagnostics })
@@ -80,7 +85,6 @@ pub(crate) struct ReasonPass {
     /// prefix map the ABox was built with, rather than the bundled one.
     pub(super) effective_ontology: Arc<OntologyScope>,
 }
-
 
 impl OntologyManager {
     pub(crate) fn assertion_graph(
@@ -102,7 +106,11 @@ impl OntologyManager {
         let abox = abox::build_abox_triples(&entities, &asserted_links, px);
         let reasoned = user.reason(&abox)?;
         let effective_ontology = user.effective_ontology().clone();
-        Ok(ReasonPass { reasoned, asserted_links, effective_ontology })
+        Ok(ReasonPass {
+            reasoned,
+            asserted_links,
+            effective_ontology,
+        })
     }
 
     /// Like [`reason_user`], but composes a **proposed layer** of uncommitted
@@ -124,7 +132,11 @@ impl OntologyManager {
         let composed = ComposedOntology::with_proposed(&user, px, proposed_edits, &abox)?;
         let reasoned = composed.reason(&abox)?;
         let effective_ontology = composed.effective_ontology().clone();
-        Ok(ReasonPass { reasoned, asserted_links, effective_ontology })
+        Ok(ReasonPass {
+            reasoned,
+            asserted_links,
+            effective_ontology,
+        })
     }
 
     /// The violations for a completed pass (reasoner clashes + facet bounds).
@@ -141,7 +153,9 @@ impl OntologyManager {
             pass.effective_ontology.prefixes(),
         )?;
         self.repo.wipe_inferred_links(user_id).await?;
-        self.repo.insert_inferred_links(user_id, &inferred.links).await?;
+        self.repo
+            .insert_inferred_links(user_id, &inferred.links)
+            .await?;
         Ok(self.validate(&pass))
     }
 
@@ -151,7 +165,11 @@ impl OntologyManager {
         query: &str,
     ) -> Result<QueryResults<'static>, AppError> {
         let pass = self.reason_user(user_id).await?;
-        sparql::query(&pass.reasoned.store, query, pass.effective_ontology.prefixes())
+        sparql::query(
+            &pass.reasoned.store,
+            query,
+            pass.effective_ontology.prefixes(),
+        )
     }
 
     pub async fn entails_type(
@@ -166,8 +184,10 @@ impl OntologyManager {
             individual_iri(entity_path),
             self.prefixes().expand(class),
         );
-        sparql::ask(&pass.reasoned.store, &query, pass.effective_ontology.prefixes())
+        sparql::ask(
+            &pass.reasoned.store,
+            &query,
+            pass.effective_ontology.prefixes(),
+        )
     }
-
-
 }

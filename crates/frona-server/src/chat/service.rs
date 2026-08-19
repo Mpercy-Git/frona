@@ -1,18 +1,20 @@
 use crate::agent::config::parse_frontmatter;
+use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::workspace::AgentPromptLoader;
-use crate::storage::StorageService;
+use crate::auth::UserService;
+use crate::core::error::AppError;
+use crate::core::repository::Repository;
+use crate::core::template::render_template;
 use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
-use crate::core::error::AppError;
-use crate::core::template::render_template;
 use crate::inference::ModelProviderRegistry;
-use crate::auth::UserService;
-use crate::inference::conversation::{ConversationBuilder, ConversationContext, DefaultConversationBuilder};
-use crate::inference::text_inference;
+use crate::inference::conversation::{
+    ConversationBuilder, ConversationContext, DefaultConversationBuilder,
+};
 use crate::inference::provider::ModelRef;
-use crate::agent::prompt::PromptLoader;
-use crate::core::repository::Repository;
+use crate::inference::text_inference;
+use crate::storage::StorageService;
 use rig_core::completion::Message as RigMessage;
 
 pub struct AgentConfig {
@@ -23,11 +25,13 @@ pub struct AgentConfig {
     pub identity: std::collections::BTreeMap<String, String>,
 }
 
-use super::models::{ChatResponse, CreateChatRequest, UpdateChatRequest};
-use super::message::models::{MessageResponse, MessageStatus, SendMessageRequest, MessageEvent, PaginatedMessagesResponse};
 use super::message::models::{Message, MessageRole, Reasoning};
+use super::message::models::{
+    MessageEvent, MessageResponse, MessageStatus, PaginatedMessagesResponse, SendMessageRequest,
+};
 use super::message::repository::MessageRepository;
 use super::models::Chat;
+use super::models::{ChatResponse, CreateChatRequest, UpdateChatRequest};
 use super::repository::ChatRepository;
 use crate::db::repo::tool_calls::ToolCallRepository;
 use crate::inference::tool_call::{ToolCall, ToolCallResponse, ToolStatus};
@@ -76,9 +80,7 @@ impl ChatService {
         usage_service: crate::inference::usage::UsageService,
     ) -> Self {
         let compactor = super::compactor::ChatCompactor::new(
-            crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(
-                message_repo.db().clone(),
-            ),
+            crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(message_repo.db().clone()),
             message_repo.clone(),
             std::sync::Arc::new(super::compactor::TextInferenceSummarizer::new(
                 provider_registry.clone(),
@@ -135,7 +137,6 @@ impl ChatService {
         );
     }
 
-
     pub fn provider_registry(&self) -> &ModelProviderRegistry {
         &self.provider_registry
     }
@@ -158,9 +159,7 @@ impl ChatService {
             .agent_service
             .find_by_id(&req.agent_id)
             .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!("Agent '{}' not found", req.agent_id))
-            })?;
+            .ok_or_else(|| AppError::NotFound(format!("Agent '{}' not found", req.agent_id)))?;
         if agent.user_id != user_id {
             return Err(AppError::Forbidden("Not your agent".into()));
         }
@@ -322,7 +321,11 @@ impl ChatService {
             crate::core::metadata::apply_metadata_patch(&mut msg.metadata, patch);
         }
         let saved = self.message_repo.update(&msg).await?;
-        self.broadcast_message_persisted(&saved, &chat, crate::chat::broadcast::EntityAction::Updated);
+        self.broadcast_message_persisted(
+            &saved,
+            &chat,
+            crate::chat::broadcast::EntityAction::Updated,
+        );
         Ok(saved.into())
     }
 
@@ -367,7 +370,11 @@ impl ChatService {
         crate::core::metadata::apply_metadata_patch(&mut msg.metadata, patch);
         let saved = self.message_repo.update(&msg).await?;
         if let Ok(Some(chat)) = self.chat_repo.find_by_id(&saved.chat_id).await {
-            self.broadcast_message_persisted(&saved, &chat, crate::chat::broadcast::EntityAction::Updated);
+            self.broadcast_message_persisted(
+                &saved,
+                &chat,
+                crate::chat::broadcast::EntityAction::Updated,
+            );
         }
         Ok(saved)
     }
@@ -421,10 +428,7 @@ impl ChatService {
         Ok(chat.into())
     }
 
-    pub async fn list_archived_chats(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<ChatResponse>, AppError> {
+    pub async fn list_archived_chats(&self, user_id: &str) -> Result<Vec<ChatResponse>, AppError> {
         let chats = self.chat_repo.find_archived_by_user_id(user_id).await?;
         Ok(chats.into_iter().map(Into::into).collect())
     }
@@ -443,10 +447,7 @@ impl ChatService {
             let user_content = req.content.clone();
             let cid = chat_id.to_string();
             Some(tokio::spawn(async move {
-                if let Err(e) = svc
-                    .generate_title(&cid, &agent_id, &user_content)
-                    .await
-                {
+                if let Err(e) = svc.generate_title(&cid, &agent_id, &user_content).await {
                     tracing::warn!(error = %e, "Title generation failed");
                 }
             }))
@@ -474,8 +475,9 @@ impl ChatService {
         let model_group_name = agent_config.model_group;
 
         let model_group = self.provider_registry.get_model_group(&model_group_name)?;
-        let max_output =
-            model_group.max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
+        let max_output = model_group
+            .max_tokens
+            .unwrap_or(model_group.inference.default_max_tokens) as usize;
         let loaded = self
             .compactor
             .compact_chat(
@@ -502,7 +504,12 @@ impl ChatService {
         };
         let tool_calls = self.get_tool_calls(chat_id).await?;
         let mut rig_history = conv_builder
-            .build(&stored_messages, &tool_calls, &conv_ctx, conversation_summary.as_deref())
+            .build(
+                &stored_messages,
+                &tool_calls,
+                &conv_ctx,
+                conversation_summary.as_deref(),
+            )
             .await;
 
         rig_history.push(RigMessage::user(&req.content));
@@ -791,8 +798,8 @@ impl ChatService {
         content: String,
         delivery: Option<crate::chat::message::models::MessageDelivery>,
     ) -> Result<MessageResponse, AppError> {
-        let mut builder = Message::builder(chat_id, MessageRole::Agent, content)
-            .agent_id(agent_id.to_string());
+        let mut builder =
+            Message::builder(chat_id, MessageRole::Agent, content).agent_id(agent_id.to_string());
         if let Some(d) = delivery {
             builder = builder.delivery(d);
         }
@@ -1165,18 +1172,14 @@ impl ChatService {
         match current_status {
             Some(ToolStatus::Resolved) => {
                 let existing = te.result.as_str();
-                let incoming = response
-                    .as_deref()
-                    .unwrap_or("Human resolved the request.");
+                let incoming = response.as_deref().unwrap_or("Human resolved the request.");
                 if existing == incoming {
-                    return Ok(ToolResolveResult::AlreadyResolved(
-                        MessageResponse::from(
-                            self.message_repo
-                                .find_by_id(&te.message_id)
-                                .await?
-                                .ok_or_else(|| AppError::NotFound("Message not found".into()))?,
-                        ),
-                    ));
+                    return Ok(ToolResolveResult::AlreadyResolved(MessageResponse::from(
+                        self.message_repo
+                            .find_by_id(&te.message_id)
+                            .await?
+                            .ok_or_else(|| AppError::NotFound("Message not found".into()))?,
+                    )));
                 }
                 return Err(AppError::Http {
                     status: 409,
@@ -1197,8 +1200,7 @@ impl ChatService {
             }
         }
 
-        let response_text = response
-            .unwrap_or_else(|| "Human resolved the request.".to_string());
+        let response_text = response.unwrap_or_else(|| "Human resolved the request.".to_string());
 
         if let Some(ref mut h) = te.hitl {
             h.status = ToolStatus::Resolved;
@@ -1262,8 +1264,7 @@ impl ChatService {
             }
         }
 
-        let response_text = response
-            .unwrap_or_else(|| "User denied the request.".to_string());
+        let response_text = response.unwrap_or_else(|| "User denied the request.".to_string());
 
         if let Some(ref mut h) = te.hitl {
             h.status = ToolStatus::Denied;
@@ -1288,17 +1289,11 @@ impl ChatService {
         self.tool_call_repo.find_pending_by_chat_id(chat_id).await
     }
 
-    pub async fn get_tool_call(
-        &self,
-        id: &str,
-    ) -> Result<Option<ToolCall>, AppError> {
+    pub async fn get_tool_call(&self, id: &str) -> Result<Option<ToolCall>, AppError> {
         self.tool_call_repo.find_by_id(id).await
     }
 
-    pub async fn get_tool_calls(
-        &self,
-        chat_id: &str,
-    ) -> Result<Vec<ToolCall>, AppError> {
+    pub async fn get_tool_calls(&self, chat_id: &str) -> Result<Vec<ToolCall>, AppError> {
         self.tool_call_repo.find_by_chat_id(chat_id).await
     }
 
@@ -1403,7 +1398,9 @@ impl ChatService {
             .find_by_id(&agent.user_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("User {} not found", agent.user_id)))?;
-        let ws = self.storage_service.agent_workspace(&user.handle, &agent.handle);
+        let ws = self
+            .storage_service
+            .agent_workspace(&user.handle, &agent.handle);
 
         tracing::debug!(agent_id, user_id = %agent.user_id, "Resolved agent from DB");
 
@@ -1412,11 +1409,13 @@ impl ChatService {
             None => ws
                 .read("AGENT.md")
                 .map(|c| parse_frontmatter(&c).template)
-                .ok_or_else(|| AppError::Internal(format!("No AGENT.md found for agent {agent_id}")))?,
+                .ok_or_else(|| {
+                    AppError::Internal(format!("No AGENT.md found for agent {agent_id}"))
+                })?,
         };
 
-        let system_prompt = render_template(&raw_prompt, &[("agent_name", &agent.name)])
-            .unwrap_or(raw_prompt);
+        let system_prompt =
+            render_template(&raw_prompt, &[("agent_name", &agent.name)]).unwrap_or(raw_prompt);
 
         Ok(AgentConfig {
             system_prompt,
@@ -1443,13 +1442,17 @@ impl ChatService {
             .find_by_id(&agent.user_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("User {} not found", agent.user_id)))?;
-        let ws = self.storage_service.agent_workspace(&user.handle, &agent.handle);
+        let ws = self
+            .storage_service
+            .agent_workspace(&user.handle, &agent.handle);
         let prompts = AgentPromptLoader::new(&ws, &self.prompts);
-        let content = prompts.read("TITLE.md")
+        let content = prompts
+            .read("TITLE.md")
             .ok_or_else(|| AppError::Internal("No title generation prompt found".into()))?;
         let parsed = parse_frontmatter(&content);
 
-        let model_group = self.build_title_model_group(parsed.metadata.get("model").map(|s| s.as_str()))?;
+        let model_group =
+            self.build_title_model_group(parsed.metadata.get("model").map(|s| s.as_str()))?;
 
         let usage_ctx = crate::inference::usage::UsageContext::new(
             crate::inference::usage::InferenceKind::Title {
@@ -1474,11 +1477,14 @@ impl ChatService {
         Ok(title)
     }
 
-    fn build_title_model_group(&self, model_specifier: Option<&str>) -> Result<crate::inference::config::ModelGroup, AppError> {
+    fn build_title_model_group(
+        &self,
+        model_specifier: Option<&str>,
+    ) -> Result<crate::inference::config::ModelGroup, AppError> {
         let base = match model_specifier {
             Some(m) if m.contains('/') => {
-                let model_ref = ModelRef::parse(m)
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                let model_ref =
+                    ModelRef::parse(m).map_err(|e| AppError::Internal(e.to_string()))?;
                 return Ok(crate::inference::config::ModelGroup {
                     name: "title".to_string(),
                     main: model_ref,
@@ -1490,9 +1496,7 @@ impl ChatService {
                     inference: Default::default(),
                 });
             }
-            Some(group) if !group.is_empty() => {
-                self.provider_registry.get_model_group(group)?
-            }
+            Some(group) if !group.is_empty() => self.provider_registry.get_model_group(group)?,
             _ => self.provider_registry.get_model_group("primary")?,
         };
         Ok(crate::inference::config::ModelGroup {
@@ -1668,6 +1672,9 @@ mod tests {
     #[test]
     fn test_parse_title_response_empty_title() {
         let response = r#"{ "title": "" }"#;
-        assert_eq!(parse_title_response(response, "fallback text"), "fallback text");
+        assert_eq!(
+            parse_title_response(response, "fallback text"),
+            "fallback text"
+        );
     }
 }

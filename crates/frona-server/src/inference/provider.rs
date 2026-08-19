@@ -2,19 +2,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
+use rig_core::completion::GetTokenUsage;
+use rig_core::completion::request::{ToolDefinition as RigToolDefinition, Usage};
 use rig_core::completion::{
     AssistantContent, CompletionModel, CompletionRequest, CompletionResponse,
     Message as RigMessage,
     message::{ToolCall, ToolChoice, ToolFunction},
 };
-use rig_core::completion::GetTokenUsage;
-use rig_core::completion::request::{ToolDefinition as RigToolDefinition, Usage};
 use tokio::sync::mpsc;
 
+use super::error::InferenceError;
 use crate::chat::broadcast::BroadcastService;
 use crate::core::config::{OpenAiApi, ProviderModel};
 use crate::core::metrics;
-use super::error::InferenceError;
 
 pub enum StreamToken {
     Text(String),
@@ -37,7 +37,11 @@ pub struct InferenceOutput {
 
 impl InferenceOutput {
     pub fn new(content: Vec<AssistantContent>, usage: Usage) -> Self {
-        Self { content, usage, ttft_ms: None }
+        Self {
+            content,
+            usage,
+            ttft_ms: None,
+        }
     }
 
     pub fn with_ttft(mut self, ttft_ms: Option<u64>) -> Self {
@@ -123,11 +127,9 @@ pub struct ModelRef {
 
 impl ModelRef {
     pub fn parse(s: &str) -> Result<Self, InferenceError> {
-        let (provider, model_id) = s
-            .split_once('/')
-            .ok_or_else(|| InferenceError::InvalidModelRef(format!(
-                "expected 'provider/model' format, got '{s}'"
-            )))?;
+        let (provider, model_id) = s.split_once('/').ok_or_else(|| {
+            InferenceError::InvalidModelRef(format!("expected 'provider/model' format, got '{s}'"))
+        })?;
 
         if provider.is_empty() || model_id.is_empty() {
             return Err(InferenceError::InvalidModelRef(format!(
@@ -171,16 +173,22 @@ impl InferenceCounter {
     }
 
     fn decrement(&self) {
-        let val = self.count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            Some(v.saturating_sub(1))
-        }).unwrap_or(0).saturating_sub(1);
+        let val = self
+            .count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(1))
+            })
+            .unwrap_or(0)
+            .saturating_sub(1);
         self.broadcast.broadcast_inference_count(val);
         metrics::set_active_inference_requests(val);
     }
 
     pub fn guard(&self) -> InferenceGuard {
         self.increment();
-        InferenceGuard { counter: self.clone() }
+        InferenceGuard {
+            counter: self.clone(),
+        }
     }
 }
 
@@ -276,12 +284,30 @@ impl ModelProvider for OpenAiProvider {
         temperature: Option<f64>,
     ) -> Result<InferenceOutput, InferenceError> {
         match Self::api(model) {
-            OpenAiApi::ChatCompletions => self.chat_completions
-                .inference(model, system_prompt, chat_history, tools, max_tokens, temperature)
-                .await,
-            OpenAiApi::Responses => self.responses
-                .inference(model, system_prompt, chat_history, tools, max_tokens, temperature)
-                .await,
+            OpenAiApi::ChatCompletions => {
+                self.chat_completions
+                    .inference(
+                        model,
+                        system_prompt,
+                        chat_history,
+                        tools,
+                        max_tokens,
+                        temperature,
+                    )
+                    .await
+            }
+            OpenAiApi::Responses => {
+                self.responses
+                    .inference(
+                        model,
+                        system_prompt,
+                        chat_history,
+                        tools,
+                        max_tokens,
+                        temperature,
+                    )
+                    .await
+            }
         }
     }
 
@@ -296,28 +322,32 @@ impl ModelProvider for OpenAiProvider {
         temperature: Option<f64>,
     ) -> Result<InferenceOutput, InferenceError> {
         match Self::api(model) {
-            OpenAiApi::ChatCompletions => self.chat_completions
-                .stream_inference(
-                    model,
-                    system_prompt,
-                    chat_history,
-                    tools,
-                    token_tx,
-                    max_tokens,
-                    temperature,
-                )
-                .await,
-            OpenAiApi::Responses => self.responses
-                .stream_inference(
-                    model,
-                    system_prompt,
-                    chat_history,
-                    tools,
-                    token_tx,
-                    max_tokens,
-                    temperature,
-                )
-                .await,
+            OpenAiApi::ChatCompletions => {
+                self.chat_completions
+                    .stream_inference(
+                        model,
+                        system_prompt,
+                        chat_history,
+                        tools,
+                        token_tx,
+                        max_tokens,
+                        temperature,
+                    )
+                    .await
+            }
+            OpenAiApi::Responses => {
+                self.responses
+                    .stream_inference(
+                        model,
+                        system_prompt,
+                        chat_history,
+                        tools,
+                        token_tx,
+                        max_tokens,
+                        temperature,
+                    )
+                    .await
+            }
         }
     }
 
@@ -331,33 +361,41 @@ impl ModelProvider for OpenAiProvider {
         temperature: Option<f64>,
     ) -> Result<serde_json::Value, InferenceError> {
         match Self::api(model) {
-            OpenAiApi::ChatCompletions => self.chat_completions
-                .structured_inference(
-                    model,
-                    system_prompt,
-                    chat_history,
-                    schema,
-                    max_tokens,
-                    temperature,
-                )
-                .await,
-            OpenAiApi::Responses => self.responses
-                .structured_inference(
-                    model,
-                    system_prompt,
-                    chat_history,
-                    schema,
-                    max_tokens,
-                    temperature,
-                )
-                .await,
+            OpenAiApi::ChatCompletions => {
+                self.chat_completions
+                    .structured_inference(
+                        model,
+                        system_prompt,
+                        chat_history,
+                        schema,
+                        max_tokens,
+                        temperature,
+                    )
+                    .await
+            }
+            OpenAiApi::Responses => {
+                self.responses
+                    .structured_inference(
+                        model,
+                        system_prompt,
+                        chat_history,
+                        schema,
+                        max_tokens,
+                        temperature,
+                    )
+                    .await
+            }
         }
     }
 }
 
 impl<C> RigProvider<C> {
     pub fn new(client: C, counter: InferenceCounter) -> Self {
-        Self { client, counter, hook: None }
+        Self {
+            client,
+            counter,
+            hook: None,
+        }
     }
 
     pub fn with_hook(mut self, hook: super::hooks::RequestHook) -> Self {
@@ -476,8 +514,13 @@ where
 
         // Kept only when tracing is on - the builder consumes both, and cloning a whole
         // history per call to satisfy a disabled debug path is not worth it.
-        let traced = super::trace::enabled()
-            .then(|| (chat_history.clone(), tools.clone(), system_prompt.to_string()));
+        let traced = super::trace::enabled().then(|| {
+            (
+                chat_history.clone(),
+                tools.clone(),
+                system_prompt.to_string(),
+            )
+        });
 
         let request = CompletionRequestBuilder::new(system_prompt, chat_history)
             .tools(tools)
@@ -541,8 +584,13 @@ where
         tracing::debug!(chat_history = ?chat_history, "LLM chat history");
 
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-        let traced = super::trace::enabled()
-            .then(|| (chat_history.clone(), tools.clone(), system_prompt.to_string()));
+        let traced = super::trace::enabled().then(|| {
+            (
+                chat_history.clone(),
+                tools.clone(),
+                system_prompt.to_string(),
+            )
+        });
 
         let request = CompletionRequestBuilder::new(system_prompt, chat_history)
             .tools(tools)
@@ -564,7 +612,9 @@ where
             ttft_ms,
         } = consume_tool_stream(stream, &token_tx, &tool_names).await?;
 
-        let has_tool_calls = contents.iter().any(|c| matches!(c, AssistantContent::ToolCall(_)));
+        let has_tool_calls = contents
+            .iter()
+            .any(|c| matches!(c, AssistantContent::ToolCall(_)));
         if !has_tool_calls && !accumulated_text.is_empty() && still_buffering {
             recover_tool_calls_from_text(
                 &mut accumulated_text,
@@ -576,7 +626,9 @@ where
 
         if !accumulated_text.is_empty() {
             if still_buffering {
-                let _ = token_tx.send(StreamToken::Text(accumulated_text.clone())).await;
+                let _ = token_tx
+                    .send(StreamToken::Text(accumulated_text.clone()))
+                    .await;
             }
             contents.insert(0, AssistantContent::text(&accumulated_text));
         }
@@ -686,8 +738,12 @@ async fn consume_tool_stream<S, R>(
     tool_names: &[String],
 ) -> Result<StreamConsumed, InferenceError>
 where
-    S: futures::Stream<Item = Result<rig_core::streaming::StreamedAssistantContent<R>, rig_core::completion::CompletionError>>
-        + Unpin,
+    S: futures::Stream<
+            Item = Result<
+                rig_core::streaming::StreamedAssistantContent<R>,
+                rig_core::completion::CompletionError,
+            >,
+        > + Unpin,
     R: Clone + Unpin + GetTokenUsage,
 {
     use futures::StreamExt;
@@ -716,7 +772,9 @@ where
                             .iter()
                             .any(|name| accumulated_text.contains(name.as_str()));
                         if !has_tool_name {
-                            let _ = token_tx.send(StreamToken::Text(accumulated_text.clone())).await;
+                            let _ = token_tx
+                                .send(StreamToken::Text(accumulated_text.clone()))
+                                .await;
                             buffering = false;
                         }
                     }
@@ -840,12 +898,9 @@ fn parse_lenient_json(raw: &str) -> Option<serde_json::Value> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
         return Some(v);
     }
-    let parsed = json_partial::jsonish::parse(
-        raw,
-        json_partial::jsonish::ParseOptions::default(),
-    )
-    .ok()
-    .map(|v| json_partial::jsonish::jsonish_to_serde(&v))?;
+    let parsed = json_partial::jsonish::parse(raw, json_partial::jsonish::ParseOptions::default())
+        .ok()
+        .map(|v| json_partial::jsonish::jsonish_to_serde(&v))?;
 
     // The repair pass practically never fails - it coerces. `I cannot classify this` comes
     // back as a JSON *string*, and `{invalid json here}` as `{}`. Neither is a tool call,
@@ -856,20 +911,27 @@ fn parse_lenient_json(raw: &str) -> Option<serde_json::Value> {
     //     `{invalid json here}` case - accepting it would invent an argument-less call the
     //     model never made, and silently, which is worse than dropping it.
     let obj = parsed.as_object()?;
-    let braces_were_empty =
-        raw.trim().trim_start_matches('{').trim_end_matches('}').trim().is_empty();
+    let braces_were_empty = raw
+        .trim()
+        .trim_start_matches('{')
+        .trim_end_matches('}')
+        .trim()
+        .is_empty();
     if obj.is_empty() && !braces_were_empty {
-        tracing::debug!(raw_len = raw.len(), "model JSON salvaged nothing; not a tool call");
+        tracing::debug!(
+            raw_len = raw.len(),
+            "model JSON salvaged nothing; not a tool call"
+        );
         return None;
     }
-    tracing::debug!(raw_len = raw.len(), "repaired model JSON that serde_json refused");
+    tracing::debug!(
+        raw_len = raw.len(),
+        "repaired model JSON that serde_json refused"
+    );
     Some(parsed)
 }
 
-fn try_extract_tool_calls_from_text(
-    text: &str,
-    tool_names: &[&str],
-) -> Vec<ExtractedToolCall> {
+fn try_extract_tool_calls_from_text(text: &str, tool_names: &[&str]) -> Vec<ExtractedToolCall> {
     let mut results = Vec::new();
 
     for &name in tool_names {
@@ -951,9 +1013,7 @@ fn try_extract_tool_calls_from_text(
     results
 }
 
-pub fn extract_text_from_choice(
-    contents: &[AssistantContent],
-) -> Result<String, InferenceError> {
+pub fn extract_text_from_choice(contents: &[AssistantContent]) -> Result<String, InferenceError> {
     let mut text_parts = Vec::new();
 
     for item in contents {
@@ -980,7 +1040,10 @@ mod tests {
     fn openai_model(api: OpenAiApi, params: OpenAICompatParams) -> ModelRef {
         ModelRef {
             model_id: "test-model".to_string(),
-            provider: ProviderModel::OpenAI { api: Some(api), params },
+            provider: ProviderModel::OpenAI {
+                api: Some(api),
+                params,
+            },
         }
     }
 
@@ -991,7 +1054,10 @@ mod tests {
             top_p: Some(0.5),
             ..Default::default()
         };
-        assert_eq!(serialize_params(&params), Some(serde_json::json!({"top_p": 0.5})));
+        assert_eq!(
+            serialize_params(&params),
+            Some(serde_json::json!({"top_p": 0.5}))
+        );
     }
 
     #[test]
@@ -1004,8 +1070,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        let params = request_params(&model, Some(456), None, Some(super::super::hooks::openai))
-            .unwrap();
+        let params =
+            request_params(&model, Some(456), None, Some(super::super::hooks::openai)).unwrap();
         assert_eq!(params.max_tokens, None);
         assert_eq!(
             params.additional_params,
@@ -1115,7 +1181,11 @@ mod tests {
     fn extract_tolerates_a_brace_inside_a_string_value() {
         let text = r#"mytool {"note": "use } carefully", "key": "value"}"#;
         let results = try_extract_tool_calls_from_text(text, &["mytool"]);
-        assert_eq!(results.len(), 1, "the call must not be dropped: {results:?}");
+        assert_eq!(
+            results.len(),
+            1,
+            "the call must not be dropped: {results:?}"
+        );
         assert_eq!(
             results[0].arguments,
             serde_json::json!({"note": "use } carefully", "key": "value"})
@@ -1128,7 +1198,11 @@ mod tests {
     fn extract_tolerates_an_escaped_quote_before_a_brace() {
         let text = r#"mytool {"q": "a \" then }", "k": 1}"#;
         let results = try_extract_tool_calls_from_text(text, &["mytool"]);
-        assert_eq!(results.len(), 1, "the call must not be dropped: {results:?}");
+        assert_eq!(
+            results.len(),
+            1,
+            "the call must not be dropped: {results:?}"
+        );
     }
 
     /// Repair must not become invention. The pass coerces rather than fails, so these are
@@ -1148,17 +1222,20 @@ mod tests {
     #[test]
     fn valid_json_is_parsed_strictly_and_unchanged() {
         let raw = r#"{"a":1,"b":[{"c":"x"}]}"#;
-        assert_eq!(parse_lenient_json(raw), Some(serde_json::json!({"a":1,"b":[{"c":"x"}]})));
+        assert_eq!(
+            parse_lenient_json(raw),
+            Some(serde_json::json!({"a":1,"b":[{"c":"x"}]}))
+        );
     }
 
     /// The failure modes a model emitting prose tool calls actually produces.
     #[test]
     fn repair_recovers_the_shapes_models_write() {
         for raw in [
-            r#"{"key": "value",}"#,                 // trailing comma
-            r#"{key: "value"}"#,                    // unquoted key
-            r#"{'key': 'value'}"#,                  // single quotes
-            r#"{"key": "value""#,                   // truncated
+            r#"{"key": "value",}"#, // trailing comma
+            r#"{key: "value"}"#,    // unquoted key
+            r#"{'key': 'value'}"#,  // single quotes
+            r#"{"key": "value""#,   // truncated
         ] {
             let got = parse_lenient_json(raw);
             assert_eq!(got, Some(serde_json::json!({"key": "value"})), "raw: {raw}");

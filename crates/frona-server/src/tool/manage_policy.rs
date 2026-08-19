@@ -67,7 +67,9 @@ impl ManagePolicyTool {
         let policy_text = arguments
             .get("policy_text")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::Validation("Missing required parameter: policy_text".into()))?;
+            .ok_or_else(|| {
+                AppError::Validation("Missing required parameter: policy_text".into())
+            })?;
 
         let annotated = prepend_annotations(id, description, policy_text);
 
@@ -126,10 +128,7 @@ impl ManagePolicyTool {
             return Ok(err);
         }
 
-        let existing = self
-            .policy_service
-            .find_by_name(&ctx.user.id, id)
-            .await?;
+        let existing = self.policy_service.find_by_name(&ctx.user.id, id).await?;
 
         let Some(existing) = existing else {
             return Ok(ToolOutput::error(format!(
@@ -142,9 +141,7 @@ impl ManagePolicyTool {
             .and_then(|v| v.as_str())
             .unwrap_or(&existing.description);
 
-        let policy_text = arguments
-            .get("policy_text")
-            .and_then(|v| v.as_str());
+        let policy_text = arguments.get("policy_text").and_then(|v| v.as_str());
 
         let new_text = if let Some(text) = policy_text {
             prepend_annotations(id, description, text)
@@ -203,7 +200,9 @@ impl ManagePolicyTool {
         let mut idx = 1;
 
         if !managed_policies.is_empty() {
-            output.push_str("## Managed policies (server-managed by config — cannot be modified)\n\n");
+            output.push_str(
+                "## Managed policies (server-managed by config — cannot be modified)\n\n",
+            );
             for policy in &managed_policies {
                 let id = policy.id();
                 let description = policy.annotation("description").unwrap_or("");
@@ -241,14 +240,18 @@ impl ManagePolicyTool {
     }
 
     fn handle_schema() -> ToolOutput {
-        ToolOutput::text(include_str!("../../../../resources/policy/frona.cedarschema"))
+        ToolOutput::text(include_str!(
+            "../../../../resources/policy/frona.cedarschema"
+        ))
     }
 
     fn handle_validate(&self, arguments: &Value) -> Result<ToolOutput, AppError> {
         let policy_text = arguments
             .get("policy_text")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::Validation("Missing required parameter: policy_text".into()))?;
+            .ok_or_else(|| {
+                AppError::Validation("Missing required parameter: policy_text".into())
+            })?;
 
         match self.policy_service.validate_policy_text(policy_text) {
             Ok(()) => Ok(ToolOutput::text("Policy syntax is valid.")),

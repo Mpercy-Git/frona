@@ -136,7 +136,9 @@ impl UserGroupService {
     pub async fn create(&self, name: &str, description: &str) -> Result<UserGroup, AppError> {
         Self::validate_name(name)?;
         if self.repo.find_by_name(name).await?.is_some() {
-            return Err(AppError::Validation(format!("group already exists: {name}")));
+            return Err(AppError::Validation(format!(
+                "group already exists: {name}"
+            )));
         }
         let now = Utc::now();
         let group = UserGroup {
@@ -184,9 +186,7 @@ impl UserGroupService {
             )));
         }
         if self.repo.find_by_name(new).await?.is_some() {
-            return Err(AppError::Validation(format!(
-                "group already exists: {new}"
-            )));
+            return Err(AppError::Validation(format!("group already exists: {new}")));
         }
         // Sweep membership in users first so any concurrent reads don't see a dangling name.
         self.db

@@ -42,10 +42,10 @@ mod scope;
 mod search;
 
 pub use core::OntologyCatalogue;
-pub use roots::Roots;
-pub use scope::{OntologyScope, VocabHit};
 #[cfg(test)]
 pub(super) use loading::format_of;
+pub use roots::Roots;
+pub use scope::{OntologyScope, VocabHit};
 
 #[cfg(test)]
 mod tests;

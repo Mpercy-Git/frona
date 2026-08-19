@@ -1,10 +1,10 @@
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use crate::auth::User;
 use crate::auth::UserRepository;
-use crate::core::user_config::{UserConfig, UserConfigPatch};
 use crate::core::error::AppError;
 use crate::core::repository::new_id;
-use crate::auth::User;
+use crate::core::user_config::{UserConfig, UserConfigPatch};
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use struct_patch::Patch;
 
 use super::generic::SurrealRepo;
@@ -125,7 +125,9 @@ impl UserRepository for SurrealRepo<User> {
     async fn find_by_handle(&self, handle: &crate::core::Handle) -> Result<Option<User>, AppError> {
         let mut result = self
             .db()
-            .query(format!("{SELECT_CLAUSE} FROM user WHERE handle = $handle LIMIT 1"))
+            .query(format!(
+                "{SELECT_CLAUSE} FROM user WHERE handle = $handle LIMIT 1"
+            ))
             .bind(("handle", handle.as_ref().to_string()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;

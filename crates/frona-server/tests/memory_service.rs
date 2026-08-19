@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use frona::db::init as db;
-use frona::db::repo::generic::SurrealRepo;
-use frona::db::repo::basic_memory::SurrealMemoryEntryRepo;
-use frona::memory::basic::repository::MemoryEntryRepository;
-use frona::memory::basic::models::{Memory, MemorySourceType};
-use frona::memory::basic::repository::MemoryRepository;
-use frona::memory::basic::BasicMemoryService;
 use frona::agent::prompt::PromptLoader;
+use frona::db::init as db;
+use frona::db::repo::basic_memory::SurrealMemoryEntryRepo;
+use frona::db::repo::generic::SurrealRepo;
+use frona::memory::basic::BasicMemoryService;
+use frona::memory::basic::models::{Memory, MemorySourceType};
+use frona::memory::basic::repository::MemoryEntryRepository;
+use frona::memory::basic::repository::MemoryRepository;
 use frona::tool::AgentTool;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 mod helpers;
 
@@ -94,8 +94,12 @@ async fn test_compact_entries_if_needed_skips_below_threshold() {
     let db = test_db().await;
     let svc = make_memory_service(db.clone());
 
-    svc.store_memory_entry("agent-1", "Short memory 1", None).await.unwrap();
-    svc.store_memory_entry("agent-1", "Short memory 2", None).await.unwrap();
+    svc.store_memory_entry("agent-1", "Short memory 1", None)
+        .await
+        .unwrap();
+    svc.store_memory_entry("agent-1", "Short memory 2", None)
+        .await
+        .unwrap();
 
     // Entries are small (well under 3000 tokens), so compaction should not have been triggered.
     // We verify no Memory record was created since we never called compact_entries_if_needed.
@@ -129,7 +133,11 @@ async fn test_store_user_memory_tool_rejects_a_blank_memory() {
     );
 
     let stored = tool
-        .execute("store_user_memory", serde_json::json!({ "memory": "   " }), &helpers::mock_context())
+        .execute(
+            "store_user_memory",
+            serde_json::json!({ "memory": "   " }),
+            &helpers::mock_context(),
+        )
         .await;
     match stored {
         Err(frona::core::error::AppError::Validation(_)) => {}

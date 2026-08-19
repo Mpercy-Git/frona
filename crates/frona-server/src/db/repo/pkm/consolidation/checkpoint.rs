@@ -1,7 +1,6 @@
 use crate::db::repo::pkm::*;
 
 impl PkmRepo {
-
     /// The user's newest consolidation pass, finished or not. Ids are UUIDv7, so newest
     /// is a plain `ORDER BY id DESC` - no separate clock, and no `updated_at` tiebreak.
     pub async fn latest_consolidation_record(
@@ -36,7 +35,10 @@ impl PkmRepo {
             .map_err(|e| Self::err("open_records", e))?;
         let rows: Vec<String> = q.take(0).map_err(|e| Self::err("open_records_take", e))?;
         let mut seen = std::collections::HashSet::new();
-        Ok(rows.into_iter().filter(|u| seen.insert(u.clone())).collect())
+        Ok(rows
+            .into_iter()
+            .filter(|u| seen.insert(u.clone()))
+            .collect())
     }
 
     /// Write the record - the checkpoint. Upserts by id, so the driver's between-stage
@@ -65,30 +67,36 @@ impl PkmRepo {
         &self,
         record: &KnowledgeConsolidationRecord,
     ) -> Result<(), AppError> {
-        let tx = self.db.clone().begin().await
+        let tx = self
+            .db
+            .clone()
+            .begin()
+            .await
             .map_err(|e| Self::err("complete_consolidation_begin", e))?;
-        if let Err(e) = tx.query(
-            "DELETE knowledge_consolidation_entity WHERE consolidation_id = $cid",
-        )
-        .bind(("cid", record.consolidation_id.clone()))
-        .await
-        .and_then(|response| response.check()) {
+        if let Err(e) = tx
+            .query("DELETE knowledge_consolidation_entity WHERE consolidation_id = $cid")
+            .bind(("cid", record.consolidation_id.clone()))
+            .await
+            .and_then(|response| response.check())
+        {
             let _ = tx.cancel().await;
             return Err(Self::err("complete_consolidation_entities", e));
         }
         let mut record = record.clone();
         record.updated_at = Utc::now();
-        if let Err(e) = tx.query(
-            "UPSERT type::record('knowledge_consolidation_record', $id) CONTENT $record",
-        )
-        .bind(("id", record.id.clone()))
-        .bind(("record", record))
-        .await
-        .and_then(|response| response.check()) {
+        if let Err(e) = tx
+            .query("UPSERT type::record('knowledge_consolidation_record', $id) CONTENT $record")
+            .bind(("id", record.id.clone()))
+            .bind(("record", record))
+            .await
+            .and_then(|response| response.check())
+        {
             let _ = tx.cancel().await;
             return Err(Self::err("complete_consolidation_record", e));
         }
-        tx.commit().await.map_err(|e| Self::err("complete_consolidation_commit", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| Self::err("complete_consolidation_commit", e))?;
         Ok(())
     }
 
@@ -125,6 +133,4 @@ impl PkmRepo {
         }
         Ok(stale.len())
     }
-
-
 }

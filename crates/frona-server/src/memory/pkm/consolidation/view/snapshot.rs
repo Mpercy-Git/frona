@@ -16,7 +16,8 @@ impl EntitySnapshot {
         durable: impl IntoIterator<Item = KnowledgeConsolidationEntity>,
         draft: &EntityDraft,
     ) -> Self {
-        let mut entities: BTreeMap<String, KnowledgeEntity> = durable.into_iter()
+        let mut entities: BTreeMap<String, KnowledgeEntity> = durable
+            .into_iter()
             .filter_map(|entity| entity.effective_entity())
             .map(|entity| {
                 let path = entity.path.clone();

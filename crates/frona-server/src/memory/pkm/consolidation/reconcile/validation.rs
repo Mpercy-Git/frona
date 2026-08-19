@@ -3,17 +3,13 @@ use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
 use crate::core::error::AppError;
+use crate::memory::pkm::consolidation::ReconcilePromotion;
+use crate::memory::pkm::consolidation::classify::{OntologyDeclaration, ProposalSet};
 use crate::memory::pkm::consolidation::context::ConsolidationContext;
-use crate::memory::pkm::consolidation::classify::{
-    OntologyDeclaration, ProposalSet,
-};
-use crate::memory::pkm::consolidation::reconcile::projection::{
-    curie_key, entity_in_pass,
-};
+use crate::memory::pkm::consolidation::reconcile::projection::{curie_key, entity_in_pass};
 use crate::memory::pkm::consolidation::reconcile::{
     EntityVerdict, PromotionSuggestion, RelationInput,
 };
-use crate::memory::pkm::consolidation::ReconcilePromotion;
 use crate::memory::pkm::consolidation::{PromptSpec, comparison_key};
 use crate::memory::pkm::model::{
     AttributeSource, KnowledgeEntity, KnowledgeEntityLink, KnowledgeMemory, RelationType,
@@ -50,18 +46,26 @@ pub(super) fn assertion_provenance_rejections(
     current_page: &str,
 ) -> Vec<String> {
     let active: HashSet<&str> = memories.iter().map(|memory| memory.id.as_str()).collect();
-    let retired: HashSet<&str> = verdict.outdated.iter().map(|item| item.memory.trim())
-        .chain(verdict.relations.iter()
-            .filter(|item| !item.links.is_empty())
-            .map(|item| item.memory.trim()))
+    let retired: HashSet<&str> = verdict
+        .outdated
+        .iter()
+        .map(|item| item.memory.trim())
+        .chain(
+            verdict
+                .relations
+                .iter()
+                .filter(|item| !item.links.is_empty())
+                .map(|item| item.memory.trim()),
+        )
         .collect();
     let mut rejected = Vec::new();
 
     for (property, value) in verdict.attributes.as_object().into_iter().flatten() {
         for value in attribute_values(value) {
-            let source = verdict.attribute_sources.iter().find(|source| {
-                source.property == *property && source.value == *value
-            });
+            let source = verdict
+                .attribute_sources
+                .iter()
+                .find(|source| source.property == *property && source.value == *value);
             match source {
                 None => rejected.push(format!(
                     "Attribute `{property}` value {} has no attribute_sources entry.", value
@@ -94,9 +98,10 @@ pub(super) fn assertion_provenance_rejections(
     }
     for relation in &verdict.entity_relations {
         if relation.source_memory_ids.is_empty()
-            || relation.source_memory_ids.iter().any(|id| {
-                !active.contains(id.trim()) || retired.contains(id.trim())
-            })
+            || relation
+                .source_memory_ids
+                .iter()
+                .any(|id| !active.contains(id.trim()) || retired.contains(id.trim()))
         {
             rejected.push(format!(
                 "Relation `{}` → `{}` must cite only current supporting memory ids.",
@@ -107,7 +112,10 @@ pub(super) fn assertion_provenance_rejections(
 
     for source in existing_attributes {
         if source.source_memory_ids.is_empty()
-            || !source.source_memory_ids.iter().all(|id| retired.contains(id.trim()))
+            || !source
+                .source_memory_ids
+                .iter()
+                .all(|id| retired.contains(id.trim()))
         {
             continue;
         }
@@ -121,7 +129,10 @@ pub(super) fn assertion_provenance_rejections(
     for link in existing_links {
         if link.origin != crate::memory::pkm::model::LinkOrigin::Asserted
             || link.source_memory_ids.is_empty()
-            || !link.source_memory_ids.iter().all(|id| retired.contains(id.trim()))
+            || !link
+                .source_memory_ids
+                .iter()
+                .all(|id| retired.contains(id.trim()))
         {
             continue;
         }
@@ -143,8 +154,14 @@ pub(super) fn merge_explicit_retractions(
     verdict: &EntityVerdict,
 ) -> Vec<(String, String)> {
     for item in &verdict.relation_retractions {
-        let retraction = (item.property.trim().to_string(), item.target.trim().to_string());
-        if !retraction.0.is_empty() && !retraction.1.is_empty() && !retractions.contains(&retraction) {
+        let retraction = (
+            item.property.trim().to_string(),
+            item.target.trim().to_string(),
+        );
+        if !retraction.0.is_empty()
+            && !retraction.1.is_empty()
+            && !retractions.contains(&retraction)
+        {
             retractions.push(retraction);
         }
     }
@@ -168,17 +185,23 @@ pub(super) async fn replacement_retractions(
     let pending = proposals.promotions_for(source_path);
     let mut out = Vec::new();
     for related in &verdict.relations {
-        for replacement in related.links.iter().filter(|l| l.relation == RelationType::Replace) {
+        for replacement in related
+            .links
+            .iter()
+            .filter(|l| l.relation == RelationType::Replace)
+        {
             let was = comparison_key(&replacement.was);
             let now = comparison_key(&replacement.now);
             for promotion in promotions {
                 let (property, new_target) = (&promotion.property, &promotion.target);
-                let Some(new_page) = entity_in_pass(ctx, proposals, new_target).await?
-                else {
+                let Some(new_page) = entity_in_pass(ctx, proposals, new_target).await? else {
                     continue;
                 };
                 let new_matches = comparison_key(&new_page.name) == now
-                    || new_page.aliases.iter().any(|alias| comparison_key(alias) == now);
+                    || new_page
+                        .aliases
+                        .iter()
+                        .any(|alias| comparison_key(alias) == now);
                 if !new_matches {
                     continue;
                 }
@@ -187,23 +210,23 @@ pub(super) async fn replacement_retractions(
                         && link.relation == *property
                         && link.to_entity_path != *new_target
                 }) {
-                    let Some(old_page) = ctx
-                        .view
-                        .entity_by_path(&old_link.to_entity_path)
-                        .await?
+                    let Some(old_page) = ctx.view.entity_by_path(&old_link.to_entity_path).await?
                     else {
                         continue;
                     };
                     let old_matches = comparison_key(&old_page.name) == was
-                        || old_page.aliases.iter().any(|alias| comparison_key(alias) == was);
+                        || old_page
+                            .aliases
+                            .iter()
+                            .any(|alias| comparison_key(alias) == was);
                     let retraction = (property.clone(), old_link.to_entity_path.clone());
                     if old_matches && !out.contains(&retraction) {
                         out.push(retraction);
                     }
                 }
-                for (old_property, _, old_target) in pending.iter().filter(|(_, _, target)| {
-                    target != new_target
-                }) {
+                for (old_property, _, old_target) in
+                    pending.iter().filter(|(_, _, target)| target != new_target)
+                {
                     if old_property != property {
                         continue;
                     }
@@ -211,7 +234,10 @@ pub(super) async fn replacement_retractions(
                         continue;
                     };
                     let old_matches = comparison_key(&old_page.name) == was
-                        || old_page.aliases.iter().any(|alias| comparison_key(alias) == was);
+                        || old_page
+                            .aliases
+                            .iter()
+                            .any(|alias| comparison_key(alias) == was);
                     let retraction = (property.clone(), old_target.clone());
                     if old_matches && !out.contains(&retraction) {
                         out.push(retraction);
@@ -229,7 +255,9 @@ pub(super) async fn replacement_retractions(
     for promotion in promotions {
         let (property, new_target) = (&promotion.property, &promotion.target);
         for outdated in &verdict.outdated {
-            let Some(memory) = memories.iter().find(|memory| memory.id == outdated.memory.trim())
+            let Some(memory) = memories
+                .iter()
+                .find(|memory| memory.id == outdated.memory.trim())
             else {
                 continue;
             };
@@ -239,10 +267,7 @@ pub(super) async fn replacement_retractions(
                     && link.relation == *property
                     && link.to_entity_path != *new_target
             }) {
-                let Some(old_page) = ctx
-                    .view
-                    .entity_by_path(&old_link.to_entity_path)
-                    .await?
+                let Some(old_page) = ctx.view.entity_by_path(&old_link.to_entity_path).await?
                 else {
                     continue;
                 };
@@ -259,7 +284,9 @@ pub(super) async fn replacement_retractions(
 
 pub(super) fn memory_names_entity(content: &str, name: &str, aliases: &HashSet<String>) -> bool {
     content.contains(&comparison_key(name))
-        || aliases.iter().any(|alias| content.contains(&comparison_key(alias)))
+        || aliases
+            .iter()
+            .any(|alias| content.contains(&comparison_key(alias)))
 }
 
 /// Whether a `replace` is one the entries actually support.
@@ -286,7 +313,12 @@ pub(super) fn replace_is_supported(
     if was.is_empty() || now.is_empty() || was == now {
         return false;
     }
-    let content = |id: &str| memories.iter().find(|m| m.id == id).map(|m| comparison_key(&m.content));
+    let content = |id: &str| {
+        memories
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| comparison_key(&m.content))
+    };
     let (Some(older), Some(newer)) = (content(older_id), content(newer_id)) else {
         return false;
     };
@@ -324,7 +356,8 @@ pub(super) fn promotion_suggestions(
     entities: &[KnowledgeEntity],
     links: &[KnowledgeEntityLink],
 ) -> Vec<PromotionSuggestion> {
-    let linked_paths: HashSet<&str> = links.iter()
+    let linked_paths: HashSet<&str> = links
+        .iter()
         .filter(|link| link.from_entity_path == source_path)
         .map(|link| link.to_entity_path.as_str())
         .collect();
@@ -349,18 +382,16 @@ pub(super) fn promotion_suggestions(
     for (attribute, value) in attributes {
         let values: Vec<&str> = match value {
             serde_json::Value::String(s) => vec![s.as_str()],
-            serde_json::Value::Array(items) => items
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .collect(),
+            serde_json::Value::Array(items) => {
+                items.iter().filter_map(serde_json::Value::as_str).collect()
+            }
             _ => Vec::new(),
         };
         for value in values {
             let value_key = comparison_key(value);
             if value_key.is_empty()
                 || already_linked_values.contains(&value_key)
-                || already_decided
-                    .contains(&(comparison_key(attribute), value_key.clone()))
+                || already_decided.contains(&(comparison_key(attribute), value_key.clone()))
             {
                 continue;
             }
@@ -368,7 +399,10 @@ pub(super) fn promotion_suggestions(
             let mut candidates = Vec::new();
             for entity in entities {
                 let exact = comparison_key(&entity.name) == value_key
-                    || entity.aliases.iter().any(|a| comparison_key(a) == value_key)
+                    || entity
+                        .aliases
+                        .iter()
+                        .any(|a| comparison_key(a) == value_key)
                     || normal_path.as_ref().is_some_and(|p| p == &entity.path);
                 if exact {
                     candidates.push((entity.path.clone(), entity.name.clone()));
@@ -402,10 +436,7 @@ pub(super) fn render_promotion_suggestions(
             block.push_str(&format!("  - `{path}` — {name}\n"));
         }
     }
-    PromptSpec::RECONCILE.advisory(
-        ctx.llm.prompts(),
-        &[("suggestions", &block)],
-    )
+    PromptSpec::RECONCILE.advisory(ctx.llm.prompts(), &[("suggestions", &block)])
 }
 
 pub(super) struct RelationPromotionValidation<'a> {
@@ -438,15 +469,23 @@ pub(super) async fn relation_promotion_rejections(
             relation.value.trim(),
             relation.target.trim(),
         );
-        let cited = memories.iter()
-            .filter(|memory| relation.source_memory_ids.iter().any(|id| id.trim() == memory.id))
+        let cited = memories
+            .iter()
+            .filter(|memory| {
+                relation
+                    .source_memory_ids
+                    .iter()
+                    .any(|id| id.trim() == memory.id)
+            })
             .collect::<Vec<_>>();
         let memory_context = if cited.is_empty() {
             "(no current cited memory was found)".to_string()
         } else {
-            cited.iter().map(|memory| {
-                format!("{}: {}", memory.id, memory.content.trim())
-            }).collect::<Vec<_>>().join(" | ")
+            cited
+                .iter()
+                .map(|memory| format!("{}: {}", memory.id, memory.content.trim()))
+                .collect::<Vec<_>>()
+                .join(" | ")
         };
         let context = |rule: &str, target_identity: &str| {
             format!(
@@ -456,11 +495,17 @@ pub(super) async fn relation_promotion_rejections(
             )
         };
         let semantic_key = comparison_key(attribute.rsplit(':').next().unwrap_or(attribute));
-        if let Some((_, held_property, _)) = existing.iter().find(|(held_key, held_property, held_target)| {
-            held_target == target
-                && comparison_key(held_key.rsplit(':').next().unwrap_or(held_key)) == semantic_key
-                && prefixes.expand(held_property) != prefixes.expand(relation.property.trim())
-        }) {
+        if let Some((_, held_property, _)) =
+            existing
+                .iter()
+                .find(|(held_key, held_property, held_target)| {
+                    held_target == target
+                        && comparison_key(held_key.rsplit(':').next().unwrap_or(held_key))
+                            == semantic_key
+                        && prefixes.expand(held_property)
+                            != prefixes.expand(relation.property.trim())
+                })
+        {
             out.push(context(
                 "pending_relation_is_authoritative",
                 &format!(
@@ -477,7 +522,10 @@ pub(super) async fn relation_promotion_rejections(
             continue;
         }
         let value_key = comparison_key(value);
-        if !cited.iter().any(|memory| comparison_key(&memory.content).contains(&value_key)) {
+        if !cited
+            .iter()
+            .any(|memory| comparison_key(&memory.content).contains(&value_key))
+        {
             out.push(context(
                 "value_supported_by_cited_memory",
                 "not evaluated because the cited memory did not contain the proposed value",
@@ -496,25 +544,29 @@ pub(super) async fn relation_promotion_rejections(
             entity.name, entity.aliases, entity.path,
         );
         let exact = comparison_key(&entity.name) == value_key
-            || entity.aliases.iter().any(|alias| comparison_key(alias) == value_key)
+            || entity
+                .aliases
+                .iter()
+                .any(|alias| comparison_key(alias) == value_key)
             || normalize_path(value).is_some_and(|path| path == entity.path);
         if !exact {
-            out.push(context("value_resolves_to_target_identity", &target_identity));
+            out.push(context(
+                "value_resolves_to_target_identity",
+                &target_identity,
+            ));
             continue;
         }
-        let property = match prefixes.repair_term(
-            relation.property.trim(),
-            TermKind::Property,
-        ) {
+        let property = match prefixes.repair_term(relation.property.trim(), TermKind::Property) {
             Ok(property) => property,
             Err(_) => {
                 out.push(context("valid_object_property", &target_identity));
                 continue;
             }
         };
-        if known_data_properties.iter().any(|known| {
-            prefixes.expand(known) == prefixes.expand(&property)
-        }) {
+        if known_data_properties
+            .iter()
+            .any(|known| prefixes.expand(known) == prefixes.expand(&property))
+        {
             out.push(context("property_is_not_a_data_property", &target_identity));
         }
     }
@@ -567,7 +619,10 @@ pub(super) async fn accepted_promotions(
             continue;
         };
         let exact = comparison_key(&entity.name) == value_key
-            || entity.aliases.iter().any(|a| comparison_key(a) == value_key)
+            || entity
+                .aliases
+                .iter()
+                .any(|a| comparison_key(a) == value_key)
             || normalize_path(value).is_some_and(|p| p == entity.path);
         if !exact {
             warn!(
@@ -609,9 +664,7 @@ pub(super) async fn accepted_promotions(
             continue;
         }
         let stored_key = curie_key(attribute, prefixes);
-        let semantic_key = |key: &str| {
-            comparison_key(key.rsplit(':').next().unwrap_or(key))
-        };
+        let semantic_key = |key: &str| comparison_key(key.rsplit(':').next().unwrap_or(key));
         if existing.iter().any(|(held_key, _, held_target)| {
             held_target == target && semantic_key(held_key) == semantic_key(&stored_key)
         }) {
@@ -624,8 +677,12 @@ pub(super) async fn accepted_promotions(
             );
         }
         if seen.insert((stored_key.clone(), property.clone(), target.to_string())) {
-            let declaration = verdict.declarations.iter()
-                .find(|declaration| prefixes.expand(declaration.term()) == prefixes.expand(&property))
+            let declaration = verdict
+                .declarations
+                .iter()
+                .find(|declaration| {
+                    prefixes.expand(declaration.term()) == prefixes.expand(&property)
+                })
                 .and_then(|declaration| serde_json::to_value(declaration).ok());
             out.push(ReconcilePromotion {
                 key: stored_key,
@@ -653,26 +710,31 @@ pub(super) fn reconcile_declaration_rejections(
             out.push("- an ontology declaration has an empty term".into());
         } else if declaration.description().is_empty() {
             out.push(format!("- `{term}` needs a semantic description"));
-        } else if declarations.insert(prefixes.expand(term), declaration).is_some() {
+        } else if declarations
+            .insert(prefixes.expand(term), declaration)
+            .is_some()
+        {
             out.push(format!("- `{term}` is declared more than once"));
         }
     }
     for relation in &verdict.entity_relations {
-        let Ok(property) = prefixes.repair_term(relation.property.trim(), TermKind::Property) else {
+        let Ok(property) = prefixes.repair_term(relation.property.trim(), TermKind::Property)
+        else {
             continue;
         };
-        if known_data_properties.iter().any(|held| {
-            prefixes.expand(held) == prefixes.expand(&property)
-        }) {
+        if known_data_properties
+            .iter()
+            .any(|held| prefixes.expand(held) == prefixes.expand(&property))
+        {
             out.push(format!(
                 "- relation `{property}` is already a data property and cannot point to an entity"
             ));
             continue;
         }
         if !prefixes.expand(&property).starts_with("urn:frona:")
-            || known_object_properties.iter().any(|held| {
-                prefixes.expand(held) == prefixes.expand(&property)
-            })
+            || known_object_properties
+                .iter()
+                .any(|held| prefixes.expand(held) == prefixes.expand(&property))
         {
             continue;
         }
@@ -686,18 +748,19 @@ pub(super) fn reconcile_declaration_rejections(
     if let Some(attributes) = verdict.attributes.as_object() {
         for key in attributes.keys() {
             let property = curie_key(key, prefixes);
-            if known_object_properties.iter().any(|held| {
-                prefixes.expand(held) == prefixes.expand(&property)
-            }) {
+            if known_object_properties
+                .iter()
+                .any(|held| prefixes.expand(held) == prefixes.expand(&property))
+            {
                 out.push(format!(
                     "- attribute `{property}` is already an object property and cannot hold a literal"
                 ));
                 continue;
             }
             if !prefixes.expand(&property).starts_with("urn:frona:")
-                || known_data_properties.iter().any(|held| {
-                    prefixes.expand(held) == prefixes.expand(&property)
-                })
+                || known_data_properties
+                    .iter()
+                    .any(|held| prefixes.expand(held) == prefixes.expand(&property))
             {
                 continue;
             }

@@ -26,9 +26,9 @@ use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::DefaultConversationBuilder;
 use frona::inference::registry::ModelProviderRegistry;
 use frona::storage::StorageService;
-use helpers::{test_model_group, MockModelProvider};
-use surrealdb::engine::local::{Db, Mem};
+use helpers::{MockModelProvider, test_model_group};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 fn workspace_resources() -> PathBuf {
     // Walk up from the test binary's CWD until we find a sibling `resources/prompts`.
@@ -114,8 +114,8 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.user_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
-            state.presign_service.clone(),
-            state.usage_service.clone(),
+        state.presign_service.clone(),
+        state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
     // Rebuild Harness so it sees the new chat_service with the mock registry.
@@ -125,7 +125,8 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.storage_service.clone(),
         state.agent_service.clone(),
         helpers::test_memory_service(&state, &db),
-        state.skill_service.clone(),        state.task_service.clone(),
+        state.skill_service.clone(),
+        state.task_service.clone(),
         state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
@@ -137,7 +138,9 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.config.clone(),
         state.usage_service.clone(),
     ));
-    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
+        state.harness.clone(),
+    ));
 
     state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await.unwrap();
@@ -187,10 +190,7 @@ async fn seed_user_and_agent(state: &AppState) {
         .await;
 }
 
-async fn build_session_for_chat(
-    state: &AppState,
-    chat_id: &str,
-) -> ChatSessionContext {
+async fn build_session_for_chat(state: &AppState, chat_id: &str) -> ChatSessionContext {
     let chat = state
         .chat_service
         .find_chat(chat_id)
@@ -202,9 +202,15 @@ async fn build_session_for_chat(
         storage_service: state.storage_service.clone(),
         agent_service: state.agent_service.clone(),
     });
-    ChatSessionContext::build(&state.harness, "user-1", chat, CancellationToken::new(), builder)
-        .await
-        .expect("session builds")
+    ChatSessionContext::build(
+        &state.harness,
+        "user-1",
+        chat,
+        CancellationToken::new(),
+        builder,
+    )
+    .await
+    .expect("session builds")
 }
 
 fn registry_has_tool(session: &ChatSessionContext, tool_id: &str) -> bool {
@@ -271,7 +277,9 @@ async fn send_message_filtered_in_task_chat() {
         title: "Send reminder".into(),
         description: "Send a friendly reminder to drink water.".into(),
         status: TaskStatus::InProgress,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,

@@ -1,8 +1,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::core::error::AppError;
-use crate::memory::pkm::ontology::catalogue::OntologyCatalogue;
 use crate::memory::pkm::ontology::OntologyManager;
+use crate::memory::pkm::ontology::catalogue::OntologyCatalogue;
 use crate::memory::pkm::ontology::prefixes::{KB_NAMESPACE, PrefixMap};
 use crate::memory::pkm::ontology::schema::{self, SchemaEdit};
 
@@ -43,46 +43,61 @@ impl OntologySchemaView {
             values.into_iter().collect::<Vec<_>>()
         };
         let direct_parents = merged(
-            base.as_ref().map(|term| term.direct_parents.clone()).unwrap_or_default(),
+            base.as_ref()
+                .map(|term| term.direct_parents.clone())
+                .unwrap_or_default(),
             local.map(|term| &term.direct_parents),
         );
         let mut direct_children = merged(
-            base.as_ref().map(|term| term.direct_children.clone()).unwrap_or_default(),
+            base.as_ref()
+                .map(|term| term.direct_children.clone())
+                .unwrap_or_default(),
             local.map(|term| &term.direct_children),
         );
         let children_truncated = base.as_ref().is_some_and(|term| term.children_truncated)
             || direct_children.len() > CHILD_LIMIT;
         direct_children.truncate(CHILD_LIMIT);
         let equivalents = merged(
-            base.as_ref().map(|term| term.equivalents.clone()).unwrap_or_default(),
+            base.as_ref()
+                .map(|term| term.equivalents.clone())
+                .unwrap_or_default(),
             local.map(|term| &term.equivalents),
         );
         let disjoint_with = merged(
-            base.as_ref().map(|term| term.disjoint_with.clone()).unwrap_or_default(),
+            base.as_ref()
+                .map(|term| term.disjoint_with.clone())
+                .unwrap_or_default(),
             local.map(|term| &term.disjoint_with),
         );
         let domain = merged(
-            base.as_ref().map(|term| term.domain.clone()).unwrap_or_default(),
+            base.as_ref()
+                .map(|term| term.domain.clone())
+                .unwrap_or_default(),
             local.map(|term| &term.domain),
         );
         let range = merged(
-            base.as_ref().map(|term| term.range.clone()).unwrap_or_default(),
+            base.as_ref()
+                .map(|term| term.range.clone())
+                .unwrap_or_default(),
             local.map(|term| &term.range),
         );
         let inverse = merged(
-            base.as_ref().map(|term| term.inverse.clone()).unwrap_or_default(),
+            base.as_ref()
+                .map(|term| term.inverse.clone())
+                .unwrap_or_default(),
             local.map(|term| &term.inverse),
         );
         let kind = local
             .and_then(|term| term.kind.clone())
             .or_else(|| base.as_ref().map(|term| term.kind.clone()));
-        let property = kind.as_deref().filter(|kind| *kind != "class").map(|_| {
-            OntologyPropertyInspection {
-                domain: domain.iter().map(|value| compact(value)).collect(),
-                range: range.iter().map(|value| compact(value)).collect(),
-                inverse: inverse.iter().map(|value| compact(value)).collect(),
-            }
-        });
+        let property =
+            kind.as_deref()
+                .filter(|kind| *kind != "class")
+                .map(|_| OntologyPropertyInspection {
+                    domain: domain.iter().map(|value| compact(value)).collect(),
+                    range: range.iter().map(|value| compact(value)).collect(),
+                    inverse: inverse.iter().map(|value| compact(value)).collect(),
+                });
         OntologyTermInspection {
             term: compact(iri),
             exists,
@@ -100,7 +115,11 @@ impl OntologySchemaView {
             },
             user_relevance: self.relevance(iri, active).to_string(),
             direct_parents: direct_parents.iter().map(|value| compact(value)).collect(),
-            ancestors: self.ancestors(iri).iter().map(|value| compact(value)).collect(),
+            ancestors: self
+                .ancestors(iri)
+                .iter()
+                .map(|value| compact(value))
+                .collect(),
             direct_children: direct_children.iter().map(|value| compact(value)).collect(),
             children_truncated,
             equivalents: equivalents.iter().map(|value| compact(value)).collect(),
@@ -128,8 +147,11 @@ impl OntologySchemaView {
     }
 
     fn ancestors(&self, iri: &str) -> BTreeSet<String> {
-        let mut ancestors =
-            walk_ancestors(iri, |term| self.parents(term), |term| self.equivalents(term));
+        let mut ancestors = walk_ancestors(
+            iri,
+            |term| self.parents(term),
+            |term| self.equivalents(term),
+        );
         let mut equivalent_queue = self.equivalents(iri);
         let mut equivalents = HashSet::new();
         while let Some(equivalent) = equivalent_queue.pop() {
@@ -313,7 +335,10 @@ impl OntologyManager {
             .iter()
             .map(|term| view.catalogue.prefixes().expand(term))
             .collect();
-        let inspections = expanded.iter().map(|term| view.term(term, active_terms)).collect();
+        let inspections = expanded
+            .iter()
+            .map(|term| view.term(term, active_terms))
+            .collect();
         let mut relations = Vec::new();
         for (index, a) in expanded.iter().enumerate() {
             for b in &expanded[index + 1..] {
@@ -354,7 +379,10 @@ impl OntologyManager {
                 .term(&iri, 0)
                 .and_then(|term| term.source)
                 .unwrap_or_else(|| "catalogue".to_string());
-            candidates.insert(iri, (rank, brevity, hit.kind.to_string(), source, hit.label));
+            candidates.insert(
+                iri,
+                (rank, brevity, hit.kind.to_string(), source, hit.label),
+            );
         }
         for iri in active_terms.iter().chain(view.overlay.terms.keys()) {
             let base = view.catalogue.term(iri, 0);
@@ -373,7 +401,8 @@ impl OntologyManager {
             let origin = if local.and_then(|term| term.kind.as_ref()).is_some() {
                 "user".to_string()
             } else {
-                base.and_then(|term| term.source).unwrap_or_else(|| "catalogue".to_string())
+                base.and_then(|term| term.source)
+                    .unwrap_or_else(|| "catalogue".to_string())
             };
             candidates.insert(iri.clone(), (rank, brevity, kind, origin, label));
         }
@@ -426,7 +455,10 @@ impl OntologyManager {
             .await?
             .iter()
             .filter(|entity| {
-                entity.kinds.iter().any(|kind| prefixes.expand(kind) == target)
+                entity
+                    .kinds
+                    .iter()
+                    .any(|kind| prefixes.expand(kind) == target)
             })
             .count();
         let link_count = self

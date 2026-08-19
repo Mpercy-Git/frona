@@ -10,18 +10,16 @@ use crate::memory::pkm::consolidation::Verdict;
 use crate::memory::pkm::consolidation::context::ConsolidationContext;
 use crate::memory::pkm::consolidation::evidence::SearchToolEvidenceTool;
 use crate::memory::pkm::consolidation::ingest::cleanup::{
-    candidate_attribute_map, remove_multi_entity_candidate_attributes,
-    terminal_cleanup_with_recall,
+    candidate_attribute_map, remove_multi_entity_candidate_attributes, terminal_cleanup_with_recall,
 };
 use crate::memory::pkm::consolidation::ingest::correction::{
     AgentEvidenceMetrics, GroundingCorrectionState, agent_contribution_count,
-    apply_allowed_revision, canonical_failure_state, contribution_count,
-    correction_memory_ids, count_tool_supports, render_memory_evidence,
-    validate_entity_revision_identity,
+    apply_allowed_revision, canonical_failure_state, contribution_count, correction_memory_ids,
+    count_tool_supports, render_memory_evidence, validate_entity_revision_identity,
 };
 use crate::memory::pkm::consolidation::ingest::evidence::{
-    batch_without_failed_contributions, candidate_attribute_evidence, resolve_evidence,
-    resolve_evidence_with_tools, is_agent_evidence_failure,
+    batch_without_failed_contributions, candidate_attribute_evidence, is_agent_evidence_failure,
+    resolve_evidence, resolve_evidence_with_tools,
 };
 use crate::memory::pkm::consolidation::ingest::submission::Batch;
 use crate::memory::pkm::consolidation::ingest::temporal::{
@@ -91,23 +89,40 @@ impl Ingest {
         system: String,
         input: String,
     ) -> Result<(Batch, usize, usize, usize, AgentEvidenceMetrics), AppError> {
-        let transcript_turns = self.ctx.scope.evidence_sources.iter().filter(|source| matches!(
-            source.kind,
-            TranscriptEvidenceKind::UserMessage { .. }
-                | TranscriptEvidenceKind::AgentMessage { .. }
-        )).count();
+        let transcript_turns = self
+            .ctx
+            .scope
+            .evidence_sources
+            .iter()
+            .filter(|source| {
+                matches!(
+                    source.kind,
+                    TranscriptEvidenceKind::UserMessage { .. }
+                        | TranscriptEvidenceKind::AgentMessage { .. }
+                )
+            })
+            .count();
         let max_submissions = extraction_submission_limit(transcript_turns);
         let max_tool_turns = max_submissions;
         let recall_lookups = Arc::new(AtomicUsize::new(0));
         let evidence_lookups = Arc::new(AtomicUsize::new(0));
         let searched_messages = Arc::new(Mutex::new(HashSet::new()));
         let erroneous_contents = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let evidence_assertions = self.ctx.scope.evidence_sources.iter().filter_map(|source| {
-            let TranscriptEvidenceKind::AgentMessage { message_id, .. } = &source.kind else { return None };
-            Some((source.handle.clone(), message_id.clone()))
-        }).collect::<HashMap<_, _>>();
+        let evidence_assertions = self
+            .ctx
+            .scope
+            .evidence_sources
+            .iter()
+            .filter_map(|source| {
+                let TranscriptEvidenceKind::AgentMessage { message_id, .. } = &source.kind else {
+                    return None;
+                };
+                Some((source.handle.clone(), message_id.clone()))
+            })
+            .collect::<HashMap<_, _>>();
         let research_messages = Arc::new(research_message_handles(
-            &self.ctx.scope.evidence_sources, &self.ctx.scope.recall.evidence,
+            &self.ctx.scope.evidence_sources,
+            &self.ctx.scope.recall.evidence,
         ));
         let tools: Vec<Arc<dyn AgentTool>> = vec![
             Arc::new(ReadRecallResultTool {
@@ -156,10 +171,18 @@ impl Ingest {
         let searched_ref = &searched_messages;
         let research_ref = research_messages.clone();
         let erroneous_ref = &erroneous_contents;
-        let (no_tool_ref, no_tool_items_ref, strong_ref, fallback_ref, invalid_ref) =
-            (&no_tool_drops, &no_tool_items, &strong_matches, &fallback_reviews, &invalid_submissions);
-        let (citation_ref, additions_ref, splits_ref) =
-            (&citation_repairs, &coverage_memory_additions, &mixed_claim_splits);
+        let (no_tool_ref, no_tool_items_ref, strong_ref, fallback_ref, invalid_ref) = (
+            &no_tool_drops,
+            &no_tool_items,
+            &strong_matches,
+            &fallback_reviews,
+            &invalid_submissions,
+        );
+        let (citation_ref, additions_ref, splits_ref) = (
+            &citation_repairs,
+            &coverage_memory_additions,
+            &mixed_claim_splits,
+        );
         // The transcript is consumed on `Ok`, so a missing first candidate must not let
         // the watermark advance. Hence `?` rather than a fallback.
         let refined = convo
@@ -305,17 +328,19 @@ impl Ingest {
             })
             .await?;
 
-        let mut batch =
-            refined.unwrap_or(Batch {
-                new_entities: Vec::new(),
-                existing_entity_updates: Vec::new(),
-                playbooks: Vec::new(),
-                memories: Vec::new(),
-                research_dispositions: Vec::new(),
-            });
-        let agent_before_cleanup = agent_contribution_count(&batch, &self.ctx.scope.evidence_sources);
+        let mut batch = refined.unwrap_or(Batch {
+            new_entities: Vec::new(),
+            existing_entity_updates: Vec::new(),
+            playbooks: Vec::new(),
+            memories: Vec::new(),
+            research_dispositions: Vec::new(),
+        });
+        let agent_before_cleanup =
+            agent_contribution_count(&batch, &self.ctx.scope.evidence_sources);
         let mut terminal_failures = {
-            let searched = searched_messages.lock().expect("searched evidence messages poisoned");
+            let searched = searched_messages
+                .lock()
+                .expect("searched evidence messages poisoned");
             validate_extract_submission(
                 &mut batch,
                 &self.ctx.scope.evidence_sources,
@@ -326,14 +351,15 @@ impl Ingest {
                 &citation_repairs,
             )
         };
-        terminal_failures.extend(validate_erroneous_memories(
-            &batch,
-            &self.ctx,
-            &erroneous_contents,
-        ).await?);
+        terminal_failures
+            .extend(validate_erroneous_memories(&batch, &self.ctx, &erroneous_contents).await?);
         let has_unreported_terminal_failure = {
-            let reported = reported_failures.lock().expect("reported grounding state poisoned");
-            terminal_failures.iter().any(|failure| !reported.contains(&failure.fingerprint()))
+            let reported = reported_failures
+                .lock()
+                .expect("reported grounding state poisoned");
+            terminal_failures
+                .iter()
+                .any(|failure| !reported.contains(&failure.fingerprint()))
         };
         if has_unreported_terminal_failure {
             return Err(AppError::Internal(
@@ -341,8 +367,11 @@ impl Ingest {
             ));
         }
         let newly_rejected_without_tool = {
-            let mut seen = no_tool_items.lock().expect("no-tool evidence state poisoned");
-            terminal_failures.iter()
+            let mut seen = no_tool_items
+                .lock()
+                .expect("no-tool evidence state poisoned");
+            terminal_failures
+                .iter()
                 .filter(|failure| failure.reason == "agent_claim_without_tool_evidence")
                 .filter(|failure| seen.insert(failure.fingerprint()))
                 .count()
@@ -351,21 +380,39 @@ impl Ingest {
         let before_failed_cleanup = contribution_count(&batch);
         batch = batch_without_failed_contributions(&batch, &terminal_failures);
         let failed_cleanup_drops = before_failed_cleanup.saturating_sub(contribution_count(&batch));
-        let dropped = failed_cleanup_drops + terminal_cleanup_with_recall(
-            &mut batch,
-            &self.ctx.scope.evidence_sources,
-            &self.ctx.scope.recall,
-        );
+        let dropped = failed_cleanup_drops
+            + terminal_cleanup_with_recall(
+                &mut batch,
+                &self.ctx.scope.evidence_sources,
+                &self.ctx.scope.recall,
+            );
         for memory in &batch.memories {
-            let recall_ids = memory.sources.iter().filter_map(|citation| {
-                let source = self.ctx.scope.evidence_sources.iter()
-                    .find(|source| source.handle == citation.message)?;
-                let TranscriptEvidenceKind::AgentMessage { message_id, .. } = &source.kind else {
-                    return None;
-                };
-                Some(self.ctx.scope.recall.result_calls_for_message(message_id).iter()
-                    .map(|call| call.local_id.as_str()).collect::<Vec<_>>())
-            }).flatten().collect::<Vec<_>>();
+            let recall_ids = memory
+                .sources
+                .iter()
+                .filter_map(|citation| {
+                    let source = self
+                        .ctx
+                        .scope
+                        .evidence_sources
+                        .iter()
+                        .find(|source| source.handle == citation.message)?;
+                    let TranscriptEvidenceKind::AgentMessage { message_id, .. } = &source.kind
+                    else {
+                        return None;
+                    };
+                    Some(
+                        self.ctx
+                            .scope
+                            .recall
+                            .result_calls_for_message(message_id)
+                            .iter()
+                            .map(|call| call.local_id.as_str())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .flatten()
+                .collect::<Vec<_>>();
             if !recall_ids.is_empty() {
                 tracing::info!(
                     memory = %memory.content,
@@ -380,10 +427,10 @@ impl Ingest {
         let evidence_terminal_drops = agent_before_cleanup.saturating_sub(
             agent_contribution_count(&batch, &self.ctx.scope.evidence_sources),
         );
-        let mut research_coverage = research_coverage_stats(
-            &batch, &self.ctx.scope.evidence_sources, &research_messages,
-        );
-        research_coverage.memories_added_by_repair = coverage_memory_additions.load(Ordering::Relaxed);
+        let mut research_coverage =
+            research_coverage_stats(&batch, &self.ctx.scope.evidence_sources, &research_messages);
+        research_coverage.memories_added_by_repair =
+            coverage_memory_additions.load(Ordering::Relaxed);
         research_coverage.citation_repairs = citation_repairs.load(Ordering::Relaxed);
         research_coverage.mixed_claim_splits = mixed_claim_splits.load(Ordering::Relaxed);
         Ok((
@@ -413,7 +460,8 @@ impl Ingest {
 
         // Seed the owner's self-entity and pass the owner→path binding so self-facts
         // route there. (This is not resolution - just the reserved owner entity.)
-        let self_path = self.ctx
+        let self_path = self
+            .ctx
             .repo
             .ensure_self_entity(&self.ctx.scope.user_id, &self.ctx.scope.user_name)
             .await
@@ -441,14 +489,20 @@ impl Ingest {
             existing_entities
         };
         let mut research_messages = research_message_handles(
-            &self.ctx.scope.evidence_sources, &self.ctx.scope.recall.evidence,
-        ).into_iter().collect::<Vec<_>>();
+            &self.ctx.scope.evidence_sources,
+            &self.ctx.scope.recall.evidence,
+        )
+        .into_iter()
+        .collect::<Vec<_>>();
         research_messages.sort();
         let research_messages = if research_messages.is_empty() {
             "(none)".to_string()
         } else {
-            research_messages.into_iter().map(|message| format!("- `{message}`"))
-                .collect::<Vec<_>>().join("\n")
+            research_messages
+                .into_iter()
+                .map(|message| format!("- `{message}`"))
+                .collect::<Vec<_>>()
+                .join("\n")
         };
         let rendered = self.ctx.llm.render(
             PromptSpec::INGEST,
@@ -471,7 +525,13 @@ impl Ingest {
         }
 
         // A failure must propagate so the sweep does not advance the watermark.
-        let (mut parsed, grounding_corrections, grounding_items_dropped, recall_result_lookups, agent_evidence) = self
+        let (
+            mut parsed,
+            grounding_corrections,
+            grounding_items_dropped,
+            recall_result_lookups,
+            agent_evidence,
+        ) = self
             .extract_grounded(rendered.system, rendered.input)
             .await?;
         remove_multi_entity_candidate_attributes(&mut parsed);
@@ -525,17 +585,23 @@ impl Ingest {
                 description: entity.description.clone(),
                 aliases: entity.aliases.clone(),
                 identity_evidence: resolve_evidence(
-                    &entity.sources, &self.ctx.scope.evidence_sources,
-                ).unwrap_or_default(),
+                    &entity.sources,
+                    &self.ctx.scope.evidence_sources,
+                )
+                .unwrap_or_default(),
                 attributes: serde_json::Value::Object(attributes),
                 attribute_evidence,
             });
         }
 
-        let existing_paths: HashSet<&str> =
-            existing_pages.iter().map(|entity| entity.path.as_str()).collect();
+        let existing_paths: HashSet<&str> = existing_pages
+            .iter()
+            .map(|entity| entity.path.as_str())
+            .collect();
         for update in &parsed.existing_entity_updates {
-            let Some(path) = normalize_path(&update.path) else { continue };
+            let Some(path) = normalize_path(&update.path) else {
+                continue;
+            };
             if !existing_paths.contains(path.as_str()) {
                 warn!(
                     proposed = %update.path,
@@ -570,10 +636,14 @@ impl Ingest {
             let local = candidate.id.trim();
             let name = candidate.name.trim();
             let description = candidate.description.trim();
-            let path = normalize_path(&candidate.path).ok_or_else(|| AppError::Internal(
-                "extract accepted a playbook candidate with an unusable path".into(),
-            ))?;
-            if local.is_empty() || name.is_empty() || description.is_empty()
+            let path = normalize_path(&candidate.path).ok_or_else(|| {
+                AppError::Internal(
+                    "extract accepted a playbook candidate with an unusable path".into(),
+                )
+            })?;
+            if local.is_empty()
+                || name.is_empty()
+                || description.is_empty()
                 || playbook_by_local.contains_key(local)
             {
                 return Err(AppError::Internal(
@@ -592,9 +662,9 @@ impl Ingest {
         }
 
         for mem in parsed.memories {
-            let kind = MemoryKind::parse(&mem.kind).ok_or_else(|| AppError::Internal(
-                "extract accepted a memory with an invalid kind".into(),
-            ))?;
+            let kind = MemoryKind::parse(&mem.kind).ok_or_else(|| {
+                AppError::Internal("extract accepted a memory with an invalid kind".into())
+            })?;
             let playbook_index = match (kind == MemoryKind::Procedural, mem.playbook.as_deref()) {
                 (true, Some(local)) => playbook_by_local.get(local.trim()).copied(),
                 (true, None) | (false, Some(_)) => None,
@@ -602,7 +672,8 @@ impl Ingest {
             };
             if playbook_index.is_none() {
                 return Err(AppError::Internal(
-                    "extract accepted a memory with an invalid procedural playbook reference".into(),
+                    "extract accepted a memory with an invalid procedural playbook reference"
+                        .into(),
                 ));
             }
             if (kind == MemoryKind::Episodic) != mem.episode.is_some() {
@@ -618,7 +689,10 @@ impl Ingest {
                 resolved_start: None,
                 resolved_end: None,
             });
-            if episode.as_ref().is_some_and(|e| e.duration.is_some() && e.absolute.is_some()) {
+            if episode
+                .as_ref()
+                .is_some_and(|e| e.duration.is_some() && e.absolute.is_some())
+            {
                 return Err(AppError::Internal(
                     "extract accepted an episode with both relative and absolute time".into(),
                 ));
@@ -636,7 +710,11 @@ impl Ingest {
                     "extract accepted a memory with empty content".into(),
                 ));
             }
-            let paths: Vec<String> = mem.entities.iter().filter_map(|p| normalize_path(p)).collect();
+            let paths: Vec<String> = mem
+                .entities
+                .iter()
+                .filter_map(|p| normalize_path(p))
+                .collect();
             if paths.is_empty() {
                 return Err(AppError::Internal(
                     "extract accepted a memory without a usable entity".into(),
@@ -670,10 +748,13 @@ impl Ingest {
                 paths,
             });
             if let Some(index) = playbook_index.filter(|index| *index != usize::MAX) {
-                out.playbook_candidates[index].source_memory_ids.insert(memory_id);
+                out.playbook_candidates[index]
+                    .source_memory_ids
+                    .insert(memory_id);
             }
         }
-        out.playbook_candidates.retain(|candidate| !candidate.source_memory_ids.is_empty());
+        out.playbook_candidates
+            .retain(|candidate| !candidate.source_memory_ids.is_empty());
         Ok(Some(out))
     }
 }

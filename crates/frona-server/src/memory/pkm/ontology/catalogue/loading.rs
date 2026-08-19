@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use frona_ontologies::graph::Graph;
 use frona_ontologies::rdf::{
-    P_ALT_LABEL, P_DISJOINT, P_EQ_CLASS, P_EQ_PROP, P_FIRST, P_REST, P_SUBCLASS,
-    P_SUBPROP, P_TYPE, P_UNION,
+    P_ALT_LABEL, P_DISJOINT, P_EQ_CLASS, P_EQ_PROP, P_FIRST, P_REST, P_SUBCLASS, P_SUBPROP, P_TYPE,
+    P_UNION,
 };
 use oxigraph::io::{RdfFormat, RdfParser};
 use oxrdf::{NamedOrBlankNode, Term};
@@ -18,7 +18,10 @@ pub(super) fn ontology_files(dir: &Path) -> Result<Vec<PathBuf>, AppError> {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => {
-            return Err(AppError::Internal(format!("ontology: read dir {}: {e}", dir.display())));
+            return Err(AppError::Internal(format!(
+                "ontology: read dir {}: {e}",
+                dir.display()
+            )));
         }
     };
     let mut out: Vec<PathBuf> = entries
@@ -44,9 +47,14 @@ pub(crate) fn format_of(path: &Path) -> Option<RdfFormat> {
 
 /// `kbpedia.ttl.gz` → `kbpedia`.
 pub(super) fn source_name(path: &Path) -> String {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let name = name.strip_suffix(".gz").unwrap_or(&name);
-    name.rsplit_once('.').map(|(s, _)| s.to_string()).unwrap_or_else(|| name.to_string())
+    name.rsplit_once('.')
+        .map(|(s, _)| s.to_string())
+        .unwrap_or_else(|| name.to_string())
 }
 
 /// Decompress if needed, and hand the parser a **stream**. Loading into a `Store`
@@ -111,9 +119,8 @@ pub(super) fn scan_file(bytes: &[u8], path: &Path) -> Result<FileScan, AppError>
         Box::new(bytes)
     };
     for q in RdfParser::from_format(fmt).for_reader(reader) {
-        let q = q.map_err(|e| {
-            AppError::Internal(format!("ontology: parse {}: {e}", path.display()))
-        })?;
+        let q =
+            q.map_err(|e| AppError::Internal(format!("ontology: parse {}: {e}", path.display())))?;
         let subject = match &q.subject {
             NamedOrBlankNode::NamedNode(n) => n.as_str(),
             NamedOrBlankNode::BlankNode(b) => {
@@ -130,7 +137,9 @@ pub(super) fn scan_file(bytes: &[u8], path: &Path) -> Result<FileScan, AppError>
             iri.get_or_insert_with(|| subject.to_string());
             continue;
         }
-        let Term::BlankNode(o) = &q.object else { continue };
+        let Term::BlankNode(o) = &q.object else {
+            continue;
+        };
         match q.predicate.as_str() {
             P_SUBCLASS | P_SUBPROP | P_EQ_CLASS | P_EQ_PROP => {
                 offenders.insert(subject.to_string());
@@ -146,5 +155,8 @@ pub(super) fn scan_file(bytes: &[u8], path: &Path) -> Result<FileScan, AppError>
             offenders.insert(subject);
         }
     }
-    Ok(FileScan { iri, anonymous: offenders.into_iter().collect() })
+    Ok(FileScan {
+        iri,
+        anonymous: offenders.into_iter().collect(),
+    })
 }

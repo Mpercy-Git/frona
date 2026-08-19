@@ -1,7 +1,6 @@
 use super::*;
 
 impl PkmRepo {
-
     /// Replace all **inferred** (`origin=Inferred`) entity links for a user with the
     /// reasoner's fresh output. Asserted edges are untouched; inferred edges are
     /// derived, so they are wiped and rewritten wholesale each reasoning pass.
@@ -87,10 +86,13 @@ impl PkmRepo {
 
         // An entity carries several classes, so this is a list per entity rather than one
         // value; flattened below alongside the attribute keys.
-        let kinds: Vec<Vec<String>> = q.take(0).map_err(|e| Self::err("ontology_terms_kinds", e))?;
+        let kinds: Vec<Vec<String>> = q
+            .take(0)
+            .map_err(|e| Self::err("ontology_terms_kinds", e))?;
         let keys: Vec<Vec<String>> = q.take(1).map_err(|e| Self::err("ontology_terms_keys", e))?;
-        let relations: Vec<String> =
-            q.take(2).map_err(|e| Self::err("ontology_terms_relations", e))?;
+        let relations: Vec<String> = q
+            .take(2)
+            .map_err(|e| Self::err("ontology_terms_relations", e))?;
 
         let mut out: Vec<String> = kinds
             .into_iter()
@@ -104,7 +106,10 @@ impl PkmRepo {
         Ok(out)
     }
 
-    pub async fn asserted_links(&self, user_id: &str) -> Result<Vec<KnowledgeEntityLink>, AppError> {
+    pub async fn asserted_links(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<KnowledgeEntityLink>, AppError> {
         let mut q = self
             .db
             .query(format!(
@@ -118,24 +123,36 @@ impl PkmRepo {
     }
 
     /// Complete entity graph for a user, including asserted and reasoner-materialized edges.
-    pub async fn list_entity_links(&self, user_id: &str) -> Result<Vec<KnowledgeEntityLink>, AppError> {
+    pub async fn list_entity_links(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<KnowledgeEntityLink>, AppError> {
         let mut q = self
             .db
-            .query(format!("{SELECT} FROM knowledge_entity_link WHERE user_id = $uid"))
+            .query(format!(
+                "{SELECT} FROM knowledge_entity_link WHERE user_id = $uid"
+            ))
             .bind(("uid", user_id.to_string()))
             .await
             .map_err(|e| Self::err("list_entity_links", e))?;
-        q.take(0).map_err(|e| Self::err("list_entity_links_take", e))
+        q.take(0)
+            .map_err(|e| Self::err("list_entity_links_take", e))
     }
 
-    pub async fn list_entity_sources(&self, user_id: &str) -> Result<Vec<KnowledgeEntitySource>, AppError> {
+    pub async fn list_entity_sources(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<KnowledgeEntitySource>, AppError> {
         let mut q = self
             .db
-            .query(format!("{SELECT} FROM knowledge_entity_source WHERE user_id = $uid"))
+            .query(format!(
+                "{SELECT} FROM knowledge_entity_source WHERE user_id = $uid"
+            ))
             .bind(("uid", user_id.to_string()))
             .await
             .map_err(|e| Self::err("list_entity_sources", e))?;
-        q.take(0).map_err(|e| Self::err("list_entity_sources_take", e))
+        q.take(0)
+            .map_err(|e| Self::err("list_entity_sources_take", e))
     }
 
     /// Outgoing edges from an entity (for frontmatter `[[wikilinks]]`).
@@ -153,7 +170,8 @@ impl PkmRepo {
             .bind(("from", from_entity_path.to_string()))
             .await
             .map_err(|e| Self::err("links_from_entity", e))?;
-        q.take(0).map_err(|e| Self::err("links_from_entity_take", e))
+        q.take(0)
+            .map_err(|e| Self::err("links_from_entity_take", e))
     }
 
     /// Paths of entities that link **to** `to_entity_path` - i.e. whose rendered files contain a
@@ -174,5 +192,4 @@ impl PkmRepo {
             .map_err(|e| Self::err("entities_linking_to", e))?;
         q.take(0).map_err(|e| Self::err("pages_linking_to_take", e))
     }
-
 }

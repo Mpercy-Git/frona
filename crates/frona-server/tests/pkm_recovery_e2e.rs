@@ -34,8 +34,8 @@ use frona::memory::pkm::{ConsolidationStageState, PkmService};
 use frona::storage::StorageService;
 
 use helpers::{
-    MockModelProvider, MockResponse, init_metrics, mark_entity_rendered,
-    seed_reconciled_entity, test_harness, test_model_group, test_registry_with_group,
+    MockModelProvider, MockResponse, init_metrics, mark_entity_rendered, seed_reconciled_entity,
+    test_harness, test_model_group, test_registry_with_group,
 };
 
 const USER: &str = "u1";
@@ -51,7 +51,9 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             encryption_secret: "test-secret".to_string(),
             ..Default::default()
         },
-        database: DatabaseConfig { path: format!("{base}/db") },
+        database: DatabaseConfig {
+            path: format!("{base}/db"),
+        },
         storage: StorageConfig {
             data_dir: format!("{base}/data"),
             shared_config_dir: format!("{base}/config"),
@@ -98,8 +100,14 @@ impl Ctx {
     /// production behaviour, and the reason the failure tests cannot inject through it.
     /// Calling `consolidate` is what production does once past that gate, so this exercises
     /// the record lifecycle without pretending the gate isn't there.
-    async fn consolidate(&self) -> Result<frona::memory::pkm::ConsolidationStats, frona::core::error::AppError> {
-        let vault = self.pkm.storage().vault_scope(frona::handle!("testuser"), "Memory").unwrap();
+    async fn consolidate(
+        &self,
+    ) -> Result<frona::memory::pkm::ConsolidationStats, frona::core::error::AppError> {
+        let vault = self
+            .pkm
+            .storage()
+            .vault_scope(frona::handle!("testuser"), "Memory")
+            .unwrap();
         let scope = frona::memory::pkm::ConsolidationScope {
             user_id: USER.into(),
             user_name: "Test User".into(),
@@ -119,7 +127,11 @@ impl Ctx {
 /// Classify stage fails outright rather than per page - the only clean way to make a
 /// *stage* (not an item) fail, since every stage deliberately swallows a single item's
 /// model error.
-async fn setup(mock: Arc<MockModelProvider>, memory_config: MemoryConfig, broken_ontology: bool) -> Ctx {
+async fn setup(
+    mock: Arc<MockModelProvider>,
+    memory_config: MemoryConfig,
+    broken_ontology: bool,
+) -> Ctx {
     init_metrics();
     let db: Surreal<Db> = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
@@ -188,7 +200,13 @@ async fn setup(mock: Arc<MockModelProvider>, memory_config: MemoryConfig, broken
     );
     let harness = test_harness(&db, &config, mock.clone());
     seed_agent(&db).await;
-    Ctx { _tmp: tmp, db, state, pkm, harness }
+    Ctx {
+        _tmp: tmp,
+        db,
+        state,
+        pkm,
+        harness,
+    }
 }
 
 async fn seed_agent(db: &Surreal<Db>) {
@@ -231,7 +249,10 @@ async fn seed_chat(db: &Surreal<Db>) -> Chat {
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
-    SurrealRepo::<Chat>::new(db.clone()).create(&chat).await.unwrap();
+    SurrealRepo::<Chat>::new(db.clone())
+        .create(&chat)
+        .await
+        .unwrap();
     chat
 }
 
@@ -257,7 +278,9 @@ async fn add_agent_message(db: &Surreal<Db>, chat_id: &str, content: &str) {
     message.created_at = Utc::now() - Duration::minutes(120);
     message.status = Some(MessageStatus::Completed);
     frona::db::repo::messages::SurrealMessageRepo::new(db.clone())
-        .create(&message).await.unwrap();
+        .create(&message)
+        .await
+        .unwrap();
 }
 
 async fn seed_dirty_page(repo: &PkmRepo) {
@@ -319,12 +342,28 @@ fn page_responses(name: &str, fact: &str, classify_entitys: usize) -> Vec<MockRe
     });
     let reconcile: Value = json!({"relations": [], "outdated": [], "attributes": {}, "description": "svc", "moves": []});
 
-    let mut out = vec![MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)])];
+    let mut out = vec![MockResponse::ToolCalls(vec![(
+        "e".into(),
+        "submit".into(),
+        extract,
+    )])];
     for i in 0..classify_entitys {
-        let response = if i == 0 { classify_self.clone() } else { classify.clone() };
-        out.push(MockResponse::ToolCalls(vec![(format!("k{i}"), "submit".into(), response)]));
+        let response = if i == 0 {
+            classify_self.clone()
+        } else {
+            classify.clone()
+        };
+        out.push(MockResponse::ToolCalls(vec![(
+            format!("k{i}"),
+            "submit".into(),
+            response,
+        )]));
     }
-    out.push(MockResponse::ToolCalls(vec![("r".into(), "submit".into(), reconcile)]));
+    out.push(MockResponse::ToolCalls(vec![(
+        "r".into(),
+        "submit".into(),
+        reconcile,
+    )]));
     out.push(MockResponse::Text(format!("{name} details.")));
     out
 }
@@ -376,39 +415,62 @@ async fn procedural_memory_resolves_and_authors_a_playbook_end_to_end() {
     ]));
     let ctx = setup(mock.clone(), MemoryConfig::default(), false).await;
     let chat = seed_chat(&ctx.db).await;
-    add_agent_message(&ctx.db, &chat.id, "Run pg_ctl restart to restart Postgres safely").await;
+    add_agent_message(
+        &ctx.db,
+        &chat.id,
+        "Run pg_ctl restart to restart Postgres safely",
+    )
+    .await;
     add_message(&ctx.db, &chat.id, "Please remember that procedure.").await;
 
     ctx.sweep().await;
 
     let repo = ctx.repo();
-    let page = repo.entity_by_path(USER, "playbooks/restart-postgres").await.unwrap();
+    let page = repo
+        .entity_by_path(USER, "playbooks/restart-postgres")
+        .await
+        .unwrap();
     let record = ctx.record().await;
     let pages = repo.list_entities(USER).await.unwrap();
     let page = page.unwrap_or_else(|| panic!(
         "Resolve did not materialize the Playbook; record={record:?} pages={pages:?}; histories={:?}",
         mock.histories(),
     ));
-    assert_eq!(page.category, frona::memory::pkm::model::EntityCategory::Playbook);
+    assert_eq!(
+        page.category,
+        frona::memory::pkm::model::EntityCategory::Playbook
+    );
     assert!(page.body.contains("pg_ctl restart"));
-    assert!(ctx.pkm.storage().page_exists(
-        &ctx.pkm.storage().vault_scope(frona::handle!("testuser"), "Memory").unwrap(),
-        "playbooks/restart-postgres",
+    assert!(
+        ctx.pkm.storage().page_exists(
+            &ctx.pkm
+                .storage()
+                .vault_scope(frona::handle!("testuser"), "Memory")
+                .unwrap(),
+            "playbooks/restart-postgres",
+        )
+    );
+    assert!(matches!(
+        ctx.record().await.unwrap().state,
+        ConsolidationStageState::Done
     ));
-    assert!(matches!(ctx.record().await.unwrap().state, ConsolidationStageState::Done));
     let tool_histories = mock.tool_histories();
-    let author_tools = tool_histories.iter().find(|tools| {
-        let has = |name| tools.iter().any(|tool| tool.name == name);
-        has("submit") && has("search_entities") && has("read_entity")
-            && !has("ontology_sparql")
-    }).expect("Playbook Author model request");
+    let author_tools = tool_histories
+        .iter()
+        .find(|tools| {
+            let has = |name| tools.iter().any(|tool| tool.name == name);
+            has("submit") && has("search_entities") && has("read_entity") && !has("ontology_sparql")
+        })
+        .expect("Playbook Author model request");
     let names: std::collections::HashSet<_> =
         author_tools.iter().map(|tool| tool.name.as_str()).collect();
     assert!(names.contains("search_entities"));
     assert!(names.contains("read_entity"));
     for filesystem_tool in ["read", "grep", "glob", "shell"] {
-        assert!(!names.contains(filesystem_tool),
-            "Playbook Author must use effective PKM tools: {names:?}");
+        assert!(
+            !names.contains(filesystem_tool),
+            "Playbook Author must use effective PKM tools: {names:?}"
+        );
     }
 }
 
@@ -423,10 +485,16 @@ async fn failed_playbook_author_stays_parked_and_resumes_from_the_dirty_page() {
     let ctx = setup(mock.clone(), config, false).await;
     let repo = ctx.repo();
     repo.upsert_entity_skeleton(
-        USER, "playbooks/restart-postgres",
+        USER,
+        "playbooks/restart-postgres",
         frona::memory::pkm::model::EntityCategory::Playbook,
-        &[], "Restart Postgres", "Restart it safely", &[],
-    ).await.unwrap();
+        &[],
+        "Restart Postgres",
+        "Restart it safely",
+        &[],
+    )
+    .await
+    .unwrap();
     repo.create_sourced_memory(
         USER,
         frona::memory::pkm::model::MemoryKind::Procedural,
@@ -435,32 +503,64 @@ async fn failed_playbook_author_stays_parked_and_resumes_from_the_dirty_page() {
         vec![frona::memory::pkm::model::MemoryEvidence {
             strength: frona::memory::pkm::model::EvidenceStrength::Explicit,
             source: frona::memory::pkm::model::EvidenceSource::HumanEdit {
-                page_path: "playbooks/restart-postgres".into(), quote: "pg_ctl restart".into(),
+                page_path: "playbooks/restart-postgres".into(),
+                quote: "pg_ctl restart".into(),
             },
         }],
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     repo.save_consolidation_record(&frona::memory::pkm::KnowledgeConsolidationRecord {
         id: frona::core::repository::new_id(),
-        consolidation_id: frona::core::repository::new_id(), user_id: USER.into(),
-        state: ConsolidationStageState::PlaybookAuthor, stats: Default::default(),
-        attempts: 0, restart_count: 0, failure: None,
-        next_attempt_at: Utc::now(), updated_at: Utc::now(),
-    }).await.unwrap();
+        consolidation_id: frona::core::repository::new_id(),
+        user_id: USER.into(),
+        state: ConsolidationStageState::PlaybookAuthor,
+        stats: Default::default(),
+        attempts: 0,
+        restart_count: 0,
+        failure: None,
+        next_attempt_at: Utc::now(),
+        updated_at: Utc::now(),
+    })
+    .await
+    .unwrap();
 
     assert!(ctx.consolidate().await.is_err());
-    let parked = ctx.record().await.expect("Playbook Author failure remains durable");
-    assert!(matches!(parked.state, ConsolidationStageState::PlaybookAuthor));
+    let parked = ctx
+        .record()
+        .await
+        .expect("Playbook Author failure remains durable");
+    assert!(matches!(
+        parked.state,
+        ConsolidationStageState::PlaybookAuthor
+    ));
     assert_eq!(parked.attempts, 1);
-    assert!(repo.entity_by_path(USER, "playbooks/restart-postgres").await.unwrap().is_some());
+    assert!(
+        repo.entity_by_path(USER, "playbooks/restart-postgres")
+            .await
+            .unwrap()
+            .is_some()
+    );
 
-    mock.enqueue(MockResponse::ToolCalls(vec![("a".into(), "submit".into(), json!({
-        "name": "Restart Postgres", "description": "Restart it safely",
-        "body": "# Restart Postgres\n\nRun `pg_ctl restart`.", "related_playbooks": []
-    }))]));
+    mock.enqueue(MockResponse::ToolCalls(vec![(
+        "a".into(),
+        "submit".into(),
+        json!({
+            "name": "Restart Postgres", "description": "Restart it safely",
+            "body": "# Restart Postgres\n\nRun `pg_ctl restart`.", "related_playbooks": []
+        }),
+    )]));
     ctx.consolidate().await.unwrap();
-    let page = repo.entity_by_path(USER, "playbooks/restart-postgres").await.unwrap().unwrap();
+    let page = repo
+        .entity_by_path(USER, "playbooks/restart-postgres")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(page.body.contains("pg_ctl restart"));
-    assert!(matches!(ctx.record().await.unwrap().state, ConsolidationStageState::Done));
+    assert!(matches!(
+        ctx.record().await.unwrap().state,
+        ConsolidationStageState::Done
+    ));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -471,7 +571,11 @@ async fn failed_playbook_author_stays_parked_and_resumes_from_the_dirty_page() {
 /// the pass log. `Done` is what tells the next sweep this is history, not work in flight.
 #[tokio::test]
 async fn completed_pass_reaches_done_and_is_kept_as_a_log() {
-    let mock = Arc::new(MockModelProvider::new(page_responses("postgres", "Postgres runs on 5433", 2)));
+    let mock = Arc::new(MockModelProvider::new(page_responses(
+        "postgres",
+        "Postgres runs on 5433",
+        2,
+    )));
     let ctx = setup(mock.clone(), MemoryConfig::default(), false).await;
     let chat = seed_chat(&ctx.db).await;
     add_message(&ctx.db, &chat.id, "my postgres runs on 5433").await;
@@ -479,11 +583,22 @@ async fn completed_pass_reaches_done_and_is_kept_as_a_log() {
     ctx.sweep().await;
 
     let rec = ctx.record().await.expect("a pass ran");
-    assert!(matches!(rec.state, ConsolidationStageState::Done), "reached the terminal stage");
-    assert_eq!(rec.attempts, 0, "no stage had to be retried");
-    assert!(rec.stats.memories_added > 0, "the log carries the pass's counts: {:?}", rec.stats);
     assert!(
-        ctx.repo().users_with_open_consolidation().await.unwrap().is_empty(),
+        matches!(rec.state, ConsolidationStageState::Done),
+        "reached the terminal stage"
+    );
+    assert_eq!(rec.attempts, 0, "no stage had to be retried");
+    assert!(
+        rec.stats.memories_added > 0,
+        "the log carries the pass's counts: {:?}",
+        rec.stats
+    );
+    assert!(
+        ctx.repo()
+            .users_with_open_consolidation()
+            .await
+            .unwrap()
+            .is_empty(),
         "a finished pass is not open work"
     );
 }
@@ -491,7 +606,9 @@ async fn completed_pass_reaches_done_and_is_kept_as_a_log() {
 #[tokio::test]
 async fn completed_pass_keeps_exact_page_projection_in_database() {
     let mock = Arc::new(MockModelProvider::new(page_responses(
-        "postgres", "Postgres runs on 5433", 2,
+        "postgres",
+        "Postgres runs on 5433",
+        2,
     )));
     let ctx = setup(mock, MemoryConfig::default(), false).await;
     let chat = seed_chat(&ctx.db).await;
@@ -499,16 +616,28 @@ async fn completed_pass_keeps_exact_page_projection_in_database() {
 
     ctx.sweep().await;
 
-    let page = ctx.repo().entity_by_path(USER, "services/postgres")
-        .await.unwrap().unwrap();
+    let page = ctx
+        .repo()
+        .entity_by_path(USER, "services/postgres")
+        .await
+        .unwrap()
+        .unwrap();
     let rev = page.rev.as_deref().expect("completed page has a revision");
-    let content = page.sync_content.as_deref()
+    let content = page
+        .sync_content
+        .as_deref()
         .expect("completed page keeps its exact canonical bytes");
     assert_eq!(frona::memory::pkm::sha256_hex(content), rev);
-    let vault = ctx.pkm.storage()
-        .vault_scope(frona::handle!("testuser"), "Memory").unwrap();
+    let vault = ctx
+        .pkm
+        .storage()
+        .vault_scope(frona::handle!("testuser"), "Memory")
+        .unwrap();
     assert_eq!(
-        ctx.pkm.storage().read_page(&vault, "services/postgres").as_deref(),
+        ctx.pkm
+            .storage()
+            .read_page(&vault, "services/postgres")
+            .as_deref(),
         Some(content),
         "the file mirror must contain the durable database projection",
     );
@@ -524,7 +653,11 @@ async fn completed_pass_keeps_exact_page_projection_in_database() {
 /// completion marker three stages early.
 #[tokio::test]
 async fn page_that_was_never_authored_stays_dirty() {
-    let mock = Arc::new(MockModelProvider::new(page_responses("postgres", "Postgres runs on 5433", 2)));
+    let mock = Arc::new(MockModelProvider::new(page_responses(
+        "postgres",
+        "Postgres runs on 5433",
+        2,
+    )));
     let ctx = setup(mock, MemoryConfig::default(), false).await;
     let chat = seed_chat(&ctx.db).await;
     add_message(&ctx.db, &chat.id, "my postgres runs on 5433").await;
@@ -532,7 +665,10 @@ async fn page_that_was_never_authored_stays_dirty() {
 
     let repo = ctx.repo();
     assert!(
-        repo.entities_needing_reconciliation(USER).await.unwrap().is_empty(),
+        repo.entities_needing_reconciliation(USER)
+            .await
+            .unwrap()
+            .is_empty(),
         "a fully processed pass leaves nothing dirty"
     );
 
@@ -569,9 +705,14 @@ async fn page_that_was_never_authored_stays_dirty() {
         "reconcile alone does not mark the page done"
     );
 
-    mark_entity_rendered(&ctx.db, USER, "services/postgres").await.unwrap();
+    mark_entity_rendered(&ctx.db, USER, "services/postgres")
+        .await
+        .unwrap();
     assert!(
-        repo.entities_needing_reconciliation(USER).await.unwrap().is_empty(),
+        repo.entities_needing_reconciliation(USER)
+            .await
+            .unwrap()
+            .is_empty(),
         "only the article landing on disk does"
     );
 }
@@ -580,21 +721,35 @@ async fn page_that_was_never_authored_stays_dirty() {
 /// dirty set - can never release what it held, and the facts are hidden forever.
 #[tokio::test]
 async fn quarantined_page_stays_dirty_so_it_can_be_reinstated() {
-    let mock = Arc::new(MockModelProvider::new(page_responses("postgres", "Postgres runs on 5433", 2)));
+    let mock = Arc::new(MockModelProvider::new(page_responses(
+        "postgres",
+        "Postgres runs on 5433",
+        2,
+    )));
     let ctx = setup(mock, MemoryConfig::default(), false).await;
     let chat = seed_chat(&ctx.db).await;
     add_message(&ctx.db, &chat.id, "my postgres runs on 5433").await;
     ctx.sweep().await;
 
     let repo = ctx.repo();
-    let memories = repo.memories_for_entity(USER, "services/postgres").await.unwrap();
-    let fact = memories.first().expect("the page has a fact");
-
-    repo.set_disposition(USER, &fact.id, frona::memory::pkm::model::Disposition::Suspect)
+    let memories = repo
+        .memories_for_entity(USER, "services/postgres")
         .await
         .unwrap();
+    let fact = memories.first().expect("the page has a fact");
+
+    repo.set_disposition(
+        USER,
+        &fact.id,
+        frona::memory::pkm::model::Disposition::Suspect,
+    )
+    .await
+    .unwrap();
     assert!(
-        repo.entities_needing_reconciliation(USER).await.unwrap().contains(&"services/postgres".to_string()),
+        repo.entities_needing_reconciliation(USER)
+            .await
+            .unwrap()
+            .contains(&"services/postgres".to_string()),
         "quarantining re-dirties the page it hid facts on"
     );
 }
@@ -607,15 +762,25 @@ async fn quarantined_page_stays_dirty_so_it_can_be_reinstated() {
 /// retry. The pass resumes *there* rather than starting over.
 #[tokio::test]
 async fn failed_stage_parks_the_record_and_backs_off() {
-    let mock = Arc::new(MockModelProvider::new(page_responses("postgres", "Postgres runs on 5433", 2)));
-    let config = MemoryConfig { pkm_consolidation_max_attempts: 3, ..Default::default() };
+    let mock = Arc::new(MockModelProvider::new(page_responses(
+        "postgres",
+        "Postgres runs on 5433",
+        2,
+    )));
+    let config = MemoryConfig {
+        pkm_consolidation_max_attempts: 3,
+        ..Default::default()
+    };
     // A broken catalogue fails the Classify stage as a whole.
     let ctx = setup(mock, config, true).await;
     let chat = seed_chat(&ctx.db).await;
     add_message(&ctx.db, &chat.id, "my postgres runs on 5433").await;
     seed_dirty_page(&ctx.repo()).await;
 
-    assert!(ctx.consolidate().await.is_err(), "the broken catalogue fails the Classify stage");
+    assert!(
+        ctx.consolidate().await.is_err(),
+        "the broken catalogue fails the Classify stage"
+    );
 
     let rec = ctx.record().await.expect("the pass left a record");
     assert!(
@@ -624,7 +789,10 @@ async fn failed_stage_parks_the_record_and_backs_off() {
         rec.state.label()
     );
     assert_eq!(rec.attempts, 1, "one attempt charged");
-    assert!(rec.next_attempt_at > Utc::now(), "and a retry scheduled in the future");
+    assert!(
+        rec.next_attempt_at > Utc::now(),
+        "and a retry scheduled in the future"
+    );
     assert_eq!(
         ctx.repo().users_with_open_consolidation().await.unwrap(),
         [USER],
@@ -636,7 +804,11 @@ async fn failed_stage_parks_the_record_and_backs_off() {
 /// mining. A wedged pass must not keep piling unreconciled pages underneath itself.
 #[tokio::test]
 async fn backing_off_pass_suppresses_the_next_tick() {
-    let mock = Arc::new(MockModelProvider::new(page_responses("postgres", "Postgres runs on 5433", 2)));
+    let mock = Arc::new(MockModelProvider::new(page_responses(
+        "postgres",
+        "Postgres runs on 5433",
+        2,
+    )));
     let config = MemoryConfig {
         pkm_consolidation_max_attempts: 5,
         pkm_consolidation_retry_base_secs: 3600,
@@ -650,12 +822,19 @@ async fn backing_off_pass_suppresses_the_next_tick() {
     assert!(ctx.consolidate().await.is_err());
     let after_first = mock.calls();
     let attempts_after_first = ctx.record().await.unwrap().attempts;
-    assert!(ctx.record().await.unwrap().next_attempt_at > Utc::now(), "backing off");
+    assert!(
+        ctx.record().await.unwrap().next_attempt_at > Utc::now(),
+        "backing off"
+    );
 
     // The sweep is what honours the backoff, so drive it rather than `consolidate`.
     ctx.sweep().await;
 
-    assert_eq!(mock.calls(), after_first, "the backing-off tick spends nothing");
+    assert_eq!(
+        mock.calls(),
+        after_first,
+        "the backing-off tick spends nothing"
+    );
     assert_eq!(
         ctx.record().await.unwrap().attempts,
         attempts_after_first,
@@ -667,7 +846,11 @@ async fn backing_off_pass_suppresses_the_next_tick() {
 /// marked terminally Failed instead of being silently deleted.
 #[tokio::test]
 async fn unrecoverable_stage_that_burns_its_budget_is_marked_failed() {
-    let mock = Arc::new(MockModelProvider::new(page_responses("postgres", "Postgres runs on 5433", 2)));
+    let mock = Arc::new(MockModelProvider::new(page_responses(
+        "postgres",
+        "Postgres runs on 5433",
+        2,
+    )));
     let config = MemoryConfig {
         pkm_consolidation_max_attempts: 2,
         // No backoff, so consecutive sweeps in the test are eligible immediately.
@@ -709,7 +892,11 @@ async fn unrecoverable_stage_that_burns_its_budget_is_marked_failed() {
 async fn pass_killed_mid_page_author_resumes_without_re_authoring_what_it_wrote() {
     use frona::memory::pkm::{ConsolidationStageState, KnowledgeConsolidationRecord};
 
-    let mock = Arc::new(MockModelProvider::new(page_responses("postgres", "Postgres runs on 5433", 2)));
+    let mock = Arc::new(MockModelProvider::new(page_responses(
+        "postgres",
+        "Postgres runs on 5433",
+        2,
+    )));
     let ctx = setup(mock.clone(), MemoryConfig::default(), false).await;
     let chat = seed_chat(&ctx.db).await;
     add_message(&ctx.db, &chat.id, "my postgres runs on 5433").await;
@@ -718,7 +905,11 @@ async fn pass_killed_mid_page_author_resumes_without_re_authoring_what_it_wrote(
     let repo = ctx.repo();
     let mut pages = repo.list_all_entity_paths(USER).await.unwrap();
     pages.sort();
-    assert_eq!(pages.len(), 2, "the pass produced the self-page and the mined one: {pages:?}");
+    assert_eq!(
+        pages.len(),
+        2,
+        "the pass produced the self-page and the mined one: {pages:?}"
+    );
     let (already_written, still_owed) = (pages[0].clone(), pages[1].clone());
 
     // Exactly the durable state a crash mid-author leaves: one page's exact article and
@@ -865,7 +1056,10 @@ async fn classification_reaches_the_record_before_the_stage_finishes() {
     );
 
     let calls_at_interruption = mock.calls();
-    assert_eq!(calls_at_interruption, 3, "extract, one banked classify, one interrupted classify");
+    assert_eq!(
+        calls_at_interruption, 3,
+        "extract, one banked classify, one interrupted classify"
+    );
 
     // The interrupted provider request is gone with the process, so retry supplies a new
     // answer for that one unbanked page. The first page must be replayed from the record.
@@ -888,24 +1082,39 @@ async fn classification_reaches_the_record_before_the_stage_finishes() {
     // tools and the pass cannot produce the expected final graph.
     if let Err(error) = ctx.consolidate().await {
         let state = ctx.record().await.map(|record| match record.state {
-            ConsolidationStageState::Classify(state) => format!(
-                "classify revision={}",
-                state.revision,
-            ),
+            ConsolidationStageState::Classify(state) => {
+                format!("classify revision={}", state.revision,)
+            }
             state => state.label().into(),
         });
-        panic!("resume failed after {} total model calls in state {state:?}: {error}", mock.calls());
+        panic!(
+            "resume failed after {} total model calls in state {state:?}: {error}",
+            mock.calls()
+        );
     }
 
-    let rec = ctx.record().await.expect("the resumed pass remains as its completed log");
-    assert!(rec.state.is_done(), "the interrupted Classify pass reaches Done on resume");
+    let rec = ctx
+        .record()
+        .await
+        .expect("the resumed pass remains as its completed log");
+    assert!(
+        rec.state.is_done(),
+        "the interrupted Classify pass reaches Done on resume"
+    );
     assert_eq!(
         mock.calls(),
         expected_calls,
         "resume replays the banked classification without another model request"
     );
-    let page = ctx.repo().entity_by_path(USER, "services/postgres").await.unwrap();
-    assert!(page.is_some(), "the final transaction commits the resumed pending page");
+    let page = ctx
+        .repo()
+        .entity_by_path(USER, "services/postgres")
+        .await
+        .unwrap();
+    assert!(
+        page.is_some(),
+        "the final transaction commits the resumed pending page"
+    );
 }
 
 /// `rendered_at` for each path, in the order given - the stamp author writes once a
@@ -913,7 +1122,13 @@ async fn classification_reaches_the_record_before_the_stage_finishes() {
 async fn rendered_stamps(repo: &PkmRepo, paths: &[String]) -> Vec<chrono::DateTime<Utc>> {
     let mut out = Vec::new();
     for p in paths {
-        out.push(repo.entity_by_path(USER, p).await.unwrap().unwrap().rendered_at);
+        out.push(
+            repo.entity_by_path(USER, p)
+                .await
+                .unwrap()
+                .unwrap()
+                .rendered_at,
+        );
     }
     out
 }
@@ -961,7 +1176,11 @@ async fn record_advances_through_every_stage_in_order() {
 /// every `kinds` justified by it go in one transaction.
 #[tokio::test]
 async fn no_entity_carries_a_class_the_schema_never_declared() {
-    let mock = Arc::new(MockModelProvider::new(page_responses("postgres", "Postgres runs on 5433", 2)));
+    let mock = Arc::new(MockModelProvider::new(page_responses(
+        "postgres",
+        "Postgres runs on 5433",
+        2,
+    )));
     let ctx = setup(mock, MemoryConfig::default(), false).await;
     let chat = seed_chat(&ctx.db).await;
     add_message(&ctx.db, &chat.id, "my postgres runs on 5433").await;
@@ -1011,7 +1230,10 @@ async fn no_entity_carries_a_class_the_schema_never_declared() {
             );
         }
     }
-    assert!(typed > 0, "the pass typed something, so this is not vacuous");
+    assert!(
+        typed > 0,
+        "the pass typed something, so this is not vacuous"
+    );
     let _ = minted; // a pass that minted nothing still proves the standard-term half
 }
 
@@ -1043,9 +1265,16 @@ async fn cleanup_rehomes_memories_whose_entity_went_missing() {
         ["services/postgres"],
         "the memories now point at a path with no page"
     );
-    let memories = repo.memories_for_entity(USER, "services/postgres").await.unwrap();
+    let memories = repo
+        .memories_for_entity(USER, "services/postgres")
+        .await
+        .unwrap();
     assert!(
-        !repo.memory_entity_paths(USER, &memories[0].id).await.unwrap().is_empty(),
+        !repo
+            .memory_entity_paths(USER, &memories[0].id)
+            .await
+            .unwrap()
+            .is_empty(),
         "the memory still has its entity link"
     );
 
@@ -1072,11 +1301,19 @@ async fn cleanup_materializes_live_entities_then_removes_only_obsolete_markdown(
     let mock = Arc::new(MockModelProvider::new(Vec::new()));
     let ctx = setup(mock, MemoryConfig::default(), false).await;
     seed_dirty_page(&ctx.repo()).await;
-    ctx.repo().set_page_rev(USER, "services/postgres", "previous-author-rev").await.unwrap();
+    ctx.repo()
+        .set_page_rev(USER, "services/postgres", "previous-author-rev")
+        .await
+        .unwrap();
     let storage = ctx.pkm.storage();
-    let scope = storage.vault_scope(frona::handle!("testuser"), "Memory").unwrap();
-    storage.write_page(&scope, "obsolete/nested/page", "old").unwrap();
-    let artifact = storage.memory_root(&frona::handle!("testuser"))
+    let scope = storage
+        .vault_scope(frona::handle!("testuser"), "Memory")
+        .unwrap();
+    storage
+        .write_page(&scope, "obsolete/nested/page", "old")
+        .unwrap();
+    let artifact = storage
+        .memory_root(&frona::handle!("testuser"))
         .join("Memory/artifacts/keep.txt");
     std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
     std::fs::write(&artifact, "keep").unwrap();
@@ -1096,17 +1333,28 @@ async fn cleanup_materializes_live_entities_then_removes_only_obsolete_markdown(
     ctx.repo().save_consolidation_record(&record).await.unwrap();
     ctx.consolidate().await.unwrap();
 
-    assert!(storage.page_exists(&scope, "services/postgres"), "every live page is materialized");
     assert!(
-        ctx.repo().entities_needing_reconciliation(USER).await.unwrap()
+        storage.page_exists(&scope, "services/postgres"),
+        "every live page is materialized"
+    );
+    assert!(
+        ctx.repo()
+            .entities_needing_reconciliation(USER)
+            .await
+            .unwrap()
             .contains(&"services/postgres".to_string()),
         "cleanup repairs the file projection without pretending Page Author completed",
     );
-    assert!(!storage.page_exists(&scope, "obsolete/nested/page"), "obsolete Markdown is deleted");
+    assert!(
+        !storage.page_exists(&scope, "obsolete/nested/page"),
+        "obsolete Markdown is deleted"
+    );
     assert!(artifact.exists(), "non-Markdown artifacts are preserved");
     assert!(
-        !storage.memory_root(&frona::handle!("testuser"))
-            .join("Memory/obsolete").exists(),
+        !storage
+            .memory_root(&frona::handle!("testuser"))
+            .join("Memory/obsolete")
+            .exists(),
         "directories emptied by the sweep are removed",
     );
 }

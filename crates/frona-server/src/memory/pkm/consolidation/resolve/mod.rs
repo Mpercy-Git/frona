@@ -21,6 +21,6 @@ mod run;
 
 pub(super) use evidence::{
     IdentityMatch, IdentityResolution, ResolutionDecisionContext, identity_matches,
-    pair_change_requires_judgment, resolution_identity_fingerprint,
-    resolution_pair_fingerprint, resolution_pair_key,
+    pair_change_requires_judgment, resolution_identity_fingerprint, resolution_pair_fingerprint,
+    resolution_pair_key,
 };

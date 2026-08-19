@@ -25,8 +25,8 @@ use crate::auth::user_service::UserService;
 use crate::core::error::AppError;
 use crate::db::repo::pkm::PkmRepo;
 
-use super::projection::write_page_and_rev;
 use super::model::KnowledgeEntity;
+use super::projection::write_page_and_rev;
 use super::projection::{MarkdownPage, compose_page};
 use super::storage::PkmStorage;
 use super::vault::VaultScope;
@@ -95,7 +95,10 @@ pub(super) async fn reconcile_user_files(
     for page in pages {
         let locs = uid_locations.get(&page.id).cloned().unwrap_or_default();
         let at_canonical = locs.iter().any(|location| location == &page.path);
-        let stale: Vec<String> = locs.into_iter().filter(|location| *location != page.path).collect();
+        let stale: Vec<String> = locs
+            .into_iter()
+            .filter(|location| *location != page.path)
+            .collect();
 
         if at_canonical {
             report.deduped += delete_all(storage, &vault, &stale, &page.path);
@@ -138,7 +141,8 @@ async fn adopt_legacy_file(
         return Ok(());
     };
     let rev = super::projection::sha256_hex(&content);
-    repo.set_page_projection(&page.user_id, &page.path, &content, &rev).await
+    repo.set_page_projection(&page.user_id, &page.path, &content, &rev)
+        .await
 }
 
 fn delete_all(
@@ -168,7 +172,9 @@ async fn render_page_from_db(
     page: &KnowledgeEntity,
 ) -> Result<(), AppError> {
     if let Some(content) = page.sync_content.as_deref().filter(|content| {
-        page.rev.as_deref().is_some_and(|rev| super::projection::sha256_hex(content) == rev)
+        page.rev
+            .as_deref()
+            .is_some_and(|rev| super::projection::sha256_hex(content) == rev)
     }) {
         write_page_and_rev(repo, storage, vault, &page.user_id, &page.path, content).await?;
         return Ok(());
@@ -179,8 +185,12 @@ async fn render_page_from_db(
         .unwrap_or_default();
     let article = MarkdownPage::parse(&page.body);
     let file = compose_page(
-        page, &article, &page.attributes, &links,
-        &crate::memory::pkm::ontology::PrefixMap::standard(), vault,
+        page,
+        &article,
+        &page.attributes,
+        &links,
+        &crate::memory::pkm::ontology::PrefixMap::standard(),
+        vault,
     );
     write_page_and_rev(repo, storage, vault, &page.user_id, &page.path, &file).await?;
     Ok(())

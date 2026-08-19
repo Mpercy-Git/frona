@@ -3,13 +3,13 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use crate::inference::conversation::HeartbeatConversationBuilder;
 use crate::agent::models::Agent;
 use crate::agent::task::models::TaskKind;
-use crate::core::state::AppState;
 use crate::chat::models::CreateChatRequest;
 use crate::core::error::AppError;
+use crate::core::state::AppState;
 use crate::inference::InferenceResponse;
+use crate::inference::conversation::HeartbeatConversationBuilder;
 use crate::tool::task::next_cron_occurrence;
 
 pub struct Scheduler {
@@ -79,19 +79,41 @@ impl Scheduler {
 
         let shutdown = self.app_state.shutdown_token.clone();
         spawn_periodic!(self, poll, "poll_tasks", run_poll_tasks, shutdown);
-        spawn_periodic!(self, token_cleanup, "token_cleanup", run_token_cleanup, shutdown);
-        spawn_periodic!(self, model_metadata_refresh, "model_metadata_refresh", run_model_metadata_refresh, shutdown);
+        spawn_periodic!(
+            self,
+            token_cleanup,
+            "token_cleanup",
+            run_token_cleanup,
+            shutdown
+        );
+        spawn_periodic!(
+            self,
+            model_metadata_refresh,
+            "model_metadata_refresh",
+            run_model_metadata_refresh,
+            shutdown
+        );
         let share_cleanup = Duration::from_secs(cfg.share.cleanup_interval_secs);
-        spawn_periodic!(self, share_cleanup, "share_cleanup", run_share_cleanup, shutdown);
+        spawn_periodic!(
+            self,
+            share_cleanup,
+            "share_cleanup",
+            run_share_cleanup,
+            shutdown
+        );
 
         // Memory maintenance is owned by the active service (it registers its own
         // periodic jobs) - keeps the scheduler memory-agnostic and works for any impl.
-        self.app_state.harness.memory_service.register_maintenance(&self);
+        self.app_state
+            .harness
+            .memory_service
+            .register_maintenance(&self);
 
         // Skip the startup refresh if the cached catalog is younger than the
         // periodic interval - restart shouldn't trigger another ~1.5 MB fetch.
         // Missing/unreadable cache always falls through to a fresh fetch.
-        let cache_dir = std::path::Path::new(&self.app_state.config.storage.cache_dir).to_path_buf();
+        let cache_dir =
+            std::path::Path::new(&self.app_state.config.storage.cache_dir).to_path_buf();
         let fresh = crate::inference::metadata::loader::cache_age(&cache_dir)
             .is_some_and(|age| age < model_metadata_refresh);
         if fresh {
@@ -133,7 +155,8 @@ impl Scheduler {
             "version" => version,
         )
         .set(entries);
-        metrics::gauge!(crate::inference::usage::service::MODEL_METADATA_REFRESH_AGE_SECONDS).set(0.0);
+        metrics::gauge!(crate::inference::usage::service::MODEL_METADATA_REFRESH_AGE_SECONDS)
+            .set(0.0);
         Ok(())
     }
 
@@ -172,7 +195,11 @@ impl Scheduler {
         if self.app_state.is_shutting_down() {
             return Ok(());
         }
-        let expired = self.app_state.task_service.find_expired_signal_tasks().await?;
+        let expired = self
+            .app_state
+            .task_service
+            .find_expired_signal_tasks()
+            .await?;
         if expired.is_empty() {
             return Ok(());
         }
@@ -217,7 +244,11 @@ impl Scheduler {
         if self.app_state.is_shutting_down() {
             return Ok(());
         }
-        let templates = self.app_state.task_service.find_due_cron_templates().await?;
+        let templates = self
+            .app_state
+            .task_service
+            .find_due_cron_templates()
+            .await?;
         if templates.is_empty() {
             return Ok(());
         }
@@ -226,7 +257,11 @@ impl Scheduler {
 
         for template in templates {
             let (cron_expression, timezone) = match &template.kind {
-                TaskKind::Cron { cron_expression, timezone, .. } => (
+                TaskKind::Cron {
+                    cron_expression,
+                    timezone,
+                    ..
+                } => (
                     cron_expression.clone(),
                     crate::auth::models::resolve_timezone(timezone.as_deref(), server_tz),
                 ),
@@ -307,7 +342,11 @@ impl Scheduler {
             return Ok(());
         }
         let now = Utc::now();
-        let agents = self.app_state.agent_service.find_due_heartbeats(now).await?;
+        let agents = self
+            .app_state
+            .agent_service
+            .find_due_heartbeats(now)
+            .await?;
         if agents.is_empty() {
             return Ok(());
         }
@@ -323,12 +362,19 @@ impl Scheduler {
                 tracing::warn!(agent_id = %agent.id, user_id = %user_id, "Heartbeat agent's user not found, skipping");
                 continue;
             };
-            let ws = self.app_state.storage_service.agent_workspace(&user.handle, &agent.handle);
+            let ws = self
+                .app_state
+                .storage_service
+                .agent_workspace(&user.handle, &agent.handle);
             let heartbeat_content = match ws.read("HEARTBEAT.md") {
                 Some(content) if !content.trim().is_empty() => content,
                 _ => {
                     let next = now + chrono::Duration::minutes(interval as i64);
-                    let _ = self.app_state.agent_service.update_next_heartbeat(&agent.id, Some(next)).await;
+                    let _ = self
+                        .app_state
+                        .agent_service
+                        .update_next_heartbeat(&agent.id, Some(next))
+                        .await;
                     continue;
                 }
             };
@@ -342,7 +388,9 @@ impl Scheduler {
             let agent_clone = agent.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = execute_heartbeat(&app_state, &agent_clone, &user_id, &heartbeat_content).await {
+                if let Err(e) =
+                    execute_heartbeat(&app_state, &agent_clone, &user_id, &heartbeat_content).await
+                {
                     tracing::error!(
                         error = %e,
                         agent_id = %agent_clone.id,
@@ -350,7 +398,11 @@ impl Scheduler {
                     );
                 }
                 let next = Utc::now() + chrono::Duration::minutes(interval as i64);
-                if let Err(e) = app_state.agent_service.update_next_heartbeat(&agent_clone.id, Some(next)).await {
+                if let Err(e) = app_state
+                    .agent_service
+                    .update_next_heartbeat(&agent_clone.id, Some(next))
+                    .await
+                {
                     tracing::error!(
                         error = %e,
                         agent_id = %agent_clone.id,
@@ -378,7 +430,6 @@ impl Scheduler {
         }
         Ok(())
     }
-
 }
 
 pub async fn execute_cron(
@@ -495,12 +546,28 @@ async fn execute_heartbeat(
     });
     let result = state
         .harness
-        .run_loop(user_id, &chat_id, &agent_msg_id, cancel_token, builder, &[], None)
+        .run_loop(
+            user_id,
+            &chat_id,
+            &agent_msg_id,
+            cancel_token,
+            builder,
+            &[],
+            None,
+        )
         .await;
 
     match result {
-        Ok(crate::agent::harness::AgentLoopOutcome { inference, mut response }) => match inference {
-            InferenceResponse::Completed { text, attachments, reasoning, .. } => {
+        Ok(crate::agent::harness::AgentLoopOutcome {
+            inference,
+            mut response,
+        }) => match inference {
+            InferenceResponse::Completed {
+                text,
+                attachments,
+                reasoning,
+                ..
+            } => {
                 response.content = text;
                 response.attachments = attachments;
                 response.reasoning = reasoning;
@@ -519,7 +586,10 @@ async fn execute_heartbeat(
         },
         Err(e) => {
             if let Ok(msg) = state.chat_service.get_message(user_id, &agent_msg_id).await {
-                let _ = state.chat_service.fail_agent_message(msg, e.to_string()).await;
+                let _ = state
+                    .chat_service
+                    .fail_agent_message(msg, e.to_string())
+                    .await;
             }
             tracing::error!(error = %e, chat_id = %chat_id, "Heartbeat agent tool loop failed");
         }

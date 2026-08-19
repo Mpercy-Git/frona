@@ -53,7 +53,9 @@ pub(crate) async fn twilio_ws_handler(
         Err(e) => return e.into_response(),
     };
 
-    ws.on_upgrade(move |socket| handle_voice_socket(socket, state, chat_id, user_id, contact_id, call_id))
+    ws.on_upgrade(move |socket| {
+        handle_voice_socket(socket, state, chat_id, user_id, contact_id, call_id)
+    })
 }
 
 async fn handle_voice_socket(
@@ -152,7 +154,10 @@ async fn handle_voice_socket(
                     tokio::time::sleep(std::time::Duration::from_secs(tts_secs)).await;
                     tracing::info!(chat_id = %chat_id, "Sending hangup signal to Twilio");
                     let end_msg = serde_json::json!({ "type": "end" });
-                    ws_send.send(Message::Text(end_msg.to_string().into())).await.ok();
+                    ws_send
+                        .send(Message::Text(end_msg.to_string().into()))
+                        .await
+                        .ok();
                     break;
                 }
             }
@@ -169,11 +174,18 @@ async fn handle_voice_socket(
     state.active_sessions.remove(&chat_id).await;
 
     if let Ok(Some(task)) = state.task_service.find_by_chat_id(&chat_id).await
-        && matches!(task.status, crate::agent::task::models::TaskStatus::InProgress)
+        && matches!(
+            task.status,
+            crate::agent::task::models::TaskStatus::InProgress
+        )
     {
         let summary = last_response;
 
-        if let Ok(task) = state.task_service.mark_completed(&task.id, Some(summary.clone())).await {
+        if let Ok(task) = state
+            .task_service
+            .mark_completed(&task.id, Some(summary.clone()))
+            .await
+        {
             crate::agent::task::executor::deliver_event_to_source(
                 &state.chat_service,
                 &task,
@@ -205,18 +217,23 @@ async fn handle_voice_turn(
         .save_live_call_message(user_id, chat_id, content, contact_id)
         .await?;
 
-    let chat = state.chat_service.find_chat(chat_id).await?
+    let chat = state
+        .chat_service
+        .find_chat(chat_id)
+        .await?
         .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
 
     loop {
         // Create or find an Executing agent message for this turn
-        let agent_msg_id = match state.chat_service
+        let agent_msg_id = match state
+            .chat_service
             .find_executing_message_for_chat(chat_id)
             .await
         {
             Ok(Some(msg)) => msg.id,
             _ => {
-                let msg = state.chat_service
+                let msg = state
+                    .chat_service
                     .create_executing_agent_message(chat_id, &chat.agent_id)
                     .await?;
                 msg.id
@@ -228,12 +245,25 @@ async fn handle_voice_turn(
             storage_service: state.storage_service.clone(),
             agent_service: state.agent_service.clone(),
         });
-        let outcome = state.harness.run_loop(user_id, chat_id, &agent_msg_id, cancel_token.clone(), builder, &[], None).await?;
+        let outcome = state
+            .harness
+            .run_loop(
+                user_id,
+                chat_id,
+                &agent_msg_id,
+                cancel_token.clone(),
+                builder,
+                &[],
+                None,
+            )
+            .await?;
         let mut response = outcome.response;
 
         match outcome.inference {
             InferenceResponse::ExternalToolPending {
-                ref tool_calls, ref turn_text, ..
+                ref tool_calls,
+                ref turn_text,
+                ..
             } if tool_calls.iter().any(|te| te.name == "send_dtmf") => {
                 let tool_call = tool_calls.iter().find(|te| te.name == "send_dtmf").unwrap();
                 tracing::debug!(chat_id = %chat_id, digits = %tool_call.result, "Sending DTMF digits");
@@ -247,29 +277,32 @@ async fn handle_voice_turn(
                     .await
                     .ok();
 
-                let _ = state.chat_service
+                let _ = state
+                    .chat_service
                     .resolve_tool_call(&tool_call.id, Some("DTMF sent".to_string()))
                     .await;
 
                 response.content = turn_text.clone();
-                let _ = state.chat_service
-                    .complete_agent_message(response)
-                    .await;
+                let _ = state.chat_service.complete_agent_message(response).await;
             }
             InferenceResponse::ExternalToolPending {
-                ref tool_calls, ref turn_text, ..
+                ref tool_calls,
+                ref turn_text,
+                ..
             } if tool_calls.iter().any(|te| te.name == "hangup_call") => {
-                let tool_call = tool_calls.iter().find(|te| te.name == "hangup_call").unwrap();
+                let tool_call = tool_calls
+                    .iter()
+                    .find(|te| te.name == "hangup_call")
+                    .unwrap();
                 tracing::debug!(chat_id = %chat_id, "Hangup requested by agent");
 
-                let _ = state.chat_service
+                let _ = state
+                    .chat_service
                     .resolve_tool_call(&tool_call.id, Some("Call ended".to_string()))
                     .await;
 
                 response.content = turn_text.clone();
-                let _ = state.chat_service
-                    .complete_agent_message(response)
-                    .await;
+                let _ = state.chat_service.complete_agent_message(response).await;
 
                 if let Some(cid) = call_id
                     && let Err(e) = state.call_service.mark_completed(cid).await
@@ -279,18 +312,23 @@ async fn handle_voice_turn(
 
                 return Ok((turn_text.clone(), true));
             }
-            InferenceResponse::Completed { text, attachments, reasoning, .. } => {
+            InferenceResponse::Completed {
+                text,
+                attachments,
+                reasoning,
+                ..
+            } => {
                 response.content = text.clone();
                 response.attachments = attachments;
                 response.reasoning = reasoning;
-                let _ = state.chat_service
-                    .complete_agent_message(response)
-                    .await;
+                let _ = state.chat_service.complete_agent_message(response).await;
                 return Ok((text, false));
             }
             _ => {
-                let _ = state.chat_service
-                    .fail_agent_message(response, "voice inference unexpected branch".to_string()).await;
+                let _ = state
+                    .chat_service
+                    .fail_agent_message(response, "voice inference unexpected branch".to_string())
+                    .await;
                 return Ok((String::new(), false));
             }
         }

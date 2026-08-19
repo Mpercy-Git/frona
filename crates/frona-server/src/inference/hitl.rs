@@ -32,7 +32,9 @@ pub struct Hitl {
 #[serde(tag = "type", content = "data")]
 #[surreal(crate = "surrealdb::types", tag = "type", content = "data")]
 pub enum HitlRequest {
-    Question { options: Vec<String> },
+    Question {
+        options: Vec<String>,
+    },
     Takeover {
         reason: String,
         debugger_url: String,
@@ -147,7 +149,9 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let back: HitlRequest = serde_json::from_str(&json).unwrap();
         match back {
-            HitlRequest::App { action, manifest, .. } => {
+            HitlRequest::App {
+                action, manifest, ..
+            } => {
                 assert_eq!(action, "deploy");
                 assert_eq!(manifest["handle"], "notes");
             }
@@ -195,7 +199,9 @@ mod tests {
             connection_id: "conn-1".into(),
             vault_item_id: "item-1".into(),
             grant_duration: GrantDuration::Once,
-            target: CredentialTarget::Prefix { env_var_prefix: "DB".into() },
+            target: CredentialTarget::Prefix {
+                env_var_prefix: "DB".into(),
+            },
         });
         let json = serde_json::to_string(&r).unwrap();
         let back: HitlResponse = serde_json::from_str(&json).unwrap();
@@ -262,5 +268,4 @@ mod tests {
         assert!(back.response.is_some());
         assert!(back.delivery.is_some());
     }
-
 }

@@ -1,7 +1,7 @@
+use crate::agent::task::models::{CreateTaskRequest, TaskResponse, UpdateTaskRequest};
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use crate::agent::task::models::{CreateTaskRequest, TaskResponse, UpdateTaskRequest};
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;

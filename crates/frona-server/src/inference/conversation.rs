@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use base64::Engine;
-use rig_core::completion::message::{DocumentSourceKind, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent};
+use rig_core::completion::message::{
+    DocumentSourceKind, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent,
+};
 use rig_core::completion::{AssistantContent, Message as RigMessage};
 
 use std::collections::HashMap;
@@ -413,9 +415,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
     }
 }
 
-fn group_tool_calls_by_message(
-    tool_calls: &[ToolCall],
-) -> HashMap<String, Vec<&ToolCall>> {
+fn group_tool_calls_by_message(tool_calls: &[ToolCall]) -> HashMap<String, Vec<&ToolCall>> {
     let mut map: HashMap<String, Vec<&ToolCall>> = HashMap::new();
     for te in tool_calls {
         map.entry(te.message_id.clone()).or_default().push(te);
@@ -469,7 +469,11 @@ fn convert_agent_with_tool_calls(
             assistant_items.push(AssistantContent::text(text));
         }
         for te in tes {
-            assistant_items.push(AssistantContent::tool_call(&te.provider_call_id, &te.name, te.arguments.clone()));
+            assistant_items.push(AssistantContent::tool_call(
+                &te.provider_call_id,
+                &te.name,
+                te.arguments.clone(),
+            ));
         }
         if let Ok(content) = rig_core::OneOrMany::many(assistant_items) {
             result.push(RigMessage::Assistant { id: None, content });
@@ -518,8 +522,7 @@ pub fn format_files_block_simple(content: &str, attachments: &[Attachment]) -> S
 }
 
 pub fn is_embeddable_image(attachment: &Attachment) -> bool {
-    is_image_content_type(&attachment.content_type)
-        && !attachment.content_type.contains("svg")
+    is_image_content_type(&attachment.content_type) && !attachment.content_type.contains("svg")
 }
 
 pub fn convert_agent_message(
@@ -536,15 +539,13 @@ pub fn convert_agent_message(
     let is_self = msg.agent_id.as_deref() == Some(agent_id);
     if is_self {
         if let Some(r) = &msg.reasoning {
-            let mut items: Vec<AssistantContent> = vec![
-                AssistantContent::Reasoning(
-                    rig_core::completion::message::Reasoning::new_with_signature(
-                        &r.content,
-                        r.signature.clone(),
-                    )
-                    .optional_id(r.id.clone()),
-                ),
-            ];
+            let mut items: Vec<AssistantContent> = vec![AssistantContent::Reasoning(
+                rig_core::completion::message::Reasoning::new_with_signature(
+                    &r.content,
+                    r.signature.clone(),
+                )
+                .optional_id(r.id.clone()),
+            )];
             if !msg.content.is_empty() {
                 items.push(AssistantContent::text(&msg.content));
             }
@@ -597,7 +598,10 @@ fn attribute_cross_agent(content: &str, handle: Option<&str>) -> String {
 fn task_completion_content(msg: &Message) -> String {
     let has_schema = matches!(
         &msg.event,
-        Some(MessageEvent::TaskCompletion { schema: Some(_), .. })
+        Some(MessageEvent::TaskCompletion {
+            schema: Some(_),
+            ..
+        })
     );
     if has_schema && !msg.content.is_empty() {
         format!("<task_result>{}</task_result>", msg.content)
@@ -706,9 +710,9 @@ pub async fn build_user_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use crate::agent::task::models::TaskStatus;
-    use crate::chat::message::models::{MessageRole, MessageEvent};
+    use crate::chat::message::models::{MessageEvent, MessageRole};
+    use chrono::Utc;
 
     fn make_message(role: MessageRole, content: &str) -> Message {
         Message {
@@ -907,9 +911,16 @@ mod tests {
         assert!(result.is_some());
         let rig_msg = result.unwrap();
         if let RigMessage::Assistant { content, .. } = &rig_msg {
-            let has_reasoning = content.iter().any(|c| matches!(c, AssistantContent::Reasoning(_)));
-            assert!(has_reasoning, "Expected reasoning content in assistant message");
-            let has_text = content.iter().any(|c| matches!(c, AssistantContent::Text(_)));
+            let has_reasoning = content
+                .iter()
+                .any(|c| matches!(c, AssistantContent::Reasoning(_)));
+            assert!(
+                has_reasoning,
+                "Expected reasoning content in assistant message"
+            );
+            let has_text = content
+                .iter()
+                .any(|c| matches!(c, AssistantContent::Text(_)));
             assert!(has_text, "Expected text content in assistant message");
         } else {
             panic!("Expected Assistant message");
@@ -933,7 +944,9 @@ mod tests {
         let result = convert_agent_message(&msg, "agent-1", None);
         assert!(result.is_some());
         if let RigMessage::Assistant { content, .. } = result.unwrap() {
-            let has_reasoning = content.iter().any(|c| matches!(c, AssistantContent::Reasoning(_)));
+            let has_reasoning = content
+                .iter()
+                .any(|c| matches!(c, AssistantContent::Reasoning(_)));
             assert!(!has_reasoning);
         }
     }

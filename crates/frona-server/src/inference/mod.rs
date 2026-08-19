@@ -1,36 +1,35 @@
-pub mod hitl;
-pub mod hooks;
 pub mod config;
 pub mod context;
 pub mod conversation;
 pub mod error;
+pub mod hitl;
+pub mod hooks;
 pub mod metadata;
 pub mod provider;
 pub mod registry;
 pub mod request;
 pub mod retry;
-pub mod trace;
 pub mod structured;
 pub mod tool_call;
 pub mod tool_loop;
+pub mod trace;
 pub mod usage;
 
 pub use usage::{CompactionTarget, InferenceKind, UsageContext};
 
+pub use crate::chat::broadcast::EventSender;
 pub use error::InferenceError;
 pub use hitl::{
     Hitl, HitlDelivery, HitlOutcome, HitlRequest, HitlResponse, ResolveOutcome, VaultGrant,
 };
 pub use provider::ModelRef;
 pub use registry::ModelProviderRegistry;
-pub use request::{InferenceRequest, InferenceResponse, InferenceContext, active_chat};
-pub use crate::chat::broadcast::EventSender;
+pub use request::{InferenceContext, InferenceRequest, InferenceResponse, active_chat};
 pub use rig_core::completion::request::Usage;
 pub use structured::{
     AnswerAttempt, StructuredConversation, structured_inference, structured_inference_with_tools,
 };
 pub use tool_loop::{InferenceEvent, InferenceEventKind};
-
 
 use rig_core::completion::Message as RigMessage;
 
@@ -82,7 +81,10 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
         )
         .await?
         {
-            retry::StreamResult::Contents { content: contents, usage: _ } => {
+            retry::StreamResult::Contents {
+                content: contents,
+                usage: _,
+            } => {
                 let reasoning = extract_reasoning(&contents);
                 Ok(InferenceResponse::Completed {
                     text: response_text,
@@ -91,9 +93,7 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
                     reasoning,
                 })
             }
-            retry::StreamResult::Cancelled => {
-                Ok(InferenceResponse::Cancelled(response_text))
-            }
+            retry::StreamResult::Cancelled => Ok(InferenceResponse::Cancelled(response_text)),
         }
     } else {
         let event_tx = request.ctx.event_tx.clone();
@@ -113,9 +113,17 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
         .await?;
 
         Ok(match outcome {
-            tool_loop::ToolLoopOutcome::Completed { text, attachments, lifecycle_event, reasoning } => {
-                InferenceResponse::Completed { text, attachments, lifecycle_event, reasoning }
-            }
+            tool_loop::ToolLoopOutcome::Completed {
+                text,
+                attachments,
+                lifecycle_event,
+                reasoning,
+            } => InferenceResponse::Completed {
+                text,
+                attachments,
+                lifecycle_event,
+                reasoning,
+            },
             tool_loop::ToolLoopOutcome::Cancelled(text) => InferenceResponse::Cancelled(text),
             tool_loop::ToolLoopOutcome::ExternalToolPending {
                 turn_text,

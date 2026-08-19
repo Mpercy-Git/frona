@@ -5,17 +5,16 @@
 use std::sync::Arc;
 
 use crate::core::error::AppError;
-use crate::db::repo::pkm::PkmRepo;
 use crate::db::repo::pkm::PkmConsolidationStore;
+use crate::db::repo::pkm::PkmRepo;
 use crate::memory::pkm::consolidation::view::EntityViewManager;
 
-use crate::memory::pkm::rename;
 use crate::memory::pkm::consolidation::inference::ConsolidationInference;
-use crate::memory::pkm::projection::write_page_and_rev;
 use crate::memory::pkm::consolidation::{
-    ConsolidationScope, ConsolidationStageState, ConsolidationStats,
-    KnowledgeConsolidationRecord,
+    ConsolidationScope, ConsolidationStageState, ConsolidationStats, KnowledgeConsolidationRecord,
 };
+use crate::memory::pkm::projection::write_page_and_rev;
+use crate::memory::pkm::rename;
 use crate::memory::pkm::storage::PkmStorage;
 
 pub struct ConsolidationContext {
@@ -44,7 +43,14 @@ impl ConsolidationContext {
             PkmConsolidationStore::new(repo.clone())
                 .scoped(&record.consolidation_id, &record.user_id),
         );
-        Self { scope, repo, view, storage, llm, record: tokio::sync::Mutex::new(record) }
+        Self {
+            scope,
+            repo,
+            view,
+            storage,
+            llm,
+            record: tokio::sync::Mutex::new(record),
+        }
     }
 
     /// A fresh context for mining or authoring work outside an open sweep.

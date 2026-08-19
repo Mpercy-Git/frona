@@ -37,8 +37,7 @@ impl Command for SwitchAgentCommand {
             Some(MessageCommand::Command { name, .. }) => name.clone(),
             _ => {
                 return Err(AppError::Internal(
-                    "SwitchAgentCommand invoked without a Command invocation on the message"
-                        .into(),
+                    "SwitchAgentCommand invoked without a Command invocation on the message".into(),
                 ));
             }
         };

@@ -17,9 +17,11 @@ impl PkmRepo {
         .bind(("uid", record.user_id.clone()))
         .await
         .map_err(|e| Self::err("recover_consolidation_rows", e))?;
-        let rows: Vec<KnowledgeConsolidationEntity> = response.take(0)
+        let rows: Vec<KnowledgeConsolidationEntity> = response
+            .take(0)
             .map_err(|e| Self::err("recover_consolidation_rows_take", e))?;
-        let affected_paths: Vec<String> = rows.iter().take(20).map(|row| row.path.clone()).collect();
+        let affected_paths: Vec<String> =
+            rows.iter().take(20).map(|row| row.path.clone()).collect();
         let mut next = record.clone();
         next.restart_count = next.restart_count.saturating_add(1);
         next.attempts = 0;
@@ -46,7 +48,10 @@ impl PkmRepo {
                 let source_memory_ids = row.source_memory_ids.clone();
                 let published = self.entity_by_path(&row.user_id, &row.path).await?;
                 row = KnowledgeConsolidationEntity::pending(
-                    &row.consolidation_id, &row.user_id, &row.path, row.category,
+                    &row.consolidation_id,
+                    &row.user_id,
+                    &row.path,
+                    row.category,
                     row.contributions,
                     source_memory_ids.iter().cloned().collect(),
                 );
@@ -78,49 +83,68 @@ impl PkmRepo {
             next.failure = Some(diagnostic);
         }
 
-        let tx = self.db.clone().begin().await
+        let tx = self
+            .db
+            .clone()
+            .begin()
+            .await
             .map_err(|e| Self::err("recover_consolidation_begin", e))?;
         if terminal {
-            if let Err(e) = tx.query(
-                "DELETE knowledge_consolidation_entity WHERE consolidation_id = $cid",
-            ).bind(("cid", record.consolidation_id.clone())).await
-                .and_then(|response| response.check()) {
+            if let Err(e) = tx
+                .query("DELETE knowledge_consolidation_entity WHERE consolidation_id = $cid")
+                .bind(("cid", record.consolidation_id.clone()))
+                .await
+                .and_then(|response| response.check())
+            {
                 let _ = tx.cancel().await;
                 return Err(Self::err("recover_consolidation_clear", e));
             }
         } else {
-            let retained: std::collections::HashSet<String> =
-                pending_rows.iter().map(|row| row.consolidation_entity_id.clone()).collect();
-            if let Err(e) = tx.query(
-                "DELETE knowledge_consolidation_entity
+            let retained: std::collections::HashSet<String> = pending_rows
+                .iter()
+                .map(|row| row.consolidation_entity_id.clone())
+                .collect();
+            if let Err(e) = tx
+                .query(
+                    "DELETE knowledge_consolidation_entity
                  WHERE consolidation_id = $cid AND meta::id(id) NOT IN $retained",
-            )
-            .bind(("cid", record.consolidation_id.clone()))
-            .bind(("retained", retained.into_iter().collect::<Vec<_>>()))
-            .await
-            .and_then(|response| response.check()) {
+                )
+                .bind(("cid", record.consolidation_id.clone()))
+                .bind(("retained", retained.into_iter().collect::<Vec<_>>()))
+                .await
+                .and_then(|response| response.check())
+            {
                 let _ = tx.cancel().await;
                 return Err(Self::err("recover_consolidation_prune", e));
             }
             for row in pending_rows {
-                if let Err(e) = tx.query(
-                    "UPSERT type::record('knowledge_consolidation_entity', $id) CONTENT $row",
-                ).bind(("id", row.consolidation_entity_id.clone())).bind(("row", row)).await
-                    .and_then(|response| response.check()) {
+                if let Err(e) = tx
+                    .query(
+                        "UPSERT type::record('knowledge_consolidation_entity', $id) CONTENT $row",
+                    )
+                    .bind(("id", row.consolidation_entity_id.clone()))
+                    .bind(("row", row))
+                    .await
+                    .and_then(|response| response.check())
+                {
                     let _ = tx.cancel().await;
                     return Err(Self::err("recover_consolidation_entity", e));
                 }
             }
         }
-        if let Err(e) = tx.query(
-            "UPSERT type::record('knowledge_consolidation_record', $id) CONTENT $record",
-        ).bind(("id", next.id.clone())).bind(("record", next.clone())).await
-            .and_then(|response| response.check()) {
+        if let Err(e) = tx
+            .query("UPSERT type::record('knowledge_consolidation_record', $id) CONTENT $record")
+            .bind(("id", next.id.clone()))
+            .bind(("record", next.clone()))
+            .await
+            .and_then(|response| response.check())
+        {
             let _ = tx.cancel().await;
             return Err(Self::err("recover_consolidation_record", e));
         }
-        tx.commit().await.map_err(|e| Self::err("recover_consolidation_commit", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| Self::err("recover_consolidation_commit", e))?;
         Ok(next)
     }
-
 }

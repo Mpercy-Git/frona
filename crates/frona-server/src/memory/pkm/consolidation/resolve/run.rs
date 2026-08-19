@@ -7,10 +7,14 @@ use oxigraph::store::Store;
 use oxrdf::{Term, Triple};
 
 use crate::core::error::AppError;
+use crate::memory::pkm::consolidation::PromptSpec;
 use crate::memory::pkm::consolidation::Verdict;
+use crate::memory::pkm::consolidation::candidates::{
+    RESOLUTION_RETRIEVAL_LIMIT, RankedCandidate, Request, Search, Subject,
+};
 use crate::memory::pkm::consolidation::classify::ProposalSet;
 use crate::memory::pkm::consolidation::resolve::evidence::{
-    IdentityConversation, IdentityResolution, ResolveDecision, ResolutionDecisionContext,
+    IdentityConversation, IdentityResolution, ResolutionDecisionContext, ResolveDecision,
     validate_resolution_evidence,
 };
 #[cfg(test)]
@@ -21,15 +25,8 @@ use crate::memory::pkm::consolidation::resolve::evidence::{
 use crate::memory::pkm::consolidation::{
     Consolidator, projection_rejection_details, validate_proposal_projection,
 };
-use crate::memory::pkm::consolidation::candidates::{
-    RESOLUTION_RETRIEVAL_LIMIT, RankedCandidate, Request,
-    Search, Subject,
-};
-use crate::memory::pkm::consolidation::PromptSpec;
 use crate::memory::pkm::model::KnowledgeConsolidationEntity;
-use crate::memory::pkm::ontology::{
-    OntologyManager, individual_iri, path_from_individual, sparql,
-};
+use crate::memory::pkm::ontology::{OntologyManager, individual_iri, path_from_individual, sparql};
 use crate::tool::registry::ToolFilter;
 
 impl Consolidator {
@@ -64,17 +61,19 @@ impl Consolidator {
             .find_candidates(
                 request,
                 |c| {
-                c.kinds = ontology_manager.normalize_types(
-                    &proposals.kinds_for(&c.path, &c.kinds),
-                    staged_type_delta,
-                );
+                    c.kinds = ontology_manager.normalize_types(
+                        &proposals.kinds_for(&c.path, &c.kinds),
+                        staged_type_delta,
+                    );
                 },
                 |subject, c| {
-                    let ours: Vec<String> = subject.kinds.iter().map(|kind| px.expand(kind)).collect();
+                    let ours: Vec<String> =
+                        subject.kinds.iter().map(|kind| px.expand(kind)).collect();
                     let theirs: Vec<String> = c.kinds.iter().map(|kind| px.expand(kind)).collect();
                     ontology_type_affinity(store, &ours, &theirs, px)
                 },
-            ).await
+            )
+            .await
     }
 
     /// The entity paths the reasoned closure says this entity is the same entity as.
@@ -88,9 +87,7 @@ impl Consolidator {
             "SELECT ?o WHERE {{ <{me}> owl:sameAs ?o . FILTER(isIRI(?o)) \
              FILTER(STR(?o) != \"{me}\") }}"
         );
-        let QueryResults::Solutions(sols) = sparql::query(
-            store, &query, &self.prefixes,
-        )? else {
+        let QueryResults::Solutions(sols) = sparql::query(store, &query, &self.prefixes)? else {
             return Ok(Vec::new());
         };
         let mut out: Vec<String> = sols
@@ -137,10 +134,17 @@ impl Consolidator {
                 ),
                 (
                     "description",
-                    if entity.description.is_empty() { "(none)" } else { &entity.description },
+                    if entity.description.is_empty() {
+                        "(none)"
+                    } else {
+                        &entity.description
+                    },
                 ),
                 ("kind", decision_context.kinds_display.as_str()),
-                ("identity_evidence", decision_context.identity_evidence.as_str()),
+                (
+                    "identity_evidence",
+                    decision_context.identity_evidence.as_str(),
+                ),
                 (
                     "assertions",
                     if decision_context.subject_fields.assertions.is_empty() {
@@ -153,16 +157,19 @@ impl Consolidator {
             ],
         )?;
         let overlay = self.tool_overlay(ontology_manager, proposals).await?;
-        let evidence_context = decision_context.clone()
+        let evidence_context = decision_context
+            .clone()
             .with_tool_visible_state(&entity.path, &overlay.entities);
-        let tools = crate::memory::pkm::consolidation::tools::ontology::build_ontology_tools_with_overlay(
-            ontology_manager.clone(),
-            &self.ctx,
-            self.prefixes.clone(),
-            Some(overlay),
-            crate::memory::pkm::consolidation::tools::ontology::OntologyToolProfile::Resolve,
-        );
-        let mut convo = self.ctx
+        let tools =
+            crate::memory::pkm::consolidation::tools::ontology::build_ontology_tools_with_overlay(
+                ontology_manager.clone(),
+                &self.ctx,
+                self.prefixes.clone(),
+                Some(overlay),
+                crate::memory::pkm::consolidation::tools::ontology::OntologyToolProfile::Resolve,
+            );
+        let mut convo = self
+            .ctx
             .llm
             .conversation::<ResolveDecision>(
                 self.ctx.scope.chat_id.as_deref(),
@@ -316,7 +323,10 @@ impl Consolidator {
                 pair_count: paths.len(),
             },
         };
-        Ok(IdentityConversation { decision, corrections })
+        Ok(IdentityConversation {
+            decision,
+            corrections,
+        })
     }
 }
 
@@ -329,9 +339,12 @@ pub(super) fn types_provably_disjoint(
     theirs: &[String],
     prefixes: &crate::memory::pkm::ontology::PrefixMap,
 ) -> bool {
-    ours.iter().any(|ours| theirs.iter().any(|theirs| {
-        sparql::ask(store, &format!(
-            "ASK {{ \
+    ours.iter().any(|ours| {
+        theirs.iter().any(|theirs| {
+            sparql::ask(
+                store,
+                &format!(
+                    "ASK {{ \
                {{ <{ours}> <http://www.w3.org/2000/01/rdf-schema#subClassOf>* ?a . \
                   <{theirs}> <http://www.w3.org/2000/01/rdf-schema#subClassOf>* ?b . \
                   ?a <http://www.w3.org/2002/07/owl#disjointWith> ?b }} \
@@ -340,8 +353,12 @@ pub(super) fn types_provably_disjoint(
                   <{theirs}> <http://www.w3.org/2000/01/rdf-schema#subClassOf>* ?b . \
                   ?b <http://www.w3.org/2002/07/owl#disjointWith> ?a }} \
              }}"
-        ), prefixes).unwrap_or(false)
-    }))
+                ),
+                prefixes,
+            )
+            .unwrap_or(false)
+        })
+    })
 }
 
 pub(super) fn ontology_type_affinity(
@@ -350,14 +367,25 @@ pub(super) fn ontology_type_affinity(
     theirs: &[String],
     prefixes: &crate::memory::pkm::ontology::PrefixMap,
 ) -> Option<u8> {
-    if types_provably_disjoint(store, ours, theirs, prefixes) { return None; }
-    if ours.iter().any(|ours| theirs.contains(ours)) { return Some(3); }
-    let related = ours.iter().any(|ours| theirs.iter().any(|theirs| {
-        sparql::ask(store, &format!(
-            "ASK {{ {{ <{ours}> rdfs:subClassOf+ <{theirs}> }} UNION \
+    if types_provably_disjoint(store, ours, theirs, prefixes) {
+        return None;
+    }
+    if ours.iter().any(|ours| theirs.contains(ours)) {
+        return Some(3);
+    }
+    let related = ours.iter().any(|ours| {
+        theirs.iter().any(|theirs| {
+            sparql::ask(
+                store,
+                &format!(
+                    "ASK {{ {{ <{ours}> rdfs:subClassOf+ <{theirs}> }} UNION \
                     {{ <{theirs}> rdfs:subClassOf+ <{ours}> }} }}"
-        ), prefixes).unwrap_or(false)
-    }));
+                ),
+                prefixes,
+            )
+            .unwrap_or(false)
+        })
+    });
     Some(if related { 2 } else { 0 })
 }
 

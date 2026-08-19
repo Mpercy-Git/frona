@@ -5,7 +5,12 @@ use crate::memory::pkm::model::{
 
 fn entity(path: &str) -> KnowledgeConsolidationEntity {
     let mut entity = KnowledgeConsolidationEntity::pending(
-        "run", "user", path, EntityCategory::Concept, Vec::new(), Default::default(),
+        "run",
+        "user",
+        path,
+        EntityCategory::Concept,
+        Vec::new(),
+        Default::default(),
     );
     entity.name = path.to_string();
     entity.rederive_search();
@@ -22,7 +27,10 @@ fn draft_replacement_shadows_durable_state() {
 
     let snapshot = EntitySnapshot::new([durable], &draft);
 
-    assert_eq!(snapshot.entity_by_path("people/casey-owner").unwrap().name, "Current Casey Owner");
+    assert_eq!(
+        snapshot.entity_by_path("people/casey-owner").unwrap().name,
+        "Current Casey Owner"
+    );
 }
 
 #[test]

@@ -49,9 +49,17 @@ run = "cargo build --release -p frona-server"
 description = "Cargo check all crates"
 run = "cargo check --workspace"
 
+[tasks.fmt]
+description = "Format Rust code"
+run = "cargo fmt --all"
+
+[tasks."fmt:check"]
+description = "Check Rust formatting"
+run = "cargo fmt --all -- --check"
+
 [tasks.lint]
 description = "Run clippy + frontend lint"
-depends = ["lint:backend", "lint:frontend"]
+depends = ["fmt:check", "lint:backend", "lint:frontend"]
 
 [tasks."lint:backend"]
 description = "Run clippy"

@@ -11,9 +11,7 @@ use tracing::warn;
 
 use crate::core::error::AppError;
 use crate::db::repo::pkm::AuthoredPageWrite;
-use crate::memory::pkm::model::{
-    KnowledgeMemory, KnowledgeEntity, classify_memories,
-};
+use crate::memory::pkm::model::{KnowledgeEntity, KnowledgeMemory, classify_memories};
 use crate::memory::pkm::projection::{MarkdownPage, canonicalize_wikilinks, compose_page};
 use crate::tool::AgentTool;
 use crate::tool::registry::ToolFilter;
@@ -93,12 +91,14 @@ impl PageAuthor {
             return Ok(false);
         };
         let page = page.as_knowledge_entity();
-        let memories = self.ctx
+        let memories = self
+            .ctx
             .repo
             .memories_for_entity(&self.ctx.scope.user_id, path)
             .await
             .unwrap_or_default();
-        let links = self.ctx
+        let links = self
+            .ctx
             .repo
             .links_from_entity(&self.ctx.scope.user_id, path)
             .await
@@ -110,34 +110,56 @@ impl PageAuthor {
 
         let article = if current.is_empty() {
             MarkdownPage::parse(&deterministic_body(
-                &page, &current, &self.ctx.scope.timezone,
+                &page,
+                &current,
+                &self.ctx.scope.timezone,
             ))
         } else {
             self.authored_body(&page, &page.attributes, &current, &history)
                 .await
-                .unwrap_or_else(|| MarkdownPage::parse(&deterministic_body(
-                    &page, &current, &self.ctx.scope.timezone,
-                )))
+                .unwrap_or_else(|| {
+                    MarkdownPage::parse(&deterministic_body(
+                        &page,
+                        &current,
+                        &self.ctx.scope.timezone,
+                    ))
+                })
         };
         let article = MarkdownPage::parse(&canonicalize_wikilinks(
-            &article.body, redirects, &self.ctx.scope.vault,
+            &article.body,
+            redirects,
+            &self.ctx.scope.vault,
         ));
 
         let file = compose_page(
-            &page, &article, &page.attributes, &links, &self.prefixes,
+            &page,
+            &article,
+            &page.attributes,
+            &links,
+            &self.prefixes,
             &self.ctx.scope.vault,
         );
         let rev = crate::memory::pkm::sha256_hex(&file);
-        self.ctx.repo.commit_authored_page(
-            self.ctx.view.consolidation_id(),
-            &self.ctx.scope.user_id,
-            &AuthoredPageWrite {
-                path: path.to_string(), name: page.name, description: page.description,
-                attributes: page.attributes, body: article.body,
-                related_playbooks: page.related_playbooks, content: file.clone(), rev,
-            },
-        ).await?;
-        self.ctx.storage.write_page(&self.ctx.scope.vault, path, &file)?;
+        self.ctx
+            .repo
+            .commit_authored_page(
+                self.ctx.view.consolidation_id(),
+                &self.ctx.scope.user_id,
+                &AuthoredPageWrite {
+                    path: path.to_string(),
+                    name: page.name,
+                    description: page.description,
+                    attributes: page.attributes,
+                    body: article.body,
+                    related_playbooks: page.related_playbooks,
+                    content: file.clone(),
+                    rev,
+                },
+            )
+            .await?;
+        self.ctx
+            .storage
+            .write_page(&self.ctx.scope.vault, path, &file)?;
         Ok(true)
     }
 
@@ -150,7 +172,9 @@ impl PageAuthor {
     ) -> Option<MarkdownPage> {
         let cur = list_or(current, "(none)", &self.ctx.scope.timezone);
         let old = list_or(
-            history, "(none — nothing has changed)", &self.ctx.scope.timezone,
+            history,
+            "(none — nothing has changed)",
+            &self.ctx.scope.timezone,
         );
         let mut attrs = String::new();
         if let Some(map) = attributes.as_object().filter(|m| !m.is_empty()) {
@@ -195,13 +219,15 @@ impl PageAuthor {
         // (locale-fragile). Empty output → None → deterministic fallback.
         let budget = Arc::new(std::sync::atomic::AtomicUsize::new(20));
         let tools: Vec<Arc<dyn AgentTool>> = vec![
-            Arc::new(crate::memory::pkm::consolidation::tools::SearchEntitiesTool {
-                prompts: self.ctx.llm.prompts().clone(),
-                repo: self.ctx.view.clone(),
-                overlay: None,
-                budget: Some(budget.clone()),
-                prefixes: self.prefixes.clone(),
-            }),
+            Arc::new(
+                crate::memory::pkm::consolidation::tools::SearchEntitiesTool {
+                    prompts: self.ctx.llm.prompts().clone(),
+                    repo: self.ctx.view.clone(),
+                    overlay: None,
+                    budget: Some(budget.clone()),
+                    prefixes: self.prefixes.clone(),
+                },
+            ),
             Arc::new(crate::memory::pkm::consolidation::tools::ReadEntityTool {
                 prompts: self.ctx.llm.prompts().clone(),
                 repo: self.ctx.view.clone(),
@@ -212,14 +238,18 @@ impl PageAuthor {
                 budget: Some(budget),
             }),
         ];
-        let raw = match self.ctx.llm.text_with_tools(
-            &self.ctx.scope.agent_id,
-            &rendered.system,
-            vec![RigMessage::user(&rendered.input)],
-            &[ToolFilter::AllowList(&[])],
-            &tools,
-            20,
-        ).await
+        let raw = match self
+            .ctx
+            .llm
+            .text_with_tools(
+                &self.ctx.scope.agent_id,
+                &rendered.system,
+                vec![RigMessage::user(&rendered.input)],
+                &[ToolFilter::AllowList(&[])],
+                &tools,
+                20,
+            )
+            .await
         {
             Ok(r) => r,
             Err(e) => {
@@ -269,7 +299,8 @@ fn list_or(memories: &[&KnowledgeMemory], empty: &str, timezone: &str) -> String
 fn author_memory_bullet(memory: &KnowledgeMemory, timezone: &str) -> String {
     let evidence = prompt_evidence(&memory.evidence);
     let mut rendered = format!(
-        "- ({:?}) {}\n  evidence: {}\n", memory.kind, memory.content, evidence,
+        "- ({:?}) {}\n  evidence: {}\n",
+        memory.kind, memory.content, evidence,
     );
     if let Some(episode) = &memory.episode {
         let status = format!("{:?}", episode.status).to_ascii_lowercase();
@@ -282,7 +313,8 @@ fn author_memory_bullet(memory: &KnowledgeMemory, timezone: &str) -> String {
             let tz = timezone.parse::<chrono_tz::Tz>().unwrap_or(chrono_tz::UTC);
             fields.push(format!(
                 "start_local={} timezone={timezone}",
-                start.with_timezone(&tz)
+                start
+                    .with_timezone(&tz)
                     .to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
             ));
         } else if let Some(absolute) = &episode.absolute {
@@ -332,15 +364,19 @@ mod tests {
             kind: MemoryKind::Episodic,
             episode: Some(Episode {
                 status: EpisodeStatus::Planned,
-                anchor: TemporalAnchor { message: "m23".into(), quote: String::new() },
+                anchor: TemporalAnchor {
+                    message: "m23".into(),
+                    quote: String::new(),
+                },
                 duration: None,
                 absolute: Some(AbsoluteTime {
-                    year: Some(2026), month: Some(7), day: Some(20),
-                    hour: Some(2), minute: Some(0),
+                    year: Some(2026),
+                    month: Some(7),
+                    day: Some(20),
+                    hour: Some(2),
+                    minute: Some(0),
                 }),
-                resolved_start: Some(
-                    Utc.with_ymd_and_hms(2026, 7, 20, 2, 0, 0).unwrap(),
-                ),
+                resolved_start: Some(Utc.with_ymd_and_hms(2026, 7, 20, 2, 0, 0).unwrap()),
                 resolved_end: None,
             }),
             content: "A Sunday-evening reminder was scheduled.".into(),
@@ -355,11 +391,12 @@ mod tests {
         let rendered = list_or(&[&memory], "(none)", "America/Los_Angeles");
 
         assert!(rendered.contains("status=planned"), "{rendered}");
-        assert!(rendered.contains("start_utc=2026-07-20T02:00:00Z"), "{rendered}");
         assert!(
-            rendered.contains(
-                "start_local=2026-07-19T19:00:00-07:00 timezone=America/Los_Angeles"
-            ),
+            rendered.contains("start_utc=2026-07-20T02:00:00Z"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("start_local=2026-07-19T19:00:00-07:00 timezone=America/Los_Angeles"),
             "{rendered}",
         );
     }

@@ -3,16 +3,18 @@ use std::sync::Arc;
 
 use rig_core::client::Nothing;
 use rig_core::providers::{
-    anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral,
-    moonshot, ollama, openai, openrouter, perplexity, together, xai,
+    anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral, moonshot,
+    ollama, openai, openrouter, perplexity, together, xai,
 };
 
+use super::config::{
+    InferenceConfig, ModelGroup, ModelProviderConfig, ModelRegistryConfig, RetryConfig,
+};
+use super::error::InferenceError;
+use super::hooks;
+use super::provider::{InferenceCounter, ModelProvider, ModelRef, OpenAiProvider, RigProvider};
 use crate::chat::broadcast::BroadcastService;
 use crate::core::config::ProviderModel;
-use super::hooks;
-use super::config::{InferenceConfig, ModelGroup, ModelRegistryConfig, ModelProviderConfig, RetryConfig};
-use super::error::InferenceError;
-use super::provider::{InferenceCounter, ModelProvider, ModelRef, OpenAiProvider, RigProvider};
 
 #[derive(Clone)]
 pub struct ModelProviderRegistry {
@@ -51,7 +53,9 @@ impl ModelProviderRegistry {
         }
 
         if providers.is_empty() {
-            tracing::warn!("No inference providers configured — chat will fail until a provider is available");
+            tracing::warn!(
+                "No inference providers configured — chat will fail until a provider is available"
+            );
         }
 
         Ok(Self {
@@ -238,9 +242,10 @@ fn init_provider(
                 .base_url(url)
                 .build()
                 .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?;
-            Ok(Arc::new(
-                RigProvider::new(client, counter.clone()).with_hook(hooks::openai),
-            ) as Arc<dyn ModelProvider>)
+            Ok(
+                Arc::new(RigProvider::new(client, counter.clone()).with_hook(hooks::openai))
+                    as Arc<dyn ModelProvider>,
+            )
         }
         "huggingface" => init_api_key_provider!(name, entry, huggingface, counter),
         _ => Err(InferenceError::ProviderNotConfigured(format!(

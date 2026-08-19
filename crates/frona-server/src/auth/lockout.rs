@@ -31,7 +31,9 @@ impl LoginAttemptTracker {
     pub async fn record_failure(&self, identifier: &str) {
         let counter = self
             .cache
-            .get_with(identifier.to_string(), async { Arc::new(AtomicU32::new(0)) })
+            .get_with(identifier.to_string(), async {
+                Arc::new(AtomicU32::new(0))
+            })
             .await;
         counter.fetch_add(1, Ordering::Relaxed);
     }

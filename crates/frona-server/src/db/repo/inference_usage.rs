@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use surrealdb::types::SurrealValue;
 
 use crate::core::error::AppError;
+use crate::inference::usage::models::UsageRollup;
 use crate::inference::usage::{
     BucketLatencyRow, ChatCostRow, InferenceUsage, InferenceUsageRepository, LatencyPercentiles,
     ModelLatencyRow, TimeBucket, UsageBucket,
 };
-use crate::inference::usage::models::UsageRollup;
 
 use super::generic::SurrealRepo;
 
@@ -35,18 +35,18 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         until: Option<DateTime<Utc>>,
     ) -> Result<UsageRollup, AppError> {
         let (window_clause, bindings) = window_clause(since, until);
-        let query = format!(
-            "{ROLLUP_SELECT} WHERE chat_id = $chat_id{window_clause} GROUP ALL"
-        );
-        let mut req = self.db().query(&query).bind(("chat_id", chat_id.to_string()));
+        let query = format!("{ROLLUP_SELECT} WHERE chat_id = $chat_id{window_clause} GROUP ALL");
+        let mut req = self
+            .db()
+            .query(&query)
+            .bind(("chat_id", chat_id.to_string()));
         for (k, v) in bindings {
             req = req.bind((k, v));
         }
-        let mut result = req
-            .await
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
+        let rollup: Option<UsageRollup> = result
+            .take(0)
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let rollup: Option<UsageRollup> =
-            result.take(0).map_err(|e| AppError::Database(e.to_string()))?;
         Ok(rollup.unwrap_or_default())
     }
 
@@ -57,18 +57,18 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         until: Option<DateTime<Utc>>,
     ) -> Result<UsageRollup, AppError> {
         let (window_clause, bindings) = window_clause(since, until);
-        let query = format!(
-            "{ROLLUP_SELECT} WHERE user_id = $user_id{window_clause} GROUP ALL"
-        );
-        let mut req = self.db().query(&query).bind(("user_id", user_id.to_string()));
+        let query = format!("{ROLLUP_SELECT} WHERE user_id = $user_id{window_clause} GROUP ALL");
+        let mut req = self
+            .db()
+            .query(&query)
+            .bind(("user_id", user_id.to_string()));
         for (k, v) in bindings {
             req = req.bind((k, v));
         }
-        let mut result = req
-            .await
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
+        let rollup: Option<UsageRollup> = result
+            .take(0)
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let rollup: Option<UsageRollup> =
-            result.take(0).map_err(|e| AppError::Database(e.to_string()))?;
         Ok(rollup.unwrap_or_default())
     }
 
@@ -79,18 +79,18 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         until: Option<DateTime<Utc>>,
     ) -> Result<UsageRollup, AppError> {
         let (window_clause, bindings) = window_clause(since, until);
-        let query = format!(
-            "{ROLLUP_SELECT} WHERE agent_id = $agent_id{window_clause} GROUP ALL"
-        );
-        let mut req = self.db().query(&query).bind(("agent_id", agent_id.to_string()));
+        let query = format!("{ROLLUP_SELECT} WHERE agent_id = $agent_id{window_clause} GROUP ALL");
+        let mut req = self
+            .db()
+            .query(&query)
+            .bind(("agent_id", agent_id.to_string()));
         for (k, v) in bindings {
             req = req.bind((k, v));
         }
-        let mut result = req
-            .await
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
+        let rollup: Option<UsageRollup> = result
+            .take(0)
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let rollup: Option<UsageRollup> =
-            result.take(0).map_err(|e| AppError::Database(e.to_string()))?;
         Ok(rollup.unwrap_or_default())
     }
 
@@ -113,25 +113,27 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
                 WHERE user_id = $user_id{window_clause} \
                 GROUP BY kind_tag"
         );
-        let mut req = self.db().query(&query).bind(("user_id", user_id.to_string()));
+        let mut req = self
+            .db()
+            .query(&query)
+            .bind(("user_id", user_id.to_string()));
         for (k, v) in bindings {
             req = req.bind((k, v));
         }
-        let mut result = req
-            .await
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
+        let rows: Vec<GroupedRollup> = result
+            .take(0)
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let rows: Vec<GroupedRollup> =
-            result.take(0).map_err(|e| AppError::Database(e.to_string()))?;
-        Ok(rows.into_iter().map(|r| {
-            let key = r.key.clone();
-            (key, r.rollup())
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let key = r.key.clone();
+                (key, r.rollup())
+            })
+            .collect())
     }
 
-    async fn last_chat_input_tokens(
-        &self,
-        chat_id: &str,
-    ) -> Result<Option<u64>, AppError> {
+    async fn last_chat_input_tokens(&self, chat_id: &str) -> Result<Option<u64>, AppError> {
         // SurrealDB requires `ORDER BY` columns to be in the SELECT
         // projection — hence `created_at` is selected alongside the value we
         // actually consume.
@@ -154,9 +156,7 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
             .bind(("chat_id", chat_id.to_string()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let row: Option<Row> = res
-            .take(0)
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        let row: Option<Row> = res.take(0).map_err(|e| AppError::Database(e.to_string()))?;
         Ok(row.map(|r| r.input_tokens))
     }
 
@@ -179,19 +179,24 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
                 WHERE user_id = $user_id{window_clause} \
                 GROUP BY model_ref"
         );
-        let mut req = self.db().query(&query).bind(("user_id", user_id.to_string()));
+        let mut req = self
+            .db()
+            .query(&query)
+            .bind(("user_id", user_id.to_string()));
         for (k, v) in bindings {
             req = req.bind((k, v));
         }
-        let mut result = req
-            .await
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
+        let rows: Vec<GroupedRollup> = result
+            .take(0)
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let rows: Vec<GroupedRollup> =
-            result.take(0).map_err(|e| AppError::Database(e.to_string()))?;
-        Ok(rows.into_iter().map(|r| {
-            let key = r.key.clone();
-            (key, r.rollup())
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let key = r.key.clone();
+                (key, r.rollup())
+            })
+            .collect())
     }
 
     async fn aggregate_buckets_by_user(
@@ -271,13 +276,14 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
                 ttft_ms_p99: <float>math::percentile($ttft, 99) \
              }};"
         );
-        let mut req = self.db().query(&query).bind(("user_id", user_id.to_string()));
+        let mut req = self
+            .db()
+            .query(&query)
+            .bind(("user_id", user_id.to_string()));
         for (k, v) in bindings {
             req = req.bind((k, v));
         }
-        let mut result = req
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
         // Three statements: two LETs (no result rows) + the final RETURN.
         // The RETURN's row is at index 2.
         let row: Option<Row> = result
@@ -319,13 +325,14 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
                 ORDER BY cost_usd DESC \
                 LIMIT {limit}"
         );
-        let mut req = self.db().query(&query).bind(("user_id", user_id.to_string()));
+        let mut req = self
+            .db()
+            .query(&query)
+            .bind(("user_id", user_id.to_string()));
         for (k, v) in bindings {
             req = req.bind((k, v));
         }
-        let mut result = req
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
         let rows: Vec<ChatCostRow> = result
             .take(0)
             .map_err(|e| AppError::Database(e.to_string()))?;

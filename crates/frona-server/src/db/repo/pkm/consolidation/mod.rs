@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::core::error::AppError;
 use crate::memory::pkm::model::{
-    ConsolidationEntityLifecycle, KnowledgeConsolidationEntity, EntityHit, normalize_identity_name,
+    ConsolidationEntityLifecycle, EntityHit, KnowledgeConsolidationEntity, normalize_identity_name,
 };
 
 use super::PkmRepo;
@@ -15,7 +15,9 @@ pub struct PkmConsolidationStore {
 }
 
 impl PkmConsolidationStore {
-    pub fn new(committed: Arc<PkmRepo>) -> Self { Self { committed } }
+    pub fn new(committed: Arc<PkmRepo>) -> Self {
+        Self { committed }
+    }
 
     pub fn scoped(&self, consolidation_id: &str, user_id: &str) -> PkmConsolidationRepo {
         PkmConsolidationRepo {
@@ -43,15 +45,27 @@ struct ResolutionCandidateQuery<'a> {
 }
 
 impl PkmConsolidationRepo {
-    pub fn consolidation_id(&self) -> &str { &self.consolidation_id }
-    pub fn user_id(&self) -> &str { &self.user_id }
+    pub fn consolidation_id(&self) -> &str {
+        &self.consolidation_id
+    }
+    pub fn user_id(&self) -> &str {
+        &self.user_id
+    }
 
-    pub async fn upsert_entity(&self, mut row: KnowledgeConsolidationEntity) -> Result<(), AppError> {
+    pub async fn upsert_entity(
+        &self,
+        mut row: KnowledgeConsolidationEntity,
+    ) -> Result<(), AppError> {
         if row.consolidation_id != self.consolidation_id || row.user_id != self.user_id {
-            return Err(AppError::Database("pkm/consolidation_entity: scope mismatch".into()));
+            return Err(AppError::Database(
+                "pkm/consolidation_entity: scope mismatch".into(),
+            ));
         }
         if row.entity_id.is_none()
-            && let Some(entity) = self.committed.entity_by_path(&self.user_id, &row.path).await?
+            && let Some(entity) = self
+                .committed
+                .entity_by_path(&self.user_id, &row.path)
+                .await?
         {
             row.entity_id = Some(entity.id);
         }
@@ -60,8 +74,13 @@ impl PkmConsolidationRepo {
         self.committed.upsert_consolidation_entity(&row).await
     }
 
-    pub async fn working_entity(&self, path: &str) -> Result<Option<KnowledgeConsolidationEntity>, AppError> {
-        self.committed.consolidation_entity_by_path(&self.consolidation_id, &self.user_id, path).await
+    pub async fn working_entity(
+        &self,
+        path: &str,
+    ) -> Result<Option<KnowledgeConsolidationEntity>, AppError> {
+        self.committed
+            .consolidation_entity_by_path(&self.consolidation_id, &self.user_id, path)
+            .await
     }
 
     pub async fn redirects(&self) -> Result<std::collections::BTreeMap<String, String>, AppError> {
@@ -70,7 +89,10 @@ impl PkmConsolidationRepo {
             .await
     }
 
-    pub async fn entity_by_path(&self, path: &str) -> Result<Option<KnowledgeConsolidationEntity>, AppError> {
+    pub async fn entity_by_path(
+        &self,
+        path: &str,
+    ) -> Result<Option<KnowledgeConsolidationEntity>, AppError> {
         let mut current_path = path.to_string();
         let mut visited = std::collections::HashSet::new();
         loop {
@@ -79,7 +101,9 @@ impl PkmConsolidationRepo {
                     "pkm/consolidation_entity: redirect cycle at `{current_path}`"
                 )));
             }
-            let Some(row) = self.working_entity(&current_path).await? else { break; };
+            let Some(row) = self.working_entity(&current_path).await? else {
+                break;
+            };
             if row.lifecycle == ConsolidationEntityLifecycle::Coalesced
                 && let Some(canonical) = row.canonical_path
             {
@@ -88,8 +112,14 @@ impl PkmConsolidationRepo {
             }
             if row.lifecycle == ConsolidationEntityLifecycle::Pending
                 && row.entity_id.is_some()
-                && row.contributions.iter().any(|contribution| contribution.existing_only)
-                && let Some(entity) = self.committed.entity_by_path(&self.user_id, &current_path).await?
+                && row
+                    .contributions
+                    .iter()
+                    .any(|contribution| contribution.existing_only)
+                && let Some(entity) = self
+                    .committed
+                    .entity_by_path(&self.user_id, &current_path)
+                    .await?
             {
                 let mut effective = row;
                 effective.apply_committed(entity);
@@ -97,10 +127,17 @@ impl PkmConsolidationRepo {
             }
             return Ok(row.effective_entity());
         }
-        let Some(entity) = self.committed.entity_by_path(&self.user_id, &current_path).await? else {
+        let Some(entity) = self
+            .committed
+            .entity_by_path(&self.user_id, &current_path)
+            .await?
+        else {
             return Ok(None);
         };
-        Ok(Some(KnowledgeConsolidationEntity::from_committed(&self.consolidation_id, entity)))
+        Ok(Some(KnowledgeConsolidationEntity::from_committed(
+            &self.consolidation_id,
+            entity,
+        )))
     }
 
     pub async fn list_entities(&self) -> Result<Vec<KnowledgeConsolidationEntity>, AppError> {
@@ -116,9 +153,10 @@ impl PkmConsolidationRepo {
     }
 
     pub async fn search_entities(&self, query: &str) -> Result<Vec<EntityHit>, AppError> {
-        let mut hits = self.committed.search_effective_entities(
-            &self.consolidation_id, &self.user_id, query,
-        ).await?;
+        let mut hits = self
+            .committed
+            .search_effective_entities(&self.consolidation_id, &self.user_id, query)
+            .await?;
         self.prioritize_exact_name(query, &mut hits);
         Ok(hits)
     }
@@ -132,31 +170,38 @@ impl PkmConsolidationRepo {
         query_text: &str,
         limit: i64,
     ) -> Result<Vec<EntityHit>, AppError> {
-        self.committed.search_effective_resolution_candidates(
-            &self.consolidation_id,
-            &self.user_id,
-            ResolutionCandidateQuery {
-                names,
-                name_tokens,
-                assertions,
-                kinds,
-                text: query_text,
-                limit,
-            },
-        ).await
+        self.committed
+            .search_effective_resolution_candidates(
+                &self.consolidation_id,
+                &self.user_id,
+                ResolutionCandidateQuery {
+                    names,
+                    name_tokens,
+                    assertions,
+                    kinds,
+                    text: query_text,
+                    limit,
+                },
+            )
+            .await
     }
 
     fn prioritize_exact_name(&self, query: &str, hits: &mut [EntityHit]) {
         let exact = normalize_identity_name(query);
         hits.sort_by_key(|hit| {
             let matches = normalize_identity_name(&hit.name) == exact
-                || hit.aliases.iter().any(|alias| normalize_identity_name(alias) == exact);
+                || hit
+                    .aliases
+                    .iter()
+                    .any(|alias| normalize_identity_name(alias) == exact);
             !matches
         });
     }
 
     pub async fn clear(&self) -> Result<(), AppError> {
-        self.committed.delete_consolidation_entities(&self.consolidation_id).await
+        self.committed
+            .delete_consolidation_entities(&self.consolidation_id)
+            .await
     }
 
     pub(crate) async fn commit_transition(
@@ -164,7 +209,9 @@ impl PkmConsolidationRepo {
         rows: &[KnowledgeConsolidationEntity],
         checkpoint: &crate::memory::pkm::KnowledgeConsolidationRecord,
     ) -> Result<(), AppError> {
-        self.committed.commit_consolidation_transition(rows, checkpoint).await
+        self.committed
+            .commit_consolidation_transition(rows, checkpoint)
+            .await
     }
 }
 

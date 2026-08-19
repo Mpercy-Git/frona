@@ -23,7 +23,11 @@ impl PkmRepo {
             }
         }
 
-        let tx = self.db.clone().begin().await
+        let tx = self
+            .db
+            .clone()
+            .begin()
+            .await
             .map_err(|e| Self::err("reconcile_commit_begin", e))?;
         macro_rules! tx_try {
             ($expr:expr, $ctx:literal) => {
@@ -51,26 +55,30 @@ impl PkmRepo {
                 .await,
                 "reconcile_commit_relation_read"
             );
-            let mut memories: Vec<KnowledgeMemory> = tx_try!(
-                response.take(0),
-                "reconcile_commit_relation_take"
-            );
-            let Some(mut memory) = memories.pop() else { continue; };
+            let mut memories: Vec<KnowledgeMemory> =
+                tx_try!(response.take(0), "reconcile_commit_relation_take");
+            let Some(mut memory) = memories.pop() else {
+                continue;
+            };
             let to = RecordId::new("knowledge_memory", relation.to_id.clone());
-            if !memory.relations.iter().any(|held| {
-                held.relation == relation.relation && held.to == to
-            }) {
+            if !memory
+                .relations
+                .iter()
+                .any(|held| held.relation == relation.relation && held.to == to)
+            {
                 memory.relations.push(MemoryRelation {
                     relation: relation.relation,
                     to,
                     note: relation.note.clone(),
                 });
                 tx_try!(
-                    tx.query("UPDATE type::record('knowledge_memory', $id) SET relations = $relations")
-                        .bind(("id", relation.subordinate_id.clone()))
-                        .bind(("relations", memory.relations))
-                        .await
-                        .and_then(|response| response.check()),
+                    tx.query(
+                        "UPDATE type::record('knowledge_memory', $id) SET relations = $relations"
+                    )
+                    .bind(("id", relation.subordinate_id.clone()))
+                    .bind(("relations", memory.relations))
+                    .await
+                    .and_then(|response| response.check()),
                     "reconcile_commit_relation_write"
                 );
             }
@@ -86,7 +94,10 @@ impl PkmRepo {
                 .bind(("id", outdated.memory_id.clone()))
                 .bind(("disposition", Disposition::Outdated))
                 .bind(("now", now))
-                .bind(("reason", (!outdated.reason.is_empty()).then(|| outdated.reason.clone())))
+                .bind((
+                    "reason",
+                    (!outdated.reason.is_empty()).then(|| outdated.reason.clone())
+                ))
                 .await
                 .and_then(|response| response.check()),
                 "reconcile_commit_outdated"
@@ -150,9 +161,9 @@ impl PkmRepo {
                 .and_then(|response| response.check()),
             "reconcile_commit_checkpoint"
         );
-        tx.commit().await.map_err(|e| Self::err("reconcile_commit", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| Self::err("reconcile_commit", e))?;
         Ok(())
     }
-
-
 }
