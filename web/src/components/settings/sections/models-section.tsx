@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import type { ModelGroupConfig, RetryConfig } from "@/lib/config-types";
+import { formatGroupName } from "@/lib/model-groups";
 import { NumberInput, SectionHeader, Toggle } from "@/components/settings/field";
 import { CubeIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import { ComboboxInput } from "@/components/settings/combobox";
@@ -16,16 +17,7 @@ interface ModelsSectionProps {
   onChange: (models: Record<string, ModelGroupConfig>) => void;
 }
 
-const PREDEFINED_GROUPS = ["primary", "reasoning", "coding"];
-
-function formatGroupName(name: string): string {
-  const names: Record<string, string> = {
-    primary: "Primary",
-    reasoning: "Reasoning",
-    coding: "Coding",
-  };
-  return names[name] ?? name;
-}
+const PREDEFINED_GROUPS = ["primary", "reasoning", "coding", "memory"];
 
 function sortedGroupNames(names: string[]): string[] {
   const predefined = PREDEFINED_GROUPS.filter((g) => names.includes(g));

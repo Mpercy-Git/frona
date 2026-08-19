@@ -18,6 +18,7 @@ import { AuthSection } from "@/components/settings/sections/auth-section";
 import { SsoSection } from "@/components/settings/sections/sso-section";
 import { BrowserSection } from "@/components/settings/sections/browser-section";
 import { SearchSection } from "@/components/settings/sections/search-section";
+import { MemorySection } from "@/components/settings/sections/memory-section";
 import { VoiceSection } from "@/components/settings/sections/voice-section";
 import { ServerVaultSection } from "@/components/settings/sections/vault-section";
 import { AdvancedSection } from "@/components/settings/sections/advanced-section";
@@ -29,7 +30,8 @@ import type { Config } from "@/lib/config-types";
 const TABS = [
   { id: "providers", label: "Providers", saveable: true, divider: false },
   { id: "models", label: "Models", saveable: true, divider: false },
-  { id: "skills", label: "Skills", saveable: false, divider: true },
+  { id: "memory", label: "Memory", saveable: true, divider: true },
+  { id: "skills", label: "Skills", saveable: false, divider: false },
   { id: "search", label: "Search", saveable: true, divider: false },
   { id: "voice", label: "Voice", saveable: true, divider: false },
   { id: "browser", label: "Browser", saveable: true, divider: false },
@@ -57,6 +59,10 @@ export default function AdminSettingsPage() {
   }, [user, hasAccess, router]);
 
   const [config, setConfig] = useState<Config | null>(null);
+  // The backend the server booted with - snapshot at load so it stays put while
+  // the user edits the draft; it's what carries the "Active" badge (a backend
+  // switch only takes effect after a restart + reload).
+  const [activeBackend, setActiveBackend] = useState<Config["memory"]["backend"] | null>(null);
   const [patch, setPatch] = useState<Record<string, unknown>>({});
   const [activeTab, setActiveTabState] = useState<TabId>(() => {
     if (typeof window !== "undefined") {
@@ -100,6 +106,7 @@ export default function AdminSettingsPage() {
     try {
       const cfg = await getConfig();
       setConfig(cfg);
+      setActiveBackend(cfg.memory.backend);
     } catch {
       setError("Failed to load configuration");
     } finally {
@@ -308,6 +315,14 @@ export default function AdminSettingsPage() {
                     <SearchSection
                       search={config.search}
                       onChange={(v) => updatePatch("search", v)}
+                    />
+                  )}
+                  {activeTab === "memory" && (
+                    <MemorySection
+                      memory={config.memory}
+                      models={config.models}
+                      activeBackend={activeBackend}
+                      onChange={(v) => updatePatch("memory", v)}
                     />
                   )}
                   {activeTab === "voice" && (
