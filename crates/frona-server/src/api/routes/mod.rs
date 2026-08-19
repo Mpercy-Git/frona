@@ -3,6 +3,8 @@ pub mod agents;
 pub mod apps;
 pub mod auth;
 pub mod mcp;
+pub mod memory_pkm;
+pub mod memory_pkm_read;
 pub mod browser;
 pub mod channels;
 pub mod chats;
