@@ -46,7 +46,7 @@ pub enum BroadcastEventKind {
     /// Per-inference-call usage event fired from `UsageService::record`.
     /// Only dispatched when the row has a `chat_id` so we have somewhere to send it
     /// - rootless rows (`Compaction::User`, `Compaction::Space`) still hit the DB
-    /// and Prometheus, they just don't broadcast.
+    ///   and Prometheus, they just don't broadcast.
     UsageRecorded(UsageRecorded),
 }
 
