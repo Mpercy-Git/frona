@@ -512,10 +512,21 @@ impl AppState {
 
         let push_subscription_repo: Arc<dyn PushSubscriptionRepository> =
             Arc::new(SurrealPushSubscriptionRepo::new(db.clone()));
-        let push_sender = PushSender::new(&config.push, push_subscription_repo.clone())
-            .ok()
-            .flatten()
-            .map(Arc::new);
+        // A malformed VAPID private key must not be reported as "not
+        // configured" — that reads as "push is off by choice" while the real
+        // problem is a bad key, and every notification silently goes nowhere.
+        let push_sender = match PushSender::new(&config.push, push_subscription_repo.clone()) {
+            Ok(sender) => sender.map(Arc::new),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "Push notifications disabled: the configured VAPID private key could not be \
+                     parsed. It must be the base64url-encoded P-256 private key produced by \
+                     `npx web-push generate-vapid-keys`."
+                );
+                None
+            }
+        };
         let notification_service = NotificationService::with_broadcast(
             SurrealRepo::new(db.clone()),
             broadcast_service.clone(),

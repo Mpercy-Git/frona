@@ -3,8 +3,8 @@
 
 // Take over immediately when a new version ships. Without this, an updated
 // worker sits in "waiting" until every tab closes, so behaviour changes (like
-// the active-chat notification suppression below) don't apply to existing
-// sessions — the old worker keeps running.
+// the foreground check below) don't apply to existing sessions — the old
+// worker keeps running.
 self.addEventListener("install", () => {
   self.skipWaiting();
 });
@@ -36,45 +36,81 @@ self.addEventListener("push", (event) => {
 
   event.waitUntil(
     (async () => {
-      // Suppress the notification only when the user is already looking at the
-      // exact page it links to: a window that is focused/visible AND currently
-      // on the same URL (same path + same chat id). In every other case —
-      // window unfocused, a different chat open, or a different page — we show
-      // it, so an active conversation stays quiet while everything else alerts.
+      // Suppress the notification only when a page positively confirms it is
+      // in the foreground AND already showing the exact target of this push.
+      // Anything else — no page open, no answer, an answer that says otherwise
+      // — shows the notification.
       if (await isViewingTarget(url)) return;
       await self.registration.showNotification(title, options);
     })(),
   );
 });
 
-/** True if a focused/visible window is already on `targetUrl`. */
+/**
+ * True only if an open page *tells us* it is foregrounded on `targetUrl`.
+ *
+ * The obvious implementation — read `client.focused` / `client.visibilityState`
+ * from `clients.matchAll()` — is what this replaced, and it is why Android
+ * stopped raising notifications. Chrome on Android leaves a client's
+ * `visibilityState` at "visible" in situations where the user plainly cannot
+ * see it: the screen is locked, or the PWA/tab is behind another app. Every
+ * push that arrived while the phone sat idle on a chat page was therefore
+ * treated as "you're already looking at this" and never shown — precisely the
+ * moment a push is worth having.
+ *
+ * So the service worker no longer infers foreground state. It asks, and the
+ * page answers with `document.hasFocus()` and its own `location`, which are
+ * accurate. A backgrounded or frozen page does not get its handler run in
+ * time and simply does not answer, and an unanswered check means "show it".
+ * Every failure mode now falls on the side of raising the notification.
+ */
 async function isViewingTarget(targetUrl) {
   try {
-    const target = new URL(targetUrl, self.location.origin);
     const allClients = await clients.matchAll({
       type: "window",
       includeUncontrolled: true,
     });
-    for (const client of allClients) {
-      // Only an actively-focused (or at least visible) window counts as
-      // "active"; a backgrounded tab should still notify.
-      const active =
-        client.focused === true || client.visibilityState === "visible";
-      if (!active) continue;
+    if (allClients.length === 0) return false;
 
-      const current = new URL(client.url);
-      if (current.origin !== target.origin) continue;
-      if (current.pathname !== target.pathname) continue;
-      // For chat deep-links, the conversation is identified by `?id=`.
-      if (current.searchParams.get("id") !== target.searchParams.get("id")) {
-        continue;
-      }
-      return true;
-    }
+    const answers = await Promise.all(
+      allClients.map((client) => askClient(client, targetUrl)),
+    );
+    return answers.some((viewing) => viewing === true);
   } catch {
-    // On any parsing/matching error, fall through and show the notification.
+    // On any error, fall through and show the notification.
+    return false;
   }
-  return false;
+}
+
+/** How long a foregrounded page gets to answer before we just notify. */
+const FOREGROUND_CHECK_TIMEOUT_MS = 400;
+
+/** Ask one window whether it is foregrounded on `targetUrl`. */
+function askClient(client, targetUrl) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+
+    // A page that cannot answer within the timeout is not a page the user is
+    // looking at (or not one that can tell us), so we notify.
+    const timer = setTimeout(() => done(false), FOREGROUND_CHECK_TIMEOUT_MS);
+
+    try {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = (event) => done(event.data?.viewing === true);
+      client.postMessage(
+        { type: "frona:foreground-check", url: targetUrl },
+        [channel.port2],
+      );
+    } catch {
+      done(false);
+    }
+  });
 }
 
 self.addEventListener("notificationclick", (event) => {

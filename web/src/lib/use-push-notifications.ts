@@ -5,6 +5,15 @@ import { api } from "./api-client";
 
 type PermissionState = "default" | "granted" | "denied" | "unsupported";
 
+/** Per-device outcome of a test push, as reported by the server. */
+export interface PushTestResult {
+  configured: boolean;
+  attempted: number;
+  delivered: number;
+  removed: number;
+  failures: { service: string; reason: string }[];
+}
+
 /// iOS only delivers Web Push to an installed (home-screen) PWA — in a normal
 /// Safari tab `Notification` is undefined, so the hook reports `unsupported`
 /// with nothing to act on. This distinguishes "your browser can't" from
@@ -29,6 +38,12 @@ export function usePushNotifications() {
   const [subscribed, setSubscribed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [installRequired, setInstallRequired] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // null while unknown; false when the server has no usable VAPID key pair and
+  // therefore can never send, however healthy the device's subscription looks.
+  const [serverCanSend, setServerCanSend] = useState<boolean | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<PushTestResult | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -38,6 +53,13 @@ export function usePushNotifications() {
       return;
     }
     setPermission(Notification.permission as PermissionState);
+
+    api
+      .get<{ public_key: string | null; can_send: boolean }>(
+        "/api/push/vapid-public-key",
+      )
+      .then((data) => setServerCanSend(data.can_send))
+      .catch(() => {});
 
     navigator.serviceWorker.ready
       .then((reg) => reg.pushManager.getSubscription())
@@ -68,18 +90,33 @@ export function usePushNotifications() {
   const enable = useCallback(async () => {
     if (permission === "unsupported") return;
     setLoading(true);
+    setError(null);
+    setTestResult(null);
     try {
-      // 1. Request notification permission.
+      // 1. Request notification permission. Already-granted resolves straight
+      //    away, which is what makes this safe to re-run for a device that has
+      //    permission but has lost its subscription.
       const result = await Notification.requestPermission();
       setPermission(result as PermissionState);
-      if (result !== "granted") return;
+      if (result !== "granted") {
+        if (result === "denied") {
+          setError(
+            "Notifications are blocked for this site. Allow them in your browser or system settings, then try again.",
+          );
+        }
+        return;
+      }
 
       // 2. Fetch VAPID public key from backend.
-      const { public_key } = await api.get<{ public_key: string }>(
-        "/api/push/vapid-public-key",
-      );
+      const { public_key, can_send } = await api.get<{
+        public_key: string | null;
+        can_send: boolean;
+      }>("/api/push/vapid-public-key");
+      setServerCanSend(can_send);
       if (!public_key) {
-        console.error("[push] VAPID public key not configured on server");
+        setError(
+          "This server has no VAPID key pair configured, so it cannot send push notifications. Set FRONA_PUSH_VAPID_PUBLIC_KEY and FRONA_PUSH_VAPID_PRIVATE_KEY.",
+        );
         return;
       }
 
@@ -95,6 +132,11 @@ export function usePushNotifications() {
       setSubscribed(true);
     } catch (err) {
       console.error("[push] Failed to enable notifications:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not enable notifications on this device.",
+      );
     } finally {
       setLoading(false);
     }
@@ -102,6 +144,8 @@ export function usePushNotifications() {
 
   const disable = useCallback(async () => {
     setLoading(true);
+    setError(null);
+    setTestResult(null);
     try {
       const registration = await navigator.serviceWorker.ready;
       const subscription = await registration.pushManager.getSubscription();
@@ -114,12 +158,55 @@ export function usePushNotifications() {
       setSubscribed(false);
     } catch (err) {
       console.error("[push] Failed to disable notifications:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not disable notifications on this device.",
+      );
     } finally {
       setLoading(false);
     }
   }, []);
 
-  return { permission, subscribed, loading, installRequired, enable, disable };
+  /// Ask the server to push a throwaway notification to this user's devices.
+  ///
+  /// "Nothing showed up" is otherwise undiagnosable from the device: the
+  /// server may have no subscription stored, no key to sign with, or the push
+  /// service may be rejecting every send. The report separates those from the
+  /// case where the push was accepted and the phone still stayed quiet, which
+  /// points at the OS notification settings instead.
+  const sendTest = useCallback(async () => {
+    setTesting(true);
+    setError(null);
+    setTestResult(null);
+    try {
+      const result = await api.post<PushTestResult>("/api/push/test", {});
+      setTestResult(result);
+    } catch (err) {
+      console.error("[push] Test notification failed:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not send a test notification.",
+      );
+    } finally {
+      setTesting(false);
+    }
+  }, []);
+
+  return {
+    permission,
+    subscribed,
+    loading,
+    installRequired,
+    error,
+    serverCanSend,
+    testing,
+    testResult,
+    enable,
+    disable,
+    sendTest,
+  };
 }
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {

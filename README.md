@@ -42,7 +42,9 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 ### 🔔 Web Push notifications & PWA (net-new)
 
 - **Web Push with VAPID** — a service worker delivers OS-level push notifications for agent replies to subscribed devices, including mobile
-- **Smart suppression** — a push only fires when the relevant chat isn't already focused: an active, focused conversation stays quiet, while a backgrounded window, unfocused tab, or different page still alerts
+- **High-urgency delivery** — pushes are sent with `Urgency: high`, so Android wakes the device and raises the notification immediately instead of holding it until Doze's next maintenance window
+- **Smart suppression that fails towards notifying** — a push is held back only when an open page positively confirms it is focused on that exact chat; the service worker never infers this from `visibilityState`, which Android reports as "visible" for a locked or backgrounded window
+- **Diagnosable** — a *Send test notification* button reports what each push service actually did with the message, so "nothing arrived" separates into no subscription, no VAPID key, a rejected signature, or an OS-level setting
 - **Installable PWA with an Android app-like feel** — web app manifest, generated app icons (standard + maskable + apple-touch), `viewport-fit=cover`, safe-area insets, dynamic viewport height (`100dvh`), no accidental pull-to-refresh, and virtual-keyboard-aware composer scrolling
 - Push subscriptions re-sync on mobile, iOS gets explicit install guidance, and the composer stays above the on-screen keyboard
 
