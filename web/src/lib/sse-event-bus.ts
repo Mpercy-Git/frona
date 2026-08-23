@@ -35,9 +35,13 @@ export interface UsageRecorded {
 }
 
 
+/// Lifecycle of the row an `entity_updated` event describes. Mirrors
+/// `EntityAction` in `crates/frona-server/src/chat/broadcast.rs`.
+export type EntityAction = "created" | "updated" | "deleted";
+
 export type GlobalSSEEvent =
   | { type: "title"; chatId: string; title: string }
-  | { type: "entity_updated"; chatId: string; table: string; recordId: string; fields: Record<string, unknown> }
+  | { type: "entity_updated"; chatId: string; table: string; recordId: string; action: EntityAction; spaceId: string | null; fields: Record<string, unknown> }
   | { type: "task_update"; taskId: string; status: string; sourceChatId: string | null; title: string; chatId: string | null; resultSummary: string | null }
   | { type: "inference_count"; count: number }
   | { type: "notification"; notification: Notification };
@@ -345,6 +349,10 @@ export class SSEEventBus {
           chatId,
           table: parsed.table as string,
           recordId: parsed.record_id as string,
+          // Older servers only ever meant "updated" here; treat a missing
+          // action as that rather than dropping the event.
+          action: (parsed.action as EntityAction | undefined) ?? "updated",
+          spaceId: (parsed.space_id as string | null | undefined) ?? null,
           fields: parsed.fields as Record<string, unknown>,
         });
         break;

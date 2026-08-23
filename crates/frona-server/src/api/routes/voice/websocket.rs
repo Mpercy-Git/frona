@@ -123,6 +123,10 @@ async fn handle_voice_socket(
     let ws_send = Arc::new(Mutex::new(ws_send));
     let mut last_response = String::new();
     let mut first_prompt = true;
+    // Set when the agent ended the call itself (`hangup_call`), which already
+    // closed the call record out. Anything else that ends this socket — the
+    // caller hanging up, the relay dropping — leaves it to us below.
+    let mut agent_hung_up = false;
 
     loop {
         let msg = match ws_recv.next().await {
@@ -325,6 +329,7 @@ async fn handle_voice_socket(
                 }
 
                 if should_hang_up {
+                    agent_hung_up = true;
                     // Wait on what was actually spoken, so the sign-off isn't
                     // cut off by hanging up too early. Streamed speech has been
                     // playing since the first token, so discount the time the
@@ -363,6 +368,17 @@ async fn handle_voice_socket(
 
     tracing::info!(chat_id = %chat_id, "Voice WS session ended");
     state.active_sessions.remove(&chat_id, session_id).await;
+
+    // The socket closing is the only signal we get when the *other* party
+    // hangs up: Twilio just drops the relay. Without this the call row would
+    // sit at `Active` for ever, since only the agent's own `hangup_call`
+    // completes it.
+    if let Some(cid) = call_id.as_deref()
+        && !agent_hung_up
+        && let Err(e) = state.call_service.mark_completed(cid).await
+    {
+        tracing::warn!(error = %e, call_id = %cid, "Failed to mark call completed on socket close");
+    }
 
     if let Ok(Some(task)) = state.task_service.find_by_chat_id(&chat_id).await
         && matches!(task.status, crate::agent::task::models::TaskStatus::InProgress)

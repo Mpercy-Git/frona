@@ -6,6 +6,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
   createElement,
 } from "react";
 import { api, archiveChat as apiArchiveChat, unarchiveChat as apiUnarchiveChat, deleteChat as apiDeleteChat, archiveSpace as apiArchiveSpace, deleteSpace as apiDeleteSpace, deleteAgent as apiDeleteAgent, deleteTask as apiDeleteTask, getArchivedChats, getContacts, getTask } from "./api-client";
@@ -41,6 +42,8 @@ interface NavigationContextRaw {
   /// Throws on network unavailability — AppGate decides whether to retry.
   refresh: () => Promise<void>;
   addStandaloneChat: (chat: ChatResponse) => void;
+  addChat: (chat: ChatResponse) => void;
+  addChatById: (chatId: string) => void;
   updateChatTitle: (chatId: string, title: string) => void;
   updateAgent: (agentId: string, fields: Record<string, unknown>) => void;
   deleteAgent: (agentId: string) => Promise<void>;
@@ -110,9 +113,57 @@ export function NavigationProvider({
 
   // `prev ? ... : prev` guards exist only to satisfy the type system; the
   // mutators are only reachable below AppGate, which guarantees boot data.
+  // Deduped: the chat this client just created also arrives as an SSE
+  // `entity_updated` event, and either path can land first.
   const addStandaloneChat = useCallback((chat: ChatResponse) => {
-    setStandaloneChats((prev) => (prev ? [chat, ...prev] : prev));
+    setStandaloneChats((prev) => {
+      if (!prev || prev.some((c) => c.id === chat.id)) return prev;
+      return [chat, ...prev];
+    });
   }, []);
+
+  /// Slot a chat into the sidebar wherever it belongs — its space, or the
+  /// standalone list. Idempotent: a chat we already show is left alone, so
+  /// this is safe to call for chats this client created itself.
+  const addChat = useCallback((chat: ChatResponse) => {
+    // Task-execution chats and archived ones aren't sidebar entries — mirrors
+    // what /api/navigation returns.
+    if (chat.task_id || chat.archived_at) return;
+
+    const spaceId = chat.space_id;
+    if (spaceId) {
+      setSpaces((prev) => {
+        if (!prev) return prev;
+        const space = prev.find((s) => s.id === spaceId);
+        // A space we don't know about yet — the next refresh() brings both.
+        if (!space || space.chats.some((c) => c.id === chat.id)) return prev;
+        return prev.map((s) =>
+          s.id === spaceId ? { ...s, chats: [chat, ...s.chats] } : s,
+        );
+      });
+      return;
+    }
+
+    setStandaloneChats((prev) => {
+      if (!prev || prev.some((c) => c.id === chat.id)) return prev;
+      return [chat, ...prev];
+    });
+  }, []);
+
+  /// A chat created server-side — an inbound call an agent answered, a
+  /// message arriving on a channel — reaches this client only as an SSE
+  /// `entity_updated` event carrying its id, so fetch the row and add it.
+  /// Without this the sidebar learns about such chats only on a full reload.
+  const inFlightChatFetches = useRef(new Set<string>());
+  const addChatById = useCallback((chatId: string) => {
+    if (inFlightChatFetches.current.has(chatId)) return;
+    inFlightChatFetches.current.add(chatId);
+    api
+      .get<ChatResponse>(`/api/chats/${chatId}`)
+      .then(addChat)
+      .catch(() => {})
+      .finally(() => inFlightChatFetches.current.delete(chatId));
+  }, [addChat]);
 
   const updateAgent = useCallback((agentId: string, fields: Record<string, unknown>) => {
     setAgents((prev) => {
@@ -259,6 +310,8 @@ export function NavigationProvider({
         setMobileSubNavOpen,
         refresh,
         addStandaloneChat,
+        addChat,
+        addChatById,
         updateChatTitle,
         updateAgent,
         deleteAgent: deleteAgentAction,
