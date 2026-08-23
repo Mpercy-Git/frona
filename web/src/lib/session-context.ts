@@ -55,7 +55,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const systemAgent = useSystemAgent();
   const agentId = activeChat?.agent_id ?? agentParam ?? systemAgent.id;
   const [inferring, setInferring] = useState(false);
-  const { updateChatTitle, updateAgent, updateTaskInList, setActiveTab, standaloneChats, spaces, archivedChats } = useNavigation();
+  const { updateChatTitle, updateAgent, addChatById, updateTaskInList, setActiveTab, standaloneChats, spaces, archivedChats } = useNavigation();
   const { addNotification } = useNotifications();
 
   const [prevActiveChatId, setPrevActiveChatId] = useState(activeChatId);
@@ -135,6 +135,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         case "entity_updated":
           if (event.table === "agent") {
             updateAgent(event.recordId, event.fields);
+          } else if (event.table === "chat" && event.action === "created") {
+            // Chats the server creates on its own — an inbound call an agent
+            // answered, a message arriving on a channel — would otherwise
+            // show up in the sidebar only after a full reload.
+            addChatById(event.recordId);
           }
           break;
         case "task_update":
@@ -179,7 +184,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       unsubscribe();
       controller.abort();
     };
-  }, [updateChatTitle, updateAgent, updateTaskInList, addNotification]);
+  }, [updateChatTitle, updateAgent, addChatById, updateTaskInList, addNotification]);
 
   const setPendingMessage = useCallback((message: string, attachments?: Attachment[]) => {
     sessionStore.pendingMessage = { content: message, attachments };

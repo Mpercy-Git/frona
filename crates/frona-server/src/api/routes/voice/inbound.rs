@@ -253,6 +253,13 @@ pub(super) async fn twilio_inbound_handler(
         }
     };
 
+    // Everything the call owns — contact, chat, token — is keyed by the real
+    // user id. `user_id` above is only the allowlist's key, which the fallback
+    // just above allows to be a handle; using it as an owner would create the
+    // chat under a value the rest of the platform never matches, and every
+    // voice turn would then fail its ownership check.
+    let owner_id = user.id.clone();
+
     // ------------------------------------------------------------------
     // 6. Resolve answering agent
     //    The owning user's own choice wins; otherwise their "receptionist".
@@ -275,7 +282,7 @@ pub(super) async fn twilio_inbound_handler(
     // Handle (username) is the common case for a configured inbound agent.
     let agent = match agent {
         Some(a) => Some(a),
-        None => match state.agent_service.find_by_handle(&user_id, &agent_query).await {
+        None => match state.agent_service.find_by_handle(&owner_id, &agent_query).await {
             Ok(Some(a)) => Some(a),
             _ => None,
         },
@@ -284,7 +291,7 @@ pub(super) async fn twilio_inbound_handler(
     // If still not found, try by display name.
     let agent = match agent {
         Some(a) => Some(a),
-        None => match state.agent_service.find_by_name(&user_id, &agent_query).await {
+        None => match state.agent_service.find_by_name(&owner_id, &agent_query).await {
             Ok(Some(a)) => Some(a),
             _ => None,
         },
@@ -321,7 +328,7 @@ pub(super) async fn twilio_inbound_handler(
     let contact = match state
         .contact_service
         .find_or_create_by_phone(
-            &user_id,
+            &owner_id,
             &from,
             caller_display_name.as_deref().unwrap_or("Incoming caller"),
         )
@@ -344,7 +351,7 @@ pub(super) async fn twilio_inbound_handler(
     let chat = match state
         .chat_service
         .create_chat(
-            &user_id,
+            &owner_id,
             CreateChatRequest {
                 space_id: None,
                 task_id: None,
@@ -478,7 +485,7 @@ pub(super) async fn twilio_inbound_handler(
         from = %from,
         chat_id = %chat.id,
         call_id = %call_id,
-        user_id = %user_id,
+        user_id = %owner_id,
         agent_id = %agent_id,
         "Inbound call answered — TwiML issued with ConversationRelay"
     );

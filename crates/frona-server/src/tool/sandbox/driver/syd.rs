@@ -310,10 +310,12 @@ mod tests {
         }
     }
 
+    // A fixed shared path here raced across the 14 parallel tests that call
+    // this — one test's write could land between another's write and read.
+    // A fresh tempdir per call gives each test its own file.
     fn test_driver() -> SydDriver {
-        let dir = std::env::temp_dir().join("frona_test_syd");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("resolv.conf");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resolv.conf");
         std::fs::write(&path, "nameserver 8.8.8.8\nnameserver 8.8.4.4\n").unwrap();
         SydDriver::with_resolv_conf(path.to_str().unwrap())
     }

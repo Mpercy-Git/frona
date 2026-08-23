@@ -258,7 +258,7 @@ describe("SSEEventBus: global events", () => {
     const received: GlobalSSEEvent[] = [];
     bus.onGlobal((e) => received.push(e));
 
-    bus.routeEvent("entity_updated", "chat-1", { table: "agent", record_id: "a1", fields: { name: "New" } });
+    bus.routeEvent("entity_updated", "chat-1", { table: "agent", record_id: "a1", action: "updated", fields: { name: "New" } });
 
     expect(received).toHaveLength(1);
     expect(received[0]).toEqual({
@@ -266,8 +266,41 @@ describe("SSEEventBus: global events", () => {
       chatId: "chat-1",
       table: "agent",
       recordId: "a1",
+      action: "updated",
+      spaceId: null,
       fields: { name: "New" },
     });
+  });
+
+  it("carries action and space_id on entity_updated — the sidebar needs both to place a new chat", () => {
+    const received: GlobalSSEEvent[] = [];
+    bus.onGlobal((e) => received.push(e));
+
+    // What the server sends when an inbound call creates a chat.
+    bus.routeEvent("entity_updated", "", {
+      table: "chat",
+      record_id: "c1",
+      action: "created",
+      space_id: "s1",
+      fields: null,
+    });
+
+    expect(received[0]).toMatchObject({
+      type: "entity_updated",
+      table: "chat",
+      recordId: "c1",
+      action: "created",
+      spaceId: "s1",
+    });
+  });
+
+  it("defaults a missing action to updated", () => {
+    const received: GlobalSSEEvent[] = [];
+    bus.onGlobal((e) => received.push(e));
+
+    bus.routeEvent("entity_updated", "chat-1", { table: "agent", record_id: "a1", fields: {} });
+
+    expect(received[0]).toMatchObject({ action: "updated", spaceId: null });
   });
 
   it("delivers task_update events to global listeners", () => {

@@ -151,6 +151,9 @@ export interface CreateSpaceRequest {
 export interface ChatResponse {
   id: string;
   space_id: string | null;
+  /** Set when the chat is a task's execution log; those are kept out of the
+   *  sidebar (the server's /api/navigation excludes them too). */
+  task_id: string | null;
   agent_id: string;
   title: string | null;
   archived_at: string | null;
