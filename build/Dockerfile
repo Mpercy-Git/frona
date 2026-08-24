@@ -1,11 +1,11 @@
-FROM node:24-slim AS frontend-builder
+FROM node:24.19.0-slim AS frontend-builder
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci
 COPY web/ .
 RUN npm run build
 
-FROM rust:1.95-bookworm AS planner
+FROM rust:1.97.1-bookworm AS planner
 RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo.txt \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \
@@ -16,7 +16,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM rust:1.95-bookworm AS backend-builder
+FROM rust:1.97.1-bookworm AS backend-builder
 RUN --mount=type=bind,source=build/pkgs/builder-rust-apt.txt,target=/tmp/packages.txt \
   apt-get update && apt-get install -y --no-install-recommends \
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
@@ -120,7 +120,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-  | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.95.0 \
+  | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.97.1 \
   && rustup component add clippy rustfmt
 
 COPY --from=python-builder /install /usr/local

@@ -168,7 +168,7 @@ impl OntologyCatalogue {
             children,
             inverse,
             prefixes: PrefixMap::standard(),
-            fingerprint: format!("{:x}", hasher.finalize()),
+            fingerprint: hex::encode(hasher.finalize()),
             cache: RwLock::new(HashMap::new()),
         }))
     }

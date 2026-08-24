@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { MessagePrimitive, useMessage, useMessagePartText } from "@assistant-ui/react";
+import { MessagePrimitive, useAuiState, useMessagePartText } from "@assistant-ui/react";
 import { useThreadIsRunning } from "@assistant-ui/core/react";
 import { MarkdownText } from "./markdown-text";
 import { useSession } from "@/lib/session-context";
@@ -268,7 +268,7 @@ function AttachmentItem({ attachment }: { attachment: Attachment }) {
 }
 
 function MessageAttachments() {
-  const message = useMessage();
+  const message = useAuiState((state) => state.message);
   const attachments = (message.metadata as Record<string, any>)?.custom?.attachments as Attachment[] | undefined;
 
   if (!attachments?.length) return null;
@@ -284,7 +284,7 @@ function MessageAttachments() {
 
 export function FronaAssistantMessage() {
   const { agentId: sessionAgentId, activeTaskId } = useSession();
-  const message = useMessage();
+  const message = useAuiState((state) => state.message);
   const messageAgentId = (message.metadata as Record<string, any>)?.custom?.agentId;
   const agentId = messageAgentId ?? sessionAgentId ?? undefined;
   const { agents } = useNavigation();

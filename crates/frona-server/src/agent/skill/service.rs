@@ -345,7 +345,7 @@ impl SkillService {
 
         if let Some((user_handle, agent_handle)) = agent {
             let ws = self.storage.agent_workspace(user_handle, agent_handle);
-            let skill_base = format!("skills/{}", &fetched.name);
+            let skill_base = format!("skills/{}", fetched.name);
             ws.write(&format!("{skill_base}/SKILL.md"), &fetched.content)?;
             for file in &fetched.files {
                 ws.write_bytes(&format!("{skill_base}/{}", file.path), &file.content)?;
@@ -459,7 +459,7 @@ impl SkillService {
                 .fetch_skill_from_cache(repo, &discovered)
                 .await?;
 
-            let skill_base = format!("skills/{}", &fetched.name);
+            let skill_base = format!("skills/{}", fetched.name);
             ws.write(&format!("{skill_base}/SKILL.md"), &fetched.content)?;
             for file in &fetched.files {
                 ws.write_bytes(&format!("{skill_base}/{}", file.path), &file.content)?;

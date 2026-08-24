@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use base64::Engine;
 use rig_core::completion::message::{
-    DocumentSourceKind, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent,
+    DocumentSourceKind, ImageMediaType, MimeType, ProviderCallId, Reasoning, ToolCallId,
+    ToolResult, ToolResultContent, UserContent,
 };
 use rig_core::completion::{AssistantContent, Message as RigMessage};
 
@@ -455,13 +456,10 @@ fn convert_agent_with_tool_calls(
         // originally emitted; without it they reject the request with
         // `invalid_request_error` on resume after a HITL pause.
         if let Some(r) = tes.iter().find_map(|te| te.turn_reasoning.as_ref()) {
-            assistant_items.push(AssistantContent::Reasoning(
-                rig_core::completion::message::Reasoning::new_with_signature(
-                    &r.content,
-                    r.signature.clone(),
-                )
-                .optional_id(r.id.clone()),
-            ));
+            assistant_items.push(AssistantContent::Reasoning(Reasoning {
+                id: r.id.clone(),
+                ..Reasoning::new_with_signature(&r.content, r.signature.clone())
+            }));
         }
         if let Some(text) = tes.iter().find_map(|te| te.turn_text.as_deref())
             && !text.is_empty()
@@ -475,22 +473,29 @@ fn convert_agent_with_tool_calls(
                 te.arguments.clone(),
             ));
         }
-        if let Ok(content) = rig_core::OneOrMany::many(assistant_items) {
-            result.push(RigMessage::Assistant { id: None, content });
+        if !assistant_items.is_empty() {
+            result.push(RigMessage::Assistant {
+                id: None,
+                content: assistant_items,
+            });
         }
 
         let tool_results: Vec<UserContent> = tes
             .iter()
             .map(|te| {
+                let provider = ProviderCallId::new(te.provider_call_id.clone());
                 UserContent::ToolResult(ToolResult {
-                    id: te.provider_call_id.clone(),
-                    call_id: None,
-                    content: rig_core::OneOrMany::one(ToolResultContent::text(&te.result)),
+                    call: ToolCallId::for_provider(provider.as_ref()),
+                    provider,
+                    name: te.name.clone(),
+                    content: vec![ToolResultContent::text(&te.result)],
                 })
             })
             .collect();
-        if let Ok(content) = rig_core::OneOrMany::many(tool_results) {
-            result.push(RigMessage::User { content });
+        if !tool_results.is_empty() {
+            result.push(RigMessage::User {
+                content: tool_results,
+            });
         }
     }
 
@@ -498,18 +503,16 @@ fn convert_agent_with_tool_calls(
     if is_completed && !msg.content.is_empty() {
         let mut items: Vec<AssistantContent> = Vec::new();
         if let Some(r) = &msg.reasoning {
-            items.push(AssistantContent::Reasoning(
-                rig_core::completion::message::Reasoning::new_with_signature(
-                    &r.content,
-                    r.signature.clone(),
-                )
-                .optional_id(r.id.clone()),
-            ));
+            items.push(AssistantContent::Reasoning(Reasoning {
+                id: r.id.clone(),
+                ..Reasoning::new_with_signature(&r.content, r.signature.clone())
+            }));
         }
         items.push(AssistantContent::text(&msg.content));
-        if let Ok(content) = rig_core::OneOrMany::many(items) {
-            result.push(RigMessage::Assistant { id: None, content });
-        }
+        result.push(RigMessage::Assistant {
+            id: None,
+            content: items,
+        });
     }
 }
 
@@ -539,19 +542,17 @@ pub fn convert_agent_message(
     let is_self = msg.agent_id.as_deref() == Some(agent_id);
     if is_self {
         if let Some(r) = &msg.reasoning {
-            let mut items: Vec<AssistantContent> = vec![AssistantContent::Reasoning(
-                rig_core::completion::message::Reasoning::new_with_signature(
-                    &r.content,
-                    r.signature.clone(),
-                )
-                .optional_id(r.id.clone()),
-            )];
+            let mut items: Vec<AssistantContent> = vec![AssistantContent::Reasoning(Reasoning {
+                id: r.id.clone(),
+                ..Reasoning::new_with_signature(&r.content, r.signature.clone())
+            })];
             if !msg.content.is_empty() {
                 items.push(AssistantContent::text(&msg.content));
             }
-            if let Ok(content) = rig_core::OneOrMany::many(items) {
-                return Some(RigMessage::Assistant { id: None, content });
-            }
+            return Some(RigMessage::Assistant {
+                id: None,
+                content: items,
+            });
         }
         // Empty Assistant text blocks make Anthropic reject the request.
         if msg.content.is_empty() {
@@ -702,9 +703,7 @@ pub async fn build_user_message(
         return RigMessage::user(&text);
     }
 
-    RigMessage::User {
-        content: rig_core::OneOrMany::many(contents).unwrap(),
-    }
+    RigMessage::User { content: contents }
 }
 
 #[cfg(test)]

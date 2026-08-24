@@ -3,7 +3,7 @@ use axum::body::Bytes;
 use axum::http::{HeaderValue, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use sha1::Sha1;
 

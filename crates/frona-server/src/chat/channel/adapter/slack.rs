@@ -591,9 +591,9 @@ fn build_slack_blocks(
     match kind {
         HitlKind::Approval => {
             let yes = SlackBlockButtonElement::new(SlackActionId(format!("r:{tcid}:y")), pt("Yes"))
-                .with_style("primary".into());
+                .with_style(SlackBlockButtonStyle::Primary);
             let no = SlackBlockButtonElement::new(SlackActionId(format!("r:{tcid}:n")), pt("No"))
-                .with_style("danger".into());
+                .with_style(SlackBlockButtonStyle::Danger);
             let mut elements: Vec<SlackActionBlockElement> = vec![yes.into(), no.into()];
             if let Some(b) = url_button() {
                 elements.push(b.into());

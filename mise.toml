@@ -1,6 +1,6 @@
 [tools]
-rust = "1.95.0"
-node = "24"
+rust = "1.97.1"
+node = "24.19.0"
 rust-analyzer = "latest"
 "cargo:cargo-watch" = "latest"
 
@@ -30,7 +30,7 @@ run = "cargo watch -w crates/ -w Cargo.toml -w Cargo.lock --delay 3 -x 'run -p f
 [tasks.install-frontend]
 description = "Install frontend dependencies"
 dir = "web"
-run = "npm install"
+run = "npm ci"
 
 [tasks.build]
 description = "Production build (frontend + backend)"
@@ -67,6 +67,7 @@ run = "cargo clippy --workspace -- -D warnings"
 
 [tasks."lint:frontend"]
 description = "Run Next.js lint"
+depends = ["install-frontend"]
 dir = "web"
 run = "npm run lint"
 

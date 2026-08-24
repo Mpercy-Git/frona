@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rmcp::ServiceExt;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Implementation,
-    InitializeResult, Tool,
+    ServerPeerInfo, Tool,
 };
 use rmcp::service::{NotificationContext, RoleClient, RunningService};
 use rmcp::transport::IntoTransport;
@@ -125,7 +125,7 @@ impl McpClient {
             .map_err(|e| AppError::Tool(format!("MCP call_tool failed: {e}")))
     }
 
-    pub fn peer_info(&self) -> Option<InitializeResult> {
+    pub fn peer_info(&self) -> Option<ServerPeerInfo> {
         self.running.peer_info().map(|info| (*info).clone())
     }
 

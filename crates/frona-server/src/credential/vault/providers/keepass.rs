@@ -36,16 +36,6 @@ impl KeePassVaultProvider {
     }
 }
 
-fn collect_entries(group: &keepass::db::Group, results: &mut Vec<(String, keepass::db::Entry)>) {
-    for entry in &group.entries {
-        let uuid_hex = format!("{:032x}", entry.uuid.as_u128());
-        results.push((uuid_hex, entry.clone()));
-    }
-    for child_group in &group.groups {
-        collect_entries(child_group, results);
-    }
-}
-
 #[async_trait]
 impl VaultProvider for KeePassVaultProvider {
     async fn search(&self, query: &str, max_results: usize) -> Result<Vec<VaultItem>, AppError> {
@@ -58,8 +48,10 @@ impl VaultProvider for KeePassVaultProvider {
             let db = provider.open_db()?;
             let query_lower = query.to_lowercase();
 
-            let mut all_entries = Vec::new();
-            collect_entries(&db.root, &mut all_entries);
+            let all_entries = db
+                .iter_all_entries()
+                .map(|entry| (format!("{:032x}", entry.id().uuid().as_u128()), entry))
+                .collect::<Vec<_>>();
 
             let items: Vec<VaultItem> = all_entries
                 .iter()
@@ -97,8 +89,10 @@ impl VaultProvider for KeePassVaultProvider {
             let provider = KeePassVaultProvider::new(file_path, master_password);
             let db = provider.open_db()?;
 
-            let mut all_entries = Vec::new();
-            collect_entries(&db.root, &mut all_entries);
+            let all_entries = db
+                .iter_all_entries()
+                .map(|entry| (format!("{:032x}", entry.id().uuid().as_u128()), entry))
+                .collect::<Vec<_>>();
 
             let (_, entry) = all_entries
                 .iter()

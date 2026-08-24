@@ -391,7 +391,7 @@ impl AppState {
         let oauth_service = if config.sso.enabled {
             let oauth_repo: SurrealRepo<crate::auth::oauth::models::OAuthIdentity> =
                 SurrealRepo::new(db.clone());
-            OAuthService::new(config, Arc::new(oauth_repo), http_client.clone()).ok()
+            OAuthService::new(config, Arc::new(oauth_repo)).ok()
         } else {
             None
         };

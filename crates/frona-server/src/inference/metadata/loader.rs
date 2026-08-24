@@ -149,7 +149,7 @@ pub fn parse(json: &str) -> Result<ModelCatalogSnapshot, AppError> {
     let mut hasher = Sha256::new();
     hasher.update(json.as_bytes());
     let digest = hasher.finalize();
-    let version = format!("{:x}", digest)[..12].to_string();
+    let version = hex::encode(digest)[..12].to_string();
 
     Ok(ModelCatalogSnapshot {
         version,

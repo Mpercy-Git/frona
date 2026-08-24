@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { MessagePrimitive, AttachmentPrimitive, useMessage } from "@assistant-ui/react";
+import { MessagePrimitive, AttachmentPrimitive, useAuiState } from "@assistant-ui/react";
 import type { CompleteAttachment } from "@assistant-ui/react";
 import { presignFile } from "@/lib/api-client";
 import { getBackendAttachment } from "@/lib/use-chat-runtime";
@@ -108,7 +108,7 @@ function UserAttachment({ attachment }: { attachment: CompleteAttachment }) {
 }
 
 export function FronaUserMessage() {
-  const message = useMessage();
+  const message = useAuiState((state) => state.message);
   const tz = useTimezone();
   const custom = (message.metadata as Record<string, any>)?.custom ?? {};
   const command: MessageCommand | undefined = custom.command;

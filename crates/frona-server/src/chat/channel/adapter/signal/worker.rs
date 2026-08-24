@@ -272,6 +272,9 @@ async fn run(
                     Some(Received::Contacts) => {
                         tracing::info!(channel_id = %channel_id, "Signal contacts sync received");
                     }
+                    Some(Received::DecryptionError(_)) => {
+                        tracing::warn!(channel_id = %channel_id, "Signal message decryption failed");
+                    }
                     Some(Received::Content(content)) => {
                         convert::handle(
                             &mut manager,

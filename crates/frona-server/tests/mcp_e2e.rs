@@ -173,8 +173,8 @@ async fn spawn_handshake_and_tool_call() {
     let text: String = result
         .content
         .iter()
-        .filter_map(|c| match &c.raw {
-            rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+        .filter_map(|c| match c {
+            rmcp::model::ContentBlock::Text(t) => Some(t.text.clone()),
             _ => None,
         })
         .collect();
@@ -187,8 +187,8 @@ async fn spawn_handshake_and_tool_call() {
     let sum: String = result
         .content
         .iter()
-        .filter_map(|c| match &c.raw {
-            rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+        .filter_map(|c| match c {
+            rmcp::model::ContentBlock::Text(t) => Some(t.text.clone()),
             _ => None,
         })
         .collect();

@@ -1,11 +1,11 @@
-use jsonschema::JSONSchema;
+use jsonschema::Validator;
 use serde_json::Value;
 
 pub const MAX_SCHEMA_BYTES: usize = 16 * 1024;
 
 pub struct ResultSpec {
     pub schema: Value,
-    compiled: JSONSchema,
+    compiled: Validator,
 }
 
 impl std::fmt::Debug for ResultSpec {
@@ -20,7 +20,7 @@ impl ResultSpec {
     pub fn new(schema: Value) -> Result<Self, String> {
         Self::enforce_size_cap(&schema)?;
         let compiled =
-            JSONSchema::compile(&schema).map_err(|e| format!("invalid JSON Schema: {e}"))?;
+            jsonschema::validator_for(&schema).map_err(|e| format!("invalid JSON Schema: {e}"))?;
         Ok(Self { schema, compiled })
     }
 
@@ -41,9 +41,16 @@ impl ResultSpec {
     }
 
     pub fn validate_value(&self, value: &Value) -> Result<(), String> {
-        self.compiled
-            .validate(value)
-            .map_err(|errors| errors.map(|e| e.to_string()).collect::<Vec<_>>().join("; "))
+        let errors = self
+            .compiled
+            .iter_errors(value)
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     /// Type=string schemas accept the raw input; everything else expects JSON encoding.

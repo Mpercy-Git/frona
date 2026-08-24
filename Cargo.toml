@@ -18,18 +18,17 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rig-core = "0.41"
+rig-core = "0.42"
 async-stream = "0.3"
 serde-aux = "4"
-base64 = "0.22"
+base64 = "0.23"
 backon = "1"
 bon = "3"
 moka = { version = "0.12", features = ["future", "sync"] }
 cedar-policy = { version = "4", features = ["partial-eval"] }
-# Git-only (crates.io stuck at 0.6.x). The pinned rev carries an unfixed
-# PNI-routing bug (PR #395); see signal/mod.rs for the user-visible impact.
-presage = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8" }
-presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8" }
+# Git-only because the Signal client is not published on crates.io.
+presage = { git = "https://github.com/whisperfish/presage", rev = "f74b96e0fb9099ce8be2b28b7ca9d11f78a6faea" }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "f74b96e0fb9099ce8be2b28b7ca9d11f78a6faea" }
 
 # Signal's fork of curve25519-dalek shares the upstream crate name, so
 # `[patch.crates-io]` is the only way to substitute it. Mirrors presage's

@@ -153,12 +153,10 @@ fn published_release(dir: &Path) {
     enc.write_all(content.as_bytes()).unwrap();
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("r.ttl.gz"), enc.finish().unwrap()).unwrap();
-    let sha = Sha256::digest(content.as_bytes());
+    let sha = hex::encode(Sha256::digest(content.as_bytes()));
     std::fs::write(
         dir.join("metadata.json"),
-        format!(
-            r#"{{"sources":[{{"artifact":{{"name":"r.ttl.gz","content_sha256":"{sha:x}"}}}}]}}"#
-        ),
+        format!(r#"{{"sources":[{{"artifact":{{"name":"r.ttl.gz","content_sha256":"{sha}"}}}}]}}"#),
     )
     .unwrap();
 }

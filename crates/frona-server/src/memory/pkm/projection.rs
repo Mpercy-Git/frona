@@ -306,7 +306,7 @@ fn yaml_key(key: &str) -> std::borrow::Cow<'_, str> {
 pub fn sha256_hex(bytes: &str) -> String {
     let mut h = Sha256::new();
     h.update(bytes.as_bytes());
-    format!("{:x}", h.finalize())
+    hex::encode(h.finalize())
 }
 
 /// Commit the exact canonical bytes and revision, then update the page's `.md` mirror.

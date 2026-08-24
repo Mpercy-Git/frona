@@ -127,17 +127,16 @@ where
                     Err(e) => format!("tool error: {e}"),
                 };
                 chat_history.push(RigMessage::User {
-                    content: rig_core::OneOrMany::one(
-                        rig_core::completion::message::UserContent::ToolResult(
-                            rig_core::completion::message::ToolResult {
-                                id: tc.id.clone(),
-                                call_id: tc.call_id.clone(),
-                                content: rig_core::OneOrMany::one(
-                                    rig_core::completion::message::ToolResultContent::text(&text),
-                                ),
-                            },
-                        ),
-                    ),
+                    content: vec![rig_core::completion::message::UserContent::ToolResult(
+                        rig_core::completion::message::ToolResult {
+                            call: tc.id.clone(),
+                            provider: tc.provider.clone(),
+                            name: tc.function.name.clone(),
+                            content: vec![rig_core::completion::message::ToolResultContent::text(
+                                &text,
+                            )],
+                        },
+                    )],
                 });
             }
         }
@@ -195,17 +194,16 @@ pub async fn text_inference_with_tools(
                 Err(e) => format!("tool error: {e}"),
             };
             chat_history.push(RigMessage::User {
-                content: rig_core::OneOrMany::one(
-                    rig_core::completion::message::UserContent::ToolResult(
-                        rig_core::completion::message::ToolResult {
-                            id: tc.id.clone(),
-                            call_id: tc.call_id.clone(),
-                            content: rig_core::OneOrMany::one(
-                                rig_core::completion::message::ToolResultContent::text(&text),
-                            ),
-                        },
-                    ),
-                ),
+                content: vec![rig_core::completion::message::UserContent::ToolResult(
+                    rig_core::completion::message::ToolResult {
+                        call: tc.id.clone(),
+                        provider: tc.provider.clone(),
+                        name: tc.function.name.clone(),
+                        content: vec![rig_core::completion::message::ToolResultContent::text(
+                            &text,
+                        )],
+                    },
+                )],
             });
         }
     }
@@ -324,7 +322,10 @@ pub struct StructuredConversation<'a, T> {
     usage_ctx: UsageContext,
     tool_turns_left: usize,
     requests_used: usize,
-    last_submit: Option<(String, Option<String>)>,
+    last_submit: Option<(
+        rig_core::completion::message::ToolCallId,
+        Option<rig_core::completion::message::ProviderCallId>,
+    )>,
     _marker: std::marker::PhantomData<fn() -> T>,
 }
 
@@ -406,7 +407,7 @@ where
                 {
                     Some((
                         tc.id.clone(),
-                        tc.call_id.clone(),
+                        tc.provider.clone(),
                         tc.function.arguments.clone(),
                     ))
                 }
@@ -437,19 +438,16 @@ where
                         "tool error: exploration tool limit reached; call `submit` now".into()
                     };
                     self.history.push(RigMessage::User {
-                        content: rig_core::OneOrMany::one(
-                            rig_core::completion::message::UserContent::ToolResult(
-                                rig_core::completion::message::ToolResult {
-                                    id: tc.id.clone(),
-                                    call_id: tc.call_id.clone(),
-                                    content: rig_core::OneOrMany::one(
-                                        rig_core::completion::message::ToolResultContent::text(
-                                            &text,
-                                        ),
-                                    ),
-                                },
-                            ),
-                        ),
+                        content: vec![rig_core::completion::message::UserContent::ToolResult(
+                            rig_core::completion::message::ToolResult {
+                                call: tc.id.clone(),
+                                provider: tc.provider.clone(),
+                                name: tc.function.name.clone(),
+                                content: vec![
+                                    rig_core::completion::message::ToolResultContent::text(&text),
+                                ],
+                            },
+                        )],
                     });
                 }
             }
@@ -504,17 +502,16 @@ where
             ));
         };
         self.history.push(RigMessage::User {
-            content: rig_core::OneOrMany::one(
-                rig_core::completion::message::UserContent::ToolResult(
-                    rig_core::completion::message::ToolResult {
-                        id,
-                        call_id,
-                        content: rig_core::OneOrMany::one(
-                            rig_core::completion::message::ToolResultContent::text(&text),
-                        ),
-                    },
-                ),
-            ),
+            content: vec![rig_core::completion::message::UserContent::ToolResult(
+                rig_core::completion::message::ToolResult {
+                    call: id,
+                    provider: call_id,
+                    name: provider::SUBMIT_TOOL_NAME.to_string(),
+                    content: vec![rig_core::completion::message::ToolResultContent::text(
+                        &text,
+                    )],
+                },
+            )],
         });
         Ok(())
     }

@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { ComposerPrimitive, ThreadPrimitive, AttachmentPrimitive, useComposerRuntime, unstable_useTriggerPopoverScopeContextOptional } from "@assistant-ui/react";
+import { ComposerPrimitive, ThreadPrimitive, AttachmentPrimitive, useAui, unstable_useTriggerPopoverScopeContextOptional } from "@assistant-ui/react";
 import { useThreadIsRunning } from "@assistant-ui/core/react";
 import { LexicalComposerInput } from "@assistant-ui/react-lexical";
 import type { Unstable_TriggerItem } from "@assistant-ui/core";
@@ -81,7 +81,7 @@ export function FronaComposer({
   onSend?: (content: string, attachments?: Attachment[]) => void;
   wizard?: ToolWizardState;
 }) {
-  const composerRuntime = useComposerRuntime();
+  const composerRuntime = useAui().composer;
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
-use rand::Rng;
+use rand::RngExt;
 
 use crate::chat::broadcast::{BroadcastService, EntityAction};
 use crate::core::config::Config;
@@ -712,10 +712,10 @@ fn pairing_pending(channel: &Channel) -> bool {
 }
 
 fn generate_pair_code() -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..PAIR_CODE_LEN)
         .map(|_| {
-            let idx = rng.gen_range(0..PAIR_CODE_ALPHABET.len());
+            let idx = rng.random_range(0..PAIR_CODE_ALPHABET.len());
             PAIR_CODE_ALPHABET[idx] as char
         })
         .collect()

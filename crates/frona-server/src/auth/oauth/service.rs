@@ -28,15 +28,11 @@ pub struct OAuthService {
     pending_states: Arc<Mutex<HashMap<String, (String, Nonce)>>>,
     repo: Arc<dyn OAuthRepository>,
     redirect_uri: String,
-    http: reqwest::Client,
+    http: openidconnect::reqwest::Client,
 }
 
 impl OAuthService {
-    pub fn new(
-        config: &Config,
-        repo: Arc<dyn OAuthRepository>,
-        http: reqwest::Client,
-    ) -> Result<Self, AppError> {
+    pub fn new(config: &Config, repo: Arc<dyn OAuthRepository>) -> Result<Self, AppError> {
         let authority = config.sso.authority.clone().ok_or_else(|| {
             AppError::Validation("FRONA_SSO_AUTHORITY is required when SSO is enabled".into())
         })?;
@@ -71,7 +67,7 @@ impl OAuthService {
             pending_states: Arc::new(Mutex::new(HashMap::new())),
             repo,
             redirect_uri,
-            http,
+            http: openidconnect::reqwest::Client::new(),
         })
     }
 
@@ -380,7 +376,7 @@ async fn fetch_userinfo(
         openidconnect::EndpointMaybeSet,
         openidconnect::EndpointMaybeSet,
     >,
-    http_client: &reqwest::Client,
+    http_client: &openidconnect::reqwest::Client,
     token_response: &openidconnect::core::CoreTokenResponse,
     expected_sub: &str,
 ) -> Result<Option<CoreUserInfoClaims>, String> {

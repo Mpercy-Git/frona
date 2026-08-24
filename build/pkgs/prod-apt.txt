@@ -1,16 +1,16 @@
-ca-certificates=20230311+deb12u1
+ca-certificates=20250419~deb12u1
 libgfortran5=12.2.0-14+deb12u1
 libopenblas0=0.3.21+ds-4
 
 curl=7.88.1-10+deb12u15
 wget=1.21.3-1+deb12u1
-dnsutils=1:9.18.49-1~deb12u1
+dnsutils=1:9.18.49-1~deb12u2
 iputils-ping=3:20221126-1+deb12u1
 
 git=1:2.39.5-0+deb12u3
 openssh-client=1:9.2p1-2+deb12u10
 
-unzip=6.0-28
+unzip=6.0-28+deb12u1
 xz-utils=5.4.1-1+deb12u1
 zip=3.0-13
 
@@ -21,7 +21,7 @@ librsvg2-bin=2.54.7+dfsg-1~deb12u1
 libheif1=1.15.1-1+deb12u1
 libdjvulibre21=3.5.28-2.2~deb12u1
 
-libpq5=15.18-0+deb12u1
+libpq5=15.19-0+deb12u1
 libmariadb3=1:10.11.18-0+deb12u1
 mariadb-common=1:10.11.18-0+deb12u1
 
@@ -36,4 +36,4 @@ rsync=3.2.7-1+deb12u6
 smbclient=2:4.17.12+dfsg-0+deb12u4
 fd-find=8.6.0-3
 
-nodejs=24.18.0-1nodesource1
+nodejs=24.19.0-1nodesource1

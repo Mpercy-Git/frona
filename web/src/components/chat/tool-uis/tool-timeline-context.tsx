@@ -9,7 +9,7 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { useMessage } from "@assistant-ui/react";
+import { useAuiState } from "@assistant-ui/react";
 import { useThreadIsRunning } from "@assistant-ui/core/react";
 import { ChevronRightIcon, ChevronUpIcon, WrenchScrewdriverIcon } from "@heroicons/react/24/outline";
 import { AnimatePresence, motion } from "motion/react";
@@ -47,7 +47,7 @@ export function ToolTimelineProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const message = useMessage();
+  const message = useAuiState((state) => state.message);
   const isRunning = useThreadIsRunning();
 
   const toolCallIds = useMemo(() => {

@@ -38,7 +38,7 @@ impl KeyPairService {
             return Ok(kp);
         }
 
-        let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let signing_key = SigningKey::generate(&mut rand::rng());
         let private_bytes = signing_key.to_bytes();
         let public_bytes = signing_key.verifying_key().to_bytes();
 

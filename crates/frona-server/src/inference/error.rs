@@ -148,10 +148,7 @@ mod tests {
     #[test]
     fn a_successful_http_response_that_rig_cannot_decode_is_retryable() {
         let error = InferenceError::CompletionFailed(CompletionError::ProviderResponse(
-            ProviderResponseError {
-                status: Some(axum::http::StatusCode::OK),
-                body: r#"{"choices":[]}"#.into(),
-            },
+            ProviderResponseError::new(axum::http::StatusCode::OK, r#"{"choices":[]}"#),
         ));
 
         assert!(error.is_retryable());
@@ -171,10 +168,7 @@ mod tests {
     #[test]
     fn a_provider_response_without_an_http_success_status_is_not_retryable() {
         let error = InferenceError::CompletionFailed(CompletionError::ProviderResponse(
-            ProviderResponseError {
-                status: None,
-                body: "unknown provider failure".into(),
-            },
+            ProviderResponseError::without_status("unknown provider failure"),
         ));
 
         assert!(!error.is_retryable());

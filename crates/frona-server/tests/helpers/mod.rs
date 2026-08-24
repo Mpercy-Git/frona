@@ -326,7 +326,10 @@ impl ModelProvider for MockModelProvider {
             MockResponse::ToolCalls(calls) => calls
                 .into_iter()
                 .map(|(id, name, args)| {
-                    AssistantContent::ToolCall(ToolCall::new(id, ToolFunction::new(name, args)))
+                    AssistantContent::ToolCall(ToolCall::new(
+                        rig_core::completion::message::ToolCallId::new_or_mint(id),
+                        ToolFunction::new(name, args),
+                    ))
                 })
                 .collect(),
             MockResponse::Error(e) => return Err(e),
@@ -391,7 +394,10 @@ impl ModelProvider for MockModelProvider {
             MockResponse::ToolCalls(calls) => calls
                 .into_iter()
                 .map(|(id, name, args)| {
-                    AssistantContent::ToolCall(ToolCall::new(id, ToolFunction::new(name, args)))
+                    AssistantContent::ToolCall(ToolCall::new(
+                        rig_core::completion::message::ToolCallId::new_or_mint(id),
+                        ToolFunction::new(name, args),
+                    ))
                 })
                 .collect(),
             MockResponse::Error(e) => return Err(e),

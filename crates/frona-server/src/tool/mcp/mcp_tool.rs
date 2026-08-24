@@ -56,8 +56,8 @@ impl AgentTool for McpTool {
         let text = result
             .content
             .iter()
-            .filter_map(|c| match &c.raw {
-                rmcp::model::RawContent::Text(t) => Some(t.text.as_str()),
+            .filter_map(|c| match c {
+                rmcp::model::ContentBlock::Text(t) => Some(t.text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()

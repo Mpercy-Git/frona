@@ -129,8 +129,15 @@ fn sha256_uncompressed(path: &Path) -> std::io::Result<String> {
             Box::new(std::io::BufReader::new(file))
         };
     let mut hasher = Sha256::new();
-    std::io::copy(&mut reader, &mut hasher)?;
-    Ok(format!("{:x}", hasher.finalize()))
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 pub fn repair_dir(user_dir: &Path) -> PathBuf {
     user_dir.join(REPAIR_SUBDIR)
@@ -233,7 +240,7 @@ mod tests {
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(content.as_bytes()).unwrap();
         std::fs::write(dir.join(name), enc.finish().unwrap()).unwrap();
-        format!("{:x}", Sha256::digest(content.as_bytes()))
+        hex::encode(Sha256::digest(content.as_bytes()))
     }
 
     fn manifest(dir: &Path, entries: &[(&str, &str)]) {

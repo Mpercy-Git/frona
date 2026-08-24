@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use axum::body::Bytes;
 use axum::http::{Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;

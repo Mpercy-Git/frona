@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use base64::Engine;
 use rig_core::completion::message::{
-    DocumentSourceKind, ImageMediaType, MimeType, ToolFunction, ToolResult, ToolResultContent,
-    UserContent,
+    DocumentSourceKind, ImageMediaType, MimeType, ProviderCallId, ToolCallId, ToolFunction,
+    ToolResult, ToolResultContent, UserContent,
 };
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
@@ -204,28 +204,31 @@ pub(crate) async fn process_model_response(
         }
     }
 
-    let assistant_msg = RigMessage::Assistant {
-        id: None,
-        content: rig_core::OneOrMany::many(assistant_content_items)
-            .unwrap_or_else(|_| rig_core::OneOrMany::one(AssistantContent::text(""))),
+    let content = if assistant_content_items.is_empty() {
+        vec![AssistantContent::text("")]
+    } else {
+        assistant_content_items
     };
+    let assistant_msg = RigMessage::Assistant { id: None, content };
     chat_history.push(assistant_msg);
 
     has_tool_calls
 }
 
 fn build_tool_result_message(
-    tool_call_id: String,
-    call_id: Option<String>,
+    tool_call_id: ToolCallId,
+    provider: Option<ProviderCallId>,
+    tool_name: String,
     result: String,
     tool_output: &crate::tool::ToolOutput,
 ) -> RigMessage {
     let has_images = !tool_output.images().is_empty();
     if has_images {
         let tool_result_content = UserContent::ToolResult(ToolResult {
-            id: tool_call_id,
-            call_id,
-            content: rig_core::OneOrMany::one(ToolResultContent::text(&result)),
+            call: tool_call_id,
+            provider,
+            name: tool_name,
+            content: vec![ToolResultContent::text(&result)],
         });
         let mut user_contents = vec![tool_result_content];
         for img in tool_output.images() {
@@ -238,15 +241,16 @@ fn build_tool_result_message(
             }));
         }
         RigMessage::User {
-            content: rig_core::OneOrMany::many(user_contents).unwrap(),
+            content: user_contents,
         }
     } else {
         RigMessage::User {
-            content: rig_core::OneOrMany::one(UserContent::ToolResult(ToolResult {
-                id: tool_call_id,
-                call_id,
-                content: rig_core::OneOrMany::one(ToolResultContent::text(&result)),
-            })),
+            content: vec![UserContent::ToolResult(ToolResult {
+                call: tool_call_id,
+                provider,
+                name: tool_name,
+                content: vec![ToolResultContent::text(&result)],
+            })],
         }
     }
 }
@@ -303,7 +307,7 @@ async fn execute_tool_calls(
         event_tx.send(InferenceEvent {
             kind: InferenceEventKind::ToolCall {
                 id: te_id.clone(),
-                provider_call_id: tool_call.id.clone(),
+                provider_call_id: tool_call.wire_call_id().to_string(),
                 name: tool_name.clone(),
                 arguments: arguments.clone(),
                 description: description.clone(),
@@ -410,7 +414,7 @@ async fn execute_tool_calls(
         let te_response: crate::inference::tool_call::ToolCallResponse = te_record.into();
 
         let tool_call_result = ToolCallResult {
-            provider_call_id: tool_call.id.clone(),
+            provider_call_id: tool_call.wire_call_id().to_string(),
             tool_name: tool_name.clone(),
             arguments: te_response.arguments.clone(),
             result: text.clone(),
@@ -448,18 +452,20 @@ async fn execute_tool_calls(
             if let Some(output) = tool_output {
                 let msg = build_tool_result_message(
                     tool_call.id.clone(),
-                    tool_call.call_id.clone(),
+                    tool_call.provider.clone(),
+                    tool_name.clone(),
                     text,
                     &output,
                 );
                 chat_history.push(msg);
             } else {
                 chat_history.push(RigMessage::User {
-                    content: rig_core::OneOrMany::one(UserContent::ToolResult(ToolResult {
-                        id: tool_call.id.clone(),
-                        call_id: tool_call.call_id.clone(),
-                        content: rig_core::OneOrMany::one(ToolResultContent::text(&text)),
-                    })),
+                    content: vec![UserContent::ToolResult(ToolResult {
+                        call: tool_call.id.clone(),
+                        provider: tool_call.provider.clone(),
+                        name: tool_name.clone(),
+                        content: vec![ToolResultContent::text(&text)],
+                    })],
                 });
             }
         }

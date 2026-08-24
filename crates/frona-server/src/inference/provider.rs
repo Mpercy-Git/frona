@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use rig_core::completion::GetTokenUsage;
 use rig_core::completion::request::{ToolDefinition as RigToolDefinition, Usage};
 use rig_core::completion::{
     AssistantContent, CompletionModel, CompletionRequest, CompletionResponse,
@@ -99,11 +98,16 @@ impl<'a> CompletionRequestBuilder<'a> {
     }
 
     fn build(self) -> CompletionRequest {
+        let chat_history = if self.chat_history.is_empty() {
+            vec![RigMessage::user("")]
+        } else {
+            self.chat_history
+        };
+
         CompletionRequest {
             model: None,
             preamble: Some(self.system_prompt.to_string()),
-            chat_history: rig_core::OneOrMany::many(self.chat_history)
-                .unwrap_or_else(|_| rig_core::OneOrMany::one(RigMessage::user(""))),
+            chat_history,
             documents: vec![],
             tools: self.tools,
             temperature: self.temperature,
@@ -484,9 +488,6 @@ impl<C> ModelProvider for RigProvider<C>
 where
     C: rig_core::client::CompletionClient + Send + Sync,
     C::CompletionModel: CompletionModel + Send + Sync + 'static,
-    <C::CompletionModel as CompletionModel>::Response: Send + Sync,
-    <C::CompletionModel as CompletionModel>::StreamingResponse:
-        Clone + Unpin + Send + Sync + GetTokenUsage + 'static,
 {
     async fn inference(
         &self,
@@ -529,7 +530,7 @@ where
             .additional_params(params.additional_params)
             .build();
 
-        let response: CompletionResponse<_> = model
+        let response: CompletionResponse = model
             .completion(request)
             .await
             .map_err(InferenceError::CompletionFailed)?;
@@ -697,7 +698,7 @@ where
             .additional_params(params.additional_params)
             .build();
 
-        let response: CompletionResponse<_> = model
+        let response: CompletionResponse = model
             .completion(request)
             .await
             .map_err(InferenceError::CompletionFailed)?;
@@ -732,7 +733,7 @@ struct StreamConsumed {
     ttft_ms: Option<u64>,
 }
 
-async fn consume_tool_stream<S, R>(
+async fn consume_tool_stream<S>(
     mut stream: S,
     token_tx: &mpsc::Sender<StreamToken>,
     tool_names: &[String],
@@ -740,11 +741,10 @@ async fn consume_tool_stream<S, R>(
 where
     S: futures::Stream<
             Item = Result<
-                rig_core::streaming::StreamedAssistantContent<R>,
+                rig_core::streaming::StreamedAssistantContent,
                 rig_core::completion::CompletionError,
             >,
         > + Unpin,
-    R: Clone + Unpin + GetTokenUsage,
 {
     use futures::StreamExt;
     use std::time::Instant;
@@ -785,7 +785,9 @@ where
             Ok(rig_core::streaming::StreamedAssistantContent::ToolCall { tool_call, .. }) => {
                 contents.push(AssistantContent::ToolCall(tool_call));
             }
-            Ok(rig_core::streaming::StreamedAssistantContent::Reasoning(r)) => {
+            Ok(rig_core::streaming::StreamedAssistantContent::Reasoning {
+                reasoning: r, ..
+            }) => {
                 if ttft_ms.is_none() {
                     ttft_ms = Some(stream_start.elapsed().as_millis() as u64);
                 }
@@ -795,18 +797,20 @@ where
                 reasoning_signature = r.first_signature().map(|s| s.to_string());
                 let _ = token_tx.send(StreamToken::Reasoning(text)).await;
             }
-            Ok(rig_core::streaming::StreamedAssistantContent::ReasoningDelta { id, reasoning }) => {
+            Ok(rig_core::streaming::StreamedAssistantContent::ReasoningDelta {
+                id,
+                reasoning,
+                ..
+            }) => {
                 if ttft_ms.is_none() {
                     ttft_ms = Some(stream_start.elapsed().as_millis() as u64);
                 }
                 accumulated_reasoning.push_str(&reasoning);
-                if id.is_some() {
-                    reasoning_id = id;
-                }
+                reasoning_id = Some(id);
                 let _ = token_tx.send(StreamToken::Reasoning(reasoning)).await;
             }
             Ok(rig_core::streaming::StreamedAssistantContent::Final(r)) => {
-                final_usage = Some(r.token_usage());
+                final_usage = Some(r.usage);
             }
             Ok(_) => {}
             Err(e) => {
@@ -819,11 +823,13 @@ where
         let thinking_chars = accumulated_reasoning.len();
         tracing::debug!(thinking_chars, "Thinking tokens received");
         contents.push(AssistantContent::Reasoning(
-            rig_core::completion::message::Reasoning::new_with_signature(
-                &accumulated_reasoning,
-                reasoning_signature,
-            )
-            .optional_id(reasoning_id),
+            rig_core::completion::message::Reasoning {
+                id: reasoning_id,
+                ..rig_core::completion::message::Reasoning::new_with_signature(
+                    &accumulated_reasoning,
+                    reasoning_signature,
+                )
+            },
         ));
     }
 
@@ -863,7 +869,9 @@ fn recover_tool_calls_from_text(
 
     for tc in extracted {
         contents.push(AssistantContent::ToolCall(ToolCall::new(
-            crate::core::repository::new_id(),
+            rig_core::completion::message::ToolCallId::new_or_mint(
+                crate::core::repository::new_id(),
+            ),
             ToolFunction::new(tc.tool_name, tc.arguments),
         )));
     }
@@ -1336,7 +1344,7 @@ mod tests {
         let contents = vec![
             AssistantContent::text("part1"),
             AssistantContent::ToolCall(ToolCall::new(
-                "id1".to_string(),
+                rig_core::completion::message::ToolCallId::new_or_mint("id1"),
                 ToolFunction::new("tool".to_string(), serde_json::json!({})),
             )),
             AssistantContent::text("part2"),
@@ -1348,7 +1356,7 @@ mod tests {
     #[test]
     fn test_extract_text_from_choice_no_text() {
         let contents = vec![AssistantContent::ToolCall(ToolCall::new(
-            "id1".to_string(),
+            rig_core::completion::message::ToolCallId::new_or_mint("id1"),
             ToolFunction::new("tool".to_string(), serde_json::json!({})),
         ))];
         let result = extract_text_from_choice(&contents);
