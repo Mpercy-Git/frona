@@ -299,7 +299,9 @@ function PageInspector({
         <p className="mt-2 text-sm leading-5 text-text-secondary">{data.page.description}</p>
         <div className="mt-2 flex flex-wrap gap-1.5">
           {data.types.map((type) => <span key={type.iri} className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-secondary">{type.label}</span>)}
-          <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-secondary">{data.page.origin}</span>
+          {data.page.origin === "external" && (
+            <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-secondary">External</span>
+          )}
         </div>
       </div>
       <div className="flex border-b border-border px-4">
