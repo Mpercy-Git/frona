@@ -224,9 +224,9 @@ impl SandboxManager {
             .await
             .unwrap_or(false)
         {
+            let memory_path = self.storage_service.user_pkm_path(&ctx.user.handle);
             memory_read.push(
-                self.storage_service
-                    .user_pkm_path(&ctx.user.handle)
+                canonicalize_with_unresolved_tail(&memory_path)
                     .to_string_lossy()
                     .into_owned(),
             );
@@ -1137,6 +1137,17 @@ mod tests {
         let result = canonicalize_with_unresolved_tail(&target);
         let expected_parent = std::fs::canonicalize(tmp.path()).unwrap();
         assert_eq!(result, expected_parent.join("a/b/c/file.txt"));
+    }
+
+    #[test]
+    fn canonicalize_relative_nonexistent_path_is_absolute() {
+        let relative = PathBuf::from("target")
+            .join("test_data")
+            .join("users/mina/pkm");
+        let result = canonicalize_with_unresolved_tail(&relative);
+
+        assert!(result.is_absolute());
+        assert!(result.ends_with("target/test_data/users/mina/pkm"));
     }
 
     #[test]
