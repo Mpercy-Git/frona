@@ -157,7 +157,11 @@ export async function getMemoryGraph(): Promise<MemoryGraphResponse> {
 }
 
 export async function getMemoryPage(path: string): Promise<MemoryPageResponse> {
-  return request<MemoryPageResponse>(`/api/memory/pkm/page?path=${encodeURIComponent(path)}`);
+  const response = await request<Omit<MemoryPageResponse, "page"> & {
+    entity: MemoryPageResponse["page"];
+  }>(`/api/memory/pkm/entity?path=${encodeURIComponent(path)}`);
+  const { entity, ...rest } = response;
+  return { ...rest, page: entity };
 }
 
 export async function searchMemory(query: string): Promise<MemorySearchResult[]> {

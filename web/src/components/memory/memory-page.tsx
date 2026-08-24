@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AdjustmentsHorizontalIcon,
@@ -26,7 +26,6 @@ function isTab(value: string | null): value is MemoryTab {
 }
 
 export function MemoryPage() {
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const mobile = useMobile();
@@ -42,6 +41,14 @@ export function MemoryPage() {
   const [showInferred, setShowInferred] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const tab = isTab(searchParams.get("tab")) ? searchParams.get("tab") as MemoryTab : "page";
+
+  useEffect(() => {
+    const path = searchParams.get("page") ?? "";
+    if (path) {
+      setSelectedPath(path);
+      setInspectorOpen(true);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,9 +90,9 @@ export function MemoryPage() {
     params.set("page", path);
     params.set("tab", nextTab);
     const destination = `${pathname}?${params.toString()}`;
-    if (replace) router.replace(destination, { scroll: false });
-    else router.push(destination, { scroll: false });
-  }, [pathname, router, searchParams]);
+    if (replace) window.history.replaceState(null, "", destination);
+    else window.history.pushState(null, "", destination);
+  }, [pathname, searchParams]);
 
   const selectPage = useCallback((path: string) => {
     setSelectedPath(path);
