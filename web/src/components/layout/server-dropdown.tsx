@@ -37,7 +37,7 @@ const ENTRIES: ServerEntry[] = [
   { label: "Browser", href: "/admin/settings#browser", icon: GlobeAltIcon, requires: "admin" },
   { label: "Sandbox", href: "/admin/settings#sandbox", icon: BeakerIcon, requires: "admin" },
   { label: "Users", href: "/admin/settings#users", icon: UsersIcon, requires: "list_users" },
-  { label: "Server Settings", href: "/admin/settings", icon: Cog6ToothIcon, requires: "admin", divider: true },
+  { label: "Server Settings", href: "/admin/settings#providers", icon: Cog6ToothIcon, requires: "admin", divider: true },
 ];
 
 export function ServerDropdown() {
@@ -87,7 +87,7 @@ export function ServerDropdown() {
         {visible.map((entry) => {
           const Icon = entry.icon;
           return (
-            <div key={entry.href}>
+            <div key={entry.label}>
               {entry.divider && <div className="border-t border-border my-1" />}
               <button
                 onClick={() => navigate(entry.href)}
