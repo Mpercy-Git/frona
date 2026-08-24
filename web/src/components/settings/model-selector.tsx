@@ -111,7 +111,7 @@ export function ModelSelector({
   const modelIdByName = new Map(availableModels.map((m) => [m.name ?? m.id, m.id]));
   const modelItems = availableModels.map((m) => {
     const display = m.name ?? m.id;
-    return { value: display, label: display };
+    return { value: m.id, label: display };
   });
   const modelDisplay = modelNameById.get(model)
     ?? availableModels.find((m) => m.id.startsWith(model) || model.startsWith(m.id))?.name
@@ -146,8 +146,8 @@ export function ModelSelector({
           placeholder={loading ? "Fetching models..." : "Select model"}
           allowFreeText
           disabled={!provider}
-          onChange={(newDisplay) => {
-            const modelId = modelIdByName.get(newDisplay) ?? newDisplay;
+          onChange={(newValue) => {
+            const modelId = modelIdByName.get(newValue) ?? newValue;
             onModelChange(modelId);
           }}
         />
