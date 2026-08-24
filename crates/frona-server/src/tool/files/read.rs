@@ -69,6 +69,11 @@ impl ReadTool {
         {
             return read_image(&bytes, m, path_arg);
         }
+        if let Some(ref m) = mime
+            && m == "application/pdf"
+        {
+            return Ok(read_pdf(&bytes, path_arg, offset, limit));
+        }
 
         match std::str::from_utf8(&bytes) {
             Ok(text) => Ok(read_text(text, offset, limit)),
@@ -120,6 +125,23 @@ fn read_image(bytes: &[u8], mime: &str, path_arg: &str) -> Result<ToolOutput, Ap
         format!("Read image file [{}]", out_mime),
         vec![ImageData { bytes: out_bytes, media_type: out_mime }],
     ))
+}
+
+fn read_pdf(bytes: &[u8], path_arg: &str, offset: Option<usize>, limit: Option<usize>) -> ToolOutput {
+    let text = match pdf_extract::extract_text_from_mem(bytes) {
+        Ok(t) => t,
+        Err(e) => {
+            return ToolOutput::error(format!(
+                "could not extract text from PDF at {path_arg} ({e})"
+            ));
+        }
+    };
+    if text.trim().is_empty() {
+        return ToolOutput::error(format!(
+            "PDF at {path_arg} has no extractable text layer (likely a scanned or image-only PDF); OCR is not supported"
+        ));
+    }
+    read_text(&text, offset, limit)
 }
 
 fn read_text(text: &str, offset: Option<usize>, limit: Option<usize>) -> ToolOutput {
@@ -202,5 +224,20 @@ mod tests {
         assert!(is_supported_image("image/png"));
         assert!(is_supported_image("image/jpeg"));
         assert!(!is_supported_image("application/pdf"));
+    }
+
+    const MINIMAL_PDF: &[u8] = include_bytes!("testdata/minimal.pdf");
+
+    #[test]
+    fn read_pdf_extracts_text() {
+        let out = read_pdf(MINIMAL_PDF, "ticket.pdf", None, None);
+        assert!(out.is_success());
+        assert!(out.text_content().contains("Hello World"));
+    }
+
+    #[test]
+    fn read_pdf_garbage_bytes_errors() {
+        let out = read_pdf(b"not a pdf", "bad.pdf", None, None);
+        assert!(!out.is_success());
     }
 }
