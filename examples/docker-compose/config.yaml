@@ -148,6 +148,10 @@
 #   enabled: true/false (default: true)
 
 # Define named model groups. Agents reference these by name.
+#
+# `config.openrouter.yaml` in this directory is a ready-made alternative that
+# runs every built-in agent through OpenRouter on one API key, with a model
+# picked per group for cost against capability. Copy it over this file to use it.
 
 models:
   primary:

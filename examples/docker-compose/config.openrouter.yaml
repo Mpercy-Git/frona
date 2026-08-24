@@ -1,0 +1,177 @@
+# Frona — OpenRouter model preset
+#
+# A drop-in `config.yaml` for running every built-in agent through OpenRouter
+# with one API key. Copy it to where the server reads its config (or merge the
+# `providers:` and `models:` blocks into the config you already have) and set
+# `OPENROUTER_API_KEY` in `.env`.
+#
+#     mkdir -p data && cp config.openrouter.yaml data/config.yaml
+#
+# Every other setting keeps its default — see `config.yaml` for the full,
+# annotated list of server/auth/storage/voice options.
+#
+# ---------------------------------------------------------------------------
+# How model groups map to agents
+# ---------------------------------------------------------------------------
+# Agents pick a model by *group name*, not by model id (`model_group:` in
+# `resources/agents/<agent>/AGENT.md`, editable per-agent in the UI):
+#
+#   primary    → Assistant  — the default chat agent; highest message volume
+#   coding     → Developer  — writes and debugs code, long tool loops
+#   reasoning  → Researcher, Receptionist — multi-step research and phone calls
+#
+# Four more groups are optional overrides used by background work. Each one
+# falls back to `primary` when it isn't defined, so pointing them at something
+# cheap is free money — they run constantly and nobody reads their output
+# directly:
+#
+#   title         → chat title generation (one short line per new chat)
+#   compaction    → history + memory compaction (long input, short output)
+#   vision        → transcribes images for agents whose model is text-only
+#   call_summary  → post-call summaries for the Receptionist
+#
+# ---------------------------------------------------------------------------
+# Prices below are OpenRouter list rates in USD per 1M tokens, input/output,
+# as of August 2026. They move — check the model page before budgeting.
+# ---------------------------------------------------------------------------
+
+providers:
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+
+models:
+  # Assistant — chats, delegates, handles attachments. Optimised for cost per
+  # message and latency rather than peak reasoning, because most turns are
+  # short. Gemini 3.7 Flash takes image and audio input natively, so the
+  # `vision` transcription pre-pass never has to fire for this agent.
+  # $0.375 / $1.875 — 1M context, 64K max output.
+  primary:
+    provider: openrouter
+    model: google/gemini-3.7-flash
+    max_tokens: 16000
+    # Deliberately below the model's real 1M window: compaction triggers at
+    # `inference.compaction_trigger_pct` (80%) of this number, so a smaller
+    # window caps what each turn re-sends. Raise to 1000000 if you would rather
+    # pay for full long-context recall than compact.
+    context_window: 200000
+    fallbacks:
+      # Different vendor on purpose — a fallback that shares an upstream with
+      # the main model fails with it.
+      - provider: openrouter
+        model: z-ai/glm-5.2
+
+  # Developer — the value pick of the set. GLM 5.2 is an open-weights agentic
+  # coder that holds its own against frontier models on project-level edits at
+  # roughly a sixth of Claude Sonnet 5's input price ($2 / $10).
+  # $0.336 / $1.056 — 1M context.
+  coding:
+    provider: openrouter
+    model: z-ai/glm-5.2
+    max_tokens: 32000
+    context_window: 200000
+    provider_routing:
+      # Open-weights models are served by many upstreams of varying quality.
+      # Only route to ones that accept the full request (tool definitions
+      # included) and skip aggressively quantised endpoints — a provider that
+      # silently drops `tools` turns the Developer into a chatbot.
+      require_parameters: true
+      quantizations: [fp8, bf16]
+    fallbacks:
+      - provider: openrouter
+        model: qwen/qwen3.6-plus
+
+  # Researcher + Receptionist — long tool loops over web results, where a
+  # weaker model burns more tokens re-reading pages than a stronger one costs.
+  # GLM 5.3 is the step up from 5.2 without frontier pricing.
+  # $1.40 / $4.40 — 1.05M context.
+  #
+  # NOTE: the Receptionist shares this group, and phone calls are
+  # latency-bound, not reasoning-bound — the caller hears every second of
+  # think time. If you use voice, point the Receptionist at a fast model
+  # instead (set its model group to `primary` in the UI, or define a group of
+  # your own and set `model_group:` in its AGENT.md).
+  reasoning:
+    provider: openrouter
+    model: z-ai/glm-5.3
+    max_tokens: 32000
+    context_window: 200000
+    provider_routing:
+      require_parameters: true
+      quantizations: [fp8, bf16]
+    fallbacks:
+      - provider: openrouter
+        model: google/gemini-3.7-flash
+
+  # --- Background utilities -------------------------------------------------
+
+  # One short title per chat. Nothing here justifies a frontier model.
+  # $0.057 / $0.115 — 1M+ context.
+  title:
+    provider: openrouter
+    model: deepseek/deepseek-v4-flash
+    max_tokens: 1024
+    context_window: 200000
+
+  # Compaction reads a lot and writes a little, so input price dominates.
+  # Gemini 3.7 Flash rather than the cheapest option available: a bad summary
+  # is permanent — it becomes the agent's memory of the conversation.
+  compaction:
+    provider: openrouter
+    model: google/gemini-3.7-flash
+    max_tokens: 8192
+    context_window: 1000000
+
+  # Transcribes images for agents on a text-only model. Only fires when the
+  # agent's own model can't take image input, so with `primary` above it is
+  # mostly idle — keep it defined anyway for agents you point at text-only
+  # models.
+  vision:
+    provider: openrouter
+    model: google/gemini-3.7-flash
+    max_tokens: 4096
+    context_window: 200000
+
+  # Summarises a finished call from its transcript. Short input, short output.
+  call_summary:
+    provider: openrouter
+    model: deepseek/deepseek-v4-flash
+    max_tokens: 2048
+    context_window: 200000
+
+# ---------------------------------------------------------------------------
+# Trading cost for capability
+# ---------------------------------------------------------------------------
+# Swap a group's `model:` for one of these and leave everything else alone.
+#
+#   Step up (better, pricier)
+#     anthropic/claude-sonnet-5   $2.00 / $10.00   1M ctx   strongest all-round
+#     moonshotai/kimi-k3          $2.60 / $13.00   1M ctx   long agentic runs
+#     z-ai/glm-5.3                $1.40 /  $4.40   1M ctx   already `reasoning`
+#
+#   Step down (cheaper, weaker)
+#     minimax/minimax-m3          $0.23 /  $0.96   1M ctx   cheapest capable
+#     qwen/qwen3.6-flash          $0.19 /  $1.13            fast, small tasks
+#     deepseek/deepseek-v4-flash  $0.06 /  $0.12   1M+ ctx  utility-grade
+#
+# ---------------------------------------------------------------------------
+# Notes
+# ---------------------------------------------------------------------------
+# * `model:` is the OpenRouter slug including its vendor prefix
+#   (`google/gemini-3.7-flash`), not the vendor's own model id.
+# * Every model above supports tool calling, which all built-in agents need.
+#   Before adopting one that isn't listed here, check the "Supported
+#   Parameters" section of its OpenRouter model page for `tools`.
+# * `context_window` is only a hint to Frona's compaction trigger; it does not
+#   change what OpenRouter accepts. Frona reads the real window from the
+#   models.dev catalog when it knows the model, and falls back to 128K when it
+#   doesn't — which is why the newer slugs above set it explicitly.
+# * If a model's image support is misreported, correct it without waiting on
+#   the catalog:
+#
+#     inference:
+#       text_only_models: ["deepseek-v4-flash"]
+#       vision_models: ["z-ai/glm-5.3"]
+#
+# * OpenRouter bills a flat fee on credit purchases on top of these
+#   passthrough rates — factor it in when comparing against a direct
+#   provider key.
