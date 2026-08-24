@@ -31,6 +31,51 @@ pub struct TaskToolContext {
 use super::registry::AgentToolRegistry;
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 
+/// A tool's `input_schema` can carry `oneOf`/`anyOf`/`allOf` at the top level
+/// two different ways: (1) as the *whole* schema — e.g. a discriminated union
+/// from an MCP server's Rust/TS tagged-union input type — or (2) as an
+/// additional constraint alongside an already-complete `type: object` schema,
+/// e.g. `tool/mod.rs`'s `anyOf: [{required: [a]}, {required: [b]}]` XOR
+/// encoding for `create_task`'s `result_description`/`result_schema` pair.
+/// Anthropic's Messages API rejects either shape outright — the keyword's
+/// mere presence at the top level 400s the *entire* request, not just the
+/// offending tool. Case (2) only needs the keyword stripped: `properties`
+/// already exists, so leave it and `required` exactly as authored. Case (1)
+/// has no top-level `properties` to preserve, so synthesize a permissive one
+/// (union of all branches' properties, none required) — Anthropic has no way
+/// to express "exactly one of these branches" here regardless.
+fn flatten_top_level_union(schema: &mut Value) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    let branches = ["oneOf", "anyOf", "allOf"]
+        .into_iter()
+        .find_map(|key| match obj.remove(key) {
+            Some(Value::Array(branches)) => Some(branches),
+            _ => None,
+        });
+    let Some(branches) = branches else {
+        return;
+    };
+
+    if obj.contains_key("properties") {
+        obj.entry("type".to_string()).or_insert_with(|| serde_json::json!("object"));
+        return;
+    }
+
+    let mut properties = serde_json::Map::new();
+    for branch in &branches {
+        if let Some(props) = branch.get("properties").and_then(|p| p.as_object()) {
+            for (name, prop_schema) in props {
+                properties.entry(name.clone()).or_insert_with(|| prop_schema.clone());
+            }
+        }
+    }
+    obj.insert("type".to_string(), serde_json::json!("object"));
+    obj.insert("properties".to_string(), Value::Object(properties));
+    obj.remove("required");
+}
+
 struct UserToolRegistry {
     tools: HashMap<String, Arc<dyn AgentTool>>,
 }
@@ -215,6 +260,8 @@ impl ToolManager {
             if !decision.is_ok_and(|d| d.allowed) {
                 continue;
             }
+
+            flatten_top_level_union(&mut def.parameters);
 
             if let Some(props) = def
                 .parameters
@@ -429,4 +476,79 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     }
 
     tools
+}
+
+#[cfg(test)]
+mod flatten_top_level_union_tests {
+    use super::flatten_top_level_union;
+    use serde_json::json;
+
+    #[test]
+    fn flattens_one_of_into_plain_object() {
+        let mut schema = json!({
+            "oneOf": [
+                {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]},
+                {"type": "object", "properties": {"b": {"type": "number"}}, "required": ["b"]}
+            ]
+        });
+        flatten_top_level_union(&mut schema);
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("oneOf").is_none());
+        assert!(schema.get("required").is_none());
+        assert_eq!(schema["properties"]["a"]["type"], "string");
+        assert_eq!(schema["properties"]["b"]["type"], "number");
+    }
+
+    #[test]
+    fn leaves_plain_object_schema_untouched() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "required": ["a"]
+        });
+        let before = schema.clone();
+        flatten_top_level_union(&mut schema);
+        assert_eq!(schema, before);
+    }
+
+    #[test]
+    fn any_of_and_all_of_are_also_flattened() {
+        for key in ["anyOf", "allOf"] {
+            let mut schema = json!({
+                key: [{"type": "object", "properties": {"x": {"type": "boolean"}}}]
+            });
+            flatten_top_level_union(&mut schema);
+            assert_eq!(schema["type"], "object");
+            assert!(schema.get(key).is_none());
+            assert_eq!(schema["properties"]["x"]["type"], "boolean");
+        }
+    }
+
+    /// The `create_task`/`create_recurring_task` shape (tool/mod.rs's
+    /// `result_description`/`result_schema` XOR encoding): `anyOf` is a
+    /// sibling constraint on an already-complete object schema, not the
+    /// schema itself. Only the offending keyword should be stripped —
+    /// `properties` and the real top-level `required` list must survive.
+    #[test]
+    fn strips_any_of_constraint_without_touching_existing_properties_or_required() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "result_description": {"type": "string"},
+                "result_schema": {"type": "object"}
+            },
+            "required": ["title"],
+            "anyOf": [
+                {"required": ["result_description"]},
+                {"required": ["result_schema"]}
+            ]
+        });
+        flatten_top_level_union(&mut schema);
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("anyOf").is_none());
+        assert_eq!(schema["required"], json!(["title"]));
+        assert_eq!(schema["properties"]["result_description"]["type"], "string");
+        assert_eq!(schema["properties"]["result_schema"]["type"], "object");
+    }
 }
