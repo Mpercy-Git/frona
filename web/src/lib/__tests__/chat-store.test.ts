@@ -195,6 +195,36 @@ describe("ChatStore", () => {
       expect(tc.args.turnText).toBe("I'll search for that.");
     });
 
+    it("keeps streamed text visible when a tool call starts", () => {
+      store.handleEvent({ type: "token", content: "I'll search for that." });
+      store.handleEvent({
+        type: "tool_call",
+        id: "te-1",
+        provider_call_id: "tc-1",
+        name: "web_search",
+        arguments: "{}",
+      });
+
+      expect(store.getDisplayMessages()[0].content).toBe("I'll search for that.");
+    });
+
+    it("starts post-tool streaming text on its own Markdown line", () => {
+      store.handleEvent({ type: "token", content: "I'll search for that." });
+      store.handleEvent({
+        type: "tool_call",
+        id: "te-1",
+        provider_call_id: "tc-1",
+        name: "web_search",
+        arguments: "{}",
+      });
+      store.handleEvent({ type: "tool_result", name: "web_search", success: true, summary: "Done" });
+      store.handleEvent({ type: "token", content: "Here are the results." });
+
+      expect(store.getDisplayMessages()[0].content).toBe(
+        "I'll search for that.\n\nHere are the results.",
+      );
+    });
+
     it("shows tool executions in the synthetic message", () => {
       store.handleEvent({
         type: "tool_call",

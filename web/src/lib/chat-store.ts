@@ -297,6 +297,16 @@ export class ChatStore {
     switch (event.type) {
       case "token":
         this.isRunning = true;
+        // The first text emitted after a tool call starts a new visible turn.
+        // Use a blank line so Markdown renders it separately from the text
+        // spoken before the tool.
+        if (
+          this.lastTextSnapshot > 0 &&
+          this.streamingText.length === this.lastTextSnapshot &&
+          event.content.length > 0
+        ) {
+          this.streamingText += "\n\n";
+        }
         this.streamingText += event.content;
         break;
 
@@ -506,9 +516,10 @@ export class ChatStore {
     const merged = mergeConsecutiveMessages(this.messages);
     if (!this.isRunning) return merged;
 
-    const displayText = this.lastTextSnapshot > 0
-      ? this.streamingText.slice(this.lastTextSnapshot)
-      : this.streamingText;
+    // Keep the full token stream visible across tool calls. The previous
+    // snapshot slice moved pre-tool text into the tool timeline, which made
+    // the main assistant text appear to clear whenever a tool started.
+    const displayText = this.streamingText;
 
     const streamingTools = this.buildToolCalls();
 

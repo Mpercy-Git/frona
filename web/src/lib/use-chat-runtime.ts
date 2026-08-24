@@ -78,23 +78,25 @@ export type AssistantContentPart =
   | { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, string | number | boolean | null>; argsText: string; result?: string };
 
 /**
- * If the text part is empty but a tool call has turnText, promote the last
- * turnText to the main text and strip it from all tool call args.
+ * Put every tool turn's text before the final assistant text, with each item
+ * on its own Markdown line, then strip it from the tool args to avoid rendering
+ * it twice when the tool timeline is expanded.
  */
-export function promoteTurnText(parts: AssistantContentPart[]): AssistantContentPart[] {
+export function appendTurnText(parts: AssistantContentPart[]): AssistantContentPart[] {
   const textPart = parts.find((p) => p.type === "text");
-  if (textPart && "text" in textPart && textPart.text.trim()) return parts;
+  const turnTexts = parts.flatMap((p) => {
+    if (p.type !== "tool-call") return [];
+    const turnText = (p.args as Record<string, unknown>)?.turnText;
+    return typeof turnText === "string" && turnText.trim() ? [turnText.trim()] : [];
+  });
+  if (turnTexts.length === 0) return parts;
 
-  let lastTurnText = "";
-  for (const p of parts) {
-    if (p.type === "tool-call" && typeof (p.args as Record<string, unknown>)?.turnText === "string") {
-      lastTurnText = (p.args as Record<string, unknown>).turnText as string;
-    }
-  }
-  if (!lastTurnText) return parts;
+  const existingText = textPart?.type === "text" ? textPart.text.trimEnd() : "";
+  // Blank lines ensure Markdown renders every turn on a distinct visible line.
+  const combinedText = [...turnTexts, existingText].filter(Boolean).join("\n\n");
 
   const promoted = parts.map(p => {
-    if (p.type === "text") return { ...p, text: lastTurnText };
+    if (p.type === "text") return { ...p, text: combinedText };
     if (p.type === "tool-call" && (p.args as Record<string, unknown>)?.turnText) {
       const { turnText: _, ...rest } = p.args;
       return { ...p, args: rest };
@@ -102,14 +104,21 @@ export function promoteTurnText(parts: AssistantContentPart[]): AssistantContent
     return p;
   });
 
-  // No text part existed to receive the promoted turnText - e.g. an internal
-  // tool turn whose message body is empty and whose reasoning suppressed the
-  // empty-text placeholder in convertMessage. Prepend one so the agent's words
-  // render above the tool timeline instead of vanishing behind "Used N tools".
+  // An internal-tool turn with reasoning can have no text placeholder.
   if (!textPart) {
-    return [{ type: "text", text: lastTurnText }, ...promoted];
+    return [{ type: "text", text: combinedText }, ...promoted];
   }
   return promoted;
+}
+
+function stripTurnText(parts: AssistantContentPart[]): AssistantContentPart[] {
+  return parts.map((part) => {
+    if (part.type !== "tool-call" || !(part.args as Record<string, unknown>)?.turnText) {
+      return part;
+    }
+    const { turnText: _, ...args } = part.args;
+    return { ...part, args };
+  });
 }
 
 export function convertMessage(msg: MessageResponse) {
@@ -256,10 +265,11 @@ export function convertMessage(msg: MessageResponse) {
       }
     }
 
-    // Mid-flight, keep turnText in tool-call args so they render as bubbles
-    // between tools; only promote it when the message is fully done.
+    // Streaming text already contains the text emitted before each tool call,
+    // so keep it in the main message and remove duplicate timeline copies.
+    // Completed backend messages put persisted turn_text before the final text.
     const inFlight = msg.status === "executing" || msg.status === "paused";
-    const finalContent = inFlight ? content : promoteTurnText(content);
+    const finalContent = inFlight ? stripTurnText(content) : appendTurnText(content);
 
     return {
       id: msg.id,

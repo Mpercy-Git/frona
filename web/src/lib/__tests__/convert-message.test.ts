@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { convertMessage, promoteTurnText, type AssistantContentPart } from "../use-chat-runtime";
+import { appendTurnText, convertMessage, type AssistantContentPart } from "../use-chat-runtime";
 import type { MessageResponse, ToolCall } from "../types";
 
 
@@ -265,7 +265,7 @@ describe("convertMessage: tool executions", () => {
     expect(toolPart.result).toBe("denied");
   });
 
-  it("includes turn_text in tool-call args", () => {
+  it("renders turn_text before completed message text", () => {
     const msg = makeAgentMessage({
       tool_calls: [
         makeToolCall({
@@ -275,8 +275,10 @@ describe("convertMessage: tool executions", () => {
     });
 
     const result = convertMessage(msg);
+    const textPart = result!.content.find((p: any) => p.type === "text") as any;
     const toolPart = result!.content.find((p: any) => p.type === "tool-call") as any;
-    expect(toolPart.args.turnText).toBe("Before the tool");
+    expect(textPart.text).toBe("Before the tool\n\nHello");
+    expect(toolPart.args.turnText).toBeUndefined();
   });
 
   it("surfaces the agent's turn text when body is empty and reasoning is present", () => {
@@ -390,16 +392,16 @@ describe("convertMessage: special roles", () => {
 });
 
 
-describe("promoteTurnText", () => {
-  it("does nothing when text part already has content", () => {
+describe("appendTurnText", () => {
+  it("puts turnText before an existing final text part", () => {
     const parts: AssistantContentPart[] = [
       { type: "text", text: "Already here" },
       { type: "tool-call", toolCallId: "tc-1", toolName: "cli", args: { turnText: "Before tool" } as any, argsText: "{}", result: "ok" },
     ];
 
-    const result = promoteTurnText(parts);
-    expect(result[0]).toEqual({ type: "text", text: "Already here" });
-    expect((result[1] as any).args.turnText).toBe("Before tool");
+    const result = appendTurnText(parts);
+    expect(result[0]).toEqual({ type: "text", text: "Before tool\n\nAlready here" });
+    expect((result[1] as any).args.turnText).toBeUndefined();
   });
 
   it("promotes last turnText to text part when text is empty", () => {
@@ -409,8 +411,8 @@ describe("promoteTurnText", () => {
       { type: "tool-call", toolCallId: "tc-2", toolName: "cli", args: { turnText: "Last turn" } as any, argsText: "{}", result: "ok" },
     ];
 
-    const result = promoteTurnText(parts);
-    expect((result[0] as any).text).toBe("Last turn");
+    const result = appendTurnText(parts);
+    expect((result[0] as any).text).toBe("First turn\n\nLast turn");
     expect((result[1] as any).args.turnText).toBeUndefined();
     expect((result[2] as any).args.turnText).toBeUndefined();
   });
@@ -421,17 +423,17 @@ describe("promoteTurnText", () => {
       { type: "tool-call", toolCallId: "tc-1", toolName: "cli", args: {} as any, argsText: "{}", result: "ok" },
     ];
 
-    const result = promoteTurnText(parts);
+    const result = appendTurnText(parts);
     expect((result[0] as any).text).toBe("");
   });
 
-  it("does not promote when text part has only whitespace", () => {
+  it("replaces whitespace-only text with turnText", () => {
     const parts: AssistantContentPart[] = [
       { type: "text", text: "   " },
       { type: "tool-call", toolCallId: "tc-1", toolName: "cli", args: { turnText: "Before" } as any, argsText: "{}", result: "ok" },
     ];
 
-    const result = promoteTurnText(parts);
+    const result = appendTurnText(parts);
     expect((result[0] as any).text).toBe("Before");
   });
 
@@ -442,7 +444,7 @@ describe("promoteTurnText", () => {
       { type: "tool-call", toolCallId: "tc-1", toolName: "cli", args: { turnText: "Before" } as any, argsText: "{}", result: "ok" },
     ];
 
-    const result = promoteTurnText(parts);
+    const result = appendTurnText(parts);
     expect(result[0]).toEqual({ type: "reasoning", text: "thinking" });
   });
 
@@ -453,15 +455,15 @@ describe("promoteTurnText", () => {
       { type: "tool-call", toolCallId: "tc-1", toolName: "memory_remember", args: { turnText: "Oh nice, big shop." } as any, argsText: "{}", result: "ok" },
     ];
 
-    const result = promoteTurnText(parts);
+    const result = appendTurnText(parts);
     expect(result[0]).toEqual({ type: "text", text: "Oh nice, big shop." });
     expect((result[1] as any).args.turnText).toBeUndefined();
   });
 });
 
 
-describe("convertMessage: turnText promotion gated on status", () => {
-  it("does not promote turnText on executing messages", () => {
+describe("convertMessage: turnText appending gated on status", () => {
+  it("removes duplicate turnText from executing tool-call args", () => {
     const msg = makeAgentMessage({
       content: "",
       status: "executing",
@@ -472,10 +474,10 @@ describe("convertMessage: turnText promotion gated on status", () => {
 
     const result = convertMessage(msg);
     const toolPart = result!.content.find((p: any) => p.type === "tool-call") as any;
-    expect(toolPart.args.turnText).toBe("I'll do that");
+    expect(toolPart.args.turnText).toBeUndefined();
   });
 
-  it("promotes turnText on completed messages", () => {
+  it("appends turnText on completed messages", () => {
     const msg = makeAgentMessage({
       content: "",
       status: "completed",
