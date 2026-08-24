@@ -930,6 +930,17 @@ mod tests {
         }
     }
 
+    fn without_base_filesystem_grants(mut sandbox: Sandbox) -> Sandbox {
+        sandbox.base_filesystem_policy = Arc::new(BaseFilesystemPolicy {
+            system_read_dirs: Vec::new(),
+            proc_read_paths: Vec::new(),
+            etc_read_allowlist: Vec::new(),
+            read_write_dirs: Vec::new(),
+            read_write_devices: Vec::new(),
+        });
+        sandbox
+    }
+
     #[test]
     fn test_setup_creates_venv() {
         if !python3_available() {
@@ -1168,7 +1179,12 @@ mod tests {
         let workspace_via_symlink = symlinked_data.join("workspace");
         let target = workspace_via_symlink.join("pwgen.py"); // doesn't exist
 
-        let mut ws = temp_sandbox(&format!("symlink_{}", uuid::Uuid::new_v4()));
+        // Exclude the driver's global /tmp grant so this specifically tests
+        // workspace path matching.
+        let mut ws = without_base_filesystem_grants(temp_sandbox(&format!(
+            "symlink_{}",
+            uuid::Uuid::new_v4()
+        )));
         ws.path = workspace_via_symlink;
 
         // Pre-fix bug: is_writable returned false because target was literal
@@ -1192,7 +1208,12 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
         let outside = tmp.path().join("outside.txt"); // sibling of workspace
 
-        let mut ws = temp_sandbox(&format!("outside_{}", uuid::Uuid::new_v4()));
+        // tempfile paths are under /tmp, which the real driver grants R+W.
+        // Exclude base grants so this specifically tests workspace isolation.
+        let mut ws = without_base_filesystem_grants(temp_sandbox(&format!(
+            "outside_{}",
+            uuid::Uuid::new_v4()
+        )));
         ws.path = workspace;
 
         assert!(!ws.is_writable(&outside));
