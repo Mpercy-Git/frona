@@ -59,12 +59,34 @@ describe("ChatStore", () => {
   });
 
   describe("subscriber notifications", () => {
-    it("notifies subscribers on state changes", () => {
+    it("notifies subscribers on state changes", async () => {
       const listener = vi.fn();
       store.subscribe(listener);
 
       store.handleEvent({ type: "token", content: "hi" });
+      await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
+    });
+
+    it("batches streaming notifications to one animation frame", () => {
+      const callbacks: FrameRequestCallback[] = [];
+      const animationFrame = vi
+        .spyOn(globalThis, "requestAnimationFrame")
+        .mockImplementation((callback) => {
+          callbacks.push(callback);
+          return callbacks.length;
+        });
+      const listener = vi.fn();
+      store.subscribe(listener);
+
+      for (let i = 0; i < 100; i += 1) {
+        store.handleEvent({ type: "token", content: "x" });
+      }
+
+      expect(listener).not.toHaveBeenCalled();
+      expect(callbacks).toHaveLength(1);
+      callbacks[0](0);
       expect(listener).toHaveBeenCalledTimes(1);
+      animationFrame.mockRestore();
     });
 
     it("unsubscribe stops notifications", () => {
@@ -74,6 +96,23 @@ describe("ChatStore", () => {
 
       store.handleEvent({ type: "token", content: "hi" });
       expect(listener).not.toHaveBeenCalled();
+    });
+
+    it("defers subscribers added during notification until the next change", () => {
+      const replacement = vi.fn();
+      let unsubscribe = () => {};
+      const listener = vi.fn(() => {
+        unsubscribe();
+        store.subscribe(replacement);
+      });
+      unsubscribe = store.subscribe(listener);
+
+      store.markRunning();
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(replacement).not.toHaveBeenCalled();
+
+      store.markLoaded();
+      expect(replacement).toHaveBeenCalledTimes(1);
     });
 
     it("getSnapshot returns a stable reference until state changes", () => {

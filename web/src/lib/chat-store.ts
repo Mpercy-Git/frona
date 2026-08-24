@@ -107,6 +107,7 @@ export class ChatStore {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<() => void>();
   private _snapshot: StoreSnapshot | null = null;
+  private streamingNotificationScheduled = false;
 
   subscribe(callback: () => void): () => void {
     this.listeners.add(callback);
@@ -182,9 +183,21 @@ export class ChatStore {
     }
   }
 
-  private notify() {
+  private notify(defer = false) {
     this._snapshot = null;
-    for (const fn of this.listeners) fn();
+    if (defer && typeof requestAnimationFrame === "function") {
+      if (this.streamingNotificationScheduled) return;
+      this.streamingNotificationScheduled = true;
+      requestAnimationFrame(() => {
+        this.streamingNotificationScheduled = false;
+        for (const fn of [...this.listeners]) fn();
+      });
+      return;
+    }
+    // React may replace a useSyncExternalStore subscriber synchronously while
+    // handling this callback. Iterate a snapshot so listeners added during a
+    // notification are not visited by the same live Set iterator.
+    for (const fn of [...this.listeners]) fn();
   }
 
   markLoaded() {
@@ -482,7 +495,7 @@ export class ChatStore {
         break;
       }
     }
-    this.notify();
+    this.notify(event.type === "token" || event.type === "reasoning");
   }
 
   /**
