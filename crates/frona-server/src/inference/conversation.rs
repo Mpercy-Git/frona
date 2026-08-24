@@ -424,6 +424,16 @@ fn group_tool_calls_by_message(tool_calls: &[ToolCall]) -> HashMap<String, Vec<&
     map
 }
 
+fn reasoning_for_replay(r: &crate::chat::message::models::Reasoning) -> Reasoning {
+    r.raw
+        .as_ref()
+        .and_then(|raw| serde_json::from_value(raw.clone()).ok())
+        .unwrap_or_else(|| Reasoning {
+            id: r.id.clone(),
+            ..Reasoning::new_with_signature(&r.content, r.signature.clone())
+        })
+}
+
 fn convert_agent_with_tool_calls(
     msg: &Message,
     tool_calls: &[&ToolCall],
@@ -456,10 +466,7 @@ fn convert_agent_with_tool_calls(
         // originally emitted; without it they reject the request with
         // `invalid_request_error` on resume after a HITL pause.
         if let Some(r) = tes.iter().find_map(|te| te.turn_reasoning.as_ref()) {
-            assistant_items.push(AssistantContent::Reasoning(Reasoning {
-                id: r.id.clone(),
-                ..Reasoning::new_with_signature(&r.content, r.signature.clone())
-            }));
+            assistant_items.push(AssistantContent::Reasoning(reasoning_for_replay(r)));
         }
         if let Some(text) = tes.iter().find_map(|te| te.turn_text.as_deref())
             && !text.is_empty()
@@ -503,10 +510,7 @@ fn convert_agent_with_tool_calls(
     if is_completed && !msg.content.is_empty() {
         let mut items: Vec<AssistantContent> = Vec::new();
         if let Some(r) = &msg.reasoning {
-            items.push(AssistantContent::Reasoning(Reasoning {
-                id: r.id.clone(),
-                ..Reasoning::new_with_signature(&r.content, r.signature.clone())
-            }));
+            items.push(AssistantContent::Reasoning(reasoning_for_replay(r)));
         }
         items.push(AssistantContent::text(&msg.content));
         result.push(RigMessage::Assistant {
@@ -542,10 +546,8 @@ pub fn convert_agent_message(
     let is_self = msg.agent_id.as_deref() == Some(agent_id);
     if is_self {
         if let Some(r) = &msg.reasoning {
-            let mut items: Vec<AssistantContent> = vec![AssistantContent::Reasoning(Reasoning {
-                id: r.id.clone(),
-                ..Reasoning::new_with_signature(&r.content, r.signature.clone())
-            })];
+            let mut items: Vec<AssistantContent> =
+                vec![AssistantContent::Reasoning(reasoning_for_replay(r))];
             if !msg.content.is_empty() {
                 items.push(AssistantContent::text(&msg.content));
             }
@@ -785,6 +787,7 @@ mod tests {
             id: None,
             content: "thinking".into(),
             signature: None,
+            raw: None,
         });
         assert!(convert_agent_message(&msg, "agent-1", None).is_some());
     }
@@ -903,6 +906,7 @@ mod tests {
                 id: Some("reasoning-1".to_string()),
                 content: "Let me think about this...".to_string(),
                 signature: Some("sig-abc".to_string()),
+                raw: None,
             }),
             ..make_message(MessageRole::Agent, "Here is my answer")
         };

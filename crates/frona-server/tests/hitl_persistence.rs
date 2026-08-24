@@ -54,6 +54,7 @@ async fn tool_call_turn_reasoning_round_trips() {
         id: Some("r-1".into()),
         content: "I need to ask the user.".into(),
         signature: Some("sig-abc".into()),
+        raw: None,
     });
 
     let id = te.id.clone();

@@ -569,6 +569,7 @@ async fn test_message_with_reasoning_round_trips_through_db() {
         id: Some("r-123".to_string()),
         content: "Let me think about this carefully...".to_string(),
         signature: Some("sig-abc-def".to_string()),
+        raw: None,
     });
 
     msg_repo.create(&msg).await.unwrap();
@@ -619,6 +620,7 @@ async fn test_message_reasoning_with_no_signature() {
         id: None,
         content: "Quick thought".to_string(),
         signature: None,
+        raw: None,
     });
 
     msg_repo.create(&msg).await.unwrap();

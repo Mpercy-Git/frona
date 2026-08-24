@@ -129,6 +129,7 @@ pub fn extract_reasoning(contents: &[AssistantContent]) -> Option<Reasoning> {
                 id: r.id.clone(),
                 content: r.display_text(),
                 signature: r.first_signature().map(|s| s.to_string()),
+                raw: serde_json::to_value(r).ok(),
             })
         } else {
             None
@@ -698,5 +699,20 @@ mod tests {
         )];
         let r = extract_reasoning(&contents).unwrap();
         assert_eq!(r.content, "chunk1 \nchunk2");
+    }
+
+    #[test]
+    fn extract_reasoning_preserves_opaque_blocks_when_display_text_is_empty() {
+        let reasoning = rig_core::completion::message::Reasoning::encrypted("ciphertext")
+            .with_id("rs_opaque".to_string());
+        let contents = vec![AssistantContent::Reasoning(reasoning.clone())];
+
+        let stored = extract_reasoning(&contents).expect("reasoning should be retained");
+
+        assert_eq!(stored.id.as_deref(), Some("rs_opaque"));
+        assert!(stored.content.is_empty());
+        let replayed: rig_core::completion::message::Reasoning =
+            serde_json::from_value(stored.raw.expect("raw reasoning should be stored")).unwrap();
+        assert_eq!(replayed, reasoning);
     }
 }

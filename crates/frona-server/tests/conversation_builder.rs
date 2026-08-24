@@ -309,6 +309,7 @@ async fn agent_with_tool_calls_includes_per_turn_reasoning() {
         id: Some("r-0".into()),
         content: "I should engage with a question.".into(),
         signature: Some("sig-0".into()),
+        raw: None,
     });
 
     let result = builder.build(&messages, &[te], &ctx, None).await;
@@ -376,6 +377,7 @@ async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
         id: None,
         content: "thinking for turn 0".into(),
         signature: None,
+        raw: None,
     });
 
     let mut te1 = tool_call("chat-1", &agent_msg_id, 1, "tool_b");
@@ -383,6 +385,7 @@ async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
         id: None,
         content: "thinking for turn 1".into(),
         signature: None,
+        raw: None,
     });
 
     let result = builder.build(&messages, &[te0, te1], &ctx, None).await;

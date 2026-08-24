@@ -14,6 +14,11 @@ pub struct Reasoning {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// Lossless reasoning representation emitted by the inference adapter.
+    /// `content` remains the best-effort UI projection; this value is the
+    /// authoritative source when rebuilding provider history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
@@ -396,6 +401,7 @@ mod tests {
             id: Some("r-1".to_string()),
             content: "thinking about the problem".to_string(),
             signature: Some("sig-abc".to_string()),
+            raw: None,
         };
 
         let json = serde_json::to_string(&reasoning).unwrap();
@@ -412,6 +418,7 @@ mod tests {
             id: None,
             content: "just text".to_string(),
             signature: None,
+            raw: None,
         };
 
         let json = serde_json::to_string(&reasoning).unwrap();
@@ -427,6 +434,7 @@ mod tests {
                 id: Some("r-1".to_string()),
                 content: "I need to think".to_string(),
                 signature: None,
+                raw: None,
             })
             .build();
 
@@ -451,6 +459,7 @@ mod tests {
                 id: Some("r-1".to_string()),
                 content: "deep thinking".to_string(),
                 signature: Some("sig".to_string()),
+                raw: None,
             })
             .build();
 

@@ -631,7 +631,11 @@ where
                     .send(StreamToken::Text(accumulated_text.clone()))
                     .await;
             }
-            contents.insert(0, AssistantContent::text(&accumulated_text));
+            let text_index = contents
+                .iter()
+                .take_while(|item| matches!(item, AssistantContent::Reasoning(_)))
+                .count();
+            contents.insert(text_index, AssistantContent::text(&accumulated_text));
         }
 
         tracing::debug!(
@@ -757,6 +761,7 @@ where
     let mut accumulated_reasoning = String::new();
     let mut reasoning_id: Option<String> = None;
     let mut reasoning_signature: Option<String> = None;
+    let mut complete_reasoning: Option<rig_core::completion::message::Reasoning> = None;
     let mut final_usage: Option<Usage> = None;
 
     while let Some(chunk) = stream.next().await {
@@ -792,13 +797,13 @@ where
                     ttft_ms = Some(stream_start.elapsed().as_millis() as u64);
                 }
                 let text = r.display_text();
-                accumulated_reasoning.push_str(&text);
                 reasoning_id = r.id.clone();
                 reasoning_signature = r.first_signature().map(|s| s.to_string());
+                complete_reasoning = Some(r);
                 let _ = token_tx.send(StreamToken::Reasoning(text)).await;
             }
             Ok(rig_core::streaming::StreamedAssistantContent::ReasoningDelta {
-                id,
+                provider_id,
                 reasoning,
                 ..
             }) => {
@@ -806,7 +811,9 @@ where
                     ttft_ms = Some(stream_start.elapsed().as_millis() as u64);
                 }
                 accumulated_reasoning.push_str(&reasoning);
-                reasoning_id = Some(id);
+                if provider_id.is_some() {
+                    reasoning_id = provider_id;
+                }
                 let _ = token_tx.send(StreamToken::Reasoning(reasoning)).await;
             }
             Ok(rig_core::streaming::StreamedAssistantContent::Final(r)) => {
@@ -819,18 +826,21 @@ where
         }
     }
 
-    if !accumulated_reasoning.is_empty() {
+    if let Some(reasoning) = complete_reasoning {
+        contents.insert(0, AssistantContent::Reasoning(reasoning));
+    } else if !accumulated_reasoning.is_empty() {
         let thinking_chars = accumulated_reasoning.len();
         tracing::debug!(thinking_chars, "Thinking tokens received");
-        contents.push(AssistantContent::Reasoning(
-            rig_core::completion::message::Reasoning {
+        contents.insert(
+            0,
+            AssistantContent::Reasoning(rig_core::completion::message::Reasoning {
                 id: reasoning_id,
                 ..rig_core::completion::message::Reasoning::new_with_signature(
                     &accumulated_reasoning,
                     reasoning_signature,
                 )
-            },
-        ));
+            }),
+        );
     }
 
     Ok(StreamConsumed {
