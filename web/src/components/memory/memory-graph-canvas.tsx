@@ -55,6 +55,7 @@ const drawWrappedNodeLabel: NodeLabelDrawingFunction<NodeAttributes, EdgeAttribu
 const fadedNode = "rgba(128, 137, 148, 0.16)";
 const ambientAssertedEdge = "rgba(105, 116, 128, 0.24)";
 const ambientInferredEdge = "rgba(105, 116, 128, 0.14)";
+const layoutCacheVersion = 2;
 
 function colorForNode(node: MemoryGraphNode): string {
   const selectedType = node.types.find((type) => type.iri === node.displayType);
@@ -63,7 +64,7 @@ function colorForNode(node: MemoryGraphNode): string {
 
 function loadPositions(revision: string): Record<string, { x: number; y: number }> | null {
   try {
-    const raw = localStorage.getItem(`frona:memory-layout:${revision}`);
+    const raw = localStorage.getItem(`frona:memory-layout:v${layoutCacheVersion}:${revision}`);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -76,7 +77,7 @@ function savePositions(revision: string, graph: MultiDirectedGraph<NodeAttribute
     positions[path] = { x: attributes.x, y: attributes.y };
   });
   try {
-    localStorage.setItem(`frona:memory-layout:${revision}`, JSON.stringify(positions));
+    localStorage.setItem(`frona:memory-layout:v${layoutCacheVersion}:${revision}`, JSON.stringify(positions));
   } catch {
     // Layout caching is an enhancement; private browsing and quotas may disable it.
   }
@@ -251,13 +252,14 @@ export function MemoryGraphCanvas({
     let layout: FA2LayoutSupervisor<NodeAttributes, EdgeAttributes> | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     if (!cached && graph.order > 1) {
+      const smallGraph = graph.order <= 12;
       layout = new FA2LayoutSupervisor(graph, {
         settings: {
           ...forceAtlas2.inferSettings(graph),
           barnesHutOptimize: graph.order > 200,
           edgeWeightInfluence: 1.2,
-          gravity: 0.7,
-          scalingRatio: 5,
+          gravity: smallGraph ? 1.8 : 0.7,
+          scalingRatio: smallGraph ? 1.5 : 5,
           slowDown: 4,
         },
       });
@@ -265,6 +267,14 @@ export function MemoryGraphCanvas({
       timer = setTimeout(() => {
         layout?.stop();
         savePositions(data.revision, graph);
+        if (graph.order <= 12) {
+          const camera = renderer.getCamera();
+          const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          void camera.animate(
+            { x: 0.5, y: 0.5, ratio: graph.order <= 6 ? 1.65 : 1.3 },
+            { duration: reducedMotion ? 0 : 350, easing: "quadraticInOut" },
+          );
+        }
       }, 1600);
     }
 
@@ -293,7 +303,10 @@ export function MemoryGraphCanvas({
       }
       if (depth === 1) return { ...attributes, size: attributes.size * 1.22, forceLabel: directlyRelated.has(path), zIndex: 3 };
       if (depth === 2) return { ...attributes, size: attributes.size, forceLabel: false, zIndex: 2 };
-      return { ...attributes, size: Math.max(2.5, attributes.size * 0.55), color: fadedNode, forceLabel: false, zIndex: 0 };
+      // Selection emphasizes the local neighborhood, but the graph remains a
+      // map of every wiki page. Shrinking distant nodes below Sigma's label
+      // threshold and making them nearly transparent made them look absent.
+      return { ...attributes, forceLabel: false, zIndex: 0 };
     });
     renderer.setSetting("edgeReducer", (edge, attributes) => {
       if (attributes.origin === "memory") return { ...attributes, hidden: true };
@@ -329,6 +342,13 @@ export function MemoryGraphCanvas({
       if (display) {
         const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         const camera = renderer.getCamera();
+        if (graph.order <= 12) {
+          void camera.animate(
+            { x: 0.5, y: 0.5, ratio: graph.order <= 6 ? 1.65 : 1.3 },
+            { duration: reducedMotion ? 0 : 450, easing: "quadraticInOut" },
+          );
+          return;
+        }
         void camera.animate(
           selectionCameraTarget(display, camera.getState()),
           { duration: reducedMotion ? 0 : 450, easing: "quadraticInOut" },
