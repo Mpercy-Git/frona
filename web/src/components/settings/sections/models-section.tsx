@@ -15,9 +15,11 @@ interface ModelsSectionProps {
   enabledProviders: string[];
   providerConfigs?: Record<string, import("@/lib/config-types").ModelProviderConfig>;
   onChange: (models: Record<string, ModelGroupConfig>) => void;
+  onReadyChange?: (blockReason: string | null) => void;
 }
 
-const PREDEFINED_GROUPS = ["primary", "reasoning", "coding", "memory"];
+const PREDEFINED_GROUPS = ["primary", "coding", "reasoning", "memory"];
+const OPTIONAL_GROUPS = ["coding", "reasoning", "memory"];
 
 function sortedGroupNames(names: string[]): string[] {
   const predefined = PREDEFINED_GROUPS.filter((g) => names.includes(g));
@@ -397,12 +399,22 @@ function GeminiParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: 
   );
 }
 
-export function ModelsSection({ models, enabledProviders, providerConfigs, onChange }: ModelsSectionProps) {
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+export function ModelsSection({ models, enabledProviders, providerConfigs, onChange, onReadyChange }: ModelsSectionProps) {
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["primary"]));
   const [paramsDialog, setParamsDialog] = useState<{ group: string; fallbackIndex?: number } | null>(null);
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
 
-  const groupNames = sortedGroupNames(Object.keys(models));
+  const groupNames = sortedGroupNames(Array.from(new Set(["primary", ...Object.keys(models)])));
+  const availableGroups = OPTIONAL_GROUPS.filter((name) => !(name in models));
+
+  const primary = models.primary;
+  const primaryBlockReason = !primary?.provider || !primary?.model
+    ? "Configure the Primary model group to continue"
+    : null;
+
+  useEffect(() => {
+    onReadyChange?.(primaryBlockReason);
+  }, [onReadyChange, primaryBlockReason]);
 
   function toggleExpanded(name: string) {
     setExpandedGroups((prev) => {
@@ -414,7 +426,7 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
   }
 
   function updateGroup(name: string, update: Partial<ModelGroupConfig>) {
-    onChange({ ...models, [name]: { ...models[name], ...update } });
+    onChange({ ...models, [name]: { ...(models[name] ?? newModelGroup()), ...update } });
   }
 
   function renameGroup(oldName: string, newName: string) {
@@ -441,23 +453,23 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
   }
 
   function addGroup() {
-    let name = "";
+    let name = "custom_group";
     let i = 1;
     while (name in models) {
-      name = `group_${i++}`;
+      name = `custom_group_${i++}`;
     }
     onChange({ ...models, [name]: newModelGroup() });
     setExpandedGroups((prev) => new Set(prev).add(name));
   }
 
   function updateFallback(groupName: string, index: number, update: Partial<ModelGroupConfig>) {
-    const fallbacks = [...(models[groupName].fallbacks ?? [])];
+    const fallbacks = [...(models[groupName]?.fallbacks ?? [])];
     fallbacks[index] = { ...fallbacks[index], ...update };
     updateGroup(groupName, { fallbacks });
   }
 
   function addFallback(groupName: string) {
-    updateGroup(groupName, { fallbacks: [...(models[groupName].fallbacks ?? []), newFallback()] });
+    updateGroup(groupName, { fallbacks: [...(models[groupName]?.fallbacks ?? []), newFallback()] });
   }
 
   function removeFallback(groupName: string, index: number) {
@@ -470,38 +482,65 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
       <SectionHeader title="Model Groups" description="Configure model groups with fallback chains and inference parameters" icon={CubeIcon} />
       <div className="space-y-3">
         {groupNames.map((name) => {
-          const group = models[name];
+          const group = models[name] ?? newModelGroup();
           const isExpanded = expandedGroups.has(name);
+          const isPrimary = name === "primary";
 
           return (
             <div
               key={name}
               className="rounded-lg border border-border bg-surface-secondary"
             >
-              <button
-                type="button"
-                onClick={() => toggleExpanded(name)}
-                className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-text-primary hover:bg-surface-tertiary rounded-lg"
-              >
-                <span>{formatGroupName(name)}</span>
-                <svg
-                  className={`h-4 w-4 text-text-tertiary transition-transform ${isExpanded ? "rotate-180" : ""}`}
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
+              <div className="flex items-center px-4 py-3">
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(name)}
+                  className="flex min-w-0 flex-1 items-center justify-between text-sm font-medium text-text-primary"
                 >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
+                  <span className="flex items-center gap-2">
+                    {formatGroupName(name)}
+                    {isPrimary && (
+                      <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent">
+                        Required
+                      </span>
+                    )}
+                  </span>
+                  <svg
+                    className={`h-4 w-4 text-text-tertiary transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {!isPrimary && (
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked="true"
+                    aria-label={`Disable ${formatGroupName(name)} model group`}
+                    onClick={() => {
+                      if (PREDEFINED_GROUPS.includes(name)) removeGroup(name);
+                      else setConfirmingRemove(name);
+                    }}
+                    className="relative ml-3 inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent bg-accent transition-colors"
+                  >
+                    <span className="pointer-events-none inline-block h-5 w-5 translate-x-5 rounded-full bg-surface shadow transition-transform" />
+                  </button>
+                )}
+              </div>
 
               {isExpanded && (
                 <div className="space-y-4 px-4 pb-4">
-                  <GroupNameInput
-                    value={name}
-                    suggestions={PREDEFINED_GROUPS.filter((g) => g === name || !(g in models))}
-                    onRename={(newName) => renameGroup(name, newName)}
-                  />
+                  {!isPrimary && !PREDEFINED_GROUPS.includes(name) && (
+                    <GroupNameInput
+                      value={name}
+                      suggestions={PREDEFINED_GROUPS.filter((g) => g === name || !(g in models))}
+                      onRename={(newName) => renameGroup(name, newName)}
+                    />
+                  )}
 
                   <div className="flex items-end gap-2">
                     <div className="flex-1">
@@ -589,13 +628,6 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
                       </svg>
                       Fallback
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmingRemove(name)}
-                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-danger hover:bg-surface-tertiary transition ml-auto"
-                    >
-                      Remove
-                    </button>
                   </div>
                 </div>
               )}
@@ -603,6 +635,31 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
           );
         })}
       </div>
+
+      {availableGroups.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {availableGroups.map((name) => (
+            <div key={name} className="flex items-center justify-between rounded-lg border border-border bg-surface-secondary px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-text-secondary">{formatGroupName(name)}</span>
+                <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[10px] font-medium text-text-tertiary">
+                  Uses Primary
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onChange({ ...models, [name]: newModelGroup() });
+                  setExpandedGroups((prev) => new Set(prev).add(name));
+                }}
+                className="rounded-lg bg-surface-tertiary px-3 py-1 text-xs font-medium text-text-secondary transition hover:bg-accent hover:text-surface"
+              >
+                Enable
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <button
         type="button"

@@ -183,6 +183,7 @@ function SetupWizard() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [providersBlock, setProvidersBlock] = useState<string | null>(null);
+  const [modelsBlock, setModelsBlock] = useState<string | null>(null);
 
   const updatePatch = useCallback((section: string, value: unknown) => {
     setPatch((prev) => ({ ...prev, [section]: value }));
@@ -213,6 +214,7 @@ function SetupWizard() {
 
   function getBlockReason(): string | null {
     if (currentStep.id === "providers") return providersBlock;
+    if (currentStep.id === "models") return modelsBlock;
     if (currentStep.id === "auth" && config) {
       const secret = config.auth.encryption_secret;
       const hasSecret = typeof secret === "string" ? secret.length > 0 : (typeof secret === "object" && secret?.is_set);
@@ -309,6 +311,7 @@ function SetupWizard() {
                 enabledProviders={Object.keys(config.providers)}
                 providerConfigs={config.providers}
                 onChange={(v) => updatePatch("models", v)}
+                onReadyChange={setModelsBlock}
               />
             )}
             {currentStep.id === "memory" && (
