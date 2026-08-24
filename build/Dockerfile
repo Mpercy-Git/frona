@@ -136,7 +136,10 @@ RUN --mount=type=bind,source=build/pkgs/dev-rust-cargo.txt,target=/tmp/cargo.txt
 
 COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/syd /usr/local/bin/
 
-RUN groupadd -g 1000 frona && useradd -u 1000 -g frona -m -s /bin/bash frona
+ARG DEV_UID=1000
+ARG DEV_GID=1000
+RUN groupadd -g "$DEV_GID" frona \
+    && useradd -u "$DEV_UID" -g "$DEV_GID" -m -s /bin/bash frona
 RUN mkdir -p /app /app/target /app/frontend/node_modules /app/data /app/bin \
     /usr/local/cargo/registry /usr/local/cargo/git \
     && chown -R frona:frona /app /usr/local/cargo
@@ -145,7 +148,7 @@ USER frona
 WORKDIR /app
 COPY --chown=frona:frona web/package.json web/package-lock.json* web/
 RUN cd web && npm install
-CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch --poll -w crates/ -w Cargo.toml -w Cargo.lock --delay 3 -s /app/build/dev-watch.sh & cd web && npm run dev & wait"]
+CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch -w crates/ -w Cargo.toml -w Cargo.lock --delay 3 -s /app/build/dev-watch.sh & cd web && npm run dev & wait"]
 
 
 FROM python:3.12-slim-bookworm AS prod

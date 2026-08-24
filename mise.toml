@@ -85,7 +85,7 @@ cargo test -p frona-server --test mcp_e2e -- --ignored
 description = "Run all tests including end-to-end"
 depends = ["test", "test:e2e"]
 
-[tasks.docker]
+[tasks.container]
 description = "Build production Docker image"
 run = "build/build.sh"
 
@@ -93,11 +93,11 @@ run = "build/build.sh"
 description = "Release: bump version, git tag, build and push Docker image"
 run = "build/release.sh"
 
-[tasks."docker:publish"]
+[tasks."container:publish"]
 description = "Build production image and push to GHCR"
 run = "build/publish.sh"
 
-[tasks."docker:publish:preview"]
+[tasks."container:publish:preview"]
 description = "Build prod image and push to your personal preview registry (set FRONA_PREVIEW_IMAGE/FRONA_PREVIEW_TAG in mise.local.toml)"
 run = '''
 : "${FRONA_PREVIEW_IMAGE:?Set FRONA_PREVIEW_IMAGE in mise.local.toml}"
@@ -109,27 +109,27 @@ fi
 build/publish.sh "$FRONA_PREVIEW_IMAGE:$FRONA_PREVIEW_TAG"
 '''
 
-[tasks."docker:dev"]
-description = "Run full dev stack in Docker (with hot-reload)"
-run = "docker compose -f build/docker-compose.yml --profile dev up"
+[tasks."container:dev"]
+description = "Run full dev stack in a container runtime (with hot-reload)"
+run = "build/container.sh dev"
 
-[tasks."docker:dev:build"]
+[tasks."container:dev:build"]
 description = "Rebuild the dev image and run the stack"
-run = "docker compose -f build/docker-compose.yml --profile dev up --build"
+run = "build/container.sh dev --build"
 
-[tasks."docker:dev:down"]
-description = "Stop dev Docker stack and remove its volumes"
-run = "docker compose -f build/docker-compose.yml --profile dev down -v"
+[tasks."container:dev:down"]
+description = "Stop dev container stack and remove its volumes"
+run = "build/container.sh dev down -v"
 
-[tasks."docker:prod"]
-description = "Run production stack in Docker"
-run = "docker compose -f build/docker-compose.yml --profile prod up --build"
+[tasks."container:prod"]
+description = "Run production container stack"
+run = "build/container.sh prod --build"
 
-[tasks."docker:prod:down"]
-description = "Stop production Docker stack"
-run = "docker compose -f build/docker-compose.yml --profile prod down"
+[tasks."container:prod:down"]
+description = "Stop production container stack"
+run = "build/container.sh prod down"
 
-[tasks."docker:update-versions"]
+[tasks."container:update-versions"]
 description = "Pull latest dependencies and update version locks"
 run = "build/update-versions.sh"
 

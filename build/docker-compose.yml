@@ -11,10 +11,10 @@ services:
       - TIMEOUT=1800000
     volumes:
       - ../data/browser_profiles:/profiles
-    restart: unless-stopped
+    restart: ${CONTAINER_RESTART_POLICY:-unless-stopped}
 
   searxng:
-    image: searxng/searxng:2026.5.9-0cba32c15
+    image: docker.io/searxng/searxng:2026.5.9-0cba32c15
     ports:
       - "8080:8080"
     environment:
@@ -23,7 +23,7 @@ services:
     configs:
       - source: searxng-settings
         target: /etc/searxng/settings.yml
-    restart: unless-stopped
+    restart: ${CONTAINER_RESTART_POLICY:-unless-stopped}
 
   frona-dev:
     profiles: [dev]
@@ -33,6 +33,9 @@ services:
       context: ..
       dockerfile: build/Dockerfile
       target: dev
+      args:
+        DEV_UID: ${CONTAINER_UID:-1000}
+        DEV_GID: ${CONTAINER_GID:-1000}
     ports:
       - "3001:3001"
       - "3000:3000"
@@ -58,7 +61,6 @@ services:
       - FRONA_SEARCH_SEARXNG_BASE_URL=http://searxng:8080
       - FRONA_SERVER_PORT=3001
       - CARGO_BUILD_JOBS=4
-      - WATCHPACK_POLLING=true
       - SURREAL_SYNC_DATA=true
       - FRONA_VOICE_CALLBACK_BASE_URL
       - FRONA_VOICE_TWILIO_ACCOUNT_SID
@@ -67,7 +69,7 @@ services:
       - FRONA_VOICE_TWILIO_VOICE_ID
       - FRONA_VOICE_TWILIO_SPEECH_MODEL
     depends_on: [browserless, searxng]
-    restart: unless-stopped
+    restart: ${CONTAINER_RESTART_POLICY:-unless-stopped}
 
   frona:
     profiles: [prod]
@@ -94,11 +96,11 @@ services:
       - FRONA_VOICE_TWILIO_VOICE_ID
       - FRONA_VOICE_TWILIO_SPEECH_MODEL
     depends_on: [browserless, searxng]
-    restart: unless-stopped
+    restart: ${CONTAINER_RESTART_POLICY:-unless-stopped}
 
   ngrok:
-    image: ngrok/ngrok:latest
-    restart: unless-stopped
+    image: docker.io/ngrok/ngrok:latest
+    restart: ${CONTAINER_RESTART_POLICY:-unless-stopped}
     command:
       - http
       - frona-dev:3001
