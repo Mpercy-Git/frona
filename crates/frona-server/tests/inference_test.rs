@@ -424,7 +424,11 @@ async fn test_tool_loop_rate_limit_retry() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
+    // SurrealDB schema initialization uses timeout-based retries internally;
+    // initialize it with the clock running, then pause again for retry timing.
+    tokio::time::resume();
     let chat_service = test_chat_service().await;
+    tokio::time::pause();
 
     let outcome = run_tool_loop(
         &registry,
@@ -478,7 +482,11 @@ async fn test_tool_loop_rate_limit_exhausted() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
+    // SurrealDB schema initialization uses timeout-based retries internally;
+    // initialize it with the clock running, then pause again for retry timing.
+    tokio::time::resume();
     let chat_service = test_chat_service().await;
+    tokio::time::pause();
 
     let result = run_tool_loop(
         &registry,
