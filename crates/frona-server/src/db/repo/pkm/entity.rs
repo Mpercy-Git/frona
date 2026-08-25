@@ -108,6 +108,39 @@ impl PkmRepo {
         description: &str,
         aliases: &[String],
     ) -> Result<(), AppError> {
+        for attempt in 0..CONFLICT_RETRIES {
+            match self
+                .try_upsert_entity_skeleton(
+                    user_id,
+                    path,
+                    category,
+                    kinds,
+                    name,
+                    description,
+                    aliases,
+                )
+                .await
+            {
+                Err(error) if Self::is_write_conflict(&error) && attempt + 1 < CONFLICT_RETRIES => {
+                    tokio::time::sleep(std::time::Duration::from_millis(5 << attempt)).await;
+                }
+                result => return result,
+            }
+        }
+        unreachable!("the loop returns on its last attempt")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn try_upsert_entity_skeleton(
+        &self,
+        user_id: &str,
+        path: &str,
+        category: EntityCategory,
+        kinds: &[String],
+        name: &str,
+        description: &str,
+        aliases: &[String],
+    ) -> Result<(), AppError> {
         if let Some(existing) = self.entity_by_path(user_id, path).await? {
             return self.update_entity_skeleton(existing, aliases).await;
         } else {
