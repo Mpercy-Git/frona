@@ -13,8 +13,11 @@ pub trait ChatSummaryRepository: Repository<ChatSummary> {
 pub trait ChatRepository: Repository<Chat> {
     async fn find_by_user_id(&self, user_id: &str) -> Result<Vec<Chat>, AppError>;
     async fn find_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError>;
+    /// Includes archived and task chats. Use for destructive space operations
+    /// and counts that must cover every chat row.
+    async fn find_all_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError>;
     /// Excludes task-execution chats (`task_id IS NOT NONE`). Use for user-facing
-    /// listings; use `find_by_space_id` when you need every row.
+    /// listings.
     async fn find_user_chats_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError>;
     async fn find_standalone_by_user_id(&self, user_id: &str) -> Result<Vec<Chat>, AppError>;
     async fn find_archived_by_user_id(&self, user_id: &str) -> Result<Vec<Chat>, AppError>;

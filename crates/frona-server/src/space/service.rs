@@ -84,7 +84,11 @@ impl SpaceService {
         let mut responses = Vec::with_capacity(spaces.len());
         for space in spaces {
             let mut response: SpaceResponse = space.into();
-            response.chat_count = self.chat_repo.find_by_space_id(&response.id).await?.len();
+            response.chat_count = self
+                .chat_repo
+                .find_all_by_space_id(&response.id)
+                .await?
+                .len();
             responses.push(response);
         }
         Ok(responses)
@@ -151,7 +155,7 @@ impl SpaceService {
         // messages, tool calls, credential bindings, summaries, and other
         // ephemeral chat-owned data before the containing space is removed.
         // Inference usage and extracted memory are intentionally retained.
-        for chat in self.chat_repo.find_by_space_id(space_id).await? {
+        for chat in self.chat_repo.find_all_by_space_id(space_id).await? {
             self.chat_repo.delete(&chat.id).await?;
         }
         self.repo.delete(space_id).await?;
@@ -222,7 +226,7 @@ mod tests {
         assert!(service.find_by_id(&space.id).await.unwrap().is_none());
         assert!(
             chat_repo
-                .find_by_space_id(&space.id)
+                .find_all_by_space_id(&space.id)
                 .await
                 .unwrap()
                 .is_empty()

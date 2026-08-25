@@ -31,7 +31,7 @@ impl ChatRepository for SurrealRepo<Chat> {
 
     async fn find_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError> {
         let query = format!(
-            "{SELECT_CLAUSE} FROM chat WHERE space_id = $space_id ORDER BY updated_at DESC"
+            "{SELECT_CLAUSE} FROM chat WHERE space_id = $space_id AND archived_at IS NONE ORDER BY updated_at DESC"
         );
         let mut result = self
             .db()
@@ -45,6 +45,22 @@ impl ChatRepository for SurrealRepo<Chat> {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(chats)
+    }
+
+    async fn find_all_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM chat WHERE space_id = $space_id ORDER BY updated_at DESC"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("space_id", space_id.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))
     }
 
     async fn find_user_chats_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError> {
