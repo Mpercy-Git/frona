@@ -842,6 +842,15 @@ enum AccessKind {
 /// at the OS layer (workspace path → canonical via symlinks; new-file target
 /// → canonical-prefix + literal tail).
 pub fn canonicalize_with_unresolved_tail(path: &Path) -> PathBuf {
+    let absolute;
+    let path = if path.is_absolute() {
+        path
+    } else {
+        absolute = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(path);
+        &absolute
+    };
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }

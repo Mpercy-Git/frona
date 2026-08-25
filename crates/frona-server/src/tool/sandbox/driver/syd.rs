@@ -316,6 +316,7 @@ impl SydArgsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn test_config() -> SandboxConfig {
         SandboxConfig {
@@ -325,11 +326,11 @@ mod tests {
     }
 
     fn test_driver() -> SydDriver {
-        let dir = std::env::temp_dir().join("frona_test_syd");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("resolv.conf");
-        std::fs::write(&path, "nameserver 8.8.8.8\nnameserver 8.8.4.4\n").unwrap();
-        SydDriver::with_resolv_conf(path.to_str().unwrap())
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
+            .unwrap();
+        file.flush().unwrap();
+        SydDriver::with_resolv_conf(file.path().to_str().unwrap())
     }
 
     #[test]
