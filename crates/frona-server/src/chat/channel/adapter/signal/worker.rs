@@ -1,7 +1,8 @@
 //! `presage::Manager::receive_messages()` internally calls
-//! `tokio::task::spawn_local`, so the manager MUST run on a `current_thread`
-//! runtime. We give each channel its own OS thread + runtime and bridge to
-//! the main multi-thread runtime through tokio mpsc channels.
+//! `tokio::task::spawn_local`, so the manager MUST run inside a `LocalSet` on
+//! a `current_thread` runtime. We give each channel its own OS thread + local
+//! runtime and bridge to the main multi-thread runtime through tokio mpsc
+//! channels.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -105,20 +106,24 @@ pub async fn spawn(
                     return;
                 }
             };
-            rt.block_on(run(
-                db_path,
-                device_name,
-                expect_setup,
-                qr_tx,
-                cmd_rx,
-                cmd_tx_inner,
-                emit,
-                cancel,
-                channel_id,
-                hitl,
-                chat_service,
-                signals,
-            ));
+            let local = tokio::task::LocalSet::new();
+            local.block_on(
+                &rt,
+                run(
+                    db_path,
+                    device_name,
+                    expect_setup,
+                    qr_tx,
+                    cmd_rx,
+                    cmd_tx_inner,
+                    emit,
+                    cancel,
+                    channel_id,
+                    hitl,
+                    chat_service,
+                    signals,
+                ),
+            );
         })
         .map_err(|e| AppError::Internal(format!("Signal worker thread spawn: {e}")))?;
 
