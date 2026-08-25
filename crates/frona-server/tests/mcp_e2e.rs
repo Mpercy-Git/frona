@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
+use frona::core::repository::Repository;
 use frona::tool::mcp::McpManager;
 use frona::tool::mcp::models::{McpPackage, McpRuntime, McpServer, McpServerStatus};
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
@@ -69,6 +70,23 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
         .await
         .unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
+    let user_repo = frona::db::repo::generic::SurrealRepo::new(db.clone());
+    let now = chrono::Utc::now();
+    user_repo
+        .create(&frona::auth::User {
+            id: "test-user".into(),
+            handle: frona::handle!("testuser"),
+            email: "test@example.com".into(),
+            name: "Test User".into(),
+            password_hash: "unused".into(),
+            timezone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .unwrap();
     let storage = frona::storage::StorageService::new(&frona::core::config::Config {
         storage: frona::core::config::StorageConfig {
             data_dir: tmp.to_string_lossy().into_owned(),
@@ -76,10 +94,8 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
         },
         ..Default::default()
     });
-    let user_service = frona::auth::UserService::new(
-        frona::db::repo::generic::SurrealRepo::new(db.clone()),
-        &frona::core::config::CacheConfig::default(),
-    );
+    let user_service =
+        frona::auth::UserService::new(user_repo, &frona::core::config::CacheConfig::default());
     let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
     let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
         Arc::new(frona::db::repo::generic::SurrealRepo::<
@@ -157,12 +173,12 @@ async fn spawn_handshake_and_tool_call() {
         .expect("start should succeed");
 
     assert!(
-        tools.iter().any(|t| t.id == "mcp__fake_s1__echo"),
+        tools.iter().any(|t| t.id == "mcp__fake-s1__echo"),
         "echo tool should be discovered; got: {:?}",
         tools.iter().map(|t| &t.id).collect::<Vec<_>>()
     );
     assert!(
-        tools.iter().any(|t| t.id == "mcp__fake_s1__add"),
+        tools.iter().any(|t| t.id == "mcp__fake-s1__add"),
         "add tool should be discovered"
     );
 
@@ -253,7 +269,7 @@ async fn tools_for_user_returns_filtered_tools() {
         .expect("start should succeed");
 
     let mut allowlist = HashMap::new();
-    allowlist.insert("fake_s3".to_string(), {
+    allowlist.insert("fake-s3".to_string(), {
         let mut s = HashSet::new();
         s.insert("echo".to_string());
         s
@@ -261,7 +277,7 @@ async fn tools_for_user_returns_filtered_tools() {
 
     let tools = manager.tools_for_user("test-user", &allowlist).await;
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].id, "mcp__fake_s3__echo");
+    assert_eq!(tools[0].id, "mcp__fake-s3__echo");
 
     manager.stop("s3").await.unwrap();
 }
