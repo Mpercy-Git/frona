@@ -40,7 +40,7 @@ interface Channel {
   agent_id: string;
   config: Record<string, string>;
   dispatch_mode: "message" | "signal";
-  // Connection status only — supervisor-owned. Setup/pairing are overlays below.
+  // Connection status only - supervisor-owned. Setup/pairing are overlays below.
   status: "disconnected" | "connecting" | "connected" | "reconnecting" | "failed";
   // Operator intent, independent of runtime status.
   enabled: boolean;
@@ -72,7 +72,7 @@ interface ChannelManifest {
 }
 
 // Keyed by the *derived* badge label (connection status + overlays), not the
-// raw status — see `channelBadge` below.
+// raw status - see `channelBadge` below.
 const STATUS_BADGE: Record<string, string> = {
   disconnected: "bg-surface-tertiary text-text-secondary",
   connecting: "bg-blue-400/15 text-blue-400",
@@ -92,7 +92,7 @@ function channelBadge(c: Channel): { label: string; key: string } {
   return { label: c.status, key: c.status };
 }
 
-// Green is reserved for the `connected` status badge — keep it out of the
+// Green is reserved for the `connected` status badge - keep it out of the
 // provider palette so the two don't collide visually on a row.
 const PROVIDER_COLORS = [
   "bg-blue-500/15 text-blue-400",
@@ -118,6 +118,7 @@ export function ChannelsSection() {
   const [error, setError] = useState<string | null>(null);
   const [installManifest, setInstallManifest] = useState<ChannelManifest | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Channel | null>(null);
+  const [deleteAssociatedSpace, setDeleteAssociatedSpace] = useState(false);
   const router = useRouter();
 
   const reload = useCallback(async () => {
@@ -167,10 +168,15 @@ export function ChannelsSection() {
   const remove = async (channel: Channel) => {
     setConfirmDelete(null);
     setActionLoading(channel.id);
+    setError(null);
     try {
-      await api.delete(`/api/channels/${channel.id}`);
+      const query = deleteAssociatedSpace ? "?delete_space=true" : "";
+      await api.delete(`/api/channels/${channel.id}${query}`);
+      setDeleteAssociatedSpace(false);
       await reload();
-    } catch {
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Delete failed");
+      await reload();
     } finally {
       setActionLoading(null);
     }
@@ -180,7 +186,7 @@ export function ChannelsSection() {
     <div className="space-y-4">
       <SectionHeader
         title="Channels"
-        description="Connect external messaging providers (Telegram, SMS, …) so agents can send and receive messages."
+        description="Connect external messaging providers (Telegram, SMS, ...) so agents can send and receive messages."
         icon={ChatBubbleLeftRightIcon}
       />
 
@@ -188,7 +194,10 @@ export function ChannelsSection() {
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
             className="absolute inset-0 bg-black/50"
-            onClick={() => setConfirmDelete(null)}
+            onClick={() => {
+              setConfirmDelete(null);
+              setDeleteAssociatedSpace(false);
+            }}
           />
           <div className="relative rounded-xl border border-border bg-surface-secondary p-4 space-y-4 max-w-lg w-full mx-4 shadow-xl">
             <div className="mb-5 pb-3 border-b border-border flex items-end justify-between gap-3">
@@ -206,6 +215,26 @@ export function ChannelsSection() {
               This will stop the channel and remove it. The agent in this space will no
               longer receive or send messages through this provider.
             </p>
+            {(() => {
+              const space = spaces.find((s) => s.id === confirmDelete.space_id);
+              const chatCount = space?.chat_count ?? 0;
+              return (
+                <label className="flex items-start gap-2 rounded-lg border border-border bg-surface p-3 text-sm text-text-secondary">
+                  <input
+                    type="checkbox"
+                    checked={deleteAssociatedSpace}
+                    onChange={(e) => setDeleteAssociatedSpace(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    Also delete the associated space{space ? ` "${space.name}"` : ""}
+                    {chatCount > 0
+                      ? ` and its ${chatCount} ${chatCount === 1 ? "chat" : "chats"}, including all messages`
+                      : ""}.
+                  </span>
+                </label>
+              );
+            })()}
             <div className="flex gap-2">
               <button
                 onClick={() => remove(confirmDelete)}
@@ -215,7 +244,10 @@ export function ChannelsSection() {
                 Delete
               </button>
               <button
-                onClick={() => setConfirmDelete(null)}
+                onClick={() => {
+                  setConfirmDelete(null);
+                  setDeleteAssociatedSpace(false);
+                }}
                 className="w-28 inline-flex items-center justify-center gap-1.5 rounded-lg border border-border py-2 text-sm font-medium text-text-secondary hover:bg-surface-tertiary transition"
               >
                 Cancel
@@ -290,8 +322,8 @@ export function ChannelsSection() {
             {channels.map((c) => {
               const isLoading = actionLoading === c.id;
               const badge = channelBadge(c);
-              // Buttons follow intent, not runtime status. ▶ enables (or retries a
-              // terminally-failed channel); ⏸ disables. Both hit /start, /stop.
+              // Buttons follow intent, not runtime status. Start enables (or retries a
+              // terminally-failed channel); Stop disables. Both hit /start, /stop.
               const showStart = !c.enabled || c.status === "failed";
               const showStop = c.enabled;
               const startTitle = c.enabled ? "Retry" : "Enable";
@@ -358,7 +390,10 @@ export function ChannelsSection() {
                       </button>
                     )}
                     <button
-                      onClick={() => setConfirmDelete(c)}
+                      onClick={() => {
+                        setDeleteAssociatedSpace(false);
+                        setConfirmDelete(c);
+                      }}
                       disabled={isLoading}
                       title="Delete"
                       className="rounded-lg p-1.5 text-text-tertiary hover:text-danger hover:bg-danger/10 disabled:opacity-50 transition"
@@ -509,8 +544,8 @@ function CreateChannelDialog({
               onChange={(e) => setDispatchMode(e.target.value as "message" | "signal")}
               className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
             >
-              <option value="message">Treat as a message from you — requires pairing</option>
-              <option value="signal">Hand off to a waiting agent — e.g. 2FA codes or confirmation links</option>
+              <option value="message">Treat as a message from you - requires pairing</option>
+              <option value="signal">Hand off to a waiting agent - e.g. 2FA codes or confirmation links</option>
             </select>
           </div>
 

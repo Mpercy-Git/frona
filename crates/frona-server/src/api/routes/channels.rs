@@ -1,4 +1,4 @@
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -13,6 +13,12 @@ use crate::core::supervisor::Supervisor;
 
 use crate::api::error::ApiError;
 use crate::api::middleware::auth::AuthUser;
+
+#[derive(Default, serde::Deserialize)]
+struct DeleteChannelQuery {
+    #[serde(default)]
+    delete_space: bool,
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -159,11 +165,19 @@ async fn delete_channel(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<DeleteChannelQuery>,
 ) -> Result<StatusCode, ApiError> {
+    let channel = state.channel_service.find_owned(&auth.user_id, &id).await?;
     state
         .channel_service
         .delete(&state, &auth.user_id, &id)
         .await?;
+    if query.delete_space {
+        state
+            .space_service
+            .delete(&auth.user_id, &channel.space_id)
+            .await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -31,7 +31,7 @@ impl ChatRepository for SurrealRepo<Chat> {
 
     async fn find_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError> {
         let query = format!(
-            "{SELECT_CLAUSE} FROM chat WHERE space_id = $space_id AND archived_at IS NONE ORDER BY updated_at DESC"
+            "{SELECT_CLAUSE} FROM chat WHERE space_id = $space_id ORDER BY updated_at DESC"
         );
         let mut result = self
             .db()

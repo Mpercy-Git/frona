@@ -1,11 +1,13 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 interface DeleteConfirmDialogProps {
   open: boolean;
   onCancel: () => void;
   onConfirm: () => void;
   title?: string;
-  message?: string;
+  message?: ReactNode;
   confirmLabel?: string;
   confirming?: boolean;
   confirmingLabel?: string;
@@ -30,9 +32,9 @@ export function DeleteConfirmDialog({
         <h3 className="text-sm font-semibold text-text-primary">
           {title}
         </h3>
-        <p className="mt-2 text-sm text-text-secondary">
+        <div className="mt-2 text-sm text-text-secondary">
           {message}
-        </p>
+        </div>
         <div className="mt-4 flex justify-end gap-2">
           <button
             onClick={onCancel}

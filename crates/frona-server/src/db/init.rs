@@ -237,6 +237,14 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
           WHEN $event = 'DELETE'
           THEN (DELETE FROM tool_call WHERE chat_id = meta::id($before.id));
 
+        DEFINE EVENT IF NOT EXISTS cascade_delete_chat_vault_access_logs ON TABLE chat
+          WHEN $event = 'DELETE'
+          THEN (DELETE FROM vault_access_log WHERE chat_id = meta::id($before.id));
+
+        DEFINE EVENT IF NOT EXISTS cascade_delete_chat_calls ON TABLE chat
+          WHEN $event = 'DELETE'
+          THEN (DELETE FROM call WHERE chat = $before.id);
+
         DEFINE EVENT IF NOT EXISTS cascade_delete_chat_summary ON TABLE chat
           WHEN $event = 'DELETE'
           THEN (DELETE FROM chat_summary WHERE chat_id = meta::id($before.id));

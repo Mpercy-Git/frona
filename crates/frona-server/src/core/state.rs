@@ -567,8 +567,11 @@ impl AppState {
             Arc::new(SurrealRepo::<crate::chat::message::models::Message>::new(
                 db.clone(),
             ));
-        let space_service =
-            SpaceService::new(SurrealRepo::new(db.clone()), broadcast_service.clone());
+        let space_service = SpaceService::new(
+            SurrealRepo::new(db.clone()),
+            SurrealRepo::new(db.clone()),
+            broadcast_service.clone(),
+        );
         let contact_service =
             ContactService::new(SurrealRepo::new(db.clone()), broadcast_service.clone());
         let channel_supervisor = Arc::new(crate::chat::channel::ChannelSupervisor::new(

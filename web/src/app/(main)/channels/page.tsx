@@ -20,6 +20,7 @@ import { SectionHeader, SectionPanel } from "@/components/settings/field";
 import { AddCredentialForm } from "@/components/agents/configure/creds-section";
 import type { VaultGrant, VaultConnection, PendingCredential } from "@/components/agents/configure/creds-section";
 import { ManifestInfo, MarkdownProse, type ExternalLink } from "@/components/channels/manifest-info";
+import { DeleteConfirmDialog } from "@/components/nav/delete-confirm-dialog";
 import { QRCodeSVG } from "qrcode.react";
 import { formatDistanceToNow } from "date-fns";
 import type { Agent, SpaceResponse } from "@/lib/types";
@@ -229,6 +230,8 @@ function ChannelDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleteAssociatedSpace, setDeleteAssociatedSpace] = useState(false);
 
   const [agentId, setAgentId] = useState("");
   const [dispatchMode, setDispatchMode] = useState<"message" | "signal">("message");
@@ -380,12 +383,16 @@ function ChannelDetailPage() {
   };
 
   const remove = async () => {
-    if (!confirm("Delete this channel? Pending messages will not be sent.")) return;
     setActionLoading(true);
+    setError(null);
     try {
-      await api.delete(`/api/channels/${channelId}`);
+      const query = deleteAssociatedSpace ? "?delete_space=true" : "";
+      await api.delete(`/api/channels/${channelId}${query}`);
+      setConfirmDeleteOpen(false);
+      setDeleteAssociatedSpace(false);
       router.push("/settings#channels");
-    } catch {
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Delete failed");
     } finally {
       setActionLoading(false);
     }
@@ -450,6 +457,41 @@ function ChannelDetailPage() {
 
   return (
     <div className="flex h-full bg-surface">
+      <DeleteConfirmDialog
+        open={confirmDeleteOpen}
+        onCancel={() => {
+          setConfirmDeleteOpen(false);
+          setDeleteAssociatedSpace(false);
+        }}
+        onConfirm={remove}
+        title="Delete channel?"
+        message={
+          <div className="space-y-3">
+            <p>
+              This will permanently delete the channel. Pending messages will not be sent.
+            </p>
+            <label className="flex items-start gap-2 rounded-lg border border-border bg-surface-secondary p-3">
+              <input
+                type="checkbox"
+                checked={deleteAssociatedSpace}
+                onChange={(e) => setDeleteAssociatedSpace(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                Also delete the associated space{space ? ` "${space.name}"` : ""} and all of its chats and messages.
+              </span>
+            </label>
+            {deleteAssociatedSpace && (space?.chat_count ?? 0) > 0 && (
+              <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 font-medium text-danger">
+                {space?.chat_count} {space?.chat_count === 1 ? "chat" : "chats"} will be deleted
+              </div>
+            )}
+          </div>
+        }
+        confirmLabel="Delete channel"
+        confirming={actionLoading}
+        confirmingLabel="Deleting..."
+      />
       <div
         className="border-r border-border bg-surface-nav p-4 flex flex-col"
         style={{ width: 289 }}
@@ -716,7 +758,10 @@ function ChannelDetailPage() {
                   </button>
                 )}
                 <button
-                  onClick={remove}
+                  onClick={() => {
+                    setDeleteAssociatedSpace(false);
+                    setConfirmDeleteOpen(true);
+                  }}
                   disabled={actionLoading}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-danger hover:bg-surface-tertiary disabled:opacity-50 transition"
                 >

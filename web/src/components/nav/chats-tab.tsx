@@ -9,13 +9,16 @@ import {
   ArchiveBoxIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  EllipsisVerticalIcon,
+  PencilIcon,
+  TrashIcon,
 } from "@heroicons/react/24/outline";
 import { api } from "@/lib/api-client";
 import { useNavigation, neighborRoute } from "@/lib/navigation-context";
 import { useSession } from "@/lib/session-context";
 import { ChatActions } from "./chat-actions";
 import { DeleteConfirmDialog } from "./delete-confirm-dialog";
-import type { SpaceResponse } from "@/lib/types";
+import type { SpaceResponse, SpaceWithChats } from "@/lib/types";
 
 export function ChatsTab() {
   const {
@@ -40,6 +43,12 @@ export function ChatsTab() {
   const [creatingSpace, setCreatingSpace] = useState(false);
   const [spaceName, setSpaceName] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [spaceMenu, setSpaceMenu] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<SpaceWithChats | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [deleteSpaceTarget, setDeleteSpaceTarget] = useState<SpaceWithChats | null>(null);
+  const [spaceActionPending, setSpaceActionPending] = useState(false);
+  const [spaceError, setSpaceError] = useState<string | null>(null);
 
   const handleNewChat = () => {
     setActiveChat(null);
@@ -80,6 +89,44 @@ export function ChatsTab() {
     }
   };
 
+  const handleRenameSpace = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!renameTarget || !renameName.trim()) return;
+    setSpaceActionPending(true);
+    setSpaceError(null);
+    try {
+      await api.put<SpaceResponse>(`/api/spaces/${renameTarget.id}`, {
+        name: renameName.trim(),
+      });
+      setRenameTarget(null);
+      await refresh();
+    } catch (error) {
+      setSpaceError(error instanceof Error ? error.message : "Failed to rename space");
+    } finally {
+      setSpaceActionPending(false);
+    }
+  };
+
+  const handleDeleteSpace = async () => {
+    if (!deleteSpaceTarget) return;
+    setSpaceActionPending(true);
+    setSpaceError(null);
+    try {
+      const deletingCurrentSpace = activeSpaceId === deleteSpaceTarget.id;
+      await api.delete(`/api/spaces/${deleteSpaceTarget.id}`);
+      setDeleteSpaceTarget(null);
+      if (deletingCurrentSpace) {
+        setActiveChat(null);
+        router.push("/chat");
+      }
+      await refresh();
+    } catch (error) {
+      setSpaceError(error instanceof Error ? error.message : "Failed to delete space");
+    } finally {
+      setSpaceActionPending(false);
+    }
+  };
+
   return (
     <div className="space-y-1 p-2">
       <div className="flex items-center justify-between px-2 pb-1">
@@ -94,6 +141,10 @@ export function ChatsTab() {
           <FolderPlusIcon className="h-3.5 w-3.5" />
         </button>
       </div>
+
+      {spaceError && (
+        <p className="px-2 py-1 text-xs text-danger">{spaceError}</p>
+      )}
 
       {creatingSpace && (
         <form onSubmit={handleCreateSpace} className="px-2 pb-1">
@@ -111,22 +162,96 @@ export function ChatsTab() {
       )}
 
       {spaces.map((space) => (
-        <button
+        <div
           key={space.id}
-          onClick={() => router.push(`/space?id=${space.id}`)}
-          className={`flex w-full items-center gap-1 rounded-lg px-3 py-2 text-sm font-medium transition ${
+          className={`group relative flex w-full items-center rounded-lg text-sm font-medium transition ${
             activeSpaceId === space.id
               ? "bg-surface-tertiary text-text-primary"
               : "text-text-primary hover:bg-surface-secondary"
           }`}
         >
-          <FolderIcon className="h-4 w-4 shrink-0 text-text-tertiary" />
-          <span className="truncate">{space.name}</span>
-          <span className="ml-auto text-[10px] text-text-tertiary">
-            {space.chats.length}
-          </span>
-        </button>
+          <button
+            onClick={() => router.push(`/space?id=${space.id}`)}
+            className="flex min-w-0 flex-1 items-center gap-1 px-3 py-2 text-left"
+          >
+            <FolderIcon className="h-4 w-4 shrink-0 text-text-tertiary" />
+            <span className="truncate">{space.name}</span>
+            <span className="ml-auto text-[10px] text-text-tertiary">{space.chats.length}</span>
+          </button>
+          <button
+            onClick={() => setSpaceMenu((id) => (id === space.id ? null : space.id))}
+            className="mr-1 rounded p-0.5 text-text-tertiary opacity-0 transition hover:text-text-primary group-hover:opacity-100 focus:opacity-100"
+            aria-label={`Actions for ${space.name}`}
+          >
+            <EllipsisVerticalIcon className="h-5 w-5" />
+          </button>
+          {spaceMenu === space.id && (
+            <div className="absolute right-1 top-full z-50 mt-1 w-32 rounded-lg border border-border bg-surface py-1 shadow-lg">
+              <button
+                onClick={() => {
+                  setSpaceMenu(null);
+                  setRenameTarget(space);
+                  setRenameName(space.name);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-secondary"
+              >
+                <PencilIcon className="h-4 w-4" /> Rename
+              </button>
+              <button
+                onClick={() => {
+                  setSpaceMenu(null);
+                  setDeleteSpaceTarget(space);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-danger hover:bg-surface-secondary"
+              >
+                <TrashIcon className="h-4 w-4" /> Delete
+              </button>
+            </div>
+          )}
+        </div>
       ))}
+
+      {renameTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setRenameTarget(null)} />
+          <form onSubmit={handleRenameSpace} className="relative w-full max-w-sm rounded-xl border border-border bg-surface p-6 shadow-xl mx-4">
+            <h3 className="text-sm font-semibold text-text-primary">Rename space</h3>
+            <input
+              autoFocus
+              value={renameName}
+              onChange={(e) => setRenameName(e.target.value)}
+              className="mt-3 w-full rounded-lg border border-border bg-surface-secondary px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-text-secondary"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setRenameTarget(null)} disabled={spaceActionPending} className="rounded-lg px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-secondary">Cancel</button>
+              <button type="submit" disabled={spaceActionPending || !renameName.trim()} className="rounded-lg bg-accent px-3 py-1.5 text-sm text-surface disabled:opacity-50">Rename</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <DeleteConfirmDialog
+        open={deleteSpaceTarget !== null}
+        onCancel={() => setDeleteSpaceTarget(null)}
+        onConfirm={handleDeleteSpace}
+        title={`Delete ${deleteSpaceTarget?.name ?? "space"}?`}
+        message={
+          <div className="space-y-3">
+            <p>
+              This will permanently delete the space, its chats, and all messages.
+              This action cannot be undone.
+            </p>
+            {(deleteSpaceTarget?.chat_count ?? 0) > 0 && (
+              <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 font-medium text-danger">
+                {deleteSpaceTarget?.chat_count} {deleteSpaceTarget?.chat_count === 1 ? "chat" : "chats"} will be deleted
+              </div>
+            )}
+          </div>
+        }
+        confirmLabel="Delete space"
+        confirming={spaceActionPending}
+        confirmingLabel="Deleting..."
+      />
 
       {standaloneChats.length > 0 && (
         <div className="pt-2">

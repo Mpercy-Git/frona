@@ -130,6 +130,7 @@ export interface UpdateAgentRequest {
 export interface SpaceResponse {
   id: string;
   name: string;
+  chat_count: number;
   created_at: string;
   updated_at: string;
 }
