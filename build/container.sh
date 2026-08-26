@@ -64,6 +64,48 @@ else
   export CONTAINER_RESTART_POLICY="${CONTAINER_RESTART_POLICY:-unless-stopped}"
 fi
 
+# podman-compose does not pass Podman's --jobs option through to image builds.
+# Prebuild explicitly so independent Dockerfile stages can use all available CPUs.
+if [[ "$runtime" == podman ]]; then
+  build_jobs="${CONTAINER_BUILD_JOBS:-$(nproc)}"
+  image="localhost/frona-${profile}:local"
+  build_image() {
+    local -a build_args=(
+      build --layers --jobs "$build_jobs"
+      --target "$profile"
+      --tag "$image"
+    )
+    if [[ "$profile" == dev ]]; then
+      build_args+=(
+        --build-arg "DEV_UID=$CONTAINER_UID"
+        --build-arg "DEV_GID=$CONTAINER_GID"
+      )
+    fi
+    "$runtime" "${build_args[@]}" .
+  }
+
+  if [[ "$action" == build ]]; then
+    build_image
+    exit
+  fi
+
+  if [[ "$action" == up ]]; then
+    filtered_args=()
+    requested_build=false
+    for arg in "$@"; do
+      if [[ "$arg" == --build ]]; then
+        requested_build=true
+      else
+        filtered_args+=("$arg")
+      fi
+    done
+    if [[ "$requested_build" == true ]]; then
+      build_image
+      set -- "${filtered_args[@]}"
+    fi
+  fi
+fi
+
 # Podman requires bind-mount source paths to exist before container creation.
 # Create them as the workspace user so outer-container tooling can write there.
 mkdir -p data/browser_profiles web/node_modules
