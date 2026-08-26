@@ -129,7 +129,28 @@ export function MemoryPage() {
     );
   }
 
-  if (!graph || !selectedPath) {
+  if (!graph) {
+    return <main className="flex h-full items-center justify-center bg-surface text-sm text-text-secondary">Loading memory graph…</main>;
+  }
+
+  if (graph.nodes.length === 0) {
+    return (
+      <main className="flex h-full items-center justify-center bg-surface p-6">
+        <div className="max-w-md rounded-2xl border border-border bg-surface-secondary p-6 text-center shadow-sm">
+          <ShareIcon className="mx-auto h-9 w-9 text-text-tertiary" />
+          <h1 className="mt-3 text-xl font-semibold text-text-primary">No memories yet</h1>
+          <p className="mt-2 text-sm leading-5 text-text-secondary">
+            Your memory graph will appear here after Frona learns from your conversations.
+          </p>
+          <Link href="/" className="mt-4 inline-flex rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover">
+            Start a conversation
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
+  if (!selectedPath) {
     return <main className="flex h-full items-center justify-center bg-surface text-sm text-text-secondary">Loading memory graph…</main>;
   }
 
