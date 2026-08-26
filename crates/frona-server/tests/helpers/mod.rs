@@ -735,6 +735,10 @@ pub fn test_metrics_ctx() -> frona::inference::usage::UsageService {
                 db
             });
             tx.send(db).expect("send db back");
+            // The in-memory SurrealDB engine owns tasks spawned on this
+            // runtime. Keep its worker thread alive for the process lifetime;
+            // dropping the runtime leaves later database requests pending.
+            rt.block_on(std::future::pending::<()>());
         });
         rx.recv().expect("recv db")
     });
