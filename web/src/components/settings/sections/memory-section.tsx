@@ -7,6 +7,7 @@ import { HelpTip, NumberInput, SelectInput, SectionHeader, SectionPanel } from "
 import {
   ArrowPathIcon,
   ArrowsPointingInIcon,
+  BookOpenIcon,
   BoltIcon,
   CheckIcon,
   CircleStackIcon,
@@ -279,9 +280,13 @@ export function MemorySection({ memory, models, activeBackend, onChange }: Memor
               onChange={(v) => onChange({ ...memory, pkm_consolidate_idle_secs: v })}
               min={1}
             />
-          </SectionPanel>
-
-          <SectionPanel title="Conversation limits">
+            <NumberInput
+              label="Concurrent model calls"
+              description="Maximum consolidation model calls that may run at once across chat mining and page authoring."
+              value={memory.pkm_consolidation_concurrency}
+              onChange={(v) => onChange({ ...memory, pkm_consolidation_concurrency: v })}
+              min={1}
+            />
             <NumberInput
               label="Consolidation tool turns"
               description="Maximum exploration-tool turns for Classify and Resolve. Zero disables exploration tools."
@@ -295,6 +300,75 @@ export function MemorySection({ memory, models, activeBackend, onChange }: Memor
               value={memory.pkm_consolidation_max_submissions}
               onChange={(v) => onChange({ ...memory, pkm_consolidation_max_submissions: v })}
               min={1}
+            />
+            <NumberInput
+              label="Stage retry limit"
+              description="Maximum failures at the current consolidation stage before abandoning the pass."
+              value={memory.pkm_consolidation_max_attempts}
+              onChange={(v) => onChange({ ...memory, pkm_consolidation_max_attempts: v })}
+              min={1}
+            />
+            <NumberInput
+              label="Adjudication attempts per batch"
+              description="Maximum adjudication submissions per batch, including revisions requested by guardrails."
+              value={memory.pkm_adjudication_max_attempts_per_batch}
+              onChange={(v) => onChange({ ...memory, pkm_adjudication_max_attempts_per_batch: v })}
+              min={1}
+            />
+            <NumberInput
+              label="Checkpoint recovery limit"
+              description="Fatal post-extraction checkpoint resets allowed before the pass fails permanently."
+              value={memory.pkm_consolidation_checkpoint_failure_cap}
+              onChange={(v) => onChange({ ...memory, pkm_consolidation_checkpoint_failure_cap: v })}
+              min={0}
+            />
+            <NumberInput
+              label="Retry backoff (seconds)"
+              description="Base delay for failed consolidation retries. The delay doubles after each attempt."
+              value={memory.pkm_consolidation_retry_base_secs}
+              onChange={(v) => onChange({ ...memory, pkm_consolidation_retry_base_secs: v })}
+              min={0}
+            />
+          </SectionPanel>
+
+          <SectionPanel title="Extraction" icon={DocumentTextIcon}>
+            <NumberInput
+              label="Transcript token cap"
+              description="Maximum estimated transcript tokens sent to Extract in one request."
+              value={memory.pkm_extract_max_tokens}
+              onChange={(v) => onChange({ ...memory, pkm_extract_max_tokens: v })}
+              min={1}
+            />
+            <NumberInput
+              label="Transcript message cap"
+              description="Maximum messages consumed by one Extract request."
+              value={memory.pkm_extract_max_messages}
+              onChange={(v) => onChange({ ...memory, pkm_extract_max_messages: v })}
+              min={1}
+            />
+            <NumberInput
+              label="Tool-evidence lookback"
+              description="Same-chat agent messages searched backward for successful tool evidence."
+              value={memory.pkm_extract_agent_evidence_lookback_messages}
+              onChange={(v) => onChange({ ...memory, pkm_extract_agent_evidence_lookback_messages: v })}
+              min={0}
+            />
+            <NumberInput
+              label="Tool-evidence result token cap"
+              description="Token cap returned by each scoped tool-evidence search or read."
+              value={memory.pkm_extract_agent_evidence_result_token_cap}
+              onChange={(v) => onChange({ ...memory, pkm_extract_agent_evidence_result_token_cap: v })}
+              min={0}
+            />
+          </SectionPanel>
+
+          <SectionPanel title="Playbooks" icon={BookOpenIcon}>
+            <NumberInput
+              label="Index token cap"
+              description="Token budget for the available-playbooks index. Least-used playbooks are dropped first when it is exceeded."
+              value={memory.pkm_playbook_index_token_cap}
+              onChange={(v) => onChange({ ...memory, pkm_playbook_index_token_cap: v })}
+              min={0}
             />
             <NumberInput
               label="Playbook tool turns"

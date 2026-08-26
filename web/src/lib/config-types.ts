@@ -183,12 +183,22 @@ export interface MemoryConfig {
   pkm_short_memory_demote_threshold: number;
   pkm_short_memory_top_n: number;
   pkm_short_memory_token_cap: number;
+  pkm_playbook_index_token_cap: number;
   pkm_consolidate_secs: number;
   pkm_consolidate_idle_secs: number;
+  pkm_consolidation_concurrency: number;
   pkm_consolidation_max_tool_turns: number;
   pkm_consolidation_max_submissions: number;
   pkm_playbook_max_tool_turns: number;
   pkm_playbook_max_submissions: number;
+  pkm_extract_max_tokens: number;
+  pkm_extract_max_messages: number;
+  pkm_extract_agent_evidence_lookback_messages: number;
+  pkm_extract_agent_evidence_result_token_cap: number;
+  pkm_consolidation_max_attempts: number;
+  pkm_adjudication_max_attempts_per_batch: number;
+  pkm_consolidation_checkpoint_failure_cap: number;
+  pkm_consolidation_retry_base_secs: number;
 }
 
 export interface Config {
