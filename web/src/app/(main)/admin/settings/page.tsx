@@ -275,7 +275,9 @@ export default function AdminSettingsPage() {
                   {activeTab === "models" && (
                     <ModelsSection
                       models={config.models}
-                      enabledProviders={Object.keys(config.providers)}
+                      enabledProviders={Object.entries(config.providers)
+                        .filter(([, provider]) => provider.enabled !== false)
+                        .map(([id]) => id)}
                       providerConfigs={config.providers}
                       onChange={(v) => updatePatch("models", v)}
                     />
