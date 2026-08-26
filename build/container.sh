@@ -108,7 +108,7 @@ fi
 
 # Podman requires bind-mount source paths to exist before container creation.
 # Create them as the workspace user so outer-container tooling can write there.
-mkdir -p data/browser_profiles web/node_modules
+mkdir -p data/browser_profiles web/node_modules target/sccache
 
 exec "$runtime" compose -f build/docker-compose.yml \
   --profile "$profile" "$action" "$@"

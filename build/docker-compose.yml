@@ -45,6 +45,7 @@ services:
       - ../Cargo.toml:/app/Cargo.toml
       - ../Cargo.lock:/app/Cargo.lock
       - cargo-cache:/app/target
+      - ../target/sccache:/cache/sccache
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
       - node-modules:/app/web/node_modules
@@ -72,7 +73,7 @@ services:
       # debug binary on every backend edit.
       - CARGO_PROFILE_DEV_DEBUG=1
       - RUSTC_WRAPPER=sccache
-      - SCCACHE_DIR=/app/target/sccache
+      - SCCACHE_DIR=/cache/sccache
       - SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-40G}
       # GNU ld dominated backend restart time. LLVM lld is installed in the dev image.
       - CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang
