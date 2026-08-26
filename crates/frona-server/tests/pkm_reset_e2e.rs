@@ -514,7 +514,10 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
         .await
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(body, serde_json::json!({"available": true, "reset": null}));
+    assert_eq!(
+        body,
+        serde_json::json!({"available": true, "reset": null, "consolidation": null})
+    );
 
     for response in rebuild_responses() {
         mock.enqueue(response);
