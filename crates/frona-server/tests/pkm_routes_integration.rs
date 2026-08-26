@@ -345,6 +345,7 @@ async fn graph_returns_the_user_scoped_memory_network() {
         .unwrap();
     assert_eq!(me["relationStats"]["outgoing"], 1);
     assert_eq!(me["relationStats"]["incoming"], 0);
+    assert_eq!(me["useCount"], 0);
 }
 
 #[tokio::test]

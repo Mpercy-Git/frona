@@ -33,6 +33,7 @@ export interface MemoryGraphNode {
   path: string;
   name: string;
   description: string;
+  useCount: number;
   origin: PageOrigin;
   category: PageCategory;
   types: OntologyType[];
@@ -117,6 +118,7 @@ export interface MemorySearchResult {
   path: string;
   name: string;
   description: string;
+  useCount?: number;
   origin: PageOrigin;
   category: PageCategory;
   types: string[];

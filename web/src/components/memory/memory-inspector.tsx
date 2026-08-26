@@ -9,6 +9,7 @@ import {
   ArrowLeftIcon,
   ArrowTopRightOnSquareIcon,
   ChevronRightIcon,
+  CircleStackIcon,
   MagnifyingGlassIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
@@ -27,6 +28,7 @@ interface MemoryInspectorProps {
   searchMode: boolean;
   searchQuery: string;
   searchResults: MemorySearchResult[];
+  browsablePages: MemorySearchResult[];
   searchLoading: boolean;
   onClose: () => void;
   onSelect: (path: string, fromSearch?: boolean) => void;
@@ -92,30 +94,37 @@ function evidenceDestination(memory: AtomicMemory): string | null {
 function SearchResults({
   query,
   results,
+  browsablePages,
   loading,
   onSelect,
 }: {
   query: string;
   results: MemorySearchResult[];
+  browsablePages: MemorySearchResult[];
   loading: boolean;
   onSelect: (path: string) => void;
 }) {
+  const hasQuery = Boolean(query.trim());
+  const displayedPages = hasQuery ? results : browsablePages;
+
   return (
     <div className="h-full overflow-y-auto p-4 pr-14">
       <div className="mb-4 flex items-center gap-2">
-        <MagnifyingGlassIcon className="h-5 w-5 text-text-tertiary" />
-        <h2 className="text-lg font-semibold text-text-primary">Search memory</h2>
+        {hasQuery
+          ? <MagnifyingGlassIcon className="h-5 w-5 text-text-tertiary" />
+          : <CircleStackIcon className="h-5 w-5 text-text-tertiary" />}
+        <h2 className="text-lg font-semibold text-text-primary">{hasQuery ? "Search memory" : "Browse memory"}</h2>
       </div>
-      {!query.trim() ? (
-        <p className="text-sm text-text-secondary">Search names, descriptions, aliases, and page contents.</p>
-      ) : loading ? (
+      {hasQuery && loading ? (
         <p className="text-sm text-text-secondary">Searching…</p>
-      ) : results.length === 0 ? (
+      ) : hasQuery && displayedPages.length === 0 ? (
         <p className="text-sm text-text-secondary">No memory pages match “{query}”.</p>
       ) : (
         <div className="space-y-2">
-          <p className="mb-3 text-xs text-text-tertiary">{results.length} result{results.length === 1 ? "" : "s"}</p>
-          {results.map((result) => (
+          <p className="mb-3 text-xs text-text-tertiary">
+            {displayedPages.length} {hasQuery ? `result${displayedPages.length === 1 ? "" : "s"}` : `page${displayedPages.length === 1 ? "" : "s"}`}
+          </p>
+          {displayedPages.map((result) => (
             <button
               key={result.path}
               onClick={() => onSelect(result.path)}
@@ -268,8 +277,8 @@ function PageInspector({
   onTab,
   onSelect,
   onBackToSearch,
-  showSearchBack,
-}: Pick<MemoryInspectorProps, "selectedPath" | "tab" | "onTab" | "onSelect" | "onBackToSearch"> & { showSearchBack: boolean }) {
+  searchQuery,
+}: Pick<MemoryInspectorProps, "selectedPath" | "tab" | "onTab" | "onSelect" | "onBackToSearch" | "searchQuery">) {
   const [data, setData] = useState<MemoryPageResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -289,11 +298,9 @@ function PageInspector({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-border px-4 pb-3 pt-4 pr-14">
-        {showSearchBack && (
-          <button onClick={onBackToSearch} className="mb-2 flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary">
-            <ArrowLeftIcon className="h-3.5 w-3.5" /> Search results
-          </button>
-        )}
+        <button onClick={onBackToSearch} className="mb-2 flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary">
+          <ArrowLeftIcon className="h-3.5 w-3.5" /> {searchQuery.trim() ? "Search results" : "Browse memory"}
+        </button>
         <h2 className="text-xl font-semibold text-text-primary">{data.page.name}</h2>
         <p className="mt-1 font-mono text-[11px] text-text-tertiary">{data.page.path}</p>
         <p className="mt-2 text-sm leading-5 text-text-secondary">{data.page.description}</p>
@@ -343,7 +350,13 @@ export function MemoryInspector(props: MemoryInspectorProps) {
           </button>
           <div className={props.mobile ? "h-[calc(100%-12px)] pt-3" : "h-full"}>
             {props.searchMode ? (
-              <SearchResults query={props.searchQuery} results={props.searchResults} loading={props.searchLoading} onSelect={(path) => props.onSelect(path, true)} />
+              <SearchResults
+                query={props.searchQuery}
+                results={props.searchResults}
+                browsablePages={props.browsablePages}
+                loading={props.searchLoading}
+                onSelect={(path) => props.onSelect(path, true)}
+              />
             ) : (
               <PageInspector
                 selectedPath={props.selectedPath}
@@ -351,7 +364,7 @@ export function MemoryInspector(props: MemoryInspectorProps) {
                 onTab={props.onTab}
                 onSelect={props.onSelect}
                 onBackToSearch={props.onBackToSearch}
-                showSearchBack={Boolean(props.searchQuery.trim())}
+                searchQuery={props.searchQuery}
               />
             )}
           </div>

@@ -33,8 +33,8 @@ export function MemoryPage() {
   const [graph, setGraph] = useState<MemoryGraphResponse | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState(searchParams.get("page") ?? "");
-  const [inspectorOpen, setInspectorOpen] = useState(Boolean(searchParams.get("page")));
-  const [searchMode, setSearchMode] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [searchMode, setSearchMode] = useState(!searchParams.get("page"));
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<MemorySearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -114,6 +114,25 @@ export function MemoryPage() {
   const searchMatches = useMemo(
     () => activeSearchMatches(searchMode, query, results),
     [query, results, searchMode],
+  );
+  const browsablePages = useMemo<MemorySearchResult[]>(
+    () => graph?.nodes
+      .map((node) => ({
+        path: node.path,
+        name: node.name,
+        description: node.description,
+        useCount: node.useCount,
+        origin: node.origin,
+        category: node.category,
+        types: node.types.map((type) => type.iri),
+        aliases: [],
+      }))
+      .sort((left, right) => {
+        if (left.path === graph.selfPath) return -1;
+        if (right.path === graph.selfPath) return 1;
+        return right.useCount - left.useCount;
+      }) ?? [],
+    [graph],
   );
 
   if (graphError) {
@@ -233,6 +252,7 @@ export function MemoryPage() {
         searchMode={searchMode}
         searchQuery={query}
         searchResults={results}
+        browsablePages={browsablePages}
         searchLoading={searchLoading}
         onClose={() => setInspectorOpen(false)}
         onSelect={selectPage}
