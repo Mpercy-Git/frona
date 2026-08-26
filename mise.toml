@@ -84,7 +84,10 @@ cargo test -p frona-server --test mcp_e2e -- --ignored
 
 [tasks."test:all"]
 description = "Run all tests including end-to-end"
-depends = ["test", "test:e2e"]
+run = """
+mise run test
+mise run test:e2e
+"""
 
 [tasks.container]
 description = "Build production Docker image"
