@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { CircleStackIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { DeleteConfirmDialog } from "@/components/nav/delete-confirm-dialog";
+import { ConsolidationStatusCard } from "@/components/memory/consolidation-status-card";
+import { ConsolidationHistoryTable } from "@/components/memory/consolidation-history-table";
 import { SectionHeader, SectionPanel } from "@/components/settings/field";
 import {
   getPkmStatus,
@@ -13,6 +15,7 @@ import {
 export function UserMemorySection() {
   const [available, setAvailable] = useState<boolean | null>(null);
   const [reset, setReset] = useState<PkmResetStatus | null>(null);
+  const [consolidation, setConsolidation] = useState<Awaited<ReturnType<typeof getPkmStatus>>["consolidation"]>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -22,6 +25,7 @@ export function UserMemorySection() {
       const response = await getPkmStatus();
       setAvailable(response.available);
       setReset(response.reset);
+      setConsolidation(response.consolidation ?? null);
       if (response.reset?.status !== "failed") setError(null);
     } catch (statusError) {
       setAvailable(false);
@@ -34,10 +38,11 @@ export function UserMemorySection() {
   }, [loadStatus]);
 
   useEffect(() => {
-    if (reset?.status !== "pending" && reset?.status !== "running") return;
+    if (reset?.status !== "pending" && reset?.status !== "running" &&
+        consolidation?.status !== "running" && consolidation?.status !== "retrying") return;
     const timer = window.setInterval(() => void loadStatus(), 1500);
     return () => window.clearInterval(timer);
-  }, [loadStatus, reset?.status]);
+  }, [consolidation?.status, loadStatus, reset?.status]);
 
   async function submitReset() {
     setSubmitting(true);
@@ -77,7 +82,10 @@ export function UserMemorySection() {
           </p>
         </SectionPanel>
       ) : (
-        <SectionPanel title="Danger zone">
+        <>
+          <ConsolidationStatusCard value={consolidation} />
+          <ConsolidationHistoryTable />
+          <SectionPanel title="Danger zone">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="text-sm font-medium text-text-primary">Reset memory</div>
@@ -106,7 +114,8 @@ export function UserMemorySection() {
             </p>
           )}
           {error && !failed && <p className="text-sm text-danger" role="alert">{error}</p>}
-        </SectionPanel>
+          </SectionPanel>
+        </>
       )}
 
       <DeleteConfirmDialog

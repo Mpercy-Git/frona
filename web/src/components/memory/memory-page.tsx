@@ -15,6 +15,7 @@ import { activeSearchMatches, branchColor } from "@/lib/memory-graph";
 import type { MemoryGraphResponse, MemorySearchResult } from "@/lib/memory-types";
 import { useMobile } from "@/lib/use-mobile";
 import { MemoryInspector, type MemoryTab } from "./memory-inspector";
+import { ConsolidationStatusCard } from "./consolidation-status-card";
 
 const MemoryGraphCanvas = dynamic(
   () => import("./memory-graph-canvas").then((module) => module.MemoryGraphCanvas),
@@ -165,7 +166,7 @@ export function MemoryPage() {
         onSelect={selectPage}
       />
 
-      <div className="absolute left-3 right-3 top-3 z-20 flex items-start gap-2 sm:left-5 sm:right-auto sm:w-[min(520px,calc(100%-40px))]">
+      <div className="absolute left-3 right-3 top-3 z-20 flex items-start gap-2 sm:left-5 sm:right-auto sm:w-[min(780px,calc(100%-40px))]">
         <div className="flex min-w-0 flex-1 items-center rounded-xl border border-border bg-surface-secondary/95 shadow-lg backdrop-blur">
           <MagnifyingGlassIcon className="ml-3 h-5 w-5 shrink-0 text-text-tertiary" />
           <input
@@ -188,6 +189,7 @@ export function MemoryPage() {
         >
           <AdjustmentsHorizontalIcon className="h-5 w-5" />
         </button>
+        <ConsolidationStatusCard compact className="relative shrink-0" />
       </div>
 
       {filtersOpen && (

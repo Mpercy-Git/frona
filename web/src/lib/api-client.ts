@@ -184,6 +184,46 @@ export interface PkmResetStatus {
 export interface PkmStatusResponse {
   available: boolean;
   reset: PkmResetStatus | null;
+  consolidation: PkmConsolidationStatus | null;
+}
+
+export type PkmConsolidationState = "running" | "retrying" | "completed" | "failed";
+
+export interface PkmConsolidationStatus {
+  id: string;
+  status: PkmConsolidationState;
+  stage: string;
+  stageIndex: number;
+  stageCount: number;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  nextAttemptAt: string | null;
+  attempts: number;
+  restartCount: number;
+  failure: { stage: string; message: string; affectedCount: number } | null;
+  usage: { input_tokens: number; cached_input_tokens: number; output_tokens: number; cost_usd: number; calls: number };
+  usageIsEstimate: boolean;
+  summary: {
+    memoriesAdded: number; entitiesCreated: number; entitiesMinted: number;
+    entitiesMerged: number; entitiesReconciled: number; factsQuarantined: number;
+    factsReinstated: number; pagesBuilt: number; playbooksBuilt: number;
+    groundingCorrections: number; groundingItemsDropped: number; citationRepairs: number;
+    duplicateClaims: number; unsupportedClaims: number; itemsCleaned: number;
+  };
+}
+
+export interface PkmConsolidationRun {
+  id: string;
+  status: PkmConsolidationState;
+  stage: string;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  memoriesAdded: number;
+  entitiesChanged: number;
+  pagesBuilt: number;
+  playbooksBuilt: number;
 }
 
 export interface PkmResetResponse {
@@ -193,6 +233,14 @@ export interface PkmResetResponse {
 
 export function getPkmStatus(): Promise<PkmStatusResponse> {
   return request<PkmStatusResponse>("/api/memory/pkm/status");
+}
+
+export function getPkmConsolidations(): Promise<{ runs: PkmConsolidationRun[] }> {
+  return request("/api/memory/pkm/consolidations");
+}
+
+export function getPkmConsolidation(id: string = "latest"): Promise<PkmConsolidationStatus> {
+  return request(`/api/memory/pkm/consolidations/${encodeURIComponent(id)}`);
 }
 
 export function requestPkmReset(): Promise<PkmResetResponse> {
