@@ -17,6 +17,11 @@ use crate::inference::text_inference;
 use crate::storage::StorageService;
 use rig_core::completion::Message as RigMessage;
 
+// Reasoning models may consume output tokens before emitting the short text
+// response. A 100-token ceiling can therefore yield a successful completion
+// containing reasoning only, which leaves the chat untitled.
+const TITLE_MAX_TOKENS: u64 = 1024;
+
 pub struct AgentConfig {
     pub system_prompt: String,
     pub model_group: String,
@@ -1489,7 +1494,7 @@ impl ChatService {
                     name: "title".to_string(),
                     main: model_ref,
                     fallbacks: vec![],
-                    max_tokens: Some(100),
+                    max_tokens: Some(TITLE_MAX_TOKENS),
                     temperature: None,
                     context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
                     retry: Default::default(),
@@ -1503,7 +1508,7 @@ impl ChatService {
             name: "title".to_string(),
             main: base.main.clone(),
             fallbacks: base.fallbacks.clone(),
-            max_tokens: Some(100),
+            max_tokens: Some(TITLE_MAX_TOKENS),
             temperature: base.temperature,
             context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
             retry: base.retry.clone(),
