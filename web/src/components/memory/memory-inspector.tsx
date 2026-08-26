@@ -231,7 +231,9 @@ function MemoryBody({ data }: { data: MemoryPageResponse }) {
           <section key={memory.id} className="rounded-xl border border-border bg-surface p-4">
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-secondary">{memory.kind}</span>
-              <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-secondary">{memory.disposition}</span>
+              {memory.disposition !== "none" && (
+                <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-secondary">{memory.disposition}</span>
+              )}
               <span className="text-[11px] text-text-tertiary">{new Date(memory.created_at).toLocaleString()}</span>
             </div>
             <p className="mt-3 whitespace-pre-wrap text-sm leading-5 text-text-primary">{memory.content}</p>
