@@ -157,10 +157,15 @@ impl OntologyManager {
             return TypePlan::Refused;
         };
         let iri = catalogue.prefixes().expand(class);
-        if kinds.contains(&iri) {
-            return TypePlan::AlreadyHeld;
+        let current = self.normalize_types(kinds, delta);
+        if current.contains(&iri) {
+            return if current == kinds {
+                TypePlan::AlreadyHeld
+            } else {
+                TypePlan::Write(current)
+            };
         }
-        let mut proposed = kinds.to_vec();
+        let mut proposed = current;
         proposed.push(iri.clone());
         // Normalised before the gate: a redundant arrival is dropped rather than
         // rejected, and an arrival that makes an existing type redundant retires it.

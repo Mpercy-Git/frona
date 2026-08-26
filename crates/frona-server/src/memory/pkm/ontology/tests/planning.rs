@@ -25,6 +25,21 @@ async fn normalization_canonicalizes_before_deduplication_and_subsumption() {
     );
 }
 
+#[tokio::test]
+async fn stamping_an_existing_type_repairs_a_mixed_curie_and_iri_pair() {
+    let (mgr, _repo) = manager().await;
+    let plan = mgr.plan_entity_type(
+        &["schema:Person".into(), iri("schema:Person")],
+        "schema:Person",
+        &[],
+    );
+    assert_eq!(
+        plan,
+        TypePlan::Write(vec![iri("schema:Person")]),
+        "an already-held type must not bypass canonicalization",
+    );
+}
+
 /// A class minted *this pass* exists only in the delta, so a catalogue-only check
 /// would keep both and defeat the whole exercise.
 #[tokio::test]
