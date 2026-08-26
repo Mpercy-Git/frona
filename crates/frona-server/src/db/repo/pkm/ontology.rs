@@ -724,7 +724,13 @@ impl PkmRepo {
             }
             None => {
                 let row = KnowledgeOntology {
-                    id: new_id(),
+                    // Initial writers must contend on the same record key. Relying only
+                    // on the unique user_id index permits two concurrent transactions
+                    // to both observe an absent index entry and report a successful
+                    // create (notably with the in-memory engine). Existing rows retain
+                    // their historical generated ids; new rows use the naturally
+                    // unique owner id so CREATE provides the missing atomic primitive.
+                    id: user_id.to_string(),
                     user_id: user_id.to_string(),
                     owl: owl.to_string(),
                     format: format.to_string(),
