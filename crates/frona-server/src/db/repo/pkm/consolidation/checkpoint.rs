@@ -1,6 +1,46 @@
 use crate::db::repo::pkm::*;
 
 impl PkmRepo {
+    /// Newest consolidation passes for the user, including any current open pass.
+    pub async fn consolidation_records(
+        &self,
+        user_id: &str,
+        limit: usize,
+    ) -> Result<Vec<KnowledgeConsolidationRecord>, AppError> {
+        let q = self
+            .db
+            .query(format!(
+                "{SELECT} FROM knowledge_consolidation_record
+                 WHERE user_id = $uid ORDER BY id DESC LIMIT $limit"
+            ))
+            .bind(("uid", user_id.to_string()))
+            .bind(("limit", limit));
+        let mut response = q.await.map_err(|e| Self::err("consolidation_records", e))?;
+        response
+            .take(0)
+            .map_err(|e| Self::err("consolidation_records_take", e))
+    }
+
+    pub async fn consolidation_record(
+        &self,
+        user_id: &str,
+        id: &str,
+    ) -> Result<Option<KnowledgeConsolidationRecord>, AppError> {
+        let mut response = self
+            .db
+            .query(format!(
+                "{SELECT} FROM type::record('knowledge_consolidation_record', $id)
+                 WHERE user_id = $uid LIMIT 1"
+            ))
+            .bind(("id", id.to_string()))
+            .bind(("uid", user_id.to_string()))
+            .await
+            .map_err(|e| Self::err("consolidation_record", e))?;
+        response
+            .take(0)
+            .map_err(|e| Self::err("consolidation_record_take", e))
+    }
+
     /// The user's newest consolidation pass, finished or not. Ids are UUIDv7, so newest
     /// is a plain `ORDER BY id DESC` - no separate clock, and no `updated_at` tiebreak.
     pub async fn latest_consolidation_record(

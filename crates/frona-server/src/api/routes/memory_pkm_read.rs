@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::error::AppError;
 use crate::core::state::AppState;
+use crate::db::repo::generic::SurrealRepo;
+use crate::inference::usage::{InferenceUsage, InferenceUsageRepository, UsageRollup};
 use crate::memory::pkm::model::{
     EntityCategory, EntityOrigin, KnowledgeEntity, KnowledgeEntityLink, KnowledgeMemory,
     LinkOrigin, SELF_ENTITY_PATH,
@@ -22,6 +24,8 @@ const SCOPE: &str = "memory";
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/memory/pkm/status", get(status))
+        .route("/api/memory/pkm/consolidations", get(consolidations))
+        .route("/api/memory/pkm/consolidations/{id}", get(consolidation))
         .route("/api/memory/pkm/reset", post(reset))
         .route("/api/memory/pkm/graph", get(graph))
         .route("/api/memory/pkm/entity", get(entity))
@@ -58,6 +62,213 @@ fn require_pkm<'a>(
 struct StatusResponse {
     available: bool,
     reset: Option<ResetStatusResponse>,
+    consolidation: Option<ConsolidationStatusResponse>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsolidationStatusResponse {
+    id: String,
+    status: &'static str,
+    stage: String,
+    stage_index: usize,
+    stage_count: usize,
+    started_at: Option<DateTime<Utc>>,
+    updated_at: DateTime<Utc>,
+    completed_at: Option<DateTime<Utc>>,
+    next_attempt_at: Option<DateTime<Utc>>,
+    attempts: u32,
+    restart_count: u32,
+    failure: Option<ConsolidationFailureResponse>,
+    usage: UsageRollup,
+    usage_is_estimate: bool,
+    summary: ConsolidationSummaryResponse,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsolidationFailureResponse {
+    stage: String,
+    message: String,
+    affected_count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsolidationSummaryResponse {
+    memories_added: usize,
+    entities_created: usize,
+    entities_minted: usize,
+    entities_merged: usize,
+    entities_reconciled: usize,
+    facts_quarantined: usize,
+    facts_reinstated: usize,
+    pages_built: usize,
+    playbooks_built: usize,
+    grounding_corrections: usize,
+    grounding_items_dropped: usize,
+    citation_repairs: usize,
+    duplicate_claims: usize,
+    unsupported_claims: usize,
+    items_cleaned: usize,
+}
+
+fn record_started_at(id: &str) -> Option<DateTime<Utc>> {
+    let timestamp = uuid::Uuid::parse_str(id).ok()?.get_timestamp()?;
+    let (seconds, nanos) = timestamp.to_unix();
+    DateTime::from_timestamp(seconds.try_into().ok()?, nanos)
+}
+
+fn stage_position(label: &str) -> usize {
+    match label {
+        "ingest" => 1,
+        "classify" => 2,
+        "resolve" => 3,
+        "reconcile" => 4,
+        "assemble" => 5,
+        "playbook_resolve" => 6,
+        "playbook_author" => 7,
+        "page_author" => 8,
+        "cleanup" | "done" | "failed" => 9,
+        _ => 1,
+    }
+}
+
+fn record_status(record: &crate::memory::pkm::KnowledgeConsolidationRecord) -> &'static str {
+    match record.state.label() {
+        "done" => "completed",
+        "failed" => "failed",
+        _ if record.failure.is_some() && record.next_attempt_at > Utc::now() => "retrying",
+        _ => "running",
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsolidationListItem {
+    id: String,
+    status: &'static str,
+    stage: String,
+    started_at: Option<DateTime<Utc>>,
+    updated_at: DateTime<Utc>,
+    completed_at: Option<DateTime<Utc>>,
+    memories_added: usize,
+    entities_changed: usize,
+    pages_built: usize,
+    playbooks_built: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsolidationListResponse {
+    runs: Vec<ConsolidationListItem>,
+}
+
+async fn consolidations(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<ConsolidationListResponse>, ApiError> {
+    let records = require_pkm(&auth, &state)?
+        .repo()
+        .consolidation_records(&auth.user_id, 21)
+        .await?;
+    let runs = records
+        .into_iter()
+        .map(|record| {
+            let terminal = record.state.is_done();
+            ConsolidationListItem {
+                id: record.id.clone(),
+                status: record_status(&record),
+                stage: record.state.label().to_string(),
+                started_at: record_started_at(&record.id),
+                updated_at: record.updated_at,
+                completed_at: terminal.then_some(record.updated_at),
+                memories_added: record.stats.memories_added,
+                entities_changed: record.stats.entities_created
+                    + record.stats.entities_minted
+                    + record.stats.entities_merged
+                    + record.stats.entities_reconciled,
+                pages_built: record.stats.pages_built,
+                playbooks_built: record.stats.playbooks_built,
+            }
+        })
+        .collect();
+    Ok(Json(ConsolidationListResponse { runs }))
+}
+
+async fn consolidation(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ConsolidationStatusResponse>, ApiError> {
+    let repo = require_pkm(&auth, &state)?.repo();
+    let record = if id == "latest" {
+        repo.latest_consolidation_record(&auth.user_id).await?
+    } else {
+        repo.consolidation_record(&auth.user_id, &id).await?
+    }
+    .ok_or_else(|| AppError::NotFound("consolidation run not found".into()))?;
+    let usage_repo = SurrealRepo::<InferenceUsage>::new(state.db.clone());
+    Ok(Json(
+        consolidation_detail(&auth.user_id, record, &usage_repo).await?,
+    ))
+}
+
+async fn consolidation_detail(
+    user_id: &str,
+    record: crate::memory::pkm::KnowledgeConsolidationRecord,
+    usage_repo: &SurrealRepo<InferenceUsage>,
+) -> Result<ConsolidationStatusResponse, AppError> {
+    let started_at = record_started_at(&record.id);
+    let terminal = record.state.is_done();
+    let usage = usage_repo
+        .aggregate_by_kind(user_id, started_at, terminal.then_some(record.updated_at))
+        .await?
+        .remove("Memory")
+        .unwrap_or_default();
+    let label = record.state.label();
+    let status = record_status(&record);
+    let stats = record.stats;
+    Ok(ConsolidationStatusResponse {
+        id: record.id,
+        status,
+        stage: label.to_string(),
+        stage_index: stage_position(label),
+        stage_count: 9,
+        started_at,
+        updated_at: record.updated_at,
+        completed_at: terminal.then_some(record.updated_at),
+        next_attempt_at: (status == "retrying").then_some(record.next_attempt_at),
+        attempts: record.attempts,
+        restart_count: record.restart_count,
+        failure: record.failure.map(|failure| ConsolidationFailureResponse {
+            stage: failure.stage,
+            message: failure.error,
+            affected_count: failure.affected_count,
+        }),
+        usage,
+        usage_is_estimate: true,
+        summary: ConsolidationSummaryResponse {
+            memories_added: stats.memories_added,
+            entities_created: stats.entities_created,
+            entities_minted: stats.entities_minted,
+            entities_merged: stats.entities_merged,
+            entities_reconciled: stats.entities_reconciled,
+            facts_quarantined: stats.facts_quarantined,
+            facts_reinstated: stats.facts_reinstated,
+            pages_built: stats.pages_built,
+            playbooks_built: stats.playbooks_built,
+            grounding_corrections: stats.grounding_corrections,
+            grounding_items_dropped: stats.grounding_items_dropped,
+            citation_repairs: stats.research_coverage.citation_repairs,
+            duplicate_claims: stats.research_coverage.claims_duplicate,
+            unsupported_claims: stats.research_coverage.claims_unsupported,
+            items_cleaned: stats.short_memory_dropped
+                + stats.orphans_gced
+                + stats.dropped_gced
+                + stats.entities_gced,
+        },
+    })
 }
 
 async fn status(
@@ -66,9 +277,78 @@ async fn status(
 ) -> Result<Json<StatusResponse>, ApiError> {
     let pkm = require_pkm(&auth, &state)?;
     let reset = pkm.reset_status(&auth.user_id).await?.map(Into::into);
+    let record = pkm
+        .repo()
+        .latest_consolidation_record(&auth.user_id)
+        .await?;
+    let usage_repo = SurrealRepo::<InferenceUsage>::new(state.db.clone());
+    let consolidation = if let Some(record) = record {
+        let started_at = record_started_at(&record.id);
+        let terminal = record.state.is_done();
+        let until = terminal.then_some(record.updated_at);
+        let usage = usage_repo
+            .aggregate_by_kind(&auth.user_id, started_at, until)
+            .await?
+            .remove("Memory")
+            .unwrap_or_default();
+        let label = record.state.label();
+        let status = if label == "done" {
+            "completed"
+        } else if label == "failed" {
+            "failed"
+        } else if record.failure.is_some() && record.next_attempt_at > Utc::now() {
+            "retrying"
+        } else {
+            "running"
+        };
+        let stats = record.stats;
+        Some(ConsolidationStatusResponse {
+            id: record.id,
+            status,
+            stage: label.to_string(),
+            stage_index: stage_position(label),
+            stage_count: 9,
+            started_at,
+            updated_at: record.updated_at,
+            completed_at: terminal.then_some(record.updated_at),
+            next_attempt_at: (status == "retrying").then_some(record.next_attempt_at),
+            attempts: record.attempts,
+            restart_count: record.restart_count,
+            failure: record.failure.map(|failure| ConsolidationFailureResponse {
+                stage: failure.stage,
+                message: failure.error,
+                affected_count: failure.affected_count,
+            }),
+            usage,
+            usage_is_estimate: true,
+            summary: ConsolidationSummaryResponse {
+                memories_added: stats.memories_added,
+                entities_created: stats.entities_created,
+                entities_minted: stats.entities_minted,
+                entities_merged: stats.entities_merged,
+                entities_reconciled: stats.entities_reconciled,
+                facts_quarantined: stats.facts_quarantined,
+                facts_reinstated: stats.facts_reinstated,
+                pages_built: stats.pages_built,
+                playbooks_built: stats.playbooks_built,
+                grounding_corrections: stats.grounding_corrections,
+                grounding_items_dropped: stats.grounding_items_dropped,
+                citation_repairs: stats.research_coverage.citation_repairs,
+                duplicate_claims: stats.research_coverage.claims_duplicate,
+                unsupported_claims: stats.research_coverage.claims_unsupported,
+                items_cleaned: stats.short_memory_dropped
+                    + stats.orphans_gced
+                    + stats.dropped_gced
+                    + stats.entities_gced,
+            },
+        })
+    } else {
+        None
+    };
     Ok(Json(StatusResponse {
         available: true,
         reset,
+        consolidation,
     }))
 }
 
