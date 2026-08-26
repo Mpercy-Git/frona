@@ -190,6 +190,16 @@ function SetupWizard() {
     setConfig((prev) => prev ? { ...prev, [section]: value } as Config : prev);
   }, []);
 
+  const updateModels = useCallback((models: Config["models"], removedGroups: string[] = []) => {
+    setPatch((prev) => {
+      const existing = (prev.models ?? {}) as Record<string, unknown>;
+      const modelPatch: Record<string, unknown> = { ...existing, ...models };
+      for (const name of removedGroups) modelPatch[name] = null;
+      return { ...prev, models: modelPatch };
+    });
+    setConfig((prev) => prev ? { ...prev, models } : prev);
+  }, []);
+
   useEffect(() => {
     getConfig()
       .then((cfg) => {
@@ -312,7 +322,7 @@ function SetupWizard() {
                   .filter(([, provider]) => provider.enabled !== false)
                   .map(([id]) => id)}
                 providerConfigs={config.providers}
-                onChange={(v) => updatePatch("models", v)}
+                onChange={updateModels}
                 onReadyChange={setModelsBlock}
               />
             )}

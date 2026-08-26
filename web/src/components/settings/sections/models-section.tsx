@@ -14,7 +14,7 @@ interface ModelsSectionProps {
   models: Record<string, ModelGroupConfig>;
   enabledProviders: string[];
   providerConfigs?: Record<string, import("@/lib/config-types").ModelProviderConfig>;
-  onChange: (models: Record<string, ModelGroupConfig>) => void;
+  onChange: (models: Record<string, ModelGroupConfig>, removedGroups?: string[]) => void;
   onReadyChange?: (blockReason: string | null) => void;
 }
 
@@ -434,7 +434,7 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
     const entries = Object.entries(models).map(([k, v]) =>
       k === oldName ? [newName, v] : [k, v]
     );
-    onChange(Object.fromEntries(entries));
+    onChange(Object.fromEntries(entries), oldName === newName ? [] : [oldName]);
     setExpandedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(oldName)) {
@@ -448,7 +448,7 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
   function removeGroup(name: string) {
     const next = { ...models };
     delete next[name];
-    onChange(next);
+    onChange(next, [name]);
     setConfirmingRemove(null);
   }
 
