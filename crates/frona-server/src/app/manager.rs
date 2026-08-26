@@ -114,7 +114,7 @@ impl AppManager {
         if let Some(mut proc) = processes.remove(app_id) {
             let port = proc.port;
 
-            let _ = proc.child.kill().await;
+            kill_process_group(&mut proc.child).await;
             let _ = proc.child.wait().await;
 
             self.allocated_ports.lock().await.remove(&port);
@@ -385,6 +385,22 @@ impl AppManager {
         )?;
 
         Ok((child, log_path))
+    }
+}
+
+async fn kill_process_group(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // Sandbox::spawn calls setsid(), making the tracked child the process-group
+        // leader. Kill the group so shells and app servers do not survive a backend
+        // restart and keep the allocated port bound.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill().await;
     }
 }
 

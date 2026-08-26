@@ -121,6 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.policy_service.register_managed_policy(policy);
     }
 
+    let app_supervisor_handle;
     {
         let executor = state.task_executor.clone();
         tokio::spawn(async move {
@@ -155,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let shutdown = state.shutdown_token.clone();
         let notif = state.notification_service.clone();
         let broadcast = state.broadcast_service.clone();
-        tokio::spawn(async move {
+        app_supervisor_handle = tokio::spawn(async move {
             run(app_supervisor, shutdown, notif, broadcast, app_config).await;
         });
 
@@ -346,7 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     info!("Starting on {addr}");
 
-    let shutdown_token = state.shutdown_token.clone();
+    let shutdown_state = state.clone();
     let shutdown_signal = async move {
         let ctrl_c = tokio::signal::ctrl_c();
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -358,7 +359,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         info!("Initiating graceful shutdown...");
-        shutdown_token.cancel();
+        let app_ids = shutdown_state
+            .app_service
+            .manager()
+            .get_managed_app_ids()
+            .await;
+        for app_id in app_ids {
+            if let Err(error) = shutdown_state.app_service.manager().stop_app(&app_id).await {
+                tracing::warn!(%error, %app_id, "Failed to stop app during shutdown");
+            }
+        }
+        shutdown_state.shutdown_token.cancel();
     };
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -374,6 +385,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_graceful_shutdown(shutdown_signal)
     .await?;
+
+    if let Err(error) = app_supervisor_handle.await {
+        tracing::warn!(%error, "App supervisor failed during shutdown");
+    }
 
     info!("HTTP server stopped, draining in-flight work...");
     frona::core::shutdown::graceful_drain(&state).await;
