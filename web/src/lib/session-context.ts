@@ -140,6 +140,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             // answered, a message arriving on a channel — would otherwise
             // show up in the sidebar only after a full reload.
             addChatById(event.recordId);
+          } else if (
+            event.table === "chat" &&
+            event.action === "updated" &&
+            event.recordId === sessionStore.activeChatId
+          ) {
+            // Covers a live call transfer flipping this chat's agent_id
+            // (and anything else that changes it) while it's open — refetch
+            // so the header's shown agent updates without a reload. Uses
+            // sessionStore rather than the closed-over activeChatId: this
+            // handler is set up once on mount, so the destructured value
+            // would be stale on every navigation after the first.
+            api.get<ChatResponse>(`/api/chats/${event.recordId}`)
+              .then((chat) => setActiveChat(chat))
+              .catch(() => {});
           }
           break;
         case "task_update":

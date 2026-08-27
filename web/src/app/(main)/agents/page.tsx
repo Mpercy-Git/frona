@@ -81,6 +81,7 @@ import { agentDisplayName } from "@/lib/types";
 import { ProfileSection } from "@/components/agents/configure/profile-section";
 import { InstructionsSection } from "@/components/agents/configure/instructions-section";
 import { ModelSection } from "@/components/agents/configure/model-section";
+import { VoiceSection } from "@/components/agents/configure/voice-section";
 import { ToolsSection } from "@/components/agents/configure/tools-section";
 import { SkillsSection } from "@/components/agents/configure/skills-section";
 import type { SkillBrowserHandle } from "@/components/skills/skill-browser";
@@ -93,6 +94,7 @@ import { ConfigSidebar } from "@/components/layout/config-sidebar";
 const SECTIONS = [
   { id: "profile", label: "Profile" },
   { id: "model", label: "Model" },
+  { id: "voice", label: "Voice" },
   { id: "prompt", label: "Prompt" },
   { id: "tools", label: "Tools" },
   { id: "skills", label: "Skills" },
@@ -277,6 +279,12 @@ function AgentSettings() {
               <ModelSection
                 modelGroup={(merged.model_group as string) ?? "primary"}
                 onModelGroupChange={(v) => update({ model_group: v })}
+              />
+            )}
+            {activeSection === "voice" && (
+              <VoiceSection
+                voiceId={(merged.voice_id as string | null) ?? ""}
+                onVoiceIdChange={(v) => update({ voice_id: v })}
               />
             )}
             {activeSection === "prompt" && (

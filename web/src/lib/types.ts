@@ -72,6 +72,9 @@ export interface Agent {
   tools: string[];
   skills: string[];
   avatar_url: string | null;
+  /** TTS voice for live phone calls this agent answers or is transferred
+   *  into. `null` falls back to the server's default voice. */
+  voice_id: string | null;
   identity: Record<string, string>;
   sandbox_policy: SandboxPolicy;
   sandbox_limits: SandboxLimits | null;
