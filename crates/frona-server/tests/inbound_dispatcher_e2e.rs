@@ -156,6 +156,7 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
             sandbox_limits: None,
             max_concurrent_tasks: Some(5),
             avatar: None,
+            voice_id: None,
             identity: Default::default(),
             prompt: Some("You are the channel-inbound agent.".into()),
             heartbeat_interval: None,

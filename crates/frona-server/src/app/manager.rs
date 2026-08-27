@@ -513,6 +513,7 @@ mod tests {
                 sandbox_limits: None,
                 max_concurrent_tasks: None,
                 avatar: None,
+                voice_id: None,
                 identity: std::collections::BTreeMap::new(),
                 prompt: None,
                 heartbeat_interval: None,

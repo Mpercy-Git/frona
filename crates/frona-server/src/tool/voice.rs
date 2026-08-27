@@ -9,7 +9,9 @@ use sha1::Sha1;
 use std::collections::HashMap;
 use twilio_async::{TwilioJson, TwilioRequest};
 
+use crate::agent::models::Agent;
 use crate::agent::prompt::PromptLoader;
+use crate::agent::service::AgentService;
 use crate::auth::User;
 use crate::auth::UserService;
 use crate::auth::token::models::TokenType;
@@ -80,6 +82,45 @@ pub async fn find_user_by_phone(user_service: &UserService, phone: &str) -> Opti
             None
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Agent resolution
+// ---------------------------------------------------------------------------
+
+/// Whether `s` could be an agent id (ids are UUIDs — see `core::repository::new_id`).
+/// Handles and display names never parse as one, so this lets callers on a
+/// latency-sensitive path (like answering an inbound call) skip a
+/// guaranteed-miss lookup.
+pub fn looks_like_agent_id(s: &str) -> bool {
+    uuid::Uuid::parse_str(s).is_ok()
+}
+
+/// Resolve `query` against `owner_id`'s agents by id, then handle, then
+/// display name — the same chain the inbound-call agent-selection setting
+/// and the `transfer_call` tool both use. `None` when none of the three
+/// match.
+///
+/// The id branch isn't owner-scoped (unlike handle/name): an id is only
+/// ever produced by the owner's own prior selection, so trusting it here
+/// avoids an extra scoped lookup on the common miss.
+pub async fn resolve_agent_by_query(
+    agent_service: &AgentService,
+    owner_id: &str,
+    query: &str,
+) -> Option<Agent> {
+    if looks_like_agent_id(query)
+        && let Ok(Some(agent)) = agent_service.find_by_id(query).await
+    {
+        return Some(agent);
+    }
+    if let Ok(Some(agent)) = agent_service.find_by_handle(owner_id, query).await {
+        return Some(agent);
+    }
+    if let Ok(Some(agent)) = agent_service.find_by_name(owner_id, query).await {
+        return Some(agent);
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +633,15 @@ mod tests {
         let config = VoiceConfig::default();
         assert!(config.twilio_account_sid.is_none());
         assert!(config.provider.is_none());
+    }
+
+    #[test]
+    fn looks_like_agent_id_only_matches_uuids() {
+        // Real ids are UUIDs; handles/names must not trigger the id lookup.
+        assert!(looks_like_agent_id(&uuid::Uuid::new_v4().to_string()));
+        assert!(!looks_like_agent_id("receptionist"));
+        assert!(!looks_like_agent_id("my-agent_2"));
+        assert!(!looks_like_agent_id(""));
     }
 
     #[test]

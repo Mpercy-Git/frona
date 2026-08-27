@@ -171,6 +171,7 @@ impl AgentService {
             sandbox_limits: req.sandbox_limits,
             max_concurrent_tasks: None,
             avatar: None,
+            voice_id: req.voice_id,
             identity: std::collections::BTreeMap::new(),
             prompt: None,
             heartbeat_interval: None,
@@ -307,6 +308,9 @@ impl AgentService {
         }
         if let Some(prompt) = req.prompt {
             agent.prompt = if prompt.is_empty() { None } else { Some(prompt) };
+        }
+        if let Some(voice_id) = req.voice_id {
+            agent.voice_id = if voice_id.trim().is_empty() { None } else { Some(voice_id) };
         }
         if let Some(ref identity) = req.identity {
             if let Some(avatar) = identity.get("avatar")
@@ -461,6 +465,7 @@ impl AgentService {
             sandbox_limits: None,
             max_concurrent_tasks: None,
             avatar: None,
+            voice_id: None,
             identity: std::collections::BTreeMap::new(),
             prompt: None,
             heartbeat_interval: None,

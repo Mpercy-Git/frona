@@ -72,6 +72,7 @@ fn test_agent(user_id: &str) -> Agent {
         sandbox_limits: None,
         max_concurrent_tasks: None,
         avatar: None,
+        voice_id: None,
         identity: std::collections::BTreeMap::new(),
         prompt: None,
         heartbeat_interval: None,
@@ -269,6 +270,7 @@ async fn agent_service_update_invalidates_cache() {
             sandbox_limits: None,
             prompt: None,
             identity: None,
+            voice_id: None,
         },
     )
     .await

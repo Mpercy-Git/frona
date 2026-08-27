@@ -181,6 +181,7 @@ async fn seed_user_and_agent(state: &AppState) {
             sandbox_limits: None,
             max_concurrent_tasks: None,
             avatar: None,
+            voice_id: None,
             identity: Default::default(),
             prompt: Some("You are a test agent.".into()),
             heartbeat_interval: None,
