@@ -16,7 +16,7 @@ use crate::tool::voice::{
     VoiceSessionExtensions, find_user_by_phone, resolve_agent_by_query, validate_twilio_signature,
 };
 
-use super::build_twiml;
+use super::{TwimlOptions, build_twiml};
 
 // ---------------------------------------------------------------------------
 // TwiML helpers
@@ -373,6 +373,7 @@ pub(super) async fn twilio_inbound_handler(
         // Prefer the resolved display name (allowlist or matched user) over the
         // contact's stored name, which may be "Incoming caller" from a prior call.
         caller_name: Some(caller_display_name.unwrap_or_else(|| contact.name.clone())),
+        transfer_note: None,
     }) {
         Ok(v) => v,
         Err(e) => {
@@ -434,6 +435,10 @@ pub(super) async fn twilio_inbound_handler(
         .replace("https://", "wss://")
         .replace("http://", "ws://");
     let ws_url = format!("{ws_base}/api/voice/twilio/ws?token={}", created.jwt);
+    // Reuses the same session token — `connect_action` needs the same
+    // chat/call/caller context the WS handler does, and Twilio only hits this
+    // URL once the relay session it's paired with has already ended.
+    let action_url = format!("{base_url}/api/voice/twilio/connect-action?token={}", created.jwt);
 
     // Per-user greeting wins; otherwise the server-level default.
     let greeting = state
@@ -443,8 +448,12 @@ pub(super) async fn twilio_inbound_handler(
 
     let twiml = build_twiml(
         &ws_url,
-        greeting.as_deref(),
-        None, // hints — not applicable for inbound
+        TwimlOptions {
+            welcome_greeting: greeting.as_deref(),
+            hints: None, // not applicable for inbound
+            action: Some(&action_url),
+            voice_id: agent.voice_id.as_deref(),
+        },
         &state.config.voice,
     );
 

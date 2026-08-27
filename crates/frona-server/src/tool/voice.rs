@@ -190,6 +190,13 @@ pub struct VoiceSessionExtensions {
     /// Caller's display name for inbound calls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caller_name: Option<String>,
+    /// Set when this leg was reached via `transfer_call` — the outgoing
+    /// agent's handoff note, carried through the ConversationRelay `end`
+    /// message's `handoffData` and back into this leg's own session token.
+    /// Seeds the new agent's first turn with a `[CALL_TRANSFERRED: ...]`
+    /// prefix, same mechanism as `[INBOUND_CALL: ...]` on a fresh answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_note: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -607,6 +614,85 @@ impl AgentTool for HangupCallTool {
 
     async fn execute(&self, _tool_name: &str, _arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
         Ok(ToolOutput::text("hangup").as_pending_external())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TransferCallTool (external — pauses tool loop)
+// ---------------------------------------------------------------------------
+
+/// Past this many transfers on one call, further `transfer_call` attempts are
+/// rejected rather than silently retried — a loop guard against agents
+/// bouncing a caller back and forth.
+const MAX_CALL_TRANSFERS: u32 = 5;
+
+pub struct TransferCallTool {
+    pub prompts: PromptLoader,
+    pub agent_service: AgentService,
+    pub call_service: CallService,
+}
+
+#[async_trait]
+impl AgentTool for TransferCallTool {
+    fn name(&self) -> &str {
+        "transfer_call"
+    }
+
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        load_tool_definition(&self.prompts, "tools/transfer_call.md")
+            .map(|d| vec![d])
+            .unwrap_or_default()
+    }
+
+    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+        let target_query = arguments
+            .get("target_agent")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Validation("Missing required parameter: target_agent".into()))?;
+        let note = arguments
+            .get("handoff_note")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let owner_id = &ctx.user.id;
+        let target = resolve_agent_by_query(&self.agent_service, owner_id, target_query)
+            .await
+            .ok_or_else(|| AppError::Validation(format!("Agent '{target_query}' not found")))?;
+
+        if target.id == ctx.agent.id {
+            return Err(AppError::Validation(
+                "The caller is already speaking with that agent".into(),
+            ));
+        }
+        if !target.enabled {
+            return Err(AppError::Validation(format!("Agent '{}' is disabled", target.name)));
+        }
+        // The id branch of resolve_agent_by_query isn't owner-scoped (see its
+        // doc comment) — this is what actually enforces that the target is
+        // one the caller's agent is allowed to hand off to.
+        self.agent_service.get_accessible(owner_id, &target.id).await?;
+
+        let call = self
+            .call_service
+            .find_by_chat_id(&ctx.chat.id)
+            .await?
+            .ok_or_else(|| AppError::Validation("No active call on this chat".into()))?;
+        if call.transfer_count >= MAX_CALL_TRANSFERS {
+            return Err(AppError::Validation(
+                "This call has already been transferred too many times".into(),
+            ));
+        }
+        self.call_service.increment_transfer_count(&call.id).await?;
+
+        // Read by the voice websocket handler, which embeds this verbatim in
+        // the ConversationRelay `end` message's `handoffData` so the target
+        // agent/note survive the reconnect without a DB round-trip.
+        let payload = serde_json::json!({
+            "target_agent_id": target.id,
+            "note": note,
+        });
+        Ok(ToolOutput::text(payload.to_string()).as_pending_external())
     }
 }
 
