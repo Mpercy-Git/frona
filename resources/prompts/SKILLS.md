@@ -5,6 +5,7 @@ A skill is a set of local instructions to follow that is stored in a `SKILL.md` 
 - Discovery: Check `<available_skills>` for available skills. Skill bodies live on disk at the listed paths.
 - Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
 - Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
+- Not installed yet: `<available_skills>` is only what you already have, not everything that exists. If the task clearly calls for a skill you don't have and the `search_skills` tool is available, search the registry, then propose the install with `add_skill` — the user approves before anything is added. If those tools aren't available, just continue with the best fallback.
 - How to use a skill (progressive disclosure):
   1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.
   2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the skill directory listed above first, and only consider other paths if needed.

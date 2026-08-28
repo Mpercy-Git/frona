@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { api } from "@/lib/api-client";
-import type { CredentialRequestItem, CredentialTarget, GrantDuration, HitlResponse, ToolCall, VaultField } from "@/lib/types";
+import type { CredentialRequestItem, CredentialTarget, GrantDuration, HitlResponse, SkillCandidate, ToolCall, VaultField } from "@/lib/types";
 import { ApprovalButtons } from "./approval-parts";
 
 function Label({ children }: { children: React.ReactNode }) {
@@ -476,6 +476,59 @@ export function AppContent({ te, onResolve }: ToolContentProps) {
   );
 }
 
+/**
+ * Skill-install approval. The agent found skills it doesn't have; nothing is
+ * written until this is approved, so the list has to say plainly what would be
+ * added, from where, and who ends up with it.
+ */
+export function SkillsContent({ te, onResolve }: ToolContentProps) {
+  const hitl = te.hitl;
+  if (!hitl || hitl.request.type !== "Skills") return null;
+  const { items, scope, reason } = hitl.request.data;
+
+  const approveLabel = items.length === 1 ? `Install ${items[0].name}` : `Install ${items.length} skills`;
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="text-sm font-medium text-text-primary">{approveLabel}</p>
+        <p className="text-xs text-text-tertiary mt-1">{reason}</p>
+      </div>
+      <div>
+        <Label>{scope === "user" ? "Available to all your agents" : "Available to this agent only"}</Label>
+        <ul className="space-y-1.5">
+          {items.map((item: SkillCandidate) => (
+            <li
+              key={`${item.repo}/${item.name}`}
+              className="rounded-lg border border-border bg-surface-secondary px-3 py-2"
+            >
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <span className="text-sm font-medium text-text-primary">{item.name}</span>
+                <a
+                  href={`https://github.com/${item.repo}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs font-mono text-text-tertiary hover:text-accent"
+                >
+                  {item.repo}
+                </a>
+              </div>
+              {item.description && (
+                <p className="mt-1 text-xs text-text-secondary">{item.description}</p>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <ApprovalButtons
+        loading={false}
+        onApprove={() => onResolve({ type: "Approval", data: true }, "Approved")}
+        onDeny={() => onResolve({ type: "Approval", data: false }, "Denied")}
+      />
+    </div>
+  );
+}
+
 export function ToolContentDispatch(props: ToolContentProps & { selectedAnswer?: string }) {
   switch (props.te.hitl?.request.type) {
     case "Question":
@@ -487,6 +540,8 @@ export function ToolContentDispatch(props: ToolContentProps & { selectedAnswer?:
       return <CredentialContent {...props} />;
     case "App":
       return <AppContent {...props} />;
+    case "Skills":
+      return <SkillsContent {...props} />;
     default:
       return null;
   }

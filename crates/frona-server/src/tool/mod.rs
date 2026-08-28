@@ -15,6 +15,7 @@ pub mod report_signal;
 pub mod request_credentials;
 pub mod task;
 pub mod send_message;
+pub mod skills;
 pub mod annotate;
 pub mod task_control;
 pub mod update_identity;

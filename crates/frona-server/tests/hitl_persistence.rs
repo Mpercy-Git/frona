@@ -8,7 +8,9 @@ use frona::core::repository::Repository;
 use frona::credential::vault::models::{CredentialTarget, GrantDuration};
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::hitl::{Hitl, HitlDelivery, HitlRequest, HitlResponse, VaultGrant};
+use frona::inference::hitl::{
+    Hitl, HitlDelivery, HitlRequest, HitlResponse, SkillCandidate, SkillInstallScope, VaultGrant,
+};
 use frona::inference::tool_call::{TaskEvent, ToolCall, ToolStatus};
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem};
@@ -181,6 +183,55 @@ async fn vault_granted_response_round_trips() {
         }
         _ => panic!("expected Vault::Granted"),
     }
+}
+
+#[tokio::test]
+async fn skills_request_round_trips_with_approval() {
+    let db = test_db().await;
+    let repo: SurrealRepo<ToolCall> = SurrealRepo::new(db);
+
+    let mut te = base_tool_call("add_skill");
+    te.hitl = Some(Hitl {
+        prompt: "Install 2 skills for this agent?".into(),
+        url: "https://x/chats/c1".into(),
+        request: HitlRequest::Skills {
+            items: vec![
+                SkillCandidate {
+                    name: "pdf".into(),
+                    repo: "anthropics/skills".into(),
+                    description: "Fill and merge PDF files.".into(),
+                },
+                SkillCandidate {
+                    name: "xlsx".into(),
+                    repo: "anthropics/skills".into(),
+                    description: String::new(),
+                },
+            ],
+            scope: SkillInstallScope::User,
+            reason: "The user asked for a filled-in form.".into(),
+        },
+        status: ToolStatus::Resolved,
+        response: Some(HitlResponse::Approval(true)),
+        delivery: None,
+    });
+
+    let id = te.id.clone();
+    repo.create(&te).await.unwrap();
+    let found = repo.find_by_id(&id).await.unwrap().expect("should find");
+    let h = found.hitl.expect("hitl should round-trip");
+    match h.request {
+        HitlRequest::Skills { items, scope, reason } => {
+            assert_eq!(scope, SkillInstallScope::User);
+            assert_eq!(reason, "The user asked for a filled-in form.");
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].name, "pdf");
+            assert_eq!(items[0].repo, "anthropics/skills");
+            assert_eq!(items[0].description, "Fill and merge PDF files.");
+            assert_eq!(items[1].description, "");
+        }
+        _ => panic!("expected Skills variant"),
+    }
+    assert!(matches!(h.response, Some(HitlResponse::Approval(true))));
 }
 
 #[tokio::test]

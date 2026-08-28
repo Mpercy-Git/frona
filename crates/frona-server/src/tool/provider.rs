@@ -113,6 +113,12 @@ pub const BUILTIN_PROVIDERS: &[BuiltinSpec] = &[
         configurable: true,
     },
     BuiltinSpec {
+        id: "skills",
+        display_name: "skills",
+        description: "Search the skill registry for skills that aren't installed and add them, with the user's approval.",
+        configurable: true,
+    },
+    BuiltinSpec {
         id: "app",
         display_name: "app",
         description: "Deploy, start, stop, restart and destroy agent-published web apps.",

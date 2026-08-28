@@ -126,6 +126,9 @@ pub fn kind_for(req: &HitlRequest) -> HitlKind {
         HitlRequest::App { .. } => HitlKind::Approval,
         HitlRequest::Credential { .. } => HitlKind::External,
         HitlRequest::Credentials { .. } => HitlKind::External,
+        // Everything the user needs to decide is in the prompt (skill names,
+        // repo, descriptions), so a plain yes/no works in text channels too.
+        HitlRequest::Skills { .. } => HitlKind::Approval,
     }
 }
 
@@ -365,6 +368,31 @@ mod tests {
             reason: "Acme API".into(),
         };
         assert_eq!(kind_for(&req), HitlKind::External);
+    }
+
+    #[test]
+    fn kind_for_skills_returns_approval_so_text_channels_can_answer() {
+        use crate::inference::hitl::{SkillCandidate, SkillInstallScope};
+        let req = HitlRequest::Skills {
+            items: vec![SkillCandidate {
+                name: "pdf".into(),
+                repo: "anthropics/skills".into(),
+                description: "Fill PDF forms.".into(),
+            }],
+            scope: SkillInstallScope::Agent,
+            reason: "The user asked for a filled-in form.".into(),
+        };
+        assert_eq!(kind_for(&req), HitlKind::Approval);
+
+        let h = Hitl {
+            prompt: "Install the 'pdf' skill for this agent?".into(),
+            url: "https://app.example/chats/abc".into(),
+            request: req,
+            status: crate::inference::tool_call::ToolStatus::Pending,
+            response: None,
+            delivery: None,
+        };
+        assert!(render_text(&h).contains("Reply YES or NO"));
     }
 
     #[test]
