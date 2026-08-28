@@ -427,6 +427,28 @@ async fn handle_voice_socket(
                         let mut send = ws_send.lock().await;
                         send.send(Message::Text(end_msg.to_string().into())).await.ok();
                     }
+
+                    // Keep reading until Twilio closes its end (or we time
+                    // out) instead of dropping the connection ourselves
+                    // right away. Breaking immediately here raced Twilio's
+                    // own processing of the "end" message in testing: its
+                    // action callback arrived with no handoffData and
+                    // SessionStatus "failed" (error 64105, "Websocket
+                    // ended") — indistinguishable, from Twilio's side, from
+                    // us disconnecting mid-message rather than finishing
+                    // cleanly.
+                    let drain_deadline = Instant::now() + Duration::from_secs(3);
+                    loop {
+                        let remaining = drain_deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        match tokio::time::timeout(remaining, ws_recv.next()).await {
+                            Ok(Some(Ok(Message::Close(_)))) | Ok(None) => break,
+                            Ok(Some(Ok(_))) => continue,
+                            Ok(Some(Err(_))) | Err(_) => break,
+                        }
+                    }
                     break;
                 }
             }
