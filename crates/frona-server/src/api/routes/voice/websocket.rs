@@ -30,13 +30,16 @@ type WsSend = Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>;
 const DEFAULT_HANGUP_SIGN_OFF: &str = "Thanks for calling. Goodbye.";
 
 /// Spoken before a transfer when the agent called `transfer_call` without a
-/// closing line of its own — same purpose as `DEFAULT_HANGUP_SIGN_OFF`.
-const DEFAULT_TRANSFER_SIGN_OFF: &str = "One moment, I'll connect you now.";
+/// closing line of its own — same purpose as `DEFAULT_HANGUP_SIGN_OFF`. The
+/// caller hears this, then the line goes quiet before ringing again as the
+/// target agent (see `place_transfer_callback`) — not a live, in-call
+/// handoff, so the wording sets that expectation.
+const DEFAULT_TRANSFER_SIGN_OFF: &str = "One moment, someone will call you right back.";
 
 /// Prefix a session's first prompt with context the agent needs before it
-/// can usefully reply: who's calling, and — if this leg was reached via
-/// `transfer_call` — why it's picking up mid-call. `transfer_note` takes
-/// priority since a transferred leg also carries `caller_name`.
+/// can usefully reply: who's calling, and — if this leg is `transfer_call`'s
+/// callback — why it's calling them. `transfer_note` takes priority since a
+/// callback leg also carries `caller_name`.
 fn prefix_first_prompt(
     voice_prompt: String,
     caller_name: Option<&str>,
@@ -47,7 +50,7 @@ fn prefix_first_prompt(
     if let Some(note) = transfer_note {
         let name = caller_name.unwrap_or("the caller");
         format!(
-            "[CALL_TRANSFERRED: You're picking up a live call. Caller: {name} ({phone}). Handoff note: {note}.]\n{voice_prompt}"
+            "[CALL_TRANSFERRED: You're calling back {name} ({phone}), transferred to you from another agent. Handoff note: {note}.]\n{voice_prompt}"
         )
     } else if let Some(name) = caller_name {
         format!("[INBOUND_CALL: Incoming call from {name} ({phone}).]\n{voice_prompt}")
@@ -58,9 +61,10 @@ fn prefix_first_prompt(
 
 /// Parse `TransferCallTool`'s JSON result (`{"target_agent_id":..,
 /// "note":..}`) into `(target_agent_id, note)`. `None` on malformed JSON —
-/// callers fall back to an empty target, which `connect_action` treats as
-/// "no transfer" (ends the call) rather than panicking on a value that
-/// should never actually be malformed in practice.
+/// callers fall back to an empty target, which `place_transfer_callback`
+/// treats as "target agent not found" (skips the callback, logs an error)
+/// rather than panicking on a value that should never actually be malformed
+/// in practice.
 fn parse_transfer_result(result: &str) -> Option<(String, String)> {
     let v: serde_json::Value = serde_json::from_str(result).ok()?;
     let target_agent_id = v.get("target_agent_id")?.as_str()?.to_string();
@@ -169,12 +173,16 @@ async fn handle_voice_socket(
     let ws_send = Arc::new(Mutex::new(ws_send));
     let mut last_response = String::new();
     let mut first_prompt = true;
-    // Set when the turn loop already handled why this socket is closing
-    // (`hangup_call` already marked the call completed; `transfer_call`
-    // deliberately doesn't, since the call isn't over). Anything else that
-    // ends this socket — the caller hanging up, the relay dropping — leaves
-    // it to the cleanup at the bottom.
+    // Set when the turn loop already marked the call completed
+    // (`hangup_call` and `transfer_call` both do — a transfer ends this call
+    // for real now, same as a hangup). Anything else that ends this socket —
+    // the caller hanging up, the relay dropping — leaves it to the cleanup
+    // at the bottom.
     let mut relay_closed_cleanly = false;
+    // Set by a transfer_call outcome; read after the loop to place the
+    // callback once this call has actually closed. See
+    // `place_transfer_callback`.
+    let mut pending_transfer: Option<(String, String)> = None;
 
     loop {
         let msg = match ws_recv.next().await {
@@ -404,39 +412,27 @@ async fn handle_voice_socket(
                     let tts_secs = tts_secs.saturating_sub(already_played).max(1);
                     tracing::info!(chat_id = %chat_id, tts_secs, already_played, "Waiting for TTS before ending the relay session");
 
-                    // A transfer embeds its target/note in handoffData so
-                    // connect_action (api::routes::voice::mod) can pick up
-                    // the hand-off with no DB round-trip; a plain hangup
-                    // sends the same "end" it always has.
-                    let end_msg = match &outcome {
-                        TurnOutcome::Transfer { target_agent_id, note } => {
-                            tracing::info!(chat_id = %chat_id, target_agent_id = %target_agent_id, "Sending transfer signal to Twilio");
-                            let handoff_data = serde_json::json!({
-                                "target_agent_id": target_agent_id,
-                                "note": note,
-                            })
-                            .to_string();
-                            serde_json::json!({ "type": "end", "handoffData": handoff_data })
-                        }
-                        _ => {
-                            tracing::info!(chat_id = %chat_id, "Sending hangup signal to Twilio");
-                            serde_json::json!({ "type": "end" })
-                        }
-                    };
+                    if let TurnOutcome::Transfer { target_agent_id, note } = &outcome {
+                        tracing::info!(chat_id = %chat_id, target_agent_id = %target_agent_id, "Transfer requested — ending this call, callback follows once it closes");
+                        pending_transfer = Some((target_agent_id.clone(), note.clone()));
+                    } else {
+                        tracing::info!(chat_id = %chat_id, "Sending hangup signal to Twilio");
+                    }
+
+                    let end_msg = serde_json::json!({ "type": "end" });
                     {
                         let mut send = ws_send.lock().await;
                         send.send(Message::Text(end_msg.to_string().into())).await.ok();
+                        // Explicitly close our end right after, rather than
+                        // just dropping the connection — this avoided a
+                        // "failed" session (error 64105, "Websocket ended")
+                        // in testing.
+                        send.send(Message::Close(None)).await.ok();
                     }
 
-                    // Keep reading until Twilio closes its end (or we time
-                    // out) instead of dropping the connection ourselves
-                    // right away. Breaking immediately here raced Twilio's
-                    // own processing of the "end" message in testing: its
-                    // action callback arrived with no handoffData and
-                    // SessionStatus "failed" (error 64105, "Websocket
-                    // ended") — indistinguishable, from Twilio's side, from
-                    // us disconnecting mid-message rather than finishing
-                    // cleanly.
+                    // Keep reading briefly for Twilio's own Close in
+                    // response, rather than dropping the socket the instant
+                    // our Close is queued.
                     let drain_deadline = Instant::now() + Duration::from_secs(3);
                     loop {
                         let remaining = drain_deadline.saturating_duration_since(Instant::now());
@@ -466,14 +462,32 @@ async fn handle_voice_socket(
 
     // The socket closing is the only signal we get when the *other* party
     // hangs up: Twilio just drops the relay. Without this the call row would
-    // sit at `Active` for ever, since only the agent's own `hangup_call`
-    // completes it. A transfer also closes this socket without ending the
-    // call, so `relay_closed_cleanly` (set for either outcome) covers both.
+    // sit at `Active` for ever, since only the agent's own `hangup_call` (or
+    // `transfer_call`, which ends this call the same way) completes it —
+    // `relay_closed_cleanly` covers both.
     if let Some(cid) = call_id.as_deref()
         && !relay_closed_cleanly
         && let Err(e) = state.call_service.mark_completed(cid).await
     {
         tracing::warn!(error = %e, call_id = %cid, "Failed to mark call completed on socket close");
+    }
+
+    // Now that this call has actually ended, place the callback — a fresh
+    // outbound call to the same caller, as the target agent. Deliberately
+    // not raced with the closing sequence above: the caller's line needs to
+    // actually be free before we dial it again, or the callback would just
+    // hit a busy signal.
+    if let Some((target_agent_id, note)) = pending_transfer {
+        place_transfer_callback(
+            &state,
+            &chat_id,
+            &user_id,
+            &target_agent_id,
+            &note,
+            caller_phone.as_deref(),
+            caller_name.as_deref(),
+        )
+        .await;
     }
 
     if let Ok(Some(task)) = state.task_service.find_by_chat_id(&chat_id).await
@@ -500,6 +514,70 @@ async fn handle_voice_socket(
             .await;
             state.task_executor.resume_parent_if_requested(&task).await;
         }
+    }
+}
+
+/// Place `transfer_call`'s callback: a fresh outbound call to the original
+/// caller, now as the target agent, on the same chat. Called once the
+/// source call has actually closed (see `handle_voice_socket`) — replaced
+/// the original design of reconnecting the live media stream via Twilio's
+/// `<Connect action>`/`handoffData` mechanism, which real-call testing
+/// showed doesn't reliably survive this deployment's reverse-proxy chain.
+/// Every failure here is logged and swallowed: the caller already heard the
+/// hand-off line and the transfer is already recorded in the chat, so there
+/// is nothing left to roll back — worst case, they don't get called back
+/// and need to try again.
+async fn place_transfer_callback(
+    state: &AppState,
+    chat_id: &str,
+    user_id: &str,
+    target_agent_id: &str,
+    note: &str,
+    caller_phone: Option<&str>,
+    caller_name: Option<&str>,
+) {
+    let Some(phone) = caller_phone else {
+        tracing::error!(chat_id = %chat_id, "Transfer callback: no caller phone on file — cannot call back");
+        return;
+    };
+    let Some(provider) = state.voice_provider.as_deref() else {
+        tracing::error!(chat_id = %chat_id, "Transfer callback: voice provider not configured");
+        return;
+    };
+    let target_agent = match state.agent_service.find_by_id(target_agent_id).await {
+        Ok(Some(a)) => a,
+        _ => {
+            tracing::error!(chat_id = %chat_id, target_agent_id = %target_agent_id, "Transfer callback: target agent not found");
+            return;
+        }
+    };
+    let user = match state.user_service.find_by_id(user_id).await {
+        Ok(Some(u)) => u,
+        _ => {
+            tracing::error!(chat_id = %chat_id, user_id = %user_id, "Transfer callback: user not found");
+            return;
+        }
+    };
+
+    let name = caller_name.unwrap_or("the caller");
+    let greeting = format!("Hi, this is {}. {}", target_agent.name, note);
+
+    if let Err(e) = crate::tool::voice::place_outbound_call(
+        provider,
+        &state.contact_service,
+        &state.call_service,
+        chat_id,
+        &user,
+        &target_agent.id,
+        phone,
+        name,
+        Some(&greeting),
+        None,
+        Some(note),
+    )
+    .await
+    {
+        tracing::error!(error = %e, chat_id = %chat_id, target_agent_id = %target_agent_id, "Transfer callback: failed to place outbound call");
     }
 }
 
@@ -875,9 +953,8 @@ async fn silence_filler(
 enum TurnOutcome {
     Continue,
     Hangup,
-    /// Carried in the ConversationRelay `end` message's `handoffData` so
-    /// `connect_action` (api::routes::voice::mod) can pick up the hand-off
-    /// without a DB round-trip.
+    /// Read by `handle_voice_socket` after this call closes, to place the
+    /// callback — see `place_transfer_callback`.
     Transfer { target_agent_id: String, note: String },
 }
 
@@ -992,8 +1069,15 @@ async fn handle_voice_turn(
                     .complete_agent_message(response)
                     .await;
 
-                // Deliberately not marking the call completed — it isn't
-                // over, just handed to a different agent by connect_action.
+                // This call is over — the target agent picks up via a fresh
+                // outbound call once it actually closes, not by keeping this
+                // one alive. Same bookkeeping as hangup_call.
+                if let Some(cid) = call_id
+                    && let Err(e) = state.call_service.mark_completed(cid).await
+                {
+                    tracing::warn!(error = %e, call_id = %cid, "Failed to mark call completed");
+                }
+
                 return Ok((turn_text.clone(), TurnOutcome::Transfer { target_agent_id, note }));
             }
             InferenceResponse::Completed { text, attachments, reasoning, .. } => {
@@ -1063,7 +1147,7 @@ mod tests {
         );
         assert_eq!(
             prefixed,
-            "[CALL_TRANSFERRED: You're picking up a live call. Caller: Alice (+15555551234). Handoff note: Wants a refund on order #123.]\nHello?"
+            "[CALL_TRANSFERRED: You're calling back Alice (+15555551234), transferred to you from another agent. Handoff note: Wants a refund on order #123.]\nHello?"
         );
     }
 

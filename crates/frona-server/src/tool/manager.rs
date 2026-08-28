@@ -478,6 +478,7 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             prompts: prompts.clone(),
             agent_service: state.agent_service.clone(),
             call_service: state.call_service.clone(),
+            chat_service: state.chat_service.clone(),
         }));
     }
 

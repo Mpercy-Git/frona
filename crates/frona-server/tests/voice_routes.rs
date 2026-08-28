@@ -140,6 +140,7 @@ async fn twilio_callback_valid_token_returns_xml() {
         welcome_greeting: None,
         hints: None,
         contact_id: None,
+        transfer_note: None,
     })
     .unwrap();
     let created = state

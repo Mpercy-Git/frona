@@ -12,6 +12,6 @@ required:
   - target_agent
   - handoff_note
 ---
-Transfer the live call to a different one of the user's agents, who picks up with their own voice. Use this when the caller asks for someone else, or when their request matches a specialist agent better suited to help them.
+Transfer the caller to a different one of the user's agents. This ends the current call and has the target agent call the caller straight back — it is not a seamless in-call handoff, so tell the caller that up front rather than implying they'll stay connected. Use this when the caller asks for someone else, or when their request matches a specialist agent better suited to help them.
 
-Always say a brief handoff line to the caller in the same message as this tool call — e.g. "Sure, let me connect you with Billing." Whatever you say alongside this call is spoken to the caller before the transfer happens; the caller then hears a short pause before the next agent greets them.
+Always say a brief handoff line to the caller in the same message as this tool call — e.g. "Sure, I'll have Billing call you right back." Whatever you say alongside this call is spoken to the caller before the call ends; expect a short gap (a few seconds) before the target agent calls back and greets them.

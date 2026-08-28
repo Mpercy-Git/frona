@@ -171,6 +171,11 @@ pub struct VoiceCallbackExtensions {
     pub hints: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contact_id: Option<String>,
+    /// Set only for `transfer_call`'s callback leg — carried through to the
+    /// WS session's own `VoiceSessionExtensions::transfer_note` once this
+    /// outbound call is answered. See `place_outbound_call`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_note: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -190,11 +195,12 @@ pub struct VoiceSessionExtensions {
     /// Caller's display name for inbound calls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caller_name: Option<String>,
-    /// Set when this leg was reached via `transfer_call` — the outgoing
-    /// agent's handoff note, carried through the ConversationRelay `end`
-    /// message's `handoffData` and back into this leg's own session token.
-    /// Seeds the new agent's first turn with a `[CALL_TRANSFERRED: ...]`
-    /// prefix, same mechanism as `[INBOUND_CALL: ...]` on a fresh answer.
+    /// Set when this leg is `transfer_call`'s callback — a fresh outbound
+    /// call the target agent places to the original caller once the source
+    /// call has actually ended (see `place_outbound_call` and
+    /// `api::routes::voice::websocket`). Seeds the target agent's first turn
+    /// with a `[CALL_TRANSFERRED: ...]` prefix, same mechanism as
+    /// `[INBOUND_CALL: ...]` on a fresh inbound answer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transfer_note: Option<String>,
 }
@@ -217,6 +223,7 @@ pub trait VoiceProvider: Send + Sync {
         welcome_greeting: Option<&str>,
         hints: Option<&str>,
         contact_id: Option<String>,
+        transfer_note: Option<&str>,
     ) -> Result<String, AppError>;
 }
 
@@ -253,12 +260,14 @@ impl VoiceProvider for TwilioProvider {
         welcome_greeting: Option<&str>,
         hints: Option<&str>,
         contact_id: Option<String>,
+        transfer_note: Option<&str>,
     ) -> Result<String, AppError> {
         let extensions = serde_json::to_value(VoiceCallbackExtensions {
             chat_id: chat_id.to_string(),
             welcome_greeting: welcome_greeting.map(str::to_string),
             hints: hints.map(str::to_string),
             contact_id,
+            transfer_note: transfer_note.map(str::to_string),
         })
         .map_err(|e| AppError::Internal(format!("voice callback claims encode: {e}")))?;
 
@@ -332,12 +341,14 @@ impl VoiceProvider for PlivoProvider {
         welcome_greeting: Option<&str>,
         hints: Option<&str>,
         contact_id: Option<String>,
+        transfer_note: Option<&str>,
     ) -> Result<String, AppError> {
         let extensions = serde_json::to_value(VoiceCallbackExtensions {
             chat_id: chat_id.to_string(),
             welcome_greeting: welcome_greeting.map(str::to_string),
             hints: hints.map(str::to_string),
             contact_id,
+            transfer_note: transfer_note.map(str::to_string),
         })
         .map_err(|e| AppError::Internal(format!("voice callback claims encode: {e}")))?;
 
@@ -482,6 +493,52 @@ pub fn create_voice_provider(
     }
 }
 
+/// Place an outbound call attached to `chat_id`, as `agent_id`: finds or
+/// creates the contact, asks the provider to dial, and records the `Call`
+/// row. Shared by `VoiceCallTool` (an agent-requested call) and the
+/// `transfer_call` callback (`api::routes::voice::websocket`) placing a
+/// fresh call to the original caller once the source call has actually
+/// ended. Returns the resolved contact, so a caller that needs its name
+/// (e.g. for a tool-result prompt block) doesn't have to look it up again.
+#[allow(clippy::too_many_arguments)]
+pub async fn place_outbound_call(
+    provider: &dyn VoiceProvider,
+    contact_service: &ContactService,
+    call_service: &CallService,
+    chat_id: &str,
+    user: &User,
+    agent_id: &str,
+    phone_number: &str,
+    name: &str,
+    welcome_greeting: Option<&str>,
+    hints: Option<&str>,
+    transfer_note: Option<&str>,
+) -> Result<crate::contact::models::ContactResponse, AppError> {
+    let contact = contact_service
+        .find_or_create_by_phone(&user.id, phone_number, name)
+        .await?;
+
+    let sid = provider
+        .initiate_call(
+            phone_number,
+            chat_id,
+            user,
+            agent_id,
+            welcome_greeting,
+            hints,
+            Some(contact.id.clone()),
+            transfer_note,
+        )
+        .await?;
+    tracing::info!(sid = %sid, to = %phone_number, chat_id = %chat_id, "Voice call initiated");
+
+    call_service
+        .create(chat_id, &contact.id, &sid, CallDirection::Outbound)
+        .await?;
+
+    Ok(contact)
+}
+
 // ---------------------------------------------------------------------------
 // VoiceCallTool (external — pauses loop until Twilio callback)
 // ---------------------------------------------------------------------------
@@ -529,26 +586,21 @@ impl AgentTool for VoiceCallTool {
         })?;
 
         let chat_id = &ctx.chat.id;
-        let user_id = &ctx.user.id;
 
-        let contact = self.contact_service
-            .find_or_create_by_phone(user_id, phone_number, name)
-            .await?;
-
-        let sid = provider.initiate_call(
-            phone_number,
+        let contact = place_outbound_call(
+            provider.as_ref(),
+            &self.contact_service,
+            &self.call_service,
             chat_id,
             &ctx.user,
             &ctx.agent.id,
+            phone_number,
+            name,
             initial_greeting,
             hints,
-            Some(contact.id.clone()),
-        ).await?;
-        tracing::info!(sid = %sid, to = %phone_number, chat_id = %chat_id, "Voice call initiated");
-
-        let _ = self.call_service
-            .create(chat_id, &contact.id, &sid, CallDirection::Outbound)
-            .await?;
+            None,
+        )
+        .await?;
 
         let call_connected_block = self.prompts
             .read_with_vars("active_call.md", &[
@@ -630,6 +682,7 @@ pub struct TransferCallTool {
     pub prompts: PromptLoader,
     pub agent_service: AgentService,
     pub call_service: CallService,
+    pub chat_service: crate::chat::service::ChatService,
 }
 
 #[async_trait]
@@ -685,9 +738,29 @@ impl AgentTool for TransferCallTool {
         }
         self.call_service.increment_transfer_count(&call.id).await?;
 
-        // Read by the voice websocket handler, which embeds this verbatim in
-        // the ConversationRelay `end` message's `handoffData` so the target
-        // agent/note survive the reconnect without a DB round-trip.
+        // Reassign now, not once the callback connects: the transcript
+        // marker and the chat's owning agent should reflect the transfer
+        // immediately, independent of whether the callback ever succeeds.
+        let updated_chat = self
+            .chat_service
+            .reassign_agent(owner_id, &ctx.chat.id, &target.id)
+            .await?;
+        let _ = self
+            .chat_service
+            .save_system_message(
+                owner_id,
+                updated_chat.space_id.as_deref(),
+                &ctx.chat.id,
+                format!("Transferred to {}.", target.name),
+            )
+            .await;
+
+        // Read by the voice websocket handler: it ends the current call
+        // exactly like hangup_call, then places a fresh outbound call to the
+        // same caller as the target agent — see
+        // api::routes::voice::websocket::place_transfer_callback. No DB
+        // round-trip or Twilio-relayed data needed for that hand-off; it's
+        // all in-process from here.
         let payload = serde_json::json!({
             "target_agent_id": target.id,
             "note": note,
