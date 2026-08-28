@@ -29,6 +29,45 @@ type WsSend = Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>;
 /// closing line of its own, so the call never ends on abrupt silence.
 const DEFAULT_HANGUP_SIGN_OFF: &str = "Thanks for calling. Goodbye.";
 
+/// Spoken before a transfer when the agent called `transfer_call` without a
+/// closing line of its own — same purpose as `DEFAULT_HANGUP_SIGN_OFF`.
+const DEFAULT_TRANSFER_SIGN_OFF: &str = "One moment, I'll connect you now.";
+
+/// Prefix a session's first prompt with context the agent needs before it
+/// can usefully reply: who's calling, and — if this leg was reached via
+/// `transfer_call` — why it's picking up mid-call. `transfer_note` takes
+/// priority since a transferred leg also carries `caller_name`.
+fn prefix_first_prompt(
+    voice_prompt: String,
+    caller_name: Option<&str>,
+    caller_phone: Option<&str>,
+    transfer_note: Option<&str>,
+) -> String {
+    let phone = caller_phone.unwrap_or("unknown");
+    if let Some(note) = transfer_note {
+        let name = caller_name.unwrap_or("the caller");
+        format!(
+            "[CALL_TRANSFERRED: You're picking up a live call. Caller: {name} ({phone}). Handoff note: {note}.]\n{voice_prompt}"
+        )
+    } else if let Some(name) = caller_name {
+        format!("[INBOUND_CALL: Incoming call from {name} ({phone}).]\n{voice_prompt}")
+    } else {
+        voice_prompt
+    }
+}
+
+/// Parse `TransferCallTool`'s JSON result (`{"target_agent_id":..,
+/// "note":..}`) into `(target_agent_id, note)`. `None` on malformed JSON —
+/// callers fall back to an empty target, which `connect_action` treats as
+/// "no transfer" (ends the call) rather than panicking on a value that
+/// should never actually be malformed in practice.
+fn parse_transfer_result(result: &str) -> Option<(String, String)> {
+    let v: serde_json::Value = serde_json::from_str(result).ok()?;
+    let target_agent_id = v.get("target_agent_id")?.as_str()?.to_string();
+    let note = v.get("note").and_then(|n| n.as_str()).unwrap_or_default().to_string();
+    Some((target_agent_id, note))
+}
+
 /// Default filler phrases used when `silence_fill_phrases` is empty.
 const DEFAULT_SILENCE_FILL_PHRASES: &[&str] = &[
     "Just a moment, I'm working on that.",
@@ -72,6 +111,7 @@ pub(crate) async fn twilio_ws_handler(
     let call_id = ext.call_id.clone();
     let caller_name = ext.caller_name.clone();
     let caller_phone = ext.caller_phone.clone();
+    let transfer_note = ext.transfer_note.clone();
     // `direction` is only set for inbound calls (see VoiceSessionExtensions).
     let is_inbound = matches!(ext.direction, Some(CallDirection::Inbound));
 
@@ -80,7 +120,12 @@ pub(crate) async fn twilio_ws_handler(
         Err(e) => return e.into_response(),
     };
 
-    ws.on_upgrade(move |socket| handle_voice_socket(socket, state, chat_id, user_id, contact_id, call_id, caller_name, caller_phone, is_inbound))
+    ws.on_upgrade(move |socket| {
+        handle_voice_socket(
+            socket, state, chat_id, user_id, contact_id, call_id, caller_name, caller_phone,
+            transfer_note, is_inbound,
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -93,6 +138,7 @@ async fn handle_voice_socket(
     call_id: Option<String>,
     caller_name: Option<String>,
     caller_phone: Option<String>,
+    transfer_note: Option<String>,
     is_inbound: bool,
 ) {
     let (mut session_id, _) = state.active_sessions.register(&chat_id).await;
@@ -123,10 +169,12 @@ async fn handle_voice_socket(
     let ws_send = Arc::new(Mutex::new(ws_send));
     let mut last_response = String::new();
     let mut first_prompt = true;
-    // Set when the agent ended the call itself (`hangup_call`), which already
-    // closed the call record out. Anything else that ends this socket — the
-    // caller hanging up, the relay dropping — leaves it to us below.
-    let mut agent_hung_up = false;
+    // Set when the turn loop already handled why this socket is closing
+    // (`hangup_call` already marked the call completed; `transfer_call`
+    // deliberately doesn't, since the call isn't over). Anything else that
+    // ends this socket — the caller hanging up, the relay dropping — leaves
+    // it to the cleanup at the bottom.
+    let mut relay_closed_cleanly = false;
 
     loop {
         let msg = match ws_recv.next().await {
@@ -168,16 +216,17 @@ async fn handle_voice_socket(
                 let (turn_id, cancel_token) = state.active_sessions.register(&chat_id).await;
                 session_id = turn_id;
 
-                // On the first prompt of an inbound call, prepend the caller
-                // identity so the agent knows who's calling.
+                // On the first prompt of the session, prepend context the
+                // agent needs: who's calling, and — if this leg was reached
+                // via transfer_call — why it's picking up mid-call.
                 let effective_prompt = if first_prompt {
                     first_prompt = false;
-                    if let Some(ref name) = caller_name {
-                        let phone = caller_phone.as_deref().unwrap_or("unknown");
-                        format!("[INBOUND_CALL: Incoming call from {name} ({phone}).]\n{voice_prompt}")
-                    } else {
-                        voice_prompt
-                    }
+                    prefix_first_prompt(
+                        voice_prompt,
+                        caller_name.as_deref(),
+                        caller_phone.as_deref(),
+                        transfer_note.as_deref(),
+                    )
                 } else {
                     voice_prompt
                 };
@@ -234,7 +283,7 @@ async fn handle_voice_socket(
                     None
                 };
 
-                let (response_text, should_hang_up) = match handle_voice_turn(
+                let (response_text, outcome) = match handle_voice_turn(
                     &state,
                     &user_id,
                     &chat_id,
@@ -281,7 +330,7 @@ async fn handle_voice_socket(
                     replay: None,
                 });
 
-                tracing::info!(chat_id = %chat_id, response_len = %response_text.len(), streamed_len = %streamed.text.len(), should_hang_up = %should_hang_up, "Voice turn complete");
+                tracing::info!(chat_id = %chat_id, response_len = %response_text.len(), streamed_len = %streamed.text.len(), outcome = ?outcome, "Voice turn complete");
 
                 // Remember the agent's own words for the task summary — never the
                 // canned sign-off below, which would otherwise overwrite the last
@@ -299,11 +348,18 @@ async fn handle_voice_socket(
                     ""
                 } else if !response_text.trim().is_empty() {
                     response_text.as_str()
-                } else if should_hang_up {
-                    tracing::info!(chat_id = %chat_id, "Hangup with no closing line — using default sign-off");
-                    DEFAULT_HANGUP_SIGN_OFF
                 } else {
-                    ""
+                    match &outcome {
+                        TurnOutcome::Hangup => {
+                            tracing::info!(chat_id = %chat_id, "Hangup with no closing line — using default sign-off");
+                            DEFAULT_HANGUP_SIGN_OFF
+                        }
+                        TurnOutcome::Transfer { .. } => {
+                            tracing::info!(chat_id = %chat_id, "Transfer with no closing line — using default sign-off");
+                            DEFAULT_TRANSFER_SIGN_OFF
+                        }
+                        TurnOutcome::Continue => "",
+                    }
                 };
 
                 if !unspoken.is_empty() || !streamed.text.is_empty() {
@@ -328,8 +384,8 @@ async fn handle_voice_socket(
                     }
                 }
 
-                if should_hang_up {
-                    agent_hung_up = true;
+                if !matches!(outcome, TurnOutcome::Continue) {
+                    relay_closed_cleanly = true;
                     // Wait on what was actually spoken, so the sign-off isn't
                     // cut off by hanging up too early. Streamed speech has been
                     // playing since the first token, so discount the time the
@@ -346,10 +402,27 @@ async fn handle_voice_socket(
                         .map(|t| t.elapsed().as_secs())
                         .unwrap_or(0);
                     let tts_secs = tts_secs.saturating_sub(already_played).max(1);
-                    tracing::info!(chat_id = %chat_id, tts_secs, already_played, "Waiting for TTS before hangup");
-                    tokio::time::sleep(Duration::from_secs(tts_secs)).await;
-                    tracing::info!(chat_id = %chat_id, "Sending hangup signal to Twilio");
-                    let end_msg = serde_json::json!({ "type": "end" });
+                    tracing::info!(chat_id = %chat_id, tts_secs, already_played, "Waiting for TTS before ending the relay session");
+
+                    // A transfer embeds its target/note in handoffData so
+                    // connect_action (api::routes::voice::mod) can pick up
+                    // the hand-off with no DB round-trip; a plain hangup
+                    // sends the same "end" it always has.
+                    let end_msg = match &outcome {
+                        TurnOutcome::Transfer { target_agent_id, note } => {
+                            tracing::info!(chat_id = %chat_id, target_agent_id = %target_agent_id, "Sending transfer signal to Twilio");
+                            let handoff_data = serde_json::json!({
+                                "target_agent_id": target_agent_id,
+                                "note": note,
+                            })
+                            .to_string();
+                            serde_json::json!({ "type": "end", "handoffData": handoff_data })
+                        }
+                        _ => {
+                            tracing::info!(chat_id = %chat_id, "Sending hangup signal to Twilio");
+                            serde_json::json!({ "type": "end" })
+                        }
+                    };
                     {
                         let mut send = ws_send.lock().await;
                         send.send(Message::Text(end_msg.to_string().into())).await.ok();
@@ -372,9 +445,10 @@ async fn handle_voice_socket(
     // The socket closing is the only signal we get when the *other* party
     // hangs up: Twilio just drops the relay. Without this the call row would
     // sit at `Active` for ever, since only the agent's own `hangup_call`
-    // completes it.
+    // completes it. A transfer also closes this socket without ending the
+    // call, so `relay_closed_cleanly` (set for either outcome) covers both.
     if let Some(cid) = call_id.as_deref()
-        && !agent_hung_up
+        && !relay_closed_cleanly
         && let Err(e) = state.call_service.mark_completed(cid).await
     {
         tracing::warn!(error = %e, call_id = %cid, "Failed to mark call completed on socket close");
@@ -772,6 +846,19 @@ async fn silence_filler(
     }
 }
 
+/// What a completed voice turn means for the socket — whether to keep
+/// talking, or how to close the relay session (a plain hangup, or a
+/// transfer that hands the chat to a different agent).
+#[derive(Debug)]
+enum TurnOutcome {
+    Continue,
+    Hangup,
+    /// Carried in the ConversationRelay `end` message's `handoffData` so
+    /// `connect_action` (api::routes::voice::mod) can pick up the hand-off
+    /// without a DB round-trip.
+    Transfer { target_agent_id: String, note: String },
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_voice_turn(
     state: &AppState,
@@ -782,7 +869,7 @@ async fn handle_voice_turn(
     ws_send: Arc<Mutex<futures::stream::SplitSink<WebSocket, Message>>>,
     contact_id: Option<&str>,
     call_id: Option<&str>,
-) -> Result<(String, bool), AppError> {
+) -> Result<(String, TurnOutcome), AppError> {
     state
         .chat_service
         .save_live_call_message(user_id, chat_id, content, contact_id)
@@ -860,7 +947,32 @@ async fn handle_voice_turn(
                     tracing::warn!(error = %e, call_id = %cid, "Failed to mark call completed");
                 }
 
-                return Ok((turn_text.clone(), true));
+                return Ok((turn_text.clone(), TurnOutcome::Hangup));
+            }
+            InferenceResponse::ExternalToolPending {
+                ref tool_calls, ref turn_text, ..
+            } if tool_calls.iter().any(|te| te.name == "transfer_call") => {
+                let tool_call = tool_calls.iter().find(|te| te.name == "transfer_call").unwrap();
+                tracing::debug!(chat_id = %chat_id, "Transfer requested by agent");
+
+                // TransferCallTool's result IS this JSON — see tool::voice.
+                let (target_agent_id, note) = parse_transfer_result(&tool_call.result).unwrap_or_else(|| {
+                    tracing::error!(chat_id = %chat_id, result = %tool_call.result, "Failed to parse transfer_call result");
+                    (String::new(), String::new())
+                });
+
+                let _ = state.chat_service
+                    .resolve_tool_call(&tool_call.id, Some("Transfer initiated".to_string()))
+                    .await;
+
+                response.content = turn_text.clone();
+                let _ = state.chat_service
+                    .complete_agent_message(response)
+                    .await;
+
+                // Deliberately not marking the call completed — it isn't
+                // over, just handed to a different agent by connect_action.
+                return Ok((turn_text.clone(), TurnOutcome::Transfer { target_agent_id, note }));
             }
             InferenceResponse::Completed { text, attachments, reasoning, .. } => {
                 response.content = text.clone();
@@ -869,7 +981,7 @@ async fn handle_voice_turn(
                 let _ = state.chat_service
                     .complete_agent_message(response)
                     .await;
-                return Ok((text, false));
+                return Ok((text, TurnOutcome::Continue));
             }
             InferenceResponse::ExternalToolPending {
                 ref tool_calls, ref turn_text, ..
@@ -906,7 +1018,7 @@ async fn handle_voice_turn(
             _ => {
                 let _ = state.chat_service
                     .fail_agent_message(response, "voice inference unexpected branch".to_string()).await;
-                return Ok((String::new(), false));
+                return Ok((String::new(), TurnOutcome::Continue));
             }
         }
     }
@@ -915,6 +1027,63 @@ async fn handle_voice_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_prefix_takes_priority_over_inbound_prefix() {
+        // A transferred leg carries both caller_name (from the original
+        // inbound extensions) and transfer_note — the transfer prefix must
+        // win, not the plain inbound one.
+        let prefixed = prefix_first_prompt(
+            "Hello?".to_string(),
+            Some("Alice"),
+            Some("+15555551234"),
+            Some("Wants a refund on order #123"),
+        );
+        assert_eq!(
+            prefixed,
+            "[CALL_TRANSFERRED: You're picking up a live call. Caller: Alice (+15555551234). Handoff note: Wants a refund on order #123.]\nHello?"
+        );
+    }
+
+    #[test]
+    fn inbound_prefix_used_when_no_transfer_note() {
+        let prefixed = prefix_first_prompt("Hello?".to_string(), Some("Alice"), Some("+15555551234"), None);
+        assert_eq!(
+            prefixed,
+            "[INBOUND_CALL: Incoming call from Alice (+15555551234).]\nHello?"
+        );
+    }
+
+    #[test]
+    fn no_prefix_for_outbound_calls() {
+        // Outbound calls carry neither caller_name nor transfer_note.
+        let prefixed = prefix_first_prompt("Hello?".to_string(), None, None, None);
+        assert_eq!(prefixed, "Hello?");
+    }
+
+    #[test]
+    fn parse_transfer_result_extracts_target_and_note() {
+        let result = r#"{"target_agent_id":"agent-123","note":"caller wants billing"}"#;
+        assert_eq!(
+            parse_transfer_result(result),
+            Some(("agent-123".to_string(), "caller wants billing".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_transfer_result_defaults_missing_note_to_empty() {
+        let result = r#"{"target_agent_id":"agent-123"}"#;
+        assert_eq!(
+            parse_transfer_result(result),
+            Some(("agent-123".to_string(), String::new()))
+        );
+    }
+
+    #[test]
+    fn parse_transfer_result_none_on_malformed_json() {
+        assert_eq!(parse_transfer_result("not json"), None);
+        assert_eq!(parse_transfer_result(r#"{"note":"only a note"}"#), None);
+    }
 
     /// A turn that has already spoken `spoken` to the caller.
     fn turn_after(spoken: &str) -> StreamedTurn {

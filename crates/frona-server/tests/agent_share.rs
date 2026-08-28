@@ -75,6 +75,7 @@ async fn seed_agent(db: &Surreal<Db>, owner_id: &str) -> Agent {
         sandbox_limits: None,
         max_concurrent_tasks: None,
         avatar: None,
+        voice_id: None,
         identity: std::collections::BTreeMap::new(),
         prompt: None,
         heartbeat_interval: None,

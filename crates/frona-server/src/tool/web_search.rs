@@ -378,7 +378,7 @@ mod tests {
                 id: "a".into(), user_id: "test-user".into(), handle: crate::handle!("aa"), name: "a".into(),
                 description: String::new(), model_group: "p".into(), enabled: true,
                 skills: None, sandbox_limits: None, max_concurrent_tasks: None,
-                avatar: None, identity: Default::default(), prompt: None,
+                avatar: None, voice_id: None, identity: Default::default(), prompt: None,
                 heartbeat_interval: None, next_heartbeat_at: None,
                 heartbeat_chat_id: None,
                 created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),

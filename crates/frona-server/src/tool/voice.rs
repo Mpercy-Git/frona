@@ -9,7 +9,9 @@ use sha1::Sha1;
 use std::collections::HashMap;
 use twilio_async::{TwilioJson, TwilioRequest};
 
+use crate::agent::models::Agent;
 use crate::agent::prompt::PromptLoader;
+use crate::agent::service::AgentService;
 use crate::auth::User;
 use crate::auth::UserService;
 use crate::auth::token::models::TokenType;
@@ -83,6 +85,45 @@ pub async fn find_user_by_phone(user_service: &UserService, phone: &str) -> Opti
 }
 
 // ---------------------------------------------------------------------------
+// Agent resolution
+// ---------------------------------------------------------------------------
+
+/// Whether `s` could be an agent id (ids are UUIDs — see `core::repository::new_id`).
+/// Handles and display names never parse as one, so this lets callers on a
+/// latency-sensitive path (like answering an inbound call) skip a
+/// guaranteed-miss lookup.
+pub fn looks_like_agent_id(s: &str) -> bool {
+    uuid::Uuid::parse_str(s).is_ok()
+}
+
+/// Resolve `query` against `owner_id`'s agents by id, then handle, then
+/// display name — the same chain the inbound-call agent-selection setting
+/// and the `transfer_call` tool both use. `None` when none of the three
+/// match.
+///
+/// The id branch isn't owner-scoped (unlike handle/name): an id is only
+/// ever produced by the owner's own prior selection, so trusting it here
+/// avoids an extra scoped lookup on the common miss.
+pub async fn resolve_agent_by_query(
+    agent_service: &AgentService,
+    owner_id: &str,
+    query: &str,
+) -> Option<Agent> {
+    if looks_like_agent_id(query)
+        && let Ok(Some(agent)) = agent_service.find_by_id(query).await
+    {
+        return Some(agent);
+    }
+    if let Ok(Some(agent)) = agent_service.find_by_handle(owner_id, query).await {
+        return Some(agent);
+    }
+    if let Ok(Some(agent)) = agent_service.find_by_name(owner_id, query).await {
+        return Some(agent);
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Twilio webhook signature validation
 // ---------------------------------------------------------------------------
 
@@ -149,6 +190,13 @@ pub struct VoiceSessionExtensions {
     /// Caller's display name for inbound calls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caller_name: Option<String>,
+    /// Set when this leg was reached via `transfer_call` — the outgoing
+    /// agent's handoff note, carried through the ConversationRelay `end`
+    /// message's `handoffData` and back into this leg's own session token.
+    /// Seeds the new agent's first turn with a `[CALL_TRANSFERRED: ...]`
+    /// prefix, same mechanism as `[INBOUND_CALL: ...]` on a fresh answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_note: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -570,6 +618,85 @@ impl AgentTool for HangupCallTool {
 }
 
 // ---------------------------------------------------------------------------
+// TransferCallTool (external — pauses tool loop)
+// ---------------------------------------------------------------------------
+
+/// Past this many transfers on one call, further `transfer_call` attempts are
+/// rejected rather than silently retried — a loop guard against agents
+/// bouncing a caller back and forth.
+const MAX_CALL_TRANSFERS: u32 = 5;
+
+pub struct TransferCallTool {
+    pub prompts: PromptLoader,
+    pub agent_service: AgentService,
+    pub call_service: CallService,
+}
+
+#[async_trait]
+impl AgentTool for TransferCallTool {
+    fn name(&self) -> &str {
+        "transfer_call"
+    }
+
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        load_tool_definition(&self.prompts, "tools/transfer_call.md")
+            .map(|d| vec![d])
+            .unwrap_or_default()
+    }
+
+    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+        let target_query = arguments
+            .get("target_agent")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Validation("Missing required parameter: target_agent".into()))?;
+        let note = arguments
+            .get("handoff_note")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let owner_id = &ctx.user.id;
+        let target = resolve_agent_by_query(&self.agent_service, owner_id, target_query)
+            .await
+            .ok_or_else(|| AppError::Validation(format!("Agent '{target_query}' not found")))?;
+
+        if target.id == ctx.agent.id {
+            return Err(AppError::Validation(
+                "The caller is already speaking with that agent".into(),
+            ));
+        }
+        if !target.enabled {
+            return Err(AppError::Validation(format!("Agent '{}' is disabled", target.name)));
+        }
+        // The id branch of resolve_agent_by_query isn't owner-scoped (see its
+        // doc comment) — this is what actually enforces that the target is
+        // one the caller's agent is allowed to hand off to.
+        self.agent_service.get_accessible(owner_id, &target.id).await?;
+
+        let call = self
+            .call_service
+            .find_by_chat_id(&ctx.chat.id)
+            .await?
+            .ok_or_else(|| AppError::Validation("No active call on this chat".into()))?;
+        if call.transfer_count >= MAX_CALL_TRANSFERS {
+            return Err(AppError::Validation(
+                "This call has already been transferred too many times".into(),
+            ));
+        }
+        self.call_service.increment_transfer_count(&call.id).await?;
+
+        // Read by the voice websocket handler, which embeds this verbatim in
+        // the ConversationRelay `end` message's `handoffData` so the target
+        // agent/note survive the reconnect without a DB round-trip.
+        let payload = serde_json::json!({
+            "target_agent_id": target.id,
+            "note": note,
+        });
+        Ok(ToolOutput::text(payload.to_string()).as_pending_external())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -592,6 +719,15 @@ mod tests {
         let config = VoiceConfig::default();
         assert!(config.twilio_account_sid.is_none());
         assert!(config.provider.is_none());
+    }
+
+    #[test]
+    fn looks_like_agent_id_only_matches_uuids() {
+        // Real ids are UUIDs; handles/names must not trigger the id lookup.
+        assert!(looks_like_agent_id(&uuid::Uuid::new_v4().to_string()));
+        assert!(!looks_like_agent_id("receptionist"));
+        assert!(!looks_like_agent_id("my-agent_2"));
+        assert!(!looks_like_agent_id(""));
     }
 
     #[test]

@@ -69,6 +69,7 @@ fn test_agent(id: &str, user_id: &str, heartbeat_chat_id: Option<&str>) -> Agent
         sandbox_limits: None,
         max_concurrent_tasks: None,
         avatar: None,
+        voice_id: None,
         identity: Default::default(),
         prompt: None,
         heartbeat_interval: None,

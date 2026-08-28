@@ -35,6 +35,7 @@ impl CallService {
             started_at: now,
             answered_at: None,
             ended_at: None,
+            transfer_count: 0,
             created_at: now,
             updated_at: now,
         };
@@ -67,6 +68,21 @@ impl CallService {
 
     pub async fn find_by_chat_id(&self, chat_id: &str) -> Result<Option<Call>, AppError> {
         self.repo.find_by_chat_id(chat_id).await
+    }
+
+    /// Bump the call's transfer count by one. Callers check the cap against
+    /// the current count (via `find_by_chat_id`) before calling this — this
+    /// method only records that a transfer happened, it doesn't enforce a
+    /// limit itself.
+    pub async fn increment_transfer_count(&self, call_id: &str) -> Result<Call, AppError> {
+        let mut call = self
+            .repo
+            .find_by_id(call_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Call not found".into()))?;
+        call.transfer_count += 1;
+        call.updated_at = Utc::now();
+        self.repo.update(&call).await
     }
 }
 
@@ -119,5 +135,21 @@ mod tests {
         let updated = svc.mark_completed(&call.id).await.unwrap();
         assert_eq!(updated.status, CallStatus::Completed);
         assert!(updated.ended_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn increment_transfer_count_starts_at_zero_and_accumulates() {
+        let svc = make_test_service().await;
+        let call = svc
+            .create("chat-4", "contact-1", "SID999", CallDirection::Inbound)
+            .await
+            .unwrap();
+        assert_eq!(call.transfer_count, 0);
+
+        let after_one = svc.increment_transfer_count(&call.id).await.unwrap();
+        assert_eq!(after_one.transfer_count, 1);
+
+        let after_two = svc.increment_transfer_count(&call.id).await.unwrap();
+        assert_eq!(after_two.transfer_count, 2);
     }
 }

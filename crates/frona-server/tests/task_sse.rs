@@ -205,6 +205,7 @@ async fn seed_agent(db: &Surreal<Db>) {
         sandbox_limits: None,
         max_concurrent_tasks: None,
         avatar: None,
+        voice_id: None,
         identity: Default::default(),
         prompt: Some("You are a test agent. Do what the user asks.".to_string()),
         heartbeat_interval: None,

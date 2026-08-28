@@ -12,16 +12,11 @@ use crate::call::models::CallDirection;
 use crate::chat::models::CreateChatRequest;
 use crate::core::Principal;
 use crate::core::state::AppState;
-use crate::tool::voice::{VoiceSessionExtensions, find_user_by_phone, validate_twilio_signature};
+use crate::tool::voice::{
+    VoiceSessionExtensions, find_user_by_phone, resolve_agent_by_query, validate_twilio_signature,
+};
 
-use super::build_twiml;
-
-/// Whether `s` could be an agent id (ids are UUIDs — see `core::repository::new_id`).
-/// Handles and display names never parse as one, so this lets the inbound path
-/// skip a guaranteed-miss lookup on the latency-sensitive answer path.
-fn looks_like_agent_id(s: &str) -> bool {
-    uuid::Uuid::parse_str(s).is_ok()
-}
+use super::{TwimlOptions, build_twiml};
 
 // ---------------------------------------------------------------------------
 // TwiML helpers
@@ -263,41 +258,13 @@ pub(super) async fn twilio_inbound_handler(
     // ------------------------------------------------------------------
     // 6. Resolve answering agent
     //    The owning user's own choice wins; otherwise their "receptionist".
-    //    Resolved by ID, handle, or name — but the ID lookup is skipped unless
-    //    the value actually looks like one. The common case ("receptionist",
-    //    or any handle the user picked) would otherwise pay a guaranteed-miss
-    //    round-trip on every inbound call, before the caller hears anything.
     // ------------------------------------------------------------------
     let agent_query = state
         .get_inbound_agent(&user_id)
         .await
         .unwrap_or_else(|| "receptionist".to_string());
 
-    let agent = if looks_like_agent_id(&agent_query) {
-        state.agent_service.find_by_id(&agent_query).await.ok().flatten()
-    } else {
-        None
-    };
-
-    // Handle (username) is the common case for a configured inbound agent.
-    let agent = match agent {
-        Some(a) => Some(a),
-        None => match state.agent_service.find_by_handle(&owner_id, &agent_query).await {
-            Ok(Some(a)) => Some(a),
-            _ => None,
-        },
-    };
-
-    // If still not found, try by display name.
-    let agent = match agent {
-        Some(a) => Some(a),
-        None => match state.agent_service.find_by_name(&owner_id, &agent_query).await {
-            Ok(Some(a)) => Some(a),
-            _ => None,
-        },
-    };
-
-    let agent = match agent {
+    let agent = match resolve_agent_by_query(&state.agent_service, &owner_id, &agent_query).await {
         Some(a) => a,
         None => {
             tracing::warn!(agent_query = %agent_query, "Inbound call: agent not found by ID, handle, or name — rejecting");
@@ -406,6 +373,7 @@ pub(super) async fn twilio_inbound_handler(
         // Prefer the resolved display name (allowlist or matched user) over the
         // contact's stored name, which may be "Incoming caller" from a prior call.
         caller_name: Some(caller_display_name.unwrap_or_else(|| contact.name.clone())),
+        transfer_note: None,
     }) {
         Ok(v) => v,
         Err(e) => {
@@ -467,6 +435,10 @@ pub(super) async fn twilio_inbound_handler(
         .replace("https://", "wss://")
         .replace("http://", "ws://");
     let ws_url = format!("{ws_base}/api/voice/twilio/ws?token={}", created.jwt);
+    // Reuses the same session token — `connect_action` needs the same
+    // chat/call/caller context the WS handler does, and Twilio only hits this
+    // URL once the relay session it's paired with has already ended.
+    let action_url = format!("{base_url}/api/voice/twilio/connect-action?token={}", created.jwt);
 
     // Per-user greeting wins; otherwise the server-level default.
     let greeting = state
@@ -476,8 +448,12 @@ pub(super) async fn twilio_inbound_handler(
 
     let twiml = build_twiml(
         &ws_url,
-        greeting.as_deref(),
-        None, // hints — not applicable for inbound
+        TwimlOptions {
+            welcome_greeting: greeting.as_deref(),
+            hints: None, // not applicable for inbound
+            action: Some(&action_url),
+            voice_id: agent.voice_id.as_deref(),
+        },
         &state.config.voice,
     );
 
@@ -559,16 +535,5 @@ mod tests {
         let expected_sig = base64::engine::general_purpose::STANDARD.encode(result);
 
         assert!(validate_twilio_signature(auth_token, url, &params, &expected_sig));
-    }
-
-    #[test]
-    fn looks_like_agent_id_only_matches_uuids() {
-        // Real ids are UUIDs; handles/names must not trigger the id lookup.
-        assert!(super::looks_like_agent_id(
-            &uuid::Uuid::new_v4().to_string()
-        ));
-        assert!(!super::looks_like_agent_id("receptionist"));
-        assert!(!super::looks_like_agent_id("my-agent_2"));
-        assert!(!super::looks_like_agent_id(""));
     }
 }

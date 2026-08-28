@@ -307,6 +307,25 @@ impl ChatService {
         Ok(chat.into())
     }
 
+    /// Hand a chat off to a different agent mid-conversation — used by a live
+    /// call transfer. Unlike `update_chat`, this has no request DTO of its
+    /// own since it's driven by the voice connect-action handler, not a user
+    /// HTTP request.
+    pub async fn reassign_agent(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        new_agent_id: &str,
+    ) -> Result<ChatResponse, AppError> {
+        let mut chat = self.get_chat(user_id, chat_id).await?;
+        chat.agent_id = new_agent_id.to_string();
+        chat.updated_at = chrono::Utc::now();
+
+        let chat = self.chat_repo.update(&chat).await?;
+        self.broadcast_chat_entity(&chat, crate::chat::broadcast::EntityAction::Updated);
+        Ok(chat.into())
+    }
+
     pub async fn upsert_channel_chat(
         &self,
         user_id: &str,
