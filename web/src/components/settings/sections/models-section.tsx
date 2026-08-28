@@ -65,7 +65,11 @@ function GroupNameInput({ value, suggestions, onRename }: GroupNameInputProps) {
       }}
       onBlur={() => {
         const resolved = nameToId.get(draft) ?? draft;
-        const sanitized = resolved.trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+        // Keep the capitalisation the user typed — only spaces and characters
+        // that are not valid in a group id are rewritten. Group ids are looked
+        // up verbatim by the server, so "Coding" and "coding" are distinct and
+        // either is fine; silently lower-casing threw away what was entered.
+        const sanitized = resolved.trim().replace(/\s+/g, "_").replace(/[^A-Za-z0-9_]/g, "");
         if (sanitized && sanitized !== value) {
           setDraft(formatGroupName(sanitized));
           onRename(sanitized);
@@ -553,11 +557,19 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
   }
 
   function renameGroup(oldName: string, newName: string) {
-    if (!newName.trim() || (newName !== oldName && newName in models)) return;
+    // Null entries are groups already marked for deletion (see removeGroup), so
+    // their names are free to take.
+    if (!newName.trim() || newName === oldName || models[newName] != null) return;
     const entries = Object.entries(models).map(([k, v]) =>
       k === oldName ? [newName, v] : [k, v]
     );
-    onChange(Object.fromEntries(entries));
+    // Tombstone the old name for the same reason removeGroup does: the backend
+    // deep-merges this patch, so a key that is merely absent keeps its on-disk
+    // group and the rename comes back undone on reload.
+    onChange({
+      ...Object.fromEntries(entries),
+      [oldName]: null as unknown as ModelGroupConfig,
+    });
     setExpandedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(oldName)) {
@@ -577,10 +589,10 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
   }
 
   function addGroup() {
-    let name = "";
     let i = 1;
+    let name = `group_${i}`;
     while (name in models) {
-      name = `group_${i++}`;
+      name = `group_${++i}`;
     }
     onChange({ ...models, [name]: newModelGroup() });
     setExpandedGroups((prev) => new Set(prev).add(name));
@@ -635,7 +647,7 @@ export function ModelsSection({ models, enabledProviders, providerConfigs, onCha
                 <div className="space-y-4 px-4 pb-4">
                   <GroupNameInput
                     value={name}
-                    suggestions={PREDEFINED_GROUPS.filter((g) => g === name || !(g in models))}
+                    suggestions={PREDEFINED_GROUPS.filter((g) => g === name || models[g] == null)}
                     onRename={(newName) => renameGroup(name, newName)}
                   />
 
