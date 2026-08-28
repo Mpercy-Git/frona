@@ -426,17 +426,24 @@ async fn handle_voice_socket(
                     {
                         let mut send = ws_send.lock().await;
                         send.send(Message::Text(end_msg.to_string().into())).await.ok();
+                        // Explicitly close our end right after — not just
+                        // drop the connection — so this reads to Twilio as
+                        // "we're done, as just announced" rather than an
+                        // idle connection it eventually times out on its
+                        // own terms. The first fix here (draining instead of
+                        // dropping immediately) turned a "failed" session
+                        // (error 64105, "Websocket ended") into a
+                        // "completed" one, but still with no handoffData on
+                        // the action callback — consistent with Twilio only
+                        // attaching the "end" message's handoffData when the
+                        // closure it sees is the sender's own, not a session
+                        // timeout it noticed after the fact.
+                        send.send(Message::Close(None)).await.ok();
                     }
 
-                    // Keep reading until Twilio closes its end (or we time
-                    // out) instead of dropping the connection ourselves
-                    // right away. Breaking immediately here raced Twilio's
-                    // own processing of the "end" message in testing: its
-                    // action callback arrived with no handoffData and
-                    // SessionStatus "failed" (error 64105, "Websocket
-                    // ended") — indistinguishable, from Twilio's side, from
-                    // us disconnecting mid-message rather than finishing
-                    // cleanly.
+                    // Keep reading briefly for Twilio's own Close in
+                    // response, rather than dropping the socket the instant
+                    // our Close is queued.
                     let drain_deadline = Instant::now() + Duration::from_secs(3);
                     loop {
                         let remaining = drain_deadline.saturating_duration_since(Instant::now());
