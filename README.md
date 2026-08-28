@@ -70,6 +70,7 @@ Upstream has no sharing concept at all — a `user_id` equality check gated ever
 ### 🧩 Skills & tasks (net-new)
 
 - **Add skills manually, without a repo** — hand-write a `SKILL.md` or fix one whose upstream frontmatter is wrong, instead of being limited to installing from GitHub
+- **The agent can find and add skills itself** — upstream, an agent only sees the skills already installed, so a task nobody installed a skill for looks like a task no skill exists for. `search_skills` reads the registry (keyword search, or a repo listing with descriptions) and `add_skill` proposes an install that pauses for the user's approval — the same consent shape as the vault: the agent can ask, but nothing is written without a yes. Approved skills land on this agent or on every agent the user owns, and are usable on the very next turn
 - **Website citations in task completion summaries** — sources from `web_search`/`web_fetch` are preserved structurally rather than surviving only if the model happens to retype them
 
 ### 🛡️ Security & correctness hardening (fork-only fixes)

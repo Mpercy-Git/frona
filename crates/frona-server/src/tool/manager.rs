@@ -433,6 +433,11 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             state.broadcast_service.clone(), prompts.clone(),
         )),
         Arc::new(super::manage_policy::ManagePolicyTool::new(state.policy_service.clone(), prompts.clone())),
+        Arc::new(super::skills::SkillsTool::new(
+            state.skill_service.clone(),
+            prompts.clone(),
+            state.config.server.external_or_local_base_url(),
+        )),
     ];
 
     tools.push(Arc::new(TaskTool::new(

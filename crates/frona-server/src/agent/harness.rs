@@ -623,6 +623,7 @@ fn hitl_notification_text(h: &crate::inference::hitl::Hitl) -> (String, String) 
         HitlRequest::Takeover { .. } => "Agent needs you to take over",
         HitlRequest::App { .. } => "App deployment needs approval",
         HitlRequest::Question { .. } => "Agent needs your input",
+        HitlRequest::Skills { .. } => "Skill install needs approval",
     }
     .to_string();
     // The HITL prompt is the most useful body; trim it to a sane length.

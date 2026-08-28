@@ -55,6 +55,48 @@ pub enum HitlRequest {
         items: Vec<CredentialRequest>,
         reason: String,
     },
+    /// The agent found skills in the registry that aren't installed and wants
+    /// to add them. Nothing is written until the user approves — the install
+    /// happens in `add_skill`'s `on_resume`, mirroring the vault flow where
+    /// the secret is only read after the grant.
+    Skills {
+        items: Vec<SkillCandidate>,
+        scope: SkillInstallScope,
+        reason: String,
+    },
+}
+
+/// One skill in a [`HitlRequest::Skills`] approval. Carries enough for the
+/// user to judge the install without leaving the chat, and enough for
+/// `on_resume` to fetch it without re-searching the registry.
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
+pub struct SkillCandidate {
+    pub name: String,
+    /// `owner/repo` on GitHub the skill is installed from.
+    pub repo: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Where an approved skill lands. `Agent` writes into the agent's own
+/// workspace (only that agent sees it); `User` writes into the user's skill
+/// directory (every agent of theirs can use it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
+#[serde(rename_all = "snake_case")]
+#[surreal(crate = "surrealdb::types")]
+pub enum SkillInstallScope {
+    Agent,
+    User,
+}
+
+impl SkillInstallScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::User => "user",
+        }
+    }
 }
 
 /// One secret in a batched [`HitlRequest::Credentials`]. `label` is an optional
@@ -230,6 +272,49 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn hitl_request_skills_round_trip() {
+        let req = HitlRequest::Skills {
+            items: vec![
+                SkillCandidate {
+                    name: "pdf".into(),
+                    repo: "anthropics/skills".into(),
+                    description: "Fill and merge PDF files.".into(),
+                },
+                SkillCandidate {
+                    name: "xlsx".into(),
+                    repo: "anthropics/skills".into(),
+                    description: String::new(),
+                },
+            ],
+            scope: SkillInstallScope::Agent,
+            reason: "The user asked for a filled-in PDF form.".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: HitlRequest = serde_json::from_str(&json).unwrap();
+        match back {
+            HitlRequest::Skills { items, scope, reason } => {
+                assert_eq!(scope, SkillInstallScope::Agent);
+                assert_eq!(reason, "The user asked for a filled-in PDF form.");
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].name, "pdf");
+                assert_eq!(items[0].repo, "anthropics/skills");
+                assert_eq!(items[0].description, "Fill and merge PDF files.");
+                assert_eq!(items[1].description, "");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn skill_install_scope_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&SkillInstallScope::User).unwrap(),
+            "\"user\""
+        );
+        assert_eq!(SkillInstallScope::Agent.as_str(), "agent");
     }
 
     #[test]
