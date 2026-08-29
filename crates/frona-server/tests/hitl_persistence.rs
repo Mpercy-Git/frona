@@ -33,7 +33,7 @@ fn base_tool_call(name: &str) -> ToolCall {
         result: String::new(),
         success: true,
         duration_ms: 0,
-        
+
         hitl: None,
         task_event: None,
         system_prompt: None,
@@ -56,13 +56,16 @@ async fn tool_call_turn_reasoning_round_trips() {
         id: Some("r-1".into()),
         content: "I need to ask the user.".into(),
         signature: Some("sig-abc".into()),
+        raw: None,
     });
 
     let id = te.id.clone();
     repo.create(&te).await.unwrap();
 
     let found = repo.find_by_id(&id).await.unwrap().expect("should find");
-    let r = found.turn_reasoning.expect("turn_reasoning should round-trip");
+    let r = found
+        .turn_reasoning
+        .expect("turn_reasoning should round-trip");
     assert_eq!(r.id.as_deref(), Some("r-1"));
     assert_eq!(r.content, "I need to ask the user.");
     assert_eq!(r.signature.as_deref(), Some("sig-abc"));
@@ -155,7 +158,9 @@ async fn vault_granted_response_round_trips() {
             connection_id: "conn-1".into(),
             vault_item_id: "item-1".into(),
             grant_duration: GrantDuration::Once,
-            target: CredentialTarget::Prefix { env_var_prefix: "DB".into() },
+            target: CredentialTarget::Prefix {
+                env_var_prefix: "DB".into(),
+            },
         })),
         delivery: None,
     });
@@ -254,7 +259,12 @@ async fn task_event_completion_round_trips() {
     repo.create(&te).await.unwrap();
     let found = repo.find_by_id(&id).await.unwrap().expect("should find");
     match found.task_event.expect("task_event should round-trip") {
-        TaskEvent::Completion { task_id, status, summary, .. } => {
+        TaskEvent::Completion {
+            task_id,
+            status,
+            summary,
+            ..
+        } => {
             assert_eq!(task_id, "task-1");
             assert!(matches!(status, TaskStatus::Completed));
             assert_eq!(summary.as_deref(), Some("Done"));
@@ -279,7 +289,11 @@ async fn task_event_deferred_round_trips() {
     repo.create(&te).await.unwrap();
     let found = repo.find_by_id(&id).await.unwrap().expect("should find");
     match found.task_event.expect("task_event should round-trip") {
-        TaskEvent::Deferred { delay_minutes, reason, .. } => {
+        TaskEvent::Deferred {
+            delay_minutes,
+            reason,
+            ..
+        } => {
             assert_eq!(delay_minutes, 30);
             assert_eq!(reason, "Try again later");
         }

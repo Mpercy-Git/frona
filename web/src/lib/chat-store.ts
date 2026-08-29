@@ -107,6 +107,7 @@ export class ChatStore {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<() => void>();
   private _snapshot: StoreSnapshot | null = null;
+  private streamingNotificationScheduled = false;
 
   subscribe(callback: () => void): () => void {
     this.listeners.add(callback);
@@ -182,9 +183,21 @@ export class ChatStore {
     }
   }
 
-  private notify() {
+  private notify(defer = false) {
     this._snapshot = null;
-    for (const fn of this.listeners) fn();
+    if (defer && typeof requestAnimationFrame === "function") {
+      if (this.streamingNotificationScheduled) return;
+      this.streamingNotificationScheduled = true;
+      requestAnimationFrame(() => {
+        this.streamingNotificationScheduled = false;
+        for (const fn of [...this.listeners]) fn();
+      });
+      return;
+    }
+    // React may replace a useSyncExternalStore subscriber synchronously while
+    // handling this callback. Iterate a snapshot so listeners added during a
+    // notification are not visited by the same live Set iterator.
+    for (const fn of [...this.listeners]) fn();
   }
 
   markLoaded() {
@@ -284,6 +297,16 @@ export class ChatStore {
     switch (event.type) {
       case "token":
         this.isRunning = true;
+        // The first text emitted after a tool call starts a new visible turn.
+        // Use a blank line so Markdown renders it separately from the text
+        // spoken before the tool.
+        if (
+          this.lastTextSnapshot > 0 &&
+          this.streamingText.length === this.lastTextSnapshot &&
+          event.content.length > 0
+        ) {
+          this.streamingText += "\n\n";
+        }
         this.streamingText += event.content;
         break;
 
@@ -482,7 +505,7 @@ export class ChatStore {
         break;
       }
     }
-    this.notify();
+    this.notify(event.type === "token" || event.type === "reasoning");
   }
 
   /**
@@ -493,9 +516,10 @@ export class ChatStore {
     const merged = mergeConsecutiveMessages(this.messages);
     if (!this.isRunning) return merged;
 
-    const displayText = this.lastTextSnapshot > 0
-      ? this.streamingText.slice(this.lastTextSnapshot)
-      : this.streamingText;
+    // Keep the full token stream visible across tool calls. The previous
+    // snapshot slice moved pre-tool text into the tool timeline, which made
+    // the main assistant text appear to clear whenever a tool started.
+    const displayText = this.streamingText;
 
     const streamingTools = this.buildToolCalls();
 

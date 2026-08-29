@@ -31,7 +31,13 @@ impl HitlDeliveryService {
         outbound: Arc<OutboundDeliveryService>,
         channels: Weak<Mutex<HashMap<String, Arc<ChannelManager>>>>,
     ) -> Self {
-        Self { chat_service, harness, task_executor, outbound, channels }
+        Self {
+            chat_service,
+            harness,
+            task_executor,
+            outbound,
+            channels,
+        }
     }
 
     /// Full channel-side HITL resolution: harness resolve/resume, then re-deliver any
@@ -81,7 +87,11 @@ impl HitlDeliveryService {
             .resolve_and_resume(tool_call_id, response)
             .await?;
         if let ResolveOutcome::Resolved {
-            should_resume: true, user_id, chat_id, message_id, task_id,
+            should_resume: true,
+            user_id,
+            chat_id,
+            message_id,
+            task_id,
         } = &outcome
         {
             let h = self.harness.clone();
@@ -109,7 +119,9 @@ impl HitlDeliveryService {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitlKind {
     Approval,
-    Choice { options: Vec<String> },
+    Choice {
+        options: Vec<String>,
+    },
     /// No in-channel affordance — adapter posts the URL and the user resolves
     /// on the web (tools needing server-side pickers like vault selection).
     External,
@@ -181,8 +193,7 @@ pub async fn try_resolve_inbound(
         .iter()
         .filter(|tc| {
             tc.hitl.as_ref().is_some_and(|h| {
-                h.status == crate::inference::tool_call::ToolStatus::Pending
-                    && h.delivery.is_some()
+                h.status == crate::inference::tool_call::ToolStatus::Pending && h.delivery.is_some()
             })
         })
         .collect();
@@ -225,12 +236,11 @@ pub async fn try_resolve_inbound(
 pub fn parse_yes_no(text: &str) -> Option<bool> {
     let t = text.trim().to_lowercase();
     const YES: &[&str] = &[
-        "yes", "y", "yeah", "yep", "ok", "okay", "sure", "approve", "approved",
-        "👍", "✅", "✔",
+        "yes", "y", "yeah", "yep", "ok", "okay", "sure", "approve", "approved", "👍", "✅", "✔",
     ];
     const NO: &[&str] = &[
-        "no", "n", "nope", "nah", "cancel", "decline", "declined", "reject",
-        "rejected", "👎", "❌", "✖",
+        "no", "n", "nope", "nah", "cancel", "decline", "declined", "reject", "rejected", "👎",
+        "❌", "✖",
     ];
     if YES.iter().any(|w| *w == t) {
         Some(true)
@@ -261,21 +271,20 @@ pub async fn parse_resolve_callback_data(
             let idx: usize = idx_str.parse().map_err(|_| {
                 crate::core::error::AppError::Validation(format!("bad choice index: {idx_str}"))
             })?;
-            let te = chat_service
-                .get_tool_call(tcid)
-                .await?
-                .ok_or_else(|| {
-                    crate::core::error::AppError::NotFound(format!("tool_call {tcid}"))
-                })?;
+            let te = chat_service.get_tool_call(tcid).await?.ok_or_else(|| {
+                crate::core::error::AppError::NotFound(format!("tool_call {tcid}"))
+            })?;
             let hitl = te.hitl.as_ref().ok_or_else(|| {
                 crate::core::error::AppError::Validation(format!("tool_call {tcid} has no HITL"))
             })?;
             let chosen = match &hitl.request {
-                HitlRequest::Question { options } => options.get(idx).cloned().ok_or_else(|| {
-                    crate::core::error::AppError::Validation(format!(
-                        "option index {idx} out of range"
-                    ))
-                })?,
+                HitlRequest::Question { options } => {
+                    options.get(idx).cloned().ok_or_else(|| {
+                        crate::core::error::AppError::Validation(format!(
+                            "option index {idx} out of range"
+                        ))
+                    })?
+                }
                 HitlRequest::Takeover { .. } => "Done".to_string(),
                 _ => {
                     return Err(crate::core::error::AppError::Validation(
@@ -449,7 +458,11 @@ mod tests {
     #[test]
     fn parse_yes_no_recognises_no_variants() {
         for s in ["no", "N", " nope ", "Cancel", "👎", "rejected"] {
-            assert_eq!(parse_yes_no(s), Some(false), "expected Some(false) for {s:?}");
+            assert_eq!(
+                parse_yes_no(s),
+                Some(false),
+                "expected Some(false) for {s:?}"
+            );
         }
     }
 

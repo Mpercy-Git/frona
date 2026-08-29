@@ -14,16 +14,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::error::AppError;
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RegistryServerEntry {
     pub name: String,
     pub description: String,
     pub version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<Repository>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub website_url: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<RegistryPackage>,
@@ -34,22 +32,16 @@ pub struct RegistryServerEntry {
     pub status: RegistryStatus,
     #[serde(default)]
     pub is_latest: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_message: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_changed_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enrichment: Option<Enrichment>,
 
     /// Quality score baked in by the build pipeline (see `scripts/ranking.py`
     /// in `fronalabs/mcp-registry-database`). `search_entries` sorts by this
     /// descending before applying the limit.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
 }
 
@@ -72,23 +64,20 @@ pub enum RegistryStatus {
     Deleted,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Repository {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subfolder: Option<String>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RegistryPackage {
     pub registry_type: String,
     pub identifier: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_hint: Option<String>,
     pub transport: RegistryTransport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -99,11 +88,11 @@ pub struct RegistryPackage {
     pub environment_variables: Vec<RegistryEnvVar>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RegistryTransport {
     #[serde(rename = "type")]
     pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// Header requirements declared by a `remotes[]` entry (e.g. a bearer
     /// token). Frona only understands `is_secret` headers as `${NAME}`
@@ -112,17 +101,14 @@ pub struct RegistryTransport {
     pub headers: Vec<RegistryEnvVar>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RegistryArgument {
     #[serde(rename = "type")]
     pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_hint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
     #[serde(default)]
     pub is_required: bool,
@@ -130,48 +116,35 @@ pub struct RegistryArgument {
     pub is_repeated: bool,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RegistryEnvVar {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default)]
     pub is_required: bool,
     #[serde(default)]
     pub is_secret: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Enrichment {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_stars: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_forks: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_watchers: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_open_issues: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_open_pull_requests: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_created_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_pushed_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_is_fork: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_is_disabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_archived: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_license: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_primary_language: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub github_topics: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_owner_avatar_url: Option<String>,
     pub enriched_at: DateTime<Utc>,
 }
@@ -394,10 +367,7 @@ mod tests {
 
     #[test]
     fn fetch_entry_finds_exact_name() {
-        let entries = parse_entries(&[
-            sample_entry("x/y", "first"),
-            sample_entry("x/z", "second"),
-        ]);
+        let entries = parse_entries(&[sample_entry("x/y", "first"), sample_entry("x/z", "second")]);
         let hit = fetch_entry(&entries, "x/z").unwrap();
         assert_eq!(hit.description, "second");
         assert!(fetch_entry(&entries, "not/here").is_none());

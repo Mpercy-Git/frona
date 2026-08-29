@@ -2,17 +2,17 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use frona::agent::task::models::{Task, TaskKind, TaskStatus};
-use frona::db::init as db;
-use frona::db::repo::chats::SurrealChatRepo;
-use frona::db::repo::messages::SurrealMessageRepo;
-use frona::storage::Attachment;
 use frona::chat::message::models::{Message, MessageRole};
 use frona::chat::message::repository::MessageRepository;
 use frona::chat::models::Chat;
 use frona::chat::repository::ChatRepository;
 use frona::core::repository::Repository;
-use surrealdb::engine::local::{Db, Mem};
+use frona::db::init as db;
+use frona::db::repo::chats::SurrealChatRepo;
+use frona::db::repo::messages::SurrealMessageRepo;
+use frona::storage::Attachment;
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -114,11 +114,21 @@ async fn test_chat_count_grouped_by_agent() {
     let db = test_db().await;
     let repo = SurrealChatRepo::new(db.clone());
 
-    repo.create(&test_chat("user-1", "agent-a", None)).await.unwrap();
-    repo.create(&test_chat("user-1", "agent-a", None)).await.unwrap();
-    repo.create(&test_chat("user-1", "agent-a", None)).await.unwrap();
-    repo.create(&test_chat("user-1", "agent-b", None)).await.unwrap();
-    repo.create(&test_chat("user-2", "agent-a", None)).await.unwrap();
+    repo.create(&test_chat("user-1", "agent-a", None))
+        .await
+        .unwrap();
+    repo.create(&test_chat("user-1", "agent-a", None))
+        .await
+        .unwrap();
+    repo.create(&test_chat("user-1", "agent-a", None))
+        .await
+        .unwrap();
+    repo.create(&test_chat("user-1", "agent-b", None))
+        .await
+        .unwrap();
+    repo.create(&test_chat("user-2", "agent-a", None))
+        .await
+        .unwrap();
 
     let count_map: HashMap<String, u64> = db
         .query("SELECT agent_id, count() AS count FROM chat WHERE user_id = $user_id GROUP BY agent_id")
@@ -159,7 +169,6 @@ async fn test_chat_count_empty_for_no_chats() {
 
     assert!(count_map.is_empty());
 }
-
 
 #[tokio::test]
 async fn test_archived_chat_excluded_from_find_by_user_id() {
@@ -253,7 +262,9 @@ async fn test_find_archived_returns_empty_when_none_archived() {
     let db = test_db().await;
     let repo = SurrealChatRepo::new(db);
 
-    repo.create(&test_chat("user-1", "system", None)).await.unwrap();
+    repo.create(&test_chat("user-1", "system", None))
+        .await
+        .unwrap();
 
     let results = repo.find_archived_by_user_id("user-1").await.unwrap();
     assert!(results.is_empty());
@@ -282,7 +293,6 @@ async fn test_archived_at_round_trips_through_repo() {
     let found = repo.find_by_id(&chat.id).await.unwrap().unwrap();
     assert!(found.archived_at.is_none());
 }
-
 
 #[tokio::test]
 async fn test_delete_by_chat_id_removes_all_messages() {
@@ -318,8 +328,14 @@ async fn test_delete_by_chat_id_does_not_affect_other_chats() {
     chat_repo.create(&chat_a).await.unwrap();
     chat_repo.create(&chat_b).await.unwrap();
 
-    msg_repo.create(&test_message(&chat_a.id, "a1")).await.unwrap();
-    msg_repo.create(&test_message(&chat_b.id, "b1")).await.unwrap();
+    msg_repo
+        .create(&test_message(&chat_a.id, "a1"))
+        .await
+        .unwrap();
+    msg_repo
+        .create(&test_message(&chat_b.id, "b1"))
+        .await
+        .unwrap();
 
     msg_repo.delete_by_chat_id(&chat_a.id).await.unwrap();
 
@@ -328,7 +344,6 @@ async fn test_delete_by_chat_id_does_not_affect_other_chats() {
     assert!(msgs_a.is_empty());
     assert_eq!(msgs_b.len(), 1);
 }
-
 
 fn test_task(user_id: &str, agent_id: &str, chat_id: Option<&str>) -> Task {
     let now = Utc::now();
@@ -341,7 +356,9 @@ fn test_task(user_id: &str, agent_id: &str, chat_id: Option<&str>) -> Task {
         title: "Test task".to_string(),
         description: "Test description".to_string(),
         status: TaskStatus::Completed,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -362,8 +379,14 @@ async fn test_cascade_delete_chat_removes_messages() {
     let chat = test_chat("user-1", "system", None);
     chat_repo.create(&chat).await.unwrap();
 
-    msg_repo.create(&test_message(&chat.id, "hello")).await.unwrap();
-    msg_repo.create(&test_message(&chat.id, "world")).await.unwrap();
+    msg_repo
+        .create(&test_message(&chat.id, "hello"))
+        .await
+        .unwrap();
+    msg_repo
+        .create(&test_message(&chat.id, "world"))
+        .await
+        .unwrap();
     assert_eq!(msg_repo.find_by_chat_id(&chat.id).await.unwrap().len(), 2);
 
     chat_repo.delete(&chat.id).await.unwrap();
@@ -381,8 +404,14 @@ async fn test_cascade_delete_task_removes_chat_and_messages() {
     let chat = test_chat("user-1", "system", Some("task-1"));
     chat_repo.create(&chat).await.unwrap();
 
-    msg_repo.create(&test_message(&chat.id, "msg1")).await.unwrap();
-    msg_repo.create(&test_message(&chat.id, "msg2")).await.unwrap();
+    msg_repo
+        .create(&test_message(&chat.id, "msg1"))
+        .await
+        .unwrap();
+    msg_repo
+        .create(&test_message(&chat.id, "msg2"))
+        .await
+        .unwrap();
 
     let task = test_task("user-1", "system", Some(&chat.id));
     task_repo.create(&task).await.unwrap();
@@ -392,7 +421,6 @@ async fn test_cascade_delete_task_removes_chat_and_messages() {
     assert!(chat_repo.find_by_id(&chat.id).await.unwrap().is_none());
     assert!(msg_repo.find_by_chat_id(&chat.id).await.unwrap().is_empty());
 }
-
 
 fn test_attachment(filename: &str, owner: &str, path: &str) -> Attachment {
     Attachment {
@@ -465,7 +493,10 @@ async fn test_find_attachments_by_chat_id_flat_list() {
     msg_repo.create(&m1).await.unwrap();
     msg_repo.create(&m2).await.unwrap();
 
-    let attachments = msg_repo.find_attachments_by_chat_id(&chat.id).await.unwrap();
+    let attachments = msg_repo
+        .find_attachments_by_chat_id(&chat.id)
+        .await
+        .unwrap();
     assert_eq!(attachments.len(), 3);
 
     let filenames: Vec<&str> = attachments.iter().map(|a| a.filename.as_str()).collect();
@@ -486,7 +517,10 @@ async fn test_find_attachments_by_chat_id_empty() {
     let msg = test_message(&chat.id, "no files");
     msg_repo.create(&msg).await.unwrap();
 
-    let attachments = msg_repo.find_attachments_by_chat_id(&chat.id).await.unwrap();
+    let attachments = msg_repo
+        .find_attachments_by_chat_id(&chat.id)
+        .await
+        .unwrap();
     assert!(attachments.is_empty());
 }
 
@@ -510,11 +544,13 @@ async fn test_find_attachments_scoped_to_chat() {
     msg_repo.create(&m_a).await.unwrap();
     msg_repo.create(&m_b).await.unwrap();
 
-    let attachments = msg_repo.find_attachments_by_chat_id(&chat_a.id).await.unwrap();
+    let attachments = msg_repo
+        .find_attachments_by_chat_id(&chat_a.id)
+        .await
+        .unwrap();
     assert_eq!(attachments.len(), 1);
     assert_eq!(attachments[0].filename, "a.txt");
 }
-
 
 #[tokio::test]
 async fn test_message_with_reasoning_round_trips_through_db() {
@@ -533,6 +569,7 @@ async fn test_message_with_reasoning_round_trips_through_db() {
         id: Some("r-123".to_string()),
         content: "Let me think about this carefully...".to_string(),
         signature: Some("sig-abc-def".to_string()),
+        raw: None,
     });
 
     msg_repo.create(&msg).await.unwrap();
@@ -540,7 +577,10 @@ async fn test_message_with_reasoning_round_trips_through_db() {
     let found = msg_repo.find_by_chat_id(&chat.id).await.unwrap();
     assert_eq!(found.len(), 1);
 
-    let r = found[0].reasoning.as_ref().expect("reasoning should be persisted");
+    let r = found[0]
+        .reasoning
+        .as_ref()
+        .expect("reasoning should be persisted");
     assert_eq!(r.id, Some("r-123".to_string()));
     assert_eq!(r.content, "Let me think about this carefully...");
     assert_eq!(r.signature, Some("sig-abc-def".to_string()));
@@ -580,6 +620,7 @@ async fn test_message_reasoning_with_no_signature() {
         id: None,
         content: "Quick thought".to_string(),
         signature: None,
+        raw: None,
     });
 
     msg_repo.create(&msg).await.unwrap();
@@ -590,7 +631,6 @@ async fn test_message_reasoning_with_no_signature() {
     assert_eq!(r.content, "Quick thought");
     assert!(r.signature.is_none());
 }
-
 
 #[tokio::test]
 async fn test_page_no_cursor_returns_latest_messages() {
@@ -609,7 +649,10 @@ async fn test_page_no_cursor_returns_latest_messages() {
         msg_repo.create(&msg).await.unwrap();
     }
 
-    let page = msg_repo.find_by_chat_id_page(&chat.id, None, None, 3).await.unwrap();
+    let page = msg_repo
+        .find_by_chat_id_page(&chat.id, None, None, 3)
+        .await
+        .unwrap();
     assert_eq!(page.len(), 3);
     assert_eq!(page[0].content, "msg-2");
     assert_eq!(page[1].content, "msg-3");
@@ -636,7 +679,10 @@ async fn test_page_before_cursor() {
     }
 
     let cursor = created[3].created_at;
-    let page = msg_repo.find_by_chat_id_page(&chat.id, Some(cursor), None, 2).await.unwrap();
+    let page = msg_repo
+        .find_by_chat_id_page(&chat.id, Some(cursor), None, 2)
+        .await
+        .unwrap();
     assert_eq!(page.len(), 2);
     assert_eq!(page[0].content, "msg-1");
     assert_eq!(page[1].content, "msg-2");
@@ -662,7 +708,10 @@ async fn test_page_after_cursor() {
     }
 
     let cursor = created[1].created_at;
-    let page = msg_repo.find_by_chat_id_page(&chat.id, None, Some(cursor), 2).await.unwrap();
+    let page = msg_repo
+        .find_by_chat_id_page(&chat.id, None, Some(cursor), 2)
+        .await
+        .unwrap();
     assert_eq!(page.len(), 2);
     assert_eq!(page[0].content, "msg-2");
     assert_eq!(page[1].content, "msg-3");
@@ -677,9 +726,15 @@ async fn test_page_limit_larger_than_result_set() {
     let chat = test_chat("user-1", "system", None);
     chat_repo.create(&chat).await.unwrap();
 
-    msg_repo.create(&test_message(&chat.id, "only one")).await.unwrap();
+    msg_repo
+        .create(&test_message(&chat.id, "only one"))
+        .await
+        .unwrap();
 
-    let page = msg_repo.find_by_chat_id_page(&chat.id, None, None, 50).await.unwrap();
+    let page = msg_repo
+        .find_by_chat_id_page(&chat.id, None, None, 50)
+        .await
+        .unwrap();
     assert_eq!(page.len(), 1);
     assert_eq!(page[0].content, "only one");
 }

@@ -1,6 +1,6 @@
 import { api } from "./api-client";
 
-// Mirrors Rust Config struct — sensitive fields come as { is_set: boolean } from GET
+// Mirrors Rust Config struct - sensitive fields come as { is_set: boolean } from GET
 export type SensitiveField = string | { is_set: boolean };
 
 export interface ServerConfig {
@@ -136,12 +136,10 @@ export interface ModelGroupConfig {
   temperature?: number | null;
   context_window?: number | null;
   retry?: RetryConfig;
-  // Anthropic
   thinking?: AnthropicThinking | null;
   top_p?: number | null;
   top_k?: number | null;
   stop_sequences?: string[] | null;
-  // Ollama
   think?: boolean | null;
   num_ctx?: number | null;
   num_predict?: number | null;
@@ -162,15 +160,12 @@ export interface ModelGroupConfig {
   stop?: string[] | null;
   use_mmap?: boolean | null;
   use_mlock?: boolean | null;
-  // OpenAI-compatible
   max_completion_tokens?: number | null;
   reasoning_effort?: string | null;
   logprobs?: boolean | null;
   top_logprobs?: number | null;
-  // Gemini
   thinking_config?: GeminiThinkingConfig | null;
   candidate_count?: number | null;
-  // Generic catch-all
   [key: string]: unknown;
 }
 
@@ -192,8 +187,6 @@ export interface InferenceConfig {
 }
 
 export interface SchedulerConfig {
-  space_compaction_secs: number;
-  memory_compaction_secs: number;
   poll_secs: number;
 }
 
@@ -203,6 +196,39 @@ export interface AppConfig {
   health_check_timeout_secs: number;
   max_restart_attempts: number;
   hibernate_after_secs: number;
+}
+
+export type MemoryBackend = "basic" | "pkm";
+
+export interface MemoryConfig {
+  /** `null` = unconfigured; the server resolves it at boot (PKM for a fresh install,
+   *  Basic for an existing one). The UI renders `null` as a concrete selection. */
+  backend: MemoryBackend | null;
+  model_group: string;
+  basic_compaction_token_threshold: number;
+  basic_compaction_secs: number;
+  basic_space_compaction_secs: number;
+  pkm_search_top_k: number;
+  pkm_short_memory_half_life_secs: number;
+  pkm_short_memory_demote_threshold: number;
+  pkm_short_memory_top_n: number;
+  pkm_short_memory_token_cap: number;
+  pkm_playbook_index_token_cap: number;
+  pkm_consolidate_secs: number;
+  pkm_consolidate_idle_secs: number;
+  pkm_consolidation_concurrency: number;
+  pkm_consolidation_max_tool_turns: number;
+  pkm_consolidation_max_submissions: number;
+  pkm_playbook_max_tool_turns: number;
+  pkm_playbook_max_submissions: number;
+  pkm_extract_max_tokens: number;
+  pkm_extract_max_messages: number;
+  pkm_extract_agent_evidence_lookback_messages: number;
+  pkm_extract_agent_evidence_result_token_cap: number;
+  pkm_consolidation_max_attempts: number;
+  pkm_adjudication_max_attempts_per_batch: number;
+  pkm_consolidation_checkpoint_failure_cap: number;
+  pkm_consolidation_retry_base_secs: number;
 }
 
 export interface Config {
@@ -218,11 +244,11 @@ export interface Config {
   inference: InferenceConfig;
   scheduler: SchedulerConfig;
   app: AppConfig;
+  memory: MemoryConfig;
   models: Record<string, ModelGroupConfig>;
   providers: Record<string, ModelProviderConfig>;
 }
 
-// JSON Schema types (subset we need for rendering)
 export interface JsonSchemaProperty {
   type?: string;
   description?: string;

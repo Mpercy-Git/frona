@@ -18,7 +18,10 @@ async fn build_task_service() -> (Surreal<surrealdb::engine::local::Db>, TaskSer
     db.use_ns("test").use_db("test").await.unwrap();
     setup_schema(&db).await.unwrap();
     let repo = SurrealRepo::new(db.clone());
-    (db, TaskService::new(repo, frona::chat::broadcast::BroadcastService::new()))
+    (
+        db,
+        TaskService::new(repo, frona::chat::broadcast::BroadcastService::new()),
+    )
 }
 
 #[tokio::test]
@@ -39,7 +42,7 @@ async fn create_signal_persists_with_signal_kind() {
             vec![],
             None,
             50,
-        None,
+            None,
         )
         .await
         .expect("create_signal");
@@ -87,7 +90,7 @@ async fn find_pending_signal_tasks_returns_only_signals() {
             vec![],
             None,
             10,
-        None,
+            None,
         )
         .await
         .unwrap();
@@ -106,7 +109,7 @@ async fn find_pending_signal_tasks_returns_only_signals() {
             vec![],
             Some(Utc::now() + Duration::hours(1)),
             5,
-        None,
+            None,
         )
         .await
         .unwrap();
@@ -123,9 +126,9 @@ async fn find_pending_signal_tasks_returns_only_signals() {
             source_chat_id: None,
             resume_parent: None,
             run_at: None,
-        quarantined: false,
-        result_schema: None,
-        result_description: None,
+            quarantined: false,
+            result_schema: None,
+            result_description: None,
         },
     )
     .await
@@ -158,7 +161,7 @@ async fn find_pending_signal_tasks_excludes_completed() {
             vec![],
             None,
             5,
-        None,
+            None,
         )
         .await
         .unwrap();
@@ -191,7 +194,7 @@ async fn find_expired_signal_tasks_returns_only_past_expires_at() {
             vec![],
             Some(now - Duration::minutes(5)),
             5,
-        None,
+            None,
         )
         .await
         .unwrap();
@@ -210,7 +213,7 @@ async fn find_expired_signal_tasks_returns_only_past_expires_at() {
             vec![],
             Some(now + Duration::hours(1)),
             5,
-        None,
+            None,
         )
         .await
         .unwrap();
@@ -229,7 +232,7 @@ async fn find_expired_signal_tasks_returns_only_past_expires_at() {
             vec![],
             None,
             5,
-        None,
+            None,
         )
         .await
         .unwrap();
@@ -257,7 +260,7 @@ async fn find_expired_signal_tasks_excludes_non_pending() {
             vec![],
             Some(Utc::now() - Duration::minutes(5)),
             5,
-        None,
+            None,
         )
         .await
         .unwrap();
@@ -290,9 +293,9 @@ async fn find_expired_signal_tasks_excludes_non_signal_kinds() {
             source_chat_id: None,
             resume_parent: None,
             run_at: Some(Utc::now() - Duration::hours(1)),
-        quarantined: false,
-        result_schema: None,
-        result_description: None,
+            quarantined: false,
+            result_schema: None,
+            result_description: None,
         },
     )
     .await
@@ -321,7 +324,7 @@ async fn save_persists_signal_evaluation_count() {
             vec![],
             None,
             5,
-        None,
+            None,
         )
         .await
         .unwrap();

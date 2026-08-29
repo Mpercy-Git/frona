@@ -1,6 +1,6 @@
-use frona::db::init::setup_schema;
 use frona::credential::key_rotation::{KeyRotation, derive_key};
 use frona::credential::vault::service::{decrypt_password, encrypt_password};
+use frona::db::init::setup_schema;
 
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use chrono::Utc;
@@ -191,7 +191,10 @@ async fn same_secret_no_rotation() {
     KeyRotation::check(&db, secret).await.unwrap();
     // Second run with same secret
     let rotation = KeyRotation::check(&db, secret).await.unwrap();
-    assert!(rotation.is_none(), "Same secret should not trigger rotation");
+    assert!(
+        rotation.is_none(),
+        "Same secret should not trigger rotation"
+    );
 }
 
 #[tokio::test]
@@ -296,7 +299,10 @@ async fn rotation_updates_runtime_config() {
 
     // Subsequent check should see no rotation needed
     let rotation = KeyRotation::check(&db, new_secret).await.unwrap();
-    assert!(rotation.is_none(), "After rotation, same secret should not trigger again");
+    assert!(
+        rotation.is_none(),
+        "After rotation, same secret should not trigger again"
+    );
 }
 
 #[tokio::test]

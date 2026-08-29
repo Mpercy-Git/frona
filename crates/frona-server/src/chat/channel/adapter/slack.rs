@@ -14,11 +14,9 @@ use crate::core::error::AppError;
 
 use super::super::attachment;
 use super::super::error::{ChannelError, ChannelErrorKind};
-use super::super::models::{
-    ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
-};
 #[cfg(test)]
 use super::super::models::ChannelFactory;
+use super::super::models::{ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SlackConfig {
@@ -108,11 +106,8 @@ impl ChannelAdapter for SlackAdapter {
         let callbacks = SlackSocketModeListenerCallbacks::new()
             .with_push_events(handle_push_event)
             .with_interaction_events(handle_interaction_event);
-        let listener = SlackClientSocketModeListener::new(
-            &SlackClientSocketModeConfig::new(),
-            env,
-            callbacks,
-        );
+        let listener =
+            SlackClientSocketModeListener::new(&SlackClientSocketModeConfig::new(), env, callbacks);
 
         let app_token = self.app_token.clone();
         let cancel = ctx.cancel.clone();
@@ -128,9 +123,7 @@ impl ChannelAdapter for SlackAdapter {
                 // Auth failures (bad app token) are terminal; treat other
                 // registration errors as transient.
                 let msg = format!("Slack Socket Mode listen_for failed: {e}");
-                if e.to_string().contains("invalid_auth")
-                    || e.to_string().contains("not_authed")
-                {
+                if e.to_string().contains("invalid_auth") || e.to_string().contains("not_authed") {
                     signals.disconnected_terminal(msg);
                 } else {
                     signals.disconnected_transient(msg);
@@ -201,18 +194,19 @@ impl ChannelAdapter for SlackAdapter {
 
         let mut elements: Vec<SlackActionBlockElement> = Vec::new();
         for (i, att) in msg.attachments.iter().enumerate() {
-            let url_str = match attachment::outbound_url(att, ctx, attachment::ChannelMode::Button).await {
-                Ok(u) => u,
-                Err(e) => {
-                    tracing::warn!(
-                        msg_id = %msg.id,
-                        path = %att.path,
-                        error = %e,
-                        "slack: canonical URL failed; skipping attachment",
-                    );
-                    continue;
-                }
-            };
+            let url_str =
+                match attachment::outbound_url(att, ctx, attachment::ChannelMode::Button).await {
+                    Ok(u) => u,
+                    Err(e) => {
+                        tracing::warn!(
+                            msg_id = %msg.id,
+                            path = %att.path,
+                            error = %e,
+                            "slack: canonical URL failed; skipping attachment",
+                        );
+                        continue;
+                    }
+                };
             let parsed = match url::Url::parse(&url_str) {
                 Ok(u) => u,
                 Err(e) => {
@@ -362,7 +356,9 @@ impl SlackAdapter {
 enum SlackError {
     /// HTTP 429 supplies `retry_after`; the tier-specific
     /// `ApiError("ratelimited")` returned over HTTP 200 does not.
-    RateLimited { retry_after: Option<Duration> },
+    RateLimited {
+        retry_after: Option<Duration>,
+    },
     Other,
     NotInChannel,
     ChannelArchived,
@@ -508,11 +504,8 @@ async fn handle_interaction_event(
         .map(|a| a.action_id.0.clone())
         .unwrap_or_default();
 
-    let parsed = crate::chat::channel::hitl::parse_resolve_callback_data(
-        &action_id,
-        &chat_service,
-    )
-    .await;
+    let parsed =
+        crate::chat::channel::hitl::parse_resolve_callback_data(&action_id, &chat_service).await;
 
     let (tool_call_id, response) = match parsed {
         Ok(p) => p,
@@ -542,7 +535,9 @@ async fn handle_interaction_event(
         .with_text(new_text.clone())
         .with_blocks(vec![
             SlackSectionBlock::new()
-                .with_text(SlackBlockText::MarkDown(SlackBlockMarkDownText::new(new_text)))
+                .with_text(SlackBlockText::MarkDown(SlackBlockMarkDownText::new(
+                    new_text,
+                )))
                 .into(),
         ]);
     let req = SlackApiChatUpdateRequest::new(
@@ -582,11 +577,8 @@ fn build_slack_blocks(
 
     let url_button = || -> Option<SlackBlockButtonElement> {
         url::Url::parse(url).ok().map(|u| {
-            SlackBlockButtonElement::new(
-                SlackActionId(format!("u:{tcid}")),
-                pt("Open on web →"),
-            )
-            .with_url(u)
+            SlackBlockButtonElement::new(SlackActionId(format!("u:{tcid}")), pt("Open on web →"))
+                .with_url(u)
         })
     };
 
@@ -598,16 +590,10 @@ fn build_slack_blocks(
 
     match kind {
         HitlKind::Approval => {
-            let yes = SlackBlockButtonElement::new(
-                SlackActionId(format!("r:{tcid}:y")),
-                pt("Yes"),
-            )
-            .with_style("primary".into());
-            let no = SlackBlockButtonElement::new(
-                SlackActionId(format!("r:{tcid}:n")),
-                pt("No"),
-            )
-            .with_style("danger".into());
+            let yes = SlackBlockButtonElement::new(SlackActionId(format!("r:{tcid}:y")), pt("Yes"))
+                .with_style(SlackBlockButtonStyle::Primary);
+            let no = SlackBlockButtonElement::new(SlackActionId(format!("r:{tcid}:n")), pt("No"))
+                .with_style(SlackBlockButtonStyle::Danger);
             let mut elements: Vec<SlackActionBlockElement> = vec![yes.into(), no.into()];
             if let Some(b) = url_button() {
                 elements.push(b.into());
@@ -636,10 +622,7 @@ fn build_slack_blocks(
             vec![prompt_block, SlackActionsBlock::new(elements).into()]
         }
         HitlKind::External => match url_button() {
-            Some(b) => vec![
-                prompt_block,
-                SlackActionsBlock::new(vec![b.into()]).into(),
-            ],
+            Some(b) => vec![prompt_block, SlackActionsBlock::new(vec![b.into()]).into()],
             None => vec![prompt_block],
         },
     }
@@ -648,7 +631,6 @@ fn build_slack_blocks(
 fn pt(s: &str) -> SlackBlockPlainTextOnly {
     SlackBlockPlainTextOnly::from(s.to_string())
 }
-
 
 fn socket_mode_error_handler(
     err: Box<dyn std::error::Error + Send + Sync + 'static>,
@@ -677,14 +659,19 @@ fn convert_message_event(
     if !user_id.is_empty() && user_id == identity.user_id {
         return None;
     }
-    if let (Some(self_bot), Some(event_bot)) = (identity.bot_id.as_deref(), m.sender.bot_id.as_ref())
+    if let (Some(self_bot), Some(event_bot)) =
+        (identity.bot_id.as_deref(), m.sender.bot_id.as_ref())
         && self_bot == event_bot.0
     {
         return None;
     }
 
     let channel = m.origin.channel.as_ref()?.0.clone();
-    let text = m.content.as_ref().and_then(|c| c.text.clone()).unwrap_or_default();
+    let text = m
+        .content
+        .as_ref()
+        .and_then(|c| c.text.clone())
+        .unwrap_or_default();
     if text.trim().is_empty() {
         return None;
     }
@@ -705,11 +692,19 @@ fn convert_message_event(
     Some(ExternalMessage {
         external_chat_id,
         sender_address: if user_id.is_empty() {
-            m.sender.bot_id.as_ref().map(|b| b.0.clone()).unwrap_or_default()
+            m.sender
+                .bot_id
+                .as_ref()
+                .map(|b| b.0.clone())
+                .unwrap_or_default()
         } else {
             user_id.to_string()
         },
-        sender_external_id: if user_id.is_empty() { None } else { Some(user_id.to_string()) },
+        sender_external_id: if user_id.is_empty() {
+            None
+        } else {
+            Some(user_id.to_string())
+        },
         sender_display_name: display,
         content: text,
         attachments: vec![],
@@ -721,8 +716,8 @@ fn format_external_id(
     channel_type: Option<&SlackChannelType>,
     thread_ts: Option<&SlackTs>,
 ) -> String {
-    let is_dm = matches!(channel_type, Some(SlackChannelType(s)) if s == "im")
-        || channel.starts_with('D');
+    let is_dm =
+        matches!(channel_type, Some(SlackChannelType(s)) if s == "im") || channel.starts_with('D');
     if is_dm {
         format!("dm:{channel}")
     } else if let Some(ts) = thread_ts {
@@ -735,9 +730,7 @@ fn format_external_id(
 fn parse_external_id(s: &str) -> Result<(SlackChannelId, Option<SlackTs>), AppError> {
     let parts: Vec<&str> = s.split(':').collect();
     match parts.as_slice() {
-        ["dm", id] | ["group", id] if !id.is_empty() => {
-            Ok((SlackChannelId(id.to_string()), None))
-        }
+        ["dm", id] | ["group", id] if !id.is_empty() => Ok((SlackChannelId(id.to_string()), None)),
         ["group", id, "thread", ts] if !id.is_empty() && !ts.is_empty() => Ok((
             SlackChannelId(id.to_string()),
             Some(SlackTs(ts.to_string())),
@@ -847,11 +840,7 @@ mod tests {
 
     #[test]
     fn format_external_id_dm_by_channel_type() {
-        let id = format_external_id(
-            "DXYZ",
-            Some(&SlackChannelType("im".to_string())),
-            None,
-        );
+        let id = format_external_id("DXYZ", Some(&SlackChannelType("im".to_string())), None);
         assert_eq!(id, "dm:DXYZ");
     }
 

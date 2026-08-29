@@ -111,28 +111,46 @@ export type AssistantContentPart =
   | { type: "tool-call"; toolCallId: string; toolName: string; args: Record<string, string | number | boolean | null>; argsText: string; result?: string };
 
 /**
- * If the text part is empty but a tool call has turnText, promote the last
- * turnText to the main text and strip it from all tool call args.
+ * Put every tool turn's text before the final assistant text, with each item
+ * on its own Markdown line, then strip it from the tool args to avoid rendering
+ * it twice when the tool timeline is expanded.
  */
-export function promoteTurnText(parts: AssistantContentPart[]): AssistantContentPart[] {
+export function appendTurnText(parts: AssistantContentPart[]): AssistantContentPart[] {
   const textPart = parts.find((p) => p.type === "text");
-  if (textPart && "text" in textPart && textPart.text.trim()) return parts;
+  const turnTexts = parts.flatMap((p) => {
+    if (p.type !== "tool-call") return [];
+    const turnText = (p.args as Record<string, unknown>)?.turnText;
+    return typeof turnText === "string" && turnText.trim() ? [turnText.trim()] : [];
+  });
+  if (turnTexts.length === 0) return parts;
 
-  let lastTurnText = "";
-  for (const p of parts) {
-    if (p.type === "tool-call" && typeof (p.args as Record<string, unknown>)?.turnText === "string") {
-      lastTurnText = (p.args as Record<string, unknown>).turnText as string;
-    }
-  }
-  if (!lastTurnText) return parts;
+  const existingText = textPart?.type === "text" ? textPart.text.trimEnd() : "";
+  // Blank lines ensure Markdown renders every turn on a distinct visible line.
+  const combinedText = [...turnTexts, existingText].filter(Boolean).join("\n\n");
 
-  return parts.map(p => {
-    if (p.type === "text") return { ...p, text: lastTurnText };
+  const promoted = parts.map(p => {
+    if (p.type === "text") return { ...p, text: combinedText };
     if (p.type === "tool-call" && (p.args as Record<string, unknown>)?.turnText) {
       const { turnText: _, ...rest } = p.args;
       return { ...p, args: rest };
     }
     return p;
+  });
+
+  // An internal-tool turn with reasoning can have no text placeholder.
+  if (!textPart) {
+    return [{ type: "text", text: combinedText }, ...promoted];
+  }
+  return promoted;
+}
+
+function stripTurnText(parts: AssistantContentPart[]): AssistantContentPart[] {
+  return parts.map((part) => {
+    if (part.type !== "tool-call" || !(part.args as Record<string, unknown>)?.turnText) {
+      return part;
+    }
+    const { turnText: _, ...args } = part.args;
+    return { ...part, args };
   });
 }
 
@@ -173,15 +191,12 @@ export function convertMessage(msg: MessageResponse) {
 
     const content: AssistantContentPart[] = [];
 
-    // User-facing external tools (HITL prompts) render BEFORE text.
     if (msg.tool_calls?.length) {
       for (const te of msg.tool_calls) {
         if (te.hitl) {
           const toolName = te.hitl.request.type;
           const status = te.hitl.status;
           const resolved = status === "resolved" || status === "denied";
-          // Project request data + hitl-level fields into a flat args object
-          // for assistant-ui consumption.
           const args: Record<string, string | number | boolean | null> = {
             prompt: te.hitl.prompt,
             url: te.hitl.url,
@@ -230,7 +245,6 @@ export function convertMessage(msg: MessageResponse) {
       content.push({ type: "text", text: "" });
     }
 
-    // Attachments render between text and tools
     if (msg.attachments?.length) {
       content.push({
         type: "tool-call",
@@ -242,8 +256,6 @@ export function convertMessage(msg: MessageResponse) {
       });
     }
 
-    // Task lifecycle events (TaskCompletion / TaskDeferred) — after
-    // attachments, before regular tools.
     if (msg.tool_calls?.length) {
       for (const te of msg.tool_calls) {
         if (te.task_event) {
@@ -269,7 +281,6 @@ export function convertMessage(msg: MessageResponse) {
       }
     }
 
-    // Regular tools (neither hitl nor task_event) — last
     if (msg.tool_calls?.length) {
       for (const te of msg.tool_calls) {
         if (!te.hitl && !te.task_event) {
@@ -290,10 +301,11 @@ export function convertMessage(msg: MessageResponse) {
       }
     }
 
-    // Mid-flight, keep turnText in tool-call args so they render as bubbles
-    // between tools; only promote it when the message is fully done.
+    // Streaming text already contains the text emitted before each tool call,
+    // so keep it in the main message and remove duplicate timeline copies.
+    // Completed backend messages put persisted turn_text before the final text.
     const inFlight = msg.status === "executing" || msg.status === "paused";
-    const finalContent = inFlight ? content : promoteTurnText(content);
+    const finalContent = inFlight ? stripTurnText(content) : appendTurnText(content);
 
     return {
       id: msg.id,
@@ -328,7 +340,6 @@ export function convertMessage(msg: MessageResponse) {
     };
   }
 
-  // System messages without events — skip
   return null;
 }
 
@@ -346,18 +357,17 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
   const onChatCreatedRef = useRef(onChatCreated);
   onChatCreatedRef.current = onChatCreated;
 
-  // One store per ChatView mount — persists across chatId changes (pending → real)
+  // One store per ChatView mount - persists across chatId changes (pending → real)
   const storeRef = useRef<ChatStore | null>(null);
   if (!storeRef.current) {
     storeRef.current = new ChatStore();
   }
   const store = storeRef.current;
 
-  // Eager SSE subscription controller — set in onNew so events are captured
+  // Eager SSE subscription controller - set in onNew so events are captured
   // immediately, before the useEffect has a chance to fire.
   const eagerSubRef = useRef<AbortController | null>(null);
 
-  // Subscribe to store changes for re-rendering
   const subscribe = useCallback((cb: () => void) => store.subscribe(cb), [store]);
   const storeSnapshot = useSyncExternalStore(
     subscribe,
@@ -404,7 +414,6 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     });
   }, [store]);
 
-  // onNew callback — creates chat if needed, sends message to backend
   const onNew = useCallback(async (message: AppendMessage) => {
     const text = message.content
       .filter((p): p is { type: "text"; text: string } => p.type === "text")
@@ -544,7 +553,6 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
 
   const runtime = useExternalStoreRuntime(adapter);
 
-  // Programmatic send — used for pending messages
   const sendMessage = useCallback((content: string, attachments?: Attachment[]) => {
     if (attachments?.length) {
       for (const att of attachments) {

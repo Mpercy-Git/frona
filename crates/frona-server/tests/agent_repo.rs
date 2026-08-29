@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use chrono::Utc;
 use frona::agent::models::Agent;
 use frona::agent::repository::AgentRepository;
@@ -11,8 +10,9 @@ use frona::db::repo::generic::SurrealRepo;
 use frona::policy::service::PolicyService;
 use frona::tool::manager::ToolManager;
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
-use surrealdb::engine::local::{Db, Mem};
+use std::sync::Arc;
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 fn test_resource_manager() -> Arc<SystemResourceManager> {
     Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0))
@@ -21,10 +21,18 @@ fn test_resource_manager() -> Arc<SystemResourceManager> {
 fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     let schema = frona::policy::schema::build_schema();
     let repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(
+            db.clone(),
+        ));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = test_user_service(db);
-    PolicyService::new(repo, schema, Arc::new(ToolManager::new(false)), storage, user_service)
+    PolicyService::new(
+        repo,
+        schema,
+        Arc::new(ToolManager::new(false)),
+        storage,
+        user_service,
+    )
 }
 
 fn test_user_service(db: &Surreal<Db>) -> frona::auth::UserService {
@@ -63,7 +71,11 @@ fn test_agent(user_id: &str) -> Agent {
     Agent {
         id: frona::core::repository::new_id(),
         user_id: user_id.to_string(),
-        handle: frona::core::Handle::try_new(format!("h-{}", &frona::core::repository::new_id().replace('-', "")[..28])).unwrap(),
+        handle: frona::core::Handle::try_new(format!(
+            "h-{}",
+            &frona::core::repository::new_id().replace('-', "")[..28]
+        ))
+        .unwrap(),
         name: "Test Agent".to_string(),
         description: "A test agent".to_string(),
         model_group: "primary".to_string(),
@@ -175,11 +187,14 @@ async fn test_find_by_id_not_found() {
 
 #[tokio::test]
 async fn test_clone_all_builtins_materializes_per_user_rows() {
-    use frona::storage::StorageService;
     use frona::core::config::Config;
+    use frona::storage::StorageService;
 
     let db = test_db().await;
-    let shared_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("resources");
+    let shared_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("resources");
     let config = Config {
         storage: frona::core::config::StorageConfig {
             data_dir: "/tmp/frona_test_clone_builtins".to_string(),
@@ -214,25 +229,42 @@ async fn test_clone_all_builtins_materializes_per_user_rows() {
         user_service,
     );
 
-    agent_service.clone_all_builtins_for_user("user-a", &storage).await.unwrap();
+    agent_service
+        .clone_all_builtins_for_user("user-a", &storage)
+        .await
+        .unwrap();
     // Idempotent: second call should not duplicate or error.
-    agent_service.clone_all_builtins_for_user("user-a", &storage).await.unwrap();
+    agent_service
+        .clone_all_builtins_for_user("user-a", &storage)
+        .await
+        .unwrap();
 
     let agents = agent_service.list("user-a").await.unwrap();
     let handles: Vec<&str> = agents.iter().map(|a| a.handle.as_ref()).collect();
-    assert!(handles.contains(&"developer"), "Expected developer handle, got: {handles:?}");
-    assert!(handles.contains(&"system"), "Expected system handle, got: {handles:?}");
+    assert!(
+        handles.contains(&"developer"),
+        "Expected developer handle, got: {handles:?}"
+    );
+    assert!(
+        handles.contains(&"system"),
+        "Expected system handle, got: {handles:?}"
+    );
     // All cloned rows belong to the user (no user_id IS NONE rows surface).
     for agent in &agents {
         assert_eq!(agent.user_id, "user-a");
     }
 }
 
-
 #[tokio::test]
 async fn agent_service_find_by_id_caches() {
     let db = test_db().await;
-    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default(), test_resource_manager(), test_policy_service(&db), test_user_service(&db));
+    let svc = AgentService::new(
+        SurrealAgentRepo::new(db.clone()),
+        &CacheConfig::default(),
+        test_resource_manager(),
+        test_policy_service(&db),
+        test_user_service(&db),
+    );
     let repo = SurrealAgentRepo::new(db);
     let agent = test_agent("user-1");
     repo.create(&agent).await.unwrap();
@@ -248,7 +280,13 @@ async fn agent_service_update_invalidates_cache() {
     use frona::agent::models::UpdateAgentRequest;
 
     let db = test_db().await;
-    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default(), test_resource_manager(), test_policy_service(&db), test_user_service(&db));
+    let svc = AgentService::new(
+        SurrealAgentRepo::new(db.clone()),
+        &CacheConfig::default(),
+        test_resource_manager(),
+        test_policy_service(&db),
+        test_user_service(&db),
+    );
     let repo = SurrealAgentRepo::new(db);
     let agent = test_agent("user-1");
     repo.create(&agent).await.unwrap();
@@ -285,7 +323,13 @@ async fn agent_service_delete_invalidates_cache() {
     let db = test_db().await;
     let user_service = test_user_service(&db);
     seed_user(&user_service, "user-1").await;
-    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default(), test_resource_manager(), test_policy_service(&db), user_service);
+    let svc = AgentService::new(
+        SurrealAgentRepo::new(db.clone()),
+        &CacheConfig::default(),
+        test_resource_manager(),
+        test_policy_service(&db),
+        user_service,
+    );
     let repo = SurrealAgentRepo::new(db);
     let agent = test_agent("user-1");
     repo.create(&agent).await.unwrap();
@@ -296,4 +340,3 @@ async fn agent_service_delete_invalidates_cache() {
 
     assert!(svc.find_by_id(&agent.id).await.unwrap().is_none());
 }
-

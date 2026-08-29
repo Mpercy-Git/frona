@@ -1,6 +1,6 @@
-use chrono::{DateTime, Utc};
 use crate::Entity;
 use crate::core::Handle;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
@@ -53,35 +53,24 @@ pub struct App {
     pub updated_at: DateTime<Utc>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppManifest {
     /// Served at `/apps/{handle}/`; source at `apps/{handle}/` in the workspace.
     pub handle: Handle,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check: Option<HealthCheck>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<ResourceLimits>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub static_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<bool>,
     /// Reconciled into Cedar on deploy/update; Cedar is the runtime source of truth.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_policy: Option<crate::policy::sandbox::SandboxPolicy>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<Vec<CredentialRequest>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hibernate: Option<bool>,
 }
 
@@ -194,8 +183,7 @@ impl From<App> for AppResponse {
             && matches!(
                 app.status,
                 AppStatus::Running | AppStatus::Serving | AppStatus::Hibernated
-            )
-        {
+            ) {
             Some(format!("/apps/{}/", app.handle))
         } else {
             None

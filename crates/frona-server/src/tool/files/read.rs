@@ -26,7 +26,11 @@ impl ReadTool {
         sandbox_manager: Arc<SandboxManager>,
         prompts: PromptLoader,
     ) -> Self {
-        Self { storage, sandbox_manager, prompts }
+        Self {
+            storage,
+            sandbox_manager,
+            prompts,
+        }
     }
 }
 
@@ -42,8 +46,14 @@ impl ReadTool {
             .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::Validation("Missing 'path' parameter".into()))?;
-        let offset = arguments.get("offset").and_then(|v| v.as_u64()).map(|n| n as usize);
-        let limit = arguments.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
+        let offset = arguments
+            .get("offset")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        let limit = arguments
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
 
         let resolved = super::resolve_path(path_arg, ctx, &self.storage)?;
         let sandbox = self.sandbox_manager.for_tool(ctx).await?;
@@ -58,9 +68,9 @@ impl ReadTool {
             return Ok(ToolOutput::error(format!("file not found: {}", path_arg)));
         }
 
-        let bytes = tokio::fs::read(&resolved).await.map_err(|e| {
-            AppError::Internal(format!("read {}: {e}", resolved.display()))
-        })?;
+        let bytes = tokio::fs::read(&resolved)
+            .await
+            .map_err(|e| AppError::Internal(format!("read {}: {e}", resolved.display())))?;
         let size = bytes.len();
 
         let mime = infer::get(&bytes).map(|t| t.mime_type().to_string());
@@ -88,7 +98,10 @@ impl ReadTool {
 }
 
 fn is_supported_image(mime: &str) -> bool {
-    matches!(mime, "image/png" | "image/jpeg" | "image/gif" | "image/webp")
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
 }
 
 fn read_image(bytes: &[u8], mime: &str, path_arg: &str) -> Result<ToolOutput, AppError> {
@@ -105,7 +118,11 @@ fn read_image(bytes: &[u8], mime: &str, path_arg: &str) -> Result<ToolOutput, Ap
     let (out_bytes, out_mime) = if w <= IMAGE_MAX_DIM && h <= IMAGE_MAX_DIM {
         (bytes.to_vec(), mime.to_string())
     } else {
-        let resized = img.resize(IMAGE_MAX_DIM, IMAGE_MAX_DIM, image::imageops::FilterType::Triangle);
+        let resized = img.resize(
+            IMAGE_MAX_DIM,
+            IMAGE_MAX_DIM,
+            image::imageops::FilterType::Triangle,
+        );
         let mut buf = std::io::Cursor::new(Vec::new());
         let fmt = match mime {
             "image/jpeg" => image::ImageFormat::Jpeg,
@@ -123,7 +140,10 @@ fn read_image(bytes: &[u8], mime: &str, path_arg: &str) -> Result<ToolOutput, Ap
     };
     Ok(ToolOutput::mixed(
         format!("Read image file [{}]", out_mime),
-        vec![ImageData { bytes: out_bytes, media_type: out_mime }],
+        vec![ImageData {
+            bytes: out_bytes,
+            media_type: out_mime,
+        }],
     ))
 }
 

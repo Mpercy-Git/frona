@@ -15,7 +15,7 @@ use crate::inference::usage::UsageContext;
 
 use super::models::InferenceUsage;
 
-// Metric names — `_total` suffix on counters per Prometheus convention; no
+// Metric names - `_total` suffix on counters per Prometheus convention; no
 // `_histogram` suffix on histograms (auto-generated `_bucket`/`_count`/`_sum`).
 pub const INFERENCE_INPUT_TOKENS_TOTAL: &str = "frona_inference_input_tokens_total";
 pub const INFERENCE_CACHED_INPUT_TOKENS_TOTAL: &str = "frona_inference_cached_input_tokens_total";
@@ -29,7 +29,8 @@ pub const INFERENCE_RETRY_OVERHEAD_MS: &str = "frona_inference_retry_overhead_ms
 pub const INFERENCE_RETRIES_TOTAL: &str = "frona_inference_retries_total";
 pub const MODEL_METADATA_LOOKUP_MISSES_TOTAL: &str = "frona_model_metadata_lookup_misses_total";
 pub const MODEL_METADATA_ENTRIES: &str = "frona_model_metadata_entries";
-pub const MODEL_METADATA_REFRESH_AGE_SECONDS: &str = "frona_model_metadata_refresh_seconds_since_last";
+pub const MODEL_METADATA_REFRESH_AGE_SECONDS: &str =
+    "frona_model_metadata_refresh_seconds_since_last";
 
 /// Latency reading captured by the retry layer for a single recorded call.
 /// `retry_overhead_ms` + `retry_count` describe retries within the recorded
@@ -45,7 +46,7 @@ pub struct LatencyMetrics {
 #[derive(Clone)]
 pub struct UsageService {
     /// Cloned from `AppState.model_catalog`. `ModelCatalogStore` is internally
-    /// `Arc`-wrapped, so all clones share the same underlying ArcSwap — the
+    /// `Arc`-wrapped, so all clones share the same underlying ArcSwap - the
     /// scheduler can `swap()` from outside this service and we observe it.
     catalog: ModelCatalogStore,
     repo: SurrealRepo<InferenceUsage>,
@@ -76,7 +77,8 @@ impl UsageService {
     ) {
         let (cost_usd, pricing_version) = self.catalog.compute(model_ref, usage);
         if cost_usd.is_none() {
-            counter!(MODEL_METADATA_LOOKUP_MISSES_TOTAL, "model_ref" => model_ref.as_str()).increment(1);
+            counter!(MODEL_METADATA_LOOKUP_MISSES_TOTAL, "model_ref" => model_ref.as_str())
+                .increment(1);
         }
         let row = build_row(
             usage_ctx,
@@ -88,7 +90,7 @@ impl UsageService {
             pricing_version,
         );
 
-        // Persistence failure logs but never propagates — observability never
+        // Persistence failure logs but never propagates - observability never
         // blocks the user's reply.
         if let Err(e) = self.repo.create(&row).await {
             tracing::warn!(
@@ -106,7 +108,7 @@ impl UsageService {
     pub fn model_supports_vision(&self, model_ref: &ModelRef) -> Option<bool> {
         self.catalog
             .current()
-            .lookup_prefix(&model_ref.provider, &model_ref.model_id)
+            .lookup_prefix(model_ref.provider.name(), &model_ref.model_id)
             .map(|e| e.supports_vision())
     }
 
@@ -119,24 +121,25 @@ impl UsageService {
         let Some(chat_id) = row.chat_id.as_ref() else {
             return;
         };
-        self.broadcast.broadcast_usage_recorded(crate::chat::broadcast::UsageRecorded {
-            chat_id: chat_id.clone(),
-            user_id: row.user_id.clone(),
-            agent_id: row.agent_id.clone(),
-            message_id: row.message_id.clone(),
-            kind_tag: row.kind_tag.clone(),
-            model_ref: row.model_ref.clone(),
-            input_tokens: row.input_tokens,
-            cached_input_tokens: row.cached_input_tokens,
-            output_tokens: row.output_tokens,
-            cost_usd: row.cost_usd,
-            duration_ms: row.duration_ms,
-            ttft_ms: row.ttft_ms,
-            output_tokens_per_second: row.output_tokens_per_second,
-            retry_overhead_ms: row.retry_overhead_ms,
-            retry_count: row.retry_count,
-            fallback_index: row.fallback_index,
-        });
+        self.broadcast
+            .broadcast_usage_recorded(crate::chat::broadcast::UsageRecorded {
+                chat_id: chat_id.clone(),
+                user_id: row.user_id.clone(),
+                agent_id: row.agent_id.clone(),
+                message_id: row.message_id.clone(),
+                kind_tag: row.kind_tag.clone(),
+                model_ref: row.model_ref.clone(),
+                input_tokens: row.input_tokens,
+                cached_input_tokens: row.cached_input_tokens,
+                output_tokens: row.output_tokens,
+                cost_usd: row.cost_usd,
+                duration_ms: row.duration_ms,
+                ttft_ms: row.ttft_ms,
+                output_tokens_per_second: row.output_tokens_per_second,
+                retry_overhead_ms: row.retry_overhead_ms,
+                retry_count: row.retry_count,
+                fallback_index: row.fallback_index,
+            });
     }
 }
 
@@ -193,7 +196,8 @@ fn emit_metrics(row: &InferenceUsage) {
         histogram!(INFERENCE_OUTPUT_TOKENS_PER_SECOND, &latency_labels).record(tps);
     }
     if row.retry_overhead_ms > 0 {
-        histogram!(INFERENCE_RETRY_OVERHEAD_MS, &latency_labels).record(row.retry_overhead_ms as f64);
+        histogram!(INFERENCE_RETRY_OVERHEAD_MS, &latency_labels)
+            .record(row.retry_overhead_ms as f64);
     }
 }
 
@@ -218,7 +222,7 @@ fn build_row(
         turn_index: kind.turn_index(),
         kind_tag: kind.tag().to_owned(),
         model_group: usage_ctx.model_group.clone(),
-        provider: model_ref.provider.clone(),
+        provider: model_ref.provider_name().to_string(),
         model_id: model_ref.model_id.clone(),
         model_ref: model_ref.as_str(),
         input_tokens: usage.input_tokens,
@@ -239,7 +243,7 @@ fn build_row(
 
 /// `output_tokens / generation_seconds` where generation_seconds is the wall
 /// time after the first token arrived. Returns `None` if there's no usable
-/// signal — no output tokens, no TTFT (non-streaming path), or duration shorter
+/// signal - no output tokens, no TTFT (non-streaming path), or duration shorter
 /// than TTFT (clock skew between captures).
 fn compute_output_tps(output_tokens: u64, latency: LatencyMetrics) -> Option<f64> {
     if output_tokens == 0 {
@@ -252,4 +256,3 @@ fn compute_output_tps(output_tokens: u64, latency: LatencyMetrics) -> Option<f64
     }
     Some(output_tokens as f64 * 1000.0 / gen_ms as f64)
 }
-

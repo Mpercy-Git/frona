@@ -84,10 +84,7 @@ fn convert_node(
         && let Some(bid) = ax.backend_dom_node_id
     {
         let key = (role.clone(), name.clone());
-        let nth = *nth_counter
-            .entry(key)
-            .and_modify(|n| *n += 1)
-            .or_insert(0);
+        let nth = *nth_counter.entry(key).and_modify(|n| *n += 1).or_insert(0);
         node.index = Some(refs.len());
         node.box_info.visible = true;
         refs.push(AxRef {
@@ -176,7 +173,9 @@ fn apply_properties(props: &[AxProperty], node: &mut AriaNode) {
                 }
             }
             AxPropertyName::Level => {
-                if let Some(l) = raw.as_i64().or_else(|| raw.as_str().and_then(|s| s.parse().ok()))
+                if let Some(l) = raw
+                    .as_i64()
+                    .or_else(|| raw.as_str().and_then(|s| s.parse().ok()))
                     && l >= 0
                 {
                     node.level = Some(l as u32);

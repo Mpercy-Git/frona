@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::skill::service::SkillService;
 use crate::agent::task::service::TaskService;
@@ -14,17 +15,20 @@ use crate::core::config::Config;
 use crate::core::error::AppError;
 use crate::core::state::ActiveSessions;
 use crate::credential::vault::service::VaultService;
+use crate::inference::config::ModelGroup;
 use crate::inference::conversation::{ConversationBuilder, DefaultConversationBuilder};
 use crate::inference::hitl::{HitlOutcome, HitlResponse, ResolveOutcome};
 use crate::inference::request::{InferenceContext, InferenceRequest, InferenceResponse};
 use crate::inference::tool_call::ToolStatus;
+use crate::inference::usage::UsageContext;
 use crate::memory::service::MemoryService;
 use crate::policy::service::PolicyService;
-use crate::agent::prompt::PromptLoader;
 use crate::storage::StorageService;
+use crate::tool::AgentTool;
 use crate::tool::manager::ToolManager;
 use crate::tool::mcp::McpServerService;
 use crate::tool::registry::ToolFilter;
+use rig_core::completion::Message as RigMessage;
 
 pub struct AgentLoopOutcome {
     /// What inference produced (Completed text, Cancelled, ExternalToolPending,
@@ -46,7 +50,7 @@ pub struct Harness {
     pub(crate) user_service: UserService,
     pub(crate) storage_service: StorageService,
     pub(crate) agent_service: AgentService,
-    pub(crate) memory_service: MemoryService,
+    pub(crate) memory_service: Arc<dyn MemoryService>,
     pub(crate) skill_service: SkillService,
     pub(crate) task_service: TaskService,
     pub(crate) notification_service: crate::notification::service::NotificationService,
@@ -70,7 +74,7 @@ impl Harness {
         user_service: UserService,
         storage_service: StorageService,
         agent_service: AgentService,
-        memory_service: MemoryService,
+        memory_service: Arc<dyn MemoryService>,
         skill_service: SkillService,
         task_service: TaskService,
         notification_service: crate::notification::service::NotificationService,
@@ -110,6 +114,357 @@ impl Harness {
             commands,
             usage_service,
         }
+    }
+
+    pub async fn structured_inference<T>(
+        &self,
+        model_group: &ModelGroup,
+        system: &str,
+        history: Vec<RigMessage>,
+        usage_ctx: UsageContext,
+    ) -> Result<T, AppError>
+    where
+        T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+    {
+        crate::inference::structured_inference::<T>(
+            self.chat_service.provider_registry(),
+            model_group,
+            system,
+            history,
+            &self.usage_service,
+            &usage_ctx,
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("harness structured inference: {e}")))
+    }
+
+    pub async fn text_inference(
+        &self,
+        model_group: &ModelGroup,
+        system: &str,
+        history: Vec<RigMessage>,
+        usage_ctx: UsageContext,
+    ) -> Result<String, AppError> {
+        crate::inference::text_inference(
+            self.chat_service.provider_registry(),
+            model_group,
+            system,
+            history,
+            &self.usage_service,
+            &usage_ctx,
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("harness text inference: {e}")))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn text_inference_with_tools(
+        &self,
+        agent_id: &str,
+        model_group: &ModelGroup,
+        system: &str,
+        history: Vec<RigMessage>,
+        tool_filters: &[ToolFilter],
+        extra_tools: &[Arc<dyn AgentTool>],
+        max_turns: usize,
+        usage_ctx: UsageContext,
+    ) -> Result<String, AppError> {
+        self.text_inference_with_tools_cancel(
+            agent_id,
+            model_group,
+            system,
+            history,
+            tool_filters,
+            extra_tools,
+            max_turns,
+            usage_ctx,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn text_inference_with_tools_cancel(
+        &self,
+        agent_id: &str,
+        model_group: &ModelGroup,
+        system: &str,
+        history: Vec<RigMessage>,
+        tool_filters: &[ToolFilter],
+        extra_tools: &[Arc<dyn AgentTool>],
+        max_turns: usize,
+        usage_ctx: UsageContext,
+        cancel_token: CancellationToken,
+    ) -> Result<String, AppError> {
+        let user_id = &usage_ctx.user_id;
+        let agent = self
+            .agent_service
+            .find_by_id(agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Agent not found: {agent_id}")))?;
+        let mut tools = self
+            .tool_manager
+            .build_agent_registry(user_id, &agent, &self.policy_service, None)
+            .await;
+        for filter in tool_filters {
+            tools.apply_filter(filter);
+        }
+        for tool in extra_tools {
+            tools.register_required(tool.clone())?;
+        }
+        if tools.is_empty() {
+            return tokio::select! {
+                _ = cancel_token.cancelled() => Err(AppError::Internal("background inference cancelled".into())),
+                result = self.text_inference(model_group, system, history, usage_ctx) => result,
+            };
+        }
+        let user = self
+            .user_service
+            .find_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("User not found: {user_id}")))?;
+        let ctx =
+            InferenceContext::new_detached(user, agent, self.shutdown_token.clone(), cancel_token);
+        crate::inference::structured::text_inference_with_tools(
+            self.chat_service.provider_registry(),
+            model_group,
+            system,
+            history,
+            &tools,
+            &ctx,
+            &self.usage_service,
+            &usage_ctx,
+            max_turns,
+        )
+        .await
+    }
+
+    /// Agentic structured inference: builds a background `InferenceContext` + a
+    /// policy-filtered, caller-restricted tool registry (via `tool_filters`), then
+    /// runs the tool loop. Falls back to a plain (tool-less) structured call if the
+    /// agent/context can't be built or no tools survive the filters.
+    /// `extra_tools` are caller-owned tool instances registered **after** the Cedar-gated
+    /// agent registry and its filters - so they bypass both Cedar and `tool_filters`. Use
+    /// for tools scoped to *this* task that must never surface on a normal agent turn (e.g.
+    /// consolidation's `get_invocation_output`). Pass `&[]` for the ordinary case.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn structured_inference_with_tools<T>(
+        &self,
+        chat_id: Option<&str>,
+        agent_id: &str,
+        model_group: &ModelGroup,
+        system: &str,
+        history: Vec<RigMessage>,
+        tool_filters: &[ToolFilter],
+        extra_tools: &[Arc<dyn AgentTool>],
+        max_turns: usize,
+        usage_ctx: UsageContext,
+    ) -> Result<T, AppError>
+    where
+        T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+    {
+        let user_id = &usage_ctx.user_id;
+        let registry = self.chat_service.provider_registry();
+
+        let agent = self
+            .agent_service
+            .find_by_id(agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Agent not found: {agent_id}")))?;
+
+        let mut tools = self
+            .tool_manager
+            .build_agent_registry(user_id, &agent, &self.policy_service, None)
+            .await;
+        for f in tool_filters {
+            tools.apply_filter(f);
+        }
+        for t in extra_tools {
+            tools.register_required(t.clone())?;
+        }
+
+        if tools.is_empty() {
+            return crate::inference::structured_inference::<T>(
+                registry,
+                model_group,
+                system,
+                history,
+                &self.usage_service,
+                &usage_ctx,
+            )
+            .await
+            .map_err(|e| AppError::Internal(format!("harness structured inference: {e}")));
+        }
+
+        let user = self
+            .user_service
+            .find_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("User not found: {user_id}")))?;
+
+        // `Some(chat_id)` → bind to that chat (streams events); `None` → detached
+        // (no chat, no event streaming - chat-scoped tools refuse via `active_chat`).
+        let ctx = match chat_id {
+            Some(chat_id) => {
+                let chat = self
+                    .chat_service
+                    .find_chat(chat_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound(format!("Chat not found: {chat_id}")))?;
+                let event_tx = self.broadcast_service.create_event_sender(
+                    user_id,
+                    chat_id,
+                    chat.space_id.clone(),
+                );
+                InferenceContext::new(
+                    user,
+                    agent,
+                    chat,
+                    event_tx,
+                    self.shutdown_token.clone(),
+                    CancellationToken::new(),
+                )
+            }
+            None => InferenceContext::new_detached(
+                user,
+                agent,
+                self.shutdown_token.clone(),
+                CancellationToken::new(),
+            ),
+        };
+        crate::inference::structured_inference_with_tools::<T>(
+            registry,
+            model_group,
+            system,
+            history,
+            &tools,
+            &ctx,
+            &self.usage_service,
+            &usage_ctx,
+            max_turns,
+        )
+        .await
+    }
+
+    /// Begin a NON-PERSISTENT, structured tool dialogue that yields a `T` (see
+    /// [`crate::inference::StructuredConversation`]). Resolves the agent, builds its
+    /// tool registry (+ `extra_tools`) and a context (detached if `chat_id` is `None`),
+    /// seeds the conversation with `system` + `initial`, and returns a handle the caller
+    /// drives with `next_attempt()` / `reject_submission()`. Writes no chat/message rows.
+    /// `max_tool_turns` bounds exploration; the caller separately bounds answer attempts.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn structured_conversation<'a, T>(
+        &'a self,
+        chat_id: Option<&str>,
+        agent_id: &str,
+        model_group: &ModelGroup,
+        system: impl Into<String>,
+        initial: impl Into<String>,
+        tool_filters: &[ToolFilter],
+        extra_tools: &[Arc<dyn AgentTool>],
+        max_tool_turns: usize,
+        usage_ctx: UsageContext,
+    ) -> Result<crate::inference::StructuredConversation<'a, T>, AppError>
+    where
+        T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+    {
+        self.structured_conversation_with_cancel(
+            chat_id,
+            agent_id,
+            model_group,
+            system,
+            initial,
+            tool_filters,
+            extra_tools,
+            max_tool_turns,
+            usage_ctx,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn structured_conversation_with_cancel<'a, T>(
+        &'a self,
+        chat_id: Option<&str>,
+        agent_id: &str,
+        model_group: &ModelGroup,
+        system: impl Into<String>,
+        initial: impl Into<String>,
+        tool_filters: &[ToolFilter],
+        extra_tools: &[Arc<dyn AgentTool>],
+        max_tool_turns: usize,
+        usage_ctx: UsageContext,
+        cancel_token: CancellationToken,
+    ) -> Result<crate::inference::StructuredConversation<'a, T>, AppError>
+    where
+        T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+    {
+        let user_id = &usage_ctx.user_id;
+        let registry = self.chat_service.provider_registry();
+
+        let agent = self
+            .agent_service
+            .find_by_id(agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Agent not found: {agent_id}")))?;
+
+        let mut tools = self
+            .tool_manager
+            .build_agent_registry(user_id, &agent, &self.policy_service, None)
+            .await;
+        for f in tool_filters {
+            tools.apply_filter(f);
+        }
+        for t in extra_tools {
+            tools.register_required(t.clone())?;
+        }
+
+        let user = self
+            .user_service
+            .find_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("User not found: {user_id}")))?;
+
+        let ctx = match chat_id {
+            Some(chat_id) => {
+                let chat = self
+                    .chat_service
+                    .find_chat(chat_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound(format!("Chat not found: {chat_id}")))?;
+                let event_tx = self.broadcast_service.create_event_sender(
+                    user_id,
+                    chat_id,
+                    chat.space_id.clone(),
+                );
+                InferenceContext::new(
+                    user,
+                    agent,
+                    chat,
+                    event_tx,
+                    self.shutdown_token.clone(),
+                    cancel_token.clone(),
+                )
+            }
+            None => InferenceContext::new_detached(
+                user,
+                agent,
+                self.shutdown_token.clone(),
+                cancel_token,
+            ),
+        };
+        Ok(crate::inference::StructuredConversation::new(
+            registry,
+            &self.usage_service,
+            tools,
+            ctx,
+            model_group.clone(),
+            system.into(),
+            initial.into(),
+            usage_ctx,
+            max_tool_turns,
+        ))
     }
 
     /// `session_id` is the generation id this run was registered under (see
@@ -164,14 +519,9 @@ impl Harness {
 
         let builder_system_prompt = builder.system_prompt();
 
-        let mut session = ChatSessionContext::build(
-            self,
-            user_id,
-            chat.clone(),
-            cancel_token.clone(),
-            builder,
-        )
-        .await?;
+        let mut session =
+            ChatSessionContext::build(self, user_id, chat.clone(), cancel_token.clone(), builder)
+                .await?;
 
         // `message_id` is the AGENT response placeholder; the user message is
         // separate. `build` already read the chat history, so take the user
@@ -186,8 +536,6 @@ impl Harness {
             && matches!(request.role, MessageRole::User)
             && let Some(MessageCommand::Command { name, args }) = request.command.clone()
         {
-            // Per-call registry wins over the default so callers can override
-            // a built-in name within their own context.
             let user = self
                 .user_service
                 .find_by_id(user_id)
@@ -203,7 +551,7 @@ impl Harness {
             })?;
 
             // `response` is always written via the terminal API at end-of-turn,
-            // so no snapshot is needed for it — only chat/request.
+            // so no snapshot is needed for it - only chat/request.
             let chat_snapshot = chat.clone();
             let request_snapshot = request.clone();
 
@@ -310,7 +658,10 @@ impl Harness {
         })
         .await?;
 
-        Ok(AgentLoopOutcome { inference, response })
+        Ok(AgentLoopOutcome {
+            inference,
+            response,
+        })
     }
 
     pub async fn resume(
@@ -331,7 +682,7 @@ impl Harness {
         Ok(())
     }
 
-    /// Does NOT spawn a resume — the caller dispatches via
+    /// Does NOT spawn a resume - the caller dispatches via
     /// `state.task_executor.resume_or_notify(...)` when `should_resume`.
     pub async fn resolve_and_resume(
         &self,
@@ -423,16 +774,17 @@ impl Harness {
             | crate::chat::service::ToolResolveResult::AlreadyResolved(m) => m,
         };
 
-        self.broadcast_service.send(crate::chat::broadcast::BroadcastEvent {
-            user_id: user.id.clone(),
-            chat_id: Some(te.chat_id.clone()),
-            space_id: chat.space_id.clone(),
-            kind: crate::chat::broadcast::BroadcastEventKind::Inference(
-                crate::inference::tool_loop::InferenceEventKind::Resume {
-                    message: message_response,
-                },
-            ),
-        });
+        self.broadcast_service
+            .send(crate::chat::broadcast::BroadcastEvent {
+                user_id: user.id.clone(),
+                chat_id: Some(te.chat_id.clone()),
+                space_id: chat.space_id.clone(),
+                kind: crate::chat::broadcast::BroadcastEventKind::Inference(
+                    crate::inference::tool_loop::InferenceEventKind::Resume {
+                        message: message_response,
+                    },
+                ),
+            });
 
         let did_flip = self
             .chat_service
@@ -485,7 +837,10 @@ impl Harness {
         outcome: Result<AgentLoopOutcome, AppError>,
     ) {
         match outcome {
-            Ok(AgentLoopOutcome { inference, mut response }) => match inference {
+            Ok(AgentLoopOutcome {
+                inference,
+                mut response,
+            }) => match inference {
                 InferenceResponse::Completed {
                     text,
                     attachments,
@@ -531,7 +886,6 @@ impl Harness {
             },
             Err(e) => {
                 tracing::warn!(message_id, error = %e, "agent loop failed");
-                // Best-effort: fetch the response for the failure event.
                 if let Ok(msg) = self.chat_service.get_message(user_id, message_id).await {
                     let _ = self
                         .chat_service

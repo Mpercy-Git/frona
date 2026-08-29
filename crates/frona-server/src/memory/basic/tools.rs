@@ -3,20 +3,20 @@ use serde_json::Value;
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::inference::config::ModelGroup;
-use crate::memory::service::MemoryService;
+use crate::memory::basic::BasicMemoryService;
 use frona_derive::agent_tool;
 
-use super::{InferenceContext, ToolOutput};
+use crate::tool::{InferenceContext, ToolOutput, active_chat, str_arg};
 
 pub struct StoreAgentMemoryTool {
-    memory_service: MemoryService,
+    memory_service: BasicMemoryService,
     compaction_group: Option<ModelGroup>,
     prompts: PromptLoader,
 }
 
 impl StoreAgentMemoryTool {
     pub fn new(
-        memory_service: MemoryService,
+        memory_service: BasicMemoryService,
         compaction_group: Option<ModelGroup>,
         prompts: PromptLoader,
     ) -> Self {
@@ -30,10 +30,13 @@ impl StoreAgentMemoryTool {
 
 #[agent_tool(name = "store_agent_memory")]
 impl StoreAgentMemoryTool {
-    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
-        let memory = arguments
-            .get("memory")
-            .and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        let memory = str_arg(&arguments, "memory")
             .ok_or_else(|| AppError::Validation("Missing 'memory' parameter".into()))?;
 
         let overrides = arguments
@@ -42,7 +45,8 @@ impl StoreAgentMemoryTool {
             .unwrap_or(false);
 
         let agent_id = &ctx.agent.id;
-        let chat_id = &ctx.chat.id;
+        let chat = active_chat(ctx)?;
+        let chat_id = &chat.id;
 
         tracing::debug!(
             agent_id = %agent_id,
@@ -82,14 +86,14 @@ impl StoreAgentMemoryTool {
 }
 
 pub struct StoreUserMemoryTool {
-    memory_service: MemoryService,
+    memory_service: BasicMemoryService,
     compaction_group: Option<ModelGroup>,
     prompts: PromptLoader,
 }
 
 impl StoreUserMemoryTool {
     pub fn new(
-        memory_service: MemoryService,
+        memory_service: BasicMemoryService,
         compaction_group: Option<ModelGroup>,
         prompts: PromptLoader,
     ) -> Self {
@@ -103,10 +107,13 @@ impl StoreUserMemoryTool {
 
 #[agent_tool]
 impl StoreUserMemoryTool {
-    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
-        let memory = arguments
-            .get("memory")
-            .and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        let memory = str_arg(&arguments, "memory")
             .ok_or_else(|| AppError::Validation("Missing 'memory' parameter".into()))?;
 
         let overrides = arguments
@@ -115,7 +122,8 @@ impl StoreUserMemoryTool {
             .unwrap_or(false);
 
         let user_id = &ctx.user.id;
-        let chat_id = &ctx.chat.id;
+        let chat = active_chat(ctx)?;
+        let chat_id = &chat.id;
 
         tracing::debug!(
             user_id = %user_id,

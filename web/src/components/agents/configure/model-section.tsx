@@ -5,14 +5,11 @@ import { Field, SectionHeader, SectionPanel, SelectInput } from "@/components/se
 import { CpuChipIcon } from "@heroicons/react/24/outline";
 import { api } from "@/lib/api-client";
 import type { ModelGroupConfig } from "@/lib/config-types";
+import { formatGroupName } from "@/lib/model-groups";
 
 interface ModelSectionProps {
   modelGroup: string;
   onModelGroupChange: (modelGroup: string) => void;
-}
-
-function formatGroupName(name: string): string {
-  return name.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 }
 
 export function ModelSection({ modelGroup, onModelGroupChange }: ModelSectionProps) {

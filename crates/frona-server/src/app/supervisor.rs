@@ -38,17 +38,21 @@ impl Supervisor for AppSupervisor {
 
     async fn start(&self, id: &str) -> Result<(), AppError> {
         if self.state.app_service.manager().has_process(id).await {
-            if let Some(agent_id) = self.state.app_service.manager().agent_id_for(id).await {
-                match self.state.app_service.manager().restart_app(id, &agent_id).await? {
-                    Some((port, pid)) => {
-                        let _ = self
-                            .state
-                            .app_service
-                            .update_status(id, AppStatus::Running, Some(port), Some(pid))
-                            .await;
-                    }
-                    None => return Err(AppError::Tool("restart returned None".into())),
+            match self
+                .state
+                .app_service
+                .manager()
+                .try_restart_crashed(id, self.state.app_service.max_restart_attempts())
+                .await?
+            {
+                Some((port, pid)) => {
+                    let _ = self
+                        .state
+                        .app_service
+                        .update_status(id, AppStatus::Running, Some(port), Some(pid))
+                        .await;
                 }
+                None => return Err(AppError::Tool("restart returned None".into())),
             }
             return Ok(());
         }
@@ -62,14 +66,20 @@ impl Supervisor for AppSupervisor {
         let Some(ref command) = app.command else {
             return Ok(());
         };
-        let manifest: super::models::AppManifest =
-            serde_json::from_value(app.manifest.clone())
-                .map_err(|e| AppError::Tool(format!("bad manifest: {e}")))?;
+        let manifest: super::models::AppManifest = serde_json::from_value(app.manifest.clone())
+            .map_err(|e| AppError::Tool(format!("bad manifest: {e}")))?;
         let (port, pid) = self
             .state
             .app_service
             .manager()
-            .start_app(id, &app.agent_id, &app.user_id, command, &manifest, Vec::new())
+            .start_app(
+                id,
+                &app.agent_id,
+                &app.user_id,
+                command,
+                &manifest,
+                Vec::new(),
+            )
             .await?;
         let _ = self
             .state

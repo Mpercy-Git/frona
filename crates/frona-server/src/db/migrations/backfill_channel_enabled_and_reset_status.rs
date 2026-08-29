@@ -40,9 +40,7 @@ async fn backfill_channel_enabled_and_reset_status(
 
     // 3. Drop stale device-link (QR) overlays; a fresh QR is re-minted on the next
     //    connect if the channel is still unlinked.
-    db.query("UPDATE channel SET setup = NONE")
-        .await?
-        .check()?;
+    db.query("UPDATE channel SET setup = NONE").await?.check()?;
 
     Ok(())
 }
@@ -61,7 +59,11 @@ mod tests {
 
     /// Seed a row with a status but no `enabled` field — the shape this migration backfills.
     async fn seed(db: &Surreal<Db>, id: &str, status: ChannelStatus, with_setup: bool) {
-        let setup = if with_setup { "{ instructions: 'scan me' }" } else { "NONE" };
+        let setup = if with_setup {
+            "{ instructions: 'scan me' }"
+        } else {
+            "NONE"
+        };
         db.query(format!(
             "CREATE type::record('channel', $id) SET status = $status, setup = {setup}"
         ))
@@ -111,7 +113,9 @@ mod tests {
         seed(&db, "disconnected", ChannelStatus::Disconnected, false).await;
         seed(&db, "failed", ChannelStatus::Failed, true).await;
 
-        backfill_channel_enabled_and_reset_status(&db).await.unwrap();
+        backfill_channel_enabled_and_reset_status(&db)
+            .await
+            .unwrap();
 
         // Intent: running-ish + Failed → enabled; explicitly Disconnected → off.
         assert_eq!(enabled_of(&db, "connected").await, Some(true));
@@ -120,9 +124,18 @@ mod tests {
         assert_eq!(enabled_of(&db, "failed").await, Some(true));
 
         // Transient runtime status is reset; Failed is preserved as terminal.
-        assert_eq!(status_of(&db, "connected").await, ChannelStatus::Disconnected);
-        assert_eq!(status_of(&db, "connecting").await, ChannelStatus::Disconnected);
-        assert_eq!(status_of(&db, "disconnected").await, ChannelStatus::Disconnected);
+        assert_eq!(
+            status_of(&db, "connected").await,
+            ChannelStatus::Disconnected
+        );
+        assert_eq!(
+            status_of(&db, "connecting").await,
+            ChannelStatus::Disconnected
+        );
+        assert_eq!(
+            status_of(&db, "disconnected").await,
+            ChannelStatus::Disconnected
+        );
         assert_eq!(status_of(&db, "failed").await, ChannelStatus::Failed);
 
         // Stale QR overlays cleared.
@@ -135,14 +148,24 @@ mod tests {
         let db = mem_db().await;
         seed(&db, "connected", ChannelStatus::Connected, true).await;
 
-        backfill_channel_enabled_and_reset_status(&db).await.unwrap();
+        backfill_channel_enabled_and_reset_status(&db)
+            .await
+            .unwrap();
         assert_eq!(enabled_of(&db, "connected").await, Some(true));
-        assert_eq!(status_of(&db, "connected").await, ChannelStatus::Disconnected);
+        assert_eq!(
+            status_of(&db, "connected").await,
+            ChannelStatus::Disconnected
+        );
 
         // Re-running must NOT recompute intent from the now-Disconnected status
         // (the `enabled IS NONE` guard); a naive backfill would flip it to false.
-        backfill_channel_enabled_and_reset_status(&db).await.unwrap();
+        backfill_channel_enabled_and_reset_status(&db)
+            .await
+            .unwrap();
         assert_eq!(enabled_of(&db, "connected").await, Some(true));
-        assert_eq!(status_of(&db, "connected").await, ChannelStatus::Disconnected);
+        assert_eq!(
+            status_of(&db, "connected").await,
+            ChannelStatus::Disconnected
+        );
     }
 }

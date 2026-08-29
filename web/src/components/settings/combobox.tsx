@@ -50,7 +50,7 @@ export function ComboboxInput({
   } = useCombobox({
     items: filteredItems,
     inputValue: value,
-    itemToString: (item) => item?.value ?? "",
+    itemToString: (item) => item?.label ?? "",
     onInputValueChange: ({ inputValue, type }) => {
       if (type === useCombobox.stateChangeTypes.InputChange) {
         const query = (inputValue ?? "").toLowerCase();

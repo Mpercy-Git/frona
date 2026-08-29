@@ -29,7 +29,11 @@ impl WriteTool {
         sandbox_manager: Arc<SandboxManager>,
         prompts: PromptLoader,
     ) -> Self {
-        Self { storage, sandbox_manager, prompts }
+        Self {
+            storage,
+            sandbox_manager,
+            prompts,
+        }
     }
 }
 
@@ -49,7 +53,10 @@ impl WriteTool {
             .get("content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::Validation("Missing 'content' parameter".into()))?;
-        let overwrite = arguments.get("overwrite").and_then(|v| v.as_bool()).unwrap_or(false);
+        let overwrite = arguments
+            .get("overwrite")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let resolved = super::resolve_path(path_arg, ctx, &self.storage)?;
         let sandbox = self.sandbox_manager.for_tool(ctx).await?;

@@ -111,17 +111,11 @@ fn visit(
     if aria_node.children.is_empty() && aria_node.props.is_empty() {
         lines.push(escaped_key);
     } else if let Some(text) = single_text_child {
-        lines.push(format!(
-            "{escaped_key}: {}",
-            yaml_scalar(&text)
-        ));
+        lines.push(format!("{escaped_key}: {}", yaml_scalar(&text)));
     } else {
         lines.push(format!("{escaped_key}:"));
         for (name, value) in &aria_node.props {
-            lines.push(format!(
-                "{indent}  - /{name}: {}",
-                yaml_scalar(value)
-            ));
+            lines.push(format!("{indent}  - /{name}: {}", yaml_scalar(value)));
         }
 
         let child_indent = format!("{indent}  ");

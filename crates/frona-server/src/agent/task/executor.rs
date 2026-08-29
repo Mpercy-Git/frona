@@ -25,7 +25,11 @@ fn quarantine_filter(task: &Task) -> Option<crate::tool::registry::ToolFilter> {
     if !task.quarantined {
         return None;
     }
-    if let TaskKind::Signal { mode: SignalMode::Continuous, .. } = task.kind {
+    if let TaskKind::Signal {
+        mode: SignalMode::Continuous,
+        ..
+    } = task.kind
+    {
         return Some(ToolFilter::AllowList(QUARANTINED_CONTINUOUS_SIGNAL_TOOLS));
     }
     Some(ToolFilter::AllowList(QUARANTINED_TASK_TOOLS))
@@ -54,24 +58,33 @@ pub enum TaskLifecycleEvent {
 fn source_chat_id_for(task: &Task) -> Option<&str> {
     match &task.kind {
         TaskKind::Delegation { source_chat_id, .. } => Some(source_chat_id.as_str()),
-        TaskKind::Direct { source_chat_id: Some(source_chat_id) } => Some(source_chat_id.as_str()),
+        TaskKind::Direct {
+            source_chat_id: Some(source_chat_id),
+        } => Some(source_chat_id.as_str()),
         TaskKind::Signal { source_chat_id, .. } => Some(source_chat_id.as_str()),
-        TaskKind::CronRun { source_chat_id: Some(source_chat_id), .. } => Some(source_chat_id.as_str()),
+        TaskKind::CronRun {
+            source_chat_id: Some(source_chat_id),
+            ..
+        } => Some(source_chat_id.as_str()),
         _ => None,
     }
 }
 
 fn source_chat_id_and_resume(task: &Task) -> Option<(&str, bool)> {
     match &task.kind {
-        TaskKind::Delegation { source_chat_id, resume_parent, .. } => {
-            Some((source_chat_id.as_str(), *resume_parent))
-        }
-        TaskKind::Direct { source_chat_id: Some(source_chat_id) } => {
-            Some((source_chat_id.as_str(), false))
-        }
-        TaskKind::Signal { source_chat_id, resume_parent, .. } => {
-            Some((source_chat_id.as_str(), *resume_parent))
-        }
+        TaskKind::Delegation {
+            source_chat_id,
+            resume_parent,
+            ..
+        } => Some((source_chat_id.as_str(), *resume_parent)),
+        TaskKind::Direct {
+            source_chat_id: Some(source_chat_id),
+        } => Some((source_chat_id.as_str(), false)),
+        TaskKind::Signal {
+            source_chat_id,
+            resume_parent,
+            ..
+        } => Some((source_chat_id.as_str(), *resume_parent)),
         // CronRun resolves its resume flag against the template (async), so
         // resume_parent_if_requested handles it; skip this sync path.
         TaskKind::CronRun { .. } => None,
@@ -183,10 +196,7 @@ fn build_completion_body(
     Some((json, Some(schema)))
 }
 
-fn build_message_event(
-    task: &Task,
-    event: TaskLifecycleEvent,
-) -> Option<(String, MessageEvent)> {
+fn build_message_event(task: &Task, event: TaskLifecycleEvent) -> Option<(String, MessageEvent)> {
     match event {
         TaskLifecycleEvent::Completion { status, summary, citations } => {
             let (content, schema) = build_completion_body(task, &status, summary.as_deref())?;
@@ -194,13 +204,21 @@ fn build_message_event(
                 task_id: task.id.clone(),
                 chat_id: task.chat_id.clone(),
                 status,
-                summary: if content.is_empty() { None } else { Some(content.clone()) },
+                summary: if content.is_empty() {
+                    None
+                } else {
+                    Some(content.clone())
+                },
                 schema,
                 citations,
             };
             Some((content, evt))
         }
-        TaskLifecycleEvent::Match { attempt_index, summary, result } => {
+        TaskLifecycleEvent::Match {
+            attempt_index,
+            summary,
+            result,
+        } => {
             let content = summary.clone();
             let evt = MessageEvent::TaskMatch {
                 task_id: task.id.clone(),
@@ -342,7 +360,10 @@ impl TaskExecutor {
             if let Err(e) = self
                 .harness
                 .task_service
-                .mark_failed(&run.id, "Server restarted while CronRun was in flight".to_string())
+                .mark_failed(
+                    &run.id,
+                    "Server restarted while CronRun was in flight".to_string(),
+                )
                 .await
             {
                 tracing::warn!(error = %e, task_id = %run.id, "Failed to mark orphan CronRun");
@@ -460,7 +481,12 @@ impl TaskExecutor {
         direct
     }
 
-    pub async fn register_cancellation(&self, agent_id: &str, task_id: &str, token: CancellationToken) {
+    pub async fn register_cancellation(
+        &self,
+        agent_id: &str,
+        task_id: &str,
+        token: CancellationToken,
+    ) {
         let key = format!("{}:{}", agent_id, task_id);
         self.active_tasks.lock().await.insert(key, token);
     }
@@ -519,13 +545,17 @@ impl TaskExecutor {
                 None
             };
 
-            let agent_msg_id = match self.harness.chat_service
+            let agent_msg_id = match self
+                .harness
+                .chat_service
                 .find_executing_message_for_chat(&chat_id)
                 .await
             {
                 Ok(Some(msg)) => msg.id,
                 _ => {
-                    let msg = self.harness.chat_service
+                    let msg = self
+                        .harness
+                        .chat_service
                         .create_executing_agent_message(&chat_id, &task.agent_id)
                         .await?;
                     msg.id
@@ -566,12 +596,23 @@ impl TaskExecutor {
             self.harness.active_sessions.remove(&chat_id, session_id).await;
 
             match result {
-                Ok(crate::agent::harness::AgentLoopOutcome { inference, mut response }) => match inference {
-                    InferenceResponse::Completed { text, attachments, lifecycle_event, reasoning, .. } => {
+                Ok(crate::agent::harness::AgentLoopOutcome {
+                    inference,
+                    mut response,
+                }) => match inference {
+                    InferenceResponse::Completed {
+                        text,
+                        attachments,
+                        lifecycle_event,
+                        reasoning,
+                        ..
+                    } => {
                         response.content = text;
                         response.attachments = attachments;
                         response.reasoning = reasoning;
-                        let _ = self.harness.chat_service
+                        let _ = self
+                            .harness
+                            .chat_service
                             .complete_agent_message(response)
                             .await;
 
@@ -590,12 +631,15 @@ impl TaskExecutor {
                         continue;
                     }
                     InferenceResponse::ExternalToolPending { tool_calls, .. } => {
-                        let _ = self.harness.chat_service
+                        let _ = self
+                            .harness
+                            .chat_service
                             .pause_agent_message(
                                 response,
                                 crate::inference::tool_loop::PauseReason::Hitl,
                                 tool_calls,
-                            ).await;
+                            )
+                            .await;
                         // Exit cleanly. The HITL-resolve handler will respawn
                         // this task via `run_task` once the human resolves.
                         return Ok(());
@@ -621,11 +665,17 @@ impl TaskExecutor {
                     }
                 },
                 Err(e) => {
-                    if let Ok(msg) = self.harness.chat_service
-                        .get_message(&task.user_id, &agent_msg_id).await
+                    if let Ok(msg) = self
+                        .harness
+                        .chat_service
+                        .get_message(&task.user_id, &agent_msg_id)
+                        .await
                     {
-                        let _ = self.harness.chat_service
-                            .fail_agent_message(msg, e.to_string()).await;
+                        let _ = self
+                            .harness
+                            .chat_service
+                            .fail_agent_message(msg, e.to_string())
+                            .await;
                     }
                     self.handle_error(&task, &e).await?;
                     return Ok(());
@@ -640,7 +690,10 @@ impl TaskExecutor {
         );
         self.harness
             .task_service
-            .mark_completed(&task.id, Some("Task auto-completed after max retries".into()))
+            .mark_completed(
+                &task.id,
+                Some("Task auto-completed after max retries".into()),
+            )
             .await?;
         deliver_event_to_source(
             &self.harness.chat_service,
@@ -692,14 +745,18 @@ impl TaskExecutor {
                     Vec::new()
                 }
             };
-            tool_calls.into_iter().rev().find_map(|te| {
-                match te.task_event {
-                    Some(TaskEvent::Completion { deliverables, .. }) if !deliverables.is_empty() => {
+            tool_calls
+                .into_iter()
+                .rev()
+                .find_map(|te| match te.task_event {
+                    Some(TaskEvent::Completion { deliverables, .. })
+                        if !deliverables.is_empty() =>
+                    {
                         Some(deliverables)
                     }
                     _ => None,
-                }
-            }).unwrap_or_default()
+                })
+                .unwrap_or_default()
         };
 
         for msg in messages.iter().rev() {
@@ -732,17 +789,26 @@ impl TaskExecutor {
         None
     }
 
-    fn lifecycle_action_from_event(
-        &self,
-        event: TaskEvent,
-    ) -> LifecycleAction {
+    fn lifecycle_action_from_event(&self, event: TaskEvent) -> LifecycleAction {
         match event {
-            TaskEvent::Completion { status, summary, deliverables, .. } => {
-                LifecycleAction::Complete { status, summary, attachments: deliverables }
-            }
-            TaskEvent::Deferred { delay_minutes, reason, .. } => {
-                LifecycleAction::Defer { delay_minutes, reason }
-            }
+            TaskEvent::Completion {
+                status,
+                summary,
+                deliverables,
+                ..
+            } => LifecycleAction::Complete {
+                status,
+                summary,
+                attachments: deliverables,
+            },
+            TaskEvent::Deferred {
+                delay_minutes,
+                reason,
+                ..
+            } => LifecycleAction::Defer {
+                delay_minutes,
+                reason,
+            },
         }
     }
 
@@ -826,10 +892,7 @@ impl TaskExecutor {
         if was_unset {
             // ensure_task_chat populated chat_id on the local clone; persist
             // it so subsequent calls reuse C₂ instead of creating a new chat.
-            self.harness
-                .task_service
-                .save(&task_for_chat)
-                .await?;
+            self.harness.task_service.save(&task_for_chat).await?;
         }
 
         self.harness
@@ -857,21 +920,26 @@ impl TaskExecutor {
             continuation_prompt: None,
         });
         let filters = tool_filters_for_task(task);
-        let outcome = self.harness.run_loop(
-            &task.user_id,
-            &chat_id,
-            &agent_msg_id,
-            cancel_token,
-            builder,
-            &filters,
-            None,
-        )
-        .await;
+        let outcome = self
+            .harness
+            .run_loop(
+                &task.user_id,
+                &chat_id,
+                &agent_msg_id,
+                cancel_token,
+                builder,
+                &filters,
+                None,
+            )
+            .await;
 
         // Signal tasks complete via tool call, not System MessageEvent.
         let mut lifecycle_event = None;
         match outcome {
-            Ok(crate::agent::harness::AgentLoopOutcome { inference, mut response }) => {
+            Ok(crate::agent::harness::AgentLoopOutcome {
+                inference,
+                mut response,
+            }) => {
                 if let InferenceResponse::Completed {
                     text,
                     attachments,
@@ -892,7 +960,12 @@ impl TaskExecutor {
                 }
             }
             Err(e) => {
-                if let Ok(msg) = self.harness.chat_service.get_message(&task.user_id, &agent_msg_id).await {
+                if let Ok(msg) = self
+                    .harness
+                    .chat_service
+                    .get_message(&task.user_id, &agent_msg_id)
+                    .await
+                {
                     let _ = self
                         .harness
                         .chat_service
@@ -955,7 +1028,11 @@ impl TaskExecutor {
         task: &Task,
         chat_id: &str,
     ) -> Result<(), AppError> {
-        let stored_messages = self.harness.chat_service.get_stored_messages(chat_id).await?;
+        let stored_messages = self
+            .harness
+            .chat_service
+            .get_stored_messages(chat_id)
+            .await?;
         if !stored_messages.is_empty() {
             return Ok(());
         }
@@ -966,8 +1043,7 @@ impl TaskExecutor {
             } => source_agent_id.as_str(),
             _ => &task.agent_id,
         };
-        self
-            .harness
+        self.harness
             .chat_service
             .save_agent_message(
                 &task.user_id,
@@ -981,14 +1057,8 @@ impl TaskExecutor {
         Ok(())
     }
 
-    pub async fn handle_cancelled(
-        &self,
-        task: &Task,
-    ) -> Result<(), AppError> {
-        self.harness
-            .task_service
-            .mark_cancelled(&task.id)
-            .await?;
+    pub async fn handle_cancelled(&self, task: &Task) -> Result<(), AppError> {
+        self.harness.task_service.mark_cancelled(&task.id).await?;
         Ok(())
     }
 
@@ -1016,19 +1086,28 @@ impl TaskExecutor {
 
     /// Terminal-only. Match would spawn concurrent loops.
     pub async fn resume_parent_if_requested(&self, task: &Task) {
-        if let TaskKind::CronRun { source_cron_id, source_chat_id: Some(chat_id), .. } = &task.kind {
+        if let TaskKind::CronRun {
+            source_cron_id,
+            source_chat_id: Some(chat_id),
+            ..
+        } = &task.kind
+        {
             let template = match self.harness.task_service.find_by_id(source_cron_id).await {
                 Ok(Some(t)) => t,
                 _ => return,
             };
             let process_result = matches!(
                 template.kind,
-                TaskKind::Cron { process_result: true, .. }
+                TaskKind::Cron {
+                    process_result: true,
+                    ..
+                }
             );
             if !process_result {
                 return;
             }
-            self.check_and_resume_parent(chat_id.as_str(), &task.user_id).await;
+            self.check_and_resume_parent(chat_id.as_str(), &task.user_id)
+                .await;
             return;
         }
 
@@ -1098,7 +1177,9 @@ impl TaskExecutor {
             return;
         }
 
-        let existing = match self.harness.chat_service
+        let existing = match self
+            .harness
+            .chat_service
             .find_executing_message_for_chat(source_chat_id)
             .await
         {
@@ -1113,7 +1194,9 @@ impl TaskExecutor {
         } else {
             // User chats settle their assistant turn before tasks complete;
             // mint a fresh executing message so the loop has a write target.
-            match self.harness.chat_service
+            match self
+                .harness
+                .chat_service
                 .create_executing_agent_message(source_chat_id, &chat.agent_id)
                 .await
             {
@@ -1124,11 +1207,14 @@ impl TaskExecutor {
                 }
             }
         };
-        if let Err(e) = self.harness.resume(user_id, source_chat_id, &message_id).await {
+        if let Err(e) = self
+            .harness
+            .resume(user_id, source_chat_id, &message_id)
+            .await
+        {
             tracing::error!(error = %e, chat_id = %source_chat_id, "Failed to resume user chat");
         }
     }
-
 }
 
 enum LifecycleAction {
@@ -1142,7 +1228,6 @@ enum LifecycleAction {
         reason: String,
     },
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1191,7 +1276,9 @@ mod tests {
             title: "x".into(),
             description: "y".into(),
             status: TaskStatus::Pending,
-            kind: TaskKind::Direct { source_chat_id: None },
+            kind: TaskKind::Direct {
+                source_chat_id: None,
+            },
             run_at: None,
             result_summary: None,
             error_message: None,

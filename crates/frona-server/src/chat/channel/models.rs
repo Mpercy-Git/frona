@@ -15,6 +15,7 @@ use crate::core::error::AppError;
 use crate::space::models::Space;
 use crate::tool::mcp::models::CredentialBinding;
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelManifest {
     pub id: String,
@@ -26,7 +27,6 @@ pub struct ChannelManifest {
     #[serde(default)]
     pub webhook_url_visible: bool,
     /// Markdown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_links: Vec<ExternalLink>,
@@ -38,21 +38,18 @@ pub struct ExternalLink {
     pub url: String,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelConfigField {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default)]
     pub is_required: bool,
     #[serde(default)]
     pub is_secret: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_from: Option<ConfigRef>,
     /// `None` for secrets — values must never leave the server.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_resolved: Option<String>,
 }
 
@@ -119,34 +116,27 @@ pub enum ChannelStatus {
     Failed,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct UserAddress {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pairing_code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pairing_initiated_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paired_at: Option<DateTime<Utc>>,
 }
 
 /// Provider setup (e.g. QR/code) — distinct from `UserAddress.pairing_*`
 /// which authenticates the sender.
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct SetupConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qr: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,
     /// Stamped by the manager in `begin_setup`; adapters leave as `None`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initiated_at: Option<DateTime<Utc>>,
 }
 
@@ -163,17 +153,13 @@ pub struct CreateChannelRequest {
     pub dispatch_mode: DispatchMode,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateChannelRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<BTreeMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<Vec<CredentialBinding>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_mode: Option<DispatchMode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<Option<crate::core::config::RetryConfig>>,
 }
 
@@ -347,9 +333,7 @@ pub trait ChannelAdapter: Send + Sync {
 
 pub fn external_chat_id(chat: &Chat) -> Result<&str, AppError> {
     chat.channel_external_id.as_deref().ok_or_else(|| {
-        AppError::Validation(
-            "missing channel_external_id on Chat — cannot deliver outbound".into(),
-        )
+        AppError::Validation("missing channel_external_id on Chat — cannot deliver outbound".into())
     })
 }
 
@@ -451,11 +435,16 @@ mod tests {
         assert_eq!(v, "\"failed\"");
     }
 
-
     #[test]
     fn dispatch_mode_serializes_snake_case() {
-        assert_eq!(serde_json::to_string(&DispatchMode::Message).unwrap(), "\"message\"");
-        assert_eq!(serde_json::to_string(&DispatchMode::Signal).unwrap(), "\"signal\"");
+        assert_eq!(
+            serde_json::to_string(&DispatchMode::Message).unwrap(),
+            "\"message\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DispatchMode::Signal).unwrap(),
+            "\"signal\""
+        );
         assert_eq!(DispatchMode::default(), DispatchMode::Message);
     }
 

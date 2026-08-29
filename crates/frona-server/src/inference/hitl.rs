@@ -8,6 +8,7 @@ use surrealdb::types::SurrealValue;
 use crate::credential::vault::models::GrantDuration;
 use crate::inference::tool_call::ToolStatus;
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct Hitl {
@@ -18,21 +19,22 @@ pub struct Hitl {
     pub request: HitlRequest,
     pub status: ToolStatus,
     /// `None` iff `status == Pending`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<HitlResponse>,
     /// Delivery cursor uses this for retry idempotency (skips already-rendered
     /// HITLs).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<HitlDelivery>,
 }
 
 /// Channels project this to `HitlKind` via `chat::channel::hitl::kind_for`
 /// rather than matching directly, so new variants only need a `kind_for` arm.
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[serde(tag = "type", content = "data")]
 #[surreal(crate = "surrealdb::types", tag = "type", content = "data")]
 pub enum HitlRequest {
-    Question { options: Vec<String> },
+    Question {
+        options: Vec<String>,
+    },
     Takeover {
         reason: String,
         debugger_url: String,
@@ -40,7 +42,6 @@ pub enum HitlRequest {
     App {
         action: String,
         manifest: serde_json::Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         previous_manifest: Option<serde_json::Value>,
     },
     Credential {
@@ -226,7 +227,9 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let back: HitlRequest = serde_json::from_str(&json).unwrap();
         match back {
-            HitlRequest::App { action, manifest, .. } => {
+            HitlRequest::App {
+                action, manifest, ..
+            } => {
                 assert_eq!(action, "deploy");
                 assert_eq!(manifest["handle"], "notes");
             }
@@ -367,7 +370,9 @@ mod tests {
             connection_id: "conn-1".into(),
             vault_item_id: "item-1".into(),
             grant_duration: GrantDuration::Once,
-            target: CredentialTarget::Prefix { env_var_prefix: "DB".into() },
+            target: CredentialTarget::Prefix {
+                env_var_prefix: "DB".into(),
+            },
         });
         let json = serde_json::to_string(&r).unwrap();
         let back: HitlResponse = serde_json::from_str(&json).unwrap();
@@ -434,5 +439,4 @@ mod tests {
         assert!(back.response.is_some());
         assert!(back.delivery.is_some());
     }
-
 }

@@ -4,12 +4,7 @@ use tower::ServiceExt;
 
 use super::*;
 
-
-async fn create_local_item(
-    state: &AppState,
-    token: &str,
-    name: &str,
-) -> serde_json::Value {
+async fn create_local_item(state: &AppState, token: &str, name: &str) -> serde_json::Value {
     let app = build_app(state.clone());
     let resp = app
         .oneshot(auth_post_json(
@@ -34,8 +29,13 @@ async fn create_local_item(
 #[tokio::test]
 async fn create_local_item_api_key() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "vault-create", "vaultcreate@example.com", "password123").await;
+    let (token, _) = register_user(
+        &state,
+        "vault-create",
+        "vaultcreate@example.com",
+        "password123",
+    )
+    .await;
 
     let item = create_local_item(&state, &token, "MyKey").await;
     assert!(item["id"].is_string());
@@ -45,8 +45,7 @@ async fn create_local_item_api_key() {
 #[tokio::test]
 async fn create_local_item_username_password() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "vault-up", "vaultup@example.com", "password123").await;
+    let (token, _) = register_user(&state, "vault-up", "vaultup@example.com", "password123").await;
 
     let app = build_app(state);
     let resp = app
@@ -70,8 +69,7 @@ async fn create_local_item_username_password() {
 #[tokio::test]
 async fn create_local_item_browser_profile() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "vault-bp", "vaultbp@example.com", "password123").await;
+    let (token, _) = register_user(&state, "vault-bp", "vaultbp@example.com", "password123").await;
 
     let app = build_app(state);
     let resp = app
@@ -113,10 +111,8 @@ async fn create_local_item_without_auth_returns_401() {
 #[tokio::test]
 async fn list_local_items_returns_only_own() {
     let (state, _tmp) = test_app_state().await;
-    let (token_a, _) =
-        register_user(&state, "vault-a", "vaulta@example.com", "password123").await;
-    let (token_b, _) =
-        register_user(&state, "vault-b", "vaultb@example.com", "password123").await;
+    let (token_a, _) = register_user(&state, "vault-a", "vaulta@example.com", "password123").await;
+    let (token_b, _) = register_user(&state, "vault-b", "vaultb@example.com", "password123").await;
 
     create_local_item(&state, &token_a, "KeyA").await;
     create_local_item(&state, &token_b, "KeyB").await;
@@ -187,7 +183,6 @@ async fn delete_local_item() {
     assert_eq!(json.as_array().unwrap().len(), 0);
 }
 
-
 #[tokio::test]
 async fn list_connections_empty() {
     let (state, _tmp) = test_app_state().await;
@@ -195,21 +190,22 @@ async fn list_connections_empty() {
         register_user(&state, "vault-conn", "vaultconn@example.com", "password123").await;
 
     let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get("/api/vaults", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(auth_get("/api/vaults", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json.as_array().unwrap().len(), 0);
 }
 
-
 #[tokio::test]
 async fn list_grants_empty() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "vault-grants", "vaultgrants@example.com", "password123").await;
+    let (token, _) = register_user(
+        &state,
+        "vault-grants",
+        "vaultgrants@example.com",
+        "password123",
+    )
+    .await;
 
     let app = build_app(state);
     let resp = app
@@ -224,8 +220,13 @@ async fn list_grants_empty() {
 #[tokio::test]
 async fn create_grant_returns_json() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "vault-grant", "vaultgrant@example.com", "password123").await;
+    let (token, _) = register_user(
+        &state,
+        "vault-grant",
+        "vaultgrant@example.com",
+        "password123",
+    )
+    .await;
 
     let item = create_local_item(&state, &token, "test-item").await;
     let item_id = item["id"].as_str().unwrap();
@@ -254,7 +255,6 @@ async fn create_grant_returns_json() {
     assert_eq!(json["principal"]["kind"], "agent");
     assert_eq!(json["principal"]["id"], "test-agent");
 }
-
 
 #[tokio::test]
 async fn vault_endpoints_reject_no_auth() {

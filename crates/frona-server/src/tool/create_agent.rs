@@ -72,14 +72,15 @@ impl CreateAgentTool {
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        let tools: Option<Vec<String>> = arguments
-            .get("tools")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            });
+        let tools: Option<Vec<String>> =
+            arguments
+                .get("tools")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                });
 
         let req = CreateAgentRequest {
             id: Some(id.clone()),
@@ -96,28 +97,16 @@ impl CreateAgentTool {
 
         let agent = self.agent_service.create(&ctx.user.id, req).await?;
 
-        let workspace = self.storage_service.agent_workspace(&ctx.user.handle, &agent.handle);
+        let workspace = self
+            .storage_service
+            .agent_workspace(&ctx.user.handle, &agent.handle);
         workspace
             .write("AGENT.md", &instructions)
             .map_err(|e| AppError::Internal(format!("Failed to write AGENT.md: {e}")))?;
 
-        ctx.event_tx.send(crate::inference::tool_loop::InferenceEvent {
-            kind: InferenceEventKind::EntityUpdated {
-                table: "agent".to_string(),
-                record_id: agent.id.clone(),
-                fields: serde_json::json!({
-                    "name": agent.name,
-                    "id": agent.id,
-                }),
-            },
-        });
-
-        self.broadcast_service.send(crate::chat::broadcast::BroadcastEvent {
-            user_id: ctx.user.id.clone(),
-            chat_id: None,
-            space_id: None,
-            kind: crate::chat::broadcast::BroadcastEventKind::Inference(
-                InferenceEventKind::EntityUpdated {
+        ctx.event_tx
+            .send(crate::inference::tool_loop::InferenceEvent {
+                kind: InferenceEventKind::EntityUpdated {
                     table: "agent".to_string(),
                     record_id: agent.id.clone(),
                     fields: serde_json::json!({
@@ -125,8 +114,24 @@ impl CreateAgentTool {
                         "id": agent.id,
                     }),
                 },
-            ),
-        });
+            });
+
+        self.broadcast_service
+            .send(crate::chat::broadcast::BroadcastEvent {
+                user_id: ctx.user.id.clone(),
+                chat_id: None,
+                space_id: None,
+                kind: crate::chat::broadcast::BroadcastEventKind::Inference(
+                    InferenceEventKind::EntityUpdated {
+                        table: "agent".to_string(),
+                        record_id: agent.id.clone(),
+                        fields: serde_json::json!({
+                            "name": agent.name,
+                            "id": agent.id,
+                        }),
+                    },
+                ),
+            });
 
         Ok(ToolOutput::text(format!(
             "Agent '{}' created successfully (id: {}). The user can now start chatting with it.",

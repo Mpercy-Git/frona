@@ -1,7 +1,8 @@
 //! `presage::Manager::receive_messages()` internally calls
-//! `tokio::task::spawn_local`, so the manager MUST run on a `current_thread`
-//! runtime. We give each channel its own OS thread + runtime and bridge to
-//! the main multi-thread runtime through tokio mpsc channels.
+//! `tokio::task::spawn_local`, so the manager MUST run inside a `LocalSet` on
+//! a `current_thread` runtime. We give each channel its own OS thread + local
+//! runtime and bridge to the main multi-thread runtime through tokio mpsc
+//! channels.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,11 +10,11 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::oneshot as futures_oneshot;
+use presage::Manager;
 use presage::libsignal_service::configuration::SignalServers;
 use presage::model::identity::OnNewIdentity;
 use presage::model::messages::Received;
 use presage::store::StateStore;
-use presage::Manager;
 use presage_store_sqlite::SqliteStore;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -105,29 +106,35 @@ pub async fn spawn(
                     return;
                 }
             };
-            rt.block_on(run(
-                db_path,
-                device_name,
-                expect_setup,
-                qr_tx,
-                cmd_rx,
-                cmd_tx_inner,
-                emit,
-                cancel,
-                channel_id,
-                hitl,
-                chat_service,
-                signals,
-            ));
+            let local = tokio::task::LocalSet::new();
+            local.block_on(
+                &rt,
+                run(
+                    db_path,
+                    device_name,
+                    expect_setup,
+                    qr_tx,
+                    cmd_rx,
+                    cmd_tx_inner,
+                    emit,
+                    cancel,
+                    channel_id,
+                    hitl,
+                    chat_service,
+                    signals,
+                ),
+            );
         })
         .map_err(|e| AppError::Internal(format!("Signal worker thread spawn: {e}")))?;
 
     let qr = match qr_rx {
         Some(rx) => match tokio::time::timeout(QR_TIMEOUT, rx).await {
             Ok(Ok(url)) => Some(url),
-            Ok(Err(_)) => return Err(AppError::Internal(
-                "Signal worker dropped QR oneshot before emitting a URL".into(),
-            )),
+            Ok(Err(_)) => {
+                return Err(AppError::Internal(
+                    "Signal worker dropped QR oneshot before emitting a URL".into(),
+                ));
+            }
             Err(_) => {
                 return Err(AppError::Internal(format!(
                     "Signal link URL not emitted within {:?}",
@@ -200,12 +207,8 @@ async fn run(
                 let _ = tx.send(url.to_string());
             }
         };
-        let link_fut = Manager::link_secondary_device(
-            store,
-            SignalServers::Production,
-            device_name,
-            link_tx,
-        );
+        let link_fut =
+            Manager::link_secondary_device(store, SignalServers::Production, device_name, link_tx);
         match futures::future::join(link_fut, qr_forward).await {
             (Ok(m), _) => {
                 tracing::info!(
@@ -273,6 +276,9 @@ async fn run(
                     }
                     Some(Received::Contacts) => {
                         tracing::info!(channel_id = %channel_id, "Signal contacts sync received");
+                    }
+                    Some(Received::DecryptionError(_)) => {
+                        tracing::warn!(channel_id = %channel_id, "Signal message decryption failed");
                     }
                     Some(Received::Content(content)) => {
                         convert::handle(

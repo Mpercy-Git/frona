@@ -153,10 +153,7 @@ impl InboundDeliveryService {
         let real_contact: Option<Contact> = if is_self {
             None
         } else if let Some(ext_id) = event.sender_external_id.as_deref() {
-            let display = event
-                .sender_display_name
-                .as_deref()
-                .unwrap_or(address);
+            let display = event.sender_display_name.as_deref().unwrap_or(address);
             Some(
                 self.contact_service
                     .upsert_by_channel_address(
@@ -269,10 +266,7 @@ impl InboundDeliveryService {
     }
 }
 
-fn synthesize_self_contact(
-    user: Option<&crate::auth::User>,
-    address: &str,
-) -> PolicyContact {
+fn synthesize_self_contact(user: Option<&crate::auth::User>, address: &str) -> PolicyContact {
     let (id, user_id, name) = match user {
         Some(u) => (u.id.clone(), u.id.clone(), u.name.clone()),
         None => (String::new(), String::new(), String::new()),
@@ -444,9 +438,7 @@ fn compose_inbound_prompt(
     if matches!(mode, DispatchMode::Message) && awaiting_categories.is_empty() {
         return None;
     }
-    let sender_block = sender
-        .map(|s| format!(" from {s}"))
-        .unwrap_or_default();
+    let sender_block = sender.map(|s| format!(" from {s}")).unwrap_or_default();
     let categories_block = if awaiting_categories.is_empty() {
         String::new()
     } else {

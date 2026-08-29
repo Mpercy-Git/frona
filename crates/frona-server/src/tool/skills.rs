@@ -20,7 +20,7 @@ use crate::inference::tool_call::ToolStatus;
 
 use frona_derive::agent_tool;
 
-use super::{InferenceContext, ToolOutput};
+use super::{InferenceContext, ToolOutput, active_chat};
 
 /// Registry search returns names + repos only; a repo listing carries
 /// descriptions. Cap both so a broad query can't flood the context window.
@@ -215,7 +215,7 @@ impl SkillsTool {
 
         Ok(ToolOutput::text("").with_hitl(Hitl {
             prompt: approval_prompt(&items, scope, &reason),
-            url: format!("{}/chat?id={}", self.public_base_url, ctx.chat.id),
+            url: format!("{}/chat?id={}", self.public_base_url, active_chat(ctx)?.id),
             request: HitlRequest::Skills {
                 items,
                 scope,

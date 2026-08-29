@@ -1,8 +1,8 @@
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use crate::storage::Attachment;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
+use crate::storage::Attachment;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use super::models::Message;
 
@@ -20,10 +20,8 @@ pub trait MessageRepository: Repository<Message> {
         before: DateTime<Utc>,
     ) -> Result<(), AppError>;
     async fn delete_by_chat_id(&self, chat_id: &str) -> Result<(), AppError>;
-    async fn find_attachments_by_chat_id(
-        &self,
-        chat_id: &str,
-    ) -> Result<Vec<Attachment>, AppError>;
+    async fn find_attachments_by_chat_id(&self, chat_id: &str)
+    -> Result<Vec<Attachment>, AppError>;
     async fn find_by_chat_id_page(
         &self,
         chat_id: &str,

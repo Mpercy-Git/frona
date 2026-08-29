@@ -4,8 +4,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
-use tokio::sync::oneshot;
 use tokio::sync::Mutex;
+use tokio::sync::oneshot;
 
 use crate::chat::message::models::Message;
 use crate::chat::models::Chat;
@@ -13,12 +13,12 @@ use crate::core::error::AppError;
 
 use super::super::attachment;
 use super::super::error::ChannelError;
+#[cfg(test)]
+use super::super::models::ChannelFactory;
 use super::super::models::{
     ChannelAdapter, ChannelCtx, ExternalMessage, SetupConfig, external_chat_id,
 };
 use super::super::typing::TypingIndicator;
-#[cfg(test)]
-use super::super::models::ChannelFactory;
 
 use wa_rs::bot::Bot;
 use wa_rs::client::Client;
@@ -84,10 +84,18 @@ impl ChannelAdapter for WhatsAppUserAdapter {
     }
 
     async fn on_inference_start(&self, chat: &Chat, _ctx: &ChannelCtx) -> Result<(), ChannelError> {
-        let Some(client) = self.client.lock().await.clone() else { return Ok(()) };
-        let Ok(external) = external_chat_id(chat) else { return Ok(()) };
-        let Ok(to_raw) = parse_external_id(external) else { return Ok(()) };
-        let Ok(to) = to_raw.parse::<wa_rs::Jid>() else { return Ok(()) };
+        let Some(client) = self.client.lock().await.clone() else {
+            return Ok(());
+        };
+        let Ok(external) = external_chat_id(chat) else {
+            return Ok(());
+        };
+        let Ok(to_raw) = parse_external_id(external) else {
+            return Ok(());
+        };
+        let Ok(to) = to_raw.parse::<wa_rs::Jid>() else {
+            return Ok(());
+        };
 
         self.typing.start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
             let client = client.clone();
@@ -103,10 +111,18 @@ impl ChannelAdapter for WhatsAppUserAdapter {
 
     async fn on_inference_done(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), ChannelError> {
         self.typing.stop(&chat.id).await;
-        let Some(client) = self.client.lock().await.clone() else { return Ok(()) };
-        let Ok(external) = external_chat_id(chat) else { return Ok(()) };
-        let Ok(to_raw) = parse_external_id(external) else { return Ok(()) };
-        let Ok(to) = to_raw.parse::<wa_rs::Jid>() else { return Ok(()) };
+        let Some(client) = self.client.lock().await.clone() else {
+            return Ok(());
+        };
+        let Ok(external) = external_chat_id(chat) else {
+            return Ok(());
+        };
+        let Ok(to_raw) = parse_external_id(external) else {
+            return Ok(());
+        };
+        let Ok(to) = to_raw.parse::<wa_rs::Jid>() else {
+            return Ok(());
+        };
         if let Err(e) = client.chatstate().send_paused(&to).await {
             tracing::debug!(
                 channel_id = %ctx.channel.id,
@@ -196,8 +212,12 @@ impl ChannelAdapter for WhatsAppUserAdapter {
         // wa_rs is text-only. Sequential cadence: render only the first
         // pending HITL. The delivery cursor advances by 1; the next pending
         // HITL renders after this one resolves (via text reply or web URL).
-        let Some(tc) = batch.first() else { return Ok(Vec::new()) };
-        let Some(h) = tc.hitl.as_ref() else { return Ok(Vec::new()) };
+        let Some(tc) = batch.first() else {
+            return Ok(Vec::new());
+        };
+        let Some(h) = tc.hitl.as_ref() else {
+            return Ok(Vec::new());
+        };
 
         let client = self.require_client(ctx, &tc.id).await?;
         let to = resolve_send_jid(&client, chat, ctx).await?;
@@ -293,11 +313,7 @@ async fn resolve_send_jid(
     }
 }
 
-async fn send_text(
-    client: &Client,
-    to: &wa_rs::Jid,
-    body: String,
-) -> Result<String, AppError> {
+async fn send_text(client: &Client, to: &wa_rs::Jid, body: String) -> Result<String, AppError> {
     let payload = wa_rs_proto::whatsapp::Message {
         conversation: Some(body),
         ..Default::default()

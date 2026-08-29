@@ -33,7 +33,8 @@ impl ShareService {
         user_id: &str,
         ttl_secs: u64,
     ) -> Result<String, AppError> {
-        self.issue_file_with_visibility(owner, path, user_id, ttl_secs, false).await
+        self.issue_file_with_visibility(owner, path, user_id, ttl_secs, false)
+            .await
     }
 
     /// Public (no-auth) share — resolved by minting a presigned URL on the
@@ -46,7 +47,8 @@ impl ShareService {
         user_id: &str,
         ttl_secs: u64,
     ) -> Result<String, AppError> {
-        self.issue_file_with_visibility(owner, path, user_id, ttl_secs, true).await
+        self.issue_file_with_visibility(owner, path, user_id, ttl_secs, true)
+            .await
     }
 
     async fn issue_file_with_visibility(
@@ -136,7 +138,10 @@ mod tests {
             .unwrap();
         assert_eq!(id.len(), 8);
         // nanoid alphabet is base64-url: A-Z a-z 0-9 _ -.
-        assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+        assert!(
+            id.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        );
     }
 
     #[tokio::test]
@@ -148,7 +153,11 @@ mod tests {
             .unwrap();
         let row = svc.resolve(&id).await.unwrap().unwrap();
         match row.kind {
-            ShareKind::File { owner, path, public } => {
+            ShareKind::File {
+                owner,
+                path,
+                public,
+            } => {
                 assert_eq!(owner, "agent:researcher");
                 assert_eq!(path, "report.md");
                 assert!(!public);
@@ -194,9 +203,18 @@ mod tests {
     #[tokio::test]
     async fn lookup_or_issue_chat_scoped_per_user_and_chat() {
         let svc = make_test_service().await;
-        let a = svc.lookup_or_issue_chat("chat-1", "user-1", 3600).await.unwrap();
-        let b = svc.lookup_or_issue_chat("chat-2", "user-1", 3600).await.unwrap();
-        let c = svc.lookup_or_issue_chat("chat-1", "user-2", 3600).await.unwrap();
+        let a = svc
+            .lookup_or_issue_chat("chat-1", "user-1", 3600)
+            .await
+            .unwrap();
+        let b = svc
+            .lookup_or_issue_chat("chat-2", "user-1", 3600)
+            .await
+            .unwrap();
+        let c = svc
+            .lookup_or_issue_chat("chat-1", "user-2", 3600)
+            .await
+            .unwrap();
         assert_ne!(a, b, "different chats must produce different rows");
         assert_ne!(a, c, "different users must produce different rows");
     }
@@ -204,9 +222,15 @@ mod tests {
     #[tokio::test]
     async fn lookup_or_issue_chat_remints_when_existing_expired() {
         let svc = make_test_service().await;
-        let first = svc.lookup_or_issue_chat("chat-x", "user-1", 0).await.unwrap();
+        let first = svc
+            .lookup_or_issue_chat("chat-x", "user-1", 0)
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let second = svc.lookup_or_issue_chat("chat-x", "user-1", 3600).await.unwrap();
+        let second = svc
+            .lookup_or_issue_chat("chat-x", "user-1", 3600)
+            .await
+            .unwrap();
         assert_ne!(first, second, "expired row must not be reused");
     }
 
@@ -237,10 +261,14 @@ mod tests {
         let svc = make_test_service().await;
         // Three expired (zero TTL) + two future.
         for _ in 0..3 {
-            svc.issue_file("agent:r", "x.md", "user-1", 0).await.unwrap();
+            svc.issue_file("agent:r", "x.md", "user-1", 0)
+                .await
+                .unwrap();
         }
         for _ in 0..2 {
-            svc.issue_file("agent:r", "x.md", "user-1", 3600).await.unwrap();
+            svc.issue_file("agent:r", "x.md", "user-1", 3600)
+                .await
+                .unwrap();
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let deleted = svc.cleanup_expired().await.unwrap();

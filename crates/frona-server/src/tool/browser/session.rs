@@ -73,7 +73,11 @@ impl BrowserSessionManager {
     }
 
     /// Inserts `/` before the query string — browserless v2 returns HTTP 400 without it.
-    fn ws_url_for_profile(config: &BrowserConfig, user_handle: &crate::core::Handle, provider: &str) -> String {
+    fn ws_url_for_profile(
+        config: &BrowserConfig,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) -> String {
         let user_data_dir = config.profile_path(user_handle, provider);
         let base = config.ws_url.trim_end_matches('/');
         format!(
@@ -253,7 +257,11 @@ impl BrowserSessionManager {
         tracing::info!(count = browser_ids.len(), "Killed browserless sessions");
     }
 
-    async fn kill_browserless_sessions_for_profile(&self, user_handle: &crate::core::Handle, provider: &str) {
+    async fn kill_browserless_sessions_for_profile(
+        &self,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) {
         let Some(config) = self.config.as_ref() else {
             return;
         };
@@ -290,7 +298,11 @@ impl BrowserSessionManager {
         self.kill_browserless_session_ids(&ids).await;
     }
 
-    pub async fn close_session(&self, user_handle: &crate::core::Handle, provider: &str) -> Result<(), AppError> {
+    pub async fn close_session(
+        &self,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) -> Result<(), AppError> {
         let key = Self::profile_key(user_handle, provider);
         let mut sessions = self.sessions.write().await;
         if let Some(conn) = sessions.remove(&key) {
@@ -341,7 +353,11 @@ mod tests {
 
     #[test]
     fn ws_url_inserts_root_path_before_query_string() {
-        let url = BrowserSessionManager::ws_url_for_profile(&cfg("ws://browserless:3333"), &crate::handle!("alice"), "openai");
+        let url = BrowserSessionManager::ws_url_for_profile(
+            &cfg("ws://browserless:3333"),
+            &crate::handle!("alice"),
+            "openai",
+        );
         assert_eq!(
             url,
             "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"
@@ -350,7 +366,11 @@ mod tests {
 
     #[test]
     fn ws_url_normalises_trailing_slash_on_base() {
-        let url = BrowserSessionManager::ws_url_for_profile(&cfg("ws://browserless:3333/"), &crate::handle!("alice"), "openai");
+        let url = BrowserSessionManager::ws_url_for_profile(
+            &cfg("ws://browserless:3333/"),
+            &crate::handle!("alice"),
+            "openai",
+        );
         assert_eq!(
             url,
             "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"

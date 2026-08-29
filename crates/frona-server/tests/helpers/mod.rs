@@ -9,18 +9,162 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use frona::core::metrics;
 use frona::db::repo::generic::SurrealRepo;
+use frona::inference::Usage;
 use frona::inference::config::{ModelGroup, RetryConfig};
 use frona::inference::error::InferenceError;
-use frona::inference::provider::{ModelProvider, ModelRef};
+use frona::inference::provider::{ModelProvider, ModelRef, SUBMIT_TOOL_NAME};
 use frona::inference::registry::ModelProviderRegistry;
-use frona::inference::Usage;
 use frona::policy::service::PolicyService;
 use frona::tool::manager::ToolManager;
 use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
-/// Test-only UsageService — empty model catalog, fresh broadcast,
+pub async fn seed_reconciled_entity(
+    db: &Surreal<Db>,
+    user_id: &str,
+    path: &str,
+    name: &str,
+    description: &str,
+    attributes: &serde_json::Value,
+) -> Result<(), ()> {
+    let repo = frona::db::repo::pkm::PkmRepo::new(db.clone(), 1);
+    let existing = repo.entity_by_path(user_id, path).await.unwrap().unwrap();
+    let name = name.trim();
+    let renamed = !name.is_empty() && name != existing.name;
+    let final_name = if renamed {
+        name.to_string()
+    } else {
+        existing.name.clone()
+    };
+    let mut aliases = existing.aliases;
+    if renamed {
+        aliases.insert(existing.name);
+    }
+    let search_text =
+        frona::memory::pkm::model::derive_search_text(&final_name, description, &aliases);
+    db.query(
+        "UPDATE type::record('knowledge_entity', $id) SET
+            name = $name, description = $description, search_text = $search_text,
+            aliases = $aliases, attributes = $attributes",
+    )
+    .bind(("id", existing.id))
+    .bind(("name", final_name))
+    .bind(("description", description.to_string()))
+    .bind(("search_text", search_text))
+    .bind(("aliases", aliases))
+    .bind(("attributes", attributes.clone()))
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+    Ok(())
+}
+
+pub async fn mark_entity_rendered(db: &Surreal<Db>, user_id: &str, path: &str) -> Result<(), ()> {
+    db.query(
+        "UPDATE knowledge_entity SET rendered_at = $now
+         WHERE user_id = $user_id AND path = $path",
+    )
+    .bind(("now", chrono::Utc::now()))
+    .bind(("user_id", user_id.to_string()))
+    .bind(("path", path.to_string()))
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+    Ok(())
+}
+
+pub async fn seed_entity_kinds(
+    db: &Surreal<Db>,
+    user_id: &str,
+    path: &str,
+    kinds: &[String],
+) -> Result<(), ()> {
+    db.query(
+        "UPDATE knowledge_entity SET kinds = $kinds, updated_at = $now
+         WHERE user_id = $user_id AND path = $path",
+    )
+    .bind(("kinds", kinds.to_vec()))
+    .bind(("now", chrono::Utc::now()))
+    .bind(("user_id", user_id.to_string()))
+    .bind(("path", path.to_string()))
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+    Ok(())
+}
+
+pub async fn seed_asserted_entity_link(
+    db: &Surreal<Db>,
+    user_id: &str,
+    from: &str,
+    to: &str,
+    relation: &str,
+) -> Result<(), ()> {
+    let link = frona::memory::pkm::model::KnowledgeEntityLink {
+        id: frona::core::repository::new_id(),
+        user_id: user_id.to_string(),
+        from_entity_path: from.to_string(),
+        to_entity_path: to.to_string(),
+        relation: relation.to_string(),
+        source_memory_ids: Vec::new(),
+        origin: frona::memory::pkm::model::LinkOrigin::Asserted,
+        created_at: chrono::Utc::now(),
+    };
+    let _: Option<surrealdb::types::Value> = db
+        .create(("knowledge_entity_link", link.id.clone()))
+        .content(link)
+        .await
+        .unwrap();
+    Ok(())
+}
+
+pub async fn commit_checkpointed_extract_patch(
+    repo: &frona::db::repo::pkm::PkmRepo,
+    user_id: &str,
+    batch: &frona::db::repo::pkm::IngestBatch,
+    watermark: Option<(&str, chrono::DateTime<chrono::Utc>)>,
+    short_memory_ids: &[String],
+) -> frona::db::repo::pkm::IngestCounts {
+    use frona::memory::pkm::{ConsolidationStageState, IngestState, KnowledgeConsolidationRecord};
+
+    let now = chrono::Utc::now();
+    let mut record = KnowledgeConsolidationRecord {
+        id: frona::core::repository::new_id(),
+        consolidation_id: frona::core::repository::new_id(),
+        user_id: user_id.to_string(),
+        state: ConsolidationStageState::Ingest(IngestState::default()),
+        stats: Default::default(),
+        attempts: 0,
+        restart_count: 0,
+        failure: None,
+        next_attempt_at: now,
+        updated_at: now,
+    };
+    record.stats.absorb_ingest_batch(batch);
+    let watermarks = watermark
+        .map(|(chat_id, until)| (chat_id.to_string(), until))
+        .into_iter()
+        .collect::<Vec<_>>();
+    let counts = repo
+        .commit_extract_patch_with_checkpoint(
+            user_id,
+            batch,
+            &watermarks,
+            short_memory_ids,
+            &record,
+        )
+        .await
+        .unwrap();
+    record.stats.absorb_ingest_counts(&counts);
+    repo.save_consolidation_record(&record).await.unwrap();
+    counts
+}
+
+/// Test-only UsageService with an empty model catalog, fresh broadcast,
 /// real DB table. Sufficient to satisfy constructor signatures; in tests that
 /// don't assert against the inference_usage table this is a complete stub.
 pub fn test_usage_service(db: &Surreal<Db>) -> frona::inference::usage::UsageService {
@@ -48,7 +192,9 @@ pub fn test_usage_ctx() -> frona::inference::usage::UsageContext {
 pub fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     let schema = frona::policy::schema::build_schema();
     let repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(
+            db.clone(),
+        ));
     let tool_manager = Arc::new(ToolManager::new(false));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = frona::auth::UserService::new(
@@ -57,9 +203,9 @@ pub fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     );
     PolicyService::new(repo, schema, tool_manager, storage, user_service)
 }
+use rig_core::completion::message::{ToolCall, ToolFunction};
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
-use rig_core::completion::message::{ToolCall, ToolFunction};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -68,11 +214,26 @@ pub enum MockResponse {
     TextWithReasoning(String, String),
     ToolCalls(Vec<(String, String, Value)>),
     Error(InferenceError),
+    /// Consume this response and remain in flight until the caller is cancelled. Useful
+    /// for crash-resume tests that need an exact durable boundary.
+    Pending,
+    /// Stay in flight, then delay the future's drop when cancellation arrives. This lets
+    /// concurrency tests observe the caller while it still owns its operation guard.
+    PendingWithDropDelay(std::time::Duration),
+    /// Hold this response until every participant reaches the same point. This proves
+    /// model calls overlap without adding timing-sensitive sleeps to concurrency tests.
+    Barrier(Arc<tokio::sync::Barrier>, Box<MockResponse>),
 }
 
 pub struct MockModelProvider {
     responses: Mutex<Vec<MockResponse>>,
     pub call_count: Mutex<usize>,
+    /// The `chat_history` of the most recent call, which is what the conversation sent
+    /// back, which is the only way to assert on messages a loop appends internally
+    /// (tool results, feedback) rather than returns.
+    last_history: Mutex<Vec<RigMessage>>,
+    histories: Mutex<Vec<Vec<RigMessage>>>,
+    tool_histories: Mutex<Vec<Vec<RigToolDefinition>>>,
 }
 
 impl MockModelProvider {
@@ -80,7 +241,33 @@ impl MockModelProvider {
         Self {
             responses: Mutex::new(responses),
             call_count: Mutex::new(0),
+            last_history: Mutex::new(Vec::new()),
+            histories: Mutex::new(Vec::new()),
+            tool_histories: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The history the provider was handed on its most recent call.
+    pub fn last_history(&self) -> Vec<RigMessage> {
+        self.last_history.lock().unwrap().clone()
+    }
+
+    pub fn histories(&self) -> Vec<Vec<RigMessage>> {
+        self.histories.lock().unwrap().clone()
+    }
+
+    pub fn tool_histories(&self) -> Vec<Vec<RigToolDefinition>> {
+        self.tool_histories.lock().unwrap().clone()
+    }
+
+    /// Append a response to the queue after construction for tests that only
+    /// know the expected payload (e.g. a memory id) after some setup runs.
+    pub fn enqueue(&self, response: MockResponse) {
+        self.responses.lock().unwrap().push(response);
+    }
+
+    pub fn prepend(&self, response: MockResponse) {
+        self.responses.lock().unwrap().insert(0, response);
     }
 
     fn next_response(&self) -> MockResponse {
@@ -102,14 +289,16 @@ impl MockModelProvider {
 impl ModelProvider for MockModelProvider {
     async fn inference(
         &self,
-        _model_id: &str,
+        _model: &ModelRef,
         _system_prompt: &str,
-        _chat_history: Vec<RigMessage>,
-        _tools: Vec<RigToolDefinition>,
+        chat_history: Vec<RigMessage>,
+        tools: Vec<RigToolDefinition>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-        _additional_params: Option<serde_json::Value>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+        *self.last_history.lock().unwrap() = chat_history.clone();
+        self.histories.lock().unwrap().push(chat_history);
+        self.tool_histories.lock().unwrap().push(tools);
         let usage = Usage {
             input_tokens: 10,
             output_tokens: 5,
@@ -117,34 +306,51 @@ impl ModelProvider for MockModelProvider {
             cached_input_tokens: 0,
             cache_creation_input_tokens: 0,
             reasoning_tokens: 0,
+            tool_use_prompt_tokens: 0,
         };
-        let content = match self.next_response() {
+        let response = match self.next_response() {
+            MockResponse::Barrier(barrier, response) => {
+                barrier.wait().await;
+                *response
+            }
+            response => response,
+        };
+        let content = match response {
             MockResponse::Text(t) => vec![AssistantContent::text(&t)],
             MockResponse::TextWithReasoning(text, reasoning) => vec![
-                AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(&reasoning)),
+                AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(
+                    &reasoning,
+                )),
                 AssistantContent::text(&text),
             ],
             MockResponse::ToolCalls(calls) => calls
                 .into_iter()
                 .map(|(id, name, args)| {
-                    AssistantContent::ToolCall(ToolCall::new(id, ToolFunction::new(name, args)))
+                    AssistantContent::ToolCall(ToolCall::new(
+                        rig_core::completion::message::ToolCallId::new_or_mint(id),
+                        ToolFunction::new(name, args),
+                    ))
                 })
                 .collect(),
             MockResponse::Error(e) => return Err(e),
+            MockResponse::Pending => std::future::pending().await,
+            MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
+            MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
         };
-        Ok(frona::inference::provider::InferenceOutput::new(content, usage))
+        Ok(frona::inference::provider::InferenceOutput::new(
+            content, usage,
+        ))
     }
 
     async fn stream_inference(
         &self,
-        _model_id: &str,
+        _model: &ModelRef,
         _system_prompt: &str,
         _chat_history: Vec<RigMessage>,
         _tools: Vec<RigToolDefinition>,
         token_tx: mpsc::Sender<frona::inference::provider::StreamToken>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-        _additional_params: Option<serde_json::Value>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
         let usage = Usage {
             input_tokens: 10,
@@ -153,54 +359,113 @@ impl ModelProvider for MockModelProvider {
             cached_input_tokens: 0,
             cache_creation_input_tokens: 0,
             reasoning_tokens: 0,
+            tool_use_prompt_tokens: 0,
         };
-        let content = match self.next_response() {
+        let response = match self.next_response() {
+            MockResponse::Barrier(barrier, response) => {
+                barrier.wait().await;
+                *response
+            }
+            response => response,
+        };
+        let content = match response {
             MockResponse::Text(t) => {
-                let _ = token_tx.send(frona::inference::provider::StreamToken::Text(t.clone())).await;
+                let _ = token_tx
+                    .send(frona::inference::provider::StreamToken::Text(t.clone()))
+                    .await;
                 vec![AssistantContent::text(t)]
             }
             MockResponse::TextWithReasoning(text, reasoning) => {
-                let _ = token_tx.send(frona::inference::provider::StreamToken::Reasoning(reasoning.clone())).await;
-                let _ = token_tx.send(frona::inference::provider::StreamToken::Text(text.clone())).await;
+                let _ = token_tx
+                    .send(frona::inference::provider::StreamToken::Reasoning(
+                        reasoning.clone(),
+                    ))
+                    .await;
+                let _ = token_tx
+                    .send(frona::inference::provider::StreamToken::Text(text.clone()))
+                    .await;
                 vec![
-                    AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(&reasoning)),
+                    AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(
+                        &reasoning,
+                    )),
                     AssistantContent::text(text),
                 ]
             }
             MockResponse::ToolCalls(calls) => calls
                 .into_iter()
                 .map(|(id, name, args)| {
-                    AssistantContent::ToolCall(ToolCall::new(id, ToolFunction::new(name, args)))
+                    AssistantContent::ToolCall(ToolCall::new(
+                        rig_core::completion::message::ToolCallId::new_or_mint(id),
+                        ToolFunction::new(name, args),
+                    ))
                 })
                 .collect(),
             MockResponse::Error(e) => return Err(e),
+            MockResponse::Pending => std::future::pending().await,
+            MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
+            MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
         };
-        Ok(frona::inference::provider::InferenceOutput::new(content, usage))
+        Ok(frona::inference::provider::InferenceOutput::new(
+            content, usage,
+        ))
     }
 
     async fn structured_inference(
         &self,
-        _model_id: &str,
+        _model: &ModelRef,
         _system_prompt: &str,
         _chat_history: Vec<RigMessage>,
         _schema: serde_json::Value,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-        _additional_params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, InferenceError> {
-        match self.next_response() {
+        let response = match self.next_response() {
+            MockResponse::Barrier(barrier, response) => {
+                barrier.wait().await;
+                *response
+            }
+            response => response,
+        };
+        match response {
             MockResponse::ToolCalls(mut calls) => {
-                let (_id, _name, args) = calls
-                    .pop()
-                    .ok_or_else(|| InferenceError::InferenceFailed("mock: empty ToolCalls".into()))?;
+                let (_id, name, args) = calls.pop().ok_or_else(|| {
+                    InferenceError::InferenceFailed("mock: empty ToolCalls".into())
+                })?;
+                // Structured output arrives as a call to the submit tool. Enforced here
+                // even though this path could ignore the name, because the REAL tool loop
+                // (`structured_inference_with_tools` / `structured_conversation`)
+                // dispatches on it: a test encoding the wrong name passes here and fails
+                // there, silently. That divergence is how the playbook capture path went
+                // untested.
+                if name != SUBMIT_TOOL_NAME {
+                    return Err(InferenceError::InferenceFailed(format!(
+                        "mock structured_inference: tool call named `{name}`, but structured \
+                         output must use `{SUBMIT_TOOL_NAME}` — the real tool loop dispatches \
+                         on this name, so any other value only works on this path"
+                    )));
+                }
                 Ok(args)
             }
             MockResponse::Error(e) => Err(e),
+            MockResponse::Pending => std::future::pending().await,
+            MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
+            MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
             _ => Err(InferenceError::InferenceFailed(
                 "mock structured_inference: queue head is not a ToolCalls response".into(),
             )),
         }
     }
+}
+
+async fn pending_with_drop_delay<T>(delay: std::time::Duration) -> T {
+    struct DelayOnDrop(std::time::Duration);
+    impl Drop for DelayOnDrop {
+        fn drop(&mut self) {
+            std::thread::sleep(self.0);
+        }
+    }
+    let _delay = DelayOnDrop(delay);
+    std::future::pending().await
 }
 
 pub struct MockInternalTool {
@@ -422,7 +687,10 @@ pub fn mock_context() -> InferenceContext {
 pub fn test_model_group() -> ModelGroup {
     ModelGroup {
         name: "test".into(),
-        main: ModelRef { provider: "mock".into(), model_id: "test-model".into(), additional_params: None },
+        main: ModelRef {
+            provider: "mock".into(),
+            model_id: "test-model".into(),
+        },
         fallbacks: vec![],
         max_tokens: Some(4096),
         temperature: None,
@@ -442,7 +710,6 @@ pub fn test_model_group_with_fallback(fallback_provider: &str, fallback_model: &
     group.fallbacks.push(ModelRef {
         provider: fallback_provider.into(),
         model_id: fallback_model.into(),
-        additional_params: None,
     });
     group
 }
@@ -452,7 +719,7 @@ pub fn test_model_group_with_fallback(fallback_provider: &str, fallback_model: &
 /// process-wide in-memory DB so tests that don't assert on the table just work.
 ///
 /// The DB is created on a **separate worker thread** so we don't trip
-/// tokio's "cannot start a runtime from within a runtime" guard — every
+/// tokio's "cannot start a runtime from within a runtime" guard. Every
 /// `#[tokio::test]` call site already lives inside a runtime, and nested
 /// `block_on` panics there.
 pub fn test_metrics_ctx() -> frona::inference::usage::UsageService {
@@ -470,6 +737,10 @@ pub fn test_metrics_ctx() -> frona::inference::usage::UsageService {
                 db
             });
             tx.send(db).expect("send db back");
+            // The in-memory SurrealDB engine owns tasks spawned on this
+            // runtime. Keep its worker thread alive for the process lifetime;
+            // dropping the runtime leaves later database requests pending.
+            rt.block_on(std::future::pending::<()>());
         });
         rx.recv().expect("recv db")
     });
@@ -483,6 +754,19 @@ pub fn test_registry_with_provider(
     let mut providers = HashMap::new();
     providers.insert(name.to_string(), provider);
     let model_groups = HashMap::new();
+    ModelProviderRegistry::for_testing(providers, model_groups)
+}
+
+pub fn test_registry_with_group(
+    provider_name: &str,
+    provider: Arc<dyn ModelProvider>,
+    group_name: &str,
+    group: ModelGroup,
+) -> ModelProviderRegistry {
+    let mut providers = HashMap::new();
+    providers.insert(provider_name.to_string(), provider);
+    let mut model_groups = HashMap::new();
+    model_groups.insert(group_name.to_string(), group);
     ModelProviderRegistry::for_testing(providers, model_groups)
 }
 
@@ -504,8 +788,8 @@ pub struct SseFrame {
 /// Convert an axum SSE `Event` to its wire-format string by running it
 /// through a one-shot Sse body, the same way axum itself serializes events.
 async fn event_to_string(event: axum::response::sse::Event) -> String {
-    use axum::response::sse::Sse;
     use axum::response::IntoResponse;
+    use axum::response::sse::Sse;
     use http_body_util::BodyExt;
 
     let stream = futures::stream::once(async { Ok::<_, std::convert::Infallible>(event) });
@@ -543,7 +827,10 @@ fn parse_sse_text(payload: &str) -> Option<SseFrame> {
     let joined = data_parts.join("\n");
     let data: Value = serde_json::from_str(&joined).unwrap_or(Value::Null);
 
-    Some(SseFrame { event: event_name, data })
+    Some(SseFrame {
+        event: event_name,
+        data,
+    })
 }
 
 /// Parse a single axum SSE `Event` into an `SseFrame`.
@@ -574,8 +861,8 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
 /// tests that need to seed rows (chats, shares, …) directly.
 pub async fn test_chat_service_with_db() -> (frona::chat::service::ChatService, surrealdb::Surreal<surrealdb::engine::local::Db>) {
     use frona::db::repo::generic::SurrealRepo;
-    use surrealdb::engine::local::Mem;
     use surrealdb::Surreal;
+    use surrealdb::engine::local::Mem;
 
     let db = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
@@ -594,12 +881,11 @@ pub async fn test_chat_service_with_db() -> (frona::chat::service::ChatService, 
 
     let storage = frona::storage::StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
-    let user_service = frona::auth::UserService::new(
-        SurrealRepo::new(db.clone()),
-        &config.cache,
-    );
+    let user_service = frona::auth::UserService::new(SurrealRepo::new(db.clone()), &config.cache);
     let agent_service = frona::agent::service::AgentService::new(
         SurrealRepo::new(db.clone()),
         &config.cache,
@@ -613,15 +899,6 @@ pub async fn test_chat_service_with_db() -> (frona::chat::service::ChatService, 
     );
 
     let usage_service = test_usage_service(&db);
-    let memory_service = frona::memory::service::MemoryService::new(
-        SurrealRepo::new(db.clone()),
-        SurrealRepo::new(db.clone()),
-        SurrealRepo::new(db.clone()),
-        std::sync::Arc::new(provider_registry.clone()),
-        frona::agent::prompt::PromptLoader::new(&base),
-        storage.clone(),
-        usage_service.clone(),
-    );
 
     let keypair_repo: SurrealRepo<frona::credential::keypair::models::KeyPair> =
         SurrealRepo::new(db.clone());
@@ -644,7 +921,6 @@ pub async fn test_chat_service_with_db() -> (frona::chat::service::ChatService, 
         provider_registry,
         storage,
         user_service,
-        memory_service,
         frona::agent::prompt::PromptLoader::new(&base),
         frona::chat::broadcast::BroadcastService::new(),
         presign_service,
@@ -652,6 +928,24 @@ pub async fn test_chat_service_with_db() -> (frona::chat::service::ChatService, 
         usage_service,
     );
     (chat_service, db)
+}
+
+/// Build a `BasicMemoryService` for tests that construct a `Harness` directly
+/// (Harness still owns the memory service). Reuses the state's mock registry.
+pub fn test_memory_service(
+    state: &frona::core::state::AppState,
+    db: &Surreal<Db>,
+) -> std::sync::Arc<dyn frona::memory::service::MemoryService> {
+    std::sync::Arc::new(frona::memory::basic::BasicMemoryService::new(
+        SurrealRepo::new(db.clone()),
+        SurrealRepo::new(db.clone()),
+        SurrealRepo::new(db.clone()),
+        SurrealRepo::new(db.clone()),
+        std::sync::Arc::new(state.chat_service.provider_registry().clone()),
+        state.prompts.clone(),
+        state.usage_service.clone(),
+        frona::core::config::MemoryConfig::default(),
+    ))
 }
 
 /// Create an `EventSender` backed by a real `BroadcastService` with a
@@ -669,4 +963,77 @@ pub async fn test_event_sender() -> (
     broadcast.register_session("test-user", tx).await;
 
     (event_sender, rx, broadcast)
+}
+
+/// Build a `Harness` whose inference is wired to `mock_provider` (via a mock-registry
+/// `ChatService`), for exercising the harness-routed PKM consolidation path. All other
+/// services are real in-memory ones from a throwaway `AppState`.
+pub fn test_harness(
+    db: &Surreal<Db>,
+    config: &frona::core::config::Config,
+    mock_provider: Arc<dyn ModelProvider>,
+) -> Arc<frona::agent::harness::Harness> {
+    use frona::agent::harness::Harness;
+    use frona::chat::service::ChatService;
+    use frona::core::state::AppState;
+
+    init_metrics();
+    let metrics_handle = metrics::setup_metrics_recorder();
+    let resource_manager = Arc::new(
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
+    );
+    let storage = frona::storage::StorageService::new(config);
+    let mut state = AppState::new(
+        db.clone(),
+        config,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics_handle,
+        resource_manager,
+    );
+
+    // ChatService wired to the mock provider so all harness inference hits it.
+    let mut providers: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
+    providers.insert("mock".to_string(), mock_provider);
+    let mut groups = HashMap::new();
+    groups.insert("test".to_string(), test_model_group());
+    let mock_registry = ModelProviderRegistry::for_testing(providers, groups);
+    let chat_service = ChatService::new(
+        SurrealRepo::new(db.clone()),
+        SurrealRepo::new(db.clone()),
+        SurrealRepo::new(db.clone()),
+        state.agent_service.clone(),
+        mock_registry,
+        state.storage_service.clone(),
+        state.user_service.clone(),
+        state.prompts.clone(),
+        state.broadcast_service.clone(),
+        state.presign_service.clone(),
+        state.notification_service.clone(),
+        state.usage_service.clone(),
+    );
+    state.chat_service = chat_service.clone();
+    let memory_service = test_memory_service(&state, db);
+    Arc::new(Harness::new(
+        chat_service,
+        state.user_service.clone(),
+        state.storage_service.clone(),
+        state.agent_service.clone(),
+        memory_service,
+        state.skill_service.clone(),
+        state.task_service.clone(),
+        state.notification_service.clone(),
+        state.vault_service.clone(),
+        state.mcp_service.clone(),
+        state.tool_manager.clone(),
+        state.policy_service.clone(),
+        state.broadcast_service.clone(),
+        state.active_sessions.clone(),
+        state.shutdown_token.clone(),
+        state.prompts.clone(),
+        state.config.clone(),
+        state.usage_service.clone(),
+    ))
 }

@@ -3,16 +3,16 @@ use serde_json::Value;
 use crate::agent::prompt::PromptLoader;
 use crate::app::models::{App, AppManifest, AppResponse};
 use crate::app::service::AppService;
+use crate::core::error::AppError;
 use crate::inference::hitl::{Hitl, HitlOutcome, HitlRequest, HitlResponse};
 use crate::inference::tool_call::ToolStatus;
-use crate::core::error::AppError;
 use crate::notification::models::{NotificationData, NotificationLevel};
 use crate::notification::service::NotificationService;
 use crate::storage::StorageService;
 
 use frona_derive::agent_tool;
 
-use super::{InferenceContext, ToolOutput};
+use super::{InferenceContext, ToolOutput, active_chat};
 
 pub struct ManageAppTool {
     app_service: AppService,
@@ -27,7 +27,7 @@ impl ManageAppTool {
         app_service: AppService,
         prompts: PromptLoader,
         notification_service: NotificationService,
-            storage_service: StorageService,
+        storage_service: StorageService,
         public_base_url: String,
     ) -> Self {
         Self {
@@ -76,15 +76,19 @@ impl ManageAppTool {
         response: HitlResponse,
         ctx: &InferenceContext,
     ) -> Result<HitlOutcome, AppError> {
-        let HitlRequest::App { action, manifest, .. } = request else {
+        let chat = active_chat(ctx)?;
+        let HitlRequest::App {
+            action, manifest, ..
+        } = request
+        else {
             return Err(AppError::Validation(
                 "manage_app on_resume: expected App request".into(),
             ));
         };
         match response {
             HitlResponse::Approval(true) => {
-                let manifest_parsed: AppManifest =
-                    serde_json::from_value(manifest.clone()).map_err(|e| {
+                let manifest_parsed: AppManifest = serde_json::from_value(manifest.clone())
+                    .map_err(|e| {
                         AppError::Validation(format!("Invalid persisted manifest: {e}"))
                     })?;
                 // Always re-deploy with the approved manifest (handles create AND update).
@@ -95,14 +99,15 @@ impl ManageAppTool {
                     .deploy_and_await(
                         &ctx.agent.id,
                         &ctx.user.id,
-                        &ctx.chat.id,
+                        &chat.id,
                         &manifest_parsed,
                         Vec::new(),
                     )
                     .await?;
-                Ok(HitlOutcome::Resolved(
-                    self.format_running_result(&format!("{action} completed"), &app),
-                ))
+                Ok(HitlOutcome::Resolved(self.format_running_result(
+                    &format!("{action} completed"),
+                    &app,
+                )))
             }
             HitlResponse::Approval(false) => {
                 let handle = manifest
@@ -133,7 +138,9 @@ impl ManageAppTool {
             && let Some(handle_str) = mv.get("handle").and_then(|v| v.as_str())
         {
             if let Some(app) = apps.iter().find(|a| a.handle.as_str() == handle_str) {
-                return Ok(ToolOutput::text(serde_json::to_string_pretty(app).unwrap_or_default()));
+                return Ok(ToolOutput::text(
+                    serde_json::to_string_pretty(app).unwrap_or_default(),
+                ));
             }
             return Ok(ToolOutput::text(format!(
                 "No app found with handle '{handle_str}'"
@@ -153,13 +160,14 @@ impl ManageAppTool {
         ctx: &InferenceContext,
         manifest_value: Option<Value>,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let manifest_value = manifest_value
             .ok_or_else(|| AppError::Validation("manifest is required for deploy".into()))?;
 
         let manifest: AppManifest = serde_json::from_value(manifest_value.clone())
             .map_err(|e| AppError::Validation(format!("Invalid manifest: {e}. Tip: `handle` is required — a short URL-safe identifier (e.g. \"notes\", \"my-dashboard\"). Apps are served at /apps/{{handle}}/.")))?;
 
-        // Pre-flight validation for static apps — catches manifest mistakes
+        // Pre-flight validation for static apps - catches manifest mistakes
         // (bad `static_dir`, missing files) BEFORE the human-approval HITL,
         // so the LLM gets immediate feedback to fix and retry.
         if manifest.effective_kind() == "static" {
@@ -171,7 +179,10 @@ impl ManageAppTool {
             )?;
         }
 
-        let existing = self.app_service.find_by_user_handle(&ctx.user.id, &manifest.handle).await?;
+        let existing = self
+            .app_service
+            .find_by_user_handle(&ctx.user.id, &manifest.handle)
+            .await?;
 
         let needs_approval = check_needs_approval(&existing, &manifest_value);
 
@@ -181,7 +192,7 @@ impl ManageAppTool {
 
             return Ok(ToolOutput::text("").with_hitl(Hitl {
                 prompt,
-                url: format!("{}/chat?id={}", self.public_base_url, ctx.chat.id),
+                url: format!("{}/chat?id={}", self.public_base_url, chat.id),
                 request: HitlRequest::App {
                     action: "deploy".to_string(),
                     manifest: manifest_value,
@@ -195,15 +206,17 @@ impl ManageAppTool {
 
         let app = if let Some(ref existing) = existing {
             self.app_service
-                .restart(&ctx.agent.id, &existing.id, &ctx.chat.id)
+                .restart(&ctx.agent.id, &existing.id, &chat.id)
                 .await?
         } else {
             self.app_service
-                .deploy_and_await(&ctx.agent.id, &ctx.user.id, &ctx.chat.id, &manifest, Vec::new())
+                .deploy_and_await(&ctx.agent.id, &ctx.user.id, &chat.id, &manifest, Vec::new())
                 .await?
         };
 
-        Ok(ToolOutput::text(self.format_running_result("deployed successfully", &app)))
+        Ok(ToolOutput::text(
+            self.format_running_result("deployed successfully", &app),
+        ))
     }
 
     fn format_running_result(&self, action: &str, app: &AppResponse) -> String {
@@ -226,10 +239,21 @@ impl ManageAppTool {
         ctx: &InferenceContext,
         manifest_value: Option<Value>,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let app_id = self.resolve_app_id(ctx, manifest_value.as_ref()).await?;
 
-        let app = self.app_service.stop(&ctx.agent.id, &app_id, &ctx.chat.id).await?;
-        self.emit_notification(ctx, &app.handle, "stop", NotificationLevel::Info, &format!("App '{}' stopped", app.name)).await;
+        let app = self
+            .app_service
+            .stop(&ctx.agent.id, &app_id, &chat.id)
+            .await?;
+        self.emit_notification(
+            ctx,
+            &app.handle,
+            "stop",
+            NotificationLevel::Info,
+            &format!("App '{}' stopped", app.name),
+        )
+        .await;
         Ok(ToolOutput::text(format!(
             "App '{}' stopped. Status: {}",
             app.name, app.status
@@ -241,15 +265,25 @@ impl ManageAppTool {
         ctx: &InferenceContext,
         manifest_value: Option<Value>,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let app_id = self.resolve_app_id(ctx, manifest_value.as_ref()).await?;
 
         let app = self
             .app_service
-            .start(&ctx.agent.id, &app_id, &ctx.chat.id, Vec::new())
+            .start(&ctx.agent.id, &app_id, &chat.id, Vec::new())
             .await?;
 
-        self.emit_notification(ctx, &app.handle, "start", NotificationLevel::Success, &format!("App '{}' started", app.name)).await;
-        Ok(ToolOutput::text(self.format_running_result("started", &app)))
+        self.emit_notification(
+            ctx,
+            &app.handle,
+            "start",
+            NotificationLevel::Success,
+            &format!("App '{}' started", app.name),
+        )
+        .await;
+        Ok(ToolOutput::text(
+            self.format_running_result("started", &app),
+        ))
     }
 
     async fn handle_restart(
@@ -257,12 +291,25 @@ impl ManageAppTool {
         ctx: &InferenceContext,
         manifest_value: Option<Value>,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let app_id = self.resolve_app_id(ctx, manifest_value.as_ref()).await?;
 
-        let app = self.app_service.restart(&ctx.agent.id, &app_id, &ctx.chat.id).await?;
+        let app = self
+            .app_service
+            .restart(&ctx.agent.id, &app_id, &chat.id)
+            .await?;
 
-        self.emit_notification(ctx, &app.handle, "restart", NotificationLevel::Info, &format!("App '{}' restarted", app.name)).await;
-        Ok(ToolOutput::text(self.format_running_result("restarted", &app)))
+        self.emit_notification(
+            ctx,
+            &app.handle,
+            "restart",
+            NotificationLevel::Info,
+            &format!("App '{}' restarted", app.name),
+        )
+        .await;
+        Ok(ToolOutput::text(
+            self.format_running_result("restarted", &app),
+        ))
     }
 
     async fn handle_destroy(
@@ -316,9 +363,7 @@ impl ManageAppTool {
             .and_then(|v| v.get("handle"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                AppError::Validation(
-                    "manifest.handle is required to identify the app".into(),
-                )
+                AppError::Validation("manifest.handle is required to identify the app".into())
             })?;
         let handle = crate::core::Handle::try_new(handle_str)?;
 
@@ -450,14 +495,12 @@ fn validate_static_dir(
     let has_html = std::fs::read_dir(&resolved)
         .ok()
         .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .any(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
-                })
+            entries.filter_map(|e| e.ok()).any(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+            })
         })
         .unwrap_or(false);
     if !has_html {
@@ -584,8 +627,6 @@ mod tests {
         assert!(check_needs_approval(&Some(app), &new));
     }
 
-    // ── validate_static_dir ──────────────────────────────────────────────
-
     fn make_static_manifest(static_dir: Option<&str>) -> AppManifest {
         AppManifest {
             handle: crate::handle!("countdown"),
@@ -673,7 +714,10 @@ mod tests {
         )
         .unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("absolute") || msg.contains("relative"), "unexpected: {msg}");
+        assert!(
+            msg.contains("absolute") || msg.contains("relative"),
+            "unexpected: {msg}"
+        );
     }
 
     #[test]
@@ -694,9 +738,7 @@ mod tests {
     #[test]
     fn rejects_dir_with_no_html() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp
-            .path()
-            .join("users/mina/agents/system/apps/countdown");
+        let dir = tmp.path().join("users/mina/agents/system/apps/countdown");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("README.md"), "hi").unwrap();
 
@@ -715,9 +757,7 @@ mod tests {
     #[test]
     fn accepts_valid_directory_with_html() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp
-            .path()
-            .join("users/mina/agents/system/apps/countdown");
+        let dir = tmp.path().join("users/mina/agents/system/apps/countdown");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("index.html"), "<html></html>").unwrap();
 

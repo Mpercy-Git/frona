@@ -10,7 +10,7 @@ use crate::contact::service::ContactService;
 use crate::core::error::AppError;
 use crate::space::service::SpaceService;
 use crate::tool::{
-    AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition,
+    AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition,
 };
 
 pub struct AnnotateTool {
@@ -97,9 +97,10 @@ impl AnnotateTool {
         ctx: &InferenceContext,
         annotations: Vec<Annotation>,
     ) -> Result<CandidateEvent, AppError> {
+        let chat = active_chat(ctx)?;
         let message = self
             .chat_service
-            .get_stored_messages(&ctx.chat.id)
+            .get_stored_messages(&chat.id)
             .await?
             .into_iter()
             .rev()
@@ -117,7 +118,7 @@ impl AnnotateTool {
             .map(|m| m.content.clone())
             .unwrap_or_default();
 
-        let channel = if let Some(space_id) = ctx.chat.space_id.as_deref() {
+        let channel = if let Some(space_id) = chat.space_id.as_deref() {
             self.channel_service
                 .find_by_space(space_id)
                 .await
@@ -143,7 +144,7 @@ impl AnnotateTool {
 
         Ok(CandidateEvent {
             channel,
-            chat: Some(ctx.chat.clone()),
+            chat: Some(chat.clone()),
             message,
             contact,
             sender,

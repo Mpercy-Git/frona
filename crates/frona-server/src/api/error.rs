@@ -1,7 +1,7 @@
+use crate::core::error::{AppError, AuthErrorCode};
 use axum::Json;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use crate::core::error::{AppError, AuthErrorCode};
 use serde_json::json;
 
 /// Byte-identical 404 for routes that must not leak whether a resource
@@ -43,13 +43,19 @@ impl IntoResponse for ApiError {
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Database(msg) => {
                 tracing::error!("Database error: {msg}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".into(),
+                )
             }
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             AppError::Internal(msg) => {
                 tracing::error!("Internal error: {msg}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".into(),
+                )
             }
             AppError::Inference(msg) => {
                 tracing::error!("Inference error: {msg}");
@@ -65,11 +71,15 @@ impl IntoResponse for ApiError {
             }
             AppError::Decryption(msg) => {
                 tracing::error!("Decryption error: {msg}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".into(),
+                )
             }
-            AppError::Http { status, message } => {
-                (StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY), message.clone())
-            }
+            AppError::Http { status, message } => (
+                StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
+                message.clone(),
+            ),
         };
 
         (status, Json(json!({ "error": message }))).into_response()

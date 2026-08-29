@@ -12,6 +12,7 @@ import { ChannelsSection } from "@/components/settings/sections/channels-section
 import { SkillsSection } from "@/components/settings/sections/skills-section";
 import { UserVaultSection } from "@/components/settings/sections/vault-section";
 import { NotificationsSection } from "@/components/settings/sections/notifications-section";
+import { UserMemorySection } from "@/components/settings/sections/user-memory-section";
 
 const TABS = [
   { id: "profile", label: "Profile" },
@@ -20,6 +21,7 @@ const TABS = [
   { id: "skills", label: "Skills" },
   { id: "mcp", label: "MCP" },
   { id: "vault", label: "Vault" },
+  { id: "memory", label: "Memory" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -155,6 +157,7 @@ export default function SettingsPage() {
               {activeTab === "skills" && <SkillsSection scope="user" />}
               {activeTab === "mcp" && <McpSection />}
               {activeTab === "vault" && <UserVaultSection />}
+              {activeTab === "memory" && <UserMemorySection />}
             </div>
 
             {sectionModified && (

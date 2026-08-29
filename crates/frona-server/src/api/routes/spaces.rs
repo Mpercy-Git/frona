@@ -58,6 +58,12 @@ async fn delete_space(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<(), ApiError> {
+    if state.channel_service.find_by_space(&id).await?.is_some() {
+        return Err(crate::core::error::AppError::Validation(
+            "Delete the channel attached to this space first".into(),
+        )
+        .into());
+    }
     state.space_service.delete(&auth.user_id, &id).await?;
     Ok(())
 }

@@ -7,9 +7,8 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use teloxide::Bot;
 use teloxide::payloads::{
-    AnswerCallbackQuerySetters, DeleteWebhookSetters, EditMessageTextSetters,
-    SendAudioSetters, SendMediaGroupSetters, SendMessageSetters,
-    SendPhotoSetters, SendVideoSetters,
+    AnswerCallbackQuerySetters, DeleteWebhookSetters, EditMessageTextSetters, SendAudioSetters,
+    SendMediaGroupSetters, SendMessageSetters, SendPhotoSetters, SendVideoSetters,
 };
 use teloxide::prelude::Requester;
 use teloxide::types::{
@@ -26,12 +25,10 @@ use teloxide::RequestError;
 
 use super::super::attachment;
 use super::super::error::{ChannelError, ChannelErrorKind};
-use super::super::models::{
-    ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
-};
-use super::super::typing::TypingIndicator;
 #[cfg(test)]
 use super::super::models::ChannelFactory;
+use super::super::models::{ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id};
+use super::super::typing::TypingIndicator;
 
 /// Telegram's typing indicator auto-fades in ~5s. Refresh just before that
 /// so long inferences keep showing "typing…" without bombarding the API.
@@ -69,10 +66,7 @@ impl From<TelegramConfig> for TelegramAdapter {
         Self {
             bot,
             typing: TypingIndicator::new(),
-            splitter: super::split::TelegramMarkdownV2Splitter::new(
-                TELEGRAM_MAX_MESSAGE_LEN,
-                None,
-            ),
+            splitter: super::split::TelegramMarkdownV2Splitter::new(TELEGRAM_MAX_MESSAGE_LEN, None),
         }
     }
 }
@@ -80,13 +74,9 @@ impl From<TelegramConfig> for TelegramAdapter {
 fn classify_telegram_error(e: &RequestError) -> ChannelError {
     let msg = e.to_string();
     match e {
-        RequestError::RetryAfter(s) => {
-            ChannelError::transient(msg).with_retry_hint(s.duration())
-        }
+        RequestError::RetryAfter(s) => ChannelError::transient(msg).with_retry_hint(s.duration()),
         RequestError::Network(_) | RequestError::Io(_) => ChannelError::transient(msg),
-        RequestError::MigrateToChatId(_) => {
-            ChannelError::terminal(msg, ChannelErrorKind::NotFound)
-        }
+        RequestError::MigrateToChatId(_) => ChannelError::terminal(msg, ChannelErrorKind::NotFound),
         RequestError::Api(api) => match api {
             ApiError::BotBlocked
             | ApiError::BotKicked
@@ -103,9 +93,7 @@ fn classify_telegram_error(e: &RequestError) -> ChannelError {
             ApiError::ChatNotFound | ApiError::UserNotFound => {
                 ChannelError::terminal(msg, ChannelErrorKind::NotFound)
             }
-            ApiError::InvalidToken => {
-                ChannelError::terminal(msg, ChannelErrorKind::Unauthorized)
-            }
+            ApiError::InvalidToken => ChannelError::terminal(msg, ChannelErrorKind::Unauthorized),
             ApiError::CantParseEntities(_)
             | ApiError::CantParseUrl
             | ApiError::WrongHttpUrl
@@ -249,12 +237,7 @@ impl ChannelAdapter for TelegramAdapter {
                 existing = %existing,
                 "Telegram bot held a different webhook URL; clearing it (with pending updates) before re-registering",
             );
-            if let Err(e) = self
-                .bot
-                .delete_webhook()
-                .drop_pending_updates(true)
-                .await
-            {
+            if let Err(e) = self.bot.delete_webhook().drop_pending_updates(true).await {
                 tracing::warn!(
                     channel_id = %ctx.channel.id,
                     error = %e,
@@ -295,7 +278,9 @@ impl ChannelAdapter for TelegramAdapter {
         chat: &Chat,
         _ctx: &ChannelCtx,
     ) -> Result<(), ChannelError> {
-        let Some(text) = tool_call.turn_text.as_deref() else { return Ok(()) };
+        let Some(text) = tool_call.turn_text.as_deref() else {
+            return Ok(());
+        };
         if text.trim().is_empty() {
             return Ok(());
         }
@@ -356,7 +341,13 @@ impl ChannelAdapter for TelegramAdapter {
         if !doc_atts.is_empty() {
             let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::with_capacity(doc_atts.len());
             for att in &doc_atts {
-                let url_str = match attachment::outbound_url(att, ctx, attachment::ChannelMode::Button).await {
+                let url_str = match attachment::outbound_url(
+                    att,
+                    ctx,
+                    attachment::ChannelMode::Button,
+                )
+                .await
+                {
                     Ok(u) => u,
                     Err(e) => {
                         tracing::warn!(msg_id = %msg.id, path = %att.path, error = %e, "telegram: canonical URL failed; skipping doc");
@@ -377,7 +368,8 @@ impl ChannelAdapter for TelegramAdapter {
 
         let mut keyboard_consumed = false;
         if !body.trim().is_empty() {
-            self.send_bubble_with_keyboard(chat, &body, doc_keyboard.clone()).await?;
+            self.send_bubble_with_keyboard(chat, &body, doc_keyboard.clone())
+                .await?;
             keyboard_consumed = doc_keyboard.is_some();
         }
 
@@ -440,36 +432,32 @@ impl ChannelAdapter for TelegramAdapter {
         Ok(())
     }
 
-    async fn on_inference_start(
-        &self,
-        chat: &Chat,
-        _ctx: &ChannelCtx,
-    ) -> Result<(), ChannelError> {
-        let Ok(external_id) = external_chat_id(chat) else { return Ok(()) };
+    async fn on_inference_start(&self, chat: &Chat, _ctx: &ChannelCtx) -> Result<(), ChannelError> {
+        let Ok(external_id) = external_chat_id(chat) else {
+            return Ok(());
+        };
         let Ok((tg_chat_id, _thread)) = parse_external_id(external_id) else {
             return Ok(());
         };
 
         let bot = self.bot.clone();
-        self.typing.start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
-            let bot = bot.clone();
-            async move {
-                if let Err(e) = bot
-                    .send_chat_action(Recipient::Id(tg_chat_id), ChatAction::Typing)
-                    .await
-                {
-                    tracing::debug!(error = %e, "Telegram sendChatAction failed (best-effort)");
+        self.typing
+            .start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
+                let bot = bot.clone();
+                async move {
+                    if let Err(e) = bot
+                        .send_chat_action(Recipient::Id(tg_chat_id), ChatAction::Typing)
+                        .await
+                    {
+                        tracing::debug!(error = %e, "Telegram sendChatAction failed (best-effort)");
+                    }
                 }
-            }
-        }).await;
+            })
+            .await;
         Ok(())
     }
 
-    async fn on_inference_done(
-        &self,
-        chat: &Chat,
-        _ctx: &ChannelCtx,
-    ) -> Result<(), ChannelError> {
+    async fn on_inference_done(&self, chat: &Chat, _ctx: &ChannelCtx) -> Result<(), ChannelError> {
         self.typing.stop(&chat.id).await;
         Ok(())
     }
@@ -592,12 +580,9 @@ fn build_inline_keyboard(
 ) -> InlineKeyboardMarkup {
     use crate::chat::channel::hitl::HitlKind;
     let url_button = || {
-        Url::parse(url).ok().map(|u| {
-            vec![InlineKeyboardButton::url(
-                "Open on web →".to_string(),
-                u,
-            )]
-        })
+        Url::parse(url)
+            .ok()
+            .map(|u| vec![InlineKeyboardButton::url("Open on web →".to_string(), u)])
     };
 
     match kind {
@@ -623,11 +608,9 @@ fn build_inline_keyboard(
                 })
                 .collect::<Vec<_>>(),
         ),
-        HitlKind::External => InlineKeyboardMarkup::new(
-            url_button()
-                .map(|row| vec![row])
-                .unwrap_or_default(),
-        ),
+        HitlKind::External => {
+            InlineKeyboardMarkup::new(url_button().map(|row| vec![row]).unwrap_or_default())
+        }
     }
 }
 
@@ -645,33 +628,28 @@ impl TelegramAdapter {
         let data = cq.get("data").and_then(|v| v.as_str()).unwrap_or("");
         let message_obj = cq.get("message");
 
-        let (tool_call_id, response) = match crate::chat::channel::hitl::parse_resolve_callback_data(
-            data,
-            &ctx.chat_service,
-        )
-        .await
-        {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                tracing::warn!(data = %data, error = %e, "telegram callback_data parse failed");
-                let _ = self
-                    .bot
-                    .answer_callback_query(teloxide::types::CallbackQueryId(cq_id.clone()))
-                    .text("Could not interpret that action.".to_string())
-                    .await;
-                return Ok(());
-            }
-        };
+        let (tool_call_id, response) =
+            match crate::chat::channel::hitl::parse_resolve_callback_data(data, &ctx.chat_service)
+                .await
+            {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    tracing::warn!(data = %data, error = %e, "telegram callback_data parse failed");
+                    let _ = self
+                        .bot
+                        .answer_callback_query(teloxide::types::CallbackQueryId(cq_id.clone()))
+                        .text("Could not interpret that action.".to_string())
+                        .await;
+                    return Ok(());
+                }
+            };
 
         // Capture the user-facing label BEFORE we move `response` into
         // resolve_hitl. The toast/message-edit reflects what the user
         // actually picked, not a generic "Resolved" placeholder.
         let answer_label = crate::chat::channel::hitl::response_display(&response);
 
-        let outcome = ctx
-            .hitl
-            .resolve(&tool_call_id, response)
-            .await;
+        let outcome = ctx.hitl.resolve(&tool_call_id, response).await;
 
         let toast = match &outcome {
             Ok(crate::inference::hitl::ResolveOutcome::Resolved { .. }) => answer_label.clone(),
@@ -706,7 +684,9 @@ impl TelegramAdapter {
             let _ = self
                 .bot
                 .edit_message_text(Recipient::Id(chat_id), msg_id, new_text)
-                .reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new()))
+                .reply_markup(InlineKeyboardMarkup::new(
+                    Vec::<Vec<InlineKeyboardButton>>::new(),
+                ))
                 .await;
         }
         Ok(())
@@ -729,7 +709,10 @@ fn parse_external_id(s: &str) -> Result<(ChatId, Option<ThreadId>), AppError> {
             let thread_n: i32 = thread
                 .parse()
                 .map_err(|e| AppError::Validation(format!("bad thread id in {s:?}: {e}")))?;
-            Ok((ChatId(chat_n), Some(ThreadId(teloxide::types::MessageId(thread_n)))))
+            Ok((
+                ChatId(chat_n),
+                Some(ThreadId(teloxide::types::MessageId(thread_n))),
+            ))
         }
         _ => Err(AppError::Validation(format!(
             "unrecognised Telegram external_id format: {s:?}"
@@ -773,10 +756,7 @@ struct InboundUser {
     username: Option<String>,
 }
 
-async fn emit_inbound_update(
-    ctx: &ChannelCtx,
-    raw: serde_json::Value,
-) -> Result<(), AppError> {
+async fn emit_inbound_update(ctx: &ChannelCtx, raw: serde_json::Value) -> Result<(), AppError> {
     let update: InboundUpdate = serde_json::from_value(raw)
         .map_err(|e| AppError::Validation(format!("invalid Telegram update: {e}")))?;
     let Some(message) = update.message else {
@@ -791,21 +771,21 @@ async fn emit_inbound_update(
         _ => format!("group:{}", message.chat.id),
     };
 
-    let from = message.from.ok_or_else(|| {
-        AppError::Validation("Telegram update missing `from` user".into())
-    })?;
+    let from = message
+        .from
+        .ok_or_else(|| AppError::Validation("Telegram update missing `from` user".into()))?;
     let display_name = from
         .username
         .as_deref()
         .map(|u| format!("@{u}"))
-        .or_else(|| {
-            match (from.first_name.as_deref(), from.last_name.as_deref()) {
+        .or_else(
+            || match (from.first_name.as_deref(), from.last_name.as_deref()) {
                 (Some(f), Some(l)) => Some(format!("{f} {l}")),
                 (Some(f), None) => Some(f.to_string()),
                 (None, Some(l)) => Some(l.to_string()),
                 (None, None) => None,
-            }
-        })
+            },
+        )
         .unwrap_or_else(|| from.id.to_string());
 
     let sender_address = from
@@ -843,7 +823,10 @@ mod tests {
             telegram_markdown_v2::UnsupportedTagsStrategy::Escape,
         )
         .unwrap();
-        assert!(out.contains("```"), "table must render as code block: {out}");
+        assert!(
+            out.contains("```"),
+            "table must render as code block: {out}"
+        );
         assert!(!out.contains("\\|"), "no escaped pipes outside code: {out}");
     }
 

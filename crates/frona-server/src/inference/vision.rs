@@ -54,7 +54,7 @@ pub fn resolve_vision_capability(
 /// model id (handling vendor-prefixed ids like "deepseek/deepseek-v4-flash").
 fn model_matches_any(model_ref: &ModelRef, list: &[String]) -> bool {
     let model_id = model_ref.model_id.as_str();
-    let composite = format!("{}/{}", model_ref.provider, model_id);
+    let composite = format!("{}/{}", model_ref.provider.name(), model_id);
     let last_segment = model_id.rsplit('/').next().unwrap_or(model_id);
     list.iter()
         .map(|e| e.trim())
@@ -139,9 +139,9 @@ pub async fn transcribe_images_in_history(
         let mut req_content: Vec<UserContent> = Vec::with_capacity(images.len() + 1);
         req_content.push(UserContent::text(TRANSCRIBE_INSTRUCTION));
         req_content.extend(images.iter().cloned());
-        let Ok(req_content) = rig_core::OneOrMany::many(req_content) else {
+        if req_content.is_empty() {
             continue;
-        };
+        }
         let req_msg = RigMessage::User { content: req_content };
 
         let usage_ctx = UsageContext::new(
@@ -181,8 +181,8 @@ pub async fn transcribe_images_in_history(
             .cloned()
             .chain(std::iter::once(UserContent::text(&replacement)))
             .collect();
-        if let Ok(new_content) = rig_core::OneOrMany::many(kept) {
-            *content = new_content;
+        if !kept.is_empty() {
+            *content = kept;
         }
     }
 
@@ -192,12 +192,14 @@ pub async fn transcribe_images_in_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::ProviderModel;
 
     fn mref(provider: &str, model_id: &str) -> ModelRef {
         ModelRef {
-            provider: provider.into(),
+            provider: ProviderModel::Custom {
+                name: provider.into(),
+            },
             model_id: model_id.into(),
-            additional_params: None,
         }
     }
 

@@ -15,6 +15,7 @@ pub enum SkillScope {
     Agent,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize)]
 pub struct Skill {
     pub name: String,
@@ -29,7 +30,6 @@ pub struct Skill {
     pub disable_model_invocation: bool,
     /// SKILL.md `argument-hint: "[city]"` or similar — display string shown in
     /// the `/` dropdown next to the skill name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub argument_hint: Option<String>,
     /// SKILL.md `arguments: [name1, name2]` — declared names for `$<name>`
     /// substitution in the skill body. Empty if not declared.
@@ -103,7 +103,12 @@ impl SkillResolver {
     /// 4. Built-in FS (resources/skills/) — filtered by agent_skills when Some
     ///
     /// None = all enabled (default), Some([]) = none, Some([...]) = specific
-    pub fn list(&self, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle, agent_skills: Option<&[String]>) -> Vec<Skill> {
+    pub fn list(
+        &self,
+        user_handle: &crate::core::Handle,
+        agent_handle: &crate::core::Handle,
+        agent_skills: Option<&[String]>,
+    ) -> Vec<Skill> {
         let mut seen = HashMap::new();
 
         let ws = self.storage.agent_workspace(user_handle, agent_handle);
@@ -128,36 +133,48 @@ impl SkillResolver {
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_default();
 
-                seen.insert(name.clone(), Skill {
-                    name,
-                    description,
-                    path: dir_path,
-                    scope: SkillScope::Agent,
-                    disable_model_invocation,
-                    argument_hint,
-                    arguments,
-                });
+                seen.insert(
+                    name.clone(),
+                    Skill {
+                        name,
+                        description,
+                        path: dir_path,
+                        scope: SkillScope::Agent,
+                        disable_model_invocation,
+                        argument_hint,
+                        arguments,
+                    },
+                );
             }
         }
 
         let user_dir = self.storage.user_skills_path(user_handle);
         for skill in self.scan_fs_skills(&user_dir, SkillScope::User) {
             if let Some(allowed) = agent_skills
-                && !allowed.contains(&skill.name) { continue; }
+                && !allowed.contains(&skill.name)
+            {
+                continue;
+            }
             seen.entry(skill.name.clone()).or_insert(skill);
         }
 
         if let Some(dir) = &self.installed_dir {
             for skill in self.scan_fs_skills(dir, SkillScope::Shared) {
                 if let Some(allowed) = agent_skills
-                    && !allowed.contains(&skill.name) { continue; }
+                    && !allowed.contains(&skill.name)
+                {
+                    continue;
+                }
                 seen.entry(skill.name.clone()).or_insert(skill);
             }
         }
 
         for skill in self.scan_fs_skills(&self.config_dir.join("skills"), SkillScope::Builtin) {
             if let Some(allowed) = agent_skills
-                && !allowed.contains(&skill.name) { continue; }
+                && !allowed.contains(&skill.name)
+            {
+                continue;
+            }
             seen.entry(skill.name.clone()).or_insert(skill);
         }
 

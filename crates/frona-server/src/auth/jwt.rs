@@ -32,16 +32,17 @@ impl JwtService {
         let mut validation = Validation::new(Algorithm::EdDSA);
         validation.set_required_spec_claims(&["exp", "sub"]);
 
-        let data = decode::<T>(token, decoding_key, &validation)
-            .map_err(|e| AppError::Auth { message: format!("Invalid token: {e}"), code: AuthErrorCode::TokenInvalid })?;
+        let data = decode::<T>(token, decoding_key, &validation).map_err(|e| AppError::Auth {
+            message: format!("Invalid token: {e}"),
+            code: AuthErrorCode::TokenInvalid,
+        })?;
         Ok(data.claims)
     }
 
-    pub fn decode_unverified_header(
-        &self,
-        token: &str,
-    ) -> Result<jsonwebtoken::Header, AppError> {
-        jsonwebtoken::decode_header(token)
-            .map_err(|e| AppError::Auth { message: format!("Invalid token header: {e}"), code: AuthErrorCode::TokenInvalid })
+    pub fn decode_unverified_header(&self, token: &str) -> Result<jsonwebtoken::Header, AppError> {
+        jsonwebtoken::decode_header(token).map_err(|e| AppError::Auth {
+            message: format!("Invalid token header: {e}"),
+            code: AuthErrorCode::TokenInvalid,
+        })
     }
 }

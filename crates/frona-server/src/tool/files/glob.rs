@@ -25,7 +25,11 @@ impl GlobTool {
         sandbox_manager: Arc<SandboxManager>,
         prompts: PromptLoader,
     ) -> Self {
-        Self { storage, sandbox_manager, prompts }
+        Self {
+            storage,
+            sandbox_manager,
+            prompts,
+        }
     }
 }
 

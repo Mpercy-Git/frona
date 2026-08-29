@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode, Uri};
-use axum::serve::ListenerExt;
 use axum::response::{Html, IntoResponse};
+use axum::serve::ListenerExt;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -17,8 +17,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use frona::core::log_stream::LogStreamLayer;
 
-use frona::storage::StorageService;
-use frona::db::init as db;
 use frona::api::middleware::metrics::track_http_metrics;
 use frona::api::middleware::setup_redirect::setup_redirect;
 use frona::api::middleware::shutdown::shutdown_gate;
@@ -27,9 +25,11 @@ use frona::core::config::Config;
 use frona::core::metrics::setup_metrics_recorder;
 use frona::core::state::AppState;
 use frona::credential::key_rotation::KeyRotation;
+use frona::db::init as db;
 use frona::scheduler::Scheduler;
-use frona::tool::sandbox::driver::verify_sandbox;
+use frona::storage::StorageService;
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use frona::tool::sandbox::driver::verify_sandbox;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -89,9 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let surreal = db::init(&config.database.path).await?;
 
-    if let Some(rotation) =
-        KeyRotation::check(&surreal, &config.auth.encryption_secret).await?
-    {
+    if let Some(rotation) = KeyRotation::check(&surreal, &config.auth.encryption_secret).await? {
         rotation.run().await?;
     }
 
@@ -103,7 +101,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     resource_manager.start_polling();
 
-    let state = AppState::new(surreal.clone(), &config, loaded.models, storage, metrics_handle, resource_manager);
+    let state = AppState::new(
+        surreal.clone(),
+        &config,
+        loaded.models,
+        storage,
+        metrics_handle,
+        resource_manager,
+    );
     state.agent_service.sync_agent_limits().await?;
     state.vault_service.sync_config_connections().await?;
     state.browser_session_manager.kill_all_sessions().await;
@@ -141,6 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.policy_service.register_managed_policy(policy);
     }
 
+    let app_supervisor_handle;
     {
         let executor = state.task_executor.clone();
         tokio::spawn(async move {
@@ -159,16 +165,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         use frona::core::supervisor::{SupervisorConfig, run};
 
-        let app_supervisor = std::sync::Arc::new(
-            frona::app::supervisor::AppSupervisor::new(state.clone()),
-        );
+        let app_supervisor =
+            std::sync::Arc::new(frona::app::supervisor::AppSupervisor::new(state.clone()));
         let app_config = SupervisorConfig {
-            health_check_interval: std::time::Duration::from_secs(
-                10,
-            ),
+            health_check_interval: std::time::Duration::from_secs(10),
             max_restart_attempts: config.app.max_restart_attempts,
             hibernate_after: if config.app.hibernate_after_secs > 0 {
-                Some(std::time::Duration::from_secs(config.app.hibernate_after_secs))
+                Some(std::time::Duration::from_secs(
+                    config.app.hibernate_after_secs,
+                ))
             } else {
                 None
             },
@@ -176,16 +181,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let shutdown = state.shutdown_token.clone();
         let notif = state.notification_service.clone();
         let broadcast = state.broadcast_service.clone();
-        tokio::spawn(async move {
+        app_supervisor_handle = tokio::spawn(async move {
             run(app_supervisor, shutdown, notif, broadcast, app_config).await;
         });
 
-        let mcp_supervisor = std::sync::Arc::new(
-            frona::tool::mcp::supervisor::McpSupervisor::new(
-                state.mcp_service.clone(),
-                state.mcp_manager.clone(),
-            ),
-        );
+        let mcp_supervisor = std::sync::Arc::new(frona::tool::mcp::supervisor::McpSupervisor::new(
+            state.mcp_service.clone(),
+            state.mcp_manager.clone(),
+        ));
         let mcp_config = SupervisorConfig {
             health_check_interval: std::time::Duration::from_secs(
                 config.mcp.health_check_interval_secs,
@@ -215,23 +218,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let broadcast = state.broadcast_service.clone();
         let channel_supervisor = state.channel_supervisor.clone();
         tokio::spawn(async move {
-            run(channel_supervisor, shutdown, notif, broadcast, channel_config).await;
+            run(
+                channel_supervisor,
+                shutdown,
+                notif,
+                broadcast,
+                channel_config,
+            )
+            .await;
         });
     }
 
-    if let Ok(compaction_group) = state.chat_service.provider_registry()
-        .get_model_group("compaction")
-        .or_else(|_| state.chat_service.provider_registry().get_model_group("primary"))
-    {
-        let scheduler = Arc::new(Scheduler::new(state.clone(), compaction_group.clone()));
-        scheduler.start();
-        info!(
-            space_secs = config.scheduler.space_compaction_secs,
-            memory_secs = config.scheduler.memory_compaction_secs,
-            poll_secs = config.scheduler.poll_secs,
-            "Scheduler started"
-        );
-    }
+    // The scheduler always runs (poll/cleanup jobs); memory maintenance is
+    // registered by the active memory service itself (which resolves its own
+    // compaction model group).
+    let scheduler = Arc::new(Scheduler::new(state.clone()));
+    scheduler.start();
+    info!(poll_secs = config.scheduler.poll_secs, "Scheduler started");
 
     let cors = config.server.cors_origins.as_deref().map(|origins_str| {
         let origins: Vec<String> = origins_str
@@ -324,10 +327,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::voice::router())
         .merge(routes::system::router())
         .merge(routes::config::router())
-        .merge(routes::provider_models::router())
+        .merge(routes::provider_models::router());
+    // Register the PKM sync API only when PKM is the active backend - a Basic install
+    // never exposes `/api/memory/pkm/*`, so no request-time is-PKM probe is needed.
+    if config
+        .memory
+        .backend
+        .unwrap_or(frona::core::config::MemoryBackend::Basic)
+        == frona::core::config::MemoryBackend::Pkm
+    {
+        api = api
+            .merge(routes::memory_pkm::router())
+            .merge(routes::memory_pkm_read::router());
+    }
+    let mut api = api
         .layer(DefaultBodyLimit::max(config.server.max_body_size_bytes))
         .layer(axum::middleware::from_fn(track_http_metrics))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), shutdown_gate));
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            shutdown_gate,
+        ));
     if let Some(cors) = cors {
         api = api.layer(cors);
     }
@@ -346,15 +365,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone())
-        .fallback_service(ServeDir::new(&config.server.static_dir).fallback(
-            axum::routing::get({
+        .fallback_service(
+            ServeDir::new(&config.server.static_dir).fallback(axum::routing::get({
                 let static_dir = PathBuf::from(&config.server.static_dir);
                 move |uri: Uri| {
                     let static_dir = static_dir.clone();
                     async move { html_fallback(static_dir, uri.path().to_owned()).await }
                 }
-            }),
-        ));
+            })),
+        );
 
     let api: axum::Router = if !has_users {
         api.layer(axum::middleware::from_fn(setup_redirect))
@@ -365,7 +384,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     info!("Starting on {addr}");
 
-    let shutdown_token = state.shutdown_token.clone();
+    let shutdown_state = state.clone();
     let shutdown_signal = async move {
         #[cfg(unix)]
         {
@@ -390,7 +409,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         info!("Initiating graceful shutdown...");
-        shutdown_token.cancel();
+        let app_ids = shutdown_state
+            .app_service
+            .manager()
+            .get_managed_app_ids()
+            .await;
+        for app_id in app_ids {
+            if let Err(error) = shutdown_state.app_service.manager().stop_app(&app_id).await {
+                tracing::warn!(%error, %app_id, "Failed to stop app during shutdown");
+            }
+        }
+        shutdown_state.shutdown_token.cancel();
     };
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -400,9 +429,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tracing::trace!("failed to set TCP_NODELAY on incoming connection: {err:#}");
             }
         });
-    axum::serve(listener, api.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal)
-        .await?;
+    axum::serve(
+        listener,
+        api.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal)
+    .await?;
+
+    if let Err(error) = app_supervisor_handle.await {
+        tracing::warn!(%error, "App supervisor failed during shutdown");
+    }
 
     info!("HTTP server stopped, draining in-flight work...");
     frona::core::shutdown::graceful_drain(&state).await;

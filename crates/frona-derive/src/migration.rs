@@ -44,9 +44,7 @@ pub fn migration(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => {
             return syn::Error::new(
                 ts_lit.span(),
-                format!(
-                    "`#[migration(...)]` timestamp must be a valid RFC 3339 literal: {e}"
-                ),
+                format!("`#[migration(...)]` timestamp must be a valid RFC 3339 literal: {e}"),
             )
             .to_compile_error()
             .into();

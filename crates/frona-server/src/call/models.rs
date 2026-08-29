@@ -22,6 +22,7 @@ pub enum CallDirection {
     Outbound,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "call")]
@@ -33,9 +34,7 @@ pub struct Call {
     pub direction: CallDirection,
     pub twilio_sid: String,
     pub started_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<DateTime<Utc>>,
     /// Number of agent-to-agent transfers this call has gone through.
     /// Capped by `TransferCallTool` to stop a runaway transfer loop.

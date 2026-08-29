@@ -7,9 +7,7 @@ use axum::{Json, Router};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use crate::agent::config::parse_frontmatter;
-use crate::agent::models::{
-    Agent, AgentResponse, CreateAgentRequest, Model, UpdateAgentRequest,
-};
+use crate::agent::models::{Agent, AgentResponse, CreateAgentRequest, Model, UpdateAgentRequest};
 use crate::chat::broadcast::{BroadcastEvent, BroadcastEventKind};
 use crate::inference::tool_loop::InferenceEventKind;
 
@@ -34,7 +32,7 @@ fn resolve_model(state: &AppState, model_group_name: &str) -> Option<Model> {
         .ok()?;
     let entry = state.model_catalog.current().lookup(&group.main).cloned();
     Some(Model {
-        provider: group.main.provider.clone(),
+        provider: group.main.provider_name().to_string(),
         model_id: group.main.model_id.clone(),
         context_window: group.context_window,
         entry,
@@ -93,7 +91,11 @@ async fn sync_agent_tools(
         .map_err(crate::core::error::AppError::from)
 }
 
-fn resolve_default_prompt(state: &AppState, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle) -> String {
+fn resolve_default_prompt(
+    state: &AppState,
+    user_handle: &crate::core::Handle,
+    agent_handle: &crate::core::Handle,
+) -> String {
     state
         .storage_service
         .agent_workspace(user_handle, agent_handle)
@@ -121,7 +123,11 @@ async fn to_response(
         .tool_manager
         .build_agent_registry(&owner_id, &agent, &state.policy_service, None)
         .await;
-    let tools: Vec<String> = registry.definitions().iter().map(|d| d.id.clone()).collect();
+    let tools: Vec<String> = registry
+        .definitions()
+        .iter()
+        .map(|d| d.id.clone())
+        .collect();
     let sandbox_policy = state
         .policy_service
         .evaluate_sandbox_policy(
@@ -477,8 +483,8 @@ async fn upload_avatar(
         }
     }
 
-    let (filename, bytes) = file_data
-        .ok_or_else(|| ApiError(AppError::Validation("Missing file field".into())))?;
+    let (filename, bytes) =
+        file_data.ok_or_else(|| ApiError(AppError::Validation("Missing file field".into())))?;
 
     let ext = StdPath::new(&filename)
         .extension()
@@ -486,7 +492,9 @@ async fn upload_avatar(
         .unwrap_or("jpg");
     let avatar_filename = format!("avatar.{ext}");
 
-    let workspace = state.storage_service.agent_workspace(&auth.handle, &agent.handle);
+    let workspace = state
+        .storage_service
+        .agent_workspace(&auth.handle, &agent.handle);
     workspace
         .write_bytes(&avatar_filename, &bytes)
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
@@ -507,4 +515,3 @@ async fn upload_avatar(
         "url": presigned_url,
     })))
 }
-

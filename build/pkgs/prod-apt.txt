@@ -1,48 +1,48 @@
 # Base
-ca-certificates
-libgfortran5
-libopenblas0
+ca-certificates=20250419~deb12u1
+libgfortran5=12.2.0-14+deb12u1
+libopenblas0=0.3.21+ds-4
 
 # Network
-curl
-wget
-dnsutils
-iputils-ping
+curl=7.88.1-10+deb12u15
+wget=1.21.3-1+deb12u1
+dnsutils=1:9.18.49-1~deb12u2
+iputils-ping=3:20221126-1+deb12u1
 
 # VCS / SSH
-git
-openssh-client
+git=1:2.39.5-0+deb12u3
+openssh-client=1:9.2p1-2+deb12u10
 
 # Archiving
-unzip
-xz-utils
-zip
+unzip=6.0-28+deb12u1
+xz-utils=5.4.1-1+deb12u1
+zip=3.0-13
 
 # Image processing
-imagemagick-6.q16
-libjpeg62-turbo
-libopenjp2-7
-librsvg2-bin
-libheif1
-libdjvulibre21
+imagemagick-6.q16=8:6.9.11.60+dfsg-1.6+deb12u13
+libjpeg62-turbo=1:2.1.5-2
+libopenjp2-7=2.5.0-2+deb12u3
+librsvg2-bin=2.54.7+dfsg-1~deb12u1
+libheif1=1.15.1-1+deb12u1
+libdjvulibre21=3.5.28-2.2~deb12u1
 
 # DB clients
-libpq5
-libmariadb3
-mariadb-common
+libpq5=15.19-0+deb12u1
+libmariadb3=1:10.11.18-0+deb12u1
+mariadb-common=1:10.11.18-0+deb12u1
 
 # Crypto
-gnupg
+gnupg=2.2.40-1.1+deb12u2
 
 # Utilities
-jq
-file
-patch
-procps
-sensible-utils
-rsync
-smbclient
-fd-find
+jq=1.6-2.1+deb12u2
+file=1:5.44-3
+patch=2.7.6-7
+procps=2:4.0.2-3
+sensible-utils=0.0.17+nmu1
+rsync=3.2.7-1+deb12u6
+smbclient=2:4.17.12+dfsg-0+deb12u4
+fd-find=8.6.0-3
 
 # Installed after NodeSource repo setup
-nodejs
+nodejs=24.19.0-1nodesource1

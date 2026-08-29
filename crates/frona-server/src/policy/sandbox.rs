@@ -27,15 +27,25 @@ pub struct SandboxPolicy {
 
 impl SandboxPolicy {
     pub fn apply(&self, config: &mut SandboxConfig) {
-        config.additional_read_paths.extend(self.read_paths.iter().cloned());
-        config.additional_write_paths.extend(self.write_paths.iter().cloned());
+        config
+            .additional_read_paths
+            .extend(self.read_paths.iter().cloned());
+        config
+            .additional_write_paths
+            .extend(self.write_paths.iter().cloned());
         if self.network_access {
             config.network_access = true;
-            config.allowed_network_destinations.extend(self.network_destinations.iter().cloned());
+            config
+                .allowed_network_destinations
+                .extend(self.network_destinations.iter().cloned());
         }
         config.allowed_bind_ports.extend(self.bind_ports.iter());
-        config.denied_paths.extend(self.denied_paths.iter().cloned());
-        config.blocked_networks.extend(self.blocked_networks.iter().cloned());
+        config
+            .denied_paths
+            .extend(self.denied_paths.iter().cloned());
+        config
+            .blocked_networks
+            .extend(self.blocked_networks.iter().cloned());
     }
 
     pub fn permissive() -> Self {
@@ -70,7 +80,11 @@ impl SandboxPolicy {
     /// `StorageService`. Absolute paths pass through unchanged. Entries that
     /// fail to parse or resolve are dropped with a warning.
     pub fn resolve_virtual_paths(&mut self, storage: &StorageService) {
-        for list in [&mut self.read_paths, &mut self.write_paths, &mut self.denied_paths] {
+        for list in [
+            &mut self.read_paths,
+            &mut self.write_paths,
+            &mut self.denied_paths,
+        ] {
             *list = list
                 .iter()
                 .filter_map(|raw| match storage.resolve(raw) {
@@ -147,14 +161,11 @@ struct Rule {
     target: String,
 }
 
-pub fn evaluate_sandbox_policy(
-    policy_set: &PolicySet,
-    principal: Entity,
-) -> SandboxPolicy {
+pub fn evaluate_sandbox_policy(policy_set: &PolicySet, principal: Entity) -> SandboxPolicy {
     let principal_uid = principal.uid();
 
-    let base_entities = Entities::from_entities([principal], None)
-        .unwrap_or_else(|_| Entities::empty());
+    let base_entities =
+        Entities::from_entities([principal], None).unwrap_or_else(|_| Entities::empty());
 
     let authorizer = cedar_policy::Authorizer::new();
     let mut rules = Vec::new();
@@ -190,7 +201,9 @@ pub fn evaluate_sandbox_policy(
                 continue;
             }
 
-            let Ok(json) = residual.to_json() else { continue };
+            let Ok(json) = residual.to_json() else {
+                continue;
+            };
             for entity in extract_resource_entities_from_residual(&json) {
                 let effective = if entity.negated {
                     match &effect {
@@ -232,7 +245,9 @@ pub fn evaluate_sandbox_policy(
 fn rules_to_policy(rules: &[Rule]) -> SandboxPolicy {
     let mut policy = SandboxPolicy::default();
 
-    let has_connect_allow = rules.iter().any(|r| r.kind == RuleKind::Connect && r.effect == RuleEffect::Allow);
+    let has_connect_allow = rules
+        .iter()
+        .any(|r| r.kind == RuleKind::Connect && r.effect == RuleEffect::Allow);
     policy.network_access = has_connect_allow;
 
     for rule in rules {
@@ -242,14 +257,20 @@ fn rules_to_policy(rules: &[Rule]) -> SandboxPolicy {
         match (&rule.effect, &rule.kind) {
             (RuleEffect::Allow, RuleKind::Read) => policy.read_paths.push(rule.target.clone()),
             (RuleEffect::Allow, RuleKind::Write) => policy.write_paths.push(rule.target.clone()),
-            (RuleEffect::Allow, RuleKind::Connect) => policy.network_destinations.push(rule.target.clone()),
+            (RuleEffect::Allow, RuleKind::Connect) => {
+                policy.network_destinations.push(rule.target.clone())
+            }
             (RuleEffect::Allow, RuleKind::Bind) => {
                 if let Ok(port) = rule.target.parse::<u16>() {
                     policy.bind_ports.push(port);
                 }
             }
-            (RuleEffect::Deny, RuleKind::Read | RuleKind::Write) => policy.denied_paths.push(rule.target.clone()),
-            (RuleEffect::Deny, RuleKind::Connect) => policy.blocked_networks.push(rule.target.clone()),
+            (RuleEffect::Deny, RuleKind::Read | RuleKind::Write) => {
+                policy.denied_paths.push(rule.target.clone())
+            }
+            (RuleEffect::Deny, RuleKind::Connect) => {
+                policy.blocked_networks.push(rule.target.clone())
+            }
             (RuleEffect::Deny, RuleKind::Bind) => {}
         }
     }
@@ -275,13 +296,18 @@ impl CedarExpr {
             if let Some(b) = val.as_bool() {
                 return Self::Bool(b);
             }
-            if let Some(id) = val.get("__entity").and_then(|e| e.get("id")).and_then(|i| i.as_str()) {
+            if let Some(id) = val
+                .get("__entity")
+                .and_then(|e| e.get("id"))
+                .and_then(|i| i.as_str())
+            {
                 return Self::Entity { id: id.to_string() };
             }
             return Self::Other;
         }
         if let Some(arr) = json.get("unknown").and_then(|u| u.as_array()) {
-            let name = arr.first()
+            let name = arr
+                .first()
                 .and_then(|v| v.get("Value"))
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
@@ -332,7 +358,10 @@ fn collect_resource_entities(expr: &CedarExpr, negated: bool, out: &mut Vec<Resi
             | (CedarExpr::Entity { id }, CedarExpr::Unknown(name))
                 if name == "resource" =>
             {
-                out.push(ResidualEntity { id: id.clone(), negated });
+                out.push(ResidualEntity {
+                    id: id.clone(),
+                    negated,
+                });
             }
             _ => {}
         },
@@ -377,7 +406,11 @@ mod tests {
     fn eval(policies: &str, agent_id: &str, tools: &[&str]) -> SandboxPolicy {
         let ps = parse_policies(policies);
         let tool_strings: Vec<String> = tools.iter().map(|s| s.to_string()).collect();
-        let principal = super::super::schema::build_agent_principal_entity(&crate::handle!("test-user"), &crate::core::Handle::try_new(agent_id).unwrap(), &tool_strings);
+        let principal = super::super::schema::build_agent_principal_entity(
+            &crate::handle!("test-user"),
+            &crate::core::Handle::try_new(agent_id).unwrap(),
+            &tool_strings,
+        );
         evaluate_sandbox_policy(&ps, principal)
     }
 
@@ -385,7 +418,8 @@ mod tests {
     fn test_eval_simple_permit_read() {
         let p = eval(
             r#"permit(principal, action == Policy::Action::"read", resource == Policy::Path::"/tmp");"#,
-            "aa", &[],
+            "aa",
+            &[],
         );
         assert!(p.read_paths.contains(&"/tmp".to_string()));
     }
@@ -395,7 +429,8 @@ mod tests {
         let p = eval(
             r#"permit(principal, action == Policy::Action::"read", resource == Policy::Path::"/browser-data")
                when { principal.tools.contains("browser") };"#,
-            "aa", &["browser"],
+            "aa",
+            &["browser"],
         );
         assert!(p.read_paths.contains(&"/browser-data".to_string()));
     }
@@ -405,7 +440,8 @@ mod tests {
         let p = eval(
             r#"permit(principal, action == Policy::Action::"read", resource == Policy::Path::"/browser-data")
                when { principal.tools.contains("browser") };"#,
-            "aa", &["web_search"],
+            "aa",
+            &["web_search"],
         );
         assert!(!p.read_paths.contains(&"/browser-data".to_string()));
     }
@@ -413,34 +449,53 @@ mod tests {
     #[test]
     fn test_eval_agent_specific() {
         let policies = r#"permit(principal == Policy::Agent::"test-user/aa", action == Policy::Action::"write", resource == Policy::Path::"/a-data");"#;
-        assert!(eval(policies, "aa", &[]).write_paths.contains(&"/a-data".to_string()));
+        assert!(
+            eval(policies, "aa", &[])
+                .write_paths
+                .contains(&"/a-data".to_string())
+        );
         assert!(eval(policies, "bb", &[]).write_paths.is_empty());
     }
 
     #[test]
     fn test_eval_permit_and_forbid_nested() {
-        let p = eval(r#"
+        let p = eval(
+            r#"
             permit(principal, action == Policy::Action::"write", resource == Policy::Path::"/workspace");
             forbid(principal, action == Policy::Action::"write", resource == Policy::Path::"/workspace/secrets");
-        "#, "aa", &[]);
+        "#,
+            "aa",
+            &[],
+        );
         assert!(p.write_paths.contains(&"/workspace".to_string()));
         assert!(p.denied_paths.contains(&"/workspace/secrets".to_string()));
     }
 
     #[test]
     fn test_eval_network_permit_and_forbid() {
-        let p = eval(r#"
+        let p = eval(
+            r#"
             permit(principal, action == Policy::Action::"connect", resource == Policy::NetworkDestination::"0.0.0.0/0!0-65535");
             forbid(principal, action == Policy::Action::"connect", resource == Policy::NetworkDestination::"10.0.0.0/8");
-        "#, "aa", &[]);
+        "#,
+            "aa",
+            &[],
+        );
         assert!(p.network_access);
-        assert!(p.network_destinations.contains(&"0.0.0.0/0!0-65535".to_string()));
+        assert!(
+            p.network_destinations
+                .contains(&"0.0.0.0/0!0-65535".to_string())
+        );
         assert!(p.blocked_networks.contains(&"10.0.0.0/8".to_string()));
     }
 
     #[test]
     fn test_eval_wildcard_resource_no_paths() {
-        let p = eval(r#"permit(principal, action == Policy::Action::"connect", resource);"#, "aa", &[]);
+        let p = eval(
+            r#"permit(principal, action == Policy::Action::"connect", resource);"#,
+            "aa",
+            &[],
+        );
         assert!(p.network_destinations.is_empty());
     }
 
@@ -467,7 +522,11 @@ mod tests {
         let search = eval(policies, "aa", &["web_search"]);
         assert!(search.read_paths.contains(&"/shared".to_string()));
         assert!(!search.read_paths.contains(&"/browser-data".to_string()));
-        assert!(search.network_destinations.contains(&"api.example.com".to_string()));
+        assert!(
+            search
+                .network_destinations
+                .contains(&"api.example.com".to_string())
+        );
     }
 
     #[test]
@@ -476,11 +535,13 @@ mod tests {
             permit(principal == Policy::Agent::"test-user/alice", action == Policy::Action::"write", resource == Policy::Path::"/alice-home");
             permit(principal == Policy::Agent::"test-user/bob", action == Policy::Action::"write", resource == Policy::Path::"/bob-home");
         "#;
-        assert_eq!(eval(policies, "alice", &[]).write_paths, vec!["/alice-home"]);
+        assert_eq!(
+            eval(policies, "alice", &[]).write_paths,
+            vec!["/alice-home"]
+        );
         assert_eq!(eval(policies, "bob", &[]).write_paths, vec!["/bob-home"]);
         assert!(eval(policies, "charlie", &[]).write_paths.is_empty());
     }
-
 
     #[test]
     fn test_eval_permit_with_unless() {
@@ -488,8 +549,16 @@ mod tests {
             permit(principal, action == Policy::Action::"read", resource == Policy::Path::"/data")
                 unless { principal.tools.contains("restricted") };
         "#;
-        assert!(eval(policies, "aa", &["browser"]).read_paths.contains(&"/data".to_string()));
-        assert!(!eval(policies, "aa", &["restricted"]).read_paths.contains(&"/data".to_string()));
+        assert!(
+            eval(policies, "aa", &["browser"])
+                .read_paths
+                .contains(&"/data".to_string())
+        );
+        assert!(
+            !eval(policies, "aa", &["restricted"])
+                .read_paths
+                .contains(&"/data".to_string())
+        );
     }
 
     #[test]
@@ -500,7 +569,11 @@ mod tests {
                 when { principal.tools.contains("auth") };
         "#;
         assert!(eval(policies, "aa", &["browser"]).read_paths.is_empty());
-        assert!(eval(policies, "aa", &["browser", "auth"]).read_paths.contains(&"/secure".to_string()));
+        assert!(
+            eval(policies, "aa", &["browser", "auth"])
+                .read_paths
+                .contains(&"/secure".to_string())
+        );
     }
 
     #[test]
@@ -509,8 +582,16 @@ mod tests {
             permit(principal, action == Policy::Action::"read", resource == Policy::Path::"/media")
                 when { principal.tools.contains("browser") || principal.tools.contains("player") };
         "#;
-        assert!(eval(policies, "aa", &["browser"]).read_paths.contains(&"/media".to_string()));
-        assert!(eval(policies, "aa", &["player"]).read_paths.contains(&"/media".to_string()));
+        assert!(
+            eval(policies, "aa", &["browser"])
+                .read_paths
+                .contains(&"/media".to_string())
+        );
+        assert!(
+            eval(policies, "aa", &["player"])
+                .read_paths
+                .contains(&"/media".to_string())
+        );
         assert!(eval(policies, "aa", &["search"]).read_paths.is_empty());
     }
 
@@ -521,7 +602,11 @@ mod tests {
                 when { principal.tools.containsAll(["cli", "deploy"]) };
         "#;
         assert!(eval(policies, "aa", &["cli"]).write_paths.is_empty());
-        assert!(eval(policies, "aa", &["cli", "deploy"]).write_paths.contains(&"/deploy".to_string()));
+        assert!(
+            eval(policies, "aa", &["cli", "deploy"])
+                .write_paths
+                .contains(&"/deploy".to_string())
+        );
     }
 
     #[test]
@@ -531,8 +616,16 @@ mod tests {
                 when { principal.tools.containsAny(["admin_tool", "monitoring"]) };
         "#;
         assert!(eval(policies, "aa", &["browser"]).read_paths.is_empty());
-        assert!(eval(policies, "aa", &["admin_tool"]).read_paths.contains(&"/logs".to_string()));
-        assert!(eval(policies, "aa", &["monitoring"]).read_paths.contains(&"/logs".to_string()));
+        assert!(
+            eval(policies, "aa", &["admin_tool"])
+                .read_paths
+                .contains(&"/logs".to_string())
+        );
+        assert!(
+            eval(policies, "aa", &["monitoring"])
+                .read_paths
+                .contains(&"/logs".to_string())
+        );
     }
 
     #[test]
@@ -542,77 +635,111 @@ mod tests {
             forbid(principal, action == Policy::Action::"connect", resource == Policy::NetworkDestination::"10.0.0.0/8")
                 unless { principal.tools.contains("admin_tool") };
         "#;
-        assert!(eval(policies, "aa", &["browser"]).blocked_networks.contains(&"10.0.0.0/8".to_string()));
-        assert!(!eval(policies, "aa", &["admin_tool"]).blocked_networks.contains(&"10.0.0.0/8".to_string()));
+        assert!(
+            eval(policies, "aa", &["browser"])
+                .blocked_networks
+                .contains(&"10.0.0.0/8".to_string())
+        );
+        assert!(
+            !eval(policies, "aa", &["admin_tool"])
+                .blocked_networks
+                .contains(&"10.0.0.0/8".to_string())
+        );
     }
 
     #[test]
     fn test_eval_multiple_forbids_stack() {
-        let p = eval(r#"
+        let p = eval(
+            r#"
             permit(principal, action == Policy::Action::"write", resource == Policy::Path::"/workspace");
             forbid(principal, action == Policy::Action::"write", resource == Policy::Path::"/workspace/secrets");
             forbid(principal, action == Policy::Action::"write", resource == Policy::Path::"/workspace/config");
             forbid(principal, action == Policy::Action::"write", resource == Policy::Path::"/workspace/.env");
-        "#, "aa", &[]);
+        "#,
+            "aa",
+            &[],
+        );
         assert_eq!(p.write_paths, vec!["/workspace"]);
         assert_eq!(p.denied_paths.len(), 3);
     }
 
     #[test]
     fn test_eval_read_permitted_write_forbidden_same_path() {
-        let p = eval(r#"
+        let p = eval(
+            r#"
             permit(principal, action == Policy::Action::"read", resource == Policy::Path::"/config");
             forbid(principal, action == Policy::Action::"write", resource == Policy::Path::"/config");
-        "#, "aa", &[]);
+        "#,
+            "aa",
+            &[],
+        );
         assert!(p.read_paths.contains(&"/config".to_string()));
         assert!(p.denied_paths.contains(&"/config".to_string()));
     }
 
     #[test]
     fn test_eval_all_four_actions() {
-        let p = eval(r#"
+        let p = eval(
+            r#"
             permit(principal, action == Policy::Action::"read", resource == Policy::Path::"/r");
             permit(principal, action == Policy::Action::"write", resource == Policy::Path::"/w");
             permit(principal, action == Policy::Action::"connect", resource == Policy::NetworkDestination::"api.com");
             permit(principal, action == Policy::Action::"bind", resource == Policy::NetworkDestination::"8080");
-        "#, "aa", &[]);
+        "#,
+            "aa",
+            &[],
+        );
         assert_eq!(p.read_paths, vec!["/r"]);
         assert_eq!(p.write_paths, vec!["/w"]);
         assert_eq!(p.network_destinations, vec!["api.com"]);
         assert_eq!(p.bind_ports, vec![8080]);
     }
 
-
     #[test]
     fn test_eval_forbid_unless_permits_exception() {
-        let p = eval(r#"
+        let p = eval(
+            r#"
             permit(principal, action == Policy::Action::"connect", resource);
             forbid(principal == Policy::Agent::"test-user/xx", action == Policy::Action::"connect", resource)
                 unless { resource == Policy::NetworkDestination::"gmail.com" };
-        "#, "xx", &[]);
+        "#,
+            "xx",
+            &[],
+        );
         assert!(p.network_destinations.contains(&"gmail.com".to_string()));
     }
 
     #[test]
     fn test_eval_forbid_unless_other_agent_unaffected() {
-        let p = eval(r#"
+        let p = eval(
+            r#"
             permit(principal, action == Policy::Action::"connect", resource);
             forbid(principal == Policy::Agent::"test-user/xx", action == Policy::Action::"connect", resource)
                 unless { resource == Policy::NetworkDestination::"gmail.com" };
-        "#, "yy", &[]);
+        "#,
+            "yy",
+            &[],
+        );
         assert!(!p.network_destinations.contains(&"gmail.com".to_string()));
     }
 
     #[test]
     fn test_eval_forbid_unless_multiple_exceptions() {
-        let p = eval(r#"
+        let p = eval(
+            r#"
             permit(principal, action == Policy::Action::"connect", resource);
             forbid(principal == Policy::Agent::"test-user/xx", action == Policy::Action::"connect", resource)
                 unless { resource == Policy::NetworkDestination::"gmail.com"
                       || resource == Policy::NetworkDestination::"api.google.com" };
-        "#, "xx", &[]);
+        "#,
+            "xx",
+            &[],
+        );
         assert!(p.network_destinations.contains(&"gmail.com".to_string()));
-        assert!(p.network_destinations.contains(&"api.google.com".to_string()));
+        assert!(
+            p.network_destinations
+                .contains(&"api.google.com".to_string())
+        );
     }
 
     #[test]
@@ -629,7 +756,6 @@ mod tests {
         let admin = eval(policies, "aa", &["admin_tool"]);
         assert!(admin.denied_paths.is_empty());
     }
-
 
     #[test]
     fn test_apply_to_sandbox_config() {
@@ -679,10 +805,15 @@ mod tests {
             ..Default::default()
         };
         policy.apply(&mut config);
-        assert_eq!(config.additional_read_paths, vec!["/existing", "/policy-path"]);
-        assert_eq!(config.allowed_network_destinations, vec!["existing-dest", "policy-dest"]);
+        assert_eq!(
+            config.additional_read_paths,
+            vec!["/existing", "/policy-path"]
+        );
+        assert_eq!(
+            config.allowed_network_destinations,
+            vec!["existing-dest", "policy-dest"]
+        );
     }
-
 
     fn no_owned_agents(_id: &str) -> bool {
         false
@@ -696,7 +827,11 @@ mod tests {
             denied_paths: vec!["/secrets".into()],
             ..Default::default()
         };
-        assert!(policy.validate_paths(&crate::handle!("mina"), no_owned_agents).is_ok());
+        assert!(
+            policy
+                .validate_paths(&crate::handle!("mina"), no_owned_agents)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -705,7 +840,11 @@ mod tests {
             read_paths: vec!["user://mina/foo.csv".into()],
             ..Default::default()
         };
-        assert!(policy.validate_paths(&crate::handle!("mina"), no_owned_agents).is_ok());
+        assert!(
+            policy
+                .validate_paths(&crate::handle!("mina"), no_owned_agents)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -714,7 +853,11 @@ mod tests {
             read_paths: vec!["user://other/foo.csv".into()],
             ..Default::default()
         };
-        assert!(policy.validate_paths(&crate::handle!("mina"), no_owned_agents).is_err());
+        assert!(
+            policy
+                .validate_paths(&crate::handle!("mina"), no_owned_agents)
+                .is_err()
+        );
     }
 
     #[test]
@@ -723,7 +866,11 @@ mod tests {
             write_paths: vec!["agent://my-agent/data".into()],
             ..Default::default()
         };
-        assert!(policy.validate_paths(&crate::handle!("mina"), |id| id == "my-agent").is_ok());
+        assert!(
+            policy
+                .validate_paths(&crate::handle!("mina"), |id| id == "my-agent")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -732,7 +879,11 @@ mod tests {
             write_paths: vec!["agent://other-agent/data".into()],
             ..Default::default()
         };
-        assert!(policy.validate_paths(&crate::handle!("mina"), |id| id == "my-agent").is_err());
+        assert!(
+            policy
+                .validate_paths(&crate::handle!("mina"), |id| id == "my-agent")
+                .is_err()
+        );
     }
 
     #[test]
@@ -741,7 +892,11 @@ mod tests {
             read_paths: vec!["relative/path".into()],
             ..Default::default()
         };
-        assert!(policy.validate_paths(&crate::handle!("mina"), no_owned_agents).is_err());
+        assert!(
+            policy
+                .validate_paths(&crate::handle!("mina"), no_owned_agents)
+                .is_err()
+        );
     }
 
     #[test]
@@ -750,9 +905,12 @@ mod tests {
             read_paths: vec!["ftp://server/foo".into()],
             ..Default::default()
         };
-        assert!(policy.validate_paths(&crate::handle!("mina"), no_owned_agents).is_err());
+        assert!(
+            policy
+                .validate_paths(&crate::handle!("mina"), no_owned_agents)
+                .is_err()
+        );
     }
-
 
     fn test_storage() -> StorageService {
         StorageService::new(&crate::core::config::Config::default())
@@ -800,7 +958,6 @@ mod tests {
         assert_eq!(policy.read_paths, vec!["/keepme".to_string()]);
     }
 
-
     #[test]
     fn test_eval_complex_real_world() {
         let policies = r#"
@@ -820,25 +977,44 @@ mod tests {
         let browser = eval(policies, "web-agent", &["browser"]);
         assert!(browser.read_paths.contains(&"/tmp".to_string()));
         assert!(browser.write_paths.contains(&"/tmp".to_string()));
-        assert!(browser.read_paths.contains(&"/browser-profiles".to_string()));
+        assert!(
+            browser
+                .read_paths
+                .contains(&"/browser-profiles".to_string())
+        );
         assert!(browser.network_access);
-        assert!(browser.network_destinations.contains(&"0.0.0.0/0!0-65535".to_string()));
+        assert!(
+            browser
+                .network_destinations
+                .contains(&"0.0.0.0/0!0-65535".to_string())
+        );
         assert!(browser.blocked_networks.contains(&"10.0.0.0/8".to_string()));
         assert!(!browser.write_paths.contains(&"/deploy".to_string()));
 
         let deployer = eval(policies, "deployer", &["deploy", "auth", "browser"]);
         assert!(deployer.write_paths.contains(&"/deploy".to_string()));
-        assert!(!deployer.denied_paths.contains(&"/deploy/secrets".to_string()));
+        assert!(
+            !deployer
+                .denied_paths
+                .contains(&"/deploy/secrets".to_string())
+        );
 
         let deployer_no_auth = eval(policies, "deployer", &["deploy"]);
-        assert!(deployer_no_auth.denied_paths.contains(&"/deploy/secrets".to_string()));
+        assert!(
+            deployer_no_auth
+                .denied_paths
+                .contains(&"/deploy/secrets".to_string())
+        );
 
         let no_tools = eval(policies, "basic", &[]);
         assert!(no_tools.read_paths.contains(&"/tmp".to_string()));
-        assert!(!no_tools.read_paths.contains(&"/browser-profiles".to_string()));
+        assert!(
+            !no_tools
+                .read_paths
+                .contains(&"/browser-profiles".to_string())
+        );
         assert!(no_tools.network_destinations.is_empty());
     }
-
 
     fn make_default_network_policy() -> cedar_policy::Policy {
         cedar_policy::Policy::from_json(
@@ -859,13 +1035,26 @@ mod tests {
         .expect("valid policy")
     }
 
-    fn eval_with_managed(policies: &str, agent_id: &str, tools: &[&str], managed: &[cedar_policy::Policy]) -> SandboxPolicy {
-        let mut ps = parse_policies(if policies.is_empty() { "// empty" } else { policies });
+    fn eval_with_managed(
+        policies: &str,
+        agent_id: &str,
+        tools: &[&str],
+        managed: &[cedar_policy::Policy],
+    ) -> SandboxPolicy {
+        let mut ps = parse_policies(if policies.is_empty() {
+            "// empty"
+        } else {
+            policies
+        });
         for p in managed {
             ps.add(p.clone()).expect("add managed policy");
         }
         let tool_strings: Vec<String> = tools.iter().map(|s| s.to_string()).collect();
-        let principal = super::super::schema::build_agent_principal_entity(&crate::handle!("test-user"), &crate::core::Handle::try_new(agent_id).unwrap(), &tool_strings);
+        let principal = super::super::schema::build_agent_principal_entity(
+            &crate::handle!("test-user"),
+            &crate::core::Handle::try_new(agent_id).unwrap(),
+            &tool_strings,
+        );
         evaluate_sandbox_policy(&ps, principal)
     }
 
@@ -890,19 +1079,43 @@ mod tests {
                    action == Policy::Action::"connect", resource)
                 unless { resource == Policy::NetworkDestination::"gmail.com:443" };
         "#;
-        let restricted = eval_with_managed(user_policies, "restricted", &[], std::slice::from_ref(&managed));
-        assert!(restricted.network_destinations.contains(&"gmail.com:443".to_string()));
+        let restricted = eval_with_managed(
+            user_policies,
+            "restricted",
+            &[],
+            std::slice::from_ref(&managed),
+        );
+        assert!(
+            restricted
+                .network_destinations
+                .contains(&"gmail.com:443".to_string())
+        );
 
-        let normal = eval_with_managed(user_policies, "normal-agent", &[], std::slice::from_ref(&managed));
+        let normal = eval_with_managed(
+            user_policies,
+            "normal-agent",
+            &[],
+            std::slice::from_ref(&managed),
+        );
         assert!(normal.network_access);
-        assert!(!normal.network_destinations.contains(&"gmail.com:443".to_string()));
+        assert!(
+            !normal
+                .network_destinations
+                .contains(&"gmail.com:443".to_string())
+        );
     }
 
     #[test]
     fn test_managed_policy_annotations() {
         let policy = make_default_network_policy();
-        assert_eq!(policy.annotation("config"), Some("sandbox.default_network_access"));
+        assert_eq!(
+            policy.annotation("config"),
+            Some("sandbox.default_network_access")
+        );
         assert_eq!(policy.annotation("readonly"), Some("true"));
-        assert_eq!(policy.annotation("description"), Some("Default outbound network access for all agents"));
+        assert_eq!(
+            policy.annotation("description"),
+            Some("Default outbound network access for all agents")
+        );
     }
 }

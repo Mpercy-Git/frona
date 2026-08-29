@@ -69,29 +69,58 @@ impl AgentToolRegistry {
     /// Restrict beyond Cedar: even if a tool is permitted generally, hide it here.
     pub fn restrict_to(&mut self, allowed: &[&str]) {
         let allow_set: std::collections::HashSet<&str> = allowed.iter().copied().collect();
-        self.definitions.retain(|d| allow_set.contains(d.id.as_str()));
-        let surviving_owners: std::collections::HashSet<String> =
-            self.definitions.iter().filter_map(|d| {
-                self.tool_name_to_owner.get(&d.id).cloned()
-            }).collect();
-        self.tool_name_to_owner.retain(|tool_id, _| allow_set.contains(tool_id.as_str()));
-        self.tools.retain(|owner, _| surviving_owners.contains(owner));
+        self.definitions
+            .retain(|d| allow_set.contains(d.id.as_str()));
+        let surviving_owners: std::collections::HashSet<String> = self
+            .definitions
+            .iter()
+            .filter_map(|d| self.tool_name_to_owner.get(&d.id).cloned())
+            .collect();
+        self.tool_name_to_owner
+            .retain(|tool_id, _| allow_set.contains(tool_id.as_str()));
+        self.tools
+            .retain(|owner, _| surviving_owners.contains(owner));
     }
 
     pub fn deny(&mut self, denied: &[&str]) {
         let deny_set: std::collections::HashSet<&str> = denied.iter().copied().collect();
-        self.definitions.retain(|d| !deny_set.contains(d.id.as_str()));
-        let surviving_owners: std::collections::HashSet<String> =
-            self.definitions.iter().filter_map(|d| {
-                self.tool_name_to_owner.get(&d.id).cloned()
-            }).collect();
-        self.tool_name_to_owner.retain(|tool_id, _| !deny_set.contains(tool_id.as_str()));
-        self.tools.retain(|owner, _| surviving_owners.contains(owner));
+        self.definitions
+            .retain(|d| !deny_set.contains(d.id.as_str()));
+        let surviving_owners: std::collections::HashSet<String> = self
+            .definitions
+            .iter()
+            .filter_map(|d| self.tool_name_to_owner.get(&d.id).cloned())
+            .collect();
+        self.tool_name_to_owner
+            .retain(|tool_id, _| !deny_set.contains(tool_id.as_str()));
+        self.tools
+            .retain(|owner, _| surviving_owners.contains(owner));
     }
 
     pub fn register(&mut self, tool: Arc<dyn AgentTool>) {
+        let definitions = tool.definitions();
+        self.register_with_definitions(tool, definitions);
+    }
+
+    pub fn register_required(&mut self, tool: Arc<dyn AgentTool>) -> Result<(), AppError> {
+        let definitions = tool.definitions();
+        if definitions.is_empty() {
+            return Err(AppError::Internal(format!(
+                "required tool `{}` has no model definitions",
+                tool.name(),
+            )));
+        }
+        self.register_with_definitions(tool, definitions);
+        Ok(())
+    }
+
+    fn register_with_definitions(
+        &mut self,
+        tool: Arc<dyn AgentTool>,
+        definitions: Vec<ToolDefinition>,
+    ) {
         let owner_name = tool.name().to_string();
-        for def in tool.definitions() {
+        for def in definitions {
             self.tool_name_to_owner
                 .insert(def.id.clone(), owner_name.clone());
             self.definitions.push(def);
@@ -99,7 +128,12 @@ impl AgentToolRegistry {
         self.tools.insert(owner_name, tool);
     }
 
-    pub async fn execute(&self, tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    pub async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let owner = self
             .tool_name_to_owner
             .get(tool_name)
@@ -180,6 +214,26 @@ mod tests {
 
     struct MockTool;
 
+    struct EmptyTool;
+
+    #[async_trait]
+    impl AgentTool for EmptyTool {
+        fn name(&self) -> &str {
+            "empty"
+        }
+        fn definitions(&self) -> Vec<ToolDefinition> {
+            Vec::new()
+        }
+        async fn execute(
+            &self,
+            _: &str,
+            _: Value,
+            _: &InferenceContext,
+        ) -> Result<ToolOutput, AppError> {
+            Ok(ToolOutput::text("empty"))
+        }
+    }
+
     #[async_trait]
     impl AgentTool for MockTool {
         fn name(&self) -> &str {
@@ -195,7 +249,12 @@ mod tests {
             }]
         }
 
-        async fn execute(&self, tool_name: &str, _arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+        async fn execute(
+            &self,
+            tool_name: &str,
+            _arguments: Value,
+            _ctx: &InferenceContext,
+        ) -> Result<ToolOutput, AppError> {
             Ok(ToolOutput::text(format!("executed {tool_name}")))
         }
     }
@@ -275,11 +334,23 @@ mod tests {
         assert_eq!(output.text_content(), "executed mock_action");
     }
 
+    #[test]
+    fn required_tool_registration_rejects_an_empty_definition_set() {
+        let mut registry = AgentToolRegistry::empty();
+
+        let error = registry.register_required(Arc::new(EmptyTool)).unwrap_err();
+
+        assert!(error.to_string().contains("empty"));
+        assert!(registry.is_empty());
+    }
+
     #[tokio::test]
     async fn test_registry_unknown_tool() {
         let registry = AgentToolRegistry::empty();
         let ctx = mock_context();
-        let result = registry.execute("nonexistent", serde_json::json!({}), &ctx).await;
+        let result = registry
+            .execute("nonexistent", serde_json::json!({}), &ctx)
+            .await;
         assert!(result.is_err());
     }
 
@@ -298,7 +369,12 @@ mod tests {
                 parameters: serde_json::json!({"type":"object","properties":{}}),
             }]
         }
-        async fn execute(&self, _: &str, _: Value, _: &InferenceContext) -> Result<ToolOutput, AppError> {
+        async fn execute(
+            &self,
+            _: &str,
+            _: Value,
+            _: &InferenceContext,
+        ) -> Result<ToolOutput, AppError> {
             Ok(ToolOutput::text("other"))
         }
     }
@@ -316,8 +392,18 @@ mod tests {
         assert_eq!(registry.definitions()[0].id, "mock_action");
 
         let ctx = mock_context();
-        assert!(registry.execute("other_action", serde_json::json!({}), &ctx).await.is_err());
-        assert!(registry.execute("mock_action", serde_json::json!({}), &ctx).await.is_ok());
+        assert!(
+            registry
+                .execute("other_action", serde_json::json!({}), &ctx)
+                .await
+                .is_err()
+        );
+        assert!(
+            registry
+                .execute("mock_action", serde_json::json!({}), &ctx)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

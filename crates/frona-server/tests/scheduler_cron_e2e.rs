@@ -3,16 +3,14 @@
 use std::sync::Arc;
 
 use frona::agent::task::executor::TaskExecutor;
-use frona::agent::task::models::{
-    CronConcurrency, CronMode, Task, TaskKind, TaskStatus,
-};
+use frona::agent::task::models::{CronConcurrency, CronMode, Task, TaskKind, TaskStatus};
 use frona::core::config::Config;
 use frona::core::state::AppState;
 use frona::db::init as db;
 use frona::scheduler::execute_cron;
 use frona::storage::StorageService;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -77,11 +75,7 @@ fn install_executor(state: &AppState) -> Arc<TaskExecutor> {
     state.task_executor.clone()
 }
 
-async fn make_template(
-    state: &AppState,
-    mode: CronMode,
-    concurrency: CronConcurrency,
-) -> Task {
+async fn make_template(state: &AppState, mode: CronMode, concurrency: CronConcurrency) -> Task {
     let next = frona::tool::task::next_cron_occurrence("* * * * *", "UTC").unwrap();
     state
         .task_service
@@ -99,7 +93,10 @@ async fn make_template(
             None,
             mode,
             concurrency,
-            false, None, None)
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap()
 }
@@ -137,8 +134,16 @@ async fn execute_cron_spawns_cron_run_with_correct_linkage() {
 
     execute_cron(&state, &template).await.unwrap();
 
-    let runs = state.task_service.find_runs_by_cron(&template.id).await.unwrap();
-    assert_eq!(runs.len(), 1, "first fire should produce exactly one CronRun");
+    let runs = state
+        .task_service
+        .find_runs_by_cron(&template.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        runs.len(),
+        1,
+        "first fire should produce exactly one CronRun"
+    );
 
     match &runs[0].kind {
         TaskKind::CronRun {
@@ -163,7 +168,11 @@ async fn execute_cron_increments_sequence_num_across_fires() {
         execute_cron(&state, &template).await.unwrap();
     }
 
-    let runs = state.task_service.find_runs_by_cron(&template.id).await.unwrap();
+    let runs = state
+        .task_service
+        .find_runs_by_cron(&template.id)
+        .await
+        .unwrap();
     assert_eq!(runs.len(), 3);
 
     let mut seqs: Vec<u64> = runs
@@ -186,7 +195,11 @@ async fn execute_cron_forbid_skips_while_previous_in_flight() {
     let (_run1, _token) = arrange_in_flight_run(&state, &executor, &template, 1).await;
 
     execute_cron(&state, &template).await.unwrap();
-    let runs = state.task_service.find_runs_by_cron(&template.id).await.unwrap();
+    let runs = state
+        .task_service
+        .find_runs_by_cron(&template.id)
+        .await
+        .unwrap();
     assert_eq!(
         runs.len(),
         1,
@@ -205,7 +218,11 @@ async fn execute_cron_replace_cancels_in_flight_and_spawns_new() {
 
     execute_cron(&state, &template).await.unwrap();
 
-    let runs = state.task_service.find_runs_by_cron(&template.id).await.unwrap();
+    let runs = state
+        .task_service
+        .find_runs_by_cron(&template.id)
+        .await
+        .unwrap();
     assert_eq!(
         runs.len(),
         2,
@@ -227,17 +244,22 @@ async fn execute_cron_allow_runs_concurrently() {
 
     execute_cron(&state, &template).await.unwrap();
 
-    let runs = state.task_service.find_runs_by_cron(&template.id).await.unwrap();
-    assert_eq!(
-        runs.len(),
-        2,
-        "Allow policy must spawn concurrent CronRuns"
-    );
+    let runs = state
+        .task_service
+        .find_runs_by_cron(&template.id)
+        .await
+        .unwrap();
+    assert_eq!(runs.len(), 2, "Allow policy must spawn concurrent CronRuns");
     assert!(
         !cancel_token.is_cancelled(),
         "Allow policy must leave in-flight runs alone"
     );
-    let still = state.task_service.find_by_id(&run1.id).await.unwrap().unwrap();
+    let still = state
+        .task_service
+        .find_by_id(&run1.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(still.status, TaskStatus::InProgress);
 }
 
@@ -254,10 +276,30 @@ async fn executor_cancel_task_cascades_to_active_cron_runs() {
 
     executor.cancel_task(&template.id).await;
 
-    assert!(token_a.is_cancelled(), "run_a's token must fire via cascade");
-    assert!(token_b.is_cancelled(), "run_b's token must fire via cascade");
-    assert!(state.task_service.find_by_id(&run_a.id).await.unwrap().is_some());
-    assert!(state.task_service.find_by_id(&run_b.id).await.unwrap().is_some());
+    assert!(
+        token_a.is_cancelled(),
+        "run_a's token must fire via cascade"
+    );
+    assert!(
+        token_b.is_cancelled(),
+        "run_b's token must fire via cascade"
+    );
+    assert!(
+        state
+            .task_service
+            .find_by_id(&run_a.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        state
+            .task_service
+            .find_by_id(&run_b.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -288,7 +330,12 @@ async fn execute_cron_does_not_stamp_chat_id_on_template() {
         execute_cron(&state, &template).await.unwrap();
     }
 
-    let reloaded = state.task_service.find_by_id(&template.id).await.unwrap().unwrap();
+    let reloaded = state
+        .task_service
+        .find_by_id(&template.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         reloaded.chat_id.is_none(),
         "Cron template must never have its chat_id stamped (got {:?})",

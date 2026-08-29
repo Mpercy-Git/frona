@@ -5,6 +5,7 @@ use crate::Entity;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "contact")]
@@ -12,19 +13,12 @@ pub struct Contact {
     pub id: String,
     pub user_id: String,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phone: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub company: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
     /// SurrealDB's `+=` operator does NOT dedupe objects — service layer must guard appends with an existence check.
     #[serde(default)]
@@ -35,15 +29,14 @@ pub struct Contact {
     pub updated_at: DateTime<Utc>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct ContactAddress {
     pub provider: String,
     pub address: String,
     /// `None` for manually-added addresses (no surfacing channel).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
 

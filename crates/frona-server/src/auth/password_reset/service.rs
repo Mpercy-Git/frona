@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
-use rand::RngCore;
-use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
 use super::models::PasswordResetToken;
@@ -35,8 +33,10 @@ impl PasswordResetService {
     }
 
     fn generate_secret() -> String {
-        let mut bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut bytes);
+        // rand 0.10 renamed `RngCore` and moved `OsRng`; `random()` is backed by
+        // ThreadRng (ChaCha12, OS-reseeded, `TryCryptoRng`) - the same CSPRNG the
+        // vault uses for AES-GCM nonces, so the token keeps its strength.
+        let bytes: [u8; 32] = rand::random();
         hex::encode(bytes)
     }
 

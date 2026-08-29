@@ -12,16 +12,15 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use frona::tool::mcp::models::{
-    McpPackage, McpRuntime, McpServer, McpServerStatus,
-};
-use frona::tool::mcp::{McpManager};
-use frona::tool::sandbox::{SandboxFactory, SandboxManager};
+use frona::core::repository::Repository;
+use frona::tool::mcp::McpManager;
+use frona::tool::mcp::models::{McpPackage, McpRuntime, McpServer, McpServerStatus};
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use frona::tool::sandbox::{SandboxFactory, SandboxManager};
 
 fn fake_server_binary() -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/debug/fake-mcp-server");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/fake-mcp-server");
     if !path.exists() {
         panic!(
             "fake-mcp-server binary not found at {}. Build it first:\n  \
@@ -55,16 +54,40 @@ fn make_server(id: &str, binary: &str, workspace: &str) -> McpServer {
         active_transport: "stdio".into(),
         status: McpServerStatus::Installed,
         tool_cache: vec![],
-        workspace_dir: workspace.to_string(),        installed_at: now,
+        workspace_dir: workspace.to_string(),
+        installed_at: now,
         last_started_at: None,
         updated_at: now,
     }
 }
 
 async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
-    let factory = Arc::new(SandboxFactory::new(true, Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0))));
-    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(()).await.unwrap();
+    let factory = Arc::new(SandboxFactory::new(
+        true,
+        Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
+    ));
+    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+        .await
+        .unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
+    let user_repo = frona::db::repo::generic::SurrealRepo::new(db.clone());
+    let now = chrono::Utc::now();
+    user_repo
+        .create(&frona::auth::User {
+            id: "test-user".into(),
+            handle: frona::handle!("testuser"),
+            email: "test@example.com".into(),
+            name: "Test User".into(),
+            password_hash: "unused".into(),
+            timezone: None,
+            phone: None,
+            groups: Vec::new(),
+            deactivated_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .unwrap();
     let storage = frona::storage::StorageService::new(&frona::core::config::Config {
         storage: frona::core::config::StorageConfig {
             data_dir: tmp.to_string_lossy().into_owned(),
@@ -72,13 +95,13 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
         },
         ..Default::default()
     });
-    let user_service = frona::auth::UserService::new(
-        frona::db::repo::generic::SurrealRepo::new(db.clone()),
-        &frona::core::config::CacheConfig::default(),
-    );
+    let user_service =
+        frona::auth::UserService::new(user_repo, &frona::core::config::CacheConfig::default());
     let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
     let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(frona::db::repo::generic::SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+        Arc::new(frona::db::repo::generic::SurrealRepo::<
+            frona::policy::models::Policy,
+        >::new(db.clone()));
     let policy_service = frona::policy::service::PolicyService::new(
         policy_repo,
         frona::policy::schema::build_schema(),
@@ -91,16 +114,21 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
             frona::build_http_client(),
             "/tmp/frona-test-mcp-e2e-cache",
         ),
-        frona::agent::skill::resolver::SkillResolver::new("/tmp/frona-test-mcp-e2e-shared", storage.clone()),
+        frona::agent::skill::resolver::SkillResolver::new(
+            "/tmp/frona-test-mcp-e2e-shared",
+            storage.clone(),
+        ),
         storage.clone(),
         "/tmp/frona-test-mcp-e2e-skills",
         &frona::core::config::CacheConfig::default(),
     );
     let keypair_repo: Arc<dyn frona::credential::keypair::repository::KeyPairRepository> =
         Arc::new(frona::db::repo::generic::SurrealRepo::new(db.clone()));
-    let keypair_service = frona::credential::keypair::service::KeyPairService::new("test-secret", keypair_repo);
-    let token_repo: Arc<frona::db::repo::generic::SurrealRepo<frona::auth::token::models::ApiToken>> =
-        Arc::new(frona::db::repo::generic::SurrealRepo::new(db));
+    let keypair_service =
+        frona::credential::keypair::service::KeyPairService::new("test-secret", keypair_repo);
+    let token_repo: Arc<
+        frona::db::repo::generic::SurrealRepo<frona::auth::token::models::ApiToken>,
+    > = Arc::new(frona::db::repo::generic::SurrealRepo::new(db));
     let token_service = frona::auth::token::service::TokenService::new(
         token_repo,
         frona::auth::jwt::JwtService::new(),
@@ -146,12 +174,12 @@ async fn spawn_handshake_and_tool_call() {
         .expect("start should succeed");
 
     assert!(
-        tools.iter().any(|t| t.id == "mcp__fake_s1__echo"),
+        tools.iter().any(|t| t.id == "mcp__fake-s1__echo"),
         "echo tool should be discovered; got: {:?}",
         tools.iter().map(|t| &t.id).collect::<Vec<_>>()
     );
     assert!(
-        tools.iter().any(|t| t.id == "mcp__fake_s1__add"),
+        tools.iter().any(|t| t.id == "mcp__fake-s1__add"),
         "add tool should be discovered"
     );
 
@@ -162,8 +190,8 @@ async fn spawn_handshake_and_tool_call() {
     let text: String = result
         .content
         .iter()
-        .filter_map(|c| match &c.raw {
-            rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+        .filter_map(|c| match c {
+            rmcp::model::ContentBlock::Text(t) => Some(t.text.clone()),
             _ => None,
         })
         .collect();
@@ -176,8 +204,8 @@ async fn spawn_handshake_and_tool_call() {
     let sum: String = result
         .content
         .iter()
-        .filter_map(|c| match &c.raw {
-            rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+        .filter_map(|c| match c {
+            rmcp::model::ContentBlock::Text(t) => Some(t.text.clone()),
             _ => None,
         })
         .collect();
@@ -242,7 +270,7 @@ async fn tools_for_user_returns_filtered_tools() {
         .expect("start should succeed");
 
     let mut allowlist = HashMap::new();
-    allowlist.insert("fake_s3".to_string(), {
+    allowlist.insert("fake-s3".to_string(), {
         let mut s = HashSet::new();
         s.insert("echo".to_string());
         s
@@ -250,7 +278,7 @@ async fn tools_for_user_returns_filtered_tools() {
 
     let tools = manager.tools_for_user("test-user", &allowlist).await;
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].id, "mcp__fake_s3__echo");
+    assert_eq!(tools[0].id, "mcp__fake-s3__echo");
 
     manager.stop("s3").await.unwrap();
 }

@@ -18,7 +18,6 @@ async fn collect_sse_frames(body: Body, timeout_ms: u64) -> String {
     collected
 }
 
-
 #[tokio::test]
 async fn event_stream_without_auth_returns_401() {
     let (state, _tmp) = test_app_state().await;
@@ -39,14 +38,10 @@ async fn event_stream_without_auth_returns_401() {
 #[tokio::test]
 async fn event_stream_returns_sse_content_type() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "sse-ct", "ssect@example.com", "password123").await;
+    let (token, _) = register_user(&state, "sse-ct", "ssect@example.com", "password123").await;
 
     let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get("/api/stream", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(auth_get("/api/stream", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let ct = resp
         .headers()
@@ -71,13 +66,8 @@ async fn event_stream_receives_chat_message_broadcast() {
     let broadcast = state.broadcast_service.clone();
 
     let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get("/api/stream", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(auth_get("/api/stream", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-
-
 
     // Broadcast a chat message for this user
     let msg = MessageResponse {
@@ -162,13 +152,8 @@ async fn event_stream_receives_task_update_broadcast() {
     let broadcast = state.broadcast_service.clone();
 
     let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get("/api/stream", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(auth_get("/api/stream", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-
-
 
     broadcast.broadcast_task_update(
         &user_id,
@@ -209,13 +194,8 @@ async fn event_stream_filters_other_user_task_updates() {
     let broadcast = state.broadcast_service.clone();
 
     let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get("/api/stream", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(auth_get("/api/stream", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-
-
 
     // Broadcast task update for a different user
     broadcast.broadcast_task_update(
@@ -243,7 +223,6 @@ async fn event_stream_filters_other_user_task_updates() {
     );
 }
 
-
 #[tokio::test]
 async fn stream_message_without_auth_returns_401() {
     let (state, _tmp) = test_app_state().await;
@@ -254,9 +233,7 @@ async fn stream_message_without_auth_returns_401() {
                 .method("POST")
                 .uri("/api/chats/fake-id/messages/stream")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"content": "X"}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({"content": "X"}).to_string()))
                 .unwrap(),
         )
         .await
@@ -267,10 +244,8 @@ async fn stream_message_without_auth_returns_401() {
 #[tokio::test]
 async fn stream_message_other_user_returns_error() {
     let (state, _tmp) = test_app_state().await;
-    let (token_a, _) =
-        register_user(&state, "sse-own", "sseown@example.com", "password123").await;
-    let (token_b, _) =
-        register_user(&state, "sse-oth", "sseoth@example.com", "password123").await;
+    let (token_a, _) = register_user(&state, "sse-own", "sseown@example.com", "password123").await;
+    let (token_b, _) = register_user(&state, "sse-oth", "sseoth@example.com", "password123").await;
 
     let agent = create_agent(&state, &token_a, "SSEAgent").await;
     let chat = create_chat(&state, &token_a, agent["id"].as_str().unwrap(), None).await;

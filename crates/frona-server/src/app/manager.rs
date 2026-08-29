@@ -76,14 +76,16 @@ impl AppManager {
     ) -> Result<(u16, u32), AppError> {
         let port = self.allocate_port().await?;
 
-        let (child, log_path) = self.spawn_process(
-            agent_id,
-            user_id,
-            command,
-            port,
-            manifest,
-            &credential_env_vars,
-        ).await?;
+        let (child, log_path) = self
+            .spawn_process(
+                agent_id,
+                user_id,
+                command,
+                port,
+                manifest,
+                &credential_env_vars,
+            )
+            .await?;
 
         let pid = child.id().unwrap_or(0);
 
@@ -112,7 +114,7 @@ impl AppManager {
         if let Some(mut proc) = processes.remove(app_id) {
             let port = proc.port;
 
-            let _ = proc.child.kill().await;
+            kill_process_group(&mut proc.child).await;
             let _ = proc.child.wait().await;
 
             self.allocated_ports.lock().await.remove(&port);
@@ -177,7 +179,9 @@ impl AppManager {
         self.stop_app(app_id).await?;
 
         if let Some(cmd) = command {
-            let (port, pid) = self.start_app(app_id, agent_id, &user_id, &cmd, &manifest, creds).await?;
+            let (port, pid) = self
+                .start_app(app_id, agent_id, &user_id, &cmd, &manifest, creds)
+                .await?;
             Ok(Some((port, pid)))
         } else {
             Ok(None)
@@ -198,12 +202,10 @@ impl AppManager {
 
                 let should_restart = match proc.manifest.effective_restart_policy() {
                     "always" => true,
-                    "on_failure" => {
-                        match proc.child.try_wait() {
-                            Ok(Some(status)) => !status.success(),
-                            _ => true,
-                        }
-                    }
+                    "on_failure" => match proc.child.try_wait() {
+                        Ok(Some(status)) => !status.success(),
+                        _ => true,
+                    },
                     _ => false,
                 };
 
@@ -229,8 +231,9 @@ impl AppManager {
         if let Some((agent_id, user_id, command, manifest, creds, restart_count)) = info {
             self.stop_app(app_id).await?;
             if let Some(cmd) = command {
-                let (port, pid) =
-                    self.start_app(app_id, &agent_id, &user_id, &cmd, &manifest, creds).await?;
+                let (port, pid) = self
+                    .start_app(app_id, &agent_id, &user_id, &cmd, &manifest, creds)
+                    .await?;
                 self.processes
                     .lock()
                     .await
@@ -385,6 +388,22 @@ impl AppManager {
     }
 }
 
+async fn kill_process_group(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // Sandbox::spawn calls setsid(), making the tracked child the process-group
+        // leader. Kill the group so shells and app servers do not survive a backend
+        // restart and keep the allocated port bound.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill().await;
+    }
+}
+
 fn read_tail(path: &PathBuf, max_bytes: u64) -> String {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -411,9 +430,15 @@ mod tests {
     async fn test_sandbox_manager(
         storage: crate::storage::StorageService,
     ) -> Arc<crate::tool::sandbox::SandboxManager> {
-        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(()).await.unwrap();
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
-        let rm = Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0));
+        let rm = Arc::new(
+            crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                60.0, 60.0, 60.0, 60.0,
+            ),
+        );
         let factory = Arc::new(SandboxFactory::new(true, rm));
 
         let user_service = crate::auth::UserService::new(
@@ -422,7 +447,9 @@ mod tests {
         );
         let tool_manager = Arc::new(crate::tool::manager::ToolManager::new(false));
         let policy_repo: Arc<dyn crate::policy::repository::PolicyRepository> =
-            Arc::new(crate::db::repo::generic::SurrealRepo::<crate::policy::models::Policy>::new(db.clone()));
+            Arc::new(crate::db::repo::generic::SurrealRepo::<
+                crate::policy::models::Policy,
+            >::new(db.clone()));
         let policy_service = crate::policy::service::PolicyService::new(
             policy_repo,
             crate::policy::schema::build_schema(),
@@ -435,17 +462,23 @@ mod tests {
                 crate::build_http_client(),
                 "/tmp/frona-test-skills-cache",
             ),
-            crate::agent::skill::resolver::SkillResolver::new("/tmp/frona-test-shared", storage.clone()),
+            crate::agent::skill::resolver::SkillResolver::new(
+                "/tmp/frona-test-shared",
+                storage.clone(),
+            ),
             storage.clone(),
             "/tmp/frona-test-skills",
             &crate::core::config::CacheConfig::default(),
         );
         let keypair_repo: Arc<dyn crate::credential::keypair::repository::KeyPairRepository> =
-            Arc::new(crate::db::repo::generic::SurrealRepo::<crate::credential::keypair::models::KeyPair>::new(db.clone()));
+            Arc::new(crate::db::repo::generic::SurrealRepo::<
+                crate::credential::keypair::models::KeyPair,
+            >::new(db.clone()));
         let keypair_service =
             crate::credential::keypair::service::KeyPairService::new("test-secret", keypair_repo);
-        let token_repo: Arc<crate::db::repo::generic::SurrealRepo<crate::auth::token::models::ApiToken>> =
-            Arc::new(crate::db::repo::generic::SurrealRepo::new(db));
+        let token_repo: Arc<
+            crate::db::repo::generic::SurrealRepo<crate::auth::token::models::ApiToken>,
+        > = Arc::new(crate::db::repo::generic::SurrealRepo::new(db));
         let token_service = crate::auth::token::service::TokenService::new(
             token_repo,
             crate::auth::jwt::JwtService::new(),
@@ -488,14 +521,19 @@ mod tests {
             crate::db::repo::generic::SurrealRepo::new(db.clone()),
             &crate::core::config::CacheConfig::default(),
         );
-        let policy_repo: std::sync::Arc<dyn crate::policy::repository::PolicyRepository> = std::sync::Arc::new(
-            crate::db::repo::generic::SurrealRepo::<crate::policy::models::Policy>::new(db.clone())
-        );
+        let policy_repo: std::sync::Arc<dyn crate::policy::repository::PolicyRepository> =
+            std::sync::Arc::new(crate::db::repo::generic::SurrealRepo::<
+                crate::policy::models::Policy,
+            >::new(db.clone()));
         let schema = crate::policy::schema::build_schema();
         let tool_manager = std::sync::Arc::new(crate::tool::manager::ToolManager::new(false));
         let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
         let policy_svc = crate::policy::service::PolicyService::new(
-            policy_repo, schema, tool_manager, storage, user_svc.clone(),
+            policy_repo,
+            schema,
+            tool_manager,
+            storage,
+            user_svc.clone(),
         );
         let repo = crate::db::repo::agents::SurrealAgentRepo::new(db);
         use crate::core::repository::Repository;
@@ -526,7 +564,11 @@ mod tests {
         crate::agent::service::AgentService::new(
             repo,
             &crate::core::config::CacheConfig::default(),
-            std::sync::Arc::new(crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)),
+            std::sync::Arc::new(
+                crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                    60.0, 60.0, 60.0, 60.0,
+                ),
+            ),
             policy_svc,
             user_svc,
         )
@@ -661,24 +703,20 @@ mod tests {
         };
 
         let port = manager.allocate_port().await.unwrap();
-        manager
-            .processes
-            .lock()
-            .await
-            .insert(
-                "test-app".to_string(),
-                ManagedProcess {
-                    child,
-                    port,
-                    agent_id: "agent-1".to_string(),
-                    user_id: "user-1".to_string(),
-                    manifest,
-                    credential_env_vars: Vec::new(),
-                    restart_count: 0,
-                    consecutive_failures: 0,
-                    log_path: None,
-                },
-            );
+        manager.processes.lock().await.insert(
+            "test-app".to_string(),
+            ManagedProcess {
+                child,
+                port,
+                agent_id: "agent-1".to_string(),
+                user_id: "user-1".to_string(),
+                manifest,
+                credential_env_vars: Vec::new(),
+                restart_count: 0,
+                consecutive_failures: 0,
+                log_path: None,
+            },
+        );
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -687,7 +725,10 @@ mod tests {
 
         let processes = manager.processes.lock().await;
         let proc = processes.get("test-app").expect("process should exist");
-        assert_eq!(proc.restart_count, 1, "restart_count should be preserved as 1");
+        assert_eq!(
+            proc.restart_count, 1,
+            "restart_count should be preserved as 1"
+        );
     }
 
     #[test]

@@ -14,12 +14,20 @@ pub struct HashicorpVaultProvider {
 }
 
 impl HashicorpVaultProvider {
-    pub fn new(address: String, token: String, mount_path: Option<String>) -> Result<Self, AppError> {
+    pub fn new(
+        address: String,
+        token: String,
+        mount_path: Option<String>,
+    ) -> Result<Self, AppError> {
         let settings = VaultClientSettingsBuilder::default()
             .address(&address)
             .token(&token)
             .build()
-            .map_err(|e| AppError::Tool(format!("Failed to build HashiCorp Vault client settings: {e}")))?;
+            .map_err(|e| {
+                AppError::Tool(format!(
+                    "Failed to build HashiCorp Vault client settings: {e}"
+                ))
+            })?;
 
         let client = VaultClient::new(settings)
             .map_err(|e| AppError::Tool(format!("Failed to create HashiCorp Vault client: {e}")))?;
@@ -60,7 +68,11 @@ impl VaultProvider for HashicorpVaultProvider {
     async fn get_secret(&self, item_id: &str) -> Result<VaultSecret, AppError> {
         let data: HashMap<String, String> = kv2::read(&self.client, &self.mount, item_id)
             .await
-            .map_err(|e| AppError::Tool(format!("Failed to read secret '{item_id}' from HashiCorp Vault: {e}")))?;
+            .map_err(|e| {
+                AppError::Tool(format!(
+                    "Failed to read secret '{item_id}' from HashiCorp Vault: {e}"
+                ))
+            })?;
 
         let username = data.get("username").cloned();
         let password = data.get("password").cloned();

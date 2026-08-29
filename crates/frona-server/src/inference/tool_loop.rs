@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use rig_core::completion::message::{
-    DocumentSourceKind, ImageMediaType, MimeType, ToolCall, ToolFunction, ToolResult,
-    ToolResultContent, UserContent,
+    DocumentSourceKind, ImageMediaType, MimeType, ProviderCallId, ToolCallId, ToolFunction,
+    ToolResult, ToolResultContent, UserContent,
 };
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
@@ -15,7 +15,7 @@ use crate::chat::message::models::{MessageResponse, Reasoning};
 use crate::core::error::AppError;
 use crate::core::metrics;
 use crate::tool::registry::AgentToolRegistry;
-use crate::tool::{InferenceContext, ToolDefinition};
+use crate::tool::{InferenceContext, ToolDefinition, active_chat};
 
 use super::config::ModelGroup;
 use super::registry::ModelProviderRegistry;
@@ -54,30 +54,41 @@ pub enum InferenceEventKind {
         record_id: String,
         fields: serde_json::Value,
     },
-    Retry { retry_after_ms: u64, reason: &'static str },
+    Retry {
+        retry_after_ms: u64,
+        reason: &'static str,
+    },
 
     /// Channel adapters use this to begin a "thinking/typing" affordance.
     Start,
     /// `message` is the persisted final state.
-    Done { message: MessageResponse },
-    Cancelled { reason: String },
-    Failed { error: String },
+    Done {
+        message: MessageResponse,
+    },
+    Cancelled {
+        reason: String,
+    },
+    Failed {
+        error: String,
+    },
     /// Loop is parked, waiting for something external (the human, a sibling
     /// task, a webhook) to resume it. The `reason` carries WHY; the message
     /// is the executing-status message at the point of the pause. Every
-    /// pause cause fires this — adapters / FE that just want "loop stopped
+    /// pause cause fires this - adapters / FE that just want "loop stopped
     /// streaming" can match on `Paused { .. }` without inspecting reason.
     Paused {
         reason: PauseReason,
         message: MessageResponse,
     },
-    /// Human just resolved a HITL — the loop is about to resume. The message
+    /// Human just resolved a HITL - the loop is about to resume. The message
     /// reflects the post-resolution state (resolved tool_call.result set).
-    Resume { message: MessageResponse },
+    Resume {
+        message: MessageResponse,
+    },
 }
 
 /// Why the inference loop paused. Each variant gets its own dispatcher
-/// branch on the channel and FE sides — adding a new pause cause is one
+/// branch on the channel and FE sides - adding a new pause cause is one
 /// new variant + one new branch.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -117,7 +128,6 @@ pub enum ToolLoopOutcome {
     },
 }
 
-
 pub fn extract_reasoning(contents: &[AssistantContent]) -> Option<Reasoning> {
     contents.iter().find_map(|c| {
         if let AssistantContent::Reasoning(r) = c {
@@ -125,6 +135,7 @@ pub fn extract_reasoning(contents: &[AssistantContent]) -> Option<Reasoning> {
                 id: r.id.clone(),
                 content: r.display_text(),
                 signature: r.first_signature().map(|s| s.to_string()),
+                raw: serde_json::to_value(r).ok(),
             })
         } else {
             None
@@ -132,7 +143,10 @@ pub fn extract_reasoning(contents: &[AssistantContent]) -> Option<Reasoning> {
     })
 }
 
-fn to_rig_tool_definitions(defs: &[ToolDefinition], exclude_mcp: bool) -> Vec<RigToolDefinition> {
+pub(crate) fn to_rig_tool_definitions(
+    defs: &[ToolDefinition],
+    exclude_mcp: bool,
+) -> Vec<RigToolDefinition> {
     defs.iter()
         .filter(|d| !exclude_mcp || !d.id.starts_with("mcp__"))
         .map(|d| {
@@ -155,7 +169,7 @@ async fn check_cancellation(
     event_tx: &EventSender,
     turn_text: &str,
 ) -> Option<ToolLoopOutcome> {
-    let _ = event_tx; // no in-loop Cancelled signal — caller emits the lifecycle event
+    let _ = event_tx; // no in-loop Cancelled signal - caller emits the lifecycle event
     if cancel_token.is_cancelled() {
         Some(ToolLoopOutcome::Cancelled(turn_text.to_string()))
     } else {
@@ -163,8 +177,10 @@ async fn check_cancellation(
     }
 }
 
-
-async fn process_model_response(
+/// Append the model's assistant response to `chat_history`, returning whether it
+/// contained tool calls. Tool-call args have the UI-only `description` stripped
+/// (see the inline note) so the pushed message matches the persisted/rebuilt one.
+pub(crate) async fn process_model_response(
     contents: &[AssistantContent],
     chat_history: &mut Vec<RigMessage>,
 ) -> bool {
@@ -176,7 +192,7 @@ async fn process_model_response(
             // The `description` arg is a UI-only field (added to every tool's
             // schema by `tool::manager` so the model emits a status indicator).
             // Strip it here so the assistant message we push into chat_history
-            // matches the persisted-then-rebuilt version — otherwise the
+            // matches the persisted-then-rebuilt version - otherwise the
             // first inference call sees args WITH description and any later
             // rebuild-from-DB sees them WITHOUT, mutating an earlier message
             // in the prefix and invalidating DeepSeek's prefix cache from
@@ -187,59 +203,70 @@ async fn process_model_response(
                 if let Some(obj) = args.as_object_mut() {
                     obj.remove("description");
                 }
-                assistant_content_items.push(AssistantContent::ToolCall(ToolCall::new(
-                    tc.id.clone(),
-                    ToolFunction::new(tc.function.name.clone(), args),
-                )));
+                let mut retained = tc.clone();
+                retained.function = ToolFunction::new(tc.function.name.clone(), args);
+                assistant_content_items.push(AssistantContent::ToolCall(retained));
             }
             _ => assistant_content_items.push(content.clone()),
         }
     }
 
-    let assistant_msg = RigMessage::Assistant {
-        id: None,
-        content: rig_core::OneOrMany::many(assistant_content_items)
-            .unwrap_or_else(|_| rig_core::OneOrMany::one(AssistantContent::text(""))),
+    let content = if assistant_content_items.is_empty() {
+        vec![AssistantContent::text("")]
+    } else {
+        assistant_content_items
     };
+    let assistant_msg = RigMessage::Assistant { id: None, content };
     chat_history.push(assistant_msg);
 
     has_tool_calls
 }
 
 fn build_tool_result_message(
-    tool_call_id: String,
+    tool_call_id: ToolCallId,
+    provider: Option<ProviderCallId>,
+    tool_name: String,
     result: String,
     tool_output: &crate::tool::ToolOutput,
 ) -> RigMessage {
     let has_images = !tool_output.images().is_empty();
     if has_images {
         let tool_result_content = UserContent::ToolResult(ToolResult {
-            id: tool_call_id,
-            call_id: None,
-            content: rig_core::OneOrMany::one(ToolResultContent::text(&result)),
+            call: tool_call_id,
+            provider,
+            name: tool_name,
+            content: vec![ToolResultContent::text(&result)],
         });
         let mut user_contents = vec![tool_result_content];
         for img in tool_output.images() {
             let b64 = base64::engine::general_purpose::STANDARD.encode(&img.bytes);
-            user_contents.push(UserContent::Image(
-                rig_core::completion::message::Image {
-                    data: DocumentSourceKind::Base64(b64),
-                    media_type: ImageMediaType::from_mime_type(&img.media_type),
-                    detail: None,
-                    additional_params: None,
-                },
-            ));
+            user_contents.push(UserContent::Image(rig_core::completion::message::Image {
+                data: DocumentSourceKind::Base64(b64),
+                media_type: ImageMediaType::from_mime_type(&img.media_type),
+                detail: None,
+                additional_params: None,
+            }));
         }
         RigMessage::User {
-            content: rig_core::OneOrMany::many(user_contents).unwrap(),
+            content: user_contents,
         }
     } else {
-        RigMessage::tool_result(tool_call_id, result)
+        RigMessage::User {
+            content: vec![UserContent::ToolResult(ToolResult {
+                call: tool_call_id,
+                provider,
+                name: tool_name,
+                content: vec![ToolResultContent::text(&result)],
+            })],
+        }
     }
 }
 
 struct ToolCallExecutionResult {
-    external_tools: Vec<(crate::inference::tool_call::ToolCallResponse, ToolCallResult)>,
+    external_tools: Vec<(
+        crate::inference::tool_call::ToolCallResponse,
+        ToolCallResult,
+    )>,
     internal_tool_results: Vec<ToolCallResult>,
     accumulated_system_prompts: Vec<String>,
 }
@@ -288,7 +315,7 @@ async fn execute_tool_calls(
         event_tx.send(InferenceEvent {
             kind: InferenceEventKind::ToolCall {
                 id: te_id.clone(),
-                provider_call_id: tool_call.id.clone(),
+                provider_call_id: tool_call.wire_call_id().to_string(),
                 name: tool_name.clone(),
                 arguments: arguments.clone(),
                 description: description.clone(),
@@ -299,7 +326,7 @@ async fn execute_tool_calls(
 
         // Persist record BEFORE execution (crash resilience).
         // Stamp turn-level metadata (text + reasoning) on the FIRST tool_call
-        // of the turn — both fields gate on the same `turn_metadata_used`
+        // of the turn - both fields gate on the same `turn_metadata_used`
         // flag so they stay paired even when turn_text is None.
         let (current_turn_text, current_turn_reasoning) = if !turn_metadata_used {
             turn_metadata_used = true;
@@ -310,7 +337,7 @@ async fn execute_tool_calls(
         let mut te_record = chat_service
             .begin_tool_call(
                 &te_id,
-                &ctx.chat.id,
+                &active_chat(ctx)?.id,
                 message_id,
                 turn,
                 &tool_call.id,
@@ -409,7 +436,9 @@ async fn execute_tool_calls(
 
         let hitl_emitted = tool_output.as_ref().and_then(|o| o.hitl().cloned());
         let task_event_emitted = tool_output.as_ref().and_then(|o| o.task_event().cloned());
-        let sp = tool_output.as_ref().and_then(|o| o.system_prompt().map(str::to_string));
+        let sp = tool_output
+            .as_ref()
+            .and_then(|o| o.system_prompt().map(str::to_string));
 
         if let Some(ref output) = tool_output {
             for attachment in output.attachments() {
@@ -434,7 +463,9 @@ async fn execute_tool_calls(
             chat_service.set_hitl(&te_record.id, h.clone()).await?;
         }
         if let Some(ref e) = task_event_emitted {
-            chat_service.set_task_event(&te_record.id, e.clone()).await?;
+            chat_service
+                .set_task_event(&te_record.id, e.clone())
+                .await?;
         }
         // Update in-memory record with finished fields so the SSE response is complete
         te_record.result = text.clone();
@@ -447,7 +478,7 @@ async fn execute_tool_calls(
         let te_response: crate::inference::tool_call::ToolCallResponse = te_record.into();
 
         let tool_call_result = ToolCallResult {
-            provider_call_id: tool_call.id.clone(),
+            provider_call_id: tool_call.wire_call_id().to_string(),
             tool_name: tool_name.clone(),
             arguments: te_response.arguments.clone(),
             result: text.clone(),
@@ -464,7 +495,9 @@ async fn execute_tool_calls(
         let is_pending_external = hitl_emitted
             .as_ref()
             .is_some_and(|h| h.status == crate::inference::tool_call::ToolStatus::Pending)
-            || tool_output.as_ref().is_some_and(|o| o.is_pending_external());
+            || tool_output
+                .as_ref()
+                .is_some_and(|o| o.is_pending_external());
 
         if is_pending_external {
             result.external_tools.push((te_response, tool_call_result));
@@ -481,10 +514,23 @@ async fn execute_tool_calls(
             }
             result.internal_tool_results.push(tool_call_result);
             if let Some(output) = tool_output {
-                let msg = build_tool_result_message(tool_call.id.clone(), text, &output);
+                let msg = build_tool_result_message(
+                    tool_call.id.clone(),
+                    tool_call.provider.clone(),
+                    tool_name.clone(),
+                    text,
+                    &output,
+                );
                 chat_history.push(msg);
             } else {
-                chat_history.push(RigMessage::tool_result(tool_call.id.clone(), text));
+                chat_history.push(RigMessage::User {
+                    content: vec![UserContent::ToolResult(ToolResult {
+                        call: tool_call.id.clone(),
+                        provider: tool_call.provider.clone(),
+                        name: tool_name.clone(),
+                        content: vec![ToolResultContent::text(&text)],
+                    })],
+                });
             }
         }
     }
@@ -526,18 +572,15 @@ pub async fn run_tool_loop(
 
         tracing::debug!(turn, "Tool loop turn");
 
-        let max_output = model_group.max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
-        chat_history = crate::inference::context::truncate_history(
-            chat_history,
-            &current_system_prompt,
-            model_group.context_window,
-            max_output,
-            model_group.inference.history_truncation_pct,
-        );
-
-        // Drop leading orphaned tool_results whose tool_use was truncated away
+        // Context is compaction-aware at load time;
+        // an over-budget turn is sent as-is and the provider rejects it (fail
+        // loud) rather than being silently truncated. The leading-orphan strip
+        // below is kept as a cheap structural invariant.
         while let Some(RigMessage::User { content }) = chat_history.first() {
-            if content.iter().any(|c| matches!(c, UserContent::ToolResult(_))) {
+            if content
+                .iter()
+                .any(|c| matches!(c, UserContent::ToolResult(_)))
+            {
                 chat_history.remove(0);
             } else {
                 break;
@@ -547,12 +590,12 @@ pub async fn run_tool_loop(
         let mut turn_text = String::new();
         // ToolTurn UsageContext for THIS iteration's LLM call. If this turn
         // produces no tool_calls (the final text-only turn), it's still a
-        // ToolTurn from the row's perspective — the loop entry is the chat
+        // ToolTurn from the row's perspective - the loop entry is the chat
         // that aggregates them via shared message_id.
         let turn_usage_ctx = crate::inference::usage::UsageContext::new(
             crate::inference::usage::InferenceKind::ToolTurn {
                 agent_id: ctx.agent.id.clone(),
-                chat_id: ctx.chat.id.clone(),
+                chat_id: active_chat(ctx)?.id.clone(),
                 message_id: message_id.to_string(),
                 turn_index: turn as u32,
             },
@@ -581,15 +624,18 @@ pub async fn run_tool_loop(
 
         last_reasoning = extract_reasoning(&contents);
 
-        let has_tool_calls =
-            process_model_response(&contents, &mut chat_history).await;
+        let has_tool_calls = process_model_response(&contents, &mut chat_history).await;
 
         if !has_tool_calls {
             final_text = turn_text;
             break;
         }
 
-        let turn_text_opt = if turn_text.is_empty() { None } else { Some(turn_text.as_str()) };
+        let turn_text_opt = if turn_text.is_empty() {
+            None
+        } else {
+            Some(turn_text.as_str())
+        };
 
         let exec_result = execute_tool_calls(
             chat_service,
@@ -622,9 +668,13 @@ pub async fn run_tool_loop(
         }
 
         if !exec_result.external_tools.is_empty() {
-            let system_prompt_injection = exec_result.external_tools.last()
+            let system_prompt_injection = exec_result
+                .external_tools
+                .last()
                 .and_then(|(_, tcr)| tcr.system_prompt.clone());
-            let tool_calls = exec_result.external_tools.into_iter()
+            let tool_calls = exec_result
+                .external_tools
+                .into_iter()
                 .map(|(te, _)| te)
                 .collect();
 
@@ -636,7 +686,7 @@ pub async fn run_tool_loop(
         }
 
         // Check for task lifecycle events (complete_task, fail_task, defer_task)
-        // and break immediately — no need for another inference turn.
+        // and break immediately - no need for another inference turn.
         let lifecycle_event = exec_result
             .internal_tool_results
             .iter()
@@ -657,10 +707,10 @@ pub async fn run_tool_loop(
 
         if turn == max_tool_turns - 1 {
             event_tx.send(InferenceEvent {
-                    kind: InferenceEventKind::Failed {
-                        error: "Max tool turns reached".to_string(),
-                    },
-                });
+                kind: InferenceEventKind::Failed {
+                    error: "Max tool turns reached".to_string(),
+                },
+            });
             return Err(AppError::Internal("Max tool turns reached".into()));
         }
     }
@@ -704,22 +754,34 @@ mod tests {
 
     #[test]
     fn extract_reasoning_returns_none_when_absent() {
-        let contents = vec![
-            AssistantContent::text("just text"),
-        ];
+        let contents = vec![AssistantContent::text("just text")];
         assert!(extract_reasoning(&contents).is_none());
     }
 
     #[test]
     fn extract_reasoning_joins_multi_chunk() {
-        let contents = vec![
-            AssistantContent::Reasoning(
-                rig_core::completion::message::Reasoning::multi(
-                    vec!["chunk1 ".to_string(), "chunk2".to_string()],
-                ),
-            ),
-        ];
+        let contents = vec![AssistantContent::Reasoning(
+            rig_core::completion::message::Reasoning::multi(vec![
+                "chunk1 ".to_string(),
+                "chunk2".to_string(),
+            ]),
+        )];
         let r = extract_reasoning(&contents).unwrap();
         assert_eq!(r.content, "chunk1 \nchunk2");
+    }
+
+    #[test]
+    fn extract_reasoning_preserves_opaque_blocks_when_display_text_is_empty() {
+        let reasoning = rig_core::completion::message::Reasoning::encrypted("ciphertext")
+            .with_id("rs_opaque".to_string());
+        let contents = vec![AssistantContent::Reasoning(reasoning.clone())];
+
+        let stored = extract_reasoning(&contents).expect("reasoning should be retained");
+
+        assert_eq!(stored.id.as_deref(), Some("rs_opaque"));
+        assert!(stored.content.is_empty());
+        let replayed: rig_core::completion::message::Reasoning =
+            serde_json::from_value(stored.raw.expect("raw reasoning should be stored")).unwrap();
+        assert_eq!(replayed, reasoning);
     }
 }

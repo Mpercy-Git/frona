@@ -38,7 +38,8 @@ fn make_server(id: &str, user_id: &str, handle: &str, status: McpServerStatus) -
         active_transport: "stdio".into(),
         status,
         tool_cache: vec![],
-        workspace_dir: format!("data/mcp/{id}"),        installed_at: now,
+        workspace_dir: format!("data/mcp/{id}"),
+        installed_at: now,
         last_started_at: None,
         updated_at: now,
     }
@@ -66,15 +67,30 @@ async fn find_by_user_isolates_users() {
     let db = test_db().await;
     let repo = SurrealRepo::<McpServer>::new(db);
 
-    repo.create(&make_server("s1", "user-1", "alpha", McpServerStatus::Installed))
-        .await
-        .unwrap();
-    repo.create(&make_server("s2", "user-1", "beta", McpServerStatus::Running))
-        .await
-        .unwrap();
-    repo.create(&make_server("s3", "user-2", "gamma", McpServerStatus::Running))
-        .await
-        .unwrap();
+    repo.create(&make_server(
+        "s1",
+        "user-1",
+        "alpha",
+        McpServerStatus::Installed,
+    ))
+    .await
+    .unwrap();
+    repo.create(&make_server(
+        "s2",
+        "user-1",
+        "beta",
+        McpServerStatus::Running,
+    ))
+    .await
+    .unwrap();
+    repo.create(&make_server(
+        "s3",
+        "user-2",
+        "gamma",
+        McpServerStatus::Running,
+    ))
+    .await
+    .unwrap();
 
     let user1 = repo.find_by_user("user-1").await.unwrap();
     assert_eq!(user1.len(), 2);
@@ -92,9 +108,14 @@ async fn find_running_only_returns_running() {
     let db = test_db().await;
     let repo = SurrealRepo::<McpServer>::new(db);
 
-    repo.create(&make_server("s1", "user-1", "aa", McpServerStatus::Installed))
-        .await
-        .unwrap();
+    repo.create(&make_server(
+        "s1",
+        "user-1",
+        "aa",
+        McpServerStatus::Installed,
+    ))
+    .await
+    .unwrap();
     repo.create(&make_server("s2", "user-1", "bb", McpServerStatus::Running))
         .await
         .unwrap();
@@ -123,12 +144,22 @@ async fn find_running_includes_starting_status() {
     repo.create(&make_server("s1", "user-1", "aa", McpServerStatus::Running))
         .await
         .unwrap();
-    repo.create(&make_server("s2", "user-1", "bb", McpServerStatus::Starting))
-        .await
-        .unwrap();
-    repo.create(&make_server("s3", "user-1", "cc", McpServerStatus::Installed))
-        .await
-        .unwrap();
+    repo.create(&make_server(
+        "s2",
+        "user-1",
+        "bb",
+        McpServerStatus::Starting,
+    ))
+    .await
+    .unwrap();
+    repo.create(&make_server(
+        "s3",
+        "user-1",
+        "cc",
+        McpServerStatus::Installed,
+    ))
+    .await
+    .unwrap();
 
     let running = repo.find_running().await.unwrap();
     assert_eq!(running.len(), 2);
@@ -171,9 +202,14 @@ async fn delete_removes_row() {
     let db = test_db().await;
     let repo = SurrealRepo::<McpServer>::new(db);
 
-    repo.create(&make_server("s1", "user-1", "aa", McpServerStatus::Installed))
-        .await
-        .unwrap();
+    repo.create(&make_server(
+        "s1",
+        "user-1",
+        "aa",
+        McpServerStatus::Installed,
+    ))
+    .await
+    .unwrap();
     repo.delete("s1").await.unwrap();
     assert!(repo.find_by_id("s1").await.unwrap().is_none());
 }
@@ -184,17 +220,15 @@ async fn credential_refs_round_trip_verbatim() {
     let repo = SurrealRepo::<McpServer>::new(db);
 
     let mut server = make_server("s1", "user-1", "example", McpServerStatus::Installed);
-    server.env.insert(
-        "GITHUB_TOKEN".to_string(),
-        "$credential:github".to_string(),
-    );
-    server.env.insert("LOG_LEVEL".to_string(), "debug".to_string());
+    server
+        .env
+        .insert("GITHUB_TOKEN".to_string(), "$credential:github".to_string());
+    server
+        .env
+        .insert("LOG_LEVEL".to_string(), "debug".to_string());
     repo.create(&server).await.unwrap();
 
     let found = repo.find_by_id("s1").await.unwrap().unwrap();
-    assert_eq!(
-        found.env.get("GITHUB_TOKEN").unwrap(),
-        "$credential:github"
-    );
+    assert_eq!(found.env.get("GITHUB_TOKEN").unwrap(), "$credential:github");
     assert_eq!(found.env.get("LOG_LEVEL").unwrap(), "debug");
 }
