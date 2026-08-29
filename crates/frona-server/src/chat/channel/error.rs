@@ -61,7 +61,10 @@ impl ChannelError {
     }
 
     pub fn terminal(message: impl Into<String>, kind: ChannelErrorKind) -> Self {
-        debug_assert!(kind.is_terminal(), "ChannelError::terminal called with Transient");
+        debug_assert!(
+            kind.is_terminal(),
+            "ChannelError::terminal called with Transient"
+        );
         Self {
             message: message.into(),
             kind,

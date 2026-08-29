@@ -9,10 +9,10 @@
 //! those URLs at the backend and 303-redirects them to the query-param form
 //! the static page expects.
 
+use axum::Router;
 use axum::extract::Path;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
-use axum::Router;
 use url::form_urlencoded::byte_serialize;
 
 use crate::core::state::AppState;

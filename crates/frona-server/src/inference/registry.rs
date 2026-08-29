@@ -3,20 +3,24 @@ use std::sync::Arc;
 
 use rig_core::client::Nothing;
 use rig_core::providers::{
-    anthropic, cohere, deepseek, galadriel, gemini, groq, huggingface, hyperbolic, mira, mistral,
-    moonshot, ollama, openai, openrouter, perplexity, together, xai,
+    anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral, moonshot,
+    ollama, openai, openrouter, perplexity, together, xai,
 };
 
-use crate::chat::broadcast::BroadcastService;
-use super::hooks;
-use super::config::{InferenceConfig, ModelGroup, ModelRegistryConfig, ModelProviderConfig, RetryConfig};
+use super::config::{
+    InferenceConfig, ModelGroup, ModelProviderConfig, ModelRegistryConfig, RetryConfig,
+};
 use super::error::InferenceError;
-use super::provider::{InferenceCounter, ModelProvider, ModelRef, RigProvider};
+use super::hooks;
+use super::provider::{InferenceCounter, ModelProvider, ModelRef, OpenAiProvider, RigProvider};
+use crate::chat::broadcast::BroadcastService;
+use crate::core::config::ProviderModel;
 
 #[derive(Clone)]
 pub struct ModelProviderRegistry {
     providers: Arc<HashMap<String, Arc<dyn ModelProvider>>>,
     model_groups: Arc<HashMap<String, ModelGroup>>,
+    protocol_defaults: Arc<HashMap<String, crate::core::config::OpenAiApi>>,
     inference: InferenceConfig,
 }
 
@@ -49,12 +53,15 @@ impl ModelProviderRegistry {
         }
 
         if providers.is_empty() {
-            tracing::warn!("No inference providers configured — chat will fail until a provider is available");
+            tracing::warn!(
+                "No inference providers configured — chat will fail until a provider is available"
+            );
         }
 
         Ok(Self {
             providers: Arc::new(providers),
             model_groups: Arc::new(model_groups),
+            protocol_defaults: Arc::new(catalog.protocol_defaults.clone()),
             inference: inference.clone(),
         })
     }
@@ -74,7 +81,16 @@ impl ModelProviderRegistry {
 
     pub fn resolve_model_group(&self, name_or_ref: &str) -> Result<ModelGroup, InferenceError> {
         if name_or_ref.contains('/') {
-            let model_ref = ModelRef::parse(name_or_ref)?;
+            let mut model_ref = ModelRef::parse(name_or_ref)?;
+            let protocol_key = model_ref.as_str();
+            if let ProviderModel::OpenAI { api, .. } = &mut model_ref.provider {
+                *api = Some(
+                    self.protocol_defaults
+                        .get(&protocol_key)
+                        .copied()
+                        .unwrap_or_default(),
+                );
+            }
             Ok(ModelGroup {
                 name: name_or_ref.to_string(),
                 main: model_ref,
@@ -82,7 +98,7 @@ impl ModelProviderRegistry {
                 max_tokens: Some(self.inference.default_max_tokens),
                 temperature: None,
                 // Ad-hoc model_ref (e.g. from a slash command). No catalog
-                // lookup at this layer — fall back to the conservative
+                // lookup at this layer - fall back to the conservative
                 // default. Callers that want a precise window should configure
                 // a proper ModelGroup.
                 context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
@@ -125,6 +141,7 @@ impl ModelProviderRegistry {
         Self {
             providers: Arc::new(providers),
             model_groups: Arc::new(model_groups),
+            protocol_defaults: Arc::new(HashMap::new()),
             inference: InferenceConfig::default(),
         }
     }
@@ -172,13 +189,9 @@ fn init_provider(
     counter: &InferenceCounter,
 ) -> Result<Arc<dyn ModelProvider>, InferenceError> {
     match name {
-        // Chat Completions (not Responses API): Responses forces `strict: true`
-        // on every function tool with no per-tool opt-out, which rejects any
-        // schema with a free-form object — including MCP-published tools whose
-        // schemas we can't reshape.
         "openai" => {
             let key = require_api_key(name, entry)?;
-            let client: openai::CompletionsClient = if let Some(url) = &entry.base_url {
+            let chat_completions: openai::CompletionsClient = if let Some(url) = &entry.base_url {
                 openai::CompletionsClient::builder()
                     .api_key(&key)
                     .base_url(url)
@@ -188,9 +201,21 @@ fn init_provider(
                 openai::CompletionsClient::new(&key)
                     .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?
             };
-            Ok(Arc::new(
-                RigProvider::new(client, counter.clone()).with_hook(hooks::openai),
-            ) as Arc<dyn ModelProvider>)
+            let responses: openai::Client = if let Some(url) = &entry.base_url {
+                openai::Client::builder()
+                    .api_key(&key)
+                    .base_url(url)
+                    .build()
+                    .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?
+            } else {
+                openai::Client::new(&key)
+                    .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?
+            };
+            Ok(Arc::new(OpenAiProvider::new(
+                chat_completions,
+                responses,
+                counter.clone(),
+            )) as Arc<dyn ModelProvider>)
         }
         // Not via init_builder_provider! because Anthropic needs a request hook
         // (prompt caching) attached to the provider.
@@ -254,7 +279,25 @@ fn init_provider(
         "hyperbolic" => init_api_key_provider!(name, entry, hyperbolic, counter),
         "moonshot" => init_api_key_provider!(name, entry, moonshot, counter),
         "mira" => init_api_key_provider!(name, entry, mira, counter),
-        "galadriel" => init_builder_provider!(name, entry, galadriel, counter),
+        // Rig 0.41 removed its dedicated Galadriel adapter. Galadriel exposes an
+        // OpenAI-compatible chat-completions endpoint, so keep the configured provider
+        // working through Rig's OpenAI client instead of dropping support entirely.
+        "galadriel" => {
+            let key = require_api_key(name, entry)?;
+            let url = entry
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.galadriel.com/v1/verified");
+            let client = openai::CompletionsClient::builder()
+                .api_key(&key)
+                .base_url(url)
+                .build()
+                .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?;
+            Ok(
+                Arc::new(RigProvider::new(client, counter.clone()).with_hook(hooks::openai))
+                    as Arc<dyn ModelProvider>,
+            )
+        }
         "huggingface" => init_api_key_provider!(name, entry, huggingface, counter),
         _ => Err(InferenceError::ProviderNotConfigured(format!(
             "Unknown provider: {name}"
@@ -268,4 +311,45 @@ fn require_api_key(provider: &str, entry: &ModelProviderConfig) -> Result<String
             "Provider '{provider}' requires an api_key but none was provided"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::config::OpenAiApi;
+
+    fn registry_with_protocol_defaults(
+        protocol_defaults: HashMap<String, OpenAiApi>,
+    ) -> ModelProviderRegistry {
+        ModelProviderRegistry {
+            providers: Arc::new(HashMap::new()),
+            model_groups: Arc::new(HashMap::new()),
+            protocol_defaults: Arc::new(protocol_defaults),
+            inference: InferenceConfig::default(),
+        }
+    }
+
+    #[test]
+    fn ad_hoc_openai_model_uses_catalog_protocol_default() {
+        let mut defaults = HashMap::new();
+        defaults.insert("openai/gpt-test".to_string(), OpenAiApi::Responses);
+        let group = registry_with_protocol_defaults(defaults)
+            .resolve_model_group("openai/gpt-test")
+            .unwrap();
+        let ProviderModel::OpenAI { api, .. } = group.main.provider else {
+            panic!("expected openai provider");
+        };
+        assert_eq!(api, Some(OpenAiApi::Responses));
+    }
+
+    #[test]
+    fn ad_hoc_openai_model_without_metadata_uses_chat_completions() {
+        let group = registry_with_protocol_defaults(HashMap::new())
+            .resolve_model_group("openai/unknown")
+            .unwrap();
+        let ProviderModel::OpenAI { api, .. } = group.main.provider else {
+            panic!("expected openai provider");
+        };
+        assert_eq!(api, Some(OpenAiApi::ChatCompletions));
+    }
 }

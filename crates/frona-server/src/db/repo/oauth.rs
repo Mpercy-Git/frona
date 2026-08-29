@@ -16,9 +16,8 @@ impl OAuthRepository for SurrealRepo<OAuthIdentity> {
         &self,
         external_sub: &str,
     ) -> Result<Option<OAuthIdentity>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM oauth_identity WHERE external_sub = $sub LIMIT 1"
-        );
+        let query =
+            format!("{SELECT_CLAUSE} FROM oauth_identity WHERE external_sub = $sub LIMIT 1");
         let mut result = self
             .db()
             .query(&query)
@@ -33,10 +32,7 @@ impl OAuthRepository for SurrealRepo<OAuthIdentity> {
         Ok(identity)
     }
 
-    async fn find_identities_by_user(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<OAuthIdentity>, AppError> {
+    async fn find_identities_by_user(&self, user_id: &str) -> Result<Vec<OAuthIdentity>, AppError> {
         let query = format!(
             "{SELECT_CLAUSE} FROM oauth_identity WHERE user_id = $user_id ORDER BY created_at DESC"
         );
@@ -53,5 +49,4 @@ impl OAuthRepository for SurrealRepo<OAuthIdentity> {
 
         Ok(identities)
     }
-
 }

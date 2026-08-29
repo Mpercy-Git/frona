@@ -139,6 +139,7 @@ export interface SpaceResponse {
   id: string;
   name: string;
   archived_at?: string | null;
+  chat_count: number;
   created_at: string;
   updated_at: string;
 }

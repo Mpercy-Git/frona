@@ -1,13 +1,13 @@
 use heck::ToSnakeCase;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Expr, ImplItem, ItemImpl, Lit, Meta, Token};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
+use syn::{DeriveInput, Expr, ImplItem, ItemImpl, Lit, Meta, Token, parse_macro_input};
 
 mod migration;
 
-/// `#[channel(id = "...", from = ConfigType)]` — `from` is optional; when
+/// `#[channel(id = "...", from = ConfigType)]` - `from` is optional; when
 /// omitted, the adapter struct itself is the deserialisation target.
 #[proc_macro_derive(ChannelFactory, attributes(channel))]
 pub fn derive_channel_factory(input: TokenStream) -> TokenStream {
@@ -15,9 +15,8 @@ pub fn derive_channel_factory(input: TokenStream) -> TokenStream {
     let adapter_name = &input.ident;
     let factory_name = quote::format_ident!("{}Factory", adapter_name);
 
-    let attrs = parse_channel_attrs(&input.attrs).unwrap_or_else(|err| {
-        panic!("#[channel(...)] attribute parse error: {err}")
-    });
+    let attrs = parse_channel_attrs(&input.attrs)
+        .unwrap_or_else(|err| panic!("#[channel(...)] attribute parse error: {err}"));
     let id = attrs.id;
     let manifest_rel_path = format!("/../../resources/channels/{id}.yaml");
 
@@ -87,10 +86,12 @@ fn parse_channel_attrs(attrs: &[syn::Attribute]) -> syn::Result<ChannelAttrs> {
     let attr = attrs
         .iter()
         .find(|a| a.path().is_ident("channel"))
-        .ok_or_else(|| syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "#[channel(id = \"...\")] attribute is required",
-        ))?;
+        .ok_or_else(|| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "#[channel(id = \"...\")] attribute is required",
+            )
+        })?;
 
     let mut id: Option<String> = None;
     let mut from: Option<syn::Type> = None;
@@ -103,18 +104,15 @@ fn parse_channel_attrs(attrs: &[syn::Attribute]) -> syn::Result<ChannelAttrs> {
             let value: syn::Type = meta.value()?.parse()?;
             from = Some(value);
         } else {
-            return Err(meta.error(
-                "unknown #[channel] argument; expected one of: id, from",
-            ));
+            return Err(meta.error("unknown #[channel] argument; expected one of: id, from"));
         }
         Ok(())
     })?;
 
     Ok(ChannelAttrs {
-        id: id.ok_or_else(|| syn::Error::new(
-            attr.span(),
-            "#[channel] missing required `id = \"...\"`",
-        ))?,
+        id: id.ok_or_else(|| {
+            syn::Error::new(attr.span(), "#[channel] missing required `id = \"...\"`")
+        })?,
         from,
     })
 }
@@ -166,12 +164,16 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 struct AgentToolArgs {
     name: Option<String>,
     files: Option<Vec<String>>,
+    /// Subdirectory under `tools/` holding the definition `.md`(s). Lets a tool
+    /// keep its prompt in `tools/<dir>/<name>.md` without restating the filename.
+    dir: Option<String>,
 }
 
 impl Parse for AgentToolArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut name = None;
         let mut files = None;
+        let mut dir = None;
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
@@ -180,6 +182,11 @@ impl Parse for AgentToolArgs {
                     let _eq: Token![=] = input.parse()?;
                     let lit: syn::LitStr = input.parse()?;
                     name = Some(lit.value());
+                }
+                "dir" => {
+                    let _eq: Token![=] = input.parse()?;
+                    let lit: syn::LitStr = input.parse()?;
+                    dir = Some(lit.value());
                 }
                 "files" => {
                     let content;
@@ -195,7 +202,10 @@ impl Parse for AgentToolArgs {
                     files = Some(file_list);
                 }
                 other => {
-                    return Err(syn::Error::new(ident.span(), format!("unknown agent_tool argument: {other}")));
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown agent_tool argument: {other}"),
+                    ));
                 }
             }
 
@@ -204,7 +214,7 @@ impl Parse for AgentToolArgs {
             }
         }
 
-        Ok(AgentToolArgs { name, files })
+        Ok(AgentToolArgs { name, files, dir })
     }
 }
 
@@ -225,8 +235,16 @@ pub fn agent_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let file_names = args.files.unwrap_or_else(|| vec![tool_name.clone()]);
 
+    // Optional `tools/<dir>/` prefix; defaults to `tools/` (backwards-compatible).
+    let dir_prefix = args
+        .dir
+        .map(|d| d.trim_matches('/').to_string())
+        .filter(|d| !d.is_empty())
+        .map(|d| format!("{d}/"))
+        .unwrap_or_default();
+
     let definitions_body = if file_names.len() == 1 {
-        let path = format!("tools/{}.md", file_names[0]);
+        let path = format!("tools/{dir_prefix}{}.md", file_names[0]);
         quote! {
             crate::tool::load_tool_definition_with_vars(&self.prompts, #path, &self.definition_vars())
                 .into_iter()
@@ -234,7 +252,7 @@ pub fn agent_tool(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     } else {
         let stmts = file_names.iter().map(|f| {
-            let path = format!("tools/{f}.md");
+            let path = format!("tools/{dir_prefix}{f}.md");
             quote! {
                 if let Some(d) = crate::tool::load_tool_definition_with_vars(&self.prompts, #path, &self.definition_vars()) {
                     defs.push(d);

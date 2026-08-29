@@ -6,8 +6,8 @@ use frona::agent::task::service::TaskService;
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
 use frona::tool::task::next_cron_occurrence;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -16,7 +16,10 @@ async fn test_db() -> Surreal<Db> {
 }
 
 fn svc(db: Surreal<Db>) -> TaskService {
-    TaskService::new(SurrealRepo::new(db), frona::chat::broadcast::BroadcastService::new())
+    TaskService::new(
+        SurrealRepo::new(db),
+        frona::chat::broadcast::BroadcastService::new(),
+    )
 }
 
 #[tokio::test]
@@ -38,7 +41,10 @@ async fn spawn_cron_run_links_back_to_template() {
             None,
             CronMode::Singleton,
             CronConcurrency::Replace,
-            false, None, None)
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -67,9 +73,23 @@ async fn find_runs_by_cron_returns_all_runs_for_template() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = s
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::PerInstance, CronConcurrency::Forbid, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::PerInstance,
+            CronConcurrency::Forbid,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -95,9 +115,23 @@ async fn find_active_runs_excludes_completed() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = s
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::Singleton, CronConcurrency::Replace, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::Singleton,
+            CronConcurrency::Replace,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -109,7 +143,11 @@ async fn find_active_runs_excludes_completed() {
     s.mark_failed(&r2.id, "boom".into()).await.unwrap();
 
     let active = s.find_active_runs_by_cron(&template.id).await.unwrap();
-    assert_eq!(active.len(), 1, "only the still-Pending run should be active");
+    assert_eq!(
+        active.len(),
+        1,
+        "only the still-Pending run should be active"
+    );
 }
 
 #[tokio::test]
@@ -121,16 +159,32 @@ async fn find_orphaned_cron_runs_returns_only_in_progress() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = s
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::Singleton, CronConcurrency::Replace, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::Singleton,
+            CronConcurrency::Replace,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     let pending_run = s.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
     let in_flight_run = s.spawn_cron_run(&template, Utc::now(), 2).await.unwrap();
 
-    s.mark_in_progress(&in_flight_run.id, Some("chat-x")).await.unwrap();
+    s.mark_in_progress(&in_flight_run.id, Some("chat-x"))
+        .await
+        .unwrap();
 
     let orphans = s.find_orphaned_cron_runs().await.unwrap();
     let ids: Vec<String> = orphans.iter().map(|t| t.id.clone()).collect();
@@ -157,7 +211,12 @@ async fn legacy_cron_deserializes_with_defaults() {
     });
     let kind: TaskKind = serde_json::from_value(json).unwrap();
     match kind {
-        TaskKind::Cron { mode, concurrency, process_result, .. } => {
+        TaskKind::Cron {
+            mode,
+            concurrency,
+            process_result,
+            ..
+        } => {
             assert_eq!(mode, CronMode::Singleton);
             assert_eq!(concurrency, CronConcurrency::Replace);
             assert!(!process_result);
@@ -182,10 +241,23 @@ async fn legacy_cron_row_loads_via_surrealdb_with_defaults() {
     let next = next_cron_occurrence("0 9 * * *", "UTC").unwrap();
     let template = s
         .create_cron_template(
-            "user-1", "agent-1", "Legacy cron", "no mode field",
-            "0 9 * * *", "UTC".into(), next,
-            None, None, None, None,
-            CronMode::Singleton, CronConcurrency::Replace, false, None, None)
+            "user-1",
+            "agent-1",
+            "Legacy cron",
+            "no mode field",
+            "0 9 * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::Singleton,
+            CronConcurrency::Replace,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -216,7 +288,11 @@ async fn legacy_cron_row_loads_via_surrealdb_with_defaults() {
             ..
         } => {
             assert_eq!(cron_expression, "0 9 * * *");
-            assert_eq!(mode, CronMode::Singleton, "missing mode defaults to Singleton");
+            assert_eq!(
+                mode,
+                CronMode::Singleton,
+                "missing mode defaults to Singleton"
+            );
             assert_eq!(
                 concurrency,
                 CronConcurrency::Replace,
@@ -236,9 +312,23 @@ async fn service_cancel_cascades_template_and_active_runs() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = s
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::PerInstance, CronConcurrency::Allow, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::PerInstance,
+            CronConcurrency::Allow,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
     let r1 = s.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
@@ -251,8 +341,16 @@ async fn service_cancel_cascades_template_and_active_runs() {
 
     let r1_after = s.find_by_id(&r1.id).await.unwrap().unwrap();
     let r2_after = s.find_by_id(&r2.id).await.unwrap().unwrap();
-    assert_eq!(r1_after.status, TaskStatus::Cancelled, "pending child cascaded");
-    assert_eq!(r2_after.status, TaskStatus::Cancelled, "in-progress child cascaded");
+    assert_eq!(
+        r1_after.status,
+        TaskStatus::Cancelled,
+        "pending child cascaded"
+    );
+    assert_eq!(
+        r2_after.status,
+        TaskStatus::Cancelled,
+        "in-progress child cascaded"
+    );
 }
 
 #[tokio::test]
@@ -263,9 +361,23 @@ async fn service_cancel_is_idempotent_on_terminal_states() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = s
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::Singleton, CronConcurrency::Replace, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::Singleton,
+            CronConcurrency::Replace,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -276,7 +388,9 @@ async fn service_cancel_is_idempotent_on_terminal_states() {
 
     // 2. Completed → idempotent
     let other = s.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
-    s.mark_completed(&other.id, Some("done".into())).await.unwrap();
+    s.mark_completed(&other.id, Some("done".into()))
+        .await
+        .unwrap();
     let returned = s.cancel("user-1", &other.id).await.unwrap();
     assert_eq!(returned.status, TaskStatus::Completed, "no status mutation");
 
@@ -294,9 +408,23 @@ async fn service_delete_cascades_cron_template_to_runs() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = s
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::PerInstance, CronConcurrency::Forbid, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::PerInstance,
+            CronConcurrency::Forbid,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
     let r1 = s.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
@@ -306,9 +434,18 @@ async fn service_delete_cascades_cron_template_to_runs() {
 
     s.delete("user-1", &template.id).await.unwrap();
 
-    assert!(s.find_by_id(&template.id).await.unwrap().is_none(), "template gone");
-    assert!(s.find_by_id(&r1.id).await.unwrap().is_none(), "completed child gone");
-    assert!(s.find_by_id(&r2.id).await.unwrap().is_none(), "in-progress child gone");
+    assert!(
+        s.find_by_id(&template.id).await.unwrap().is_none(),
+        "template gone"
+    );
+    assert!(
+        s.find_by_id(&r1.id).await.unwrap().is_none(),
+        "completed child gone"
+    );
+    assert!(
+        s.find_by_id(&r2.id).await.unwrap().is_none(),
+        "in-progress child gone"
+    );
     // No orphan references via the runs query either.
     let leftover = s.find_runs_by_cron(&template.id).await.unwrap();
     assert!(leftover.is_empty());
@@ -322,9 +459,23 @@ async fn service_delete_non_cron_does_not_touch_cron_runs() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = s
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::Singleton, CronConcurrency::Replace, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::Singleton,
+            CronConcurrency::Replace,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
     let run = s.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
@@ -364,9 +515,23 @@ async fn service_delete_rejects_wrong_user() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = s
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::Singleton, CronConcurrency::Replace, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::Singleton,
+            CronConcurrency::Replace,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
     let err = s.delete("user-2", &template.id).await.unwrap_err();
@@ -380,9 +545,23 @@ async fn service_cancel_rejects_wrong_user() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = s
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::Singleton, CronConcurrency::Replace, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::Singleton,
+            CronConcurrency::Replace,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 

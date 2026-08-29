@@ -48,7 +48,8 @@ pub fn ollama(mut p: RequestParams) -> RequestParams {
             Some(Value::Object(m)) => m,
             _ => Map::new(),
         };
-        options.entry("num_predict".to_string())
+        options
+            .entry("num_predict".to_string())
             .or_insert_with(|| Value::Number(mt.into()));
         root.insert("options".to_string(), Value::Object(options));
         p.additional_params = Some(Value::Object(root));
@@ -138,7 +139,10 @@ mod tests {
     fn openai_skips_when_max_tokens_is_none() {
         let p = openai(params(None, Some(json!({"reasoning_effort": "low"}))));
         assert!(p.max_tokens.is_none());
-        assert_eq!(p.additional_params, Some(json!({"reasoning_effort": "low"})));
+        assert_eq!(
+            p.additional_params,
+            Some(json!({"reasoning_effort": "low"}))
+        );
     }
 
     #[test]

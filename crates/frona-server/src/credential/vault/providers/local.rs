@@ -4,8 +4,8 @@ use async_trait::async_trait;
 
 use crate::core::error::AppError;
 use crate::credential::vault::models::{Credential, CredentialData, VaultItem, VaultSecret};
-use crate::credential::vault::repository::CredentialRepository;
 use crate::credential::vault::provider::VaultProvider;
+use crate::credential::vault::repository::CredentialRepository;
 
 pub struct LocalVaultProvider {
     repo: Arc<dyn CredentialRepository>,

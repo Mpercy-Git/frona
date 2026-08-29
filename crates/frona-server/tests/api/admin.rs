@@ -16,13 +16,7 @@ async fn setup_admin() -> (AppState, tempfile::TempDir, String, String) {
 
 /// Register a second (non-admin) user, returning (token, user_id).
 async fn register_member(state: &AppState, name: &str) -> (String, String) {
-    register_user(
-        state,
-        name,
-        &format!("{name}@example.com"),
-        "password123",
-    )
-    .await
+    register_user(state, name, &format!("{name}@example.com"), "password123").await
 }
 
 fn auth_post_json(uri: &str, token: &str, body: serde_json::Value) -> Request<Body> {
@@ -150,11 +144,13 @@ async fn admin_create_user_with_admins_group_succeeds() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let json = body_json(resp).await;
-    assert!(json["groups"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|g| g == "admins"));
+    assert!(
+        json["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g == "admins")
+    );
 }
 
 #[tokio::test]
@@ -195,7 +191,12 @@ async fn admin_can_promote_member_to_admin() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let updated = state.user_service.find_by_id(&member_id).await.unwrap().unwrap();
+    let updated = state
+        .user_service
+        .find_by_id(&member_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(updated.groups.iter().any(|g| g == "admins"));
 }
 
@@ -215,10 +216,7 @@ async fn cannot_demote_last_admin() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let json = body_json(resp).await;
-    assert!(json["error"]
-        .as_str()
-        .unwrap_or("")
-        .contains("last_admin"));
+    assert!(json["error"].as_str().unwrap_or("").contains("last_admin"));
 }
 
 #[tokio::test]
@@ -272,7 +270,12 @@ async fn admin_can_deactivate_member() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let target = state.user_service.find_by_id(&member_id).await.unwrap().unwrap();
+    let target = state
+        .user_service
+        .find_by_id(&member_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(target.deactivated_at.is_some());
 }
 
@@ -292,10 +295,7 @@ async fn cannot_deactivate_last_admin() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let json = body_json(resp).await;
-    assert!(json["error"]
-        .as_str()
-        .unwrap_or("")
-        .contains("last_admin"));
+    assert!(json["error"].as_str().unwrap_or("").contains("last_admin"));
 }
 
 #[tokio::test]
@@ -315,7 +315,12 @@ async fn admin_can_reactivate_user() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let target = state.user_service.find_by_id(&member_id).await.unwrap().unwrap();
+    let target = state
+        .user_service
+        .find_by_id(&member_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(target.deactivated_at.is_none());
 }
 
@@ -334,10 +339,7 @@ async fn cannot_delete_last_admin() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let json = body_json(resp).await;
-    assert!(json["error"]
-        .as_str()
-        .unwrap_or("")
-        .contains("last_admin"));
+    assert!(json["error"].as_str().unwrap_or("").contains("last_admin"));
 }
 
 #[tokio::test]
@@ -370,7 +372,14 @@ async fn delete_user_cascades_owned_chats_and_agents() {
     };
     chat_repo.create(&chat).await.unwrap();
 
-    assert!(!state.agent_service.list(&member_id).await.unwrap().is_empty());
+    assert!(
+        !state
+            .agent_service
+            .list(&member_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let app = build_app(state.clone());
     let resp = app
@@ -382,8 +391,22 @@ async fn delete_user_cascades_owned_chats_and_agents() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-    assert!(state.user_service.find_by_id(&member_id).await.unwrap().is_none());
-    assert!(state.agent_service.list(&member_id).await.unwrap().is_empty());
+    assert!(
+        state
+            .user_service
+            .find_by_id(&member_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        state
+            .agent_service
+            .list(&member_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(chat_repo.find_by_id(&chat.id).await.unwrap().is_none());
 }
 

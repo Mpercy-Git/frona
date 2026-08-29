@@ -97,24 +97,6 @@ export function AdvancedSection({ inference, scheduler, app, onChange }: Advance
       <SectionPanel title="Scheduler" icon={ClockIcon}>
 
         <NumberInput
-          label="Space Compaction Interval (hours)"
-          description="How often to run space memory compaction"
-          value={Math.round(scheduler.space_compaction_secs / 3600)}
-          onChange={(hours) => onChange({ scheduler: { ...scheduler, space_compaction_secs: hours * 3600 } })}
-          min={1}
-          placeholder="1"
-        />
-
-        <NumberInput
-          label="Memory Compaction Interval (hours)"
-          description="How often to run memory compaction"
-          value={Math.round(scheduler.memory_compaction_secs / 3600)}
-          onChange={(hours) => onChange({ scheduler: { ...scheduler, memory_compaction_secs: hours * 3600 } })}
-          min={1}
-          placeholder="1"
-        />
-
-        <NumberInput
           label="Poll Interval (seconds)"
           description="How often the scheduler checks for pending tasks"
           value={scheduler.poll_secs}

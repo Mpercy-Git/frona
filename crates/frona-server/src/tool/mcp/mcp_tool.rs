@@ -45,15 +45,10 @@ impl AgentTool for McpTool {
             .server_for_tool(tool_name)
             .await
             .ok_or_else(|| {
-                AppError::Tool(format!(
-                    "no running MCP server exposes tool {tool_name}"
-                ))
+                AppError::Tool(format!("no running MCP server exposes tool {tool_name}"))
             })?;
 
-        let bare_name = tool_name
-            .split("__")
-            .nth(2)
-            .unwrap_or(tool_name);
+        let bare_name = tool_name.split("__").nth(2).unwrap_or(tool_name);
 
         let result = self.manager.call(&server_id, bare_name, arguments).await?;
 
@@ -61,8 +56,8 @@ impl AgentTool for McpTool {
         let text = result
             .content
             .iter()
-            .filter_map(|c| match &c.raw {
-                rmcp::model::RawContent::Text(t) => Some(t.text.as_str()),
+            .filter_map(|c| match c {
+                rmcp::model::ContentBlock::Text(t) => Some(t.text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()

@@ -26,12 +26,7 @@ async fn register_returns_201_with_token() {
     let resp = app.oneshot(req).await.unwrap();
 
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let cookie = resp
-        .headers()
-        .get("set-cookie")
-        .unwrap()
-        .to_str()
-        .unwrap();
+    let cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
     assert!(cookie.contains("refresh_token="));
 
     let json = body_json(resp).await;
@@ -233,8 +228,7 @@ async fn me_with_invalid_token_returns_401() {
 #[tokio::test]
 async fn me_returns_needs_setup_false_after_setup_completed() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "setupuser", "setup@example.com", "password123").await;
+    let (token, _) = register_user(&state, "setupuser", "setup@example.com", "password123").await;
 
     state
         .set_runtime_config("setup_completed", "true")
@@ -242,10 +236,7 @@ async fn me_returns_needs_setup_false_after_setup_completed() {
         .unwrap();
 
     let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get("/api/auth/me", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(auth_get("/api/auth/me", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert!(json.get("needs_setup").is_none());
@@ -289,10 +280,7 @@ async fn logout_invalidates_session() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get("/api/auth/me", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(auth_get("/api/auth/me", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -357,12 +345,10 @@ async fn refresh_without_cookie_returns_401() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-
 #[tokio::test]
 async fn change_handle_succeeds() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "oldname", "chname@example.com", "password123").await;
+    let (token, _) = register_user(&state, "oldname", "chname@example.com", "password123").await;
 
     let app = build_app(state);
     let resp = app
@@ -383,8 +369,7 @@ async fn change_handle_succeeds() {
 async fn change_handle_duplicate_returns_400() {
     let (state, _tmp) = test_app_state().await;
     register_user(&state, "taken-name", "taken@example.com", "password123").await;
-    let (token, _) =
-        register_user(&state, "changer", "changer@example.com", "password123").await;
+    let (token, _) = register_user(&state, "changer", "changer@example.com", "password123").await;
 
     let app = build_app(state);
     let resp = app
@@ -401,8 +386,7 @@ async fn change_handle_duplicate_returns_400() {
 #[tokio::test]
 async fn change_handle_same_returns_400() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "samename", "same@example.com", "password123").await;
+    let (token, _) = register_user(&state, "samename", "same@example.com", "password123").await;
 
     let app = build_app(state);
     let resp = app
@@ -416,12 +400,10 @@ async fn change_handle_same_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-
 #[tokio::test]
 async fn create_pat_returns_201() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "patuser", "patuser@example.com", "password123").await;
+    let (token, _) = register_user(&state, "patuser", "patuser@example.com", "password123").await;
 
     let app = build_app(state);
     let resp = app
@@ -443,8 +425,7 @@ async fn create_pat_returns_201() {
 #[tokio::test]
 async fn list_pats_returns_created_tokens() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "listpat", "listpat@example.com", "password123").await;
+    let (token, _) = register_user(&state, "listpat", "listpat@example.com", "password123").await;
 
     for name in ["token-a", "token-b"] {
         let app = build_app(state.clone());
@@ -472,8 +453,7 @@ async fn list_pats_returns_created_tokens() {
 #[tokio::test]
 async fn delete_pat_returns_204() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "delpat", "delpat@example.com", "password123").await;
+    let (token, _) = register_user(&state, "delpat", "delpat@example.com", "password123").await;
 
     let app = build_app(state.clone());
     let resp = app
@@ -506,8 +486,7 @@ async fn delete_pat_returns_204() {
 #[tokio::test]
 async fn pat_can_authenticate() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "patauth", "patauth@example.com", "password123").await;
+    let (token, _) = register_user(&state, "patauth", "patauth@example.com", "password123").await;
 
     let app = build_app(state.clone());
     let resp = app
@@ -601,7 +580,6 @@ async fn logout_with_pat_deletes_token() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-
 #[tokio::test]
 async fn auth_config_returns_defaults() {
     let (state, _tmp) = test_app_state().await;
@@ -658,7 +636,6 @@ async fn sso_callback_without_provider_redirects_with_error() {
     let location = resp.headers().get("location").unwrap().to_str().unwrap();
     assert!(location.starts_with("/login?sso_error="));
 }
-
 
 fn build_disabled_registration_state(state: &AppState) -> AppState {
     let mut new_state = state.clone();
@@ -721,7 +698,6 @@ async fn register_returns_403_when_disabled_even_with_no_users() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
-
 fn build_sso_only_state(state: &AppState) -> AppState {
     let mut sso_state = state.clone();
     let mut config = (*sso_state.config).clone();
@@ -778,7 +754,6 @@ async fn login_with_sso_only_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-
 #[tokio::test]
 async fn register_with_https_base_url_sets_secure_cookie() {
     let (state, _tmp) = test_app_state().await;
@@ -805,15 +780,9 @@ async fn register_with_https_base_url_sets_secure_cookie() {
     with_connect_info(&mut req);
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let cookie = resp
-        .headers()
-        .get("set-cookie")
-        .unwrap()
-        .to_str()
-        .unwrap();
+    let cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
     assert!(cookie.contains("Secure"));
 }
-
 
 #[tokio::test]
 async fn first_password_register_becomes_admin() {
@@ -821,9 +790,15 @@ async fn first_password_register_becomes_admin() {
     // Seed the admins group (normally done at server startup).
     state.user_group_service.seed_built_in().await.unwrap();
 
-    let (_, user_id) = register_user(&state, "firstadmin", "first@example.com", "password123").await;
+    let (_, user_id) =
+        register_user(&state, "firstadmin", "first@example.com", "password123").await;
 
-    let user = state.user_service.find_by_id(&user_id).await.unwrap().unwrap();
+    let user = state
+        .user_service
+        .find_by_id(&user_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         user.groups.iter().any(|g| g == "admins"),
         "first registered user should be promoted to admins, got groups: {:?}",
@@ -839,7 +814,12 @@ async fn second_register_is_not_admin() {
     register_user(&state, "firstadmin", "first@example.com", "password123").await;
     let (_, second_id) = register_user(&state, "second", "second@example.com", "password123").await;
 
-    let user = state.user_service.find_by_id(&second_id).await.unwrap().unwrap();
+    let user = state
+        .user_service
+        .find_by_id(&second_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         !user.groups.iter().any(|g| g == "admins"),
         "second registered user should not be admin, got groups: {:?}",
@@ -868,8 +848,8 @@ async fn ensure_admin_invariant_is_idempotent() {
 #[tokio::test]
 async fn startup_promotes_oldest_active_user_when_no_admin() {
     use chrono::Utc;
-    use frona::core::repository::new_id;
     use frona::auth::User as UserModel;
+    use frona::core::repository::new_id;
 
     let (state, _tmp) = test_app_state().await;
     state.user_group_service.seed_built_in().await.unwrap();
@@ -917,9 +897,19 @@ async fn startup_promotes_oldest_active_user_when_no_admin() {
     // Run the invariant repair (this is what main.rs does at boot).
     state.user_service.ensure_admin_invariant().await.unwrap();
 
-    let promoted = state.user_service.find_by_id(&older.id).await.unwrap().unwrap();
+    let promoted = state
+        .user_service
+        .find_by_id(&older.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(promoted.groups.iter().any(|g| g == "admins"));
-    let untouched = state.user_service.find_by_id(&newer.id).await.unwrap().unwrap();
+    let untouched = state
+        .user_service
+        .find_by_id(&newer.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!untouched.groups.iter().any(|g| g == "admins"));
 }
 
@@ -930,8 +920,13 @@ async fn login_refuses_deactivated_user() {
     // First user becomes admin via bootstrap; the DB events refuse deactivating the
     // last admin, so we need a second non-admin user to deactivate.
     register_user(&state, "firstadmin", "admin@example.com", "password123").await;
-    let (_, user_id) =
-        register_user(&state, "tobedisabled", "disabled@example.com", "password123").await;
+    let (_, user_id) = register_user(
+        &state,
+        "tobedisabled",
+        "disabled@example.com",
+        "password123",
+    )
+    .await;
 
     state.user_service.deactivate(&user_id).await.unwrap();
 
@@ -952,7 +947,13 @@ async fn login_refuses_deactivated_user() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let json = body_json(resp).await;
-    assert!(json["error"].as_str().unwrap_or("").to_lowercase().contains("deactivated"));
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("deactivated")
+    );
 }
 
 #[tokio::test]
@@ -961,7 +962,8 @@ async fn refresh_refuses_deactivated_user() {
     state.user_group_service.seed_built_in().await.unwrap();
     // First user is auto-admin; we need a second non-admin to deactivate.
     register_user(&state, "firstadmin", "admin@example.com", "password123").await;
-    let (_, user_id) = register_user(&state, "refreshuser", "refresh@example.com", "password123").await;
+    let (_, user_id) =
+        register_user(&state, "refreshuser", "refresh@example.com", "password123").await;
 
     // Capture the refresh cookie from registration.
     let app = build_app(state.clone());
@@ -980,7 +982,13 @@ async fn refresh_refuses_deactivated_user() {
     with_connect_info(&mut req);
     let login_resp = app.oneshot(req).await.unwrap();
     assert_eq!(login_resp.status(), StatusCode::OK);
-    let cookie = login_resp.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    let cookie = login_resp
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let refresh_cookie = cookie.split(';').next().unwrap().to_string();
 
     // Deactivate the user, then try to refresh with the captured cookie.

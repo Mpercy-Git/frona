@@ -10,6 +10,7 @@ import { ComboboxInput } from "@/components/settings/combobox";
 import type { ServerConfig } from "@/lib/config-types";
 import { ProvidersSection } from "@/components/settings/sections/providers-section";
 import { ModelsSection } from "@/components/settings/sections/models-section";
+import { MemorySection } from "@/components/settings/sections/memory-section";
 import { ServerSection } from "@/components/settings/sections/server-section";
 import { AuthSection } from "@/components/settings/sections/auth-section";
 import { SsoSection } from "@/components/settings/sections/sso-section";
@@ -36,6 +37,7 @@ const STEPS = [
   { id: "server" },
   { id: "providers" },
   { id: "models" },
+  { id: "memory" },
   { id: "auth" },
   { id: "sso" },
   { id: "sandbox" },
@@ -181,10 +183,21 @@ function SetupWizard() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [providersBlock, setProvidersBlock] = useState<string | null>(null);
+  const [modelsBlock, setModelsBlock] = useState<string | null>(null);
 
   const updatePatch = useCallback((section: string, value: unknown) => {
     setPatch((prev) => ({ ...prev, [section]: value }));
     setConfig((prev) => prev ? { ...prev, [section]: value } as Config : prev);
+  }, []);
+
+  const updateModels = useCallback((models: Config["models"], removedGroups: string[] = []) => {
+    setPatch((prev) => {
+      const existing = (prev.models ?? {}) as Record<string, unknown>;
+      const modelPatch: Record<string, unknown> = { ...existing, ...models };
+      for (const name of removedGroups) modelPatch[name] = null;
+      return { ...prev, models: modelPatch };
+    });
+    setConfig((prev) => prev ? { ...prev, models } : prev);
   }, []);
 
   useEffect(() => {
@@ -194,6 +207,12 @@ function SetupWizard() {
         if (!isSensitiveSet(cfg.auth.encryption_secret)) {
           const secret = generateStrongSecret(64);
           updatePatch("auth", { ...cfg.auth, encryption_secret: secret });
+        }
+        // Preselect PKM for a *new* install (backend unconfigured) so it saves an
+        // explicit `pkm`. Only when unset - never override an explicit `basic`/`pkm`
+        // the operator already chose. The user can still switch it in the memory step.
+        if (cfg.memory.backend == null) {
+          updatePatch("memory", { ...cfg.memory, backend: "pkm" });
         }
       })
       .catch(() => setError("Failed to load configuration"))
@@ -205,6 +224,7 @@ function SetupWizard() {
 
   function getBlockReason(): string | null {
     if (currentStep.id === "providers") return providersBlock;
+    if (currentStep.id === "models") return modelsBlock;
     if (currentStep.id === "auth" && config) {
       const secret = config.auth.encryption_secret;
       const hasSecret = typeof secret === "string" ? secret.length > 0 : (typeof secret === "object" && secret?.is_set);
@@ -298,9 +318,20 @@ function SetupWizard() {
             {currentStep.id === "models" && (
               <ModelsSection
                 models={config.models}
-                enabledProviders={Object.keys(config.providers)}
+                enabledProviders={Object.entries(config.providers)
+                  .filter(([, provider]) => provider.enabled !== false)
+                  .map(([id]) => id)}
                 providerConfigs={config.providers}
-                onChange={(v) => updatePatch("models", v)}
+                onChange={updateModels}
+                onReadyChange={setModelsBlock}
+              />
+            )}
+            {currentStep.id === "memory" && (
+              <MemorySection
+                memory={config.memory}
+                models={config.models}
+                activeBackend={null}
+                onChange={(v) => updatePatch("memory", v)}
               />
             )}
             {currentStep.id === "server" && (

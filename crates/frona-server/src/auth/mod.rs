@@ -11,8 +11,11 @@ pub mod user_service;
 use async_trait::async_trait;
 
 pub use self::models::User;
+use self::models::{
+    ADMINS_GROUP, AuthResponse, ChangePasswordRequest, LoginRequest, RegisterRequest,
+    UpdateHandleRequest, UpdateProfileRequest, UserInfo, UserPermissions,
+};
 pub use self::user_service::UserService;
-use self::models::{ADMINS_GROUP, AuthResponse, ChangePasswordRequest, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo, UserPermissions};
 use crate::auth::token::service::TokenService;
 use crate::core::config::Config;
 use crate::core::error::{AppError, AuthErrorCode};
@@ -124,8 +127,7 @@ impl AuthService {
         let user = self
             .create_user_with_password(user_service, req, Vec::new())
             .await?;
-        let (access_jwt, refresh_jwt) =
-            token_svc.create_session_pair(keypair_svc, &user).await?;
+        let (access_jwt, refresh_jwt) = token_svc.create_session_pair(keypair_svc, &user).await?;
 
         let response = AuthResponse {
             token: access_jwt,
@@ -152,7 +154,10 @@ impl AuthService {
                 Err(_) => None,
             }
         }
-        .ok_or_else(|| AppError::Auth { message: "Invalid credentials".into(), code: AuthErrorCode::InvalidCredentials })?;
+        .ok_or_else(|| AppError::Auth {
+            message: "Invalid credentials".into(),
+            code: AuthErrorCode::InvalidCredentials,
+        })?;
 
         if user.deactivated_at.is_some() {
             return Err(AppError::Auth {
@@ -162,8 +167,7 @@ impl AuthService {
         }
 
         self.verify_password(&req.password, &user.password_hash)?;
-        let (access_jwt, refresh_jwt) =
-            token_svc.create_session_pair(keypair_svc, &user).await?;
+        let (access_jwt, refresh_jwt) = token_svc.create_session_pair(keypair_svc, &user).await?;
 
         let response = AuthResponse {
             token: access_jwt,
@@ -318,7 +322,9 @@ impl AuthService {
                 return Ok(h);
             }
         }
-        Err(AppError::Internal("Could not generate unique handle".into()))
+        Err(AppError::Internal(
+            "Could not generate unique handle".into(),
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -357,19 +363,25 @@ impl AuthService {
         let old_user_root = storage.user_root(&old_handle);
         let new_user_root = storage.user_root(&new_handle);
         if old_user_root.exists() {
-            tokio::fs::rename(&old_user_root, &new_user_root).await.map_err(|e| {
-                AppError::Internal(format!("Failed to rename user data directory: {e}"))
-            })?;
+            tokio::fs::rename(&old_user_root, &new_user_root)
+                .await
+                .map_err(|e| {
+                    AppError::Internal(format!("Failed to rename user data directory: {e}"))
+                })?;
         }
 
         // Browser profiles dir is a Docker volume mount, not under user_root.
         if let Some(browser) = &config.browser {
-            let old_profiles_dir = std::path::Path::new(&browser.profiles_path).join(old_handle.as_ref());
-            let new_profiles_dir = std::path::Path::new(&browser.profiles_path).join(new_handle.as_ref());
+            let old_profiles_dir =
+                std::path::Path::new(&browser.profiles_path).join(old_handle.as_ref());
+            let new_profiles_dir =
+                std::path::Path::new(&browser.profiles_path).join(new_handle.as_ref());
             if old_profiles_dir.exists() {
                 tokio::fs::rename(&old_profiles_dir, &new_profiles_dir)
                     .await
-                    .map_err(|e| AppError::Internal(format!("Failed to rename profiles directory: {e}")))?;
+                    .map_err(|e| {
+                        AppError::Internal(format!("Failed to rename profiles directory: {e}"))
+                    })?;
             }
         }
 
@@ -378,8 +390,7 @@ impl AuthService {
             let _ = token_svc.repo().delete(&token.id).await;
         }
 
-        let (access_jwt, refresh_jwt) =
-            token_svc.create_session_pair(keypair_svc, &user).await?;
+        let (access_jwt, refresh_jwt) = token_svc.create_session_pair(keypair_svc, &user).await?;
 
         let response = AuthResponse {
             token: access_jwt,
@@ -464,7 +475,10 @@ impl AuthService {
             .map_err(|e| AppError::Internal(format!("Invalid password hash: {e}")))?;
         Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
-            .map_err(|_| AppError::Auth { message: "Invalid email or password".into(), code: AuthErrorCode::InvalidCredentials })
+            .map_err(|_| AppError::Auth {
+                message: "Invalid email or password".into(),
+                code: AuthErrorCode::InvalidCredentials,
+            })
     }
 }
 

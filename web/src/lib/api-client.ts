@@ -1,7 +1,7 @@
 export const API_URL = process.env.NEXT_PUBLIC_FRONA_SERVER_BACKEND_URL || "";
 
 /// `kind: "unavailable"` (network failure or 5xx) means "don't infer
-/// session validity" — callers should retry / show offline, not log out.
+/// session validity" - callers should retry / show offline, not log out.
 class ApiError extends Error {
   constructor(
     public status: number,
@@ -79,7 +79,7 @@ export async function apiFetch(
   } else if (tokenResult.reason === "unavailable") {
     throw new ApiError(0, "Server unavailable", "unavailable");
   }
-  // On "unauthenticated" we still try — some endpoints are public, and a 401
+  // On "unauthenticated" we still try - some endpoints are public, and a 401
   // here surfaces a real auth failure the caller can act on.
 
   const doFetch = async (): Promise<Response> => {
@@ -141,6 +141,113 @@ async function request<T>(
 }
 
 import type { MessageResponse, Attachment, FileEntry } from "./types";
+import type {
+  MemoryGraphResponse,
+  MemoryPageResponse,
+  MemorySearchResult,
+} from "./memory-types";
+
+export async function getMemoryStatus(): Promise<boolean> {
+  const res = await apiFetch("/api/memory/pkm/status");
+  return res.ok;
+}
+
+export async function getMemoryGraph(): Promise<MemoryGraphResponse> {
+  return request<MemoryGraphResponse>("/api/memory/pkm/graph");
+}
+
+export async function getMemoryPage(path: string): Promise<MemoryPageResponse> {
+  const response = await request<Omit<MemoryPageResponse, "page"> & {
+    entity: MemoryPageResponse["page"];
+  }>(`/api/memory/pkm/entity?path=${encodeURIComponent(path)}`);
+  const { entity, ...rest } = response;
+  return { ...rest, page: entity };
+}
+
+export async function searchMemory(query: string): Promise<MemorySearchResult[]> {
+  const response = await request<{ results: MemorySearchResult[] }>(
+    `/api/memory/pkm/search?q=${encodeURIComponent(query)}`,
+  );
+  return response.results;
+}
+
+export type PkmResetState = "pending" | "running" | "failed";
+
+export interface PkmResetStatus {
+  requestId: string;
+  status: PkmResetState;
+  requestedAt: string;
+  startedAt: string | null;
+  error: string | null;
+}
+
+export interface PkmStatusResponse {
+  available: boolean;
+  reset: PkmResetStatus | null;
+  consolidation: PkmConsolidationStatus | null;
+}
+
+export type PkmConsolidationState = "running" | "retrying" | "completed" | "failed";
+
+export interface PkmConsolidationStatus {
+  id: string;
+  status: PkmConsolidationState;
+  stage: string;
+  stageIndex: number;
+  stageCount: number;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  nextAttemptAt: string | null;
+  attempts: number;
+  restartCount: number;
+  failure: { stage: string; message: string; affectedCount: number } | null;
+  usage: { input_tokens: number; cached_input_tokens: number; output_tokens: number; cost_usd: number; calls: number };
+  usageIsEstimate: boolean;
+  summary: {
+    memoriesAdded: number; entitiesCreated: number; entitiesMinted: number;
+    entitiesMerged: number; entitiesReconciled: number; factsQuarantined: number;
+    factsReinstated: number; pagesBuilt: number; playbooksBuilt: number;
+    groundingCorrections: number; groundingItemsDropped: number; citationRepairs: number;
+    duplicateClaims: number; unsupportedClaims: number; itemsCleaned: number;
+  };
+}
+
+export interface PkmConsolidationRun {
+  id: string;
+  status: PkmConsolidationState;
+  stage: string;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  memoriesAdded: number;
+  entitiesChanged: number;
+  pagesBuilt: number;
+  playbooksBuilt: number;
+}
+
+export interface PkmResetResponse {
+  requestId: string;
+  status: PkmResetState;
+}
+
+export function getPkmStatus(): Promise<PkmStatusResponse> {
+  return request<PkmStatusResponse>("/api/memory/pkm/status");
+}
+
+export function getPkmConsolidations(): Promise<{ runs: PkmConsolidationRun[] }> {
+  return request("/api/memory/pkm/consolidations");
+}
+
+export function getPkmConsolidation(id: string = "latest"): Promise<PkmConsolidationStatus> {
+  return request(`/api/memory/pkm/consolidations/${encodeURIComponent(id)}`);
+}
+
+export function requestPkmReset(): Promise<PkmResetResponse> {
+  return request<PkmResetResponse>("/api/memory/pkm/reset", {
+    method: "POST",
+  });
+}
 
 export async function uploadFile(file: File, relativePath?: string): Promise<Attachment> {
   const formData = new FormData();
@@ -149,7 +256,7 @@ export async function uploadFile(file: File, relativePath?: string): Promise<Att
     formData.append("path", relativePath);
   }
 
-  // No `Content-Type` header — the browser sets multipart/form-data with the
+  // No `Content-Type` header - the browser sets multipart/form-data with the
   // correct boundary automatically.
   const res = await apiFetch("/api/files", {
     method: "POST",

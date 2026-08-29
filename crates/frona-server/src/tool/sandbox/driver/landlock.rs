@@ -2,7 +2,7 @@ use std::process::Command;
 
 use crate::core::error::AppError;
 
-use super::{SandboxDriver, SandboxConfig};
+use super::{SandboxConfig, SandboxDriver};
 
 pub struct LandlockDriver;
 
@@ -29,7 +29,12 @@ impl SandboxDriver for LandlockDriver {
 
             let mut cmd = Command::new(program);
             cmd.args(args);
-            cmd.current_dir(config.working_dir.as_deref().unwrap_or(&config.workspace_dir));
+            cmd.current_dir(
+                config
+                    .working_dir
+                    .as_deref()
+                    .unwrap_or(&config.workspace_dir),
+            );
 
             unsafe {
                 cmd.pre_exec(move || {
@@ -66,8 +71,8 @@ fn apply_landlock(
     additional_write_paths: &[String],
 ) -> Result<(), String> {
     use landlock::{
-        Access, AccessFs, AccessNet, PathBeneath, PathFd, Ruleset, RulesetAttr,
-        RulesetCreatedAttr, ABI,
+        ABI, Access, AccessFs, AccessNet, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        RulesetCreatedAttr,
     };
 
     let abi = ABI::V5;
@@ -89,7 +94,8 @@ fn apply_landlock(
         .create()
         .map_err(|e| format!("Landlock ruleset create failed: {e}"))?;
 
-    let read_only_paths: Vec<&str> = super::linux::SYSTEM_READ_DIRS.iter()
+    let read_only_paths: Vec<&str> = super::linux::SYSTEM_READ_DIRS
+        .iter()
         .chain(super::linux::PROC_READ_PATHS.iter())
         .copied()
         .collect();
@@ -100,21 +106,24 @@ fn apply_landlock(
 
     for path in read_only_paths {
         if let Ok(fd) = PathFd::new(path) {
-            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_access))
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(fd, read_access))
                 .map_err(|e| format!("Landlock add_rule failed for {path}: {e}"))?;
         }
     }
 
     for path in super::ETC_READ_ALLOWLIST {
         if let Ok(fd) = PathFd::new(path) {
-            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_access))
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(fd, read_access))
                 .map_err(|e| format!("Landlock add_rule failed for {path}: {e}"))?;
         }
     }
 
     for path in additional_read_paths {
         if let Ok(fd) = PathFd::new(path) {
-            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_access))
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(fd, read_access))
                 .map_err(|e| format!("Landlock add_rule failed for {path}: {e}"))?;
         }
     }
@@ -123,21 +132,24 @@ fn apply_landlock(
     // to exactly that file — siblings in the parent directory remain hidden.
     for path in additional_read_files {
         if let Ok(fd) = PathFd::new(path) {
-            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_access))
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(fd, read_access))
                 .map_err(|e| format!("Landlock add_rule failed for file {path}: {e}"))?;
         }
     }
 
     for path in additional_write_paths {
         if let Ok(fd) = PathFd::new(path) {
-            ruleset = ruleset.add_rule(PathBeneath::new(fd, fs_access))
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(fd, fs_access))
                 .map_err(|e| format!("Landlock add_rule failed for {path}: {e}"))?;
         }
     }
 
     for path in &read_write_paths {
         if let Ok(fd) = PathFd::new(path) {
-            ruleset = ruleset.add_rule(PathBeneath::new(fd, fs_access))
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(fd, fs_access))
                 .map_err(|e| format!("Landlock add_rule failed for {path}: {e}"))?;
         }
     }

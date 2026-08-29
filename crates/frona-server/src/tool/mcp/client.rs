@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rmcp::ServiceExt;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Implementation,
-    InitializeResult, Tool,
+    ServerPeerInfo, Tool,
 };
 use rmcp::service::{NotificationContext, RoleClient, RunningService};
 use rmcp::transport::IntoTransport;
@@ -68,10 +68,7 @@ impl McpClient {
     /// Perform the MCP `initialize` handshake over the given transport, then fetch the
     /// initial `tools/list` and seed the cache. Returns an `McpClient` whose lifetime
     /// keeps the underlying connection alive.
-    pub async fn connect<T, E, A>(
-        transport: T,
-        client_info: ClientInfo,
-    ) -> Result<Self, AppError>
+    pub async fn connect<T, E, A>(transport: T, client_info: ClientInfo) -> Result<Self, AppError>
     where
         T: IntoTransport<RoleClient, E, A>,
         E: std::error::Error + Send + Sync + 'static,
@@ -104,8 +101,7 @@ impl McpClient {
             .list_all_tools()
             .await
             .map_err(|e| AppError::Tool(format!("MCP tools/list failed: {e}")))?;
-        let converted: Vec<CachedMcpTool> =
-            tools.into_iter().map(cached_from_rmcp_tool).collect();
+        let converted: Vec<CachedMcpTool> = tools.into_iter().map(cached_from_rmcp_tool).collect();
         *self.cached_tools.write().await = converted.clone();
         Ok(converted)
     }
@@ -129,7 +125,7 @@ impl McpClient {
             .map_err(|e| AppError::Tool(format!("MCP call_tool failed: {e}")))
     }
 
-    pub fn peer_info(&self) -> Option<InitializeResult> {
+    pub fn peer_info(&self) -> Option<ServerPeerInfo> {
         self.running.peer_info().map(|info| (*info).clone())
     }
 
@@ -153,10 +149,7 @@ fn cached_from_rmcp_tool(tool: Tool) -> CachedMcpTool {
     let input_schema = serde_json::Value::Object((*tool.input_schema).clone());
     CachedMcpTool {
         name: tool.name.into_owned(),
-        description: tool
-            .description
-            .map(|c| c.into_owned())
-            .unwrap_or_default(),
+        description: tool.description.map(|c| c.into_owned()).unwrap_or_default(),
         input_schema,
     }
 }

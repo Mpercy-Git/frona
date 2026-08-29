@@ -19,7 +19,9 @@ use crate::policy::reconcile::{
 };
 
 #[migration("2026-04-28T00:00:00Z")]
-async fn migrate_agent_sandbox_config_to_policies(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
+async fn migrate_agent_sandbox_config_to_policies(
+    db: &Surreal<Db>,
+) -> Result<(), surrealdb::Error> {
     let mut result = db
         .query("SELECT meta::id(id) as id, user_id, sandbox_config FROM agent WHERE sandbox_config IS NOT NONE")
         .await?;
@@ -30,7 +32,11 @@ async fn migrate_agent_sandbox_config_to_policies(db: &Surreal<Db>) -> Result<()
         let Some(agent_id) = row.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
             continue;
         };
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()).map(str::to_string) else {
+        let Some(user_id) = row
+            .get("user_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
             // Shared/built-in agents have no user_id; sandbox config doesn't apply to them.
             continue;
         };
@@ -62,7 +68,12 @@ async fn migrate_agent_sandbox_config_to_policies(db: &Surreal<Db>) -> Result<()
             .unwrap_or_default();
 
         let principal = EntityRef::Agent(agent_id.clone());
-        let groups = legacy_to_groups(&principal, &shared_paths, network_access, &network_destinations);
+        let groups = legacy_to_groups(
+            &principal,
+            &shared_paths,
+            network_access,
+            &network_destinations,
+        );
 
         for group in &groups {
             for (name, text) in canonical_emissions_for_group(group) {
@@ -134,7 +145,11 @@ async fn migrate_agent_sandbox_config_to_policies(db: &Surreal<Db>) -> Result<()
                 .await?;
         }
 
-        tracing::info!(agent_id, user_id, "Migrated Agent.sandbox_config to reconciled policies + sandbox_limits");
+        tracing::info!(
+            agent_id,
+            user_id,
+            "Migrated Agent.sandbox_config to reconciled policies + sandbox_limits"
+        );
     }
 
     Ok(())
@@ -163,7 +178,11 @@ fn legacy_to_groups(
             .collect(),
     };
 
-    let connect_default = if network_access { None } else { Some(AccessIntent::Deny) };
+    let connect_default = if network_access {
+        None
+    } else {
+        Some(AccessIntent::Deny)
+    };
     let connect_overrides: Vec<AccessOverride> = if network_access {
         network_destinations
             .iter()
@@ -247,12 +266,7 @@ mod tests {
 
     #[test]
     fn legacy_with_shared_paths_emits_per_resource_permits() {
-        let groups = legacy_to_groups(
-            &agent("a"),
-            &["/data".into(), "/work".into()],
-            true,
-            &[],
-        );
+        let groups = legacy_to_groups(&agent("a"), &["/data".into(), "/work".into()], true, &[]);
         let read_group = groups.iter().find(|g| g.action == "read").unwrap();
         let emissions = canonical_emissions_for_group(read_group);
         assert_eq!(emissions.len(), 2);
@@ -286,7 +300,10 @@ mod tests {
         let groups = legacy_to_groups(&agent("a"), &[], true, &[]);
         for group in &groups {
             let emissions = canonical_emissions_for_group(group);
-            assert!(emissions.is_empty(), "expected no emissions for empty inputs, got {emissions:?}");
+            assert!(
+                emissions.is_empty(),
+                "expected no emissions for empty inputs, got {emissions:?}"
+            );
         }
     }
 }

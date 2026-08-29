@@ -43,7 +43,12 @@ impl<'a> SandboxPrincipalRef<'a> {
         user_handle: &'a crate::core::Handle,
         handle: &'a crate::core::Handle,
     ) -> Self {
-        Self { user_id, user_handle, handle, kind: SandboxPrincipalKind::Agent }
+        Self {
+            user_id,
+            user_handle,
+            handle,
+            kind: SandboxPrincipalKind::Agent,
+        }
     }
 
     pub fn mcp(
@@ -51,7 +56,12 @@ impl<'a> SandboxPrincipalRef<'a> {
         user_handle: &'a crate::core::Handle,
         handle: &'a crate::core::Handle,
     ) -> Self {
-        Self { user_id, user_handle, handle, kind: SandboxPrincipalKind::Mcp }
+        Self {
+            user_id,
+            user_handle,
+            handle,
+            kind: SandboxPrincipalKind::Mcp,
+        }
     }
 
     pub fn app(
@@ -59,7 +69,12 @@ impl<'a> SandboxPrincipalRef<'a> {
         user_handle: &'a crate::core::Handle,
         handle: &'a crate::core::Handle,
     ) -> Self {
-        Self { user_id, user_handle, handle, kind: SandboxPrincipalKind::App }
+        Self {
+            user_id,
+            user_handle,
+            handle,
+            kind: SandboxPrincipalKind::App,
+        }
     }
 
     pub fn user_id(&self) -> &'a str {
@@ -70,7 +85,12 @@ impl<'a> SandboxPrincipalRef<'a> {
         // Prefix with user_id (not handle) so PolicyService::invalidate_cache,
         // which scans `sandbox_cache` for keys starting with `{user_id}:`,
         // actually evicts entries after a reconcile.
-        format!("{}:{}:{}", self.user_id, self.kind.cache_prefix(), self.handle)
+        format!(
+            "{}:{}:{}",
+            self.user_id,
+            self.kind.cache_prefix(),
+            self.handle
+        )
     }
 }
 
@@ -167,9 +187,8 @@ impl PolicyService {
         self.validate_policy_text(policy_text)?;
 
         let (name, description) = extract_annotations(policy_text);
-        let name = name.ok_or_else(|| {
-            AppError::Validation("Policy must have an @id annotation".into())
-        })?;
+        let name =
+            name.ok_or_else(|| AppError::Validation("Policy must have an @id annotation".into()))?;
 
         if self.repo.find_by_name(user_id, &name).await?.is_some() {
             return Err(AppError::Validation(format!(
@@ -252,11 +271,7 @@ impl PolicyService {
         Ok(())
     }
 
-    pub async fn delete_policy_by_name(
-        &self,
-        user_id: &str,
-        name: &str,
-    ) -> Result<(), AppError> {
+    pub async fn delete_policy_by_name(&self, user_id: &str, name: &str) -> Result<(), AppError> {
         let policy = self
             .repo
             .find_by_name(user_id, name)
@@ -332,7 +347,11 @@ impl PolicyService {
         if let Some(hit) = self.decision_cache.get(&cache_key).await {
             crate::core::metrics::record_policy_evaluation(
                 action_name,
-                if hit.allowed { "allow_cached" } else { "deny_cached" },
+                if hit.allowed {
+                    "allow_cached"
+                } else {
+                    "deny_cached"
+                },
                 start.elapsed(),
             );
             return Ok(hit);
@@ -368,26 +387,31 @@ impl PolicyService {
         };
 
         let context = match &action {
-            PolicyAction::ReceiveSignal { paired_addresses, .. }
-            | PolicyAction::ReceiveMessage { paired_addresses, .. } => {
-                build_paired_addresses_context(paired_addresses)?
+            PolicyAction::ReceiveSignal {
+                paired_addresses, ..
             }
+            | PolicyAction::ReceiveMessage {
+                paired_addresses, ..
+            } => build_paired_addresses_context(paired_addresses)?,
             _ => Context::empty(),
         };
 
         let entities = match &action {
-            PolicyAction::InvokeTool { tool_name, tool_group } => {
+            PolicyAction::InvokeTool {
+                tool_name,
+                tool_group,
+            } => {
                 let tool_entities = build_tool_entities(tool_name, tool_group);
                 let principal_tools = self
                     .resolve_agent_tools(user_id, &user_handle, &agent.handle, &cached.policy_set)
                     .await?;
-                let principal_entity = build_agent_principal_entity(
-                    &user_handle,
-                    &agent.handle,
-                    &principal_tools,
-                );
+                let principal_entity =
+                    build_agent_principal_entity(&user_handle, &agent.handle, &principal_tools);
                 Entities::from_entities(
-                    tool_entities.iter().cloned().chain(std::iter::once(principal_entity)),
+                    tool_entities
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(principal_entity)),
                     None,
                 )
                 .unwrap_or(tool_entities)
@@ -402,10 +426,20 @@ impl PolicyService {
                         id: def.id.clone(),
                         group: def.provider_id.clone(),
                     };
-                    if self.is_permitted(&user_handle, &agent.handle, &resource, &cached.policy_set)? {
+                    if self.is_permitted(
+                        &user_handle,
+                        &agent.handle,
+                        &resource,
+                        &cached.policy_set,
+                    )? {
                         principal_tools.push(def.id.clone());
                     }
-                    if self.is_permitted(&user_handle, target_handle, &resource, &cached.policy_set)? {
+                    if self.is_permitted(
+                        &user_handle,
+                        target_handle,
+                        &resource,
+                        &cached.policy_set,
+                    )? {
                         target_tools.push(def.id.clone());
                     }
                 }
@@ -436,7 +470,12 @@ impl PolicyService {
                         id: def.id.clone(),
                         group: def.provider_id.clone(),
                     };
-                    if self.is_permitted(&user_handle, &agent.handle, &resource, &cached.policy_set)? {
+                    if self.is_permitted(
+                        &user_handle,
+                        &agent.handle,
+                        &resource,
+                        &cached.policy_set,
+                    )? {
                         agent_tools.push(def.id.clone());
                     }
                 }
@@ -457,8 +496,19 @@ impl PolicyService {
             }
         };
 
-        let decision = self.evaluate_request(action_name, principal, action_uid, resource, context, &cached.policy_set, &entities, start)?;
-        self.decision_cache.insert(cache_key, decision.clone()).await;
+        let decision = self.evaluate_request(
+            action_name,
+            principal,
+            action_uid,
+            resource,
+            context,
+            &cached.policy_set,
+            &entities,
+            start,
+        )?;
+        self.decision_cache
+            .insert(cache_key, decision.clone())
+            .await;
         Ok(decision)
     }
 
@@ -482,7 +532,11 @@ impl PolicyService {
 
         match response.decision() {
             Decision::Allow => {
-                crate::core::metrics::record_policy_evaluation(action_name, "allow", start.elapsed());
+                crate::core::metrics::record_policy_evaluation(
+                    action_name,
+                    "allow",
+                    start.elapsed(),
+                );
                 Ok(AuthorizationDecision::allow())
             }
             Decision::Deny => {
@@ -496,7 +550,11 @@ impl PolicyService {
                 } else {
                     reasons.join("; ")
                 };
-                crate::core::metrics::record_policy_evaluation(action_name, "deny", start.elapsed());
+                crate::core::metrics::record_policy_evaluation(
+                    action_name,
+                    "deny",
+                    start.elapsed(),
+                );
                 Ok(AuthorizationDecision::deny(diag))
             }
         }
@@ -526,7 +584,8 @@ impl PolicyService {
         let principal = super::schema::user_entity_uid(&user.id);
         let action_uid = action_entity_uid(action.cedar_action_name());
         let resource = super::schema::user_entity_uid(&target_id);
-        let entities = super::schema::build_user_action_entities(&user.id, &user.groups, &target_id);
+        let entities =
+            super::schema::build_user_action_entities(&user.id, &user.groups, &target_id);
 
         self.evaluate_request(
             action_name,
@@ -538,6 +597,23 @@ impl PolicyService {
             &entities,
             start,
         )
+    }
+
+    /// Group-level authorization check: is `agent` allowed the given tool group?
+    /// Used to derive ambient grants (e.g. read access to the memory dir when the
+    /// agent has the `memory` tool group).
+    pub async fn is_tool_group_permitted(
+        &self,
+        user_id: &str,
+        user_handle: &crate::core::Handle,
+        agent_handle: &crate::core::Handle,
+        group: &str,
+    ) -> Result<bool, AppError> {
+        let cached = self.build_policy_set(user_id).await?;
+        let resource = PolicyResource::ToolGroup {
+            group: group.to_string(),
+        };
+        self.is_permitted(user_handle, agent_handle, &resource, &cached.policy_set)
     }
 
     fn is_permitted(
@@ -559,8 +635,14 @@ impl PolicyService {
         let action_uid = action_entity_uid("invoke_tool");
         let context = Context::empty();
 
-        let request = Request::new(principal, action_uid, resource_uid, context, Some(&self.schema))
-            .map_err(|e| AppError::Internal(format!("Policy request error: {e}")))?;
+        let request = Request::new(
+            principal,
+            action_uid,
+            resource_uid,
+            context,
+            Some(&self.schema),
+        )
+        .map_err(|e| AppError::Internal(format!("Policy request error: {e}")))?;
 
         let authorizer = Authorizer::new();
         let response = authorizer.is_authorized(&request, policy_set, &entities);
@@ -605,10 +687,8 @@ impl PolicyService {
                 }
             };
 
-            let policy = super::sandbox::evaluate_sandbox_policy(
-                &cached.policy_set,
-                principal_entity,
-            );
+            let policy =
+                super::sandbox::evaluate_sandbox_policy(&cached.policy_set, principal_entity);
             let arc = Arc::new(policy);
             self.sandbox_cache.insert(key, arc.clone()).await;
             arc
@@ -1109,7 +1189,10 @@ async fn build_entities_for_target(
                 entities.push(tool_entity);
             }
             if groups_seen.insert(def.provider_id.clone()) {
-                entities.push(Entity::new_no_attrs(group_uid, std::collections::HashSet::new()));
+                entities.push(Entity::new_no_attrs(
+                    group_uid,
+                    std::collections::HashSet::new(),
+                ));
             }
             hierarchy.add(
                 EntityRef::Tool(def.id.clone()),

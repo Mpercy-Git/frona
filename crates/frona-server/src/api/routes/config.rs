@@ -11,7 +11,6 @@ use crate::core::state::AppState;
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
 
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/config/schema", get(get_schema))
@@ -50,23 +49,25 @@ async fn update_config(
     let mut base: serde_json::Value = if raw_yaml.is_empty() {
         serde_json::json!({})
     } else {
-        let yaml_val: serde_yaml::Value = serde_yaml::from_str(&raw_yaml)
-            .map_err(|e| ApiError(crate::core::error::AppError::Internal(
-                format!("Failed to parse existing config.yaml: {e}"),
-            )))?;
-        serde_json::to_value(yaml_val)
-            .map_err(|e| ApiError(crate::core::error::AppError::Internal(
-                format!("Failed to convert YAML to JSON: {e}"),
-            )))?
+        let yaml_val: serde_yaml::Value = serde_yaml::from_str(&raw_yaml).map_err(|e| {
+            ApiError(crate::core::error::AppError::Internal(format!(
+                "Failed to parse existing config.yaml: {e}"
+            )))
+        })?;
+        serde_json::to_value(yaml_val).map_err(|e| {
+            ApiError(crate::core::error::AppError::Internal(format!(
+                "Failed to convert YAML to JSON: {e}"
+            )))
+        })?
     };
 
     deep_merge(&mut base, patch);
 
-    // Validate the merged config before writing anything to disk.
-    let _validated: Config = serde_json::from_value(base.clone())
-        .map_err(|e| ApiError(crate::core::error::AppError::Validation(
-            format!("Invalid config: {e}"),
-        )))?;
+    let _: Config = serde_json::from_value(base.clone()).map_err(|e| {
+        ApiError(crate::core::error::AppError::Validation(format!(
+            "Invalid config: {e}"
+        )))
+    })?;
 
     // Strip defaults and persist to disk (mutates `base` in place).
     persist_config(&mut base, &path)

@@ -29,7 +29,7 @@ pub struct InferenceUsage {
     pub model_id: String,
     pub model_ref: String,
 
-    // Usage. `cached_input_tokens` is rig's collapsed view — see plan
+    // Usage. `cached_input_tokens` is rig's collapsed view - see plan
     // "Cache fidelity" section for why we can't split Anthropic
     // cache_creation vs cache_read on the streaming path.
     pub input_tokens: u64,
@@ -72,7 +72,7 @@ pub struct UsageRollup {
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, PartialEq, Eq)]
 #[surreal(crate = "surrealdb::types")]
 pub enum InferenceKind {
-    /// A text-only reply — the no-tool fast path. One row per user turn
+    /// A text-only reply - the no-tool fast path. One row per user turn
     /// (the agent has no tools available). Tool-using agents produce
     /// `ToolTurn` rows instead (even for the final user-visible reply
     /// turn that stops calling tools).
@@ -96,6 +96,12 @@ pub enum InferenceKind {
     Compaction {
         target: CompactionTarget,
     },
+    /// Background PKM consolidation - turning a transcript (or a User Vault note)
+    /// into KB structure. Attributed to the **user** only (top-level `user_id`);
+    /// it carries no agent/chat because it runs async, detached from any turn, and
+    /// may have no originating chat at all (sync ingest). Distinct from
+    /// `Compaction` (context-window distillation). Mirrors `CompactionTarget::User`.
+    Memory,
     Signal {
         agent_id: String,
         chat_id: String,
@@ -119,9 +125,16 @@ pub enum InferenceKind {
 pub enum CompactionTarget {
     /// User-level memory distillation. `user_id` is on the top-level row.
     User,
-    Chat { agent_id: String, chat_id: String },
-    Agent { agent_id: String },
-    Space { space_id: String },
+    Chat {
+        agent_id: String,
+        chat_id: String,
+    },
+    Agent {
+        agent_id: String,
+    },
+    Space {
+        space_id: String,
+    },
 }
 
 impl InferenceKind {
@@ -133,6 +146,7 @@ impl InferenceKind {
             | Self::Signal { agent_id, .. }
             | Self::Router { agent_id, .. }
             | Self::Transcription { agent_id, .. } => Some(agent_id),
+            Self::Memory => None,
             Self::Compaction { target } => match target {
                 CompactionTarget::Chat { agent_id, .. } | CompactionTarget::Agent { agent_id } => {
                     Some(agent_id)
@@ -150,14 +164,19 @@ impl InferenceKind {
             | Self::Signal { chat_id, .. }
             | Self::Transcription { chat_id, .. } => Some(chat_id),
             Self::Router { chat_id, .. } => chat_id.as_deref(),
-            Self::Compaction { target: CompactionTarget::Chat { chat_id, .. } } => Some(chat_id),
+            Self::Memory => None,
+            Self::Compaction {
+                target: CompactionTarget::Chat { chat_id, .. },
+            } => Some(chat_id),
             Self::Compaction { .. } => None,
         }
     }
 
     pub fn space_id(&self) -> Option<&str> {
         match self {
-            Self::Compaction { target: CompactionTarget::Space { space_id } } => Some(space_id),
+            Self::Compaction {
+                target: CompactionTarget::Space { space_id },
+            } => Some(space_id),
             _ => None,
         }
     }
@@ -185,6 +204,7 @@ impl InferenceKind {
             Self::ToolTurn { .. } => "ToolTurn",
             Self::Title { .. } => "Title",
             Self::Compaction { .. } => "Compaction",
+            Self::Memory => "Memory",
             Self::Signal { .. } => "Signal",
             Self::Router { .. } => "Router",
             Self::Transcription { .. } => "Transcription",

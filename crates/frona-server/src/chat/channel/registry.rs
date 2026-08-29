@@ -27,8 +27,7 @@ impl ChannelRegistry {
 
     pub fn list_manifests(&self) -> Vec<ChannelManifest> {
         let factories = self.factories.read().expect("registry poisoned");
-        let mut out: Vec<ChannelManifest> =
-            factories.values().map(|f| f.manifest()).collect();
+        let mut out: Vec<ChannelManifest> = factories.values().map(|f| f.manifest()).collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
         out
     }

@@ -1,7 +1,7 @@
-use async_trait::async_trait;
 use crate::chat::models::Chat;
 use crate::chat::repository::ChatRepository;
 use crate::core::error::AppError;
+use async_trait::async_trait;
 
 use super::generic::SurrealRepo;
 
@@ -12,8 +12,9 @@ const SELECT_CLAUSE: &str = "SELECT *, meta::id(id) as id";
 #[async_trait]
 impl ChatRepository for SurrealRepo<Chat> {
     async fn find_by_user_id(&self, user_id: &str) -> Result<Vec<Chat>, AppError> {
-        let query =
-            format!("{SELECT_CLAUSE} FROM chat WHERE user_id = $user_id AND archived_at IS NONE ORDER BY updated_at DESC");
+        let query = format!(
+            "{SELECT_CLAUSE} FROM chat WHERE user_id = $user_id AND archived_at IS NONE ORDER BY updated_at DESC"
+        );
         let mut result = self
             .db()
             .query(&query)
@@ -44,6 +45,22 @@ impl ChatRepository for SurrealRepo<Chat> {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(chats)
+    }
+
+    async fn find_all_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM chat WHERE space_id = $space_id ORDER BY updated_at DESC"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("space_id", space_id.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))
     }
 
     async fn find_user_chats_by_space_id(&self, space_id: &str) -> Result<Vec<Chat>, AppError> {

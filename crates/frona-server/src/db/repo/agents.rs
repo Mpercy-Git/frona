@@ -1,8 +1,8 @@
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use crate::agent::models::Agent;
 use crate::agent::repository::AgentRepository;
 use crate::core::error::AppError;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use super::generic::SurrealRepo;
 
@@ -28,7 +28,8 @@ impl AgentRepository for SurrealRepo<Agent> {
     }
 
     async fn find_by_user_id(&self, user_id: &str) -> Result<Vec<Agent>, AppError> {
-        let query = format!("{SELECT_CLAUSE} FROM agent WHERE user_id = $user_id ORDER BY created_at DESC");
+        let query =
+            format!("{SELECT_CLAUSE} FROM agent WHERE user_id = $user_id ORDER BY created_at DESC");
         let mut result = self
             .db()
             .query(&query)
@@ -62,7 +63,11 @@ impl AgentRepository for SurrealRepo<Agent> {
         Ok(agent)
     }
 
-    async fn find_by_handle(&self, user_id: &str, handle: &crate::core::Handle) -> Result<Option<Agent>, AppError> {
+    async fn find_by_handle(
+        &self,
+        user_id: &str,
+        handle: &crate::core::Handle,
+    ) -> Result<Option<Agent>, AppError> {
         let query = format!(
             "{SELECT_CLAUSE} FROM agent WHERE user_id = $user_id AND handle = $handle LIMIT 1"
         );

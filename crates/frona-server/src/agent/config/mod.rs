@@ -101,6 +101,9 @@ extras: {"emoji":"🌤️","requires":{"bins":["curl"]}}
             entry.metadata.get("description"),
             Some(&"Get current weather and forecasts.".to_string())
         );
-        assert!(entry.metadata.contains_key("extras"), "nested object should be serialized as string");
+        assert!(
+            entry.metadata.contains_key("extras"),
+            "nested object should be serialized as string"
+        );
     }
 }

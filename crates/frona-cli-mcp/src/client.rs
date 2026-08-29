@@ -19,23 +19,13 @@ impl BridgeClient {
 
     pub async fn list_servers(&self) -> Result<Vec<BridgeServerInfo>, Error> {
         let url = format!("{}/api/mcp/bridge/servers", self.base_url);
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(&self.token)
-            .send()
-            .await?;
+        let resp = self.http.get(&url).bearer_auth(&self.token).send().await?;
         check_status(resp).await?.json().await.map_err(Error::Http)
     }
 
     pub async fn server_tools(&self, slug: &str) -> Result<BridgeServerDetail, Error> {
         let url = format!("{}/api/mcp/bridge/servers/{slug}", self.base_url);
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(&self.token)
-            .send()
-            .await?;
+        let resp = self.http.get(&url).bearer_auth(&self.token).send().await?;
         check_status(resp).await?.json().await.map_err(Error::Http)
     }
 

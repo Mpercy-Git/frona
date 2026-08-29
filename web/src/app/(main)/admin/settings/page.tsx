@@ -19,6 +19,7 @@ import { MailSection } from "@/components/settings/sections/mail-section";
 import { SsoSection } from "@/components/settings/sections/sso-section";
 import { BrowserSection } from "@/components/settings/sections/browser-section";
 import { SearchSection } from "@/components/settings/sections/search-section";
+import { MemorySection } from "@/components/settings/sections/memory-section";
 import { VoiceSection } from "@/components/settings/sections/voice-section";
 import { ServerVaultSection } from "@/components/settings/sections/vault-section";
 import { AdvancedSection } from "@/components/settings/sections/advanced-section";
@@ -33,7 +34,8 @@ const TABS = [
   { id: "providers", label: "Providers", saveable: true, divider: false },
   { id: "models", label: "Models", saveable: true, divider: false },
   { id: "agents", label: "Agents", saveable: false, divider: false },
-  { id: "skills", label: "Skills", saveable: false, divider: true },
+  { id: "memory", label: "Memory", saveable: true, divider: true },
+  { id: "skills", label: "Skills", saveable: false, divider: false },
   { id: "search", label: "Search", saveable: true, divider: false },
   { id: "voice", label: "Voice", saveable: true, divider: false },
   { id: "browser", label: "Browser", saveable: true, divider: false },
@@ -63,6 +65,10 @@ export default function AdminSettingsPage() {
   }, [user, hasAccess, router]);
 
   const [config, setConfig] = useState<Config | null>(null);
+  // The backend the server booted with - snapshot at load so it stays put while
+  // the user edits the draft; it's what carries the "Active" badge (a backend
+  // switch only takes effect after a restart + reload).
+  const [activeBackend, setActiveBackend] = useState<Config["memory"]["backend"] | null>(null);
   const [patch, setPatch] = useState<Record<string, unknown>>({});
   const [activeTab, setActiveTabState] = useState<TabId>(() => {
     if (typeof window !== "undefined") {
@@ -106,6 +112,7 @@ export default function AdminSettingsPage() {
     try {
       const cfg = await getConfig();
       setConfig(cfg);
+      setActiveBackend(cfg.memory.backend);
     } catch {
       setError("Failed to load configuration");
     } finally {
@@ -156,6 +163,16 @@ export default function AdminSettingsPage() {
   const updatePatch = useCallback((section: string, value: unknown) => {
     setPatch((prev) => ({ ...prev, [section]: value }));
     setConfig((prev) => prev ? { ...prev, [section]: value } as Config : prev);
+  }, []);
+
+  const updateModels = useCallback((models: Config["models"], removedGroups: string[] = []) => {
+    setPatch((prev) => {
+      const existing = (prev.models ?? {}) as Record<string, unknown>;
+      const modelPatch: Record<string, unknown> = { ...existing, ...models };
+      for (const name of removedGroups) modelPatch[name] = null;
+      return { ...prev, models: modelPatch };
+    });
+    setConfig((prev) => prev ? { ...prev, models } : prev);
   }, []);
 
   const mobile = useMobile();
@@ -276,9 +293,11 @@ export default function AdminSettingsPage() {
                   {activeTab === "models" && (
                     <ModelsSection
                       models={config.models}
-                      enabledProviders={Object.keys(config.providers)}
+                      enabledProviders={Object.entries(config.providers)
+                        .filter(([, provider]) => provider.enabled !== false)
+                        .map(([id]) => id)}
                       providerConfigs={config.providers}
-                      onChange={(v) => updatePatch("models", v)}
+                      onChange={updateModels}
                     />
                   )}
                   {activeTab === "server" && (
@@ -323,6 +342,14 @@ export default function AdminSettingsPage() {
                     <SearchSection
                       search={config.search}
                       onChange={(v) => updatePatch("search", v)}
+                    />
+                  )}
+                  {activeTab === "memory" && (
+                    <MemorySection
+                      memory={config.memory}
+                      models={config.models}
+                      activeBackend={activeBackend}
+                      onChange={(v) => updatePatch("memory", v)}
                     />
                   )}
                   {activeTab === "voice" && (

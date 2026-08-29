@@ -11,8 +11,9 @@ const SELECT_CLAUSE: &str = "SELECT *, meta::id(id) as id";
 #[async_trait]
 impl ContactRepository for SurrealRepo<Contact> {
     async fn find_by_user_id(&self, user_id: &str) -> Result<Vec<Contact>, AppError> {
-        let query =
-            format!("{SELECT_CLAUSE} FROM contact WHERE user_id = $user_id ORDER BY created_at DESC");
+        let query = format!(
+            "{SELECT_CLAUSE} FROM contact WHERE user_id = $user_id ORDER BY created_at DESC"
+        );
         let mut result = self
             .db()
             .query(&query)

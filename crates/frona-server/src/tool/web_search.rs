@@ -24,7 +24,6 @@ pub trait SearchProvider: Send + Sync {
     async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>, AppError>;
 }
 
-
 pub struct TavilyProvider {
     client: reqwest::Client,
     api_key: String,
@@ -68,7 +67,10 @@ impl SearchProvider for TavilyProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Http { status: status.as_u16(), message: text });
+            return Err(AppError::Http {
+                status: status.as_u16(),
+                message: text,
+            });
         }
 
         let data: TavilyResponse = resp
@@ -87,7 +89,6 @@ impl SearchProvider for TavilyProvider {
             .collect())
     }
 }
-
 
 pub struct BraveProvider {
     client: reqwest::Client,
@@ -132,7 +133,10 @@ impl SearchProvider for BraveProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Http { status: status.as_u16(), message: text });
+            return Err(AppError::Http {
+                status: status.as_u16(),
+                message: text,
+            });
         }
 
         let data: BraveResponse = resp
@@ -155,7 +159,6 @@ impl SearchProvider for BraveProvider {
         Ok(results)
     }
 }
-
 
 pub struct SearxngProvider {
     client: reqwest::Client,
@@ -191,11 +194,7 @@ impl SearchProvider for SearxngProvider {
         let resp = self
             .client
             .get(&url)
-            .query(&[
-                ("q", query),
-                ("format", "json"),
-                ("pageno", "1"),
-            ])
+            .query(&[("q", query), ("format", "json"), ("pageno", "1")])
             .send()
             .await
             .map_err(|e| AppError::Tool(format!("SearXNG request failed: {e}")))?;
@@ -203,7 +202,10 @@ impl SearchProvider for SearxngProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Http { status: status.as_u16(), message: text });
+            return Err(AppError::Http {
+                status: status.as_u16(),
+                message: text,
+            });
         }
 
         let data: SearxngResponse = resp
@@ -225,7 +227,6 @@ impl SearchProvider for SearxngProvider {
         Ok(results)
     }
 }
-
 
 pub struct WebSearchTool {
     provider: Option<Arc<dyn SearchProvider>>,
@@ -253,7 +254,12 @@ fn format_results(results: &[SearchResult]) -> String {
 
 #[agent_tool]
 impl WebSearchTool {
-    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        _ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let provider = self.provider.as_ref().ok_or_else(|| {
             AppError::Tool(
                 "No search provider configured. Set one of the following environment variables:\n\
@@ -292,7 +298,6 @@ impl WebSearchTool {
         Ok(ToolOutput::text(format_results(&results)))
     }
 }
-
 
 pub fn create_search_provider(
     http: reqwest::Client,
@@ -343,7 +348,11 @@ mod tests {
 
     #[async_trait]
     impl SearchProvider for MockProvider {
-        async fn search(&self, _query: &str, max_results: usize) -> Result<Vec<SearchResult>, AppError> {
+        async fn search(
+            &self,
+            _query: &str,
+            max_results: usize,
+        ) -> Result<Vec<SearchResult>, AppError> {
             Ok(self.results.iter().take(max_results).cloned().collect())
         }
     }
@@ -368,29 +377,52 @@ mod tests {
         let event_sender = broadcast.create_event_sender("u", "c", None);
         InferenceContext::new(
             crate::auth::User {
-                id: "u".into(), handle: crate::handle!("uu"), email: "e".into(), name: "n".into(),
-                password_hash: String::new(), timezone: None,
+                id: "u".into(),
+                handle: crate::handle!("uu"),
+                email: "e".into(),
+                name: "n".into(),
+                password_hash: String::new(),
+                timezone: None,
                 phone: None,
-                groups: Vec::new(), deactivated_at: None,
-                created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
+                groups: Vec::new(),
+                deactivated_at: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
             },
             crate::agent::models::Agent {
-                id: "a".into(), user_id: "test-user".into(), handle: crate::handle!("aa"), name: "a".into(),
-                description: String::new(), model_group: "p".into(), enabled: true,
-                skills: None, sandbox_limits: None, max_concurrent_tasks: None,
-                avatar: None, voice_id: None, identity: Default::default(), prompt: None,
-                heartbeat_interval: None, next_heartbeat_at: None,
+                id: "a".into(),
+                user_id: "test-user".into(),
+                handle: crate::handle!("aa"),
+                name: "a".into(),
+                description: String::new(),
+                model_group: "p".into(),
+                enabled: true,
+                skills: None,
+                sandbox_limits: None,
+                max_concurrent_tasks: None,
+                avatar: None,
+                voice_id: None,
+                identity: Default::default(),
+                prompt: None,
+                heartbeat_interval: None,
+                next_heartbeat_at: None,
                 heartbeat_chat_id: None,
-                created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
             },
             crate::chat::models::Chat {
-                id: "c".into(), user_id: "u".into(), space_id: None,
-                task_id: None, agent_id: "a".into(), title: None,
+                id: "c".into(),
+                user_id: "u".into(),
+                space_id: None,
+                task_id: None,
+                agent_id: "a".into(),
+                title: None,
                 archived_at: None,
                 channel_id: None,
                 channel_external_id: None,
                 metadata: Default::default(),
-                created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
             },
             event_sender,
             tokio_util::sync::CancellationToken::new(),
@@ -444,9 +476,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_tool_missing_query() {
-        let provider = Arc::new(MockProvider {
-            results: vec![],
-        });
+        let provider = Arc::new(MockProvider { results: vec![] });
         let tool = WebSearchTool::new(Some(provider), PromptLoader::new("/nonexistent"));
         let ctx = mock_context();
 
@@ -516,5 +546,4 @@ mod tests {
             Ok(_) => panic!("Expected error when no provider configured"),
         }
     }
-
 }

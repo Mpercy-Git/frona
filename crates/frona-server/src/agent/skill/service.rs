@@ -180,7 +180,12 @@ impl SkillService {
         });
     }
 
-    pub async fn list(&self, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle, agent_skills: Option<&[String]>) -> Vec<Skill> {
+    pub async fn list(
+        &self,
+        user_handle: &crate::core::Handle,
+        agent_handle: &crate::core::Handle,
+        agent_skills: Option<&[String]>,
+    ) -> Vec<Skill> {
         let cache_key = format!("{user_handle}/{agent_handle}:{}", skills_hash(agent_skills));
         if let Some(cached) = self.list_cache.get(&cache_key).await {
             return cached;
@@ -194,44 +199,60 @@ impl SkillService {
         let results = self.registry.search(query, 20).await?;
         let lock = self.read_lock();
 
-        Ok(results.into_iter().map(|r| {
-            let installed = lock.skills.get(&r.name)
-                .is_some_and(|entry| entry.source == r.repo);
-            SkillSearchResult {
-                name: r.name,
-                repo: r.repo,
-                avatar_url: r.avatar_url,
-                installs: r.installs,
-                installed,
-            }
-        }).collect())
+        Ok(results
+            .into_iter()
+            .map(|r| {
+                let installed = lock
+                    .skills
+                    .get(&r.name)
+                    .is_some_and(|entry| entry.source == r.repo);
+                SkillSearchResult {
+                    name: r.name,
+                    repo: r.repo,
+                    avatar_url: r.avatar_url,
+                    installs: r.installs,
+                    installed,
+                }
+            })
+            .collect())
     }
 
     pub async fn get_skills(&self, owner_repo: &str) -> Result<RepoBrowseResult, AppError> {
         if let Some(cached) = self.browse_cache.get(owner_repo).await {
             let lock = self.read_lock();
-            let skills = cached.skills.into_iter().map(|mut s| {
-                s.installed = lock.skills.get(&s.name)
-                    .is_some_and(|entry| entry.source == owner_repo);
-                s
-            }).collect();
+            let skills = cached
+                .skills
+                .into_iter()
+                .map(|mut s| {
+                    s.installed = lock
+                        .skills
+                        .get(&s.name)
+                        .is_some_and(|entry| entry.source == owner_repo);
+                    s
+                })
+                .collect();
             return Ok(RepoBrowseResult { skills, ..cached });
         }
 
         let discovered = self.registry.discover_skills(owner_repo).await?;
 
         let lock = self.read_lock();
-        let skills = discovered.into_iter().map(|s| {
-            let installed = lock.skills.get(&s.name)
-                .is_some_and(|entry| entry.source == owner_repo);
-            RepoBrowseSkill {
-                description: s.description,
-                name: s.name,
-                sha: s.sha,
-                dir_path: s.dir_path,
-                installed,
-            }
-        }).collect();
+        let skills = discovered
+            .into_iter()
+            .map(|s| {
+                let installed = lock
+                    .skills
+                    .get(&s.name)
+                    .is_some_and(|entry| entry.source == owner_repo);
+                RepoBrowseSkill {
+                    description: s.description,
+                    name: s.name,
+                    sha: s.sha,
+                    dir_path: s.dir_path,
+                    installed,
+                }
+            })
+            .collect();
 
         let result = RepoBrowseResult {
             repo: owner_repo.to_string(),
@@ -240,7 +261,9 @@ impl SkillService {
             skills,
         };
 
-        self.browse_cache.insert(owner_repo.to_string(), result.clone()).await;
+        self.browse_cache
+            .insert(owner_repo.to_string(), result.clone())
+            .await;
 
         Ok(result)
     }
@@ -248,15 +271,23 @@ impl SkillService {
     pub async fn preview(&self, repo: &str, skill_name: &str) -> Result<SkillPreview, AppError> {
         let local_content = self.installed_dir.join(skill_name).join("SKILL.md");
         let (content, dir_path) = if local_content.exists() {
-            let c = std::fs::read_to_string(&local_content)
-                .map_err(|e| AppError::Internal(format!("Failed to read installed SKILL.md: {e}")))?;
+            let c = std::fs::read_to_string(&local_content).map_err(|e| {
+                AppError::Internal(format!("Failed to read installed SKILL.md: {e}"))
+            })?;
             (c, skill_name.to_string())
         } else {
             let browse = self.get_skills(repo).await?;
-            let skill = browse.skills.iter()
+            let skill = browse
+                .skills
+                .iter()
                 .find(|s| s.name == skill_name)
-                .ok_or_else(|| AppError::NotFound(format!("Skill '{skill_name}' not found in {repo}")))?;
-            let c = self.registry.fetch_skill_content(repo, &skill.dir_path).await?;
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("Skill '{skill_name}' not found in {repo}"))
+                })?;
+            let c = self
+                .registry
+                .fetch_skill_content(repo, &skill.dir_path)
+                .await?;
             (c, skill.dir_path.clone())
         };
 
@@ -298,7 +329,12 @@ impl SkillService {
         })
     }
 
-    pub async fn install(&self, repo: &str, skill_name: &str, agent: Option<(&crate::core::Handle, &crate::core::Handle)>) -> Result<SkillListItem, AppError> {
+    pub async fn install(
+        &self,
+        repo: &str,
+        skill_name: &str,
+        agent: Option<(&crate::core::Handle, &crate::core::Handle)>,
+    ) -> Result<SkillListItem, AppError> {
         let (dir_path, sha, description) = self.discover_skill(repo, skill_name).await?;
         let discovered = super::registry::DiscoveredSkill {
             name: skill_name.to_string(),
@@ -306,11 +342,14 @@ impl SkillService {
             dir_path,
             sha,
         };
-        let fetched = self.registry.fetch_skill_from_cache(repo, &discovered).await?;
+        let fetched = self
+            .registry
+            .fetch_skill_from_cache(repo, &discovered)
+            .await?;
 
         if let Some((user_handle, agent_handle)) = agent {
             let ws = self.storage.agent_workspace(user_handle, agent_handle);
-            let skill_base = format!("skills/{}", &fetched.name);
+            let skill_base = format!("skills/{}", fetched.name);
             ws.write(&format!("{skill_base}/SKILL.md"), &fetched.content)?;
             for file in &fetched.files {
                 ws.write_bytes(&format!("{skill_base}/{}", file.path), &file.content)?;
@@ -346,11 +385,14 @@ impl SkillService {
 
         let now = Utc::now();
         let mut lock = self.read_lock();
-        lock.skills.insert(fetched.name.clone(), SkillLockEntry {
-            source: repo.to_string(),
-            sha: fetched.sha,
-            installed_at: now,
-        });
+        lock.skills.insert(
+            fetched.name.clone(),
+            SkillLockEntry {
+                source: repo.to_string(),
+                sha: fetched.sha,
+                installed_at: now,
+            },
+        );
         self.write_lock(&lock)?;
 
         self.invalidate_caches().await;
@@ -364,37 +406,64 @@ impl SkillService {
         })
     }
 
-    pub async fn install_batch(&self, repo: &str, skill_names: &[String], agent: Option<(&crate::core::Handle, &crate::core::Handle)>) -> Result<Vec<SkillListItem>, AppError> {
+    pub async fn install_batch(
+        &self,
+        repo: &str,
+        skill_names: &[String],
+        agent: Option<(&crate::core::Handle, &crate::core::Handle)>,
+    ) -> Result<Vec<SkillListItem>, AppError> {
         if let Some((user_handle, agent_handle)) = agent {
-            return self.install_to_agent(user_handle, agent_handle, repo, skill_names).await;
+            return self
+                .install_to_agent(user_handle, agent_handle, repo, skill_names)
+                .await;
         }
-        self.install_to_dir(&self.installed_dir, repo, skill_names, SkillScope::Shared).await
+        self.install_to_dir(&self.installed_dir, repo, skill_names, SkillScope::Shared)
+            .await
     }
 
-    pub async fn install_batch_for_user(&self, user_handle: &crate::core::Handle, repo: &str, skill_names: &[String]) -> Result<Vec<SkillListItem>, AppError> {
+    pub async fn install_batch_for_user(
+        &self,
+        user_handle: &crate::core::Handle,
+        repo: &str,
+        skill_names: &[String],
+    ) -> Result<Vec<SkillListItem>, AppError> {
         let dir = self.storage.user_skills_path(user_handle);
-        self.install_to_dir(&dir, repo, skill_names, SkillScope::User).await
+        self.install_to_dir(&dir, repo, skill_names, SkillScope::User)
+            .await
     }
 
-    async fn install_to_agent(&self, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle, repo: &str, skill_names: &[String]) -> Result<Vec<SkillListItem>, AppError> {
+    async fn install_to_agent(
+        &self,
+        user_handle: &crate::core::Handle,
+        agent_handle: &crate::core::Handle,
+        repo: &str,
+        skill_names: &[String],
+    ) -> Result<Vec<SkillListItem>, AppError> {
         let browse = self.get_skills(repo).await?;
         let now = Utc::now();
         let mut items = Vec::new();
         let ws = self.storage.agent_workspace(user_handle, agent_handle);
 
         for skill_name in skill_names {
-            let skill = browse.skills.iter()
+            let skill = browse
+                .skills
+                .iter()
                 .find(|s| s.name == *skill_name)
-                .ok_or_else(|| AppError::NotFound(format!("Skill '{skill_name}' not found in {repo}")))?;
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("Skill '{skill_name}' not found in {repo}"))
+                })?;
             let discovered = super::registry::DiscoveredSkill {
                 name: skill_name.clone(),
                 description: skill.description.clone(),
                 dir_path: skill.dir_path.clone(),
                 sha: skill.sha.clone(),
             };
-            let fetched = self.registry.fetch_skill_from_cache(repo, &discovered).await?;
+            let fetched = self
+                .registry
+                .fetch_skill_from_cache(repo, &discovered)
+                .await?;
 
-            let skill_base = format!("skills/{}", &fetched.name);
+            let skill_base = format!("skills/{}", fetched.name);
             ws.write(&format!("{skill_base}/SKILL.md"), &fetched.content)?;
             for file in &fetched.files {
                 ws.write_bytes(&format!("{skill_base}/{}", file.path), &file.content)?;
@@ -413,43 +482,62 @@ impl SkillService {
         Ok(items)
     }
 
-    async fn install_to_dir(&self, dir: &Path, repo: &str, skill_names: &[String], scope: SkillScope) -> Result<Vec<SkillListItem>, AppError> {
+    async fn install_to_dir(
+        &self,
+        dir: &Path,
+        repo: &str,
+        skill_names: &[String],
+        scope: SkillScope,
+    ) -> Result<Vec<SkillListItem>, AppError> {
         let browse = self.get_skills(repo).await?;
         let now = Utc::now();
         let mut items = Vec::new();
         let mut lock = self.read_lock_at(dir);
 
         for skill_name in skill_names {
-            let skill = browse.skills.iter()
+            let skill = browse
+                .skills
+                .iter()
                 .find(|s| s.name == *skill_name)
-                .ok_or_else(|| AppError::NotFound(format!("Skill '{skill_name}' not found in {repo}")))?;
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("Skill '{skill_name}' not found in {repo}"))
+                })?;
             let discovered = super::registry::DiscoveredSkill {
                 name: skill_name.clone(),
                 description: skill.description.clone(),
                 dir_path: skill.dir_path.clone(),
                 sha: skill.sha.clone(),
             };
-            let fetched = self.registry.fetch_skill_from_cache(repo, &discovered).await?;
+            let fetched = self
+                .registry
+                .fetch_skill_from_cache(repo, &discovered)
+                .await?;
 
             let skill_dir = dir.join(&fetched.name);
-            std::fs::create_dir_all(&skill_dir)
-                .map_err(|e| AppError::Internal(format!("Failed to create skill directory: {e}")))?;
+            std::fs::create_dir_all(&skill_dir).map_err(|e| {
+                AppError::Internal(format!("Failed to create skill directory: {e}"))
+            })?;
             std::fs::write(skill_dir.join("SKILL.md"), &fetched.content)
                 .map_err(|e| AppError::Internal(format!("Failed to write SKILL.md: {e}")))?;
             for file in &fetched.files {
                 let file_path = skill_dir.join(&file.path);
                 if let Some(parent) = file_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| AppError::Internal(format!("Failed to create directory: {e}")))?;
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        AppError::Internal(format!("Failed to create directory: {e}"))
+                    })?;
                 }
-                std::fs::write(&file_path, &file.content)
-                    .map_err(|e| AppError::Internal(format!("Failed to write {}: {e}", file.path)))?;
+                std::fs::write(&file_path, &file.content).map_err(|e| {
+                    AppError::Internal(format!("Failed to write {}: {e}", file.path))
+                })?;
             }
-            lock.skills.insert(fetched.name.clone(), SkillLockEntry {
-                source: repo.to_string(),
-                sha: fetched.sha,
-                installed_at: now,
-            });
+            lock.skills.insert(
+                fetched.name.clone(),
+                SkillLockEntry {
+                    source: repo.to_string(),
+                    sha: fetched.sha,
+                    installed_at: now,
+                },
+            );
 
             items.push(SkillListItem {
                 name: fetched.name,
@@ -540,7 +628,10 @@ impl SkillService {
         self.list_installed_in(&self.installed_dir, SkillScope::Shared)
     }
 
-    pub fn list_installed_for_user(&self, user_handle: &crate::core::Handle) -> Result<Vec<SkillListItem>, AppError> {
+    pub fn list_installed_for_user(
+        &self,
+        user_handle: &crate::core::Handle,
+    ) -> Result<Vec<SkillListItem>, AppError> {
         let dir = self.storage.user_skills_path(user_handle);
         self.list_installed_in(&dir, SkillScope::User)
     }
@@ -550,7 +641,11 @@ impl SkillService {
         self.list_installed_in(&dir, SkillScope::Builtin)
     }
 
-    fn list_installed_in(&self, dir: &Path, scope: SkillScope) -> Result<Vec<SkillListItem>, AppError> {
+    fn list_installed_in(
+        &self,
+        dir: &Path,
+        scope: SkillScope,
+    ) -> Result<Vec<SkillListItem>, AppError> {
         let lock = self.read_lock_at(dir);
         let mut items = Vec::new();
 
@@ -568,7 +663,11 @@ impl SkillService {
 
             if let Ok(content) = std::fs::read_to_string(&skill_md) {
                 let parsed = parse_frontmatter(&content);
-                let description = parsed.metadata.get("description").cloned().unwrap_or_default();
+                let description = parsed
+                    .metadata
+                    .get("description")
+                    .cloned()
+                    .unwrap_or_default();
                 let lock_entry = lock.skills.get(&name);
 
                 items.push(SkillListItem {
@@ -584,15 +683,23 @@ impl SkillService {
         Ok(items)
     }
 
-    pub async fn uninstall_agent_skill(&self, user_handle: &crate::core::Handle, agent_handle: &crate::core::Handle, name: &str) -> Result<(), AppError> {
+    pub async fn uninstall_agent_skill(
+        &self,
+        user_handle: &crate::core::Handle,
+        agent_handle: &crate::core::Handle,
+        name: &str,
+    ) -> Result<(), AppError> {
         let ws = self.storage.agent_workspace(user_handle, agent_handle);
         let skill_dir = format!("skills/{name}");
         if !ws.exists(&skill_dir) {
-            return Err(AppError::NotFound(format!("Skill '{name}' is not installed for this agent")));
+            return Err(AppError::NotFound(format!(
+                "Skill '{name}' is not installed for this agent"
+            )));
         }
         let full_path = ws.base_path().join(&skill_dir);
-        std::fs::remove_dir_all(&full_path)
-            .map_err(|e| AppError::Internal(format!("Failed to remove agent skill directory: {e}")))?;
+        std::fs::remove_dir_all(&full_path).map_err(|e| {
+            AppError::Internal(format!("Failed to remove agent skill directory: {e}"))
+        })?;
         self.invalidate_caches().await;
         Ok(())
     }
@@ -601,7 +708,11 @@ impl SkillService {
         self.uninstall_in(&self.installed_dir.clone(), name).await
     }
 
-    pub async fn uninstall_for_user(&self, user_handle: &crate::core::Handle, name: &str) -> Result<(), AppError> {
+    pub async fn uninstall_for_user(
+        &self,
+        user_handle: &crate::core::Handle,
+        name: &str,
+    ) -> Result<(), AppError> {
         let dir = self.storage.user_skills_path(user_handle);
         self.uninstall_in(&dir, name).await
     }
@@ -609,7 +720,9 @@ impl SkillService {
     async fn uninstall_in(&self, dir: &Path, name: &str) -> Result<(), AppError> {
         let skill_dir = dir.join(name);
         if !skill_dir.exists() {
-            return Err(AppError::NotFound(format!("Skill '{name}' is not installed")));
+            return Err(AppError::NotFound(format!(
+                "Skill '{name}' is not installed"
+            )));
         }
 
         std::fs::remove_dir_all(&skill_dir)
@@ -632,7 +745,8 @@ impl SkillService {
             if entry.source == MANUAL_SOURCE {
                 continue;
             }
-            repos.entry(entry.source.clone())
+            repos
+                .entry(entry.source.clone())
                 .or_default()
                 .push((name.clone(), entry.sha.clone()));
         }
@@ -641,14 +755,19 @@ impl SkillService {
 
         for (repo, skills) in repos {
             let discovered = match self.get_skills(&repo).await {
-                Ok(browse) => browse.skills.iter().map(|s| (s.name.clone(), s.sha.clone())).collect::<Vec<_>>(),
+                Ok(browse) => browse
+                    .skills
+                    .iter()
+                    .map(|s| (s.name.clone(), s.sha.clone()))
+                    .collect::<Vec<_>>(),
                 Err(e) => {
                     tracing::warn!(repo = %repo, error = %e, "Failed to check updates for repo");
                     continue;
                 }
             };
             for (name, current_sha) in skills {
-                let latest_sha = discovered.iter()
+                let latest_sha = discovered
+                    .iter()
                     .find(|(n, _)| n == &name)
                     .map(|(_, sha)| sha.clone())
                     .unwrap_or_default();
@@ -672,12 +791,24 @@ impl SkillService {
         self.browse_cache.run_pending_tasks().await;
     }
 
-    async fn discover_skill(&self, repo: &str, skill_name: &str) -> Result<(String, String, String), AppError> {
+    async fn discover_skill(
+        &self,
+        repo: &str,
+        skill_name: &str,
+    ) -> Result<(String, String, String), AppError> {
         let browse = self.get_skills(repo).await?;
-        let skill = browse.skills.iter()
+        let skill = browse
+            .skills
+            .iter()
             .find(|s| s.name == skill_name)
-            .ok_or_else(|| AppError::NotFound(format!("Skill '{skill_name}' not found in {repo}")))?;
-        Ok((skill.dir_path.clone(), skill.sha.clone(), skill.description.clone()))
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Skill '{skill_name}' not found in {repo}"))
+            })?;
+        Ok((
+            skill.dir_path.clone(),
+            skill.sha.clone(),
+            skill.description.clone(),
+        ))
     }
 
     fn read_lock(&self) -> SkillsLock {
@@ -746,11 +877,14 @@ mod tests {
         );
 
         let mut lock = SkillsLock::default();
-        lock.skills.insert("test-skill".to_string(), SkillLockEntry {
-            source: "owner/repo".to_string(),
-            sha: "abc123".to_string(),
-            installed_at: Utc::now(),
-        });
+        lock.skills.insert(
+            "test-skill".to_string(),
+            SkillLockEntry {
+                source: "owner/repo".to_string(),
+                sha: "abc123".to_string(),
+                installed_at: Utc::now(),
+            },
+        );
 
         service.write_lock(&lock).unwrap();
         let read_back = service.read_lock();
@@ -781,7 +915,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let skill_dir = tmp.path().join("test-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: test-skill\ndescription: A test skill\n---\nContent here\n").unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test skill\n---\nContent here\n",
+        )
+        .unwrap();
 
         let storage = StorageService::new(&crate::core::config::Config::default());
         let resolver = SkillResolver::new("/tmp/test_config", storage.clone());
@@ -804,7 +942,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let skill_dir = tmp.path().join("test-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: test-skill\ndescription: Test\n---\n").unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: Test\n---\n",
+        )
+        .unwrap();
 
         let storage = StorageService::new(&crate::core::config::Config::default());
         let resolver = SkillResolver::new("/tmp/test_config", storage.clone());
@@ -817,11 +959,14 @@ mod tests {
         );
 
         let mut lock = SkillsLock::default();
-        lock.skills.insert("test-skill".to_string(), SkillLockEntry {
-            source: "owner/repo".to_string(),
-            sha: "abc".to_string(),
-            installed_at: Utc::now(),
-        });
+        lock.skills.insert(
+            "test-skill".to_string(),
+            SkillLockEntry {
+                source: "owner/repo".to_string(),
+                sha: "abc".to_string(),
+                installed_at: Utc::now(),
+            },
+        );
         service.write_lock(&lock).unwrap();
 
         service.uninstall("test-skill").await.unwrap();

@@ -17,7 +17,11 @@ pub fn render_skill(skill_name: &str, prompt: &str, skills: &[Skill]) -> Option<
 
     if placeholders.is_empty() {
         if prompt.is_empty() {
-            Some(format!("<skill name=\"{}\">{}</skill>", escape_attr(skill_name), body))
+            Some(format!(
+                "<skill name=\"{}\">{}</skill>",
+                escape_attr(skill_name),
+                body
+            ))
         } else {
             Some(format!(
                 "<skill name=\"{}\">{}</skill>\n{}",
@@ -74,7 +78,12 @@ enum Placeholder {
 
 /// `$ARGUMENTS` → raw prompt. `$N` and `$<name>` → POSIX-tokenized positional;
 /// undersupplied indices substitute empty. Named slots follow declared order.
-fn interpolate(body: &str, prompt: &str, declared_names: &[String], _kinds: &HashSet<Placeholder>) -> String {
+fn interpolate(
+    body: &str,
+    prompt: &str,
+    declared_names: &[String],
+    _kinds: &HashSet<Placeholder>,
+) -> String {
     let tokens = shell_split(prompt);
     let mut out = body.replace("$ARGUMENTS", prompt);
 
@@ -146,17 +155,19 @@ mod tests {
     fn no_placeholder_empty_prompt_just_tag() {
         let mut s = skill("weather", vec![]);
         s.path = String::new();
-        let out = format!(
-            "<skill name=\"{}\">{}</skill>",
-            "weather", "body"
-        );
+        let out = format!("<skill name=\"{}\">{}</skill>", "weather", "body");
         assert!(out.starts_with("<skill name=\"weather\">"));
         assert!(out.ends_with("</skill>"));
     }
 
     #[test]
     fn interpolate_arguments_substitutes_raw_prompt() {
-        let out = interpolate("Look up $ARGUMENTS now.", "London tomorrow", &[], &HashSet::new());
+        let out = interpolate(
+            "Look up $ARGUMENTS now.",
+            "London tomorrow",
+            &[],
+            &HashSet::new(),
+        );
         assert_eq!(out, "Look up London tomorrow now.");
     }
 
@@ -190,12 +201,7 @@ mod tests {
 
     #[test]
     fn interpolate_named_missing_substitutes_empty() {
-        let out = interpolate(
-            "Hello $name.",
-            "",
-            &["name".to_string()],
-            &HashSet::new(),
-        );
+        let out = interpolate("Hello $name.", "", &["name".to_string()], &HashSet::new());
         assert_eq!(out, "Hello .");
     }
 
@@ -217,6 +223,9 @@ mod tests {
 
     #[test]
     fn escape_attr_escapes_html_specials() {
-        assert_eq!(escape_attr(r#"a & "b" < c"#), r#"a &amp; &quot;b&quot; &lt; c"#);
+        assert_eq!(
+            escape_attr(r#"a & "b" < c"#),
+            r#"a &amp; &quot;b&quot; &lt; c"#
+        );
     }
 }

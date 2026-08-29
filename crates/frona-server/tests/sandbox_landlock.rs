@@ -1,19 +1,24 @@
 #![cfg(target_os = "linux")]
 
-use std::sync::Arc;
 use frona::tool::sandbox::SandboxFactory;
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 fn test_resource_manager() -> Arc<SystemResourceManager> {
     Arc::new(SystemResourceManager::new(60.0, 60.0, 60.0, 60.0))
 }
 
-fn test_manager() -> SandboxFactory {
-    SandboxFactory::new(false, test_resource_manager())
+fn test_manager() -> (SandboxFactory, PathBuf) {
+    let base = std::env::temp_dir()
+        .join("frona_test_landlock")
+        .join(uuid::Uuid::new_v4().to_string());
+    (SandboxFactory::new(false, test_resource_manager()), base)
 }
 
-fn relative_path_manager() -> SandboxFactory {
-    SandboxFactory::new(false, test_resource_manager())
+fn relative_path_manager() -> (SandboxFactory, PathBuf) {
+    let base = PathBuf::from(format!("target/test_landlock_{}", uuid::Uuid::new_v4()));
+    (SandboxFactory::new(false, test_resource_manager()), base)
 }
 
 /// Workspace dir for `get_sandbox` — the factory no longer owns the workspace,
@@ -35,8 +40,8 @@ fn relative_ws() -> std::path::PathBuf {
 
 #[tokio::test]
 async fn test_sandbox_allows_read_system_paths() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-read-sys", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-read-sys", false, vec![]);
 
     let output = ws
         .execute("cat", &["/etc/hostname"], 10, None, None, None)
@@ -56,8 +61,8 @@ async fn test_sandbox_allows_read_system_paths() {
 
 #[tokio::test]
 async fn test_sandbox_blocks_write_to_system_paths() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-write-sys", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-write-sys", false, vec![]);
 
     let output = ws
         .execute(
@@ -84,8 +89,8 @@ async fn test_sandbox_blocks_write_to_system_paths() {
 
 #[tokio::test]
 async fn test_sandbox_allows_write_to_workspace() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-write-ws", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-write-ws", false, vec![]);
 
     let output = ws
         .execute(
@@ -112,8 +117,8 @@ async fn test_sandbox_allows_write_to_workspace() {
 
 #[tokio::test]
 async fn test_sandbox_blocks_read_outside_allowed_paths() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-block-read", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-block-read", false, vec![]);
 
     let output = ws
         .execute("ls", &["/root"], 10, None, None, None)
@@ -133,8 +138,8 @@ async fn test_sandbox_blocks_read_outside_allowed_paths() {
 
 #[tokio::test]
 async fn test_sandbox_allows_write_to_tmp() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-write-tmp", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-write-tmp", false, vec![]);
 
     let output = ws
         .execute(
@@ -164,8 +169,8 @@ async fn test_sandbox_allows_write_to_tmp() {
 
 #[tokio::test]
 async fn test_sandbox_blocks_write_outside_workspace() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-block-write", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-block-write", false, vec![]);
 
     let output = ws
         .execute(
@@ -192,8 +197,8 @@ async fn test_sandbox_blocks_write_outside_workspace() {
 
 #[tokio::test]
 async fn test_sandbox_python_in_workspace() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-python", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-python", false, vec![]);
 
     let output = ws
         .execute(
@@ -220,16 +225,13 @@ async fn test_sandbox_python_in_workspace() {
 
 #[tokio::test]
 async fn test_sandbox_python_cannot_write_system() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-py-no-write", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-py-no-write", false, vec![]);
 
     let output = ws
         .execute(
             "python3",
-            &[
-                "-c",
-                "open('/etc/landlock_test', 'w').write('hacked')",
-            ],
+            &["-c", "open('/etc/landlock_test', 'w').write('hacked')"],
             30,
             None,
             None,
@@ -253,8 +255,8 @@ async fn test_sandbox_python_cannot_write_system() {
 /// This verifies landlock works on ext4 named volumes.
 #[tokio::test]
 async fn test_sandbox_write_with_relative_workspace_path() {
-    let mgr = relative_path_manager();
-    let ws = mgr.get_sandbox(relative_ws(), "landlock-relative", false, vec![]);
+    let (mgr, base) = relative_path_manager();
+    let ws = mgr.get_sandbox(base, "landlock-relative", false, vec![]);
 
     let output = ws
         .execute(
@@ -286,8 +288,8 @@ async fn test_sandbox_write_with_relative_workspace_path() {
 /// Tests writing a CSV file via heredoc — matches the actual agent usage pattern.
 #[tokio::test]
 async fn test_sandbox_heredoc_write() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-heredoc", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-heredoc", false, vec![]);
 
     let output = ws
         .execute(
@@ -322,8 +324,8 @@ async fn test_sandbox_heredoc_write() {
 /// Tests Python writing a file inside the workspace.
 #[tokio::test]
 async fn test_sandbox_python_write_to_workspace() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-py-write-ws", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-py-write-ws", false, vec![]);
 
     let output = ws
         .execute(
@@ -353,8 +355,8 @@ async fn test_sandbox_python_write_to_workspace() {
 
 #[tokio::test]
 async fn test_sandbox_blocks_read_etc_shadow() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-etc-shadow", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-etc-shadow", false, vec![]);
 
     let output = ws
         .execute("cat", &["/etc/shadow"], 10, None, None, None)
@@ -372,8 +374,8 @@ async fn test_sandbox_blocks_read_etc_shadow() {
 
 #[tokio::test]
 async fn test_sandbox_allows_read_etc_passwd() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-etc-passwd", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-etc-passwd", false, vec![]);
 
     // /etc/passwd is world-readable and on the sandbox read allowlist
     // (getpwnam/getgrnam need it). Only /etc/shadow is blocked — see the
@@ -386,17 +388,18 @@ async fn test_sandbox_allows_read_etc_passwd() {
     assert_eq!(
         output.exit_code,
         Some(0),
-        "should be able to read /etc/passwd (world-readable, allowlisted): stderr={}",
+        "should be able to read /etc/passwd: stderr={}",
         output.stderr
     );
+    assert!(!output.stdout.trim().is_empty());
 
     let _ = std::fs::remove_dir_all(ws.path());
 }
 
 #[tokio::test]
 async fn test_sandbox_allows_read_etc_ssl() {
-    let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_ws(), "landlock-etc-ssl", false, vec![]);
+    let (mgr, base) = test_manager();
+    let ws = mgr.get_sandbox(base, "landlock-etc-ssl", false, vec![]);
 
     let output = ws
         .execute("ls", &["/etc/ssl"], 10, None, None, None)
@@ -418,14 +421,17 @@ async fn test_sandbox_allows_read_etc_ssl() {
 /// (e.g. Docker Desktop's VirtioFS fakeowner mounts).
 #[tokio::test]
 async fn test_sandbox_fallback_on_unsupported_fs() {
-    let base = "/app/data/workspaces/test_fallback";
-    if std::fs::create_dir_all(base).is_err() {
-        eprintln!("cannot create {base}, skipping (not in Docker?)");
+    let base = PathBuf::from("/app/data/workspaces/test_fallback");
+    if std::fs::create_dir_all(&base).is_err() {
+        eprintln!(
+            "cannot create {}, skipping (not in Docker?)",
+            base.display()
+        );
         return;
     }
 
     let mgr = SandboxFactory::new(false, test_resource_manager());
-    let ws = mgr.get_sandbox(base.into(), "landlock-fallback", false, vec![]);
+    let ws = mgr.get_sandbox(base, "landlock-fallback", false, vec![]);
 
     let output = ws
         .execute(

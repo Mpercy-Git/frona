@@ -13,6 +13,7 @@ function group(): ModelGroupConfig {
 }
 
 let lastChange: Record<string, ModelGroupConfig> = {};
+let lastRemoved: string[] = [];
 
 function Harness({ initial }: { initial: Record<string, ModelGroupConfig> }) {
   const [models, setModels] = useState(initial);
@@ -20,8 +21,9 @@ function Harness({ initial }: { initial: Record<string, ModelGroupConfig> }) {
     <ModelsSection
       models={models}
       enabledProviders={["openai"]}
-      onChange={(v) => {
+      onChange={(v, removed) => {
         lastChange = v;
+        lastRemoved = removed ?? [];
         setModels(v);
       }}
     />
@@ -40,49 +42,51 @@ function renameTo(name: string) {
 
 beforeEach(() => {
   lastChange = {};
+  lastRemoved = [];
 });
 
 describe("ModelsSection group names", () => {
   it("keeps the capitalisation the user typed", () => {
-    render(<Harness initial={{ primary: group() }} />);
-    expandGroup("Primary");
+    render(<Harness initial={{ primary: group(), my_group: group() }} />);
+    expandGroup("My Group");
     renameTo("MyGroup");
 
-    expect(Object.keys(lastChange).filter((k) => lastChange[k] != null)).toEqual(["MyGroup"]);
+    expect(Object.keys(lastChange)).toContain("MyGroup");
   });
 
   it("turns spaces and invalid characters into a usable id without lower-casing", () => {
-    render(<Harness initial={{ primary: group() }} />);
-    expandGroup("Primary");
+    render(<Harness initial={{ primary: group(), my_group: group() }} />);
+    expandGroup("My Group");
     renameTo("Fast Draft!");
 
-    expect(Object.keys(lastChange).filter((k) => lastChange[k] != null)).toEqual(["Fast_Draft"]);
+    expect(Object.keys(lastChange)).toContain("Fast_Draft");
   });
 
   it("still resolves a predefined group's label back to its canonical id", () => {
     render(<Harness initial={{ group_1: group() }} />);
-    expandGroup("group_1");
+    expandGroup("Group 1");
     renameTo("Coding");
 
-    expect(Object.keys(lastChange).filter((k) => lastChange[k] != null)).toEqual(["coding"]);
+    expect(Object.keys(lastChange)).toContain("coding");
   });
 
-  it("marks the old name for deletion so the rename survives a save", () => {
-    render(<Harness initial={{ primary: group() }} />);
-    expandGroup("Primary");
+  it("reports the old name as removed so the rename survives a save", () => {
+    render(<Harness initial={{ primary: group(), my_group: group() }} />);
+    expandGroup("My Group");
     renameTo("MyGroup");
 
-    // The backend deep-merges this patch, so the old key has to be sent as null
-    // to be dropped from the config on disk.
-    expect(lastChange.primary).toBeNull();
+    // The old key is named in the removed list rather than tombstoned with a
+    // null, so the backend drops it from the config on disk.
+    expect(lastRemoved).toContain("my_group");
     expect(lastChange.MyGroup).toEqual(group());
+    expect(lastChange.my_group).toBeUndefined();
   });
 
   it("gives a new group a usable default id", () => {
     render(<Harness initial={{ primary: group() }} />);
     fireEvent.click(screen.getByRole("button", { name: "+ Add Model Group" }));
 
-    expect(Object.keys(lastChange)).toContain("group_1");
+    expect(Object.keys(lastChange)).toContain("custom_group");
     expect(Object.keys(lastChange)).not.toContain("");
   });
 
@@ -90,7 +94,7 @@ describe("ModelsSection group names", () => {
     render(<Harness initial={{ group_1: group() }} />);
     fireEvent.click(screen.getByRole("button", { name: "+ Add Model Group" }));
 
-    expect(Object.keys(lastChange).sort()).toEqual(["group_1", "group_2"]);
+    expect(Object.keys(lastChange).sort()).toEqual(["custom_group", "group_1"]);
     expect(lastChange.group_1).toEqual(group());
   });
 });

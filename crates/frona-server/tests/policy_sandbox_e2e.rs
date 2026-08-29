@@ -22,8 +22,12 @@ struct MockTool {
 
 #[async_trait::async_trait]
 impl AgentTool for MockTool {
-    fn name(&self) -> &str { self.name }
-    fn definitions(&self) -> Vec<ToolDefinition> { self.defs.clone() }
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        self.defs.clone()
+    }
     async fn execute(
         &self,
         _: &str,
@@ -43,7 +47,9 @@ fn user1_handle() -> &'static frona::core::Handle {
     H.get_or_init(|| frona::core::Handle::try_new("user-1").expect("test handle"))
 }
 
-fn agent_ref<'a>(agent_handle: &'a frona::core::Handle) -> frona::policy::service::SandboxPrincipalRef<'a> {
+fn agent_ref<'a>(
+    agent_handle: &'a frona::core::Handle,
+) -> frona::policy::service::SandboxPrincipalRef<'a> {
     frona::policy::service::SandboxPrincipalRef::agent("user-1", user1_handle(), agent_handle)
 }
 
@@ -148,14 +154,17 @@ async fn e2e_simple_read_permit() {
         .await
         .unwrap();
 
-    let policy = service.evaluate_sandbox_policy(
-        frona::policy::service::SandboxPrincipalRef::agent(
-            "user-1",
-            user1_handle(),
-            &frona::handle!("agent-a"),
-        ),
-        false,
-    ).await.unwrap();
+    let policy = service
+        .evaluate_sandbox_policy(
+            frona::policy::service::SandboxPrincipalRef::agent(
+                "user-1",
+                user1_handle(),
+                &frona::handle!("agent-a"),
+            ),
+            false,
+        )
+        .await
+        .unwrap();
     assert!(policy.read_paths.contains(&"/data".to_string()));
 }
 
@@ -175,10 +184,14 @@ async fn e2e_managed_default_network_grants_access() {
             },
             "conditions": []
         }),
-    ).unwrap();
+    )
+    .unwrap();
     service.register_managed_policy(managed);
 
-    let policy = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("any-agent")), false).await.unwrap();
+    let policy = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("any-agent")), false)
+        .await
+        .unwrap();
     assert!(policy.network_access);
 }
 
@@ -194,10 +207,16 @@ async fn e2e_agent_specific_policy_does_not_affect_other_agents() {
         .await
         .unwrap();
 
-    let p_a = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false).await.unwrap();
+    let p_a = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false)
+        .await
+        .unwrap();
     assert!(p_a.write_paths.contains(&"/output".to_string()));
 
-    let p_b = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-b")), false).await.unwrap();
+    let p_b = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-b")), false)
+        .await
+        .unwrap();
     assert!(p_b.write_paths.is_empty());
 }
 
@@ -221,16 +240,23 @@ async fn e2e_forbid_creates_denied_path() {
         .await
         .unwrap();
 
-    let policy = service.evaluate_sandbox_policy(
-        frona::policy::service::SandboxPrincipalRef::agent(
-            "user-1",
-            user1_handle(),
-            &frona::handle!("agent-a"),
-        ),
-        false,
-    ).await.unwrap();
+    let policy = service
+        .evaluate_sandbox_policy(
+            frona::policy::service::SandboxPrincipalRef::agent(
+                "user-1",
+                user1_handle(),
+                &frona::handle!("agent-a"),
+            ),
+            false,
+        )
+        .await
+        .unwrap();
     assert!(policy.write_paths.contains(&"/workspace".to_string()));
-    assert!(policy.denied_paths.contains(&"/workspace/secrets".to_string()));
+    assert!(
+        policy
+            .denied_paths
+            .contains(&"/workspace/secrets".to_string())
+    );
 }
 
 // --- Complex scenarios ---
@@ -258,15 +284,25 @@ async fn e2e_tool_conditional_policy_applies_when_tool_permitted() {
         .await
         .unwrap();
 
-    let p_with_browser = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false).await.unwrap();
+    let p_with_browser = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false)
+        .await
+        .unwrap();
     assert!(
-        p_with_browser.read_paths.contains(&"/browser-data".to_string()),
+        p_with_browser
+            .read_paths
+            .contains(&"/browser-data".to_string()),
         "agent with browser tools (default) should get /browser-data: {p_with_browser:?}"
     );
 
-    let p_without_browser = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-b")), false).await.unwrap();
+    let p_without_browser = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-b")), false)
+        .await
+        .unwrap();
     assert!(
-        !p_without_browser.read_paths.contains(&"/browser-data".to_string()),
+        !p_without_browser
+            .read_paths
+            .contains(&"/browser-data".to_string()),
         "agent with browser forbidden should not get /browser-data: {p_without_browser:?}"
     );
 }
@@ -284,7 +320,8 @@ async fn e2e_forbid_unless_pattern_carves_exceptions() {
             "annotations": {},
             "conditions": []
         }),
-    ).unwrap();
+    )
+    .unwrap();
     service.register_managed_policy(managed);
 
     service
@@ -297,14 +334,27 @@ async fn e2e_forbid_unless_pattern_carves_exceptions() {
         .await
         .unwrap();
 
-    let p_x = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-x")), false).await.unwrap();
-    assert!(p_x.network_destinations.contains(&"gmail.com".to_string()),
-        "agent-x should have gmail.com as exception: {p_x:?}");
+    let p_x = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-x")), false)
+        .await
+        .unwrap();
+    assert!(
+        p_x.network_destinations.contains(&"gmail.com".to_string()),
+        "agent-x should have gmail.com as exception: {p_x:?}"
+    );
 
-    let p_y = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-y")), false).await.unwrap();
-    assert!(p_y.network_access, "agent-y should still have wildcard network access");
-    assert!(!p_y.network_destinations.contains(&"gmail.com".to_string()),
-        "agent-y should not have gmail.com specifically extracted");
+    let p_y = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-y")), false)
+        .await
+        .unwrap();
+    assert!(
+        p_y.network_access,
+        "agent-y should still have wildcard network access"
+    );
+    assert!(
+        !p_y.network_destinations.contains(&"gmail.com".to_string()),
+        "agent-y should not have gmail.com specifically extracted"
+    );
 }
 
 #[tokio::test]
@@ -341,14 +391,17 @@ async fn e2e_multiple_actions_full_sandbox_policy() {
                forbid(principal, action == Policy::Action::"connect", resource == Policy::NetworkDestination::"10.0.0.0/8");"#,
         ).await.unwrap();
 
-    let policy = service.evaluate_sandbox_policy(
-        frona::policy::service::SandboxPrincipalRef::agent(
-            "user-1",
-            user1_handle(),
-            &frona::handle!("agent-a"),
-        ),
-        false,
-    ).await.unwrap();
+    let policy = service
+        .evaluate_sandbox_policy(
+            frona::policy::service::SandboxPrincipalRef::agent(
+                "user-1",
+                user1_handle(),
+                &frona::handle!("agent-a"),
+            ),
+            false,
+        )
+        .await
+        .unwrap();
     assert!(policy.read_paths.contains(&"/r".to_string()));
     assert!(policy.write_paths.contains(&"/w".to_string()));
     assert!(policy.network_access);
@@ -360,7 +413,10 @@ async fn e2e_multiple_actions_full_sandbox_policy() {
 #[tokio::test]
 async fn e2e_policy_changes_invalidate_sandbox_cache() {
     let (_db, service) = setup().await;
-    let p1 = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false).await.unwrap();
+    let p1 = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false)
+        .await
+        .unwrap();
     assert!(p1.read_paths.is_empty());
 
     service
@@ -370,9 +426,14 @@ async fn e2e_policy_changes_invalidate_sandbox_cache() {
                permit(principal, action == Policy::Action::"read", resource == Policy::Path::"/added");"#,
         ).await.unwrap();
 
-    let p2 = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false).await.unwrap();
-    assert!(p2.read_paths.contains(&"/added".to_string()),
-        "cache should be invalidated after policy creation");
+    let p2 = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false)
+        .await
+        .unwrap();
+    assert!(
+        p2.read_paths.contains(&"/added".to_string()),
+        "cache should be invalidated after policy creation"
+    );
 }
 
 #[tokio::test]
@@ -405,14 +466,17 @@ async fn e2e_apply_to_sandbox_config_merges_correctly() {
                forbid(principal, action == Policy::Action::"connect", resource == Policy::NetworkDestination::"10.0.0.0/8");"#,
         ).await.unwrap();
 
-    let policy = service.evaluate_sandbox_policy(
-        frona::policy::service::SandboxPrincipalRef::agent(
-            "user-1",
-            user1_handle(),
-            &frona::handle!("agent-a"),
-        ),
-        false,
-    ).await.unwrap();
+    let policy = service
+        .evaluate_sandbox_policy(
+            frona::policy::service::SandboxPrincipalRef::agent(
+                "user-1",
+                user1_handle(),
+                &frona::handle!("agent-a"),
+            ),
+            false,
+        )
+        .await
+        .unwrap();
 
     let mut config = SandboxConfig {
         workspace_dir: "/workspaces/agent-a".into(),
@@ -421,9 +485,17 @@ async fn e2e_apply_to_sandbox_config_merges_correctly() {
     };
     policy.apply(&mut config);
 
-    assert!(config.additional_read_paths.contains(&"/preexisting".to_string()));
+    assert!(
+        config
+            .additional_read_paths
+            .contains(&"/preexisting".to_string())
+    );
     assert!(config.additional_read_paths.contains(&"/data".to_string()));
-    assert!(config.additional_write_paths.contains(&"/output".to_string()));
+    assert!(
+        config
+            .additional_write_paths
+            .contains(&"/output".to_string())
+    );
     assert!(config.denied_paths.contains(&"/output/secrets".to_string()));
     assert!(config.blocked_networks.contains(&"10.0.0.0/8".to_string()));
 }
@@ -443,7 +515,8 @@ async fn e2e_complex_real_world_browser_agent() {
             "annotations": {},
             "conditions": []
         }),
-    ).unwrap();
+    )
+    .unwrap();
     service.register_managed_policy(managed);
 
     // Forbid browser tools for agent-other (agent-web keeps default permit)
@@ -480,19 +553,30 @@ async fn e2e_complex_real_world_browser_agent() {
         ).await.unwrap();
 
     // Web agent
-    let web = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-web")), false).await.unwrap();
+    let web = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-web")), false)
+        .await
+        .unwrap();
     assert!(web.read_paths.contains(&"/browser-profiles".to_string()));
     assert!(web.write_paths.contains(&"/browser-profiles".to_string()));
     assert!(web.network_access);
     assert!(web.blocked_networks.contains(&"10.0.0.0/8".to_string()));
 
     // Non-browser agent
-    let other = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-other")), false).await.unwrap();
+    let other = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-other")), false)
+        .await
+        .unwrap();
     assert!(!other.read_paths.contains(&"/browser-profiles".to_string()));
     assert!(!other.write_paths.contains(&"/browser-profiles".to_string()));
-    assert!(other.network_access, "all agents have default network access");
-    assert!(other.blocked_networks.contains(&"10.0.0.0/8".to_string()),
-        "internal block applies to all agents");
+    assert!(
+        other.network_access,
+        "all agents have default network access"
+    );
+    assert!(
+        other.blocked_networks.contains(&"10.0.0.0/8".to_string()),
+        "internal block applies to all agents"
+    );
 }
 
 #[tokio::test]
@@ -510,7 +594,8 @@ async fn e2e_managed_policy_combined_with_user_policies() {
             "annotations": {},
             "conditions": []
         }),
-    ).unwrap();
+    )
+    .unwrap();
     service.register_managed_policy(managed);
 
     // User: read /shared
@@ -521,16 +606,22 @@ async fn e2e_managed_policy_combined_with_user_policies() {
                permit(principal, action == Policy::Action::"read", resource == Policy::Path::"/shared");"#,
         ).await.unwrap();
 
-    let policy = service.evaluate_sandbox_policy(
-        frona::policy::service::SandboxPrincipalRef::agent(
-            "user-1",
-            user1_handle(),
-            &frona::handle!("agent-a"),
-        ),
-        false,
-    ).await.unwrap();
+    let policy = service
+        .evaluate_sandbox_policy(
+            frona::policy::service::SandboxPrincipalRef::agent(
+                "user-1",
+                user1_handle(),
+                &frona::handle!("agent-a"),
+            ),
+            false,
+        )
+        .await
+        .unwrap();
     assert!(policy.network_access, "managed permit applies");
-    assert!(policy.read_paths.contains(&"/shared".to_string()), "user permit applies");
+    assert!(
+        policy.read_paths.contains(&"/shared".to_string()),
+        "user permit applies"
+    );
 }
 
 #[tokio::test]
@@ -548,10 +639,14 @@ async fn e2e_materialize_creates_policies_and_evaluates_back() {
             "annotations": {},
             "conditions": []
         }),
-    ).unwrap();
+    )
+    .unwrap();
     service.register_managed_policy(managed);
 
-    let entity = frona::policy::reconcile::EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("agent-a"));
+    let entity = frona::policy::reconcile::EntityRef::agent(
+        &frona::handle!("user-1"),
+        &frona::handle!("agent-a"),
+    );
     let input = frona::policy::sandbox::SandboxPolicy {
         read_paths: vec!["/data".into()],
         write_paths: vec!["/work".into()],
@@ -564,7 +659,10 @@ async fn e2e_materialize_creates_policies_and_evaluates_back() {
         .await
         .unwrap();
 
-    let evaluated = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false).await.unwrap();
+    let evaluated = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false)
+        .await
+        .unwrap();
     assert!(evaluated.read_paths.contains(&"/data".to_string()));
     assert!(evaluated.write_paths.contains(&"/work".to_string()));
     assert!(evaluated.network_access);
@@ -573,7 +671,12 @@ async fn e2e_materialize_creates_policies_and_evaluates_back() {
 #[tokio::test]
 async fn e2e_reconcile_no_op_on_equal_input_does_not_touch_rows() {
     let (_db, service) = setup().await;
-    let entity = || frona::policy::reconcile::EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("agent-a"));
+    let entity = || {
+        frona::policy::reconcile::EntityRef::agent(
+            &frona::handle!("user-1"),
+            &frona::handle!("agent-a"),
+        )
+    };
 
     let input = frona::policy::sandbox::SandboxPolicy {
         read_paths: vec!["/data".into()],
@@ -607,19 +710,30 @@ async fn e2e_reconcile_no_op_on_equal_input_does_not_touch_rows() {
         .map(|p| (p.id, p.updated_at))
         .collect();
 
-    assert_eq!(after_first, after_second, "no-op reconcile must not touch any row's updated_at");
+    assert_eq!(
+        after_first, after_second,
+        "no-op reconcile must not touch any row's updated_at"
+    );
 }
 
 #[tokio::test]
 async fn e2e_reconcile_replaces_stale_policies() {
     let (_db, service) = setup().await;
-    let entity = || frona::policy::reconcile::EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("agent-a"));
+    let entity = || {
+        frona::policy::reconcile::EntityRef::agent(
+            &frona::handle!("user-1"),
+            &frona::handle!("agent-a"),
+        )
+    };
 
     service
         .reconcile_sandbox_policy(
             "user-1",
             entity(),
-            &frona::policy::sandbox::SandboxPolicy { read_paths: vec!["/foo".into()], ..Default::default() },
+            &frona::policy::sandbox::SandboxPolicy {
+                read_paths: vec!["/foo".into()],
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -628,20 +742,34 @@ async fn e2e_reconcile_replaces_stale_policies() {
         .reconcile_sandbox_policy(
             "user-1",
             entity(),
-            &frona::policy::sandbox::SandboxPolicy { read_paths: vec!["/bar".into()], ..Default::default() },
+            &frona::policy::sandbox::SandboxPolicy {
+                read_paths: vec!["/bar".into()],
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
 
-    let evaluated = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false).await.unwrap();
+    let evaluated = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false)
+        .await
+        .unwrap();
     assert!(evaluated.read_paths.contains(&"/bar".to_string()));
-    assert!(!evaluated.read_paths.contains(&"/foo".to_string()), "stale read for /foo should be gone");
+    assert!(
+        !evaluated.read_paths.contains(&"/foo".to_string()),
+        "stale read for /foo should be gone"
+    );
 }
 
 #[tokio::test]
 async fn e2e_reconcile_default_clears_all_for_principal() {
     let (_db, service) = setup().await;
-    let entity = || frona::policy::reconcile::EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("agent-a"));
+    let entity = || {
+        frona::policy::reconcile::EntityRef::agent(
+            &frona::handle!("user-1"),
+            &frona::handle!("agent-a"),
+        )
+    };
 
     let input = frona::policy::sandbox::SandboxPolicy {
         read_paths: vec!["/data".into()],
@@ -678,13 +806,21 @@ async fn e2e_reconcile_default_clears_all_for_principal() {
         .into_iter()
         .filter(|p| p.name.starts_with("reconcile-"))
         .collect();
-    assert!(remaining.is_empty(), "permissive reconcile should wipe all reconciled rules");
+    assert!(
+        remaining.is_empty(),
+        "permissive reconcile should wipe all reconciled rules"
+    );
 }
 
 #[tokio::test]
 async fn e2e_reconcile_preserves_user_authored_policies() {
     let (_db, service) = setup().await;
-    let entity = || frona::policy::reconcile::EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("agent-a"));
+    let entity = || {
+        frona::policy::reconcile::EntityRef::agent(
+            &frona::handle!("user-1"),
+            &frona::handle!("agent-a"),
+        )
+    };
 
     // Policy on `delegate_task` action — not in any group that
     // SandboxPolicy reconciliation manages, so it must survive untouched.
@@ -716,21 +852,30 @@ async fn e2e_reconcile_preserves_user_authored_policies() {
         .unwrap()
         .into_iter()
         .find(|p| p.name == "user-hand-delegate");
-    assert!(user_policy.is_some(), "user-authored policy on unrelated action must survive re-reconcile");
+    assert!(
+        user_policy.is_some(),
+        "user-authored policy on unrelated action must survive re-reconcile"
+    );
 }
 
 #[tokio::test]
 async fn e2e_reconcile_for_mcp_principal_isolates_from_agent() {
     let (_db, service) = setup().await;
 
-    let agent_entity = frona::policy::reconcile::EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("agent-a"));
+    let agent_entity = frona::policy::reconcile::EntityRef::agent(
+        &frona::handle!("user-1"),
+        &frona::handle!("agent-a"),
+    );
     let mcp_entity = frona::policy::reconcile::EntityRef::Mcp("user-1/srv-1".into());
 
     service
         .reconcile_sandbox_policy(
             "user-1",
             agent_entity,
-            &frona::policy::sandbox::SandboxPolicy { read_paths: vec!["/agent-data".into()], ..Default::default() },
+            &frona::policy::sandbox::SandboxPolicy {
+                read_paths: vec!["/agent-data".into()],
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -738,16 +883,29 @@ async fn e2e_reconcile_for_mcp_principal_isolates_from_agent() {
         .reconcile_sandbox_policy(
             "user-1",
             mcp_entity,
-            &frona::policy::sandbox::SandboxPolicy { read_paths: vec!["/mcp-data".into()], ..Default::default() },
+            &frona::policy::sandbox::SandboxPolicy {
+                read_paths: vec!["/mcp-data".into()],
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
 
-    let agent_policy = service.evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false).await.unwrap();
-    let mcp_policy = service.evaluate_sandbox_policy(
-        frona::policy::service::SandboxPrincipalRef::mcp("user-1", user1_handle(), &frona::handle!("srv-1")),
-        false,
-    ).await.unwrap();
+    let agent_policy = service
+        .evaluate_sandbox_policy(agent_ref(&frona::handle!("agent-a")), false)
+        .await
+        .unwrap();
+    let mcp_policy = service
+        .evaluate_sandbox_policy(
+            frona::policy::service::SandboxPrincipalRef::mcp(
+                "user-1",
+                user1_handle(),
+                &frona::handle!("srv-1"),
+            ),
+            false,
+        )
+        .await
+        .unwrap();
 
     assert!(agent_policy.read_paths.contains(&"/agent-data".to_string()));
     assert!(!agent_policy.read_paths.contains(&"/mcp-data".to_string()));

@@ -1,7 +1,7 @@
+use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
-use axum::Json;
 use tokio::fs;
 
 use crate::storage::{FileEntry, SearchTarget, VirtualPath, validate_relative_path};
@@ -102,9 +102,7 @@ pub(crate) async fn delete_user_file(
     let resolved = state.storage_service.resolve_virtual_path(&vpath)?;
 
     if !resolved.exists() {
-        return Err(ApiError(AppError::NotFound(
-            "File not found".into(),
-        )));
+        return Err(ApiError(AppError::NotFound("File not found".into())));
     }
 
     if resolved.is_dir() {
@@ -154,19 +152,20 @@ async fn list_agent_dir(
     agent_seg: &str,
     rel: &str,
 ) -> Result<Json<Vec<FileEntry>>, ApiError> {
-    let agent = state.agent_service.owned_by(&auth.user_id, agent_seg).await?;
+    let agent = state
+        .agent_service
+        .owned_by(&auth.user_id, agent_seg)
+        .await?;
 
     if !rel.is_empty() {
         validate_relative_path(rel)?;
     }
 
-    let ws = state.storage_service.agent_workspace(&auth.handle, &agent.handle);
+    let ws = state
+        .storage_service
+        .agent_workspace(&auth.handle, &agent.handle);
     let base = ws.base_path().to_path_buf();
-    let dir = if rel.is_empty() {
-        base
-    } else {
-        base.join(rel)
-    };
+    let dir = if rel.is_empty() { base } else { base.join(rel) };
 
     let parent_id = if rel.is_empty() {
         "/".to_string()
@@ -212,8 +211,13 @@ pub(crate) async fn search_files(
                 Some(i) => (&rest[..i], Some(&rest[i + 1..])),
                 None => (rest, None),
             };
-            let agent = state.agent_service.owned_by(&auth.user_id, agent_seg).await?;
-            let ws = state.storage_service.agent_workspace(&auth.handle, &agent.handle);
+            let agent = state
+                .agent_service
+                .owned_by(&auth.user_id, agent_seg)
+                .await?;
+            let ws = state
+                .storage_service
+                .agent_workspace(&auth.handle, &agent.handle);
             let root = ws.base_path().to_path_buf();
             let dir = match subpath {
                 Some(sub) => {
@@ -222,7 +226,11 @@ pub(crate) async fn search_files(
                 }
                 None => root.clone(),
             };
-            targets.push(SearchTarget { dir, root, source: agent_seg.to_string() });
+            targets.push(SearchTarget {
+                dir,
+                root,
+                source: agent_seg.to_string(),
+            });
         }
         Some(scope) if scope.starts_with("user") => {
             let subpath = scope.strip_prefix("user:").unwrap_or("");
@@ -236,19 +244,33 @@ pub(crate) async fn search_files(
             } else {
                 base.join(subpath)
             };
-            targets.push(SearchTarget { dir, root: base, source: "user".to_string() });
+            targets.push(SearchTarget {
+                dir,
+                root: base,
+                source: "user".to_string(),
+            });
         }
         _ => {
             let user_ws = state.storage_service.user_workspace(&auth.handle);
             let user_dir = user_ws.base_path().to_path_buf();
-            targets.push(SearchTarget { dir: user_dir.clone(), root: user_dir, source: "user".to_string() });
+            targets.push(SearchTarget {
+                dir: user_dir.clone(),
+                root: user_dir,
+                source: "user".to_string(),
+            });
 
             let user_agents = state.agent_service.list(&auth.user_id).await?;
             for agent in &user_agents {
-                let ws = state.storage_service.agent_workspace(&auth.handle, &agent.handle);
+                let ws = state
+                    .storage_service
+                    .agent_workspace(&auth.handle, &agent.handle);
                 let agent_dir = ws.base_path().to_path_buf();
                 if agent_dir.is_dir() {
-                    targets.push(SearchTarget { dir: agent_dir.clone(), root: agent_dir, source: agent.id.clone() });
+                    targets.push(SearchTarget {
+                        dir: agent_dir.clone(),
+                        root: agent_dir,
+                        source: agent.id.clone(),
+                    });
                 }
             }
         }

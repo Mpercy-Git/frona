@@ -13,9 +13,8 @@ const SELECT_CLAUSE: &str = "SELECT *, meta::id(id) as id";
 #[async_trait]
 impl PolicyRepository for SurrealRepo<Policy> {
     async fn find_by_user_id(&self, user_id: &str) -> Result<Vec<Policy>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM policy WHERE user_id = $user_id ORDER BY created_at ASC"
-        );
+        let query =
+            format!("{SELECT_CLAUSE} FROM policy WHERE user_id = $user_id ORDER BY created_at ASC");
         let mut result = self
             .db()
             .query(&query)
@@ -30,11 +29,7 @@ impl PolicyRepository for SurrealRepo<Policy> {
         Ok(policies)
     }
 
-    async fn find_by_name(
-        &self,
-        user_id: &str,
-        name: &str,
-    ) -> Result<Option<Policy>, AppError> {
+    async fn find_by_name(&self, user_id: &str, name: &str) -> Result<Option<Policy>, AppError> {
         let query = format!(
             "{SELECT_CLAUSE} FROM policy WHERE user_id = $user_id AND name = $name LIMIT 1"
         );
@@ -54,9 +49,8 @@ impl PolicyRepository for SurrealRepo<Policy> {
     }
 
     async fn find_system_policies(&self) -> Result<Vec<Policy>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM policy WHERE user_id = NONE ORDER BY created_at ASC"
-        );
+        let query =
+            format!("{SELECT_CLAUSE} FROM policy WHERE user_id = NONE ORDER BY created_at ASC");
         let mut result = self
             .db()
             .query(&query)
@@ -71,9 +65,8 @@ impl PolicyRepository for SurrealRepo<Policy> {
     }
 
     async fn find_system_by_name(&self, name: &str) -> Result<Option<Policy>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM policy WHERE user_id = NONE AND name = $name LIMIT 1"
-        );
+        let query =
+            format!("{SELECT_CLAUSE} FROM policy WHERE user_id = NONE AND name = $name LIMIT 1");
         let mut result = self
             .db()
             .query(&query)

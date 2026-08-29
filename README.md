@@ -116,8 +116,9 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 
 ## Features
 
+- **Two memory backends:** use lightweight Basic memory or ontology-backed PKM, which turns conversations into evidence-grounded memories, typed entities and relationships, reusable playbooks, and searchable Markdown pages. Inspect the resulting knowledge graph and consolidation history from the Memory UI
 - **Autonomous agents with tools:** agents decide which tools to use and execute multi-step tasks on their own. Agents can also build their own tools
-- **Channels:** connect agents to messaging channels so the same agent, with the same memory and tools, follows you outside the web UI. Pairing flows lock channels to your devices by default
+- **Channels:** connect agents through Telegram, Slack, Discord, WhatsApp, Signal, or Twilio SMS so the same agent, with the same memory and tools, follows you outside the web UI. Channels support device pairing, policy-gated Message and Signal modes, interactive approval prompts, and automatic reconnection
 - **Signals:** an agent can pause a conversation and wait for a matching inbound (a 2FA code, a reply, a class of message) and resume automatically when something arrives, or run continuous monitors with structured results
 - **MCP with bridge mode:** install [Model Context Protocol](https://modelcontextprotocol.io) servers from the public registry in a click. Bridge mode advertises a single `mcpctl` CLI to the LLM instead of every MCP tool individually, saving thousands of tokens per turn on agents with many servers connected
 - **Browser automation:** headless Chrome via Browserless for navigating websites, filling forms, and extracting data. Persistent browser profiles keep sessions across conversations
@@ -127,10 +128,11 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 - **Skills:** instruction packages that teach agents new capabilities. Install shared skills or create agent-specific ones
 - **Scheduling and heartbeats:** recurring tasks via cron and agent-managed heartbeat checklists for ongoing monitoring
 - **Voice calls:** outbound phone calls via Twilio with speech recognition and DTMF navigation (optional)
-- **Persistent memory:** agents remember facts across conversations with automatic compaction and deduplication. User-scoped facts are shared across agents, agent-scoped facts are private
 - **Agent-to-agent delegation:** agents hand off tasks to specialized agents and get results back
 - **Sharing:** hand another registered user an agent to run (without letting them edit it) or a chat to read, with optional credential delegation on shared agents
 - **Spaces:** group conversations that share context. The platform summarizes linked conversations and feeds the context into new chats
+- **Usage and cost visibility:** monitor tokens, cost, context-window usage, and model fallbacks live in each chat, with per-user dashboards for spend, latency, cache efficiency, models, and call types
+- **Commands:** use slash commands and mentions to invoke built-in actions, installed skills, or other agents directly from chat
 - **Notifications:** agents push status updates (task finished, app deployed, credential needs approval) into a feed in the top bar so nothing important gets lost
 - **Real-time streaming:** token-by-token response streaming over Server-Sent Events
 - **SSO:** OpenID Connect support for single sign-on with Google, Keycloak, and other OIDC providers
@@ -140,7 +142,7 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 
 - **Agents** are the main building blocks. Each agent has a name, a system prompt that defines its behavior, a model group that determines which LLM it uses, and a list of tools it can access. Frona ships with built-in agents (Assistant, Researcher, Developer, Receptionist) and you can create your own.
 - **Policies** authorize every action: tool calls, delegations, file reads, network connections, and inbound channel messages. The same engine controls tool access and sandbox rules, so authorization lives in one place.
-- **Memory** lets agents remember things across conversations. There are user-scoped facts (shared across all agents) and agent-scoped facts (private to one agent). The platform automatically compacts and deduplicates memories over time.
+- **Memory** persists knowledge across conversations. Basic memory maintains compact user-scoped facts shared across agents and private agent-scoped notes. PKM builds a user-scoped knowledge graph of grounded atomic memories, entities, relationships, attributes, playbooks, and readable Markdown pages backed by an ontology.
 - **Tools** are capabilities you give to agents. Browser automation, web search, file operations, shell commands, voice calls, task scheduling, and more. Tools run server-side and return results to the agent.
 - **MCP servers** are first-class citizens. Each runs in its own sandbox as its own principal with its own filesystem, network, and resource policies, and surfaces its tools to agents through bridge mode by default.
 - **Channels** connect an agent to messaging providers. Each channel is bound to a single agent and space, with policy-gated `receive_message` and `receive_signal` actions deciding what an inbound is allowed to do.
@@ -232,14 +234,14 @@ Frona auto-discovers providers from your configuration and routes different task
 
 **Voice:** Twilio and Plivo, with ElevenLabs or Polly TTS — inbound *and* outbound calls (inbound answering is a [fork enhancement](#-fork-enhancements--unique-to-this-repository)).
 
-**Channels:** Telegram, SMS (more on the way).
+**Channels:** Telegram, Slack, Discord, WhatsApp Cloud API, WhatsApp Personal, Signal, and Twilio SMS. WhatsApp Personal and Signal use linked-device integrations; review the provider-specific notices in the [channel documentation](https://docs.frona.ai/platform/agents/channels/overview.html) before enabling them.
 
 ## Architecture
 
-Frona has two main components:
+Frona ships as a single rootless OCI image containing two main components:
 
 - **Engine:** a Rust backend (Axum) that handles agents, chat, tools, authentication, the policy engine, and an embedded SurrealDB database with RocksDB storage. The engine spawns sandboxed child processes for tool calls, MCP servers, and apps; it does not spin up containers per agent
-- **Frontend:** a Next.js application that provides the chat interface, agent management, and workspace UI
+- **Frontend:** a statically exported Next.js application, served by the engine, that provides the chat interface, agent management, and workspace UI
 
 External services plug in for specific capabilities:
 
@@ -247,30 +249,40 @@ External services plug in for specific capabilities:
 - **SearXNG:** web search
 - **Twilio:** voice calls and SMS (optional)
 
-Everything runs in OCI containers and works with any OCI-compatible runtime (Docker, Podman, etc.). A typical deployment is a single `docker-compose.yml` that brings up the engine, frontend, and supporting services. See the [Kubernetes example](examples/kubernetes) for cluster deployments.
+The Frona application runs in one OCI container and works with any OCI-compatible runtime (Docker, Podman, etc.). A typical `docker-compose.yml` runs that container alongside optional supporting services such as Browserless and SearXNG. See the [Kubernetes example](examples/kubernetes) for cluster deployments.
 
 ## Documentation
 
-- [Overview](https://docs.frona.ai/platform/overview.html) — what Frona is and how it works
-- [Quickstart](https://docs.frona.ai/platform/quickstart.html) — get running with Docker in minutes
-- [Comparison](https://docs.frona.ai/platform/comparison.html) — Frona vs. OpenClaw vs. Hermes Agent
-- [Agents](https://docs.frona.ai/platform/agents/overview.html) — agent types, configuration, and delegation
-- [Channels](https://docs.frona.ai/platform/agents/channels/overview.html) — Telegram, SMS, pairing, and dispatch modes
-- [Signals](https://docs.frona.ai/platform/agents/signals.html) — pause-and-resume on inbound messages
-- [Tools](https://docs.frona.ai/platform/tools/overview.html) — browser, search, CLI, voice, and more
-- [MCP](https://docs.frona.ai/platform/tools/mcp/overview.html) — install MCP servers and bridge mode
-- [Sandbox](https://docs.frona.ai/platform/security/sandbox.html) — filesystem, network, and resource controls
-- [Policies](https://docs.frona.ai/platform/security/policies.html) — policy reference for tools and sandbox rules
-- [Credentials](https://docs.frona.ai/platform/credentials/overview.html) — vault integration and approval workflows
-- [Deployment](https://docs.frona.ai/platform/deployment/docker-compose.html) — Docker Compose and Kubernetes guides
+- [Overview](https://docs.frona.ai/platform/overview.html) - what Frona is and how it works
+- [Quickstart](https://docs.frona.ai/platform/quickstart.html) - get running with Docker in minutes
+- [Comparison](https://docs.frona.ai/platform/comparison.html) - Frona vs. OpenClaw vs. Hermes Agent
+- [Agents](https://docs.frona.ai/platform/agents/overview.html) - agent types, configuration, and delegation
+- [Channels](https://docs.frona.ai/platform/agents/channels/overview.html) - Telegram, Slack, Discord, WhatsApp, Signal, SMS, pairing, and dispatch modes
+- [Memory](https://docs.frona.ai/platform/agents/memory/overview.html) - Basic and PKM memory backends
+- [Personal Knowledge Management](https://docs.frona.ai/platform/agents/memory/pkm.html) - grounded, ontology-backed long-term memory
+- [Usage and Costs](https://docs.frona.ai/platform/agents/chat/usage.html) - token, cost, latency, and cache dashboards
+- [Signals](https://docs.frona.ai/platform/agents/signals.html) - pause-and-resume on inbound messages
+- [Skills](https://docs.frona.ai/platform/agents/skills/overview.html) - extend agents with reusable instruction packages
+- [Apps](https://docs.frona.ai/platform/agents/apps/overview.html) - let agents build and deploy applications
+- [Tools](https://docs.frona.ai/platform/tools/overview.html) - browser, search, CLI, voice, and more
+- [MCP](https://docs.frona.ai/platform/tools/mcp/overview.html) - install MCP servers and bridge mode
+- [Sandbox](https://docs.frona.ai/platform/security/sandbox.html) - filesystem, network, and resource controls
+- [Policies](https://docs.frona.ai/platform/security/policies.html) - policy reference for tools and sandbox rules
+- [Credentials](https://docs.frona.ai/platform/credentials/overview.html) - vault integration and approval workflows
+- [Deployment](https://docs.frona.ai/platform/deployment/docker-compose.html) - Docker Compose and Kubernetes guides
 
 ## Development
 
 All commands use [mise](https://mise.jdx.dev/) as the task runner:
 
 ```bash
-mise run docker:dev       # Run full dev stack in Docker with hot-reload
-mise run docker:prod      # Run production stack in Docker
+mise run dev              # Run the backend and frontend on the host
+mise run container:dev    # Run the containerized dev stack with hot-reload
+mise run container:prod   # Build and run the production container stack
+
+mise run check            # Check all Rust crates
+mise run lint             # Check formatting and lint backend + frontend
+mise run test             # Run the workspace test suite
 ```
 
 See [mise.toml](mise.toml) for all available targets.

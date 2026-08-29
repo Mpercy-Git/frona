@@ -483,7 +483,7 @@ mod tests {
     fn signature_valid_known_vector() {
         // Construct a known HMAC-SHA1 signature by hand.
         // url = "https://example.com/inbound", no form params.
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, KeyInit, Mac};
         use sha1::Sha1;
         type HmacSha1 = Hmac<Sha1>;
 
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn signature_includes_sorted_params() {
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, KeyInit, Mac};
         use sha1::Sha1;
         type HmacSha1 = Hmac<Sha1>;
 

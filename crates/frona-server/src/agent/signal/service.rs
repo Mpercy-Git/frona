@@ -32,7 +32,6 @@ pub struct SignalService {
 }
 
 impl SignalService {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_service: TaskService,
         task_executor: Arc<TaskExecutor>,
@@ -171,10 +170,7 @@ impl SignalService {
         candidate: &CandidateEvent,
         watch: &Watch,
     ) -> Result<bool, AppError> {
-        let agent = self
-            .agent_service
-            .find_by_id(&watch.agent_id)
-            .await?;
+        let agent = self.agent_service.find_by_id(&watch.agent_id).await?;
         let Some(agent) = agent else {
             return Ok(false);
         };
@@ -188,7 +184,10 @@ impl SignalService {
                 user_id: watch.user_id.clone(),
                 name: c.name.clone(),
                 address: address.clone(),
-                addresses: [c.phone.clone(), c.email.clone()].into_iter().flatten().collect(),
+                addresses: [c.phone.clone(), c.email.clone()]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
             },
             None => PolicyContact::unresolved(&watch.user_id, &address),
         };
@@ -197,9 +196,7 @@ impl SignalService {
             .channel
             .as_ref()
             .map(|c| c.handle.clone())
-            .ok_or_else(|| {
-                AppError::Internal("Signal candidate missing channel".into())
-            })?;
+            .ok_or_else(|| AppError::Internal("Signal candidate missing channel".into()))?;
         let connector_id = candidate
             .chat
             .as_ref()
@@ -254,7 +251,10 @@ impl SignalService {
         let injected_message = self.build_candidate_block(candidate, watch.mode);
         let exec = self.task_executor.clone();
         tokio::spawn(async move {
-            if let Err(e) = exec.run_with_injected_message(&task, injected_message).await {
+            if let Err(e) = exec
+                .run_with_injected_message(&task, injected_message)
+                .await
+            {
                 tracing::error!(error = %e, "Signal task execution failed");
             }
         });
@@ -291,8 +291,14 @@ impl SignalService {
             .await?;
 
         let Some(agent) = self.agent_service.find_by_id(&chat.agent_id).await? else {
-            if let Ok(mut msg) = chat_service.get_message(&channel.user_id, &agent_msg.id).await {
-                msg.content = format!("Signal extraction skipped: agent {} not found", chat.agent_id);
+            if let Ok(mut msg) = chat_service
+                .get_message(&channel.user_id, &agent_msg.id)
+                .await
+            {
+                msg.content = format!(
+                    "Signal extraction skipped: agent {} not found",
+                    chat.agent_id
+                );
                 let _ = chat_service.complete_agent_message(msg).await;
             }
             return Ok(());
@@ -329,7 +335,10 @@ impl SignalService {
                     error = %e,
                     "Signal extraction failed",
                 );
-                if let Ok(mut msg) = chat_service.get_message(&channel.user_id, &agent_msg.id).await {
+                if let Ok(mut msg) = chat_service
+                    .get_message(&channel.user_id, &agent_msg.id)
+                    .await
+                {
                     msg.content = format!("Signal extraction failed: {e}");
                     let _ = chat_service.complete_agent_message(msg).await;
                 }
@@ -358,7 +367,10 @@ impl SignalService {
             Vec::new()
         } else {
             let contact = if let Some(ref contact_id) = msg.contact_id {
-                self.contact_service.get(&channel.user_id, contact_id).await.ok()
+                self.contact_service
+                    .get(&channel.user_id, contact_id)
+                    .await
+                    .ok()
             } else {
                 None
             };
@@ -388,7 +400,10 @@ impl SignalService {
                 fired.len()
             )
         };
-        if let Ok(mut msg) = chat_service.get_message(&channel.user_id, &agent_msg.id).await {
+        if let Ok(mut msg) = chat_service
+            .get_message(&channel.user_id, &agent_msg.id)
+            .await
+        {
             msg.content = summary_text;
             let _ = chat_service.complete_agent_message(msg).await;
         }
@@ -429,8 +444,7 @@ impl SignalService {
 
 /// Empty `allowed` disables filtering (does NOT match nothing).
 fn filter_categories(raw: Vec<String>, allowed: &[String]) -> Vec<String> {
-    let allow_set: std::collections::HashSet<&str> =
-        allowed.iter().map(|s| s.as_str()).collect();
+    let allow_set: std::collections::HashSet<&str> = allowed.iter().map(|s| s.as_str()).collect();
     raw.into_iter()
         .map(|c| c.trim().to_string())
         .filter(|c| !c.is_empty())
@@ -449,8 +463,7 @@ fn aggregate_category_hints<'a, I>(watches: I) -> Vec<(String, String)>
 where
     I: IntoIterator<Item = &'a Watch>,
 {
-    let mut counts: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for watch in watches {
         for cat in &watch.expected_categories {
             *counts.entry(cat.clone()).or_insert(0) += 1;
@@ -459,7 +472,11 @@ where
     counts
         .into_iter()
         .map(|(cat, n)| {
-            let suffix = if n == 1 { "task waiting" } else { "tasks waiting" };
+            let suffix = if n == 1 {
+                "task waiting"
+            } else {
+                "tasks waiting"
+            };
             (cat, format!("{n} {suffix}"))
         })
         .collect()
@@ -530,9 +547,7 @@ impl SignalService {
         let summary = c.summary().unwrap_or("(none)");
         let template = match mode {
             super::super::task::models::SignalMode::Once => "signal_candidate_once.md",
-            super::super::task::models::SignalMode::Continuous => {
-                "signal_candidate_continuous.md"
-            }
+            super::super::task::models::SignalMode::Continuous => "signal_candidate_continuous.md",
         };
         self.prompts
             .read_with_vars(
@@ -585,11 +600,7 @@ mod tests {
         ]
     }
 
-    fn make_watch(
-        cats: &[&str],
-        channels: &[&str],
-        contacts: &[&str],
-    ) -> Watch {
+    fn make_watch(cats: &[&str], channels: &[&str], contacts: &[&str]) -> Watch {
         Watch {
             task_id: "t".into(),
             user_id: "u".into(),
@@ -678,7 +689,8 @@ mod tests {
         let cand_ok = make_candidate(&["verification_code"], Some("sms"), Some("c-bank"));
         assert!(evaluate_match(&m, &cand_ok, &watch));
 
-        let cand_wrong_contact = make_candidate(&["verification_code"], Some("sms"), Some("c-other"));
+        let cand_wrong_contact =
+            make_candidate(&["verification_code"], Some("sms"), Some("c-other"));
         assert!(!evaluate_match(&m, &cand_wrong_contact, &watch));
     }
 

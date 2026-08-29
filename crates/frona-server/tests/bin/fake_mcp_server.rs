@@ -6,7 +6,7 @@
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, JsonObject, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, JsonObject, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 
 #[derive(Clone)]
@@ -23,26 +23,20 @@ impl EchoServer {
     }
 
     #[tool(description = "Echo back the provided text.")]
-    fn echo(
-        &self,
-        Parameters(args): Parameters<JsonObject>,
-    ) -> Result<CallToolResult, McpError> {
+    fn echo(&self, Parameters(args): Parameters<JsonObject>) -> Result<CallToolResult, McpError> {
         let text = args
             .get("text")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(description = "Add two integers and return their sum.")]
-    fn add(
-        &self,
-        Parameters(args): Parameters<JsonObject>,
-    ) -> Result<CallToolResult, McpError> {
+    fn add(&self, Parameters(args): Parameters<JsonObject>) -> Result<CallToolResult, McpError> {
         let a = args.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = args.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             (a + b).to_string(),
         )]))
     }

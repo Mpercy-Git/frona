@@ -3,16 +3,16 @@ use std::sync::Arc;
 use chrono::Utc;
 use frona::agent::task::executor::TaskExecutor;
 use frona::agent::task::models::{Task, TaskKind, TaskStatus};
-use frona::chat::message::models::MessageRole;
 use frona::chat::message::models::MessageEvent;
-use frona::storage::StorageService;
+use frona::chat::message::models::MessageRole;
 use frona::core::config::Config;
+use frona::core::repository::Repository;
+use frona::core::state::AppState;
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
-use frona::core::state::AppState;
-use frona::core::repository::Repository;
-use surrealdb::engine::local::{Db, Mem};
+use frona::storage::StorageService;
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -57,10 +57,19 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     let config = test_config(&tmp);
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
-    let state = AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
+    let state = AppState::new(
+        db,
+        &config,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics_handle,
+        resource_manager,
+    );
     // Seed the agent + user the test fixtures reference via `agent_id: "agent-1"`
     // / `user_id: "user-1"`, so chat creation (which now validates agent
     // existence + ownership) succeeds.
@@ -148,7 +157,9 @@ fn make_task(kind: TaskKind) -> Task {
 async fn ensure_task_chat_creates_when_missing() {
     let (state, _tmp) = test_app_state().await;
     let executor = make_executor(&state);
-    let mut task = make_task(TaskKind::Direct { source_chat_id: None });
+    let mut task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
     assert!(task.chat_id.is_none());
 
     let chat_id = executor.ensure_task_chat(&mut task).await.unwrap();
@@ -161,7 +172,9 @@ async fn ensure_task_chat_creates_when_missing() {
 async fn ensure_task_chat_returns_existing() {
     let (state, _tmp) = test_app_state().await;
     let executor = make_executor(&state);
-    let mut task = make_task(TaskKind::Direct { source_chat_id: None });
+    let mut task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
     task.chat_id = Some("existing-chat-id".to_string());
 
     let chat_id = executor.ensure_task_chat(&mut task).await.unwrap();
@@ -174,7 +187,9 @@ async fn ensure_task_chat_returns_existing() {
 async fn save_initial_message_saves_on_first_run() {
     let (state, _tmp) = test_app_state().await;
     let executor = make_executor(&state);
-    let mut task = make_task(TaskKind::Direct { source_chat_id: None });
+    let mut task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
     let chat_id = executor.ensure_task_chat(&mut task).await.unwrap();
 
     executor
@@ -182,7 +197,11 @@ async fn save_initial_message_saves_on_first_run() {
         .await
         .unwrap();
 
-    let messages = state.chat_service.get_stored_messages(&chat_id).await.unwrap();
+    let messages = state
+        .chat_service
+        .get_stored_messages(&chat_id)
+        .await
+        .unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "Do something");
 }
@@ -191,7 +210,9 @@ async fn save_initial_message_saves_on_first_run() {
 async fn save_initial_message_skips_on_resume() {
     let (state, _tmp) = test_app_state().await;
     let executor = make_executor(&state);
-    let mut task = make_task(TaskKind::Direct { source_chat_id: None });
+    let mut task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
     let chat_id = executor.ensure_task_chat(&mut task).await.unwrap();
 
     executor
@@ -203,7 +224,11 @@ async fn save_initial_message_skips_on_resume() {
         .await
         .unwrap();
 
-    let messages = state.chat_service.get_stored_messages(&chat_id).await.unwrap();
+    let messages = state
+        .chat_service
+        .get_stored_messages(&chat_id)
+        .await
+        .unwrap();
     assert_eq!(messages.len(), 1);
 }
 
@@ -211,16 +236,15 @@ async fn save_initial_message_skips_on_resume() {
 async fn handle_cancelled_marks_task_cancelled() {
     let (state, _tmp) = test_app_state().await;
     let executor = make_executor(&state);
-    let mut task = make_task(TaskKind::Direct { source_chat_id: None });
+    let mut task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
     let _chat_id = executor.ensure_task_chat(&mut task).await.unwrap();
 
     let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
     repo.create(&task).await.unwrap();
 
-    executor
-        .handle_cancelled(&task)
-        .await
-        .unwrap();
+    executor.handle_cancelled(&task).await.unwrap();
 
     let updated = repo.find_by_id(&task.id).await.unwrap().unwrap();
     assert_eq!(updated.status, TaskStatus::Cancelled);
@@ -265,7 +289,8 @@ async fn handle_error_marks_failed_and_delivers() {
     let source_messages = state
         .chat_service
         .get_stored_messages(&source_chat.id)
-        .await.unwrap();
+        .await
+        .unwrap();
     assert_eq!(source_messages.len(), 1);
     assert!(source_messages[0].content.contains("something broke"));
 }
@@ -307,7 +332,11 @@ async fn lifecycle_complete_event_detected() {
         .await
         .unwrap();
 
-    let messages = state.chat_service.get_stored_messages(&source_chat.id).await.unwrap();
+    let messages = state
+        .chat_service
+        .get_stored_messages(&source_chat.id)
+        .await
+        .unwrap();
     let system_msgs: Vec<_> = messages
         .iter()
         .filter(|m| m.role == MessageRole::System)
@@ -356,7 +385,11 @@ async fn lifecycle_defer_event_detected() {
         .await
         .unwrap();
 
-    let messages = state.chat_service.get_stored_messages(&task_chat.id).await.unwrap();
+    let messages = state
+        .chat_service
+        .get_stored_messages(&task_chat.id)
+        .await
+        .unwrap();
     let system_msgs: Vec<_> = messages
         .iter()
         .filter(|m| m.role == MessageRole::System)
@@ -377,7 +410,9 @@ async fn mark_deferred_sets_pending_with_run_at() {
     let (state, _tmp) = test_app_state().await;
 
     let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
-    let mut task = make_task(TaskKind::Direct { source_chat_id: None });
+    let mut task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
     task.status = TaskStatus::InProgress;
     repo.create(&task).await.unwrap();
 
@@ -396,7 +431,9 @@ async fn mark_deferred_sets_pending_with_run_at() {
 #[tokio::test]
 async fn deliver_to_source_skips_direct_tasks() {
     let (state, _tmp) = test_app_state().await;
-    let task = make_task(TaskKind::Direct { source_chat_id: None });
+    let task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
@@ -452,7 +489,8 @@ async fn deliver_to_source_sends_to_delegation() {
     let messages = state
         .chat_service
         .get_stored_messages(&source_chat.id)
-        .await.unwrap();
+        .await
+        .unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "All done");
 }
@@ -496,7 +534,8 @@ async fn deliver_to_source_sends_to_direct_with_source_chat() {
     let messages = state
         .chat_service
         .get_stored_messages(&source_chat.id)
-        .await.unwrap();
+        .await
+        .unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "Self-task result");
 }
@@ -513,7 +552,9 @@ async fn task_service_mark_completed_emits_broadcast() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     state.broadcast_service.register_session("user-1", tx).await;
 
-    let mut task = make_task(TaskKind::Direct { source_chat_id: None });
+    let mut task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
     task.chat_id = Some("chat-123".to_string());
     let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
     repo.create(&task).await.unwrap();
@@ -536,27 +577,42 @@ async fn task_service_mark_completed_emits_broadcast() {
 #[tokio::test]
 async fn concurrency_global_limit() {
     let (state, _tmp) = test_app_state().await;
-    let executor = Arc::new(TaskExecutor::with_max_concurrent_tasks(1, state.harness.clone()));
+    let executor = Arc::new(TaskExecutor::with_max_concurrent_tasks(
+        1,
+        state.harness.clone(),
+    ));
 
     let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
 
-    let mut task1 = make_task(TaskKind::Direct { source_chat_id: None });
+    let mut task1 = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
     task1.id = "task-1".to_string();
     task1.status = TaskStatus::InProgress;
     repo.create(&task1).await.unwrap();
     let exec1 = executor.clone();
-    tokio::spawn(async move { let _ = exec1.run_task(task1).await; });
+    tokio::spawn(async move {
+        let _ = exec1.run_task(task1).await;
+    });
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let mut task2 = make_task(TaskKind::Direct { source_chat_id: None });
+    let mut task2 = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
     task2.id = "task-2".to_string();
     repo.create(&task2).await.unwrap();
     let exec2 = executor.clone();
-    tokio::spawn(async move { let _ = exec2.run_task(task2).await; });
+    tokio::spawn(async move {
+        let _ = exec2.run_task(task2).await;
+    });
 
     let t2 = repo.find_by_id("task-2").await.unwrap().unwrap();
-    assert_eq!(t2.status, TaskStatus::Pending, "Second task should stay pending when limit reached");
+    assert_eq!(
+        t2.status,
+        TaskStatus::Pending,
+        "Second task should stay pending when limit reached"
+    );
 }
 
 #[tokio::test]
@@ -601,9 +657,13 @@ async fn deliver_to_source_signal_only_sends_empty_content() {
     let messages = state
         .chat_service
         .get_stored_messages(&source_chat.id)
-        .await.unwrap();
+        .await
+        .unwrap();
     assert_eq!(messages.len(), 1);
-    assert!(messages[0].content.is_empty(), "Signal-only completion should have empty content");
+    assert!(
+        messages[0].content.is_empty(),
+        "Signal-only completion should have empty content"
+    );
 }
 
 #[tokio::test]
@@ -653,7 +713,8 @@ async fn deliver_to_source_saves_message_to_user_chat() {
     let messages = state
         .chat_service
         .get_stored_messages(&user_chat.id)
-        .await.unwrap();
+        .await
+        .unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "Done");
 }
@@ -680,7 +741,14 @@ async fn lifecycle_event_saved_after_assistant_message() {
     // Simulate the executor flow: save assistant message first
     state
         .chat_service
-        .save_agent_message("user-1", None, &chat.id, "agent-1", "Here is my answer.".to_string(), None)
+        .save_agent_message(
+            "user-1",
+            None,
+            &chat.id,
+            "agent-1",
+            "Here is my answer.".to_string(),
+            None,
+        )
         .await
         .unwrap();
 
@@ -703,14 +771,21 @@ async fn lifecycle_event_saved_after_assistant_message() {
         .await
         .unwrap();
 
-    let messages = state.chat_service.get_stored_messages(&chat.id).await.unwrap();
+    let messages = state
+        .chat_service
+        .get_stored_messages(&chat.id)
+        .await
+        .unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, MessageRole::Agent);
     assert_eq!(messages[0].content, "Here is my answer.");
     assert_eq!(messages[1].role, MessageRole::System);
     assert!(matches!(
         &messages[1].event,
-        Some(MessageEvent::TaskCompletion { status: TaskStatus::Completed, .. })
+        Some(MessageEvent::TaskCompletion {
+            status: TaskStatus::Completed,
+            ..
+        })
     ));
 }
 
@@ -740,7 +815,10 @@ async fn make_cron_template_with(
             None,
             CronMode::Singleton,
             CronConcurrency::Replace,
-            process_result, None, None)
+            process_result,
+            None,
+            None,
+        )
         .await
         .unwrap()
 }
@@ -791,7 +869,11 @@ async fn deliver_to_source_cron_run_posts_regardless_of_process_result() {
         .get_stored_messages(&source_chat.id)
         .await
         .unwrap();
-    assert_eq!(messages.len(), 1, "summary delivered even with process_result=false");
+    assert_eq!(
+        messages.len(),
+        1,
+        "summary delivered even with process_result=false"
+    );
     assert_eq!(messages[0].content, "Result body");
 }
 
@@ -838,7 +920,11 @@ async fn deliver_to_source_cron_run_posts_when_process_result_true() {
         .get_stored_messages(&source_chat.id)
         .await
         .unwrap();
-    assert_eq!(messages.len(), 1, "process_result=true → one delivery message");
+    assert_eq!(
+        messages.len(),
+        1,
+        "process_result=true → one delivery message"
+    );
     assert_eq!(messages[0].content, "Result body");
 }
 
@@ -871,7 +957,10 @@ async fn deliver_to_source_cron_run_skips_when_no_source_chat() {
     // not panic and no orphan write occurs.
     assert!(matches!(
         run.kind,
-        TaskKind::CronRun { source_chat_id: None, .. }
+        TaskKind::CronRun {
+            source_chat_id: None,
+            ..
+        }
     ));
 }
 
@@ -939,10 +1028,19 @@ async fn test_app_state_no_spawning() -> (AppState, tempfile::TempDir) {
     config.server.max_concurrent_tasks = 0;
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
-    let state = AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
+    let state = AppState::new(
+        db,
+        &config,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics_handle,
+        resource_manager,
+    );
     seed_user_and_agent(&state).await;
     (state, tmp)
 }
@@ -956,8 +1054,17 @@ async fn resume_all_marks_only_in_progress_cron_runs_failed() {
     let template = state
         .task_service
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
             frona::agent::task::models::CronMode::Singleton,
             frona::agent::task::models::CronConcurrency::Replace,
             false,

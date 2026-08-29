@@ -26,7 +26,7 @@ impl SendMessageTool {
     pub fn new(
         chat_service: ChatService,
         notification_service: NotificationService,
-            agent_service: AgentService,
+        agent_service: AgentService,
         task_service: TaskService,
         prompts: PromptLoader,
     ) -> Self {
@@ -61,10 +61,9 @@ impl SendMessageTool {
 
         let _ = attachments;
 
-        let (resolved_chat, is_new_chat) =
-            self.resolve_target_chat(ctx, &content).await?;
+        let (resolved_chat, is_new_chat) = self.resolve_target_chat(ctx, &content).await?;
 
-        // Broadcast space_id must match the resolved chat — task chats are
+        // Broadcast space_id must match the resolved chat - task chats are
         // None-spaced, but the resolved channel chat lives in the channel's
         // space, and the outbound dispatcher filters on it.
         let message = self
@@ -128,23 +127,26 @@ impl SendMessageTool {
         ctx: &InferenceContext,
         message_content: &str,
     ) -> Result<(Chat, bool), AppError> {
-        if ctx.chat.task_id.is_none()
-            && ctx.agent.heartbeat_chat_id.as_deref() != Some(&ctx.chat.id)
-        {
-            return Ok((ctx.chat.clone(), false));
-        }
+        // Detached (chatless) send: no chat to anchor to → let the model pick/create
+        // a target via `llm_resolve_chat`. When a chat IS present, keep the existing
+        // anchor-to-current / walk-up-the-task-chain behavior.
+        if let Some(chat) = &ctx.chat {
+            if chat.task_id.is_none() && ctx.agent.heartbeat_chat_id.as_deref() != Some(&chat.id) {
+                return Ok((chat.clone(), false));
+            }
 
-        if ctx.chat.task_id.is_some()
-            && let Some(chat) = self.walk_task_chain(ctx).await
-        {
-            return Ok((chat, false));
+            if chat.task_id.is_some()
+                && let Some(anchor) = self.walk_task_chain(ctx, &chat.id).await
+            {
+                return Ok((anchor, false));
+            }
         }
 
         self.llm_resolve_chat(ctx, message_content).await
     }
 
-    async fn walk_task_chain(&self, ctx: &InferenceContext) -> Option<Chat> {
-        let mut current_chat_id = ctx.chat.id.clone();
+    async fn walk_task_chain(&self, ctx: &InferenceContext, start_chat_id: &str) -> Option<Chat> {
+        let mut current_chat_id = start_chat_id.to_string();
         let mut depth = 0;
         const MAX_DEPTH: usize = 10;
 
@@ -181,10 +183,7 @@ impl SendMessageTool {
         ctx: &InferenceContext,
         message_content: &str,
     ) -> Result<(Chat, bool), AppError> {
-        let heartbeat_ids = self
-            .agent_service
-            .heartbeat_chat_ids(&ctx.user.id)
-            .await;
+        let heartbeat_ids = self.agent_service.heartbeat_chat_ids(&ctx.user.id).await;
 
         let standalone_chats = self
             .chat_service
@@ -212,15 +211,14 @@ impl SendMessageTool {
 
         let system_prompt = self
             .prompts
-            .read_with_vars("send_message_resolve.md", &[
-                ("message", message_content),
-                ("chats", &chats_text),
-            ])
-            .ok_or_else(|| {
-                AppError::Internal("send_message_resolve.md prompt not found".into())
-            })?;
+            .read_with_vars(
+                "send_message_resolve.md",
+                &[("message", message_content), ("chats", &chats_text)],
+            )
+            .ok_or_else(|| AppError::Internal("send_message_resolve.md prompt not found".into()))?;
         let registry = self.chat_service.provider_registry();
-        let model_group = registry.get_model_group("compaction")
+        let model_group = registry
+            .get_model_group("compaction")
             .or_else(|_| registry.get_model_group("primary"))?;
 
         let usage_ctx = crate::inference::usage::UsageContext::new(
@@ -255,10 +253,7 @@ impl SendMessageTool {
         Ok((candidates.into_iter().next().unwrap(), false))
     }
 
-    async fn create_new_chat(
-        &self,
-        ctx: &InferenceContext,
-    ) -> Result<(Chat, bool), AppError> {
+    async fn create_new_chat(&self, ctx: &InferenceContext) -> Result<(Chat, bool), AppError> {
         let created = self
             .chat_service
             .create_chat(
@@ -272,7 +267,10 @@ impl SendMessageTool {
                 },
             )
             .await?;
-        let chat = self.chat_service.get_chat(&ctx.user.id, &created.id).await?;
+        let chat = self
+            .chat_service
+            .get_chat(&ctx.user.id, &created.id)
+            .await?;
         Ok((chat, true))
     }
 }

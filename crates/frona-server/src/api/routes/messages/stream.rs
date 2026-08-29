@@ -1,5 +1,5 @@
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 
 use crate::chat::broadcast::BroadcastEventKind;
 use crate::chat::message::models::{MessageCommand, MessageResponse, SendMessageRequest};
@@ -25,7 +25,8 @@ pub(crate) async fn stream_message(
         .await
         .map_err(ApiError::from)?;
 
-    let pending_tool = state.chat_service
+    let pending_tool = state
+        .chat_service
         .find_pending_tool_call(&chat_id)
         .await
         .map_err(ApiError::from)?;
@@ -43,7 +44,13 @@ pub(crate) async fn stream_message(
             .await
             .map_err(ApiError::from)?;
 
-        presign_response(&state.presign_service, &mut user_response, &auth.user_id, &auth.handle).await;
+        presign_response(
+            &state.presign_service,
+            &mut user_response,
+            &auth.user_id,
+            &auth.handle,
+        )
+        .await;
 
         let resolve_result = state
             .chat_service
@@ -54,7 +61,8 @@ pub(crate) async fn stream_message(
         let resolved_msg = resolve_result.into_message();
         let agent_msg_id = resolved_msg.id.clone();
 
-        let did_flip = state.chat_service
+        let did_flip = state
+            .chat_service
             .mark_message_executing(&agent_msg_id)
             .await
             .map_err(ApiError::from)?;
@@ -65,7 +73,9 @@ pub(crate) async fn stream_message(
             chat.space_id.clone(),
         );
         event_sender.send(InferenceEvent {
-            kind: InferenceEventKind::Resume { message: resolved_msg },
+            kind: InferenceEventKind::Resume {
+                message: resolved_msg,
+            },
         });
 
         if did_flip {
@@ -100,9 +110,16 @@ pub(crate) async fn stream_message(
             .await
             .map_err(ApiError::from)?;
 
-        presign_response(&state.presign_service, &mut user_response, &auth.user_id, &auth.handle).await;
+        presign_response(
+            &state.presign_service,
+            &mut user_response,
+            &auth.user_id,
+            &auth.handle,
+        )
+        .await;
 
-        let agent_msg = state.chat_service
+        let agent_msg = state
+            .chat_service
             .create_executing_agent_message(&chat_id, &agent_id)
             .await
             .map_err(ApiError::from)?;
@@ -168,9 +185,7 @@ async fn resolve_slash_invocation(
         .find_by_id(chat_agent_id)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| {
-            ApiError::from(AppError::NotFound(format!("agent {chat_agent_id}")))
-        })?;
+        .ok_or_else(|| ApiError::from(AppError::NotFound(format!("agent {chat_agent_id}"))))?;
     let user_handle = match state
         .user_service
         .find_by_id(user_id)
@@ -178,7 +193,11 @@ async fn resolve_slash_invocation(
         .map_err(ApiError::from)?
     {
         Some(u) => u.handle,
-        None => return Err(ApiError::from(AppError::NotFound(format!("user {user_id}")))),
+        None => {
+            return Err(ApiError::from(AppError::NotFound(format!(
+                "user {user_id}"
+            ))));
+        }
     };
     let skills = state
         .skill_service

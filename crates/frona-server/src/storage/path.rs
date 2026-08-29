@@ -70,9 +70,7 @@ fn split_first_segment(s: &str) -> (&str, &str) {
 pub fn validate_no_traversal(resolved: &Path, base: &str) -> Result<(), AppError> {
     for component in resolved.components() {
         if let std::path::Component::ParentDir = component {
-            return Err(AppError::Validation(
-                "Path traversal not allowed".into(),
-            ));
+            return Err(AppError::Validation("Path traversal not allowed".into()));
         }
     }
 
@@ -80,9 +78,7 @@ pub fn validate_no_traversal(resolved: &Path, base: &str) -> Result<(), AppError
     let resolved_canonical =
         std::fs::canonicalize(resolved).unwrap_or_else(|_| resolved.to_path_buf());
 
-    if !resolved_canonical.starts_with(&base_canonical)
-        && !resolved.starts_with(base)
-    {
+    if !resolved_canonical.starts_with(&base_canonical) && !resolved.starts_with(base) {
         return Err(AppError::Validation(
             "Path escapes allowed directory".into(),
         ));
@@ -93,14 +89,10 @@ pub fn validate_no_traversal(resolved: &Path, base: &str) -> Result<(), AppError
 
 pub fn validate_relative_path(path: &str) -> Result<(), AppError> {
     if path.contains("..") {
-        return Err(AppError::Validation(
-            "Path traversal not allowed".into(),
-        ));
+        return Err(AppError::Validation("Path traversal not allowed".into()));
     }
     if path.starts_with('/') {
-        return Err(AppError::Validation(
-            "Path must be relative".into(),
-        ));
+        return Err(AppError::Validation("Path must be relative".into()));
     }
     if path.contains('\0') {
         return Err(AppError::Validation(

@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use frona::tool::sandbox::SandboxFactory;
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use std::sync::Arc;
 
 fn python3_available() -> bool {
     std::process::Command::new("python3")
@@ -11,7 +11,10 @@ fn python3_available() -> bool {
 }
 
 fn test_manager() -> SandboxFactory {
-    SandboxFactory::new(false, Arc::new(SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)))
+    SandboxFactory::new(
+        false,
+        Arc::new(SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)),
+    )
 }
 
 fn test_workspace(id: &str) -> std::path::PathBuf {
@@ -29,7 +32,12 @@ async fn test_execute_uses_venv_python() {
     }
 
     let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_workspace("agent-venv-prefix"), "agent-venv-prefix", false, vec![]);
+    let ws = mgr.get_sandbox(
+        test_workspace("agent-venv-prefix"),
+        "agent-venv-prefix",
+        false,
+        vec![],
+    );
 
     let output = ws
         .execute(
@@ -66,7 +74,12 @@ async fn test_shell_uses_venv_python() {
     }
 
     let mgr = test_manager();
-    let ws = mgr.get_sandbox(test_workspace("agent-venv-which"), "agent-venv-which", false, vec![]);
+    let ws = mgr.get_sandbox(
+        test_workspace("agent-venv-which"),
+        "agent-venv-which",
+        false,
+        vec![],
+    );
 
     let output = ws
         .execute("which", &["python3"], 30, None, None, None)
@@ -104,13 +117,27 @@ async fn test_pip_install_isolated() {
     );
 
     let import_a = ws_a
-        .execute("python3", &["-c", "import cowsay; print('ok')"], 30, None, None, None)
+        .execute(
+            "python3",
+            &["-c", "import cowsay; print('ok')"],
+            30,
+            None,
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(import_a.stdout.trim(), "ok");
 
     let import_b = ws_b
-        .execute("python3", &["-c", "import cowsay; print('ok')"], 30, None, None, None)
+        .execute(
+            "python3",
+            &["-c", "import cowsay; print('ok')"],
+            30,
+            None,
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert!(

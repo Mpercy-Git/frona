@@ -1,9 +1,9 @@
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use crate::storage::Attachment;
-use crate::core::error::AppError;
 use crate::chat::message::models::Message;
 use crate::chat::message::repository::MessageRepository;
+use crate::core::error::AppError;
+use crate::storage::Attachment;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use super::generic::SurrealRepo;
 
@@ -135,10 +135,7 @@ impl MessageRepository for SurrealRepo<Message> {
         chat_id: &str,
     ) -> Result<Vec<Attachment>, AppError> {
         let messages: Vec<Message> = self.find_by_chat_id(chat_id).await?;
-        Ok(messages
-            .into_iter()
-            .flat_map(|m| m.attachments)
-            .collect())
+        Ok(messages.into_iter().flat_map(|m| m.attachments).collect())
     }
 
     async fn find_due_deliveries(

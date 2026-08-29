@@ -22,8 +22,7 @@ async fn setup_with_extra_tools(
     frona::db::init::setup_schema(&db).await.unwrap();
 
     let schema = build_schema();
-    let repo: Arc<dyn PolicyRepository> =
-        Arc::new(SurrealRepo::<Policy>::new(db.clone()));
+    let repo: Arc<dyn PolicyRepository> = Arc::new(SurrealRepo::<Policy>::new(db.clone()));
     let tool_manager = std::sync::Arc::new(frona::tool::manager::ToolManager::new(false));
 
     use frona::tool::{AgentTool, ToolDefinition, ToolOutput};
@@ -33,9 +32,18 @@ async fn setup_with_extra_tools(
     }
     #[async_trait::async_trait]
     impl AgentTool for MockTool {
-        fn name(&self) -> &str { self.name }
-        fn definitions(&self) -> Vec<ToolDefinition> { self.defs.clone() }
-        async fn execute(&self, _: &str, _: serde_json::Value, _: &frona::tool::InferenceContext) -> Result<ToolOutput, frona::core::error::AppError> {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn definitions(&self) -> Vec<ToolDefinition> {
+            self.defs.clone()
+        }
+        async fn execute(
+            &self,
+            _: &str,
+            _: serde_json::Value,
+            _: &frona::tool::InferenceContext,
+        ) -> Result<ToolOutput, frona::core::error::AppError> {
             Ok(ToolOutput::text("ok"))
         }
     }
@@ -47,18 +55,36 @@ async fn setup_with_extra_tools(
             parameters: serde_json::json!({"type": "object", "properties": {}}),
         }
     }
-    tool_manager.register_user_tool("user-1", std::sync::Arc::new(MockTool {
-        name: "browser",
-        defs: vec![mock_def("browser_navigate", "browser")],
-    })).await;
-    tool_manager.register_user_tool("user-1", std::sync::Arc::new(MockTool {
-        name: "voice",
-        defs: vec![mock_def("make_voice_call", "voice"), mock_def("hangup_call", "voice")],
-    })).await;
-    tool_manager.register_user_tool("user-1", std::sync::Arc::new(MockTool {
-        name: "search",
-        defs: vec![mock_def("web_search", "search")],
-    })).await;
+    tool_manager
+        .register_user_tool(
+            "user-1",
+            std::sync::Arc::new(MockTool {
+                name: "browser",
+                defs: vec![mock_def("browser_navigate", "browser")],
+            }),
+        )
+        .await;
+    tool_manager
+        .register_user_tool(
+            "user-1",
+            std::sync::Arc::new(MockTool {
+                name: "voice",
+                defs: vec![
+                    mock_def("make_voice_call", "voice"),
+                    mock_def("hangup_call", "voice"),
+                ],
+            }),
+        )
+        .await;
+    tool_manager
+        .register_user_tool(
+            "user-1",
+            std::sync::Arc::new(MockTool {
+                name: "search",
+                defs: vec![mock_def("web_search", "search")],
+            }),
+        )
+        .await;
 
     for &(owner, tool_id, group) in extras {
         tool_manager
@@ -132,7 +158,10 @@ async fn authorize_allows_by_default_with_base_policies() {
         .authorize(
             "user-1",
             &agent,
-            PolicyAction::InvokeTool { tool_name: "browser_navigate".into(), tool_group: "browser".into() },
+            PolicyAction::InvokeTool {
+                tool_name: "browser_navigate".into(),
+                tool_group: "browser".into(),
+            },
         )
         .await
         .unwrap();
@@ -157,7 +186,10 @@ async fn authorize_allows_with_permit_policy() {
         .authorize(
             "user-1",
             &agent,
-            PolicyAction::InvokeTool { tool_name: "browser_navigate".into(), tool_group: "browser".into() },
+            PolicyAction::InvokeTool {
+                tool_name: "browser_navigate".into(),
+                tool_group: "browser".into(),
+            },
         )
         .await
         .unwrap();
@@ -187,13 +219,27 @@ async fn forbid_overrides_permit() {
         .unwrap();
 
     let browser = service
-        .authorize("user-1", &agent, PolicyAction::InvokeTool { tool_name: "browser_navigate".into(), tool_group: "browser".into() })
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::InvokeTool {
+                tool_name: "browser_navigate".into(),
+                tool_group: "browser".into(),
+            },
+        )
         .await
         .unwrap();
     assert!(browser.is_denied());
 
     let search = service
-        .authorize("user-1", &agent, PolicyAction::InvokeTool { tool_name: "web_search".into(), tool_group: "search".into() })
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::InvokeTool {
+                tool_name: "web_search".into(),
+                tool_group: "search".into(),
+            },
+        )
         .await
         .unwrap();
     assert!(search.allowed);
@@ -205,19 +251,27 @@ async fn base_policies_include_delegation_and_communication() {
     let agent = test_agent("agent-1");
 
     let delegate = service
-        .authorize("user-1", &agent, PolicyAction::DelegateTask {
-            target_agent_id: "agent-2".into(),
-            target_handle: frona::handle!("agent-2"),
-        })
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::DelegateTask {
+                target_agent_id: "agent-2".into(),
+                target_handle: frona::handle!("agent-2"),
+            },
+        )
         .await
         .unwrap();
     assert!(delegate.allowed);
 
     let send = service
-        .authorize("user-1", &agent, PolicyAction::SendMessage {
-            target_agent_id: "agent-2".into(),
-            target_handle: frona::handle!("agent-2"),
-        })
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::SendMessage {
+                target_agent_id: "agent-2".into(),
+                target_handle: frona::handle!("agent-2"),
+            },
+        )
         .await
         .unwrap();
     assert!(send.allowed);
@@ -403,14 +457,21 @@ async fn policy_crud_lifecycle() {
     let (_db, service) = setup().await;
 
     let policy = service
-        .create_policy("user-1", "@id(\"test\")\n@description(\"A test\")\npermit(principal, action, resource);")
+        .create_policy(
+            "user-1",
+            "@id(\"test\")\n@description(\"A test\")\npermit(principal, action, resource);",
+        )
         .await
         .unwrap();
     assert_eq!(policy.name, "test");
     assert_eq!(policy.description, "A test");
 
     let updated = service
-        .update_policy("user-1", &policy.id, "@id(\"test\")\n@description(\"Updated\")\npermit(principal, action, resource);")
+        .update_policy(
+            "user-1",
+            &policy.id,
+            "@id(\"test\")\n@description(\"Updated\")\npermit(principal, action, resource);",
+        )
         .await
         .unwrap();
     assert_eq!(updated.description, "Updated");
@@ -427,12 +488,18 @@ async fn duplicate_policy_name_rejected() {
     let (_db, service) = setup().await;
 
     service
-        .create_policy("user-1", "@id(\"unique\")\npermit(principal, action, resource);")
+        .create_policy(
+            "user-1",
+            "@id(\"unique\")\npermit(principal, action, resource);",
+        )
         .await
         .unwrap();
 
     let result = service
-        .create_policy("user-1", "@id(\"unique\")\nforbid(principal, action, resource);")
+        .create_policy(
+            "user-1",
+            "@id(\"unique\")\nforbid(principal, action, resource);",
+        )
         .await;
     assert!(result.is_err());
 }
@@ -457,7 +524,14 @@ async fn delete_agent_policies_cleans_up() {
         .await
         .unwrap();
 
-    service.delete_agent_policies("user-1", &frona::handle!("user-1"), &frona::handle!("agent-1")).await.unwrap();
+    service
+        .delete_agent_policies(
+            "user-1",
+            &frona::handle!("user-1"),
+            &frona::handle!("agent-1"),
+        )
+        .await
+        .unwrap();
 
     let policies = service.list_policies("user-1").await.unwrap();
     assert!(policies.is_empty());
@@ -472,7 +546,10 @@ async fn system_agent_always_allowed_manage_policy() {
         .authorize(
             "user-1",
             &system_agent,
-            PolicyAction::InvokeTool { tool_name: "manage_policy".into(), tool_group: "policy".into() },
+            PolicyAction::InvokeTool {
+                tool_name: "manage_policy".into(),
+                tool_group: "policy".into(),
+            },
         )
         .await
         .unwrap();
@@ -486,7 +563,14 @@ async fn cache_invalidation_reflects_new_policy() {
     let agent = test_agent("agent-1");
 
     let allowed = service
-        .authorize("user-1", &agent, PolicyAction::InvokeTool { tool_name: "browser_navigate".into(), tool_group: "browser".into() })
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::InvokeTool {
+                tool_name: "browser_navigate".into(),
+                tool_group: "browser".into(),
+            },
+        )
         .await
         .unwrap();
     assert!(allowed.allowed);
@@ -497,7 +581,14 @@ async fn cache_invalidation_reflects_new_policy() {
         .unwrap();
 
     let denied = service
-        .authorize("user-1", &agent, PolicyAction::InvokeTool { tool_name: "browser_navigate".into(), tool_group: "browser".into() })
+        .authorize(
+            "user-1",
+            &agent,
+            PolicyAction::InvokeTool {
+                tool_name: "browser_navigate".into(),
+                tool_group: "browser".into(),
+            },
+        )
         .await
         .unwrap();
     assert!(denied.is_denied());
@@ -510,13 +601,27 @@ async fn base_policy_restricts_agent_tools_to_system() {
     let system_agent = test_agent("system");
 
     let denied = service
-        .authorize("user-1", &regular_agent, PolicyAction::InvokeTool { tool_name: "create_agent".into(), tool_group: "agent".into() })
+        .authorize(
+            "user-1",
+            &regular_agent,
+            PolicyAction::InvokeTool {
+                tool_name: "create_agent".into(),
+                tool_group: "agent".into(),
+            },
+        )
         .await
         .unwrap();
     assert!(denied.is_denied());
 
     let allowed = service
-        .authorize("user-1", &system_agent, PolicyAction::InvokeTool { tool_name: "create_agent".into(), tool_group: "agent".into() })
+        .authorize(
+            "user-1",
+            &system_agent,
+            PolicyAction::InvokeTool {
+                tool_name: "create_agent".into(),
+                tool_group: "agent".into(),
+            },
+        )
         .await
         .unwrap();
     assert!(allowed.allowed);
@@ -526,14 +631,18 @@ async fn base_policy_restricts_agent_tools_to_system() {
 async fn validate_policy_text_catches_syntax_errors() {
     let (_db, service) = setup().await;
 
-    assert!(service.validate_policy_text("permit(principal, action, resource);").is_ok());
+    assert!(
+        service
+            .validate_policy_text("permit(principal, action, resource);")
+            .is_ok()
+    );
     assert!(service.validate_policy_text("invalid syntax here").is_err());
 }
 
 #[tokio::test]
 async fn extract_annotations_from_parsed_policy() {
     let (id, desc) = extract_annotations(
-        "@id(\"my-policy\")\n@description(\"Does something\")\npermit(principal, action, resource);"
+        "@id(\"my-policy\")\n@description(\"Does something\")\npermit(principal, action, resource);",
     );
     assert_eq!(id.as_deref(), Some("my-policy"));
     assert_eq!(desc.as_deref(), Some("Does something"));
@@ -545,7 +654,14 @@ async fn delegation_allowed_when_principal_has_superset() {
     let agent_a = test_agent("agent-a");
 
     let decision = service
-        .authorize("user-1", &agent_a, PolicyAction::DelegateTask { target_agent_id: "agent-b".into(), target_handle: frona::handle!("agent-b") })
+        .authorize(
+            "user-1",
+            &agent_a,
+            PolicyAction::DelegateTask {
+                target_agent_id: "agent-b".into(),
+                target_handle: frona::handle!("agent-b"),
+            },
+        )
         .await
         .unwrap();
     assert!(decision.allowed);
@@ -565,7 +681,14 @@ async fn delegation_denied_when_target_has_more_tools() {
         .unwrap();
 
     let decision = service
-        .authorize("user-1", &agent_a, PolicyAction::DelegateTask { target_agent_id: "agent-b".into(), target_handle: frona::handle!("agent-b") })
+        .authorize(
+            "user-1",
+            &agent_a,
+            PolicyAction::DelegateTask {
+                target_agent_id: "agent-b".into(),
+                target_handle: frona::handle!("agent-b"),
+            },
+        )
         .await
         .unwrap();
     assert!(decision.is_denied());
@@ -597,10 +720,20 @@ async fn delegation_denied_researcher_to_receptionist() {
     // Researcher doesn't have voice tools, receptionist does
     // containsAll should fail — researcher can't delegate to receptionist
     let decision = service
-        .authorize("user-1", &researcher, PolicyAction::DelegateTask { target_agent_id: "receptionist".into(), target_handle: frona::handle!("receptionist") })
+        .authorize(
+            "user-1",
+            &researcher,
+            PolicyAction::DelegateTask {
+                target_agent_id: "receptionist".into(),
+                target_handle: frona::handle!("receptionist"),
+            },
+        )
         .await
         .unwrap();
-    assert!(decision.is_denied(), "researcher should not be able to delegate to receptionist (missing voice tools)");
+    assert!(
+        decision.is_denied(),
+        "researcher should not be able to delegate to receptionist (missing voice tools)"
+    );
 }
 
 #[tokio::test]
@@ -620,10 +753,20 @@ async fn delegation_allowed_researcher_to_developer() {
     // Both researcher and developer have the same tools (everything except voice)
     // containsAll should pass
     let decision = service
-        .authorize("user-1", &researcher, PolicyAction::DelegateTask { target_agent_id: "developer".into(), target_handle: frona::handle!("developer") })
+        .authorize(
+            "user-1",
+            &researcher,
+            PolicyAction::DelegateTask {
+                target_agent_id: "developer".into(),
+                target_handle: frona::handle!("developer"),
+            },
+        )
         .await
         .unwrap();
-    assert!(decision.allowed, "researcher should be able to delegate to developer (same tool set)");
+    assert!(
+        decision.allowed,
+        "researcher should be able to delegate to developer (same tool set)"
+    );
 }
 
 #[tokio::test]
@@ -641,13 +784,21 @@ async fn sync_base_policies_no_duplicates_on_restart() {
     service.sync_base_policies().await.unwrap();
 
     let after = service.list_system_policies().await.unwrap();
-    assert_eq!(after.len(), first_count, "base policies should not duplicate on restart");
+    assert_eq!(
+        after.len(),
+        first_count,
+        "base policies should not duplicate on restart"
+    );
 
     let names: Vec<&str> = after.iter().map(|p| p.name.as_str()).collect();
     let mut unique_names = names.clone();
     unique_names.sort();
     unique_names.dedup();
-    assert_eq!(names.len(), unique_names.len(), "all policy names should be unique");
+    assert_eq!(
+        names.len(),
+        unique_names.len(),
+        "all policy names should be unique"
+    );
 }
 
 mod reconcile {
@@ -672,7 +823,10 @@ mod reconcile {
         overrides: Vec<(EntityRef, AccessIntent)>,
     ) -> AccessGroup {
         AccessGroup {
-            principal: EntityRef::agent(&frona::handle!("user-1"), &frona::core::Handle::try_new(principal_id).unwrap()),
+            principal: EntityRef::agent(
+                &frona::handle!("user-1"),
+                &frona::core::Handle::try_new(principal_id).unwrap(),
+            ),
             action: action.into(),
             default,
             overrides: overrides
@@ -723,7 +877,12 @@ mod reconcile {
     async fn allow_override_with_baseline_deny_emits_permit() {
         let (_db, service) = setup().await;
         let target = PolicyReconcileTarget {
-            groups: vec![group("aa", "read", None, vec![(dir("/x"), AccessIntent::Allow)])],
+            groups: vec![group(
+                "aa",
+                "read",
+                None,
+                vec![(dir("/x"), AccessIntent::Allow)],
+            )],
         };
         let result = service.reconcile_or_fail("user-1", target).await.unwrap();
         assert_eq!(result.created, 1);
@@ -734,7 +893,12 @@ mod reconcile {
     async fn re_reconcile_same_target_is_noop() {
         let (_db, service) = setup().await;
         let target = || PolicyReconcileTarget {
-            groups: vec![group("aa", "read", None, vec![(dir("/x"), AccessIntent::Allow)])],
+            groups: vec![group(
+                "aa",
+                "read",
+                None,
+                vec![(dir("/x"), AccessIntent::Allow)],
+            )],
         };
         service.reconcile_or_fail("user-1", target()).await.unwrap();
         let plan = service.reconcile("user-1", target()).await.unwrap();
@@ -749,13 +913,21 @@ mod reconcile {
                 "aa",
                 "read",
                 None,
-                vec![(dir("/x"), AccessIntent::Allow), (dir("/y"), AccessIntent::Allow)],
+                vec![
+                    (dir("/x"), AccessIntent::Allow),
+                    (dir("/y"), AccessIntent::Allow),
+                ],
             )],
         };
         service.reconcile_or_fail("user-1", v1).await.unwrap();
 
         let v2 = PolicyReconcileTarget {
-            groups: vec![group("aa", "read", None, vec![(dir("/x"), AccessIntent::Allow)])],
+            groups: vec![group(
+                "aa",
+                "read",
+                None,
+                vec![(dir("/x"), AccessIntent::Allow)],
+            )],
         };
         let result = service.reconcile_or_fail("user-1", v2).await.unwrap();
         assert_eq!(result.deleted, 1, "drops the /y permit");
@@ -850,7 +1022,12 @@ mod reconcile {
             .unwrap();
 
         let target = PolicyReconcileTarget {
-            groups: vec![group("aa", "read", None, vec![(dir("/x"), AccessIntent::Allow)])],
+            groups: vec![group(
+                "aa",
+                "read",
+                None,
+                vec![(dir("/x"), AccessIntent::Allow)],
+            )],
         };
         let plan = service.reconcile("user-1", target).await.unwrap();
         assert!(!plan.is_clean(), "should have conflicts");
@@ -868,7 +1045,12 @@ mod reconcile {
     async fn stale_plan_returns_stale_plan_error() {
         let (_db, service) = setup().await;
         let target = PolicyReconcileTarget {
-            groups: vec![group("aa", "read", None, vec![(dir("/x"), AccessIntent::Allow)])],
+            groups: vec![group(
+                "aa",
+                "read",
+                None,
+                vec![(dir("/x"), AccessIntent::Allow)],
+            )],
         };
         let plan = service.reconcile("user-1", target).await.unwrap();
 
@@ -904,13 +1086,21 @@ mod reconcile {
         };
 
         let result = service
-            .reconcile_sandbox_policy("user-1", EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")), &sb)
+            .reconcile_sandbox_policy(
+                "user-1",
+                EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")),
+                &sb,
+            )
             .await
             .expect("commit succeeds");
         assert!(result.created > 0);
 
         let result2 = service
-            .reconcile_sandbox_policy("user-1", EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")), &sb)
+            .reconcile_sandbox_policy(
+                "user-1",
+                EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")),
+                &sb,
+            )
             .await
             .unwrap();
         assert_eq!(result2.created, 0);
@@ -925,7 +1115,11 @@ mod reconcile {
             ..Default::default()
         };
         let result = service
-            .reconcile_sandbox_policy("user-1", EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")), &sb)
+            .reconcile_sandbox_policy(
+                "user-1",
+                EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")),
+                &sb,
+            )
             .await
             .unwrap();
         assert_eq!(result.created, 1, "one wildcard forbid for connect");
@@ -974,7 +1168,10 @@ mod reconcile {
             .unwrap();
         // browser, voice, search → 3 ToolGroup forbids (collapsed)
         // ToolGroup::"agent" → baseline already denies, no row
-        assert_eq!(r1.created, 3, "three ToolGroup forbids; agent group already baseline-deny");
+        assert_eq!(
+            r1.created, 3,
+            "three ToolGroup forbids; agent group already baseline-deny"
+        );
 
         let r2 = service
             .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-x"), &["manage_agent".into()])
@@ -982,13 +1179,18 @@ mod reconcile {
             .unwrap();
         // browser/voice/search forbids stay (still all-deny in their groups → collapse → forbid).
         // ToolGroup::"agent" Allow vs baseline-deny → emit one ToolGroup permit.
-        assert_eq!(r2.created, 1, "selecting agent-group tool emits one ToolGroup permit");
+        assert_eq!(
+            r2.created, 1,
+            "selecting agent-group tool emits one ToolGroup permit"
+        );
         assert_eq!(r2.deleted, 0);
 
         let policies = service.list_policies("user-1").await.unwrap();
         let agent_permit = policies
             .iter()
-            .find(|p| p.policy_text.contains("ToolGroup::\"agent\"") && p.policy_text.contains("permit"))
+            .find(|p| {
+                p.policy_text.contains("ToolGroup::\"agent\"") && p.policy_text.contains("permit")
+            })
             .expect("permit row for ToolGroup::agent");
         assert!(agent_permit.policy_text.contains("resource in"));
     }
@@ -1013,7 +1215,11 @@ mod reconcile {
             .iter()
             .filter(|p| p.policy_text.contains("voice"))
             .collect();
-        assert_eq!(voice_rows.len(), 1, "one collapsed rule for voice, not per-tool");
+        assert_eq!(
+            voice_rows.len(),
+            1,
+            "one collapsed rule for voice, not per-tool"
+        );
         assert!(voice_rows[0].policy_text.contains("resource in"));
         assert!(voice_rows[0].policy_text.contains("ToolGroup::\"voice\""));
     }
@@ -1037,11 +1243,14 @@ mod reconcile {
         assert!(
             voice_rows
                 .iter()
-                .any(|p| p.policy_text.contains("Tool::\"hangup_call\"") && p.policy_text.contains("forbid")),
+                .any(|p| p.policy_text.contains("Tool::\"hangup_call\"")
+                    && p.policy_text.contains("forbid")),
             "expected per-tool forbid for hangup_call when voice has mixed intent: {voice_rows:?}"
         );
         assert!(
-            !voice_rows.iter().any(|p| p.policy_text.contains("ToolGroup::\"voice\"")),
+            !voice_rows
+                .iter()
+                .any(|p| p.policy_text.contains("ToolGroup::\"voice\"")),
             "should not have collapsed to ToolGroup::voice"
         );
     }
@@ -1135,12 +1344,17 @@ mod reconcile {
 
         let policies = service.list_policies("user-1").await.unwrap();
         assert!(
-            !policies.iter().any(|p| p.policy_text.contains("ToolGroup::\"voice\"")),
+            !policies
+                .iter()
+                .any(|p| p.policy_text.contains("ToolGroup::\"voice\"")),
             "ToolGroup::voice rule should be gone"
         );
-        assert!(policies.iter().any(
-            |p| p.policy_text.contains("Tool::\"hangup_call\"") && p.policy_text.contains("forbid")
-        ));
+        assert!(
+            policies
+                .iter()
+                .any(|p| p.policy_text.contains("Tool::\"hangup_call\"")
+                    && p.policy_text.contains("forbid"))
+        );
     }
 
     #[tokio::test]
@@ -1158,7 +1372,10 @@ mod reconcile {
         assert_eq!(result.created, 1);
 
         let policies = service.list_policies("user-1").await.unwrap();
-        let emitted = policies.iter().find(|p| p.name.starts_with("reconcile-")).expect("emitted");
+        let emitted = policies
+            .iter()
+            .find(|p| p.name.starts_with("reconcile-"))
+            .expect("emitted");
         assert!(emitted.policy_text.contains("permit"));
         assert!(emitted.policy_text.contains("unless"));
         assert!(emitted.policy_text.contains("/secret"));
@@ -1175,20 +1392,41 @@ mod reconcile {
             ..Default::default()
         };
         service
-            .reconcile_sandbox_policy("user-1", EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")), &sb)
+            .reconcile_sandbox_policy(
+                "user-1",
+                EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")),
+                &sb,
+            )
             .await
             .unwrap();
         let before = service.list_policies("user-1").await.unwrap();
-        let owned_before: Vec<_> = before.iter().filter(|p| p.name.starts_with("reconcile-")).collect();
-        assert!(owned_before.len() >= 4, "should have multiple reconciled rows, got {}", owned_before.len());
+        let owned_before: Vec<_> = before
+            .iter()
+            .filter(|p| p.name.starts_with("reconcile-"))
+            .collect();
+        assert!(
+            owned_before.len() >= 4,
+            "should have multiple reconciled rows, got {}",
+            owned_before.len()
+        );
 
         service
-            .reconcile_sandbox_policy("user-1", EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")), &SandboxPolicy::permissive())
+            .reconcile_sandbox_policy(
+                "user-1",
+                EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")),
+                &SandboxPolicy::permissive(),
+            )
             .await
             .unwrap();
         let after = service.list_policies("user-1").await.unwrap();
-        let owned_after: Vec<_> = after.iter().filter(|p| p.name.starts_with("reconcile-")).collect();
-        assert!(owned_after.is_empty(), "all reconciled rows for agent should be gone, got {owned_after:?}");
+        let owned_after: Vec<_> = after
+            .iter()
+            .filter(|p| p.name.starts_with("reconcile-"))
+            .collect();
+        assert!(
+            owned_after.is_empty(),
+            "all reconciled rows for agent should be gone, got {owned_after:?}"
+        );
     }
 
     #[tokio::test]
@@ -1199,22 +1437,40 @@ mod reconcile {
             ..Default::default()
         };
         service
-            .reconcile_sandbox_policy("user-1", EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")), &sb())
+            .reconcile_sandbox_policy(
+                "user-1",
+                EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")),
+                &sb(),
+            )
             .await
             .unwrap();
         service
-            .reconcile_sandbox_policy("user-1", EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("bb")), &sb())
+            .reconcile_sandbox_policy(
+                "user-1",
+                EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("bb")),
+                &sb(),
+            )
             .await
             .unwrap();
 
         service
-            .reconcile_sandbox_policy("user-1", EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")), &SandboxPolicy::permissive())
+            .reconcile_sandbox_policy(
+                "user-1",
+                EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")),
+                &SandboxPolicy::permissive(),
+            )
             .await
             .unwrap();
 
         let policies = service.list_policies("user-1").await.unwrap();
-        let agent_a = policies.iter().filter(|p| p.policy_text.contains("Policy::Agent::\"user-1/aa\"")).count();
-        let agent_b = policies.iter().filter(|p| p.policy_text.contains("Policy::Agent::\"user-1/bb\"")).count();
+        let agent_a = policies
+            .iter()
+            .filter(|p| p.policy_text.contains("Policy::Agent::\"user-1/aa\""))
+            .count();
+        let agent_b = policies
+            .iter()
+            .filter(|p| p.policy_text.contains("Policy::Agent::\"user-1/bb\""))
+            .count();
         assert_eq!(agent_a, 0, "agent a's rows should be wiped");
         assert!(agent_b > 0, "agent b's rows should be untouched");
     }
@@ -1225,8 +1481,14 @@ mod reconcile {
         let entity = || EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa"));
 
         // 1. Create with /data read.
-        let v1 = SandboxPolicy { read_paths: vec!["/data".into()], ..Default::default() };
-        let r1 = service.reconcile_sandbox_policy("user-1", entity(), &v1).await.unwrap();
+        let v1 = SandboxPolicy {
+            read_paths: vec!["/data".into()],
+            ..Default::default()
+        };
+        let r1 = service
+            .reconcile_sandbox_policy("user-1", entity(), &v1)
+            .await
+            .unwrap();
         assert!(r1.created > 0);
 
         // 2. Modify: add /logs.
@@ -1234,12 +1496,18 @@ mod reconcile {
             read_paths: vec!["/data".into(), "/logs".into()],
             ..Default::default()
         };
-        let r2 = service.reconcile_sandbox_policy("user-1", entity(), &v2).await.unwrap();
+        let r2 = service
+            .reconcile_sandbox_policy("user-1", entity(), &v2)
+            .await
+            .unwrap();
         assert_eq!(r2.created, 1, "added /logs");
         assert_eq!(r2.deleted, 0);
 
         // 3. Revert to /data only.
-        let r3 = service.reconcile_sandbox_policy("user-1", entity(), &v1).await.unwrap();
+        let r3 = service
+            .reconcile_sandbox_policy("user-1", entity(), &v1)
+            .await
+            .unwrap();
         assert_eq!(r3.deleted, 1, "removed /logs");
         assert_eq!(r3.created, 0);
 
@@ -1262,14 +1530,20 @@ mod reconcile {
             write_paths: vec!["/shared".into()],
             ..Default::default()
         };
-        service.reconcile_sandbox_policy("user-1", entity(), &v1).await.unwrap();
+        service
+            .reconcile_sandbox_policy("user-1", entity(), &v1)
+            .await
+            .unwrap();
 
         let v2 = SandboxPolicy {
             read_paths: vec![],
             write_paths: vec!["/shared".into()],
             ..Default::default()
         };
-        let r = service.reconcile_sandbox_policy("user-1", entity(), &v2).await.unwrap();
+        let r = service
+            .reconcile_sandbox_policy("user-1", entity(), &v2)
+            .await
+            .unwrap();
         assert_eq!(r.deleted, 1, "read row removed");
         assert_eq!(r.created, 0, "write row untouched");
     }
@@ -1285,7 +1559,10 @@ mod reconcile {
             blocked_networks: vec!["10.0.0.0/8".into()],
             ..Default::default()
         };
-        service.reconcile_sandbox_policy("user-1", entity(), &sb).await.unwrap();
+        service
+            .reconcile_sandbox_policy("user-1", entity(), &sb)
+            .await
+            .unwrap();
 
         let policies = service.list_policies("user-1").await.unwrap();
         let connect_rows: Vec<_> = policies
@@ -1319,13 +1596,23 @@ mod reconcile {
 
         // Reconcile with read_paths excluding /y → planner sees the user's
         // permit as owned and deletes it.
-        let sb = SandboxPolicy { read_paths: vec!["/x".into()], ..Default::default() };
+        let sb = SandboxPolicy {
+            read_paths: vec!["/x".into()],
+            ..Default::default()
+        };
         service
-            .reconcile_sandbox_policy("user-1", EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")), &sb)
+            .reconcile_sandbox_policy(
+                "user-1",
+                EntityRef::agent(&frona::handle!("user-1"), &frona::handle!("aa")),
+                &sb,
+            )
             .await
             .unwrap();
         let after = service.list_policies("user-1").await.unwrap();
-        assert!(!after.iter().any(|p| p.name == "u-y"), "user permit absorbed");
+        assert!(
+            !after.iter().any(|p| p.name == "u-y"),
+            "user permit absorbed"
+        );
     }
 }
 
@@ -1367,11 +1654,16 @@ async fn authorize_user_admin_can_manage_users() {
     let decision = service
         .authorize_user(
             &admin,
-            PolicyAction::ManageUsers { target_user_id: "target".into() },
+            PolicyAction::ManageUsers {
+                target_user_id: "target".into(),
+            },
         )
         .await
         .unwrap();
-    assert!(decision.allowed, "admin should be permitted to manage_users");
+    assert!(
+        decision.allowed,
+        "admin should be permitted to manage_users"
+    );
 }
 
 #[tokio::test]
@@ -1382,7 +1674,10 @@ async fn authorize_user_member_cannot_list_users() {
         .authorize_user(&member, PolicyAction::ListUsers)
         .await
         .unwrap();
-    assert!(!decision.allowed, "non-admin should not be permitted to list_users");
+    assert!(
+        !decision.allowed,
+        "non-admin should not be permitted to list_users"
+    );
 }
 
 #[tokio::test]
@@ -1394,11 +1689,16 @@ async fn authorize_user_member_cannot_manage_users() {
     let decision = service
         .authorize_user(
             &member,
-            PolicyAction::ManageUsers { target_user_id: "member-1".into() },
+            PolicyAction::ManageUsers {
+                target_user_id: "member-1".into(),
+            },
         )
         .await
         .unwrap();
-    assert!(!decision.allowed, "non-admin must not self-promote via manage_users");
+    assert!(
+        !decision.allowed,
+        "non-admin must not self-promote via manage_users"
+    );
 }
 
 #[tokio::test]
@@ -1409,7 +1709,9 @@ async fn authorize_user_admin_in_custom_group_still_admin() {
     let decision = service
         .authorize_user(
             &admin,
-            PolicyAction::ManageUsers { target_user_id: "target".into() },
+            PolicyAction::ManageUsers {
+                target_user_id: "target".into(),
+            },
         )
         .await
         .unwrap();
@@ -1432,11 +1734,21 @@ mod decision_cache {
         let (_db, service) = setup().await;
         let agent = test_agent("agent-1");
 
-        service.authorize("user-1", &agent, invoke("browser_navigate", "browser")).await.unwrap();
+        service
+            .authorize("user-1", &agent, invoke("browser_navigate", "browser"))
+            .await
+            .unwrap();
         assert_eq!(service.decision_cache_entry_count().await, 1);
 
-        service.authorize("user-1", &agent, invoke("browser_navigate", "browser")).await.unwrap();
-        assert_eq!(service.decision_cache_entry_count().await, 1, "second call must reuse the cached entry");
+        service
+            .authorize("user-1", &agent, invoke("browser_navigate", "browser"))
+            .await
+            .unwrap();
+        assert_eq!(
+            service.decision_cache_entry_count().await,
+            1,
+            "second call must reuse the cached entry"
+        );
     }
 
     #[tokio::test]
@@ -1444,9 +1756,18 @@ mod decision_cache {
         let (_db, service) = setup().await;
         let agent = test_agent("agent-1");
 
-        service.authorize("user-1", &agent, invoke("browser_navigate", "browser")).await.unwrap();
-        service.authorize("user-1", &agent, invoke("web_search", "search")).await.unwrap();
-        service.authorize("user-1", &agent, invoke("make_voice_call", "voice")).await.unwrap();
+        service
+            .authorize("user-1", &agent, invoke("browser_navigate", "browser"))
+            .await
+            .unwrap();
+        service
+            .authorize("user-1", &agent, invoke("web_search", "search"))
+            .await
+            .unwrap();
+        service
+            .authorize("user-1", &agent, invoke("make_voice_call", "voice"))
+            .await
+            .unwrap();
 
         assert_eq!(service.decision_cache_entry_count().await, 3);
     }
@@ -1457,8 +1778,14 @@ mod decision_cache {
         let agent_a = test_agent("agent-a");
         let agent_b = test_agent("agent-b");
 
-        service.authorize("user-1", &agent_a, invoke("browser_navigate", "browser")).await.unwrap();
-        service.authorize("user-1", &agent_b, invoke("browser_navigate", "browser")).await.unwrap();
+        service
+            .authorize("user-1", &agent_a, invoke("browser_navigate", "browser"))
+            .await
+            .unwrap();
+        service
+            .authorize("user-1", &agent_b, invoke("browser_navigate", "browser"))
+            .await
+            .unwrap();
 
         assert_eq!(service.decision_cache_entry_count().await, 2);
     }
@@ -1468,8 +1795,14 @@ mod decision_cache {
         let (_db, service) = setup().await;
         let agent = test_agent("agent-1");
 
-        service.authorize("user-1", &agent, invoke("browser_navigate", "browser")).await.unwrap();
-        service.authorize("user-1", &agent, invoke("web_search", "search")).await.unwrap();
+        service
+            .authorize("user-1", &agent, invoke("browser_navigate", "browser"))
+            .await
+            .unwrap();
+        service
+            .authorize("user-1", &agent, invoke("web_search", "search"))
+            .await
+            .unwrap();
         assert_eq!(service.decision_cache_entry_count().await, 2);
 
         service.invalidate_cache("user-1").await;
@@ -1481,7 +1814,10 @@ mod decision_cache {
         let (_db, service) = setup().await;
         let agent = test_agent("agent-1");
 
-        service.authorize("user-1", &agent, invoke("browser_navigate", "browser")).await.unwrap();
+        service
+            .authorize("user-1", &agent, invoke("browser_navigate", "browser"))
+            .await
+            .unwrap();
         assert_eq!(service.decision_cache_entry_count().await, 1);
 
         service.invalidate_all_caches();
@@ -1509,13 +1845,20 @@ mod decision_cache {
             )
             .await
             .unwrap();
-        assert_eq!(service.decision_cache_entry_count().await, 0, "create_policy must drop stale decisions");
+        assert_eq!(
+            service.decision_cache_entry_count().await,
+            0,
+            "create_policy must drop stale decisions"
+        );
 
         let after = service
             .authorize("user-1", &agent, invoke("browser_navigate", "browser"))
             .await
             .unwrap();
-        assert!(after.is_denied(), "fresh evaluation must reflect the new forbid");
+        assert!(
+            after.is_denied(),
+            "fresh evaluation must reflect the new forbid"
+        );
     }
 
     #[tokio::test]

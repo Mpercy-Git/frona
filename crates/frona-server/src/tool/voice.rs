@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::Engine as _;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::Sha1;
@@ -16,14 +16,16 @@ use crate::auth::User;
 use crate::auth::UserService;
 use crate::auth::token::models::TokenType;
 use crate::auth::token::service::{CreateTokenRequest, TokenService};
-use crate::call::models::CallDirection;
 use crate::call::CallService;
+use crate::call::models::CallDirection;
 use crate::contact::ContactService;
 use crate::core::Principal;
 use crate::core::config::VoiceConfig;
 use crate::core::error::AppError;
 use crate::credential::keypair::service::KeyPairService;
-use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition};
+use crate::tool::{
+    AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition,
+};
 
 // ---------------------------------------------------------------------------
 // Phone number helpers
@@ -205,10 +207,6 @@ pub struct VoiceSessionExtensions {
     pub transfer_note: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// VoiceProvider trait
-// ---------------------------------------------------------------------------
-
 #[async_trait]
 pub trait VoiceProvider: Send + Sync {
     fn name(&self) -> &str;
@@ -227,10 +225,6 @@ pub trait VoiceProvider: Send + Sync {
     ) -> Result<String, AppError>;
 }
 
-// ---------------------------------------------------------------------------
-// TwilioProvider
-// ---------------------------------------------------------------------------
-
 pub struct TwilioProvider {
     pub account_sid: String,
     pub auth_token: String,
@@ -240,7 +234,7 @@ pub struct TwilioProvider {
     pub speech_model: Option<String>,
     pub token_service: TokenService,
     pub keypair_service: KeyPairService,
-    /// Callback token TTL in seconds — short enough that a leaked callback URL
+    /// Callback token TTL in seconds - short enough that a leaked callback URL
     /// can't be replayed beyond the call setup window.
     pub callback_ttl_secs: u64,
 }
@@ -304,7 +298,9 @@ impl VoiceProvider for TwilioProvider {
 
         match result {
             TwilioJson::Success(call) => Ok(call.sid),
-            TwilioJson::Fail { status, message, .. } => Err(AppError::Tool(format!(
+            TwilioJson::Fail {
+                status, message, ..
+            } => Err(AppError::Tool(format!(
                 "Twilio API error {status}: {message}"
             ))),
         }
@@ -562,11 +558,18 @@ impl AgentTool for VoiceCallTool {
             .unwrap_or_default()
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let phone_number = arguments
             .get("phone_number")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::Validation("Missing required parameter: phone_number".into()))?;
+            .ok_or_else(|| {
+                AppError::Validation("Missing required parameter: phone_number".into())
+            })?;
 
         let name = arguments
             .get("name")
@@ -585,7 +588,8 @@ impl AgentTool for VoiceCallTool {
             AppError::Tool("Voice calling is not configured. Set voice.twilio_account_sid, twilio_auth_token, and twilio_from_number in config.".into())
         })?;
 
-        let chat_id = &ctx.chat.id;
+        let chat = active_chat(ctx)?;
+        let chat_id = &chat.id;
 
         let contact = place_outbound_call(
             provider.as_ref(),
@@ -602,21 +606,21 @@ impl AgentTool for VoiceCallTool {
         )
         .await?;
 
-        let call_connected_block = self.prompts
-            .read_with_vars("active_call.md", &[
-                ("caller_name", &contact.name),
-                ("phone_number", phone_number),
-                ("objective", objective),
-            ])
+        let call_connected_block = self
+            .prompts
+            .read_with_vars(
+                "active_call.md",
+                &[
+                    ("caller_name", &contact.name),
+                    ("phone_number", phone_number),
+                    ("objective", objective),
+                ],
+            )
             .unwrap_or_default();
 
         Ok(ToolOutput::text(call_connected_block).as_pending_external())
     }
 }
-
-// ---------------------------------------------------------------------------
-// SendDtmfTool (external — pauses tool loop)
-// ---------------------------------------------------------------------------
 
 pub struct SendDtmfTool {
     pub prompts: PromptLoader,
@@ -634,19 +638,20 @@ impl AgentTool for SendDtmfTool {
             .unwrap_or_default()
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        _ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let digits = arguments
             .get("digits")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::Validation("Missing required parameter: digits".into()))?;
-        // The result IS the digits string — the voice handler reads external_tool.result
+        // The result IS the digits string - the voice handler reads external_tool.result
         Ok(ToolOutput::text(digits).as_pending_external())
     }
 }
-
-// ---------------------------------------------------------------------------
-// HangupCallTool (external — pauses tool loop)
-// ---------------------------------------------------------------------------
 
 pub struct HangupCallTool {
     pub prompts: PromptLoader,
@@ -664,7 +669,12 @@ impl AgentTool for HangupCallTool {
             .unwrap_or_default()
     }
 
-    async fn execute(&self, _tool_name: &str, _arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        _arguments: Value,
+        _ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         Ok(ToolOutput::text("hangup").as_pending_external())
     }
 }
@@ -726,9 +736,12 @@ impl AgentTool for TransferCallTool {
         // one the caller's agent is allowed to hand off to.
         self.agent_service.get_accessible(owner_id, &target.id).await?;
 
+        // `ctx.chat` is optional since detached inference; a transfer only
+        // makes sense on a live call, so require the chat here.
+        let chat = active_chat(ctx)?;
         let call = self
             .call_service
-            .find_by_chat_id(&ctx.chat.id)
+            .find_by_chat_id(&chat.id)
             .await?
             .ok_or_else(|| AppError::Validation("No active call on this chat".into()))?;
         if call.transfer_count >= MAX_CALL_TRANSFERS {
@@ -743,14 +756,14 @@ impl AgentTool for TransferCallTool {
         // immediately, independent of whether the callback ever succeeds.
         let updated_chat = self
             .chat_service
-            .reassign_agent(owner_id, &ctx.chat.id, &target.id)
+            .reassign_agent(owner_id, &chat.id, &target.id)
             .await?;
         let _ = self
             .chat_service
             .save_system_message(
                 owner_id,
                 updated_chat.space_id.as_deref(),
-                &ctx.chat.id,
+                &chat.id,
                 format!("Transferred to {}.", target.name),
             )
             .await;
@@ -776,15 +789,18 @@ impl AgentTool for TransferCallTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::repo::generic::SurrealRepo;
     use crate::core::config::VoiceConfig;
+    use crate::db::repo::generic::SurrealRepo;
 
     async fn test_contact_service() -> ContactService {
         use surrealdb::Surreal;
         use surrealdb::engine::local::Mem;
         let db = Surreal::new::<Mem>(()).await.unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
-        ContactService::new(SurrealRepo::new(db), crate::chat::broadcast::BroadcastService::new())
+        ContactService::new(
+            SurrealRepo::new(db),
+            crate::chat::broadcast::BroadcastService::new(),
+        )
     }
 
     #[test]

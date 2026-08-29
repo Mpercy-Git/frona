@@ -23,10 +23,11 @@ impl Command for CompactCommand {
         _args: &str,
         ctx: &mut CommandContext<'_>,
     ) -> Result<CommandOutcome, AppError> {
-        let status = ctx
+        let changed = ctx
             .harness
-            .memory_service
-            .compact_chat_via_command(
+            .chat_service
+            .compactor()
+            .compact_chat(
                 &ctx.user.id,
                 &ctx.chat.id,
                 &ctx.chat.agent_id,
@@ -34,7 +35,13 @@ impl Command for CompactCommand {
                 ctx.session.model_group.context_window,
                 DEFAULT_MAX_OUTPUT_TOKENS,
             )
-            .await?;
+            .await?
+            .compacted;
+        let status = if changed {
+            "Compacted older messages into a summary."
+        } else {
+            "Chat is already at optimal size — no compaction needed."
+        };
         Ok(CommandOutcome::Message(status.to_string()))
     }
 }

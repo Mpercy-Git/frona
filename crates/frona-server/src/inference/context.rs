@@ -12,24 +12,30 @@ pub fn estimate_tokens(text: &str) -> usize {
 
 pub fn estimate_message_tokens(msg: &RigMessage) -> usize {
     let content_len: usize = match msg {
-        RigMessage::User { content } => {
-            content.iter().map(|c| -> usize {
+        RigMessage::User { content } => content
+            .iter()
+            .map(|c| -> usize {
                 match c {
                     rig_core::completion::message::UserContent::Text(t) => t.text.len(),
-                    rig_core::completion::message::UserContent::ToolResult(tr) => {
-                        tr.content.iter().map(|c| -> usize {
+                    rig_core::completion::message::UserContent::ToolResult(tr) => tr
+                        .content
+                        .iter()
+                        .map(|c| -> usize {
                             match c {
-                                rig_core::completion::message::ToolResultContent::Text(t) => t.text.len(),
+                                rig_core::completion::message::ToolResultContent::Text(t) => {
+                                    t.text.len()
+                                }
                                 _ => 100,
                             }
-                        }).sum::<usize>()
-                    }
+                        })
+                        .sum::<usize>(),
                     _ => 100,
                 }
-            }).sum::<usize>()
-        }
-        RigMessage::Assistant { content, .. } => {
-            content.iter().map(|c| -> usize {
+            })
+            .sum::<usize>(),
+        RigMessage::Assistant { content, .. } => content
+            .iter()
+            .map(|c| -> usize {
                 match c {
                     rig_core::completion::AssistantContent::Text(t) => t.text.len(),
                     rig_core::completion::AssistantContent::ToolCall(tc) => {
@@ -37,8 +43,8 @@ pub fn estimate_message_tokens(msg: &RigMessage) -> usize {
                     }
                     _ => 100,
                 }
-            }).sum::<usize>()
-        }
+            })
+            .sum::<usize>(),
         RigMessage::System { content } => content.len(),
     };
 
@@ -68,7 +74,7 @@ pub fn needs_compaction(
 /// Trims `history` to fit `history_truncation_pct` of the budget left over
 /// after `max_output_tokens` and the system prompt. Newest messages are kept;
 /// older ones are dropped first. Operates on a resolved window budget
-/// (typically from `resolve_context_window`) — doesn't know about model identity.
+/// (typically from `resolve_context_window`) - doesn't know about model identity.
 pub fn truncate_history(
     history: Vec<RigMessage>,
     system_prompt: &str,
@@ -88,6 +94,7 @@ pub fn truncate_history(
         return history;
     }
 
+    let original_len = history.len();
     let mut result: Vec<RigMessage> = Vec::new();
     let mut used = 0usize;
 
@@ -101,6 +108,18 @@ pub fn truncate_history(
     }
 
     result.reverse();
+    // We only get here when the history is over budget and messages are being
+    // dropped oldest-first - a silent context loss the caller can't see. Surface
+    // it: for the compaction summarizer (`text_inference`) this means the backlog
+    // exceeded the summarizer's own window and the oldest messages won't reach the
+    // summary either. No-op truncations returned above, so this never fires spuriously.
+    tracing::warn!(
+        estimated_tokens = total,
+        budget,
+        dropped_messages = original_len - result.len(),
+        kept_messages = result.len(),
+        "history over budget: dropped oldest messages to fit (silent context loss)"
+    );
     result
 }
 

@@ -146,10 +146,7 @@ async fn click_by_selector_works() {
     conn.navigate(&data_url(html), true).await.unwrap();
     conn.click(ElementTarget::Selector("#b")).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let title = conn
-        .evaluate("document.title", false)
-        .await
-        .unwrap();
+    let title = conn.evaluate("document.title", false).await.unwrap();
     assert_eq!(title.as_str(), Some("clicked"));
     conn.disconnect().await.unwrap();
 }
@@ -212,7 +209,9 @@ async fn select_changes_dropdown_value() {
         </select></body></html>"#;
     let conn = connect().await;
     conn.navigate(&data_url(html), true).await.unwrap();
-    conn.select(ElementTarget::Selector("#s"), "b").await.unwrap();
+    conn.select(ElementTarget::Selector("#s"), "b")
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
     let title = conn.evaluate("document.title", false).await.unwrap();
     assert_eq!(title.as_str(), Some("b"));
@@ -229,7 +228,9 @@ async fn select_matches_by_visible_text_too() {
         </select></body></html>"#;
     let conn = connect().await;
     conn.navigate(&data_url(html), true).await.unwrap();
-    conn.select(ElementTarget::Selector("#s"), "Second").await.unwrap();
+    conn.select(ElementTarget::Selector("#s"), "Second")
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
     let title = conn.evaluate("document.title", false).await.unwrap();
     assert_eq!(title.as_str(), Some("x2"));
@@ -258,7 +259,10 @@ async fn scroll_moves_page() {
         .unwrap()
         .as_f64()
         .unwrap_or(0.0);
-    assert!(after_relative > 700.0, "expected scrollY > 700, got {after_relative}");
+    assert!(
+        after_relative > 700.0,
+        "expected scrollY > 700, got {after_relative}"
+    );
 
     conn.scroll(None).await.unwrap();
     let after_bottom = conn

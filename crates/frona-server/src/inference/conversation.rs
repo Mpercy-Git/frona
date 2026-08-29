@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use base64::Engine;
-use rig_core::completion::message::{DocumentSourceKind, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent};
+use rig_core::completion::message::{
+    DocumentSourceKind, ImageMediaType, MimeType, ProviderCallId, Reasoning, ToolCallId,
+    ToolResult, ToolResultContent, UserContent,
+};
 use rig_core::completion::{AssistantContent, Message as RigMessage};
 
 use std::collections::HashMap;
@@ -21,11 +24,14 @@ pub struct ConversationContext {
 
 #[async_trait]
 pub trait ConversationBuilder: Send + Sync {
+    /// `summary`: rolling summary of compacted-away earlier messages, prepended
+    /// as a leading message by chat builders; `None` when there is no summary.
     async fn build(
         &self,
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
+        summary: Option<&str>,
     ) -> Vec<RigMessage>;
 
     /// Turn-scoped system prompt appended to the agent's main system prompt.
@@ -42,15 +48,25 @@ pub struct DefaultConversationBuilder {
 
 #[async_trait]
 impl ConversationBuilder for DefaultConversationBuilder {
-    // NOTE: fallback models reuse this history — messages are not rebuilt per model.
+    // NOTE: fallback models reuse this history - messages are not rebuilt per model.
     async fn build(
         &self,
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
+        summary: Option<&str>,
     ) -> Vec<RigMessage> {
         let te_map = group_tool_calls_by_message(tool_calls);
-        let mut result = Vec::with_capacity(messages.len());
+        let mut result = Vec::with_capacity(messages.len() + 1);
+        // Compacted earlier conversation, re-injected as a leading message so
+        // the model sees the gist of what was summarized away.
+        if let Some(s) = summary
+            && !s.trim().is_empty()
+        {
+            result.push(RigMessage::user(format!(
+                "<conversation_summary>\n{s}\n</conversation_summary>"
+            )));
+        }
         for msg in messages {
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
@@ -149,6 +165,7 @@ impl ConversationBuilder for TaskConversationBuilder {
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
+        _summary: Option<&str>,
     ) -> Vec<RigMessage> {
         let te_map = group_tool_calls_by_message(tool_calls);
         let mut result = Vec::with_capacity(messages.len());
@@ -249,7 +266,7 @@ impl ConversationBuilder for TaskConversationBuilder {
     }
 }
 
-/// The injected heartbeat turn is never written to the message table —
+/// The injected heartbeat turn is never written to the message table -
 /// it exists only inside the inference request.
 pub struct HeartbeatConversationBuilder {
     pub user_service: UserService,
@@ -266,13 +283,14 @@ impl ConversationBuilder for HeartbeatConversationBuilder {
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
+        summary: Option<&str>,
     ) -> Vec<RigMessage> {
         let default = DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
             agent_service: self.agent_service.clone(),
         };
-        let mut result = default.build(messages, tool_calls, ctx).await;
+        let mut result = default.build(messages, tool_calls, ctx, summary).await;
 
         let mut injected = String::new();
         if let Some(prompt) = &self.continuation_prompt
@@ -306,6 +324,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
+        _summary: Option<&str>,
     ) -> Vec<RigMessage> {
         let te_map = group_tool_calls_by_message(tool_calls);
         let mut result = Vec::with_capacity(messages.len());
@@ -397,14 +416,22 @@ impl ConversationBuilder for ChannelConversationBuilder {
     }
 }
 
-fn group_tool_calls_by_message(
-    tool_calls: &[ToolCall],
-) -> HashMap<String, Vec<&ToolCall>> {
+fn group_tool_calls_by_message(tool_calls: &[ToolCall]) -> HashMap<String, Vec<&ToolCall>> {
     let mut map: HashMap<String, Vec<&ToolCall>> = HashMap::new();
     for te in tool_calls {
         map.entry(te.message_id.clone()).or_default().push(te);
     }
     map
+}
+
+fn reasoning_for_replay(r: &crate::chat::message::models::Reasoning) -> Reasoning {
+    r.raw
+        .as_ref()
+        .and_then(|raw| serde_json::from_value(raw.clone()).ok())
+        .unwrap_or_else(|| Reasoning {
+            id: r.id.clone(),
+            ..Reasoning::new_with_signature(&r.content, r.signature.clone())
+        })
 }
 
 fn convert_agent_with_tool_calls(
@@ -433,19 +460,13 @@ fn convert_agent_with_tool_calls(
 
     for tes in turns.values() {
         let mut assistant_items: Vec<AssistantContent> = Vec::new();
-        // Per-turn reasoning — stamped on the first tool_call of the turn at
+        // Per-turn reasoning - stamped on the first tool_call of the turn at
         // begin time. Replayed here so thinking-mode providers (DeepSeek,
         // Anthropic extended thinking) see the `reasoning_content` they
         // originally emitted; without it they reject the request with
         // `invalid_request_error` on resume after a HITL pause.
         if let Some(r) = tes.iter().find_map(|te| te.turn_reasoning.as_ref()) {
-            assistant_items.push(AssistantContent::Reasoning(
-                rig_core::completion::message::Reasoning::new_with_signature(
-                    &r.content,
-                    r.signature.clone(),
-                )
-                .optional_id(r.id.clone()),
-            ));
+            assistant_items.push(AssistantContent::Reasoning(reasoning_for_replay(r)));
         }
         if let Some(text) = tes.iter().find_map(|te| te.turn_text.as_deref())
             && !text.is_empty()
@@ -453,24 +474,35 @@ fn convert_agent_with_tool_calls(
             assistant_items.push(AssistantContent::text(text));
         }
         for te in tes {
-            assistant_items.push(AssistantContent::tool_call(&te.provider_call_id, &te.name, te.arguments.clone()));
+            assistant_items.push(AssistantContent::tool_call(
+                &te.provider_call_id,
+                &te.name,
+                te.arguments.clone(),
+            ));
         }
-        if let Ok(content) = rig_core::OneOrMany::many(assistant_items) {
-            result.push(RigMessage::Assistant { id: None, content });
+        if !assistant_items.is_empty() {
+            result.push(RigMessage::Assistant {
+                id: None,
+                content: assistant_items,
+            });
         }
 
         let tool_results: Vec<UserContent> = tes
             .iter()
             .map(|te| {
+                let provider = ProviderCallId::new(te.provider_call_id.clone());
                 UserContent::ToolResult(ToolResult {
-                    id: te.provider_call_id.clone(),
-                    call_id: None,
-                    content: rig_core::OneOrMany::one(ToolResultContent::text(&te.result)),
+                    call: ToolCallId::for_provider(provider.as_ref()),
+                    provider,
+                    name: te.name.clone(),
+                    content: vec![ToolResultContent::text(&te.result)],
                 })
             })
             .collect();
-        if let Ok(content) = rig_core::OneOrMany::many(tool_results) {
-            result.push(RigMessage::User { content });
+        if !tool_results.is_empty() {
+            result.push(RigMessage::User {
+                content: tool_results,
+            });
         }
     }
 
@@ -478,18 +510,13 @@ fn convert_agent_with_tool_calls(
     if is_completed && !msg.content.is_empty() {
         let mut items: Vec<AssistantContent> = Vec::new();
         if let Some(r) = &msg.reasoning {
-            items.push(AssistantContent::Reasoning(
-                rig_core::completion::message::Reasoning::new_with_signature(
-                    &r.content,
-                    r.signature.clone(),
-                )
-                .optional_id(r.id.clone()),
-            ));
+            items.push(AssistantContent::Reasoning(reasoning_for_replay(r)));
         }
         items.push(AssistantContent::text(&msg.content));
-        if let Ok(content) = rig_core::OneOrMany::many(items) {
-            result.push(RigMessage::Assistant { id: None, content });
-        }
+        result.push(RigMessage::Assistant {
+            id: None,
+            content: items,
+        });
     }
 }
 
@@ -502,8 +529,7 @@ pub fn format_files_block_simple(content: &str, attachments: &[Attachment]) -> S
 }
 
 pub fn is_embeddable_image(attachment: &Attachment) -> bool {
-    is_image_content_type(&attachment.content_type)
-        && !attachment.content_type.contains("svg")
+    is_image_content_type(&attachment.content_type) && !attachment.content_type.contains("svg")
 }
 
 pub fn convert_agent_message(
@@ -520,21 +546,15 @@ pub fn convert_agent_message(
     let is_self = msg.agent_id.as_deref() == Some(agent_id);
     if is_self {
         if let Some(r) = &msg.reasoning {
-            let mut items: Vec<AssistantContent> = vec![
-                AssistantContent::Reasoning(
-                    rig_core::completion::message::Reasoning::new_with_signature(
-                        &r.content,
-                        r.signature.clone(),
-                    )
-                    .optional_id(r.id.clone()),
-                ),
-            ];
+            let mut items: Vec<AssistantContent> =
+                vec![AssistantContent::Reasoning(reasoning_for_replay(r))];
             if !msg.content.is_empty() {
                 items.push(AssistantContent::text(&msg.content));
             }
-            if let Ok(content) = rig_core::OneOrMany::many(items) {
-                return Some(RigMessage::Assistant { id: None, content });
-            }
+            return Some(RigMessage::Assistant {
+                id: None,
+                content: items,
+            });
         }
         // Empty Assistant text blocks make Anthropic reject the request.
         if msg.content.is_empty() {
@@ -581,7 +601,10 @@ fn attribute_cross_agent(content: &str, handle: Option<&str>) -> String {
 fn task_completion_content(msg: &Message) -> String {
     let has_schema = matches!(
         &msg.event,
-        Some(MessageEvent::TaskCompletion { schema: Some(_), .. })
+        Some(MessageEvent::TaskCompletion {
+            schema: Some(_),
+            ..
+        })
     );
     if has_schema && !msg.content.is_empty() {
         format!("<task_result>{}</task_result>", msg.content)
@@ -682,9 +705,7 @@ pub async fn build_user_message(
         return RigMessage::user(&text);
     }
 
-    RigMessage::User {
-        content: rig_core::OneOrMany::many(contents).unwrap(),
-    }
+    RigMessage::User { content: contents }
 }
 
 /// Remove embedded image blocks from user messages, replacing each affected
@@ -716,8 +737,8 @@ pub fn strip_images_from_history(history: &mut [RigMessage]) -> usize {
         kept.push(UserContent::text(
             "[Attachment omitted: the selected model does not support image input.]",
         ));
-        if let Ok(new_content) = rig_core::OneOrMany::many(kept) {
-            *content = new_content;
+        if !kept.is_empty() {
+            *content = kept;
             stripped += image_count;
         }
     }
@@ -727,9 +748,9 @@ pub fn strip_images_from_history(history: &mut [RigMessage]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use crate::agent::task::models::TaskStatus;
-    use crate::chat::message::models::{MessageRole, MessageEvent};
+    use crate::chat::message::models::{MessageEvent, MessageRole};
+    use chrono::Utc;
 
     fn image_block() -> UserContent {
         UserContent::Image(rig_core::completion::message::Image {
@@ -743,7 +764,7 @@ mod tests {
     #[test]
     fn strip_images_replaces_image_with_marker() {
         let content =
-            rig_core::OneOrMany::many(vec![UserContent::text("hello"), image_block()]).unwrap();
+            vec![UserContent::text("hello"), image_block()];
         let mut history = vec![RigMessage::User { content }];
         let n = strip_images_from_history(&mut history);
         assert_eq!(n, 1);
@@ -755,7 +776,7 @@ mod tests {
 
     #[test]
     fn strip_images_handles_image_only_message() {
-        let content = rig_core::OneOrMany::one(image_block());
+        let content = vec![image_block()];
         let mut history = vec![RigMessage::User { content }];
         let n = strip_images_from_history(&mut history);
         assert_eq!(n, 1);
@@ -843,6 +864,7 @@ mod tests {
             id: None,
             content: "thinking".into(),
             signature: None,
+            raw: None,
         });
         assert!(convert_agent_message(&msg, "agent-1", None).is_some());
     }
@@ -963,6 +985,7 @@ mod tests {
                 id: Some("reasoning-1".to_string()),
                 content: "Let me think about this...".to_string(),
                 signature: Some("sig-abc".to_string()),
+                raw: None,
             }),
             ..make_message(MessageRole::Agent, "Here is my answer")
         };
@@ -970,9 +993,16 @@ mod tests {
         assert!(result.is_some());
         let rig_msg = result.unwrap();
         if let RigMessage::Assistant { content, .. } = &rig_msg {
-            let has_reasoning = content.iter().any(|c| matches!(c, AssistantContent::Reasoning(_)));
-            assert!(has_reasoning, "Expected reasoning content in assistant message");
-            let has_text = content.iter().any(|c| matches!(c, AssistantContent::Text(_)));
+            let has_reasoning = content
+                .iter()
+                .any(|c| matches!(c, AssistantContent::Reasoning(_)));
+            assert!(
+                has_reasoning,
+                "Expected reasoning content in assistant message"
+            );
+            let has_text = content
+                .iter()
+                .any(|c| matches!(c, AssistantContent::Text(_)));
             assert!(has_text, "Expected text content in assistant message");
         } else {
             panic!("Expected Assistant message");
@@ -996,7 +1026,9 @@ mod tests {
         let result = convert_agent_message(&msg, "agent-1", None);
         assert!(result.is_some());
         if let RigMessage::Assistant { content, .. } = result.unwrap() {
-            let has_reasoning = content.iter().any(|c| matches!(c, AssistantContent::Reasoning(_)));
+            let has_reasoning = content
+                .iter()
+                .any(|c| matches!(c, AssistantContent::Reasoning(_)));
             assert!(!has_reasoning);
         }
     }

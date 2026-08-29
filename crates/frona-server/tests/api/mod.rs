@@ -2,13 +2,13 @@ mod admin;
 mod agents;
 mod app_supervisor;
 mod apps;
-mod mcp;
 mod auth;
 mod channels;
 mod chats;
 mod commands;
 mod contacts;
 mod files;
+mod mcp;
 mod messages;
 mod misc;
 mod navigation;
@@ -21,20 +21,20 @@ mod vaults;
 
 use std::net::SocketAddr;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::{Request, StatusCode};
-use axum::Router;
-use frona::db::repo::generic::SurrealRepo;
-use frona::storage::StorageService;
-use frona::db::init as db;
 use frona::api::middleware::shutdown::shutdown_gate;
 use frona::api::routes;
 use frona::core::config::Config;
 use frona::core::metrics::setup_metrics_recorder;
 use frona::core::state::AppState;
-use surrealdb::engine::local::Mem;
+use frona::db::init as db;
+use frona::db::repo::generic::SurrealRepo;
+use frona::storage::StorageService;
 use surrealdb::Surreal;
+use surrealdb::engine::local::Mem;
 use tower::ServiceExt;
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -60,7 +60,9 @@ pub struct MockProviderApi {
 
 impl MockProviderApi {
     pub async fn start() -> Self {
-        Self { server: MockServer::start().await }
+        Self {
+            server: MockServer::start().await,
+        }
     }
 
     pub fn uri(&self) -> String {
@@ -90,7 +92,11 @@ pub async fn telegram_mock_api() -> MockProviderApi {
         }),
     )
     .await;
-    m.stub_ok(r"(?i)setwebhook", serde_json::json!({"ok": true, "result": true})).await;
+    m.stub_ok(
+        r"(?i)setwebhook",
+        serde_json::json!({"ok": true, "result": true}),
+    )
+    .await;
     m
 }
 
@@ -114,10 +120,19 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     };
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
     let metrics = setup_metrics_recorder();
-    let mut state = AppState::new(db.clone(), &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics, resource_manager);
+    let mut state = AppState::new(
+        db.clone(),
+        &config,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics,
+        resource_manager,
+    );
 
     // Override the MCP service with a noop package installer so tests don't
     // try to run npx/uvx against fake packages.
@@ -175,7 +190,10 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::apps::router())
         .merge(routes::mcp::router())
         .merge(routes::system::router())
-        .layer(axum::middleware::from_fn_with_state(state.clone(), shutdown_gate))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            shutdown_gate,
+        ))
         .with_state(state)
 }
 
@@ -213,10 +231,8 @@ fn multipart_upload_with_path(
     let mut bytes = Vec::new();
     // path field
     bytes.extend_from_slice(
-        format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"path\"\r\n\r\n{path}\r\n"
-        )
-        .as_bytes(),
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"path\"\r\n\r\n{path}\r\n")
+            .as_bytes(),
     );
     // file field
     bytes.extend_from_slice(
@@ -249,7 +265,11 @@ async fn upload_test_file(
     let app = build_app(state.clone());
     let req = multipart_upload(token, filename, content);
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "upload_test_file({filename}) failed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "upload_test_file({filename}) failed"
+    );
     body_json(resp).await
 }
 

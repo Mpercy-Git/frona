@@ -1,9 +1,4 @@
-# ============================
-# PROD BUILD STAGES
-# ============================
-
-# Stage 1: frontend
-FROM node:24-slim AS frontend-builder
+FROM node:24.19.0-slim AS frontend-builder
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci
@@ -12,7 +7,7 @@ RUN npm run build
 
 # Stage 2: shared Rust base — apt packages + cargo tools installed once,
 # cached by Docker layer so both planner and backend-builder reuse it.
-FROM rust:1.95-bookworm AS rust-base
+FROM rust:1.97.1-bookworm AS rust-base
 RUN --mount=type=bind,source=build/pkgs/builder-rust-apt.txt,target=/tmp/packages.txt \
   apt-get update && apt-get install -y --no-install-recommends \
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
@@ -55,7 +50,31 @@ RUN --mount=type=cache,target=/app/target,id=frona-target \
     && cp target/release/frona /app/frona \
     && cp target/release/mcpctl /app/mcpctl
 
-# Stage 4: CLI tools (op, bw, syd)
+#
+# The reference ontologies are a published artifact of `frona-ontologies`, fetched at
+# build time rather than committed: ~4.2 MB of gzipped Turtle that changes on its own
+# release clock, so keeping it out of git means cutting a release needs no commit here.
+# The server reads the `.gz` as a stream - nothing unpacks them, here or at runtime.
+#
+# `NOTICE` is **not** optional: the sources are CC-BY and the attribution has to ship
+# with anything that redistributes them.
+#
+# Failing the build on an empty result is the point. Without that check a network
+# hiccup produces an image whose PKM backend silently classifies nothing, which is
+# exactly the class of quiet failure the ontology work exists to avoid.
+FROM debian:bookworm-slim AS ontology
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates jq \
+  && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /ontology && cd /ontology \
+  && curl -fsSL https://api.github.com/repos/fronalabs/frona-ontologies/releases/latest \
+     -o /tmp/release.json \
+  && jq -r '.assets[].browser_download_url' /tmp/release.json \
+     | grep -E '\.ttl\.gz$|/(metadata\.json|NOTICE)$' \
+     | xargs -r -n1 curl -fsSL -O \
+  && ls *.ttl.gz >/dev/null \
+  && echo "ontology release $(jq -r .tag_name /tmp/release.json): $(ls | tr '\n' ' ')"
+
 FROM debian:bookworm-slim AS cli-tools
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends curl unzip xz-utils ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -94,9 +113,6 @@ RUN --mount=type=bind,source=build/pkgs/builder-python-apt.txt,target=/tmp/packa
 COPY build/pkgs/builder-python-pip.txt .
 RUN pip install --no-cache-dir --prefix=/install -r builder-python-pip.txt
 
-# ============================
-# DEV TARGET
-# ============================
 
 # Same base as prod so dev and prod share the exact Python 3.12 interpreter and the
 # same runtime deps; dev only layers on the Rust build toolchain (dev-apt.txt).
@@ -121,13 +137,12 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-  | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.95.0 \
+  | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.97.1 \
   && rustup component add clippy rustfmt
 
-# Python packages: same source as prod, built once in `python-builder`.
 COPY --from=python-builder /install /usr/local
 # Pre-compile .pyc so Python needs no write access to system dirs at runtime
-# (syd sandbox blocks writes outside the agent workspace) — matches prod.
+# (syd sandbox blocks writes outside the agent workspace) - matches prod.
 RUN python3 -m compileall -q /usr/local/lib/python3.12
 
 RUN --mount=type=bind,source=build/pkgs/dev-rust-cargo.txt,target=/tmp/cargo.txt \
@@ -138,7 +153,10 @@ RUN --mount=type=bind,source=build/pkgs/dev-rust-cargo.txt,target=/tmp/cargo.txt
 
 COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/syd /usr/local/bin/
 
-RUN groupadd -g 1000 frona && useradd -u 1000 -g frona -m -s /bin/bash frona
+ARG DEV_UID=1000
+ARG DEV_GID=1000
+RUN groupadd -g "$DEV_GID" frona \
+    && useradd -u "$DEV_UID" -g "$DEV_GID" -m -s /bin/bash frona
 RUN mkdir -p /app /app/target /app/frontend/node_modules /app/data /app/bin \
     /usr/local/cargo/registry /usr/local/cargo/git \
     && chown -R frona:frona /app /usr/local/cargo
@@ -147,11 +165,8 @@ USER frona
 WORKDIR /app
 COPY --chown=frona:frona web/package.json web/package-lock.json* web/
 RUN cd web && npm install
-CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch --poll -w crates/ -w Cargo.toml -w Cargo.lock --delay 3 -s /app/build/dev-watch.sh & cd web && npm run dev & wait"]
+CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch -w crates/ -w Cargo.toml -w Cargo.lock --delay 3 -s /app/build/dev-watch.sh & cd web && npm run dev & wait"]
 
-# ============================
-# PROD TARGET (default)
-# ============================
 
 FROM python:3.12-slim-bookworm AS prod
 ARG VERSION=dev
@@ -187,6 +202,10 @@ COPY --chown=frona:frona --from=backend-builder /app/frona /app/bin/frona
 COPY --chown=frona:frona --from=backend-builder /app/mcpctl /app/bin/mcpctl
 COPY --chown=frona:frona --from=frontend-builder /app/web/out /app/static
 COPY --chown=frona:frona resources /app/share
+# After `resources`, so it lands at the path `storage.shared_config_dir` derives:
+# /app/share/ontology. Read-only here by design - anything the user adds goes to
+# `storage.ontology_dir` on the data volume, which survives a restart.
+COPY --chown=frona:frona --from=ontology /ontology /app/share/ontology
 
 ENV PATH="/app/bin:${PATH}"
 # Version reported at runtime (see core::app_version). Set from the VERSION

@@ -1,8 +1,8 @@
 use chrono::Utc;
 
-use crate::db::repo::generic::SurrealRepo;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
+use crate::db::repo::generic::SurrealRepo;
 
 use super::models::{Call, CallDirection, CallStatus};
 use super::repository::CallRepository;

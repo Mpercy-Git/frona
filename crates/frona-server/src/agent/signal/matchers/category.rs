@@ -19,9 +19,15 @@ impl Matcher for CategoryMatcher {
     }
 
     fn evaluate(&self, candidate: &CandidateEvent, watch: &Watch) -> Option<u32> {
-        let watch_set: HashSet<&str> =
-            watch.expected_categories.iter().map(String::as_str).collect();
-        let overlap = candidate.categories().filter(|c| watch_set.contains(c)).count() as u32;
+        let watch_set: HashSet<&str> = watch
+            .expected_categories
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let overlap = candidate
+            .categories()
+            .filter(|c| watch_set.contains(c))
+            .count() as u32;
         if overlap == 0 { None } else { Some(overlap) }
     }
 }

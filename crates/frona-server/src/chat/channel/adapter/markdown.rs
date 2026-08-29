@@ -137,11 +137,7 @@ pub fn to_signal(input: &str) -> SignalText {
     /// Call before any direct `out.push_str(...)` that bypasses `push_str`,
     /// otherwise the deferred blank line lands AFTER the write and orphans
     /// the bullet on its own line.
-    fn flush_pending_blank(
-        out: &mut String,
-        utf16_len: &mut u32,
-        pending_blank_line: &mut bool,
-    ) {
+    fn flush_pending_blank(out: &mut String, utf16_len: &mut u32, pending_blank_line: &mut bool) {
         if !*pending_blank_line {
             return;
         }
@@ -273,16 +269,21 @@ pub fn to_signal(input: &str) -> SignalText {
                 Tag::Strikethrough => {
                     style_stack.push((SignalStyle::Strikethrough, utf16_len));
                 }
-                Tag::Superscript | Tag::Subscript | Tag::HtmlBlock
-                | Tag::FootnoteDefinition(_) | Tag::DefinitionList
-                | Tag::DefinitionListTitle | Tag::DefinitionListDefinition
-                | Tag::Table(_) | Tag::TableHead | Tag::TableRow
-                | Tag::TableCell | Tag::MetadataBlock(_) => {}
+                Tag::Superscript
+                | Tag::Subscript
+                | Tag::HtmlBlock
+                | Tag::FootnoteDefinition(_)
+                | Tag::DefinitionList
+                | Tag::DefinitionListTitle
+                | Tag::DefinitionListDefinition
+                | Tag::Table(_)
+                | Tag::TableHead
+                | Tag::TableRow
+                | Tag::TableCell
+                | Tag::MetadataBlock(_) => {}
             },
             Event::End(tag_end) => match tag_end {
-                TagEnd::Paragraph
-                | TagEnd::Heading(_)
-                | TagEnd::BlockQuote(_) => {
+                TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::BlockQuote(_) => {
                     break_line(&mut out, &mut utf16_len, &mut at_line_start);
                     pending_blank_line = true;
                 }
@@ -290,7 +291,11 @@ pub fn to_signal(input: &str) -> SignalText {
                     let length = utf16_len.saturating_sub(code_block_start);
                     if in_code_block && length > 0 {
                         // Strip pulldown-cmark's trailing block newline.
-                        let trimmed_len = if out.ends_with('\n') { length - 1 } else { length };
+                        let trimmed_len = if out.ends_with('\n') {
+                            length - 1
+                        } else {
+                            length
+                        };
                         if trimmed_len > 0 {
                             ranges.push(SignalBodyRange {
                                 start: code_block_start,
@@ -350,7 +355,11 @@ pub fn to_signal(input: &str) -> SignalText {
                         debug_assert_eq!(style, expected_style);
                         let length = utf16_len.saturating_sub(start);
                         if length > 0 {
-                            ranges.push(SignalBodyRange { start, length, style });
+                            ranges.push(SignalBodyRange {
+                                start,
+                                length,
+                                style,
+                            });
                         }
                     }
                 }
@@ -445,12 +454,7 @@ pub fn to_whatsapp(input: &str) -> String {
     let mut at_line_start = true;
     let mut pending_blank_line = false;
 
-    fn push(
-        out: &mut String,
-        at_line_start: &mut bool,
-        pending_blank_line: &mut bool,
-        s: &str,
-    ) {
+    fn push(out: &mut String, at_line_start: &mut bool, pending_blank_line: &mut bool, s: &str) {
         if s.is_empty() {
             return;
         }
@@ -488,12 +492,21 @@ pub fn to_whatsapp(input: &str) -> String {
                 if let Some(buf) = link_text_buf.as_mut() {
                     buf.push_str(&wrapped);
                 } else {
-                    push(&mut out, &mut at_line_start, &mut pending_blank_line, &wrapped);
+                    push(
+                        &mut out,
+                        &mut at_line_start,
+                        &mut pending_blank_line,
+                        &wrapped,
+                    );
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
                 if !at_line_start {
-                    out.push(if matches!(event, Event::HardBreak) { '\n' } else { ' ' });
+                    out.push(if matches!(event, Event::HardBreak) {
+                        '\n'
+                    } else {
+                        ' '
+                    });
                     at_line_start = matches!(event, Event::HardBreak);
                 }
             }
@@ -512,7 +525,12 @@ pub fn to_whatsapp(input: &str) -> String {
                 }
                 Tag::CodeBlock(_) => {
                     break_line(&mut out, &mut at_line_start);
-                    push(&mut out, &mut at_line_start, &mut pending_blank_line, "```\n");
+                    push(
+                        &mut out,
+                        &mut at_line_start,
+                        &mut pending_blank_line,
+                        "```\n",
+                    );
                 }
                 Tag::List(start) => {
                     break_line(&mut out, &mut at_line_start);
@@ -546,11 +564,20 @@ pub fn to_whatsapp(input: &str) -> String {
                 }
                 Tag::Strong => push(&mut out, &mut at_line_start, &mut pending_blank_line, "*"),
                 Tag::Emphasis => push(&mut out, &mut at_line_start, &mut pending_blank_line, "_"),
-                Tag::Strikethrough => push(&mut out, &mut at_line_start, &mut pending_blank_line, "~"),
-                Tag::Superscript | Tag::Subscript | Tag::HtmlBlock
-                | Tag::FootnoteDefinition(_) | Tag::DefinitionList
-                | Tag::DefinitionListTitle | Tag::DefinitionListDefinition
-                | Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell
+                Tag::Strikethrough => {
+                    push(&mut out, &mut at_line_start, &mut pending_blank_line, "~")
+                }
+                Tag::Superscript
+                | Tag::Subscript
+                | Tag::HtmlBlock
+                | Tag::FootnoteDefinition(_)
+                | Tag::DefinitionList
+                | Tag::DefinitionListTitle
+                | Tag::DefinitionListDefinition
+                | Tag::Table(_)
+                | Tag::TableHead
+                | Tag::TableRow
+                | Tag::TableCell
                 | Tag::MetadataBlock(_) => {}
             },
             Event::End(tag_end) => match tag_end {
@@ -587,15 +614,24 @@ pub fn to_whatsapp(input: &str) -> String {
                     } else {
                         format!("{text}: {dest}")
                     };
-                    push(&mut out, &mut at_line_start, &mut pending_blank_line, &rendered);
+                    push(
+                        &mut out,
+                        &mut at_line_start,
+                        &mut pending_blank_line,
+                        &rendered,
+                    );
                 }
                 TagEnd::Image => {
                     let alt = link_text_buf.take().unwrap_or_default();
                     push(&mut out, &mut at_line_start, &mut pending_blank_line, &alt);
                 }
                 TagEnd::Strong => push(&mut out, &mut at_line_start, &mut pending_blank_line, "*"),
-                TagEnd::Emphasis => push(&mut out, &mut at_line_start, &mut pending_blank_line, "_"),
-                TagEnd::Strikethrough => push(&mut out, &mut at_line_start, &mut pending_blank_line, "~"),
+                TagEnd::Emphasis => {
+                    push(&mut out, &mut at_line_start, &mut pending_blank_line, "_")
+                }
+                TagEnd::Strikethrough => {
+                    push(&mut out, &mut at_line_start, &mut pending_blank_line, "~")
+                }
                 _ => {}
             },
             Event::Rule
@@ -614,9 +650,13 @@ pub fn to_whatsapp(input: &str) -> String {
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
-            !(trimmed == "*" || trimmed == "-" || trimmed.is_empty() && !line.is_empty()
+            !(trimmed == "*"
+                || trimmed == "-"
+                || trimmed.is_empty() && !line.is_empty()
                 || (trimmed.ends_with('.')
-                    && trimmed[..trimmed.len() - 1].chars().all(|c| c.is_ascii_digit())))
+                    && trimmed[..trimmed.len() - 1]
+                        .chars()
+                        .all(|c| c.is_ascii_digit())))
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -651,26 +691,24 @@ pub fn to_plain(input: &str) -> String {
     let mut at_line_start = true;
     let mut pending_blank_line = false;
 
-    let push_str = |out: &mut String,
-                    at_line_start: &mut bool,
-                    pending_blank_line: &mut bool,
-                    s: &str| {
-        if s.is_empty() {
-            return;
-        }
-        if *pending_blank_line {
-            if !out.is_empty() && !out.ends_with("\n\n") {
-                if out.ends_with('\n') {
-                    out.push('\n');
-                } else {
-                    out.push_str("\n\n");
-                }
+    let push_str =
+        |out: &mut String, at_line_start: &mut bool, pending_blank_line: &mut bool, s: &str| {
+            if s.is_empty() {
+                return;
             }
-            *pending_blank_line = false;
-        }
-        out.push_str(s);
-        *at_line_start = s.ends_with('\n');
-    };
+            if *pending_blank_line {
+                if !out.is_empty() && !out.ends_with("\n\n") {
+                    if out.ends_with('\n') {
+                        out.push('\n');
+                    } else {
+                        out.push_str("\n\n");
+                    }
+                }
+                *pending_blank_line = false;
+            }
+            out.push_str(s);
+            *at_line_start = s.ends_with('\n');
+        };
 
     let break_line = |out: &mut String, at_line_start: &mut bool| {
         if !*at_line_start {
@@ -697,7 +735,11 @@ pub fn to_plain(input: &str) -> String {
             }
             Event::SoftBreak | Event::HardBreak => {
                 if !at_line_start {
-                    out.push(if matches!(event, Event::HardBreak) { '\n' } else { ' ' });
+                    out.push(if matches!(event, Event::HardBreak) {
+                        '\n'
+                    } else {
+                        ' '
+                    });
                     at_line_start = matches!(event, Event::HardBreak);
                 }
             }
@@ -747,11 +789,21 @@ pub fn to_plain(input: &str) -> String {
                     link_text_buf = Some(String::new());
                     link_dest = None;
                 }
-                Tag::Emphasis | Tag::Strong | Tag::Strikethrough | Tag::Superscript
-                | Tag::Subscript | Tag::HtmlBlock | Tag::FootnoteDefinition(_)
-                | Tag::DefinitionList | Tag::DefinitionListTitle
-                | Tag::DefinitionListDefinition | Tag::Table(_) | Tag::TableHead
-                | Tag::TableRow | Tag::TableCell | Tag::MetadataBlock(_) => {}
+                Tag::Emphasis
+                | Tag::Strong
+                | Tag::Strikethrough
+                | Tag::Superscript
+                | Tag::Subscript
+                | Tag::HtmlBlock
+                | Tag::FootnoteDefinition(_)
+                | Tag::DefinitionList
+                | Tag::DefinitionListTitle
+                | Tag::DefinitionListDefinition
+                | Tag::Table(_)
+                | Tag::TableHead
+                | Tag::TableRow
+                | Tag::TableCell
+                | Tag::MetadataBlock(_) => {}
             },
             Event::End(tag_end) => match tag_end {
                 TagEnd::Paragraph
@@ -837,7 +889,10 @@ mod tests {
     fn fence_tables_realigns_ragged_columns() {
         let input = "| Col A | B |\n| - | - |\n| 1 | 2 |";
         let fenced = fence_tables(input);
-        assert_eq!(fenced, "```\n| Col A | B |\n| -     | - |\n| 1     | 2 |\n```");
+        assert_eq!(
+            fenced,
+            "```\n| Col A | B |\n| -     | - |\n| 1     | 2 |\n```"
+        );
     }
 
     #[test]
@@ -875,7 +930,10 @@ mod tests {
         let out = to_whatsapp(md);
         for line in out.lines() {
             let t = line.trim();
-            assert!(t != "*" && t != "* ", "stray bullet line in output: {out:?}");
+            assert!(
+                t != "*" && t != "* ",
+                "stray bullet line in output: {out:?}"
+            );
         }
         assert!(out.contains("real item"), "real-item text missing: {out:?}");
         assert!(out.contains("*Heading*"), "heading missing: {out:?}");
@@ -888,12 +946,18 @@ mod tests {
         let out = to_whatsapp("* one\n* two\n* three");
         assert!(out.contains("* one"), "tight bullet one missing: {out:?}");
         assert!(out.contains("* two"), "tight bullet two missing: {out:?}");
-        assert!(out.contains("* three"), "tight bullet three missing: {out:?}");
+        assert!(
+            out.contains("* three"),
+            "tight bullet three missing: {out:?}"
+        );
     }
 
     #[test]
     fn wa_link_with_distinct_url_renders_text_and_url() {
-        assert_eq!(to_whatsapp("see [docs](https://x.com)"), "see docs: https://x.com");
+        assert_eq!(
+            to_whatsapp("see [docs](https://x.com)"),
+            "see docs: https://x.com"
+        );
     }
 
     #[test]
@@ -903,7 +967,10 @@ mod tests {
 
     #[test]
     fn strips_emphasis() {
-        assert_eq!(to_plain("**bold** and *italic* and ~~strike~~"), "bold and italic and strike");
+        assert_eq!(
+            to_plain("**bold** and *italic* and ~~strike~~"),
+            "bold and italic and strike"
+        );
     }
 
     #[test]
@@ -973,7 +1040,11 @@ mod tests {
     // ─── to_signal ────────────────────────────────────────────────────────
 
     fn r(start: u32, length: u32, style: SignalStyle) -> SignalBodyRange {
-        SignalBodyRange { start, length, style }
+        SignalBodyRange {
+            start,
+            length,
+            style,
+        }
     }
 
     #[test]
@@ -1030,8 +1101,15 @@ mod tests {
         let out = to_signal(md);
         // Body contains the code lines; trailing newline trimmed by collapse.
         assert!(out.body.contains("let x = 1;"));
-        let mono = out.ranges.iter().find(|r| r.style == SignalStyle::Monospace);
-        assert!(mono.is_some(), "expected MONOSPACE range, got {:?}", out.ranges);
+        let mono = out
+            .ranges
+            .iter()
+            .find(|r| r.style == SignalStyle::Monospace);
+        assert!(
+            mono.is_some(),
+            "expected MONOSPACE range, got {:?}",
+            out.ranges
+        );
     }
 
     #[test]

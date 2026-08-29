@@ -5,8 +5,8 @@ use frona::chat::models::Chat;
 use frona::core::repository::Repository;
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -166,18 +166,12 @@ async fn test_heartbeat_chat_excluded_from_standalone() {
 
     // Standalone chats include both (repo doesn't know about heartbeats)
     use frona::chat::repository::ChatRepository;
-    let standalone = chat_repo
-        .find_standalone_by_user_id(user_id)
-        .await
-        .unwrap();
+    let standalone = chat_repo.find_standalone_by_user_id(user_id).await.unwrap();
     assert_eq!(standalone.len(), 2);
 
     // But filtering by heartbeat IDs should exclude the heartbeat chat
     let agent_loaded: Agent = agent_repo.find_by_id("agent-a").await.unwrap().unwrap();
-    let heartbeat_ids: Vec<String> = agent_loaded
-        .heartbeat_chat_id
-        .into_iter()
-        .collect();
+    let heartbeat_ids: Vec<String> = agent_loaded.heartbeat_chat_id.into_iter().collect();
 
     let filtered: Vec<_> = standalone
         .into_iter()
@@ -190,7 +184,13 @@ async fn test_heartbeat_chat_excluded_from_standalone() {
 /// TaskKind::source_chat_id() returns the correct value for each variant.
 #[test]
 fn test_task_kind_source_chat_id() {
-    assert_eq!(TaskKind::Direct { source_chat_id: None }.source_chat_id(), None);
+    assert_eq!(
+        TaskKind::Direct {
+            source_chat_id: None
+        }
+        .source_chat_id(),
+        None
+    );
 
     let delegation = TaskKind::Delegation {
         source_agent_id: "a".into(),

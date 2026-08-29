@@ -3,25 +3,17 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use crate::inference::conversation::HeartbeatConversationBuilder;
 use crate::agent::models::Agent;
 use crate::agent::task::models::TaskKind;
-use crate::db::repo::generic::SurrealRepo;
-use crate::db::repo::memory_entries::SurrealMemoryEntryRepo;
-use crate::core::state::AppState;
 use crate::chat::models::CreateChatRequest;
-use crate::chat::repository::ChatRepository;
 use crate::core::error::AppError;
-use crate::inference::config::ModelGroup;
+use crate::core::state::AppState;
 use crate::inference::InferenceResponse;
-use crate::memory::repository::MemoryEntryRepository;
-use crate::memory::models::MemorySourceType;
-use crate::space::repository::SpaceRepository;
+use crate::inference::conversation::HeartbeatConversationBuilder;
 use crate::tool::task::next_cron_occurrence;
 
 pub struct Scheduler {
-    app_state: AppState,
-    compaction_model_group: ModelGroup,
+    pub(crate) app_state: AppState,
 }
 
 macro_rules! spawn_periodic {
@@ -47,34 +39,81 @@ macro_rules! spawn_periodic {
 }
 
 impl Scheduler {
-    pub fn new(app_state: AppState, compaction_model_group: ModelGroup) -> Self {
-        Self {
-            app_state,
-            compaction_model_group,
-        }
+    pub fn new(app_state: AppState) -> Self {
+        Self { app_state }
+    }
+
+    /// Spawn a periodic task that runs `task` every `interval` until shutdown.
+    /// Generic - any component (e.g. a memory service) registers its own jobs,
+    /// keeping the scheduler domain-agnostic.
+    pub fn register_periodic<F, Fut>(&self, interval: Duration, name: &'static str, task: F)
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<(), AppError>> + Send,
+    {
+        let shutdown = self.app_state.shutdown_token.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = tokio::time::sleep(interval) => {
+                        if let Err(e) = task().await {
+                            tracing::warn!(error = %e, task = name, "Scheduled task failed");
+                        }
+                    }
+                    () = shutdown.cancelled() => {
+                        tracing::info!(task = name, "Scheduler loop stopping for shutdown");
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     pub fn start(self: Arc<Self>) {
         let cfg = &self.app_state.config;
-        let space = Duration::from_secs(cfg.scheduler.space_compaction_secs);
-        let memory = Duration::from_secs(cfg.scheduler.memory_compaction_secs);
         let poll = Duration::from_secs(cfg.scheduler.poll_secs);
+        // Fixed cadence, like `model_metadata_refresh` below - token cleanup isn't a
+        // tuning knob (it previously piggybacked on the memory `space_compaction_secs`).
+        let token_cleanup = Duration::from_secs(3600);
         let model_metadata_refresh = Duration::from_secs(86400);
 
         let shutdown = self.app_state.shutdown_token.clone();
-        spawn_periodic!(self, space, "space_compaction", run_space_compaction, shutdown);
-        spawn_periodic!(self, memory, "memory_compaction", run_memory_compaction, shutdown);
-        spawn_periodic!(self, memory, "user_memory_compaction", run_user_memory_compaction, shutdown);
         spawn_periodic!(self, poll, "poll_tasks", run_poll_tasks, shutdown);
-        spawn_periodic!(self, space, "token_cleanup", run_token_cleanup, shutdown);
-        spawn_periodic!(self, model_metadata_refresh, "model_metadata_refresh", run_model_metadata_refresh, shutdown);
+        spawn_periodic!(
+            self,
+            token_cleanup,
+            "token_cleanup",
+            run_token_cleanup,
+            shutdown
+        );
+        spawn_periodic!(
+            self,
+            model_metadata_refresh,
+            "model_metadata_refresh",
+            run_model_metadata_refresh,
+            shutdown
+        );
         let share_cleanup = Duration::from_secs(cfg.share.cleanup_interval_secs);
-        spawn_periodic!(self, share_cleanup, "share_cleanup", run_share_cleanup, shutdown);
+        spawn_periodic!(
+            self,
+            share_cleanup,
+            "share_cleanup",
+            run_share_cleanup,
+            shutdown
+        );
+
+        // Memory maintenance is owned by the active service (it registers its own
+        // periodic jobs) - keeps the scheduler memory-agnostic and works for any impl.
+        self.app_state
+            .harness
+            .memory_service
+            .register_maintenance(&self);
 
         // Skip the startup refresh if the cached catalog is younger than the
-        // periodic interval — restart shouldn't trigger another ~1.5 MB fetch.
+        // periodic interval - restart shouldn't trigger another ~1.5 MB fetch.
         // Missing/unreadable cache always falls through to a fresh fetch.
-        let cache_dir = std::path::Path::new(&self.app_state.config.storage.cache_dir).to_path_buf();
+        let cache_dir =
+            std::path::Path::new(&self.app_state.config.storage.cache_dir).to_path_buf();
         let fresh = crate::inference::metadata::loader::cache_age(&cache_dir)
             .is_some_and(|age| age < model_metadata_refresh);
         if fresh {
@@ -101,13 +140,13 @@ impl Scheduler {
             "Refreshed model metadata catalog"
         );
         // Persist to disk so the next boot has a head start if the network is
-        // unavailable. Failure is non-fatal — the in-memory swap below still
+        // unavailable. Failure is non-fatal - the in-memory swap below still
         // wins for this process.
         let cache_dir = std::path::Path::new(&self.app_state.config.storage.cache_dir);
         if let Err(e) = crate::inference::metadata::loader::save_cache(cache_dir, &raw) {
             tracing::warn!(error = %e, "Failed to persist model metadata cache");
         }
-        // Swap the catalog directly — `model_catalog` is shared with
+        // Swap the catalog directly - `model_catalog` is shared with
         // `usage_service` via internal `ArcSwap`, so all readers see the
         // new snapshot on next `current()`.
         self.app_state.model_catalog.swap(parsed);
@@ -116,7 +155,8 @@ impl Scheduler {
             "version" => version,
         )
         .set(entries);
-        metrics::gauge!(crate::inference::usage::service::MODEL_METADATA_REFRESH_AGE_SECONDS).set(0.0);
+        metrics::gauge!(crate::inference::usage::service::MODEL_METADATA_REFRESH_AGE_SECONDS)
+            .set(0.0);
         Ok(())
     }
 
@@ -156,7 +196,11 @@ impl Scheduler {
         if self.app_state.is_shutting_down() {
             return Ok(());
         }
-        let expired = self.app_state.task_service.find_expired_signal_tasks().await?;
+        let expired = self
+            .app_state
+            .task_service
+            .find_expired_signal_tasks()
+            .await?;
         if expired.is_empty() {
             return Ok(());
         }
@@ -201,7 +245,11 @@ impl Scheduler {
         if self.app_state.is_shutting_down() {
             return Ok(());
         }
-        let templates = self.app_state.task_service.find_due_cron_templates().await?;
+        let templates = self
+            .app_state
+            .task_service
+            .find_due_cron_templates()
+            .await?;
         if templates.is_empty() {
             return Ok(());
         }
@@ -210,7 +258,11 @@ impl Scheduler {
 
         for template in templates {
             let (cron_expression, timezone) = match &template.kind {
-                TaskKind::Cron { cron_expression, timezone, .. } => (
+                TaskKind::Cron {
+                    cron_expression,
+                    timezone,
+                    ..
+                } => (
                     cron_expression.clone(),
                     crate::auth::models::resolve_timezone(timezone.as_deref(), server_tz),
                 ),
@@ -319,7 +371,11 @@ impl Scheduler {
             return Ok(());
         }
         let now = Utc::now();
-        let agents = self.app_state.agent_service.find_due_heartbeats(now).await?;
+        let agents = self
+            .app_state
+            .agent_service
+            .find_due_heartbeats(now)
+            .await?;
         if agents.is_empty() {
             return Ok(());
         }
@@ -335,12 +391,19 @@ impl Scheduler {
                 tracing::warn!(agent_id = %agent.id, user_id = %user_id, "Heartbeat agent's user not found, skipping");
                 continue;
             };
-            let ws = self.app_state.storage_service.agent_workspace(&user.handle, &agent.handle);
+            let ws = self
+                .app_state
+                .storage_service
+                .agent_workspace(&user.handle, &agent.handle);
             let heartbeat_content = match ws.read("HEARTBEAT.md") {
                 Some(content) if !content.trim().is_empty() => content,
                 _ => {
                     let next = now + chrono::Duration::minutes(interval as i64);
-                    let _ = self.app_state.agent_service.update_next_heartbeat(&agent.id, Some(next)).await;
+                    let _ = self
+                        .app_state
+                        .agent_service
+                        .update_next_heartbeat(&agent.id, Some(next))
+                        .await;
                     continue;
                 }
             };
@@ -354,7 +417,9 @@ impl Scheduler {
             let agent_clone = agent.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = execute_heartbeat(&app_state, &agent_clone, &user_id, &heartbeat_content).await {
+                if let Err(e) =
+                    execute_heartbeat(&app_state, &agent_clone, &user_id, &heartbeat_content).await
+                {
                     tracing::error!(
                         error = %e,
                         agent_id = %agent_clone.id,
@@ -362,7 +427,11 @@ impl Scheduler {
                     );
                 }
                 let next = Utc::now() + chrono::Duration::minutes(interval as i64);
-                if let Err(e) = app_state.agent_service.update_next_heartbeat(&agent_clone.id, Some(next)).await {
+                if let Err(e) = app_state
+                    .agent_service
+                    .update_next_heartbeat(&agent_clone.id, Some(next))
+                    .await
+                {
                     tracing::error!(
                         error = %e,
                         agent_id = %agent_clone.id,
@@ -387,116 +456,6 @@ impl Scheduler {
         let deleted = self.app_state.share_service.cleanup_expired().await?;
         if deleted > 0 {
             tracing::info!(count = deleted, "Cleaned up expired share links");
-        }
-        Ok(())
-    }
-
-    async fn run_space_compaction(&self) -> Result<(), AppError> {
-        let space_repo: SurrealRepo<crate::space::models::Space> =
-            SurrealRepo::new(self.app_state.db.clone());
-        let chat_repo: SurrealRepo<crate::chat::models::Chat> =
-            SurrealRepo::new(self.app_state.db.clone());
-
-        let spaces = space_repo.find_all().await?;
-
-        for space in spaces {
-            let chats = chat_repo.find_by_space_id(&space.id).await?;
-            if chats.is_empty() {
-                continue;
-            }
-
-            let mut summaries = Vec::new();
-            for chat in &chats {
-                let title = chat.title.clone().unwrap_or_else(|| "Untitled".to_string());
-
-                let memory = self
-                    .app_state
-                    .memory_service
-                    .get_memory(MemorySourceType::Chat, &chat.id)
-                    .await?;
-
-                let summary = if let Some(mem) = memory {
-                    mem.content
-                } else {
-                    format!("(No summary available for chat: {title})")
-                };
-
-                summaries.push((title, summary));
-            }
-
-            if let Err(e) = self
-                .app_state
-                .memory_service
-                .compact_space(&space.user_id, &space.id, summaries, &self.compaction_model_group)
-                .await
-            {
-                tracing::warn!(
-                    space_id = %space.id,
-                    error = %e,
-                    "Failed to compact space"
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn run_memory_compaction(&self) -> Result<(), AppError> {
-        let repo: SurrealMemoryEntryRepo = SurrealRepo::new(self.app_state.db.clone());
-        let ids = repo.find_distinct_agent_ids().await?;
-        self.run_memory_compaction_for("agent", ids).await
-    }
-
-    async fn run_user_memory_compaction(&self) -> Result<(), AppError> {
-        let repo: SurrealMemoryEntryRepo = SurrealRepo::new(self.app_state.db.clone());
-        let ids = repo.find_distinct_user_ids().await?;
-        self.run_memory_compaction_for("user", ids).await
-    }
-
-    async fn run_memory_compaction_for(
-        &self,
-        kind: &str,
-        ids: Vec<String>,
-    ) -> Result<(), AppError> {
-        tracing::info!(count = ids.len(), kind = kind, "Starting scheduled memory compaction");
-        for id in &ids {
-            tracing::info!(%id, kind = kind, "Running scheduled memory compaction");
-            let result = match kind {
-                "agent" => {
-                    // Resolve the agent's owning user_id so the InferenceUsage
-                    // row carries it. Skip the compaction if the agent record
-                    // is gone — happens after a user delete.
-                    match self.app_state.agent_service.find_by_id(id).await {
-                        Ok(Some(agent)) => self
-                            .app_state
-                            .memory_service
-                            .compact_entries_if_needed(
-                                &agent.user_id,
-                                id,
-                                &self.compaction_model_group,
-                            )
-                            .await,
-                        Ok(None) => {
-                            tracing::debug!(agent_id = %id, "Agent gone; skipping memory compaction");
-                            Ok(())
-                        }
-                        Err(e) => {
-                            tracing::warn!(agent_id = %id, error = %e, "Failed to load agent for compaction");
-                            Ok(())
-                        }
-                    }
-                }
-                "user" => {
-                    self.app_state
-                        .memory_service
-                        .compact_user_entries_if_needed(id, &self.compaction_model_group)
-                        .await
-                }
-                _ => Ok(()),
-            };
-            if let Err(e) = result {
-                tracing::warn!(%id, kind = kind, error = %e, "Failed to compact memory entries");
-            }
         }
         Ok(())
     }
@@ -596,7 +555,7 @@ async fn execute_heartbeat(
 
     let (session_id, cancel_token) = state.active_sessions.register(&chat_id).await;
 
-    // No create_stream_user_message — heartbeats are transient. Persisting
+    // No create_stream_user_message - heartbeats are transient. Persisting
     // shows them in the UI as if the user typed it, and they reinforce the
     // "respond conversationally" pattern in subsequent ticks.
     let agent_msg = state
@@ -616,12 +575,28 @@ async fn execute_heartbeat(
     });
     let result = state
         .harness
-        .run_loop(user_id, &chat_id, &agent_msg_id, cancel_token, builder, &[], None)
+        .run_loop(
+            user_id,
+            &chat_id,
+            &agent_msg_id,
+            cancel_token,
+            builder,
+            &[],
+            None,
+        )
         .await;
 
     match result {
-        Ok(crate::agent::harness::AgentLoopOutcome { inference, mut response }) => match inference {
-            InferenceResponse::Completed { text, attachments, reasoning, .. } => {
+        Ok(crate::agent::harness::AgentLoopOutcome {
+            inference,
+            mut response,
+        }) => match inference {
+            InferenceResponse::Completed {
+                text,
+                attachments,
+                reasoning,
+                ..
+            } => {
                 response.content = text;
                 response.attachments = attachments;
                 response.reasoning = reasoning;
@@ -644,7 +619,10 @@ async fn execute_heartbeat(
         },
         Err(e) => {
             if let Ok(msg) = state.chat_service.get_message(user_id, &agent_msg_id).await {
-                let _ = state.chat_service.fail_agent_message(msg, e.to_string()).await;
+                let _ = state
+                    .chat_service
+                    .fail_agent_message(msg, e.to_string())
+                    .await;
             }
             tracing::error!(error = %e, chat_id = %chat_id, "Heartbeat agent tool loop failed");
         }
@@ -653,4 +631,3 @@ async fn execute_heartbeat(
     state.active_sessions.remove(&chat_id, session_id).await;
     Ok(())
 }
-

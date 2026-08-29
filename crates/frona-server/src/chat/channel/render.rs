@@ -126,10 +126,7 @@ fn value_is_non_scalar(v: &Value) -> bool {
     }
 }
 
-fn render_complex_object(
-    _schema: &Value,
-    obj: &serde_json::Map<String, Value>,
-) -> Option<String> {
+fn render_complex_object(_schema: &Value, obj: &serde_json::Map<String, Value>) -> Option<String> {
     match obj.get(COMPLEX_RENDER_KEY) {
         Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
@@ -161,15 +158,18 @@ fn render_value_md(v: &Value) -> String {
             .map(render_value_md)
             .collect::<Vec<_>>()
             .join(", "),
-        Value::Object(_) => format!("```json\n{}\n```", serde_json::to_string_pretty(v).unwrap_or_default()),
+        Value::Object(_) => format!(
+            "```json\n{}\n```",
+            serde_json::to_string_pretty(v).unwrap_or_default()
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::message::models::{Message, MessageRole};
     use crate::agent::task::models::TaskStatus;
+    use crate::chat::message::models::{Message, MessageRole};
     use serde_json::json;
 
     fn task_completion(content: &str, schema: Option<Value>) -> Message {

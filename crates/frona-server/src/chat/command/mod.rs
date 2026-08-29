@@ -10,9 +10,9 @@ use async_trait::async_trait;
 
 use crate::agent::harness::Harness;
 use crate::auth::User;
+use crate::chat::message::models::Message;
 use crate::chat::models::Chat;
 use crate::chat::session::ChatSessionContext;
-use crate::chat::message::models::Message;
 use crate::core::error::AppError;
 
 pub mod builtin;

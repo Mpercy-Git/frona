@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { makeAssistantToolUI, useMessage } from "@assistant-ui/react";
+import { makeAssistantToolUI, useAuiState } from "@assistant-ui/react";
 import { ArrowDownTrayIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { FilePreviewContent, canPreviewFile, languageFromFilename } from "@/components/preview/file-preview-content";
 import { MediaAttachment } from "@/components/preview/media-attachment";
@@ -108,7 +108,7 @@ function AttachmentItem({ attachment }: { attachment: Attachment }) {
 }
 
 function AttachmentsRender() {
-  const message = useMessage();
+  const message = useAuiState((state) => state.message);
   const attachments = (message.metadata as Record<string, any>)?.custom?.attachments as Attachment[] | undefined;
 
   if (!attachments?.length) return null;

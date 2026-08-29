@@ -101,7 +101,12 @@ pub async fn outbound_url(
         ChannelMode::Inline => {
             let id = ctx
                 .share_service
-                .issue_file(&att.owner, &att.path, &ctx.channel.user_id, ctx.share_ttl_secs)
+                .issue_file(
+                    &att.owner,
+                    &att.path,
+                    &ctx.channel.user_id,
+                    ctx.share_ttl_secs,
+                )
                 .await?;
             if preview {
                 Ok(format!("{base}/p/{id}"))
@@ -129,12 +134,14 @@ async fn build_owner_segment(att: &Attachment, ctx: &ChannelCtx) -> Result<Strin
     } else {
         None
     };
-    crate::storage::attachment_url_segment(&att.owner, &att.path, user_handle_ref).ok_or_else(|| {
-        AppError::Validation(format!(
-            "cannot build URL segment for owner={:?} path={:?}",
-            att.owner, att.path
-        ))
-    })
+    crate::storage::attachment_url_segment(&att.owner, &att.path, user_handle_ref).ok_or_else(
+        || {
+            AppError::Validation(format!(
+                "cannot build URL segment for owner={:?} path={:?}",
+                att.owner, att.path
+            ))
+        },
+    )
 }
 
 /// Handles both `user:{handle}` and `agent:{handle}` owners.
@@ -145,19 +152,19 @@ pub async fn read_attachment_bytes(
     let path_str = &att.path;
     let owner = &att.owner;
     let abs = if let Some(owner_handle_str) = owner.strip_prefix("user:") {
-        let owner_handle = crate::core::Handle::try_new(owner_handle_str).map_err(|e| {
-            AppError::Validation(format!("invalid owner handle in {owner}: {e}"))
-        })?;
+        let owner_handle = crate::core::Handle::try_new(owner_handle_str)
+            .map_err(|e| AppError::Validation(format!("invalid owner handle in {owner}: {e}")))?;
         let workspace = ctx.storage_service.user_workspace(&owner_handle);
-        workspace
-            .resolve_path(path_str)
-            .ok_or_else(|| AppError::NotFound(format!("attachment {path_str} not in user workspace")))?
+        workspace.resolve_path(path_str).ok_or_else(|| {
+            AppError::NotFound(format!("attachment {path_str} not in user workspace"))
+        })?
     } else if let Some(agent_handle_str) = owner.strip_prefix("agent:") {
-        let agent_handle = crate::core::Handle::try_new(agent_handle_str).map_err(|e| {
-            AppError::Validation(format!("invalid agent handle in {owner}: {e}"))
-        })?;
+        let agent_handle = crate::core::Handle::try_new(agent_handle_str)
+            .map_err(|e| AppError::Validation(format!("invalid agent handle in {owner}: {e}")))?;
         let user_handle = ctx.user_service.handle_of(&ctx.channel.user_id).await?;
-        let base = ctx.storage_service.agent_workspace_path(&user_handle, &agent_handle);
+        let base = ctx
+            .storage_service
+            .agent_workspace_path(&user_handle, &agent_handle);
         if path_str.contains("..") {
             return Err(AppError::Validation("Path traversal not allowed".into()));
         }
@@ -173,8 +180,7 @@ pub async fn read_attachment_bytes(
             "unsupported attachment owner: {owner}"
         )));
     };
-    std::fs::read(&abs)
-        .map_err(|e| AppError::Internal(format!("read attachment {path_str}: {e}")))
+    std::fs::read(&abs).map_err(|e| AppError::Internal(format!("read attachment {path_str}: {e}")))
 }
 
 #[cfg(test)]
@@ -194,14 +200,38 @@ mod tests {
 
     #[test]
     fn classify_matrix() {
-        assert_eq!(classify(&att("a.png", "image/png", "user:x")), AttachmentKind::Image);
-        assert_eq!(classify(&att("a.jpg", "IMAGE/JPEG", "user:x")), AttachmentKind::Image);
-        assert_eq!(classify(&att("a.mp3", "audio/mpeg", "user:x")), AttachmentKind::Audio);
-        assert_eq!(classify(&att("a.mp4", "video/mp4", "user:x")), AttachmentKind::Video);
-        assert_eq!(classify(&att("a.md", "text/markdown", "user:x")), AttachmentKind::Document);
-        assert_eq!(classify(&att("a.pdf", "application/pdf", "user:x")), AttachmentKind::Document);
-        assert_eq!(classify(&att("a.csv", "text/csv", "user:x")), AttachmentKind::Document);
-        assert_eq!(classify(&att("a.zip", "application/zip", "user:x")), AttachmentKind::Document);
+        assert_eq!(
+            classify(&att("a.png", "image/png", "user:x")),
+            AttachmentKind::Image
+        );
+        assert_eq!(
+            classify(&att("a.jpg", "IMAGE/JPEG", "user:x")),
+            AttachmentKind::Image
+        );
+        assert_eq!(
+            classify(&att("a.mp3", "audio/mpeg", "user:x")),
+            AttachmentKind::Audio
+        );
+        assert_eq!(
+            classify(&att("a.mp4", "video/mp4", "user:x")),
+            AttachmentKind::Video
+        );
+        assert_eq!(
+            classify(&att("a.md", "text/markdown", "user:x")),
+            AttachmentKind::Document
+        );
+        assert_eq!(
+            classify(&att("a.pdf", "application/pdf", "user:x")),
+            AttachmentKind::Document
+        );
+        assert_eq!(
+            classify(&att("a.csv", "text/csv", "user:x")),
+            AttachmentKind::Document
+        );
+        assert_eq!(
+            classify(&att("a.zip", "application/zip", "user:x")),
+            AttachmentKind::Document
+        );
     }
 
     #[test]
@@ -242,8 +272,16 @@ mod tests {
         assert!(is_previewable(&att("a.rs", "text/x-rust", "agent:r")));
         assert!(is_previewable(&att("a.py", "text/x-python", "agent:r")));
         assert!(is_previewable(&att("a.go", "text/x-go", "agent:r")));
-        assert!(is_previewable(&att("a.sh", "text/x-shellscript", "agent:r")));
-        assert!(is_previewable(&att("a.json", "application/json", "agent:r")));
+        assert!(is_previewable(&att(
+            "a.sh",
+            "text/x-shellscript",
+            "agent:r"
+        )));
+        assert!(is_previewable(&att(
+            "a.json",
+            "application/json",
+            "agent:r"
+        )));
         assert!(is_previewable(&att("a.xml", "application/xml", "agent:r")));
         assert!(is_previewable(&att("a.yaml", "text/yaml", "agent:r")));
         assert!(is_previewable(&att("a.toml", "text/toml", "agent:r")));
@@ -262,7 +300,11 @@ mod tests {
         assert!(!is_previewable(&att("a.css", "text/css", "agent:r")));
         assert!(!is_previewable(&att("a.csv", "text/csv", "agent:r")));
         assert!(!is_previewable(&att("a.zip", "application/zip", "agent:r")));
-        assert!(!is_previewable(&att("a.bin", "application/octet-stream", "agent:r")));
+        assert!(!is_previewable(&att(
+            "a.bin",
+            "application/octet-stream",
+            "agent:r"
+        )));
     }
 
     #[test]

@@ -44,7 +44,8 @@ async fn handle_unification(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
     )
     .await?;
     rewrite_notifications(db, &app_handle_by_id).await;
-    relocate_per_user_dirs_to_new_layout(db, &user_handle_by_id, &mcp_rows, &mcp_handle_by_id).await;
+    relocate_per_user_dirs_to_new_layout(db, &user_handle_by_id, &mcp_rows, &mcp_handle_by_id)
+        .await;
     relocate_channel_dirs(&user_handle_by_id, &channel_rows, &channel_handle_by_id).await;
     prune_empty_legacy_dirs();
     drop_app_manifest_id(db, &user_handle_by_id).await?;
@@ -112,9 +113,7 @@ async fn collect_user_handles(
 /// later users get fresh clones with UUID ids.
 type AgentByOwner = HashMap<(String, String), String>;
 
-async fn clone_builtin_agents_per_user(
-    db: &Surreal<Db>,
-) -> Result<AgentByOwner, surrealdb::Error> {
+async fn clone_builtin_agents_per_user(db: &Surreal<Db>) -> Result<AgentByOwner, surrealdb::Error> {
     // SurrealDB 3.x `IS NONE` is broken — use `type::is_none(…)` to cover both NULL and NONE.
     db.query("UPDATE agent SET handle = meta::id(id) WHERE type::is_none(handle)")
         .await?
@@ -140,28 +139,34 @@ async fn clone_builtin_agents_per_user(
 
         // First active user inherits the shared row to avoid FK churn.
         let shared_id: Option<String> = db
-            .query("SELECT VALUE meta::id(id) FROM agent \
-                    WHERE handle = $h AND type::is_none(user_id) LIMIT 1")
+            .query(
+                "SELECT VALUE meta::id(id) FROM agent \
+                    WHERE handle = $h AND type::is_none(user_id) LIMIT 1",
+            )
             .bind(("h", handle.to_string()))
             .await?
             .take(0)?;
         if let Some(shared_id) = shared_id
             && let Some(first) = owners.next()
         {
-            db.query("UPDATE type::record('agent', $id) \
-                      SET user_id = $u, updated_at = $now")
-                .bind(("id", shared_id.clone()))
-                .bind(("u", first.clone()))
-                .bind(("now", now))
-                .await?
-                .check()?;
+            db.query(
+                "UPDATE type::record('agent', $id) \
+                      SET user_id = $u, updated_at = $now",
+            )
+            .bind(("id", shared_id.clone()))
+            .bind(("u", first.clone()))
+            .bind(("now", now))
+            .await?
+            .check()?;
             map.insert((first.clone(), handle.to_string()), shared_id);
         }
 
         for user_id in owners {
             if let Some(existing) = db
-                .query("SELECT VALUE meta::id(id) FROM agent \
-                        WHERE handle = $h AND user_id = $u LIMIT 1")
+                .query(
+                    "SELECT VALUE meta::id(id) FROM agent \
+                        WHERE handle = $h AND user_id = $u LIMIT 1",
+                )
                 .bind(("h", handle.to_string()))
                 .bind(("u", user_id.clone()))
                 .await?
@@ -196,14 +201,29 @@ async fn clone_builtin_for_user(
         .take(0)?;
     let (description, model_group, skills, prompt, identity, sandbox_limits) = match donor {
         Some(row) => (
-            row.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            row.get("model_group").and_then(|v| v.as_str()).unwrap_or("primary").to_string(),
+            row.get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            row.get("model_group")
+                .and_then(|v| v.as_str())
+                .unwrap_or("primary")
+                .to_string(),
             opt(&row, "skills"),
             opt(&row, "prompt"),
-            row.get("identity").cloned().unwrap_or_else(|| serde_json::json!({})),
+            row.get("identity")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
             opt(&row, "sandbox_limits"),
         ),
-        None => (String::new(), "primary".into(), None, None, serde_json::json!({}), None),
+        None => (
+            String::new(),
+            "primary".into(),
+            None,
+            None,
+            serde_json::json!({}),
+            None,
+        ),
     };
 
     let new_id = crate::core::repository::new_id();
@@ -264,13 +284,14 @@ async fn rewrite_agent_fks(db: &Surreal<Db>, agents: &AgentByOwner) {
     }
 }
 
-
 async fn backfill_app_handles(
     db: &Surreal<Db>,
 ) -> Result<(Vec<serde_json::Value>, HashMap<String, String>), surrealdb::Error> {
     let mut app_result = db
-        .query("SELECT meta::id(id) AS id, user_id, name, handle, created_at \
-                FROM app ORDER BY created_at ASC")
+        .query(
+            "SELECT meta::id(id) AS id, user_id, name, handle, created_at \
+                FROM app ORDER BY created_at ASC",
+        )
         .await?;
     let app_rows: Vec<serde_json::Value> = app_result.take(0)?;
 
@@ -289,14 +310,18 @@ async fn backfill_app_handles(
 
     let mut app_handle_by_id: HashMap<String, String> = HashMap::new();
     for row in &app_rows {
-        let Some(app_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
+        let Some(app_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
         if let Some(existing) = row.get("handle").and_then(|v| v.as_str())
             && !existing.is_empty()
         {
             app_handle_by_id.insert(app_id.to_string(), existing.to_string());
             continue;
         }
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
+        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let name = row.get("name").and_then(|v| v.as_str()).unwrap_or("app");
 
         let base = crate::tool::mcp::sanitize_to_handle(name);
@@ -309,7 +334,10 @@ async fn backfill_app_handles(
             .await?
             .check()?;
         tracing::warn!(
-            app_id, user_id, name, handle = final_handle.as_str(),
+            app_id,
+            user_id,
+            name,
+            handle = final_handle.as_str(),
             "backfilled app handle from name"
         );
         taken.insert(final_handle.as_str().to_string());
@@ -322,8 +350,10 @@ async fn backfill_mcp_handles(
     db: &Surreal<Db>,
 ) -> Result<(Vec<serde_json::Value>, HashMap<String, String>), surrealdb::Error> {
     let mut mcp_result = db
-        .query("SELECT meta::id(id) AS id, user_id, slug, handle, workspace_dir, installed_at \
-                FROM mcp_server ORDER BY installed_at ASC")
+        .query(
+            "SELECT meta::id(id) AS id, user_id, slug, handle, workspace_dir, installed_at \
+                FROM mcp_server ORDER BY installed_at ASC",
+        )
         .await?;
     let mcp_rows: Vec<serde_json::Value> = mcp_result.take(0).unwrap_or_default();
 
@@ -342,14 +372,18 @@ async fn backfill_mcp_handles(
 
     let mut mcp_handle_by_id: HashMap<String, String> = HashMap::new();
     for row in &mcp_rows {
-        let Some(mcp_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
+        let Some(mcp_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
         if let Some(existing) = row.get("handle").and_then(|v| v.as_str())
             && !existing.is_empty()
         {
             mcp_handle_by_id.insert(mcp_id.to_string(), existing.to_string());
             continue;
         }
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
+        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let slug = row.get("slug").and_then(|v| v.as_str()).unwrap_or("mcp");
 
         let base = crate::tool::mcp::sanitize_to_handle(slug);
@@ -362,7 +396,10 @@ async fn backfill_mcp_handles(
             .await?
             .check()?;
         tracing::warn!(
-            mcp_id, user_id, old_slug = slug, handle = final_handle.as_str(),
+            mcp_id,
+            user_id,
+            old_slug = slug,
+            handle = final_handle.as_str(),
             "backfilled mcp handle from slug"
         );
         taken.insert(final_handle.as_str().to_string());
@@ -401,19 +438,25 @@ async fn backfill_channel_handles(
 
     let mut handle_by_id: HashMap<String, String> = HashMap::new();
     for row in &rows {
-        let Some(channel_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
+        let Some(channel_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
         if let Some(existing) = row.get("handle").and_then(|v| v.as_str())
             && !existing.is_empty()
         {
             handle_by_id.insert(channel_id.to_string(), existing.to_string());
             continue;
         }
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
-        let provider = row.get("provider").and_then(|v| v.as_str()).unwrap_or("channel");
+        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let provider = row
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("channel");
 
-        let base = Handle::try_new(provider).unwrap_or_else(|_| {
-            crate::tool::mcp::sanitize_to_handle(provider)
-        });
+        let base = Handle::try_new(provider)
+            .unwrap_or_else(|_| crate::tool::mcp::sanitize_to_handle(provider));
         let taken = taken_by_user.entry(user_id.to_string()).or_default();
         let final_handle = unique_with_suffix(base, taken);
 
@@ -423,7 +466,10 @@ async fn backfill_channel_handles(
             .await?
             .check()?;
         tracing::warn!(
-            channel_id, user_id, provider, handle = final_handle.as_str(),
+            channel_id,
+            user_id,
+            provider,
+            handle = final_handle.as_str(),
             "backfilled channel handle from provider"
         );
         taken.insert(final_handle.as_str().to_string());
@@ -467,19 +513,34 @@ async fn relocate_channel_dirs(
     let users_root = data_dir.join("users");
 
     for row in channel_rows {
-        let Some(channel_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
-        let Some(provider) = row.get("provider").and_then(|v| v.as_str()) else { continue; };
-        let Some(space_id) = row.get("space_id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_handle) = user_handle_by_id.get(user_id) else { continue; };
-        let Some(channel_handle) = channel_handle_by_id.get(channel_id) else { continue; };
+        let Some(channel_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(provider) = row.get("provider").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(space_id) = row.get("space_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_handle) = user_handle_by_id.get(user_id) else {
+            continue;
+        };
+        let Some(channel_handle) = channel_handle_by_id.get(channel_id) else {
+            continue;
+        };
 
         let from = users_root
             .join(user_handle)
             .join("channels")
             .join(provider)
             .join(space_id);
-        let to = users_root.join(user_handle).join("channels").join(channel_handle);
+        let to = users_root
+            .join(user_handle)
+            .join("channels")
+            .join(channel_handle);
         if from == to {
             continue;
         }
@@ -487,10 +548,7 @@ async fn relocate_channel_dirs(
     }
 }
 
-async fn assert_unique_handles(
-    db: &Surreal<Db>,
-    table: &str,
-) -> Result<(), surrealdb::Error> {
+async fn assert_unique_handles(db: &Surreal<Db>, table: &str) -> Result<(), surrealdb::Error> {
     let query = format!(
         "SELECT user_id, handle, count() AS n FROM {table} \
          GROUP BY user_id, handle"
@@ -528,36 +586,74 @@ async fn rewrite_cedar_policy_text(
 
     let mut agent_uid_by_key: HashMap<String, String> = HashMap::new();
     for row in &agent_rows {
-        let Some(agent_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
-        let Some(agent_handle) = row.get("handle").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_handle) = user_handle_by_id.get(user_id) else { continue; };
-        agent_uid_by_key.insert(agent_id.to_string(), format!("{user_handle}/{agent_handle}"));
+        let Some(agent_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(agent_handle) = row.get("handle").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_handle) = user_handle_by_id.get(user_id) else {
+            continue;
+        };
+        agent_uid_by_key.insert(
+            agent_id.to_string(),
+            format!("{user_handle}/{agent_handle}"),
+        );
     }
 
     let mut app_uid_by_uuid: HashMap<String, String> = HashMap::new();
     for row in app_rows {
-        let Some(app_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_handle) = user_handle_by_id.get(user_id) else { continue; };
-        let Some(app_handle) = app_handle_by_id.get(app_id) else { continue; };
+        let Some(app_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_handle) = user_handle_by_id.get(user_id) else {
+            continue;
+        };
+        let Some(app_handle) = app_handle_by_id.get(app_id) else {
+            continue;
+        };
         app_uid_by_uuid.insert(app_id.to_string(), format!("{user_handle}/{app_handle}"));
     }
     let mut mcp_uid_by_uuid: HashMap<String, String> = HashMap::new();
     for row in mcp_rows {
-        let Some(mcp_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_handle) = user_handle_by_id.get(user_id) else { continue; };
-        let Some(mcp_handle) = mcp_handle_by_id.get(mcp_id) else { continue; };
+        let Some(mcp_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_handle) = user_handle_by_id.get(user_id) else {
+            continue;
+        };
+        let Some(mcp_handle) = mcp_handle_by_id.get(mcp_id) else {
+            continue;
+        };
         mcp_uid_by_uuid.insert(mcp_id.to_string(), format!("{user_handle}/{mcp_handle}"));
     }
     let mut channel_uid_by_uuid: HashMap<String, String> = HashMap::new();
     for row in channel_rows {
-        let Some(channel_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_handle) = user_handle_by_id.get(user_id) else { continue; };
-        let Some(channel_handle) = channel_handle_by_id.get(channel_id) else { continue; };
-        channel_uid_by_uuid.insert(channel_id.to_string(), format!("{user_handle}/{channel_handle}"));
+        let Some(channel_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_handle) = user_handle_by_id.get(user_id) else {
+            continue;
+        };
+        let Some(channel_handle) = channel_handle_by_id.get(channel_id) else {
+            continue;
+        };
+        channel_uid_by_uuid.insert(
+            channel_id.to_string(),
+            format!("{user_handle}/{channel_handle}"),
+        );
     }
 
     // Each policy is rewritten in its OWNER's handle context — UUID needles
@@ -569,10 +665,18 @@ async fn rewrite_cedar_policy_text(
     let now = chrono::Utc::now();
 
     for row in &policy_rows {
-        let Some(policy_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
-        let Some(policy_user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
-        let Some(policy_user_handle) = user_handle_by_id.get(policy_user_id) else { continue; };
-        let Some(original) = row.get("policy_text").and_then(|v| v.as_str()) else { continue; };
+        let Some(policy_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(policy_user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(policy_user_handle) = user_handle_by_id.get(policy_user_id) else {
+            continue;
+        };
+        let Some(original) = row.get("policy_text").and_then(|v| v.as_str()) else {
+            continue;
+        };
 
         let mut updated = original.to_string();
         for (uuid, new_uid) in &agent_uid_by_key {
@@ -607,11 +711,13 @@ async fn rewrite_cedar_policy_text(
         }
 
         if updated != original {
-            db.query("UPDATE type::record('policy', $id) SET policy_text = $text, updated_at = $now")
-                .bind(("id", policy_id.to_string()))
-                .bind(("text", updated))
-                .bind(("now", now))
-                .await?;
+            db.query(
+                "UPDATE type::record('policy', $id) SET policy_text = $text, updated_at = $now",
+            )
+            .bind(("id", policy_id.to_string()))
+            .bind(("text", updated))
+            .bind(("now", now))
+            .await?;
             tracing::info!(policy_id, "Rewrote principal UIDs in policy_text");
         }
     }
@@ -668,10 +774,18 @@ async fn relocate_per_user_dirs_to_new_layout(
     }
 
     for row in mcp_rows {
-        let Some(mcp_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_handle) = user_handle_by_id.get(user_id) else { continue; };
-        let Some(mcp_handle) = mcp_handle_by_id.get(mcp_id) else { continue; };
+        let Some(mcp_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_handle) = user_handle_by_id.get(user_id) else {
+            continue;
+        };
+        let Some(mcp_handle) = mcp_handle_by_id.get(mcp_id) else {
+            continue;
+        };
         let new_dir = users_root.join(user_handle).join("mcps").join(mcp_handle);
 
         let old_dir = row.get("workspace_dir").and_then(|v| v.as_str());
@@ -710,10 +824,18 @@ async fn relocate_per_user_dirs_to_new_layout(
         .and_then(|mut r| r.take(0).ok())
         .unwrap_or_default();
     for row in &agent_rows {
-        let Some(agent_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else { continue; };
-        let Some(handle) = row.get("handle").and_then(|v| v.as_str()) else { continue; };
-        let Some(user_handle) = user_handle_by_id.get(user_id) else { continue; };
+        let Some(agent_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_id) = row.get("user_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(handle) = row.get("handle").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(user_handle) = user_handle_by_id.get(user_id) else {
+            continue;
+        };
 
         // Only the inherited shared row (id == handle) owns the legacy
         // `workspaces/{handle}` dir; additional users' clones start empty.
@@ -803,8 +925,12 @@ async fn drop_app_manifest_id(
     let users_root = data_dir.join("users");
 
     for row in &app_rows {
-        let Some(app_id) = row.get("id").and_then(|v| v.as_str()) else { continue; };
-        let Some(handle) = row.get("handle").and_then(|v| v.as_str()) else { continue; };
+        let Some(app_id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(handle) = row.get("handle").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let manifest_id = row
             .get("manifest")
             .and_then(|m| m.get("id"))
@@ -857,11 +983,18 @@ async fn drop_app_manifest_id(
 
         // Inject `handle` so the supervisor restore path can deserialize
         // pre-PR rows into the now-required `AppManifest.handle` field.
-        let Some(manifest) = row.get("manifest").cloned() else { continue; };
-        let serde_json::Value::Object(mut obj) = manifest else { continue; };
+        let Some(manifest) = row.get("manifest").cloned() else {
+            continue;
+        };
+        let serde_json::Value::Object(mut obj) = manifest else {
+            continue;
+        };
         let removed_id = obj.remove("id").is_some();
         let inserted_handle = obj
-            .insert("handle".into(), serde_json::Value::String(handle.to_string()))
+            .insert(
+                "handle".into(),
+                serde_json::Value::String(handle.to_string()),
+            )
             .is_none();
         if !removed_id && !inserted_handle {
             continue;
@@ -903,8 +1036,8 @@ fn unique_with_suffix(base: Handle, taken: &HashSet<String>) -> Handle {
 
 #[cfg(test)]
 mod tests {
-    use surrealdb::engine::local::Mem;
     use surrealdb::Surreal;
+    use surrealdb::engine::local::Mem;
 
     async fn seeded_db() -> Surreal<surrealdb::engine::local::Db> {
         let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -1071,7 +1204,11 @@ mod tests {
             .await
             .unwrap();
         let rows: Vec<serde_json::Value> = r.take(0).unwrap();
-        let shared = rows.first().and_then(|v| v.get("count")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let shared = rows
+            .first()
+            .and_then(|v| v.get("count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         assert_eq!(shared, 0, "shared rows should be deleted");
 
         let mut r = db
@@ -1083,7 +1220,10 @@ mod tests {
         assert!(u1_handles.contains(&"researcher".into()));
         assert!(u1_handles.contains(&"receptionist".into()));
         assert!(u1_handles.contains(&"system".into()));
-        assert!(u1_handles.contains(&"custom-a".into()), "user-created agent kept its id as handle: {u1_handles:?}");
+        assert!(
+            u1_handles.contains(&"custom-a".into()),
+            "user-created agent kept its id as handle: {u1_handles:?}"
+        );
 
         let mut r = db
             .query("SELECT meta::id(id) AS id, handle, created_at FROM app ORDER BY created_at ASC")
@@ -1092,7 +1232,10 @@ mod tests {
         let rows: Vec<serde_json::Value> = r.take(0).unwrap();
         assert_eq!(rows[0].get("handle").unwrap().as_str().unwrap(), "notes");
         assert_eq!(rows[1].get("handle").unwrap().as_str().unwrap(), "notes-2");
-        assert_eq!(rows[2].get("handle").unwrap().as_str().unwrap(), "dashboard");
+        assert_eq!(
+            rows[2].get("handle").unwrap().as_str().unwrap(),
+            "dashboard"
+        );
 
         let mut r = db
             .query("SELECT meta::id(id) AS id, handle, installed_at FROM mcp_server ORDER BY installed_at ASC")
@@ -1101,32 +1244,47 @@ mod tests {
         let rows: Vec<serde_json::Value> = r.take(0).unwrap();
         let h0 = rows[0].get("handle").unwrap().as_str().unwrap();
         assert!(h0.starts_with("mcp-"), "expected uuid fallback, got {h0}");
-        assert_eq!(rows[1].get("handle").unwrap().as_str().unwrap(), "m-2024_tool");
+        assert_eq!(
+            rows[1].get("handle").unwrap().as_str().unwrap(),
+            "m-2024_tool"
+        );
         let h2 = rows[2].get("handle").unwrap().as_str().unwrap();
         assert!(h2.len() <= 32);
-        assert!(h2.starts_with("taylorwilsdon-google_workspace"), "got: {h2}");
+        assert!(
+            h2.starts_with("taylorwilsdon-google_workspace"),
+            "got: {h2}"
+        );
 
         let mut r = db
             .query("SELECT policy_text FROM policy WHERE id = type::record('policy', 'p1')")
-            .await.unwrap();
+            .await
+            .unwrap();
         let rows: Vec<serde_json::Value> = r.take(0).unwrap();
         let t = rows[0].get("policy_text").unwrap().as_str().unwrap();
-        assert!(t.contains(r#"Policy::Agent::"alice/developer""#), "got: {t}");
+        assert!(
+            t.contains(r#"Policy::Agent::"alice/developer""#),
+            "got: {t}"
+        );
         assert!(!t.contains(r#"Policy::Agent::"developer""#));
 
         let mut r = db
             .query("SELECT policy_text FROM policy WHERE id = type::record('policy', 'p2')")
-            .await.unwrap();
+            .await
+            .unwrap();
         let rows: Vec<serde_json::Value> = r.take(0).unwrap();
         let t = rows[0].get("policy_text").unwrap().as_str().unwrap();
         assert!(t.contains(r#"Policy::App::"alice/notes""#), "got: {t}");
 
         let mut r = db
             .query("SELECT policy_text FROM policy WHERE id = type::record('policy', 'p3')")
-            .await.unwrap();
+            .await
+            .unwrap();
         let rows: Vec<serde_json::Value> = r.take(0).unwrap();
         let t = rows[0].get("policy_text").unwrap().as_str().unwrap();
-        assert!(t.contains(&format!(r#"Policy::Mcp::"alice/{h0}""#)), "got: {t}");
+        assert!(
+            t.contains(&format!(r#"Policy::Mcp::"alice/{h0}""#)),
+            "got: {t}"
+        );
     }
 
     #[tokio::test]

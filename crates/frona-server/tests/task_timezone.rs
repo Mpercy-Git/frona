@@ -10,8 +10,8 @@ use frona::agent::task::service::TaskService;
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
 use frona::tool::task::next_cron_occurrence;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -20,7 +20,10 @@ async fn test_db() -> Surreal<Db> {
 }
 
 fn make_task_service(db: Surreal<Db>) -> TaskService {
-    TaskService::new(SurrealRepo::new(db), frona::chat::broadcast::BroadcastService::new())
+    TaskService::new(
+        SurrealRepo::new(db),
+        frona::chat::broadcast::BroadcastService::new(),
+    )
 }
 
 #[tokio::test]
@@ -42,12 +45,19 @@ async fn create_cron_template_snapshots_timezone() {
             None,
             Default::default(),
             Default::default(),
-            false, None, None)
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     match task.kind {
-        TaskKind::Cron { timezone, next_run_at, .. } => {
+        TaskKind::Cron {
+            timezone,
+            next_run_at,
+            ..
+        } => {
             assert_eq!(timezone.as_deref(), Some("America/Los_Angeles"));
             assert_eq!(next_run_at, Some(next));
         }
@@ -114,20 +124,24 @@ async fn advance_cron_template_preserves_kind_and_timezone() {
             None,
             Default::default(),
             Default::default(),
-            false, None, None)
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     let second = next_cron_occurrence("0 9 * * *", "America/Los_Angeles")
         .map(|d| d + chrono::Duration::days(1))
         .unwrap();
-    let advanced = svc
-        .advance_cron_template(&task.id, second)
-        .await
-        .unwrap();
+    let advanced = svc.advance_cron_template(&task.id, second).await.unwrap();
 
     match advanced.kind {
-        TaskKind::Cron { timezone, next_run_at, .. } => {
+        TaskKind::Cron {
+            timezone,
+            next_run_at,
+            ..
+        } => {
             assert_eq!(
                 timezone.as_deref(),
                 Some("America/Los_Angeles"),
@@ -154,8 +168,15 @@ async fn cron_legacy_row_without_timezone_field_deserializes() {
     });
     let kind: TaskKind = serde_json::from_value(json).unwrap();
     match kind {
-        TaskKind::Cron { timezone, cron_expression, .. } => {
-            assert!(timezone.is_none(), "legacy rows deserialize with timezone=None");
+        TaskKind::Cron {
+            timezone,
+            cron_expression,
+            ..
+        } => {
+            assert!(
+                timezone.is_none(),
+                "legacy rows deserialize with timezone=None"
+            );
             assert_eq!(cron_expression, "0 9 * * *");
         }
         _ => panic!("expected Cron kind"),

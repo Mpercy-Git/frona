@@ -122,7 +122,10 @@ async fn preview_skill(
     State(state): State<AppState>,
     Query(params): Query<PreviewQuery>,
 ) -> Result<Json<SkillPreview>, ApiError> {
-    let preview = state.skill_service.preview(&params.repo, &params.name).await?;
+    let preview = state
+        .skill_service
+        .preview(&params.repo, &params.name)
+        .await?;
     Ok(Json(preview))
 }
 
@@ -213,12 +216,18 @@ async fn uninstall_skill(
 ) -> Result<Json<()>, ApiError> {
     if let Some(agent_id) = &params.agent_id {
         let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
-        state.skill_service.uninstall_agent_skill(&auth.handle, &agent.handle, &name).await?;
+        state
+            .skill_service
+            .uninstall_agent_skill(&auth.handle, &agent.handle, &name)
+            .await?;
         return Ok(Json(()));
     }
     match params.scope {
         InstallScope::User => {
-            state.skill_service.uninstall_for_user(&auth.handle, &name).await?;
+            state
+                .skill_service
+                .uninstall_for_user(&auth.handle, &name)
+                .await?;
         }
         InstallScope::Shared => {
             require_admin(&state, &auth).await?;

@@ -1,7 +1,6 @@
 //! Integration test: execute a task end-to-end and verify every SSE event
 //! that the frontend would receive.
 
-#[allow(dead_code)]
 mod helpers;
 
 use std::collections::HashMap;
@@ -17,15 +16,11 @@ use frona::core::state::AppState;
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
 use frona::storage::StorageService;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 use tokio::sync::mpsc;
 
-use helpers::{
-    drain_sse_frames, MockModelProvider, MockResponse, SseFrame,
-    test_model_group,
-};
-
+use helpers::{MockModelProvider, MockResponse, SseFrame, drain_sse_frames, test_model_group};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -35,9 +30,7 @@ async fn test_db() -> Surreal<Db> {
 
 /// Build an `AppState` whose provider registry contains a mock provider
 /// and a model group named "primary" that resolves to it.
-async fn test_app_state_with_mock(
-    mock: Arc<MockModelProvider>,
-) -> (AppState, tempfile::TempDir) {
+async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, tempfile::TempDir) {
     let db = test_db().await;
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_string_lossy().to_string();
@@ -70,17 +63,22 @@ async fn test_app_state_with_mock(
             80.0, 80.0, 90.0, 90.0,
         ),
     );
-    let user_service = frona::auth::UserService::new(
-        SurrealRepo::new(db.clone()),
-        &config.cache,
-    );
+    let user_service = frona::auth::UserService::new(SurrealRepo::new(db.clone()), &config.cache);
     let policy_service = {
         let schema = frona::policy::schema::build_schema();
         let repo: std::sync::Arc<dyn frona::policy::repository::PolicyRepository> =
-            std::sync::Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+            std::sync::Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(
+                db.clone(),
+            ));
         let tool_manager = std::sync::Arc::new(frona::tool::manager::ToolManager::new(false));
         let storage = frona::storage::StorageService::new(&config);
-        frona::policy::service::PolicyService::new(repo, schema, tool_manager, storage, user_service.clone())
+        frona::policy::service::PolicyService::new(
+            repo,
+            schema,
+            tool_manager,
+            storage,
+            user_service.clone(),
+        )
     };
     let agent_service = AgentService::new(
         SurrealRepo::new(db.clone()),
@@ -100,25 +98,31 @@ async fn test_app_state_with_mock(
     let provider_registry =
         frona::inference::registry::ModelProviderRegistry::for_testing(providers, model_groups);
 
-    let user_service =
-        frona::auth::UserService::new(SurrealRepo::new(db.clone()), &config.cache);
-    let prompt_loader =
-        frona::agent::prompt::PromptLoader::new(format!("{base}/prompts"));
+    let user_service = frona::auth::UserService::new(SurrealRepo::new(db.clone()), &config.cache);
+    let prompt_loader = frona::agent::prompt::PromptLoader::new(format!("{base}/prompts"));
 
     let provider_registry_arc = Arc::new(provider_registry.clone());
-    let memory_service = frona::memory::service::MemoryService::new(
-        SurrealRepo::new(db.clone()),
-        SurrealRepo::new(db.clone()),
-        SurrealRepo::new(db.clone()),
-        provider_registry_arc,
-        prompt_loader.clone(),
-        storage.clone(),
-        helpers::test_usage_service(&db),
-    );
+    let memory_service: Arc<dyn frona::memory::service::MemoryService> =
+        Arc::new(frona::memory::basic::BasicMemoryService::new(
+            SurrealRepo::new(db.clone()),
+            SurrealRepo::new(db.clone()),
+            SurrealRepo::new(db.clone()),
+            SurrealRepo::new(db.clone()),
+            provider_registry_arc,
+            prompt_loader.clone(),
+            helpers::test_usage_service(&db),
+            frona::core::config::MemoryConfig::default(),
+        ));
 
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
-    let mut state =
-        AppState::new(db.clone(), &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage.clone(), metrics_handle, resource_manager.clone());
+    let mut state = AppState::new(
+        db.clone(),
+        &config,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage.clone(),
+        metrics_handle,
+        resource_manager.clone(),
+    );
     // Must reuse `state.broadcast_service` - a fresh BroadcastService here
     // would disconnect events fired inside ChatService from SSE sessions
     // registered against state.broadcast_service.
@@ -130,7 +134,6 @@ async fn test_app_state_with_mock(
         provider_registry,
         storage.clone(),
         user_service,
-        memory_service,
         prompt_loader.clone(),
         state.broadcast_service.clone(),
         state.presign_service.clone(),
@@ -147,7 +150,7 @@ async fn test_app_state_with_mock(
         state.user_service.clone(),
         state.storage_service.clone(),
         agent_service,
-        state.memory_service.clone(),
+        memory_service,
         state.skill_service.clone(),
         state.task_service.clone(),
         state.notification_service.clone(),
@@ -162,7 +165,9 @@ async fn test_app_state_with_mock(
         state.config.clone(),
         state.usage_service.clone(),
     ));
-    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
+        state.harness.clone(),
+    ));
 
     (state, tmp)
 }
@@ -178,7 +183,9 @@ fn make_task() -> Task {
         title: "Test task".to_string(),
         description: "Say hello".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -237,16 +244,15 @@ async fn seed_user(db: &Surreal<Db>) {
     repo.create(&user).await.unwrap();
 }
 
-
 /// Execute a task that produces a simple text response and verify the
 /// complete sequence of SSE events the frontend would receive.
 #[tokio::test]
 async fn task_execution_emits_expected_sse_events() {
     helpers::init_metrics();
 
-    let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Text("Hello from the task!".to_string()),
-    ]));
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "Hello from the task!".to_string(),
+    )]));
 
     let (state, _tmp) = test_app_state_with_mock(mock).await;
     seed_agent(&state.db).await;
@@ -263,11 +269,18 @@ async fn task_execution_emits_expected_sse_events() {
     let task_id = task.id.clone();
     let executor = Arc::new(TaskExecutor::new(state.harness.clone()));
     let exec_for_spawn = executor.clone();
-    tokio::spawn(async move { let _ = exec_for_spawn.run_task(task).await; });
+    tokio::spawn(async move {
+        let _ = exec_for_spawn.run_task(task).await;
+    });
 
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if let Some(t) = repo.find_by_id(&task_id).await.unwrap() && matches!(t.status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled) {
+        if let Some(t) = repo.find_by_id(&task_id).await.unwrap()
+            && matches!(
+                t.status,
+                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+            )
+        {
             break;
         }
     }
@@ -301,16 +314,25 @@ async fn task_execution_emits_expected_sse_events() {
     );
 
     // First event: task_update with status=inprogress
-    assert_eq!(event_names[0], "task_update", "First event should be task_update");
+    assert_eq!(
+        event_names[0], "task_update",
+        "First event should be task_update"
+    );
     assert_eq!(
         frames[0].data["status"].as_str().unwrap(),
         "inprogress",
         "First task_update should be inprogress"
     );
 
-    assert_eq!(event_names[1], "chat_message", "Second event should be chat_message");
+    assert_eq!(
+        event_names[1], "chat_message",
+        "Second event should be chat_message"
+    );
 
-    assert_eq!(event_names[2], "inference_start", "Third event should be inference_start");
+    assert_eq!(
+        event_names[2], "inference_start",
+        "Third event should be inference_start"
+    );
 
     assert_eq!(event_names[3], "token", "Fourth event should be token");
     assert_eq!(
@@ -319,7 +341,10 @@ async fn task_execution_emits_expected_sse_events() {
         "Token should carry the response text"
     );
 
-    assert_eq!(event_names[4], "usage_recorded", "Fifth event should be usage_recorded");
+    assert_eq!(
+        event_names[4], "usage_recorded",
+        "Fifth event should be usage_recorded"
+    );
     assert!(
         frames[4].data["model_ref"].is_string(),
         "usage_recorded should carry model_ref"
@@ -327,9 +352,15 @@ async fn task_execution_emits_expected_sse_events() {
 
     // `complete_agent_message` no longer fires `chat_message` for streaming
     // completions - `inference_done` is the canonical signal.
-    assert_eq!(event_names[5], "inference_done", "Sixth event should be inference_done");
+    assert_eq!(
+        event_names[5], "inference_done",
+        "Sixth event should be inference_done"
+    );
     let message = &frames[5].data["message"];
-    assert!(message.is_object(), "inference_done should carry a message object");
+    assert!(
+        message.is_object(),
+        "inference_done should carry a message object"
+    );
     assert_eq!(
         message["content"].as_str().unwrap(),
         "Hello from the task!",
@@ -343,7 +374,9 @@ async fn task_execution_emits_expected_sse_events() {
 
     // Last event: task_update with terminal status
     let last = frames.last().unwrap();
-    assert_eq!(last.event, "task_update", "Last event should be task_update"
+    assert_eq!(
+        last.event, "task_update",
+        "Last event should be task_update"
     );
 }
 
@@ -354,9 +387,9 @@ async fn task_execution_emits_expected_sse_events() {
 async fn delegation_delivers_task_result_to_parent_chat() {
     helpers::init_metrics();
 
-    let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Text("Researcher reports: 42.".to_string()),
-    ]));
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "Researcher reports: 42.".to_string(),
+    )]));
 
     let (state, _tmp) = test_app_state_with_mock(mock).await;
     seed_agent(&state.db).await;
@@ -421,12 +454,17 @@ async fn delegation_delivers_task_result_to_parent_chat() {
     let task_id = task.id.clone();
     let executor = Arc::new(TaskExecutor::new(state.harness.clone()));
     let exec_for_spawn = executor.clone();
-    tokio::spawn(async move { let _ = exec_for_spawn.run_task(task).await; });
+    tokio::spawn(async move {
+        let _ = exec_for_spawn.run_task(task).await;
+    });
 
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if let Some(t) = task_repo.find_by_id(&task_id).await.unwrap()
-            && matches!(t.status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled)
+            && matches!(
+                t.status,
+                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+            )
         {
             break;
         }
@@ -480,15 +518,18 @@ async fn delegation_delivers_task_result_to_parent_chat() {
         .unwrap();
     let task_chat_agent_msgs: Vec<_> = task_chat_msgs
         .iter()
-        .filter(|m| m.role == frona::chat::message::models::MessageRole::Agent
-            && !m.content.is_empty())
+        .filter(|m| {
+            m.role == frona::chat::message::models::MessageRole::Agent && !m.content.is_empty()
+        })
         .collect();
     assert!(
         !task_chat_agent_msgs.is_empty(),
         "Task chat must contain at least one Agent message with the child agent's response. Got: {task_chat_msgs:?}"
     );
     assert!(
-        task_chat_agent_msgs.iter().any(|m| m.content.contains("Researcher reports")),
+        task_chat_agent_msgs
+            .iter()
+            .any(|m| m.content.contains("Researcher reports")),
         "Task chat should contain the mocked child response. Got: {task_chat_agent_msgs:?}"
     );
 
@@ -530,6 +571,9 @@ async fn delegation_delivers_task_result_to_parent_chat() {
     assert!(
         entity_frame.is_some(),
         "Expected an `entity_updated` SSE for the TaskCompletion message id. Frames seen: {:?}",
-        frames.iter().map(|f| (&f.event, &f.data)).collect::<Vec<_>>()
+        frames
+            .iter()
+            .map(|f| (&f.event, &f.data))
+            .collect::<Vec<_>>()
     );
 }

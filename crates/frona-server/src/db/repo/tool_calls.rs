@@ -101,13 +101,10 @@ impl ToolCallRepository for SurrealRepo<ToolCall> {
 
     async fn find_pending_by_chat_id(&self, chat_id: &str) -> Result<Option<ToolCall>, AppError> {
         let all = self.find_by_chat_id(chat_id).await?;
-        Ok(all
-            .into_iter()
-            .rev()
-            .find(|te| {
-                te.hitl
-                    .as_ref()
-                    .is_some_and(|h| h.status == crate::inference::tool_call::ToolStatus::Pending)
-            }))
+        Ok(all.into_iter().rev().find(|te| {
+            te.hitl
+                .as_ref()
+                .is_some_and(|h| h.status == crate::inference::tool_call::ToolStatus::Pending)
+        }))
     }
 }

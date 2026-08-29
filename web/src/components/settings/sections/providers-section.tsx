@@ -80,7 +80,7 @@ function buildStates(
       id,
       api_key: cfg.api_key,
       base_url: cfg.base_url,
-      enabled: cfg.enabled,
+      enabled: cfg.enabled !== false,
       testStatus: existing?.testStatus ?? "idle" as TestStatus,
       testError: existing?.testError,
     };
@@ -307,9 +307,19 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
    
   }, [providerStates]);
 
-  const configuredIds = Object.keys(providers);
-  const unconfiguredIds = KNOWN_PROVIDERS.filter((id) => !configuredIds.includes(id));
-  const sortedConfigured = KNOWN_PROVIDERS.filter((id) => id in providers);
+  const enabledIds = Object.entries(providers)
+    .filter(([, config]) => config.enabled !== false)
+    .map(([id]) => id);
+  const sortedEnabled = [
+    ...KNOWN_PROVIDERS.filter((id) => enabledIds.includes(id)),
+    ...enabledIds.filter((id) => !KNOWN_PROVIDERS.includes(id)),
+  ];
+  const disabledIds = [
+    ...KNOWN_PROVIDERS.filter((id) => !(id in providers) || providers[id].enabled === false),
+    ...Object.entries(providers)
+      .filter(([id, config]) => config.enabled === false && !KNOWN_PROVIDERS.includes(id))
+      .map(([id]) => id),
+  ];
 
   const updateProvider = (id: string, updated: ModelProviderConfig) => {
     setProviderStates((prev) =>
@@ -321,7 +331,9 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
   const enableProvider = (id: string) => {
     onChange({
       ...providers,
-      [id]: { api_key: "", base_url: null, enabled: true },
+      [id]: providers[id]
+        ? { ...providers[id], enabled: true }
+        : { api_key: "", base_url: null, enabled: true },
     });
   };
 
@@ -342,9 +354,9 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
   return (
     <div className="space-y-4">
       <SectionHeader title="Providers" description="Configure your LLM API providers" icon={CloudIcon} />
-      {sortedConfigured.length > 0 && (
+      {sortedEnabled.length > 0 && (
         <div className="space-y-3">
-          {sortedConfigured.map((id) => {
+          {sortedEnabled.map((id) => {
             const state = providerStates.find((p) => p.id === id);
             if (!state) return null;
             return (
@@ -359,10 +371,10 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
         </div>
       )}
 
-      {unconfiguredIds.length > 0 && (
+      {disabledIds.length > 0 && (
         <div className="space-y-2">
           <h3 className="text-sm font-medium text-text-tertiary pt-2">Available Providers</h3>
-          {unconfiguredIds.map((id) => (
+          {disabledIds.map((id) => (
             <CollapsedProvider
               key={id}
               id={id}
