@@ -7,7 +7,7 @@ RUN npm run build
 
 # Stage 2: shared Rust base — apt packages + cargo tools installed once,
 # cached by Docker layer so both planner and backend-builder reuse it.
-FROM rust:1.95-bookworm AS rust-base
+FROM rust:1.97.1-bookworm AS rust-base
 RUN --mount=type=bind,source=build/pkgs/builder-rust-apt.txt,target=/tmp/packages.txt \
   apt-get update && apt-get install -y --no-install-recommends \
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \

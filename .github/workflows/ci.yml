@@ -35,10 +35,10 @@ jobs:
       # "failed to join paths from $LD_LIBRARY_PATH" breakage that the rust
       # Docker image hits inside container jobs. Pinned to match build/Dockerfile.
       # This action also caches ~/.cargo and target keyed on Cargo.lock.
-      - name: Install Rust 1.95
+      - name: Install Rust 1.97.1
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.97.1"
           # This action defaults RUSTFLAGS to "-D warnings"; the codebase (and
           # the Docker release build) don't treat warnings as errors, so clear
           # it. CI is here to catch compile errors and test failures, not to
