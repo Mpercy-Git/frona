@@ -62,16 +62,23 @@ RUN --mount=type=cache,target=/app/target,id=frona-target \
 # Failing the build on an empty result is the point. Without that check a network
 # hiccup produces an image whose PKM backend silently classifies nothing, which is
 # exactly the class of quiet failure the ontology work exists to avoid.
+#
+# A hiccup shouldn't fail the release either, though: GitHub's asset endpoint
+# answered 504 on two downloads in a release build, and with no retry `-f` turned
+# that into a dead xargs child (exit 123) minutes into the job. `--retry` alone
+# covers the 5xx/429 responses; `--retry-all-errors` extends it to a refused
+# connection or a transfer reset mid-asset, which fail before any status arrives.
 FROM debian:bookworm-slim AS ontology
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl ca-certificates jq \
   && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /ontology && cd /ontology \
-  && curl -fsSL https://api.github.com/repos/fronalabs/frona-ontologies/releases/latest \
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 15 \
+     https://api.github.com/repos/fronalabs/frona-ontologies/releases/latest \
      -o /tmp/release.json \
   && jq -r '.assets[].browser_download_url' /tmp/release.json \
      | grep -E '\.ttl\.gz$|/(metadata\.json|NOTICE)$' \
-     | xargs -r -n1 curl -fsSL -O \
+     | xargs -r -n1 curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 15 -O \
   && ls *.ttl.gz >/dev/null \
   && echo "ontology release $(jq -r .tag_name /tmp/release.json): $(ls | tr '\n' ' ')"
 
