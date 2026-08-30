@@ -139,12 +139,20 @@
 #    api_key: "${GALADRIEL_API_KEY}"
 #  huggingface:
 #    api_key: "${HUGGINGFACE_API_KEY}"
+#  # Azure OpenAI. base_url is your resource endpoint, and api_version pins the
+#  # data-plane version (Azure versions it in the query string; the version
+#  # gates which request fields are accepted). Model ids are DEPLOYMENT names.
+#  azure:
+#    api_key: "${AZURE_OPENAI_API_KEY}"
+#    base_url: "${AZURE_OPENAI_ENDPOINT}"      # https://<resource>.openai.azure.com
+#    api_version: "2024-10-21"
 #  ollama:
 #    base_url: "${OLLAMA_API_BASE_URL}"
 
 # Provider options:
 #   api_key: API key string or ${ENV_VAR} reference
-#   base_url: Custom API endpoint (useful for Ollama, proxies)
+#   base_url: Custom API endpoint (required for Azure; useful for Ollama, proxies)
+#   api_version: Azure OpenAI data-plane version. Ignored by other providers
 #   enabled: true/false (default: true)
 
 # Define named model groups. Agents reference these by name.
@@ -168,6 +176,10 @@ models:
 #    provider: anthropic
 #    model: claude-opus-4-6
 #    max_tokens: 100000
+#  azure_gpt4o:
+#    provider: azure
+#    model: my-gpt-4o-deployment   # the DEPLOYMENT name, not "gpt-4o"
+#    max_tokens: 16000
 #  openai_reasoning:
 #    provider: openai
 #    model: gpt-5
@@ -213,6 +225,9 @@ models:
 #       api is optional. The models.dev adapter metadata supplies its default.
 #       Missing or unknown metadata uses chat_completions.
 #     Gemini: thinking_config ({thinking_budget}), top_p, top_k
+#     Azure: the OpenAI-compatible set (reasoning_effort, top_p, seed, ...).
+#       `model` is the deployment name; the resource endpoint and api_version
+#       live on the provider, not the model group.
 #     OpenRouter: prompt_caching (bool), provider_routing ({order, only, ignore,
 #       allow_fallbacks, require_parameters, sort, max_price, quantizations,
 #       data_collection, zdr}), plus the OpenAI-compatible params above.

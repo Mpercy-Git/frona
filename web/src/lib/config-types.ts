@@ -198,6 +198,8 @@ export interface ModelGroupConfig {
 export interface ModelProviderConfig {
   api_key: SensitiveField;
   base_url: string | null;
+  /** Azure OpenAI only — its data plane is versioned in the query string. */
+  api_version?: string | null;
   enabled: boolean;
 }
 

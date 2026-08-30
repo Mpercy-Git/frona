@@ -274,6 +274,7 @@ function ProviderParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate
     case "xai":
     case "together":
     case "hyperbolic":
+    case "azure":
       return <OpenAIParams group={group} onUpdate={onUpdate} />;
     case "openrouter":
       return <OpenRouterParamsComponent group={group} onUpdate={onUpdate} />;

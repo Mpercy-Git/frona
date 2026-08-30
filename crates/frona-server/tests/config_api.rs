@@ -36,8 +36,7 @@ fn test_redact_config_for_api_providers() {
         "anthropic".into(),
         frona::core::config::ModelProviderConfig {
             api_key: Some("sk-secret".into()),
-            base_url: None,
-            enabled: true,
+            ..Default::default()
         },
     );
 

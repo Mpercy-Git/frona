@@ -812,6 +812,14 @@ pub enum ProviderModel {
         #[serde(flatten)]
         params: GeminiParams,
     },
+    /// Azure OpenAI. `base_url` is the resource endpoint
+    /// (`https://<resource>.openai.azure.com`) and the model id is the
+    /// *deployment* name chosen in Azure, not the underlying model name.
+    #[serde(rename = "azure")]
+    Azure {
+        #[serde(flatten)]
+        params: OpenAICompatParams,
+    },
     #[serde(rename = "generic")]
     #[default]
     Generic,
@@ -866,6 +874,9 @@ impl ProviderModel {
             "gemini" => Self::Gemini {
                 params: Default::default(),
             },
+            "azure" => Self::Azure {
+                params: Default::default(),
+            },
             "generic" => Self::Generic,
             name => Self::Custom {
                 name: name.to_string(),
@@ -885,6 +896,7 @@ impl ProviderModel {
             Self::Together { .. } => "together",
             Self::Hyperbolic { .. } => "hyperbolic",
             Self::Gemini { .. } => "gemini",
+            Self::Azure { .. } => "azure",
             Self::Generic => "generic",
             Self::Custom { name } => name,
         }
@@ -916,6 +928,14 @@ pub struct ModelProviderConfig {
     pub api_key: Option<String>,
     #[schemars(description = "Custom base URL for this provider's API.")]
     pub base_url: Option<String>,
+    /// Azure OpenAI only. Azure versions its data plane in the query string
+    /// rather than the path, and the version gates which request fields are
+    /// accepted, so it has to be configurable rather than pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Azure OpenAI API version, e.g. '2024-10-21'. Ignored by other providers."
+    )]
+    pub api_version: Option<String>,
     #[serde(
         default = "serde_aux::prelude::bool_true",
         deserialize_with = "deserialize_bool_from_anything"
@@ -929,6 +949,7 @@ impl Default for ModelProviderConfig {
         Self {
             api_key: None,
             base_url: None,
+            api_version: None,
             enabled: true,
         }
     }

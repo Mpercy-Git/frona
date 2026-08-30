@@ -23,6 +23,7 @@ const KNOWN_PROVIDERS = [
   "mira",
   "galadriel",
   "huggingface",
+  "azure",
   "ollama",
 ];
 
@@ -44,6 +45,7 @@ export function formatProviderName(id: string): string {
     mira: "Mira",
     galadriel: "Galadriel",
     huggingface: "Hugging Face",
+    azure: "Azure OpenAI",
     ollama: "Ollama",
   };
   return names[id] ?? id;
@@ -55,6 +57,7 @@ export interface ProviderState {
   id: string;
   api_key: SensitiveField;
   base_url: string | null;
+  api_version: string | null;
   enabled: boolean;
   testStatus: TestStatus;
   /** Provider error message when testStatus === "error". */
@@ -80,6 +83,7 @@ function buildStates(
       id,
       api_key: cfg.api_key,
       base_url: cfg.base_url,
+      api_version: cfg.api_version ?? null,
       enabled: cfg.enabled !== false,
       testStatus: existing?.testStatus ?? "idle" as TestStatus,
       testError: existing?.testError,
@@ -187,6 +191,18 @@ interface ProviderCardProps {
 }
 
 function ProviderCard({ state, onChange, onToggle }: ProviderCardProps) {
+  const isAzure = state.id === "azure";
+  // Spread the current values rather than rebuilding the object field by
+  // field, so adding a field to ModelProviderConfig can't silently drop it on
+  // the next edit of a different field.
+  const patch = (fields: Partial<ModelProviderConfig>) =>
+    onChange({
+      api_key: state.api_key,
+      base_url: state.base_url,
+      api_version: state.api_version,
+      enabled: state.enabled,
+      ...fields,
+    });
   return (
     <div className="rounded-lg border border-border bg-surface-secondary p-4 space-y-4">
       <div className="flex items-center justify-between">
@@ -215,16 +231,26 @@ function ProviderCard({ state, onChange, onToggle }: ProviderCardProps) {
       <SensitiveInput
         label="API Key"
         value={state.api_key}
-        onChange={(value) => onChange({ api_key: value, base_url: state.base_url, enabled: state.enabled })}
+        onChange={(value) => patch({ api_key: value })}
         placeholder="Enter API key"
       />
 
       <TextInput
         label="Base URL"
         value={state.base_url}
-        onChange={(value) => onChange({ api_key: state.api_key, base_url: value || null, enabled: state.enabled })}
-        placeholder="Optional custom base URL"
+        onChange={(value) => patch({ base_url: value || null })}
+        placeholder={isAzure ? "https://<resource>.openai.azure.com" : "Optional custom base URL"}
       />
+
+      {isAzure && (
+        <TextInput
+          label="API Version"
+          description="Azure versions its data plane in the query string, and the version gates which request fields are accepted. Leave blank for the client default."
+          value={state.api_version}
+          onChange={(value) => patch({ api_version: value || null })}
+          placeholder="2024-10-21"
+        />
+      )}
 
       {state.testStatus === "error" && state.testError && (
         <p className="rounded-lg bg-error-bg px-3 py-2 text-xs text-error-text break-words">
@@ -347,6 +373,7 @@ export function ProvidersSection({ providers, onChange, onReadyChange }: Provide
     updateProvider(id, {
       api_key: current.api_key,
       base_url: current.base_url,
+      api_version: current.api_version,
       enabled,
     });
   };
