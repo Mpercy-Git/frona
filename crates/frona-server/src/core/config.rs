@@ -626,6 +626,44 @@ pub struct OpenRouterProviderRouting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(description = "Sort providers by: 'throughput', 'latency', 'price'.")]
     pub sort: Option<String>,
+    /// Hard allowlist of provider slugs. Unlike `order`, nothing outside this
+    /// list is ever eligible, so it pins cost and latency to endpoints you
+    /// have actually measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Hard allowlist of providers, e.g. ['Anthropic']. Only these are eligible.")]
+    pub only: Option<Vec<String>>,
+    /// Price ceiling. A request that cannot be served at or under the ceiling
+    /// fails instead of silently routing to an expensive endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Price ceiling in USD per million tokens. Requests that cannot be served under it fail.")]
+    pub max_price: Option<OpenRouterMaxPrice>,
+    /// `"allow"` (default) or `"deny"` — deny restricts routing to providers
+    /// that do not store prompts non-transiently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Data collection policy: 'allow' (default) or 'deny'.")]
+    pub data_collection: Option<String>,
+    /// Restrict routing to Zero Data Retention endpoints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Restrict routing to Zero Data Retention endpoints only.")]
+    pub zdr: Option<bool>,
+}
+
+/// Price ceiling for OpenRouter provider selection, in USD per million tokens
+/// (`request` and `image` are per-unit, matching the OpenRouter API).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct OpenRouterMaxPrice {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Max USD per million prompt tokens.")]
+    pub prompt: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Max USD per million completion tokens.")]
+    pub completion: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Max USD per request.")]
+    pub request: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Max USD per image.")]
+    pub image: Option<f64>,
 }
 
 /// OpenRouter-specific parameters beyond the OpenAI-compatible fields.
@@ -633,11 +671,24 @@ pub struct OpenRouterProviderRouting {
 pub struct OpenRouterParams {
     #[serde(flatten)]
     pub compat: OpenAICompatParams,
-    /// Simple routing string, e.g. "openai" or "anthropic".
-    /// Sent as top-level `route` in the API request.
+    /// Top-level `route` in the API request. OpenRouter accepts exactly one
+    /// value here, `"fallback"`, which lets it retry the request against the
+    /// models listed in `fallbacks` when the primary is down or overloaded.
+    /// It is NOT a provider name — provider preferences belong in
+    /// `provider_routing`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "Simple provider routing, e.g. 'openai' or 'anthropic'. Mutually exclusive with provider routing.")]
+    #[schemars(description = "Model-level routing. The only value OpenRouter accepts is 'fallback'.")]
     pub route: Option<String>,
+    /// Whether to place an explicit `cache_control` breakpoint on the system
+    /// prompt. Defaults to on: frona sends a large, stable system prompt plus
+    /// tool definitions on every turn of a tool loop, and providers that honour
+    /// explicit breakpoints (Anthropic, Gemini) bill a cache hit at a fraction
+    /// of the fresh-input rate. Providers that cache automatically (OpenAI,
+    /// DeepSeek, Grok) ignore the marker. Set to `false` for workloads that are
+    /// overwhelmingly one-shot, where the cache write is never read back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Place a cache_control breakpoint on the system prompt (default true).")]
+    pub prompt_caching: Option<bool>,
     /// Provider routing object. Sent as `provider` in the API request.
     /// Renamed to avoid collision with the `#[serde(tag = "provider")]` enum discriminant.
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "provider_routing")]
@@ -855,37 +906,6 @@ impl ModelGroupConfig {
 
     pub fn provider_name(&self) -> &str {
         self.provider.name()
-    }
-
-    /// Extract provider-specific params as JSON for Rig's additional_params.
-    /// Serializes the whole config, strips common fields and the provider tag,
-    /// returning only provider-specific params. Returns None if empty.
-    /// Also renames `provider_routing` to `provider` for OpenRouter API compat.
-    pub fn additional_params(&self) -> Option<serde_json::Value> {
-        const COMMON_KEYS: &[&str] = &[
-            "provider", "model", "fallbacks", "max_tokens",
-            "temperature", "context_window", "retry",
-        ];
-
-        let mut map = match serde_json::to_value(self) {
-            Ok(serde_json::Value::Object(m)) => m,
-            _ => return None,
-        };
-
-        for key in COMMON_KEYS {
-            map.remove(*key);
-        }
-
-        // Rename `provider_routing` -> `provider` for the OpenRouter API.
-        // We use `provider_routing` in the config to avoid colliding with
-        // the `#[serde(tag = "provider")]` enum discriminant.
-        if let Some(routing) = map.remove("provider_routing") {
-            map.insert("provider".to_string(), routing);
-        }
-
-        map.retain(|_, v| !v.is_null());
-
-        if map.is_empty() { None } else { Some(serde_json::Value::Object(map)) }
     }
 }
 

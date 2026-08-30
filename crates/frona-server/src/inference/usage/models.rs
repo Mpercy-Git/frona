@@ -29,9 +29,18 @@ pub struct InferenceUsage {
     pub model_id: String,
     pub model_ref: String,
 
-    // Usage. `cached_input_tokens` is rig's collapsed view - see plan
-    // "Cache fidelity" section for why we can't split Anthropic
-    // cache_creation vs cache_read on the streaming path.
+    // Usage. **Convention:** `input_tokens` is the WHOLE prompt and
+    // `cached_input_tokens` a labelled subset of it, so fresh input is
+    // `input_tokens - cached_input_tokens` and the cache ratio is
+    // `cached_input_tokens / input_tokens` — which is what the usage dashboard
+    // computes. `UsageService::build_row` puts every provider into this shape;
+    // costing uses the complementary fresh-only view (see
+    // `metadata::catalog::normalize_usage`).
+    //
+    // `cached_input_tokens` is rig's collapsed view - see plan "Cache
+    // fidelity" section for why we can't split Anthropic cache_creation vs
+    // cache_read on the streaming path. Cache writes are therefore counted
+    // inside `input_tokens` but not broken out here.
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,

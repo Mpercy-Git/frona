@@ -48,9 +48,14 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 - **Installable PWA with an Android app-like feel** — web app manifest, generated app icons (standard + maskable + apple-touch), `viewport-fit=cover`, safe-area insets, dynamic viewport height (`100dvh`), no accidental pull-to-refresh, and virtual-keyboard-aware composer scrolling
 - Push subscriptions re-sync on mobile, iOS gets explicit install guidance, and the composer stays above the on-screen keyboard
 
-### 🧭 OpenRouter provider routing (net-new)
+### 🧭 OpenRouter routing, caching & cost accounting (net-new)
 
-- Expose OpenRouter's routing controls in the UI: `route`, explicit **provider order**, and **fallbacks** so you can steer which upstream backend serves each request
+- **Routing preferences actually reach OpenRouter.** The config models provider preferences as `provider_routing` so the key doesn't collide with the `provider` enum discriminant, but the live request path never renamed it back — so `order`, `sort`, `ignore` and `quantizations` shipped under a key the API doesn't read and were silently dropped. They are now sent as the `provider` object OpenRouter documents
+- **Prompt caching on by default.** A `cache_control` breakpoint is placed on the system prompt, so the large, stable system prompt and tool definitions that every turn of a tool loop resends are billed at the cache-read rate instead of the fresh-input rate on providers that honour explicit breakpoints (Anthropic, Gemini). Providers that cache automatically ignore the marker. Per-model-group opt-out via `prompt_caching: false` for one-shot workloads, where the cache write is never read back
+- **More of the cost and privacy controls exposed**: a hard `max_price` ceiling (a request no provider can serve under it fails instead of routing somewhere expensive), an `only` hard allowlist, `data_collection: deny`, and `zdr`
+- **`route` is documented and constrained correctly** — it is model-level fallback routing whose only accepted value is `fallback`, not a provider name as the UI previously suggested
+- **Cost and context windows resolve for aggregator model ids.** `openrouter` + `anthropic/claude-sonnet-4-6` is not a literal models.dev key, so the exact-match lookup missed: every OpenRouter call recorded `cost_usd: None`, and the context window fell back to the 128K floor, firing compaction — and the extra summarisation call it costs — far earlier than a 200K/1M model requires. Both now resolve through the vendor-prefix walk
+- **Cache writes are priced.** They were billed at the plain input rate; Anthropic charges a premium (1.25×) for them, which matters as soon as caching is on
 
 ### 🤝 Sharing agents and chats (net-new)
 

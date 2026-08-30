@@ -72,36 +72,74 @@ pub struct Modalities {
 const PER_MILLION_TO_PER_TOKEN: f64 = 1.0 / 1_000_000.0;
 
 /// Normalize a rig `Usage` to our canonical convention - `input_tokens` is
-/// the FRESH input only (cache reads are additive in `cached_input_tokens`).
+/// the FRESH input only; cache reads (`cached_input_tokens`) and cache writes
+/// (`cache_creation_input_tokens`) are additive alongside it, each billed at
+/// its own rate.
 ///
 /// rig fills `usage.input_tokens` inconsistently across providers:
-/// - DeepSeek / OpenAI / Gemini / Groq / xAI / Mistral / etc. - `prompt_tokens`
-///   from the OpenAI-shaped response, which is **total** prompt tokens (cached
-///   is a labelled subset of this number). We subtract the cached portion to
-///   get the fresh count.
-/// - Anthropic - `input_tokens` from Anthropic's response, which excludes
-///   cache reads already. No adjustment needed.
+/// - DeepSeek / OpenAI / Gemini / Groq / xAI / OpenRouter / etc. -
+///   `prompt_tokens` from the OpenAI-shaped response, which is **total** prompt
+///   tokens; both cache figures are labelled subsets of that number, so we
+///   subtract them to get the fresh count.
+/// - Anthropic - `input_tokens` from Anthropic's response, which excludes both
+///   already. No adjustment needed.
 fn normalize_usage(provider: &str, u: &Usage) -> Usage {
     match provider {
         "anthropic" => *u,
         _ => Usage {
-            input_tokens: u.input_tokens.saturating_sub(u.cached_input_tokens),
+            input_tokens: u
+                .input_tokens
+                .saturating_sub(u.cached_input_tokens)
+                .saturating_sub(u.cache_creation_input_tokens),
             ..*u
         },
     }
 }
 
+/// The other half of the convention: `input_tokens` as the TOTAL prompt size,
+/// with cache reads and writes as labelled subsets of it. This is the shape
+/// `InferenceUsage` rows persist and the usage dashboard reads — it derives
+/// fresh input as `input - cached` and the cache ratio as `cached / input`,
+/// both of which need the total as the denominator.
+///
+/// Only Anthropic needs adjusting: its API reports the three figures as
+/// disjoint numbers, so a row written straight from it under-reports the
+/// prompt and skews any ratio taken against it. Every OpenAI-shaped provider
+/// already reports the total.
+///
+/// Costing goes the other way — see [`normalize_usage`]. Both derive from the
+/// same raw `Usage`, so they are alternative views of one call, never applied
+/// on top of each other.
+pub fn total_prompt_usage(provider: &str, u: &Usage) -> Usage {
+    match provider {
+        "anthropic" => Usage {
+            input_tokens: u
+                .input_tokens
+                .saturating_add(u.cached_input_tokens)
+                .saturating_add(u.cache_creation_input_tokens),
+            ..*u
+        },
+        _ => *u,
+    }
+}
+
 impl ModelEntry {
     /// **Convention:** `usage.input_tokens` is the FRESH input only;
-    /// `cached_input_tokens` is additive. Callers must normalize first -
+    /// `cached_input_tokens` and `cache_creation_input_tokens` are additive
+    /// and priced separately. Callers must normalize first -
     /// see `ModelCatalogStore::compute`, which handles per-provider rig
     /// inconsistencies.
     pub fn cost_for(&self, u: &Usage) -> Option<f64> {
         let cost = self.cost.as_ref()?;
         let cache_read = cost.cache_read.unwrap_or(0.0);
+        // A cache write is a premium over fresh input (Anthropic bills 1.25x),
+        // so a model that publishes no write rate is charged at the plain input
+        // rate rather than free — the tokens were processed either way.
+        let cache_write = cost.cache_write.unwrap_or(cost.input);
         let total = (u.input_tokens as f64) * cost.input
             + (u.output_tokens as f64) * cost.output
-            + (u.cached_input_tokens as f64) * cache_read;
+            + (u.cached_input_tokens as f64) * cache_read
+            + (u.cache_creation_input_tokens as f64) * cache_write;
         Some(total * PER_MILLION_TO_PER_TOKEN)
     }
 
@@ -463,11 +501,17 @@ impl ModelCatalogStore {
         self.inner.load_full()
     }
 
+    /// Prices a call, resolving through `lookup_prefix` rather than an exact
+    /// key. Aggregators address models by a vendor-prefixed id
+    /// (`openrouter` + `anthropic/claude-sonnet-4.5`) and direct providers add
+    /// dated suffixes, neither of which is a literal catalog key — an exact
+    /// lookup misses both and silently records `cost_usd: None`.
     pub fn compute(&self, m: &ModelRef, u: &Usage) -> (Option<f64>, String) {
         let p = self.current();
         let normalized = normalize_usage(m.provider_name(), u);
         (
-            p.lookup(m).and_then(|e| e.cost_for(&normalized)),
+            p.lookup_prefix(m.provider_name(), &m.model_id)
+                .and_then(|e| e.cost_for(&normalized)),
             p.version.clone(),
         )
     }
@@ -486,6 +530,181 @@ impl ModelCatalogStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn priced_snapshot() -> ModelCatalogSnapshot {
+        let mut entries = HashMap::new();
+        entries.insert(
+            "anthropic/claude-sonnet-4-6".into(),
+            ModelEntry {
+                cost: Some(Cost {
+                    input: 3.0,
+                    output: 15.0,
+                    cache_read: Some(0.3),
+                    cache_write: Some(3.75),
+                }),
+                limit: Limit {
+                    context: 200_000,
+                    output: 64_000,
+                    input: None,
+                },
+                ..Default::default()
+            },
+        );
+        ModelCatalogSnapshot {
+            version: "test".to_string(),
+            fetched_at: Utc::now(),
+            entries,
+            protocol_defaults: HashMap::new(),
+        }
+    }
+
+    /// `openrouter` + `anthropic/claude-sonnet-4-6` is not a literal catalog
+    /// key, so the exact lookup `compute` used to do missed and every
+    /// OpenRouter call was recorded with no cost at all.
+    #[test]
+    fn compute_prices_a_vendor_prefixed_aggregator_model_id() {
+        let store = ModelCatalogStore::new(priced_snapshot());
+        let model = ModelRef {
+            model_id: "anthropic/claude-sonnet-4-6".to_string(),
+            provider: ProviderModel::from_name("openrouter"),
+        };
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            ..Default::default()
+        };
+
+        let (cost, _) = store.compute(&model, &usage);
+        assert_eq!(cost, Some(3.0));
+    }
+
+    /// OpenAI-shaped usage reports `prompt_tokens` as the total, with the
+    /// cached and newly-written portions as labelled subsets. Billing all
+    /// three at the full input rate would triple-count the same tokens.
+    #[test]
+    fn compute_splits_openai_shaped_prompt_tokens_across_the_three_rates() {
+        let store = ModelCatalogStore::new(priced_snapshot());
+        let model = ModelRef {
+            model_id: "anthropic/claude-sonnet-4-6".to_string(),
+            provider: ProviderModel::from_name("openrouter"),
+        };
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            cached_input_tokens: 600_000,
+            cache_creation_input_tokens: 200_000,
+            output_tokens: 0,
+            ..Default::default()
+        };
+
+        // 200k fresh @ 3.00 + 600k read @ 0.30 + 200k write @ 3.75
+        let (cost, _) = store.compute(&model, &usage);
+        let cost = cost.expect("priced");
+        assert!(
+            (cost - (0.6 + 0.18 + 0.75)).abs() < 1e-9,
+            "unexpected cost {cost}"
+        );
+    }
+
+    /// Anthropic's own response already excludes cache reads from
+    /// `input_tokens`, so the subtraction must not be applied twice.
+    #[test]
+    fn compute_leaves_anthropic_native_input_tokens_alone() {
+        let store = ModelCatalogStore::new(priced_snapshot());
+        let model = ModelRef {
+            model_id: "claude-sonnet-4-6".to_string(),
+            provider: ProviderModel::from_name("anthropic"),
+        };
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            cached_input_tokens: 600_000,
+            output_tokens: 0,
+            ..Default::default()
+        };
+
+        // 1M fresh @ 3.00 + 600k read @ 0.30
+        let (cost, _) = store.compute(&model, &usage);
+        let cost = cost.expect("priced");
+        assert!((cost - (3.0 + 0.18)).abs() < 1e-9, "unexpected cost {cost}");
+    }
+
+    #[test]
+    fn total_prompt_usage_restores_anthropics_disjoint_figures() {
+        let usage = Usage {
+            input_tokens: 200,
+            cached_input_tokens: 600,
+            cache_creation_input_tokens: 200,
+            ..Default::default()
+        };
+        assert_eq!(total_prompt_usage("anthropic", &usage).input_tokens, 1000);
+    }
+
+    #[test]
+    fn total_prompt_usage_leaves_openai_shaped_totals_alone() {
+        let usage = Usage {
+            input_tokens: 1000,
+            cached_input_tokens: 600,
+            cache_creation_input_tokens: 200,
+            ..Default::default()
+        };
+        assert_eq!(total_prompt_usage("openrouter", &usage).input_tokens, 1000);
+    }
+
+    /// The two views are alternatives, not a pipeline: whichever provider
+    /// reported the call, the persisted total minus the two cache figures is
+    /// the fresh count that was priced at the full input rate.
+    #[test]
+    fn the_two_views_agree_on_the_fresh_count() {
+        for (provider, raw) in [
+            (
+                "anthropic",
+                Usage {
+                    input_tokens: 200,
+                    cached_input_tokens: 600,
+                    cache_creation_input_tokens: 200,
+                    ..Default::default()
+                },
+            ),
+            (
+                "openrouter",
+                Usage {
+                    input_tokens: 1000,
+                    cached_input_tokens: 600,
+                    cache_creation_input_tokens: 200,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let total = total_prompt_usage(provider, &raw).input_tokens;
+            let fresh = normalize_usage(provider, &raw).input_tokens;
+            assert_eq!(
+                total - raw.cached_input_tokens - raw.cache_creation_input_tokens,
+                fresh,
+                "{provider}"
+            );
+            assert_eq!(fresh, 200, "{provider}");
+        }
+    }
+
+    /// A model with no published write rate still processed the tokens, so
+    /// they are charged as fresh input rather than dropped on the floor.
+    #[test]
+    fn cost_for_charges_cache_writes_at_the_input_rate_when_none_is_published() {
+        let entry = ModelEntry {
+            cost: Some(Cost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: Some(0.3),
+                cache_write: None,
+            }),
+            ..Default::default()
+        };
+        let usage = Usage {
+            input_tokens: 0,
+            cache_creation_input_tokens: 1_000_000,
+            ..Default::default()
+        };
+        assert_eq!(entry.cost_for(&usage), Some(3.0));
+    }
 
     #[test]
     fn lookup_prefix_matches_dated_suffix_against_bare_key() {

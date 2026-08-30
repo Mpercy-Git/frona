@@ -128,6 +128,27 @@ export interface GeminiThinkingConfig {
   include_thoughts?: boolean | null;
 }
 
+export interface OpenRouterMaxPrice {
+  prompt?: number | null;
+  completion?: number | null;
+  request?: number | null;
+  image?: number | null;
+}
+
+/** Maps to the `provider` object in the OpenRouter API request. */
+export interface OpenRouterProviderRouting {
+  order?: string[] | null;
+  only?: string[] | null;
+  ignore?: string[] | null;
+  allow_fallbacks?: boolean | null;
+  require_parameters?: boolean | null;
+  quantizations?: string[] | null;
+  sort?: string | null;
+  max_price?: OpenRouterMaxPrice | null;
+  data_collection?: string | null;
+  zdr?: boolean | null;
+}
+
 export interface ModelGroupConfig {
   provider: string;
   model: string;
@@ -166,6 +187,11 @@ export interface ModelGroupConfig {
   top_logprobs?: number | null;
   thinking_config?: GeminiThinkingConfig | null;
   candidate_count?: number | null;
+  /** OpenRouter: the only value the API accepts is "fallback". */
+  route?: string | null;
+  provider_routing?: OpenRouterProviderRouting | null;
+  /** OpenRouter: place a cache_control breakpoint on the system prompt. Defaults to true. */
+  prompt_caching?: boolean | null;
   [key: string]: unknown;
 }
 
