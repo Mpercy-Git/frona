@@ -76,6 +76,28 @@ pub fn anthropic(mut p: RequestParams) -> RequestParams {
     p
 }
 
+/// OpenRouter takes provider preferences in a top-level `provider` object.
+/// The config models the same thing as `provider_routing` so the field doesn't
+/// collide with the `#[serde(tag = "provider")]` discriminant on
+/// `ProviderModel`, which means the rename has to happen on the way out —
+/// otherwise the object ships under a key OpenRouter doesn't read and every
+/// routing preference (order, sort, ignore, quantizations) is silently dropped.
+///
+/// `prompt_caching` is a frona-side toggle consumed when the completion model
+/// is built, not an API field, so it is stripped here rather than sent.
+pub fn openrouter(mut p: RequestParams) -> RequestParams {
+    if let Some(Value::Object(ref mut root)) = p.additional_params {
+        root.remove("prompt_caching");
+        if let Some(routing) = root.remove("provider_routing") {
+            root.insert("provider".to_string(), routing);
+        }
+        if root.is_empty() {
+            p.additional_params = None;
+        }
+    }
+    p
+}
+
 fn take_object(slot: &mut Option<Value>) -> Map<String, Value> {
     match slot.take() {
         Some(Value::Object(m)) => m,
@@ -205,6 +227,44 @@ mod tests {
                 "thinking": {"type": "enabled", "budget_tokens": 16000},
                 "cache_control": {"type": "ephemeral"},
             })),
+        );
+    }
+
+    #[test]
+    fn openrouter_renames_provider_routing_to_provider() {
+        let p = openrouter(params(
+            Some(8192),
+            Some(json!({
+                "provider_routing": {"order": ["Anthropic"], "sort": "throughput"},
+                "top_p": 0.9,
+            })),
+        ));
+        assert_eq!(
+            p.additional_params,
+            Some(json!({
+                "provider": {"order": ["Anthropic"], "sort": "throughput"},
+                "top_p": 0.9,
+            })),
+        );
+        // max_tokens is a first-class OpenRouter field, so it stays put.
+        assert_eq!(p.max_tokens, Some(8192));
+    }
+
+    #[test]
+    fn openrouter_strips_the_frona_side_prompt_caching_toggle() {
+        let p = openrouter(params(None, Some(json!({"prompt_caching": false}))));
+        assert_eq!(
+            p.additional_params, None,
+            "a body of nothing but the toggle should collapse to no params"
+        );
+    }
+
+    #[test]
+    fn openrouter_leaves_a_body_without_routing_alone() {
+        let p = openrouter(params(None, Some(json!({"reasoning_effort": "low"}))));
+        assert_eq!(
+            p.additional_params,
+            Some(json!({"reasoning_effort": "low"}))
         );
     }
 

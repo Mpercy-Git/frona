@@ -268,7 +268,27 @@ fn init_provider(
                 RigProvider::new(client, counter.clone()).with_hook(hooks::groq),
             ) as Arc<dyn ModelProvider>)
         }
-        "openrouter" => init_api_key_provider!(name, entry, openrouter, counter),
+        // Not via init_api_key_provider! because OpenRouter needs both a
+        // request hook (rename `provider_routing` -> `provider`) and a model
+        // decorator (explicit prompt-caching breakpoint).
+        "openrouter" => {
+            let key = require_api_key(name, entry)?;
+            let client: openrouter::Client = if let Some(url) = &entry.base_url {
+                openrouter::Client::builder()
+                    .api_key(&key)
+                    .base_url(url)
+                    .build()
+                    .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?
+            } else {
+                openrouter::Client::new(&key)
+                    .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?
+            };
+            Ok(Arc::new(
+                RigProvider::new(client, counter.clone())
+                    .with_hook(hooks::openrouter)
+                    .with_model_decorator(openrouter_prompt_caching),
+            ) as Arc<dyn ModelProvider>)
+        }
         "deepseek" => init_api_key_provider!(name, entry, deepseek, counter),
         "gemini" => init_api_key_provider!(name, entry, gemini, counter),
         "cohere" => init_api_key_provider!(name, entry, cohere, counter),
@@ -302,6 +322,30 @@ fn init_provider(
         _ => Err(InferenceError::ProviderNotConfigured(format!(
             "Unknown provider: {name}"
         ))),
+    }
+}
+
+/// Put an explicit `cache_control` breakpoint on the system prompt unless the
+/// model group opts out.
+///
+/// frona sends the same large system prompt and tool definitions on every turn
+/// of a tool loop, so on providers that honour explicit breakpoints the prefix
+/// is billed once as a cache write and then at the (much cheaper) cache-read
+/// rate for the rest of the loop. Providers that cache automatically ignore the
+/// marker, so defaulting it on costs nothing there. Opting out is worth it only
+/// for a genuinely one-shot workload, where the write is never read back.
+fn openrouter_prompt_caching(
+    model: rig_core::providers::openrouter::CompletionModel,
+    model_ref: &ModelRef,
+) -> rig_core::providers::openrouter::CompletionModel {
+    let enabled = match &model_ref.provider {
+        ProviderModel::OpenRouter { params } => params.prompt_caching.unwrap_or(true),
+        _ => true,
+    };
+    if enabled {
+        model.with_prompt_caching()
+    } else {
+        model
     }
 }
 

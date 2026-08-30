@@ -244,10 +244,18 @@ pub trait ModelProvider: Send + Sync {
 
 pub const SUBMIT_TOOL_NAME: &str = "submit";
 
-pub struct RigProvider<C> {
+/// Applied to the freshly-built completion model, before the request is
+/// assembled. Some rig knobs (OpenRouter's prompt caching, for one) are
+/// builder methods on the model rather than fields in the request body, so a
+/// `RequestHook` cannot reach them. The `ModelRef` comes along so the decision
+/// can be per-model-group rather than per-provider.
+pub type ModelDecorator<M> = fn(M, &ModelRef) -> M;
+
+pub struct RigProvider<C: rig_core::client::CompletionClient> {
     client: C,
     counter: InferenceCounter,
     hook: Option<super::hooks::RequestHook>,
+    decorate: Option<ModelDecorator<C::CompletionModel>>,
 }
 
 pub struct OpenAiProvider {
@@ -393,18 +401,32 @@ impl ModelProvider for OpenAiProvider {
     }
 }
 
-impl<C> RigProvider<C> {
+impl<C: rig_core::client::CompletionClient> RigProvider<C> {
     pub fn new(client: C, counter: InferenceCounter) -> Self {
         Self {
             client,
             counter,
             hook: None,
+            decorate: None,
         }
     }
 
     pub fn with_hook(mut self, hook: super::hooks::RequestHook) -> Self {
         self.hook = Some(hook);
         self
+    }
+
+    pub fn with_model_decorator(mut self, decorate: ModelDecorator<C::CompletionModel>) -> Self {
+        self.decorate = Some(decorate);
+        self
+    }
+
+    fn build_model(&self, model_ref: &ModelRef) -> C::CompletionModel {
+        let model = self.client.completion_model(&model_ref.model_id);
+        match self.decorate {
+            Some(decorate) => decorate(model, model_ref),
+            None => model,
+        }
     }
 }
 
@@ -504,7 +526,7 @@ where
         let model_id = model_ref.model_id.as_str();
 
         let _guard = self.counter.guard();
-        let model = self.client.completion_model(model_id);
+        let model = self.build_model(model_ref);
 
         tracing::debug!(
             model = %model_id,
@@ -574,7 +596,7 @@ where
         let model_id = model_ref.model_id.as_str();
 
         let _guard = self.counter.guard();
-        let model = self.client.completion_model(model_id);
+        let model = self.build_model(model_ref);
 
         tracing::debug!(
             model = %model_id,
@@ -675,7 +697,7 @@ where
         let model_id = model_ref.model_id.as_str();
 
         let _guard = self.counter.guard();
-        let model = self.client.completion_model(model_id);
+        let model = self.build_model(model_ref);
 
         let submit = RigToolDefinition {
             name: SUBMIT_TOOL_NAME.to_string(),
@@ -1063,6 +1085,87 @@ mod tests {
                 params,
             },
         }
+    }
+
+    /// The whole point of `hooks::openrouter`. The config names the object
+    /// `provider_routing` to dodge the `#[serde(tag = "provider")]`
+    /// discriminant, so without the rename on the way out every routing
+    /// preference ships under a key OpenRouter ignores.
+    #[test]
+    fn openrouter_request_sends_routing_under_the_provider_key() {
+        use crate::core::config::{
+            OpenRouterMaxPrice, OpenRouterParams, OpenRouterProviderRouting,
+        };
+
+        let model = ModelRef {
+            model_id: "anthropic/claude-sonnet-4-6".to_string(),
+            provider: ProviderModel::OpenRouter {
+                params: OpenRouterParams {
+                    provider_routing: Some(OpenRouterProviderRouting {
+                        order: Some(vec!["Anthropic".to_string()]),
+                        only: Some(vec!["Anthropic".to_string()]),
+                        sort: Some("throughput".to_string()),
+                        max_price: Some(OpenRouterMaxPrice {
+                            prompt: Some(5.0),
+                            ..Default::default()
+                        }),
+                        zdr: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            },
+        };
+
+        let params = request_params(
+            &model,
+            Some(8192),
+            None,
+            Some(super::super::hooks::openrouter),
+        )
+        .unwrap();
+        assert_eq!(params.max_tokens, Some(8192));
+        assert_eq!(
+            params.additional_params,
+            Some(serde_json::json!({
+                "provider": {
+                    "order": ["Anthropic"],
+                    "only": ["Anthropic"],
+                    "sort": "throughput",
+                    "max_price": {"prompt": 5.0},
+                    "zdr": true,
+                }
+            })),
+            "routing must reach the wire as `provider`, not `provider_routing`"
+        );
+    }
+
+    /// `prompt_caching` steers how the completion model is built; it is not an
+    /// OpenRouter API field and must not survive into the request body.
+    #[test]
+    fn openrouter_request_omits_the_prompt_caching_toggle() {
+        use crate::core::config::{OpenAICompatParams, OpenRouterParams};
+
+        let model = ModelRef {
+            model_id: "anthropic/claude-sonnet-4-6".to_string(),
+            provider: ProviderModel::OpenRouter {
+                params: OpenRouterParams {
+                    prompt_caching: Some(false),
+                    compat: OpenAICompatParams {
+                        top_p: Some(0.9),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            },
+        };
+
+        let params =
+            request_params(&model, None, None, Some(super::super::hooks::openrouter)).unwrap();
+        assert_eq!(
+            params.additional_params,
+            Some(serde_json::json!({"top_p": 0.9}))
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import type { ModelGroupConfig, RetryConfig } from "@/lib/config-types";
+import type { ModelGroupConfig, OpenRouterProviderRouting, RetryConfig } from "@/lib/config-types";
 import { formatGroupName } from "@/lib/model-groups";
 import { NumberInput, SectionHeader, Toggle, TextInput } from "@/components/settings/field";
 import { CubeIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
@@ -374,7 +374,10 @@ function OpenAIParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: 
 }
 
 function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: (u: Partial<ModelGroupConfig>) => void }) {
-  const routing = (group.provider_routing ?? null) as { order?: string[]; allow_fallbacks?: boolean; require_parameters?: boolean; ignore?: string[]; quantizations?: string[]; sort?: string } | null;
+  const routing = group.provider_routing ?? null;
+  const maxPrice = routing?.max_price ?? null;
+  const updateRouting = (patch: OpenRouterProviderRouting) =>
+    onUpdate({ provider_routing: { ...(routing ?? {}), ...patch } });
 
   return (
     <div className="space-y-4">
@@ -412,42 +415,53 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
           </a>.
         </p>
         <div className="space-y-3">
-          <TextInput
-            label="Route"
-            description="Simple provider routing, e.g. 'openai' or 'anthropic'. Mutually exclusive with Provider Routing below."
-            value={(group.route as string | null) ?? null}
-            onChange={(v) => onUpdate({ route: v || null })}
-            placeholder="openai"
-          />
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-text-secondary">Route</label>
+            <select
+              value={group.route ?? ""}
+              onChange={(e) => onUpdate({ route: e.target.value || null })}
+              className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
+            >
+              <option value="">Default</option>
+              <option value="fallback">Fallback</option>
+            </select>
+            <p className="text-xs text-text-tertiary">
+              Model-level routing. &quot;Fallback&quot; lets OpenRouter retry this group&apos;s fallback models
+              when the primary is down. This is not a provider name — provider preferences are below.
+            </p>
+          </div>
           <TextInput
             label="Provider Order"
             description="Comma-separated provider preferences, e.g. 'OpenAI, Anthropic'"
             value={Array.isArray(routing?.order) ? routing!.order!.join(", ") : ""}
             onChange={(raw) => {
               const order = raw.split(",").map(s => s.trim()).filter(Boolean);
-              const existing = routing ?? {};
-              onUpdate({ provider_routing: order.length > 0 ? { ...existing, order } : { ...existing, order: null } } as any);
+              updateRouting({ order: order.length > 0 ? order : null });
             }}
             placeholder="OpenAI, Anthropic"
+          />
+          <TextInput
+            label="Only These Providers"
+            description="Hard allowlist. Unlike Provider Order, nothing outside this list is ever used — pins cost and latency to endpoints you have measured."
+            value={Array.isArray(routing?.only) ? routing!.only!.join(", ") : ""}
+            onChange={(raw) => {
+              const only = raw.split(",").map(s => s.trim()).filter(Boolean);
+              updateRouting({ only: only.length > 0 ? only : null });
+            }}
+            placeholder="Anthropic"
           />
           <div className="grid grid-cols-2 gap-4">
             <Toggle
               label="Allow Fallbacks"
               description="Fall back to other providers if preferred ones fail"
               value={routing?.allow_fallbacks ?? true}
-              onChange={(v) => {
-                const existing = routing ?? {};
-                onUpdate({ provider_routing: { ...existing, allow_fallbacks: v } } as any);
-              }}
+              onChange={(v) => updateRouting({ allow_fallbacks: v })}
             />
             <Toggle
               label="Require Parameters"
               description="Only use providers that support all request parameters"
               value={routing?.require_parameters ?? false}
-              onChange={(v) => {
-                const existing = routing ?? {};
-                onUpdate({ provider_routing: { ...existing, require_parameters: v } } as any);
-              }}
+              onChange={(v) => updateRouting({ require_parameters: v })}
             />
           </div>
           <div className="grid grid-cols-2 gap-4">
@@ -457,8 +471,7 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
               value={Array.isArray(routing?.ignore) ? routing!.ignore!.join(", ") : ""}
               onChange={(raw) => {
                 const ignore = raw.split(",").map(s => s.trim()).filter(Boolean);
-                const existing = routing ?? {};
-                onUpdate({ provider_routing: { ...existing, ignore: ignore.length > 0 ? ignore : null } } as any);
+                updateRouting({ ignore: ignore.length > 0 ? ignore : null });
               }}
               placeholder="Together, DeepSeek"
             />
@@ -468,8 +481,7 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
               value={Array.isArray(routing?.quantizations) ? routing!.quantizations!.join(", ") : ""}
               onChange={(raw) => {
                 const quantizations = raw.split(",").map(s => s.trim()).filter(Boolean);
-                const existing = routing ?? {};
-                onUpdate({ provider_routing: { ...existing, quantizations: quantizations.length > 0 ? quantizations : null } } as any);
+                updateRouting({ quantizations: quantizations.length > 0 ? quantizations : null });
               }}
               placeholder="fp8, bf16"
             />
@@ -478,10 +490,7 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
             <label className="block text-sm font-medium text-text-secondary">Sort By</label>
             <select
               value={routing?.sort ?? ""}
-              onChange={(e) => {
-                const existing = routing ?? {};
-                onUpdate({ provider_routing: { ...existing, sort: e.target.value || null } } as any);
-              }}
+              onChange={(e) => updateRouting({ sort: e.target.value || null })}
               className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
             >
               <option value="">Default</option>
@@ -490,7 +499,54 @@ function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfi
               <option value="price">Price</option>
             </select>
           </div>
+          <div className="grid grid-cols-2 gap-4">
+            <NumberInput
+              label="Max Prompt Price ($/M tokens)"
+              value={maxPrice?.prompt ?? null}
+              onChange={(v) => updateRouting({ max_price: { ...(maxPrice ?? {}), prompt: v || null } })}
+              min={0}
+              step={0.1}
+              placeholder="No ceiling"
+            />
+            <NumberInput
+              label="Max Completion Price ($/M tokens)"
+              value={maxPrice?.completion ?? null}
+              onChange={(v) => updateRouting({ max_price: { ...(maxPrice ?? {}), completion: v || null } })}
+              min={0}
+              step={0.1}
+              placeholder="No ceiling"
+            />
+          </div>
+          <p className="text-xs text-text-tertiary -mt-1">
+            A hard ceiling: a request no eligible provider can serve at or under this price fails
+            rather than routing to an expensive endpoint.
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            <Toggle
+              label="Deny Data Collection"
+              description="Only route to providers that do not store prompts non-transiently"
+              value={routing?.data_collection === "deny"}
+              onChange={(v) => updateRouting({ data_collection: v ? "deny" : null })}
+            />
+            <Toggle
+              label="Zero Data Retention Only"
+              description="Restrict routing to ZDR endpoints"
+              value={routing?.zdr ?? false}
+              onChange={(v) => updateRouting({ zdr: v || null })}
+            />
+          </div>
         </div>
+      </div>
+
+      {/* Cost controls that are not part of the provider object */}
+      <div className="border-t border-border pt-4 mt-4">
+        <h4 className="text-sm font-medium text-text-secondary mb-3">Prompt Caching</h4>
+        <Toggle
+          label="Cache the System Prompt"
+          description="Marks the system prompt as a cache breakpoint. Providers that honour explicit breakpoints (Anthropic, Gemini) then bill it at the cache-read rate for the rest of a tool loop; providers that cache automatically ignore the marker. Turn off only for one-shot workloads, where the cache write is never read back."
+          value={group.prompt_caching ?? true}
+          onChange={(v) => onUpdate({ prompt_caching: v ? null : false })}
+        />
       </div>
     </div>
   );

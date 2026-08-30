@@ -173,6 +173,31 @@ models:
 #    model: gpt-5
 #    api: responses
 #    reasoning_effort: high
+#  via_openrouter:
+#    provider: openrouter
+#    model: anthropic/claude-sonnet-4-6
+#    max_tokens: 64000
+#    # A cache_control breakpoint on the system prompt. On by default; every
+#    # turn of a tool loop resends the same system prompt and tool definitions,
+#    # and providers that honour explicit breakpoints then bill that prefix at
+#    # the cache-read rate instead of the fresh-input rate. Set false only for
+#    # one-shot workloads, where the cache write is never read back.
+#    prompt_caching: true
+#    provider_routing:
+#      # Ordered preference. Nothing outside `only` is ever eligible; `order`
+#      # is a preference that still allows fallbacks.
+#      order: ["Anthropic", "Google"]
+#      # only: ["Anthropic"]
+#      allow_fallbacks: true
+#      # Rank remaining candidates by price, throughput, or latency.
+#      sort: throughput
+#      # Hard ceiling in USD per million tokens. A request no eligible provider
+#      # can serve under it fails rather than routing somewhere expensive.
+#      max_price:
+#        prompt: 5.0
+#        completion: 25.0
+#      # data_collection: deny
+#      # zdr: true
 
 # Model group options:
 #   provider: provider name (required) - anthropic, openai, ollama, gemini, groq, etc.
@@ -188,6 +213,10 @@ models:
 #       api is optional. The models.dev adapter metadata supplies its default.
 #       Missing or unknown metadata uses chat_completions.
 #     Gemini: thinking_config ({thinking_budget}), top_p, top_k
+#     OpenRouter: prompt_caching (bool), provider_routing ({order, only, ignore,
+#       allow_fallbacks, require_parameters, sort, max_price, quantizations,
+#       data_collection, zdr}), plus the OpenAI-compatible params above.
+#       route accepts only "fallback" - it is not a provider name.
 #   retry:
 #     max_retries: 10
 #     initial_backoff_ms: 1000

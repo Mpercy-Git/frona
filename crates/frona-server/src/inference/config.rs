@@ -146,9 +146,16 @@ impl ModelRegistryConfig {
 
             // Only the main model's window is resolved; a tighter fallback
             // window surfaces as an inference error on its turn and falls over.
+            //
+            // `lookup_prefix`, not `lookup`: an aggregator addresses a model by
+            // a vendor-prefixed id (`openrouter` + `anthropic/claude-sonnet-4.5`)
+            // that is not a literal catalog key, so an exact lookup misses and
+            // pins a 200K/1M model to the 128K default — which fires compaction,
+            // and the extra summarisation call it costs, far earlier than the
+            // model actually requires.
             let context_window = common.context_window.unwrap_or_else(|| {
                 catalog
-                    .lookup(&main)
+                    .lookup_prefix(main.provider_name(), &main.model_id)
                     .and_then(|e| e.max_input_tokens().map(|n| n as usize))
                     .unwrap_or(crate::inference::context::DEFAULT_CONTEXT_WINDOW)
             });
@@ -232,6 +239,69 @@ mod tests {
         assert!(ModelRef::parse("no-slash").is_err());
         assert!(ModelRef::parse("/missing-provider").is_err());
         assert!(ModelRef::parse("missing-model/").is_err());
+    }
+
+    /// An OpenRouter model id carries the vendor prefix, which is not a
+    /// catalog key on its own. When that lookup missed, a 200K model was
+    /// pinned to the 128K default and compaction — and the extra
+    /// summarisation call it costs — fired far earlier than necessary.
+    #[test]
+    fn openrouter_model_group_resolves_the_underlying_vendor_context_window() {
+        let group: ModelGroupConfig = serde_yaml::from_str(
+            r#"
+provider: openrouter
+model: anthropic/claude-opus-4-6
+"#,
+        )
+        .unwrap();
+        let config = ModelRegistryConfig {
+            models: HashMap::from([("primary".to_string(), group)]),
+            ..ModelRegistryConfig::empty()
+        };
+        let catalog = crate::inference::metadata::ModelCatalogSnapshot::defaults();
+        let expected = catalog
+            .lookup_prefix("anthropic", "claude-opus-4-6")
+            .and_then(|e| e.max_input_tokens())
+            .expect("the shipped defaults carry this family") as usize;
+
+        let groups = config
+            .parse_model_groups(&InferenceConfig::default(), &catalog)
+            .unwrap();
+
+        assert_eq!(groups["primary"].context_window, expected);
+        assert_ne!(
+            groups["primary"].context_window,
+            crate::inference::context::DEFAULT_CONTEXT_WINDOW,
+            "a vendor-prefixed id must not fall back to the 128K floor"
+        );
+    }
+
+    #[test]
+    fn openrouter_model_group_roundtrips_routing_and_caching() {
+        let yaml = r#"
+provider: openrouter
+model: anthropic/claude-sonnet-4-6
+prompt_caching: false
+provider_routing:
+  only: ["Anthropic"]
+  sort: throughput
+  max_price:
+    prompt: 5.0
+  data_collection: deny
+"#;
+        let config: ModelGroupConfig = serde_yaml::from_str(yaml).unwrap();
+        let crate::core::config::ProviderModel::OpenRouter { params } = &config.provider else {
+            panic!("expected the openrouter variant");
+        };
+        assert_eq!(params.prompt_caching, Some(false));
+        let routing = params.provider_routing.as_ref().expect("routing parsed");
+        assert_eq!(
+            routing.only.as_deref(),
+            Some(&["Anthropic".to_string()][..])
+        );
+        assert_eq!(routing.sort.as_deref(), Some("throughput"));
+        assert_eq!(routing.data_collection.as_deref(), Some("deny"));
+        assert_eq!(routing.max_price.as_ref().and_then(|p| p.prompt), Some(5.0));
     }
 
     #[test]
