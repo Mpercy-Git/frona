@@ -139,12 +139,29 @@
 #    api_key: "${GALADRIEL_API_KEY}"
 #  huggingface:
 #    api_key: "${HUGGINGFACE_API_KEY}"
+#  zai:
+#    api_key: "${ZAI_API_KEY}"
+#  venice:
+#    api_key: "${VENICE_API_KEY}"
+#  minimax:
+#    api_key: "${MINIMAX_API_KEY}"
 #  ollama:
 #    base_url: "${OLLAMA_API_BASE_URL}"
+#  llamafile:
+#    base_url: "${LLAMAFILE_API_BASE_URL}"   # defaults to http://localhost:8080
+#  # Any OpenAI-compatible /chat/completions endpoint: vLLM, LM Studio,
+#  # llama.cpp's server, a LiteLLM proxy, or a hosted service with no dedicated
+#  # entry above. base_url is required; api_key is optional, since local servers
+#  # usually ignore it. Prefer this over pointing `openai` at a custom base_url:
+#  # that path rewrites max_tokens into max_completion_tokens for gpt-5/o-series,
+#  # which many compatible servers reject.
+#  generic:
+#    base_url: "${GENERIC_API_BASE_URL}"
+#    api_key: "${GENERIC_API_KEY}"
 
 # Provider options:
 #   api_key: API key string or ${ENV_VAR} reference
-#   base_url: Custom API endpoint (useful for Ollama, proxies)
+#   base_url: Custom API endpoint (required for `generic`; useful for Ollama, proxies)
 #   enabled: true/false (default: true)
 
 # Define named model groups. Agents reference these by name.
@@ -213,6 +230,9 @@ models:
 #       api is optional. The models.dev adapter metadata supplies its default.
 #       Missing or unknown metadata uses chat_completions.
 #     Gemini: thinking_config ({thinking_budget}), top_p, top_k
+#     zai / venice / minimax / llamafile / generic: the OpenAI-compatible set
+#       (top_p, seed, stop, frequency_penalty, ...). Unlike `openai`, max_tokens
+#       is sent as-is rather than rewritten to max_completion_tokens.
 #     OpenRouter: prompt_caching (bool), provider_routing ({order, only, ignore,
 #       allow_fallbacks, require_parameters, sort, max_price, quantizations,
 #       data_collection, zdr}), plus the OpenAI-compatible params above.

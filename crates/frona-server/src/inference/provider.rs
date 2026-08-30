@@ -485,13 +485,21 @@ fn request_params(
             (explicit_max.or(max_tokens), additional)
         }
         ProviderModel::OpenRouter { params } => (max_tokens, serialize_params(params)),
+        // Plain OpenAI-compatible chat-completions endpoints. `max_tokens`
+        // stays top-level: unlike gpt-5/o-series, these accept it, and
+        // rewriting it to `max_completion_tokens` is what breaks them.
         ProviderModel::Groq { params }
         | ProviderModel::DeepSeek { params }
         | ProviderModel::XAI { params }
         | ProviderModel::Together { params }
-        | ProviderModel::Hyperbolic { params } => (max_tokens, serialize_params(params)),
+        | ProviderModel::Hyperbolic { params }
+        | ProviderModel::Zai { params }
+        | ProviderModel::Venice { params }
+        | ProviderModel::MiniMax { params }
+        | ProviderModel::Llamafile { params }
+        | ProviderModel::Generic { params } => (max_tokens, serialize_params(params)),
         ProviderModel::Gemini { params } => (max_tokens, serialize_params(params)),
-        ProviderModel::Generic | ProviderModel::Custom { .. } => (max_tokens, None),
+        ProviderModel::Custom { .. } => (max_tokens, None),
     };
 
     let params = super::hooks::RequestParams {
@@ -1165,6 +1173,32 @@ mod tests {
         assert_eq!(
             params.additional_params,
             Some(serde_json::json!({"top_p": 0.9}))
+        );
+    }
+
+    /// The reason `generic` exists rather than pointing the `openai` provider
+    /// at a custom `base_url`: that path runs `hooks::openai`, which moves
+    /// `max_tokens` into `max_completion_tokens`. vLLM, LM Studio and
+    /// llama.cpp's server take the former and reject the latter, so the cap
+    /// has to survive the trip unchanged.
+    #[test]
+    fn generic_request_leaves_max_tokens_where_compatible_servers_expect_it() {
+        let model = ModelRef {
+            model_id: "some-local-model".to_string(),
+            provider: ProviderModel::Generic {
+                params: OpenAICompatParams {
+                    top_p: Some(0.9),
+                    ..Default::default()
+                },
+            },
+        };
+
+        let params = request_params(&model, Some(8192), None, None).unwrap();
+        assert_eq!(params.max_tokens, Some(8192));
+        assert_eq!(
+            params.additional_params,
+            Some(serde_json::json!({"top_p": 0.9})),
+            "no max_completion_tokens rewrite on the generic path"
         );
     }
 

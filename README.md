@@ -57,6 +57,15 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 - **Cost and context windows resolve for aggregator model ids.** `openrouter` + `anthropic/claude-sonnet-4-6` is not a literal models.dev key, so the exact-match lookup missed: every OpenRouter call recorded `cost_usd: None`, and the context window fell back to the 128K floor, firing compaction — and the extra summarisation call it costs — far earlier than a 200K/1M model requires. Both now resolve through the vendor-prefix walk
 - **Cache writes are priced.** They were billed at the plain input rate; Anthropic charges a premium (1.25×) for them, which matters as soon as caching is on
 
+### 🔌 Any OpenAI-compatible endpoint, plus four more providers (net-new)
+
+Upstream wires each provider by name, and `init_provider` hard-errors on anything else. `provider: generic` *parsed* — `ProviderModel::from_name` has always mapped it — but had no arm in the registry, and provider init only logs a warning on failure, so the provider silently didn't exist and the config surfaced as `ProviderNotConfigured` much later. The only workaround was naming your provider `openai` with a custom `base_url`, which drags in the gpt-5/o-series `max_tokens` → `max_completion_tokens` rewrite that vLLM, LM Studio and llama.cpp's server all reject.
+
+- **`generic` now works** — point it at any OpenAI-compatible `/chat/completions` endpoint. `base_url` required, `api_key` optional (local servers usually ignore it), and `max_tokens` is sent unchanged. Covers vLLM, LM Studio, llama.cpp's server, LiteLLM and other proxies, and hosted services with no dedicated entry, without a code change each
+- **Z.ai (GLM)**, **Venice** (privacy-focused, no-logging), and **MiniMax** added as named API-key providers, with auto-discovery from `ZAI_API_KEY` / `VENICE_API_KEY` / `MINIMAX_API_KEY`
+- **llamafile** added as a second local option beside Ollama, discovered from `LLAMAFILE_API_BASE_URL`
+- `generic` also carries the full OpenAI-compatible parameter set (`top_p`, `seed`, `stop`, penalties), so a local endpoint is tunable rather than a bare marker
+
 ### 🤝 Sharing agents and chats (net-new)
 
 Upstream has no sharing concept at all — a `user_id` equality check gated every read. This fork adds two independent grants:

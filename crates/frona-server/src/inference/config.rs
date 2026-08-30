@@ -76,6 +76,9 @@ impl ModelRegistryConfig {
             ("mira", "MIRA_API_KEY"),
             ("galadriel", "GALADRIEL_API_KEY"),
             ("huggingface", "HUGGINGFACE_API_KEY"),
+            ("zai", "ZAI_API_KEY"),
+            ("venice", "VENICE_API_KEY"),
+            ("minimax", "MINIMAX_API_KEY"),
         ];
 
         for (name, env_var) in known {
@@ -91,12 +94,32 @@ impl ModelRegistryConfig {
             }
         }
 
-        if std::env::var("OLLAMA_API_BASE_URL").is_ok() {
+        // Base-URL-only providers: a local server needs no key, so its URL is
+        // what says "this is configured".
+        for (name, env_var) in [
+            ("ollama", "OLLAMA_API_BASE_URL"),
+            ("llamafile", "LLAMAFILE_API_BASE_URL"),
+        ] {
+            if let Ok(url) = std::env::var(env_var) {
+                providers.insert(
+                    name.to_string(),
+                    ModelProviderConfig {
+                        api_key: None,
+                        base_url: Some(url),
+                        enabled: true,
+                    },
+                );
+            }
+        }
+
+        // `generic` needs both halves named, since there is no default host to
+        // fall back to and the key is optional.
+        if let Ok(url) = std::env::var("GENERIC_API_BASE_URL") {
             providers.insert(
-                "ollama".to_string(),
+                "generic".to_string(),
                 ModelProviderConfig {
-                    api_key: None,
-                    base_url: std::env::var("OLLAMA_API_BASE_URL").ok(),
+                    api_key: std::env::var("GENERIC_API_KEY").ok(),
+                    base_url: Some(url),
                     enabled: true,
                 },
             );
@@ -190,6 +213,9 @@ fn default_model_for_provider(provider: &str) -> &str {
         "cohere" => "command-r-plus",
         "xai" => "grok-2-latest",
         "ollama" => "qwen3-vl:32b",
+        "zai" => "glm-4.6",
+        "minimax" => "MiniMax-M2",
+        "venice" => "venice-uncensored",
         _ => "default",
     }
 }
@@ -440,7 +466,39 @@ provider: generic
 model: some-model
 "#;
         let config: ModelGroupConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(config.provider, ProviderModel::Generic));
+        assert!(matches!(config.provider, ProviderModel::Generic { .. }));
+    }
+
+    /// A plain OpenAI-compatible endpoint still needs its sampling knobs, so
+    /// `generic` carries the same parameter set as the named compatible
+    /// providers rather than being a bare marker.
+    #[test]
+    fn generic_provider_carries_openai_compatible_params() {
+        let yaml = r#"
+provider: generic
+model: some-model
+top_p: 0.9
+stop: ["</s>"]
+seed: 7
+"#;
+        let config: ModelGroupConfig = serde_yaml::from_str(yaml).unwrap();
+        let ProviderModel::Generic { params } = &config.provider else {
+            panic!("expected the generic variant");
+        };
+        assert_eq!(params.top_p, Some(0.9));
+        assert_eq!(params.seed, Some(7));
+        assert_eq!(params.stop.as_deref(), Some(&["</s>".to_string()][..]));
+    }
+
+    #[test]
+    fn newly_wired_provider_names_round_trip() {
+        for name in ["zai", "venice", "minimax", "llamafile", "generic"] {
+            assert_eq!(
+                ProviderModel::from_name(name).name(),
+                name,
+                "{name} should survive a name -> variant -> name round trip"
+            );
+        }
     }
 
     #[test]
