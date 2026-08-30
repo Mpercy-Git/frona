@@ -47,6 +47,10 @@ spec:
           env:
             - name: CONCURRENT
               value: "10"
+            # Persist browserless' usage counters on the data volume instead of
+            # writing them to the container's ephemeral /tmp.
+            - name: METRICS_JSON_PATH
+              value: "/profiles/browserless-metrics.json"
             - name: PORT
               value: "3333"
           volumeMounts:

@@ -45,7 +45,7 @@ All persistent data is stored in `./data/`:
 - `data/workspaces/` — Agent workspaces
 - `data/files/` — Uploaded files
 - `data/skills/` — Installed skills
-- `data/browser_profiles/` — Browser automation profiles
+- `data/browser_profiles/` — Browser automation profiles, plus `browserless-metrics.json` (browserless' own usage counters)
 
 ## Updating
 

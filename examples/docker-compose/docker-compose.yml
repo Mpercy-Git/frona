@@ -21,6 +21,10 @@ services:
     image: ghcr.io/browserless/chromium:v2.42.0
     environment:
       - CONCURRENT=10
+      # Browserless rewrites its usage counters every 5 minutes. Keep them on the
+      # profiles volume (already writable by the image's non-root user) so they
+      # survive a restart instead of dying with the container's /tmp.
+      - METRICS_JSON_PATH=/profiles/browserless-metrics.json
       - PORT=3333
     volumes:
       - ./data/browser_profiles:/profiles

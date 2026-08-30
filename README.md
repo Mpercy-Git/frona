@@ -182,6 +182,8 @@ services:
     image: ghcr.io/browserless/chromium:v2.42.0
     environment:
       - CONCURRENT=10
+      # Persist browserless' usage counters instead of writing them to /tmp.
+      - METRICS_JSON_PATH=/profiles/browserless-metrics.json
     volumes:
       - ./data/browser_profiles:/profiles
     restart: unless-stopped
