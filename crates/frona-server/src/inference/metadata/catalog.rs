@@ -96,6 +96,33 @@ fn normalize_usage(provider: &str, u: &Usage) -> Usage {
     }
 }
 
+/// The other half of the convention: `input_tokens` as the TOTAL prompt size,
+/// with cache reads and writes as labelled subsets of it. This is the shape
+/// `InferenceUsage` rows persist and the usage dashboard reads — it derives
+/// fresh input as `input - cached` and the cache ratio as `cached / input`,
+/// both of which need the total as the denominator.
+///
+/// Only Anthropic needs adjusting: its API reports the three figures as
+/// disjoint numbers, so a row written straight from it under-reports the
+/// prompt and skews any ratio taken against it. Every OpenAI-shaped provider
+/// already reports the total.
+///
+/// Costing goes the other way — see [`normalize_usage`]. Both derive from the
+/// same raw `Usage`, so they are alternative views of one call, never applied
+/// on top of each other.
+pub fn total_prompt_usage(provider: &str, u: &Usage) -> Usage {
+    match provider {
+        "anthropic" => Usage {
+            input_tokens: u
+                .input_tokens
+                .saturating_add(u.cached_input_tokens)
+                .saturating_add(u.cache_creation_input_tokens),
+            ..*u
+        },
+        _ => *u,
+    }
+}
+
 impl ModelEntry {
     /// **Convention:** `usage.input_tokens` is the FRESH input only;
     /// `cached_input_tokens` and `cache_creation_input_tokens` are additive
@@ -598,6 +625,64 @@ mod tests {
         let (cost, _) = store.compute(&model, &usage);
         let cost = cost.expect("priced");
         assert!((cost - (3.0 + 0.18)).abs() < 1e-9, "unexpected cost {cost}");
+    }
+
+    #[test]
+    fn total_prompt_usage_restores_anthropics_disjoint_figures() {
+        let usage = Usage {
+            input_tokens: 200,
+            cached_input_tokens: 600,
+            cache_creation_input_tokens: 200,
+            ..Default::default()
+        };
+        assert_eq!(total_prompt_usage("anthropic", &usage).input_tokens, 1000);
+    }
+
+    #[test]
+    fn total_prompt_usage_leaves_openai_shaped_totals_alone() {
+        let usage = Usage {
+            input_tokens: 1000,
+            cached_input_tokens: 600,
+            cache_creation_input_tokens: 200,
+            ..Default::default()
+        };
+        assert_eq!(total_prompt_usage("openrouter", &usage).input_tokens, 1000);
+    }
+
+    /// The two views are alternatives, not a pipeline: whichever provider
+    /// reported the call, the persisted total minus the two cache figures is
+    /// the fresh count that was priced at the full input rate.
+    #[test]
+    fn the_two_views_agree_on_the_fresh_count() {
+        for (provider, raw) in [
+            (
+                "anthropic",
+                Usage {
+                    input_tokens: 200,
+                    cached_input_tokens: 600,
+                    cache_creation_input_tokens: 200,
+                    ..Default::default()
+                },
+            ),
+            (
+                "openrouter",
+                Usage {
+                    input_tokens: 1000,
+                    cached_input_tokens: 600,
+                    cache_creation_input_tokens: 200,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let total = total_prompt_usage(provider, &raw).input_tokens;
+            let fresh = normalize_usage(provider, &raw).input_tokens;
+            assert_eq!(
+                total - raw.cached_input_tokens - raw.cache_creation_input_tokens,
+                fresh,
+                "{provider}"
+            );
+            assert_eq!(fresh, 200, "{provider}");
+        }
     }
 
     /// A model with no published write rate still processed the tokens, so

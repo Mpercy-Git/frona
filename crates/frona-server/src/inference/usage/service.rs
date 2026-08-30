@@ -9,7 +9,7 @@ use rig_core::completion::request::Usage;
 use crate::chat::broadcast::BroadcastService;
 use crate::core::repository::{Repository, new_id};
 use crate::db::repo::generic::SurrealRepo;
-use crate::inference::metadata::ModelCatalogStore;
+use crate::inference::metadata::{ModelCatalogStore, total_prompt_usage};
 use crate::inference::provider::ModelRef;
 use crate::inference::usage::UsageContext;
 
@@ -212,6 +212,12 @@ fn build_row(
 ) -> InferenceUsage {
     let kind = &usage_ctx.kind;
     let output_tokens_per_second = compute_output_tps(usage.output_tokens, latency);
+    // Rows carry one convention regardless of which provider reported the
+    // call: `input_tokens` is the whole prompt, `cached_input_tokens` a subset
+    // of it. Persisting rig's per-provider shape verbatim meant an Anthropic
+    // row (three disjoint figures) and an OpenAI-shaped one (a total plus
+    // labelled subsets) disagreed about what the same column meant.
+    let usage = &total_prompt_usage(model_ref.provider_name(), usage);
     InferenceUsage {
         id: new_id(),
         user_id: usage_ctx.user_id.clone(),
@@ -255,4 +261,74 @@ fn compute_output_tps(output_tokens: u64, latency: LatencyMetrics) -> Option<f64
         return None;
     }
     Some(output_tokens as f64 * 1000.0 / gen_ms as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::config::ProviderModel;
+    use crate::inference::usage::InferenceKind;
+
+    fn row_for(provider: &str, usage: &Usage) -> InferenceUsage {
+        let ctx = UsageContext::new(
+            InferenceKind::Text {
+                agent_id: "agent".into(),
+                chat_id: "chat".into(),
+                message_id: "msg".into(),
+            },
+            "user",
+            "primary",
+        );
+        let model_ref = ModelRef {
+            model_id: "test-model".to_string(),
+            provider: ProviderModel::from_name(provider),
+        };
+        build_row(
+            &ctx,
+            &model_ref,
+            usage,
+            0,
+            LatencyMetrics::default(),
+            None,
+            "test".to_string(),
+        )
+    }
+
+    /// Anthropic reports the three prompt figures as disjoint numbers. Written
+    /// straight through, the row claimed a 200-token prompt for a call that
+    /// actually sent 1000, and the dashboard's `input - cached` went negative
+    /// (clamped to zero) while its cache ratio read 300%.
+    #[test]
+    fn an_anthropic_row_persists_the_whole_prompt() {
+        let row = row_for(
+            "anthropic",
+            &Usage {
+                input_tokens: 200,
+                cached_input_tokens: 600,
+                cache_creation_input_tokens: 200,
+                ..Default::default()
+            },
+        );
+        assert_eq!(row.input_tokens, 1000);
+        assert_eq!(row.cached_input_tokens, 600);
+        assert_eq!(row.input_tokens - row.cached_input_tokens, 400);
+    }
+
+    /// OpenAI-shaped providers (OpenRouter among them) already report the
+    /// total, so the row is unchanged and summing the two columns no longer
+    /// counts the cached portion twice.
+    #[test]
+    fn an_openai_shaped_row_is_already_in_the_persisted_shape() {
+        let row = row_for(
+            "openrouter",
+            &Usage {
+                input_tokens: 1000,
+                cached_input_tokens: 600,
+                cache_creation_input_tokens: 200,
+                ..Default::default()
+            },
+        );
+        assert_eq!(row.input_tokens, 1000);
+        assert_eq!(row.cached_input_tokens, 600);
+    }
 }
