@@ -454,9 +454,9 @@ impl Default for ShareConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct PushConfig {
-    #[schemars(description = "VAPID public key (base64url-encoded, uncompressed P-256). Required for Web Push.")]
+    #[schemars(description = "VAPID public key (base64url-encoded, uncompressed P-256). Leave unset and the server generates a pair and keeps it in `{data_dir}/system/vapid.json`.")]
     pub vapid_public_key: Option<String>,
-    #[schemars(description = "VAPID private key (base64url-encoded, uncompressed P-256). Required for Web Push.")]
+    #[schemars(description = "VAPID private key (base64url-encoded P-256 scalar). Leave unset to use the server's generated pair; set it without the matching public key and push stays off.")]
     pub vapid_private_key: Option<String>,
     #[schemars(description = "VAPID subject — a mailto: URL or the site's HTTPS URL.")]
     pub subject: String,
@@ -1445,6 +1445,7 @@ pub const SENSITIVE_PATHS: &[&[&str]] = &[
     &["vault", "hashicorp_token"],
     &["vault", "keepass_password"],
     &["mail", "smtp_password"],
+    &["push", "vapid_private_key"],
 ];
 
 /// Provider fields that are sensitive (applied to each provider in the map).

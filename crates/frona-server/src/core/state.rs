@@ -644,7 +644,7 @@ impl AppState {
         );
         match &push_sender {
             Some(_) => tracing::info!("Push notifications enabled (VAPID configured)"),
-            None => tracing::info!("Push notifications disabled (no VAPID keys configured)"),
+            None => tracing::info!("Push notifications disabled (no usable VAPID key pair)"),
         }
 
         let chat_share_service = crate::chat::share::service::ChatShareService::new(

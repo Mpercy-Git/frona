@@ -42,6 +42,7 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 ### 🔔 Web Push notifications & PWA (net-new)
 
 - **Web Push with VAPID** — a service worker delivers OS-level push notifications for agent replies to subscribed devices, including mobile
+- **Zero-config keys** — the server generates its own VAPID key pair on first start and keeps it in `{data_dir}/system/vapid.json`, so push works without anyone running `npx web-push generate-vapid-keys`; `FRONA_PUSH_VAPID_PUBLIC_KEY`/`FRONA_PUSH_VAPID_PRIVATE_KEY` still pin a pair of your own
 - **High-urgency delivery** — pushes are sent with `Urgency: high`, so Android wakes the device and raises the notification immediately instead of holding it until Doze's next maintenance window
 - **Smart suppression that fails towards notifying** — a push is held back only when an open page positively confirms it is focused on that exact chat; the service worker never infers this from `visibilityState`, which Android reports as "visible" for a locked or backgrounded window
 - **Diagnosable** — a *Send test notification* button reports what each push service actually did with the message, so "nothing arrived" separates into no subscription, no VAPID key, a rejected signature, or an OS-level setting

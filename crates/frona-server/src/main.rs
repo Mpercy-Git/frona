@@ -65,7 +65,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Frona v{}", frona::core::app_version());
 
     let loaded = Config::load();
-    let config = loaded.config;
+    let mut config = loaded.config;
+
+    // Resolve the Web Push key pair before anything reads `config.push`:
+    // unless the deployment configured its own, the server generates one and
+    // keeps it, so push works out of the box instead of waiting on a manual
+    // `npx web-push generate-vapid-keys`.
+    frona::notification::vapid::ensure_keys(&mut config.push, &config.storage.data_dir);
+    let config = config;
 
     const DEFAULT_SECRET: &str = "dev-secret-change-in-production";
     if config.auth.encryption_secret == DEFAULT_SECRET {
