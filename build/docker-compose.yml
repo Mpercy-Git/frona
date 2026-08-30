@@ -164,14 +164,22 @@ services:
 configs:
   searxng-settings:
     content: |
-      use_default_settings: true
+      # `remove`, not `disabled`: SearXNG loads disabled engines too, and
+      # these three can't load here. ahmia and torch are onion engines,
+      # skipped (and logged as an error) whenever Tor isn't configured;
+      # wikidata's init calls query.wikidata.org, which 403s most
+      # self-hosted instances. Frona reads SearXNG's plain results and
+      # ignores infoboxes, so losing wikidata costs it nothing -- drop the
+      # line if your instance can reach WDQS.
+      use_default_settings:
+        engines:
+          remove:
+            - ahmia
+            - torch
+            - wikidata
       server:
         limiter: false
       engines:
-        - name: ahmia
-          disabled: true
-        - name: torch
-          disabled: true
         - name: radio browser
           disabled: true
       search:

@@ -19,6 +19,13 @@ const BROWSERLESS_SESSION_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
 /// Self-evict before Browserless's hard limit so the next request rebuilds
 /// cleanly instead of hitting a forced close mid-op.
 const SELF_EVICT_MARGIN: Duration = Duration::from_secs(60);
+/// The startup sweep runs as soon as the server boots, which under
+/// `docker compose up` is while Browserless is still opening its HTTP
+/// listener. Retry connect errors on the admin API so that race is absorbed
+/// instead of reported as a failure to reach Browserless.
+const SESSION_LIST_CONNECT_RETRIES: u32 = 4;
+const SESSION_LIST_RETRY_MIN_DELAY: Duration = Duration::from_millis(500);
+const SESSION_LIST_RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
 
 #[derive(serde::Deserialize)]
 struct BrowserlessSession {
@@ -198,19 +205,33 @@ impl BrowserSessionManager {
         let client = Self::admin_http_client();
 
         let sessions_url = format!("{http_base}/sessions?token={}", config.api_token());
-        let req = match hyper::Request::get(&sessions_url).body(Body::empty()) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Failed to build sessions list request: {e}");
-                return vec![];
-            }
-        };
+        let mut delay = SESSION_LIST_RETRY_MIN_DELAY;
+        let mut retries_left = SESSION_LIST_CONNECT_RETRIES;
+        let resp = loop {
+            let req = match hyper::Request::get(&sessions_url).body(Body::empty()) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Failed to build sessions list request: {e}");
+                    return vec![];
+                }
+            };
 
-        let resp = match client.request(req).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Failed to list browserless sessions: {e}");
-                return vec![];
+            match client.request(req).await {
+                Ok(r) => break r,
+                Err(e) if e.is_connect() && retries_left > 0 => {
+                    tracing::debug!(
+                        error = %e,
+                        delay = ?delay,
+                        "Browserless not listening yet, retrying session list"
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(SESSION_LIST_RETRY_MAX_DELAY);
+                    retries_left -= 1;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to list browserless sessions: {e}");
+                    return vec![];
+                }
             }
         };
 
