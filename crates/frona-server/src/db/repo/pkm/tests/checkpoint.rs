@@ -693,12 +693,21 @@ async fn ontology_cas_writes_and_rejects_stale() {
     assert_eq!((got.version, got.owl.as_str()), (2, "Ontology(A)"));
 }
 
+/// The CAS must admit exactly one writer per version *and* keep that writer's
+/// content. Both halves matter: the bug this guards against let two writers
+/// both report success, with the loser's content silently discarded.
+///
+/// Rounds and writers are both cranked up because the race is probabilistic:
+/// at the original 4 rounds x 32 writers it reproduced roughly one run in
+/// twenty, which is a flaky failure rather than a guard. The content assertion
+/// below is the sharper half - it fails on the round where the race happens,
+/// rather than needing the winner count to come out wrong.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ontology_cas_allows_only_one_concurrent_writer() {
     let r = std::sync::Arc::new(repo().await);
-    let writers = 32;
+    let writers = 64;
     let mut largest_success_count = 0;
-    for round in 0..4 {
+    for round in 0..64 {
         let user_id = format!("u-{round}");
         assert_eq!(
             r.ontology_upsert_cas(&user_id, "Ontology()", "ofn", 0)
@@ -713,26 +722,35 @@ async fn ontology_cas_allows_only_one_concurrent_writer() {
             let start = start.clone();
             let user_id = user_id.clone();
             tasks.spawn(async move {
+                let owl = format!("Ontology(Declaration(Class(:Writer{writer})))");
                 start.wait().await;
-                r.ontology_upsert_cas(
-                    &user_id,
-                    &format!("Ontology(Declaration(Class(:Writer{writer})))"),
-                    "ofn",
-                    1,
-                )
-                .await
-                .unwrap()
+                let outcome = r
+                    .ontology_upsert_cas(&user_id, &owl, "ofn", 1)
+                    .await
+                    .unwrap();
+                (owl, outcome)
             });
         }
 
-        let mut successful_writers = 0;
+        let mut winners = Vec::new();
         while let Some(result) = tasks.join_next().await {
-            if result.unwrap().is_some() {
-                successful_writers += 1;
+            let (owl, outcome) = result.unwrap();
+            if outcome.is_some() {
+                winners.push(owl);
             }
         }
-        largest_success_count = largest_success_count.max(successful_writers);
-        assert_eq!(r.ontology_get(&user_id).await.unwrap().unwrap().version, 2);
+        largest_success_count = largest_success_count.max(winners.len());
+
+        let stored = r.ontology_get(&user_id).await.unwrap().unwrap();
+        assert_eq!(stored.version, 2, "round {round}");
+        // The writer that was told it won must be the one whose content is
+        // canonical. A second "winner" here means someone's edit was dropped
+        // after the CAS reported success.
+        assert_eq!(
+            winners.as_slice(),
+            &[stored.owl.clone()],
+            "round {round}: exactly the stored content should have won",
+        );
     }
 
     assert_eq!(
