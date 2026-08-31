@@ -70,7 +70,7 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     struct TestClaims {
         sub: String,
         exp: u64,
