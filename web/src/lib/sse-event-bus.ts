@@ -1,4 +1,4 @@
-import { ensureAccessToken, API_URL } from "./api-client";
+import { ensureAccessToken, refreshStaleToken, API_URL } from "./api-client";
 import type { MessageResponse, Notification, PauseReason } from "./types";
 
 
@@ -228,9 +228,23 @@ export class SSEEventBus {
     const headers: Record<string, string> = {};
     if (tokenResult.ok) headers["Authorization"] = `Bearer ${tokenResult.token}`;
 
+    const open = () =>
+      fetch(`${API_URL}/api/stream`, { headers, signal, credentials: "include" });
+
     let res: Response;
     try {
-      res = await fetch(`${API_URL}/api/stream`, { headers, signal, credentials: "include" });
+      res = await open();
+
+      // The stream outlives the access token, so a 401 here is an ordinary
+      // expiry. Without this refresh the reconnect loop replays the dead token
+      // on every backoff tick and the session never recovers.
+      if (res.status === 401 && tokenResult.ok) {
+        const refreshed = await refreshStaleToken(tokenResult.token);
+        if (refreshed.ok) {
+          headers["Authorization"] = `Bearer ${refreshed.token}`;
+          res = await open();
+        }
+      }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       throw err;
