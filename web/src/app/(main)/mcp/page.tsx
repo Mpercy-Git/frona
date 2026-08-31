@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { ArrowLeftIcon, CpuChipIcon, PlayIcon, StopIcon, TrashIcon, PlusIcon, InformationCircleIcon, CommandLineIcon, DocumentTextIcon, KeyIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
-import { api, API_URL, getAccessToken } from "@/lib/api-client";
+import { api, API_URL, ensureAccessToken } from "@/lib/api-client";
 import { SectionHeader, SectionPanel, Field, TextInput } from "@/components/settings/field";
 import { formatDistanceToNow } from "date-fns";
 import { SandboxSection } from "@/components/agents/configure/sandbox-section";
@@ -216,9 +216,12 @@ function McpServerPage() {
 
     const controller = new AbortController();
     (async () => {
-      const token = getAccessToken();
+      // `ensureAccessToken` rather than the cached token: after an expiry the
+      // cached one is dead, and a log pane that silently stays empty is a
+      // worse symptom than the request that renews it.
+      const tokenResult = await ensureAccessToken();
       const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
+      if (tokenResult.ok) headers["Authorization"] = `Bearer ${tokenResult.token}`;
 
       let res: Response;
       try {

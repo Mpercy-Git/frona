@@ -42,6 +42,7 @@ function LoginContent() {
       email_not_verified: "Your email has not been verified by the SSO provider.",
       csrf_failed: "SSO session expired. Please try again.",
       token_invalid: "SSO authentication failed. Please try again.",
+      token_expired: "That sign-in link expired. Please try again.",
       token_failed: "SSO provider did not return a valid token.",
       sso_disabled: "SSO is not enabled.",
       server_error: "An unexpected error occurred during SSO login.",

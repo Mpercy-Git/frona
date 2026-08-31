@@ -6,6 +6,10 @@ pub enum AuthErrorCode {
     EmailNotVerified,
     CsrfFailed,
     TokenInvalid,
+    /// The token verified but its `exp` has passed. Distinct from
+    /// [`Self::TokenInvalid`] so clients can refresh silently instead of
+    /// treating an ordinary expiry as an authentication failure.
+    TokenExpired,
     TokenFailed,
     SsoDisabled,
     ServerError,
@@ -22,6 +26,7 @@ impl AuthErrorCode {
             Self::EmailNotVerified => "email_not_verified",
             Self::CsrfFailed => "csrf_failed",
             Self::TokenInvalid => "token_invalid",
+            Self::TokenExpired => "token_expired",
             Self::TokenFailed => "token_failed",
             Self::SsoDisabled => "sso_disabled",
             Self::ServerError => "server_error",

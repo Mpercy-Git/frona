@@ -22,6 +22,10 @@ impl From<AppError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match &self.0 {
+            // Auth failures answer with a machine-readable `code` alongside the
+            // message: an expired session is routine (the client refreshes and
+            // retries) and must not be told apart from a real failure by string
+            // matching on prose.
             AppError::Auth { message, code } => {
                 // Lockout carries a deadline, so it answers with `Retry-After`
                 // rather than falling through to the plain (status, body) path.
@@ -29,7 +33,7 @@ impl IntoResponse for ApiError {
                     return (
                         StatusCode::TOO_MANY_REQUESTS,
                         [(header::RETRY_AFTER, retry_after_secs.to_string())],
-                        Json(json!({ "error": message })),
+                        Json(json!({ "error": message, "code": code.as_str() })),
                     )
                         .into_response();
                 }
@@ -37,7 +41,11 @@ impl IntoResponse for ApiError {
                     AuthErrorCode::AccountDeactivated => StatusCode::FORBIDDEN,
                     _ => StatusCode::UNAUTHORIZED,
                 };
-                (status, message.clone())
+                return (
+                    status,
+                    Json(json!({ "error": message, "code": code.as_str() })),
+                )
+                    .into_response();
             }
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
@@ -83,5 +91,53 @@ impl IntoResponse for ApiError {
         };
 
         (status, Json(json!({ "error": message }))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::error::AuthErrorCode;
+    use http_body_util::BodyExt;
+
+    async fn body_json(res: Response) -> serde_json::Value {
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// The web client branches on `code` to tell an ordinary expiry (refresh
+    /// and retry) from a dead session (sign in again), so the field is part of
+    /// the contract, not decoration.
+    #[tokio::test]
+    async fn auth_errors_carry_their_code() {
+        let res = ApiError(AppError::Auth {
+            message: "Session expired".into(),
+            code: AuthErrorCode::TokenExpired,
+        })
+        .into_response();
+
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            body_json(res).await,
+            serde_json::json!({ "error": "Session expired", "code": "token_expired" }),
+        );
+    }
+
+    #[tokio::test]
+    async fn lockout_keeps_retry_after_and_gains_a_code() {
+        let res = ApiError(AppError::Auth {
+            message: "Too many attempts".into(),
+            code: AuthErrorCode::AccountLocked {
+                retry_after_secs: 42,
+            },
+        })
+        .into_response();
+
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(res.headers()[header::RETRY_AFTER], "42");
+        assert_eq!(
+            body_json(res).await,
+            serde_json::json!({ "error": "Too many attempts", "code": "account_locked" }),
+        );
     }
 }

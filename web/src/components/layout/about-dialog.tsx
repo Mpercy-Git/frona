@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { InformationCircleIcon } from "@heroicons/react/24/outline";
-import { API_URL, getAccessToken } from "@/lib/api-client";
+import { API_URL, ensureAccessToken } from "@/lib/api-client";
 import { Dialog } from "@/components/dialog";
 
 interface SystemInfo {
@@ -37,8 +37,11 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
     let cancelled = false;
     (async () => {
       try {
+        const tokenResult = await ensureAccessToken();
         const res = await fetch(`${API_URL}/api/system/info`, {
-          headers: { Authorization: `Bearer ${getAccessToken()}` },
+          headers: tokenResult.ok
+            ? { Authorization: `Bearer ${tokenResult.token}` }
+            : {},
           credentials: "include",
         });
         if (res.ok && !cancelled) setInfo(await res.json());

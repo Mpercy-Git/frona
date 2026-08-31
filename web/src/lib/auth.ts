@@ -8,7 +8,7 @@ import {
   useCallback,
   createElement,
 } from "react";
-import { api, setAccessToken, ApiError } from "./api-client";
+import { api, setAccessToken, onSessionExpired, ApiError } from "./api-client";
 import type {
   UserInfo,
   AuthResponse,
@@ -102,6 +102,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     probe();
   }, [probe]);
+
+  /// A session that dies while the app is open used to be discovered one
+  /// request at a time, each rendering its own auth error. The api client
+  /// tells us the moment the refresh cookie is rejected, so the gate can send
+  /// the user to /login instead.
+  useEffect(
+    () =>
+      onSessionExpired(() => {
+        setUser(null);
+        setConnectionState("unauthenticated");
+      }),
+    [],
+  );
 
   const login = useCallback(async (req: LoginRequest) => {
     const res = await api.post<AuthResponse>("/api/auth/login", req);
