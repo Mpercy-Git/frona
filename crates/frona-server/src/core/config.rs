@@ -1523,7 +1523,8 @@ fn missing_provider_group(err: &str) -> Option<&str> {
     if !err.contains("missing") {
         return None;
     }
-    let (group, rest) = err.split("models.").nth(1)?.split_once('.')?;
+    let (_, after) = err.split_once("models.")?;
+    let (group, rest) = after.split_once('.')?;
     let rest = rest.trim_end_matches(['"', '\'', '`', '.']);
     (!group.is_empty() && rest.ends_with(PROVIDER_TAG)).then_some(group)
 }
