@@ -454,9 +454,9 @@ impl Default for ShareConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct PushConfig {
-    #[schemars(description = "VAPID public key (base64url-encoded, uncompressed P-256). Required for Web Push.")]
+    #[schemars(description = "VAPID public key (base64url-encoded, uncompressed P-256). Leave unset and the server generates a pair and keeps it in `{data_dir}/system/vapid.json`.")]
     pub vapid_public_key: Option<String>,
-    #[schemars(description = "VAPID private key (base64url-encoded, uncompressed P-256). Required for Web Push.")]
+    #[schemars(description = "VAPID private key (base64url-encoded P-256 scalar). Leave unset to use the server's generated pair; set it without the matching public key and push stays off.")]
     pub vapid_private_key: Option<String>,
     #[schemars(description = "VAPID subject — a mailto: URL or the site's HTTPS URL.")]
     pub subject: String,
@@ -758,7 +758,7 @@ pub enum OpenAiApi {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "provider")]
 pub enum ProviderModel {
     #[serde(rename = "anthropic")]
@@ -812,6 +812,7 @@ pub enum ProviderModel {
         #[serde(flatten)]
         params: GeminiParams,
     },
+<<<<<<< HEAD
     /// Azure OpenAI. `base_url` is the resource endpoint
     /// (`https://<resource>.openai.azure.com`) and the model id is the
     /// *deployment* name chosen in Azure, not the underlying model name.
@@ -820,12 +821,55 @@ pub enum ProviderModel {
         #[serde(flatten)]
         params: OpenAICompatParams,
     },
+=======
+    #[serde(rename = "zai")]
+    Zai {
+        #[serde(flatten)]
+        params: OpenAICompatParams,
+    },
+    #[serde(rename = "venice")]
+    Venice {
+        #[serde(flatten)]
+        params: OpenAICompatParams,
+    },
+    #[serde(rename = "minimax")]
+    MiniMax {
+        #[serde(flatten)]
+        params: OpenAICompatParams,
+    },
+    #[serde(rename = "llamafile")]
+    Llamafile {
+        #[serde(flatten)]
+        params: OpenAICompatParams,
+    },
+    /// Any OpenAI-compatible chat-completions endpoint: vLLM, LM Studio,
+    /// llama.cpp's server, a LiteLLM proxy, or a hosted service frona has no
+    /// dedicated entry for. Requires `base_url`; `api_key` is optional, since
+    /// local servers commonly ignore it.
+    ///
+    /// Distinct from configuring the `openai` provider with a `base_url`: that
+    /// path rewrites `max_tokens` into `max_completion_tokens` for gpt-5/o-series
+    /// compatibility, which many otherwise-compatible servers reject.
+>>>>>>> origin/main
     #[serde(rename = "generic")]
-    #[default]
-    Generic,
+    Generic {
+        #[serde(flatten)]
+        params: OpenAICompatParams,
+    },
     #[serde(skip)]
     #[schemars(skip)]
     Custom { name: String },
+}
+
+impl Default for ProviderModel {
+    /// Hand-written because `#[derive(Default)]` can only mark a *unit* variant
+    /// as the default, and `Generic` carries the OpenAI-compatible parameter
+    /// set so a plain compatible endpoint is still tunable.
+    fn default() -> Self {
+        Self::Generic {
+            params: OpenAICompatParams::default(),
+        }
+    }
 }
 
 impl From<&str> for ProviderModel {
@@ -874,10 +918,28 @@ impl ProviderModel {
             "gemini" => Self::Gemini {
                 params: Default::default(),
             },
+<<<<<<< HEAD
             "azure" => Self::Azure {
                 params: Default::default(),
             },
             "generic" => Self::Generic,
+=======
+            "zai" => Self::Zai {
+                params: Default::default(),
+            },
+            "venice" => Self::Venice {
+                params: Default::default(),
+            },
+            "minimax" => Self::MiniMax {
+                params: Default::default(),
+            },
+            "llamafile" => Self::Llamafile {
+                params: Default::default(),
+            },
+            "generic" => Self::Generic {
+                params: Default::default(),
+            },
+>>>>>>> origin/main
             name => Self::Custom {
                 name: name.to_string(),
             },
@@ -896,8 +958,16 @@ impl ProviderModel {
             Self::Together { .. } => "together",
             Self::Hyperbolic { .. } => "hyperbolic",
             Self::Gemini { .. } => "gemini",
+<<<<<<< HEAD
             Self::Azure { .. } => "azure",
             Self::Generic => "generic",
+=======
+            Self::Zai { .. } => "zai",
+            Self::Venice { .. } => "venice",
+            Self::MiniMax { .. } => "minimax",
+            Self::Llamafile { .. } => "llamafile",
+            Self::Generic { .. } => "generic",
+>>>>>>> origin/main
             Self::Custom { name } => name,
         }
     }
@@ -1486,6 +1556,7 @@ pub const SENSITIVE_PATHS: &[&[&str]] = &[
     &["vault", "hashicorp_token"],
     &["vault", "keepass_password"],
     &["mail", "smtp_password"],
+    &["push", "vapid_private_key"],
 ];
 
 /// Provider fields that are sensitive (applied to each provider in the map).

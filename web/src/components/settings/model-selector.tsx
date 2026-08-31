@@ -35,8 +35,16 @@ const PROVIDER_LABELS: Record<string, string> = {
   mira: "Mira",
   galadriel: "Galadriel",
   huggingface: "Hugging Face",
+<<<<<<< HEAD
   azure: "Azure OpenAI",
+=======
+  zai: "Z.ai",
+  venice: "Venice",
+  minimax: "MiniMax",
+>>>>>>> origin/main
   ollama: "Ollama",
+  llamafile: "llamafile",
+  generic: "OpenAI-compatible",
 };
 
 const modelsCache: Record<string, ModelInfo[]> = {};

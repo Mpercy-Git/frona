@@ -3,8 +3,13 @@ use std::sync::Arc;
 
 use rig_core::client::Nothing;
 use rig_core::providers::{
+<<<<<<< HEAD
     anthropic, azure, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral,
     moonshot, ollama, openai, openrouter, perplexity, together, xai,
+=======
+    anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, llamafile, minimax, mira,
+    mistral, moonshot, ollama, openai, openrouter, perplexity, together, venice, xai, zai,
+>>>>>>> origin/main
 };
 
 use super::config::{
@@ -164,25 +169,6 @@ macro_rules! init_api_key_provider {
     }};
 }
 
-macro_rules! init_builder_provider {
-    ($name:expr, $entry:expr, $mod:ident, $counter:expr) => {{
-        let key = require_api_key($name, $entry)?;
-        let client: $mod::Client = if let Some(url) = &$entry.base_url {
-            $mod::Client::builder()
-                .api_key(&key)
-                .base_url(url)
-                .build()
-                .map_err(|e| InferenceError::ConfigError(format!("{}: {e}", $name)))?
-        } else {
-            $mod::Client::builder()
-                .api_key(&key)
-                .build()
-                .map_err(|e| InferenceError::ConfigError(format!("{}: {e}", $name)))?
-        };
-        Ok(Arc::new(RigProvider::new(client, $counter.clone())) as Arc<dyn ModelProvider>)
-    }};
-}
-
 fn init_provider(
     name: &str,
     entry: &ModelProviderConfig,
@@ -319,6 +305,47 @@ fn init_provider(
             ) as Arc<dyn ModelProvider>)
         }
         "deepseek" => init_api_key_provider!(name, entry, deepseek, counter),
+        "zai" => init_api_key_provider!(name, entry, zai, counter),
+        "venice" => init_api_key_provider!(name, entry, venice, counter),
+        "minimax" => init_api_key_provider!(name, entry, minimax, counter),
+        // Local server, like Ollama: no API key, and the base_url is the whole
+        // configuration.
+        "llamafile" => {
+            let client: llamafile::Client = if let Some(url) = &entry.base_url {
+                llamafile::Client::builder()
+                    .api_key(Nothing)
+                    .base_url(url)
+                    .build()
+                    .map_err(|e| InferenceError::ConfigError(format!("llamafile: {e}")))?
+            } else {
+                llamafile::Client::builder()
+                    .api_key(Nothing)
+                    .build()
+                    .map_err(|e| InferenceError::ConfigError(format!("llamafile: {e}")))?
+            };
+            Ok(Arc::new(RigProvider::new(client, counter.clone())) as Arc<dyn ModelProvider>)
+        }
+        // Any OpenAI-compatible chat-completions endpoint. Deliberately *not*
+        // `hooks::openai`: that hook rewrites `max_tokens` into
+        // `max_completion_tokens` for gpt-5/o-series, and servers like vLLM,
+        // LM Studio and llama.cpp reject the rewritten field. `base_url` is
+        // required — there is no sensible default host for "generic" — while
+        // `api_key` is optional, since local servers commonly ignore auth.
+        "generic" => {
+            let url = entry.base_url.as_deref().ok_or_else(|| {
+                InferenceError::ConfigError(
+                    "Provider 'generic' requires a base_url pointing at an \
+                     OpenAI-compatible endpoint"
+                        .to_string(),
+                )
+            })?;
+            let client = openai::CompletionsClient::builder()
+                .api_key(entry.api_key.as_deref().unwrap_or(""))
+                .base_url(url)
+                .build()
+                .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?;
+            Ok(Arc::new(RigProvider::new(client, counter.clone())) as Arc<dyn ModelProvider>)
+        }
         "gemini" => init_api_key_provider!(name, entry, gemini, counter),
         "cohere" => init_api_key_provider!(name, entry, cohere, counter),
         "mistral" => init_api_key_provider!(name, entry, mistral, counter),
@@ -391,15 +418,23 @@ mod tests {
     use super::*;
     use crate::core::config::OpenAiApi;
 
+<<<<<<< HEAD
     fn azure_entry(base_url: Option<&str>, api_version: Option<&str>) -> ModelProviderConfig {
         ModelProviderConfig {
             api_key: Some("test-key".to_string()),
             base_url: base_url.map(str::to_string),
             api_version: api_version.map(str::to_string),
+=======
+    fn provider_entry(api_key: Option<&str>, base_url: Option<&str>) -> ModelProviderConfig {
+        ModelProviderConfig {
+            api_key: api_key.map(str::to_string),
+            base_url: base_url.map(str::to_string),
+>>>>>>> origin/main
             enabled: true,
         }
     }
 
+<<<<<<< HEAD
     #[tokio::test]
     async fn azure_initialises_from_an_endpoint_and_key() {
         let counter = InferenceCounter::new(BroadcastService::new());
@@ -425,6 +460,37 @@ mod tests {
         // isn't, so match instead.
         let Err(err) = init_provider("azure", &azure_entry(None, None), &counter) else {
             panic!("azure without a base_url must not initialise");
+=======
+    /// `provider: generic` parsed fine long before it could be initialised —
+    /// `init_provider` had no arm for it, and `from_config` only *warns* on a
+    /// failed init, so the provider silently didn't exist and the failure
+    /// surfaced much later as `ProviderNotConfigured`.
+    // `BroadcastService::new` spawns a task, so these need a runtime.
+    #[tokio::test]
+    async fn generic_provider_initialises_from_a_base_url_alone() {
+        let counter = InferenceCounter::new(BroadcastService::new());
+        assert!(
+            init_provider(
+                "generic",
+                &provider_entry(None, Some("http://localhost:8000/v1")),
+                &counter,
+            )
+            .is_ok(),
+            "a local OpenAI-compatible server needs no API key"
+        );
+    }
+
+    /// There is no sensible default host for "generic", so a missing base_url
+    /// has to fail loudly at startup rather than resolve to some other API.
+    // `BroadcastService::new` spawns a task, so these need a runtime.
+    #[tokio::test]
+    async fn generic_provider_without_a_base_url_is_a_config_error() {
+        let counter = InferenceCounter::new(BroadcastService::new());
+        // `expect_err` would need the Ok side to be Debug; `Arc<dyn ModelProvider>`
+        // isn't, so match instead.
+        let Err(err) = init_provider("generic", &provider_entry(Some("k"), None), &counter) else {
+            panic!("generic without a base_url must not initialise");
+>>>>>>> origin/main
         };
         assert!(
             err.to_string().contains("base_url"),
@@ -432,6 +498,25 @@ mod tests {
         );
     }
 
+<<<<<<< HEAD
+=======
+    // `BroadcastService::new` spawns a task, so these need a runtime.
+    #[tokio::test]
+    async fn newly_wired_providers_initialise() {
+        let counter = InferenceCounter::new(BroadcastService::new());
+        for name in ["zai", "venice", "minimax"] {
+            assert!(
+                init_provider(name, &provider_entry(Some("test-key"), None), &counter).is_ok(),
+                "{name} should initialise from an API key alone"
+            );
+        }
+        assert!(
+            init_provider("llamafile", &provider_entry(None, None), &counter).is_ok(),
+            "llamafile defaults to its local base URL"
+        );
+    }
+
+>>>>>>> origin/main
     fn registry_with_protocol_defaults(
         protocol_defaults: HashMap<String, OpenAiApi>,
     ) -> ModelProviderRegistry {

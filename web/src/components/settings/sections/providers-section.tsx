@@ -23,8 +23,16 @@ const KNOWN_PROVIDERS = [
   "mira",
   "galadriel",
   "huggingface",
+<<<<<<< HEAD
   "azure",
+=======
+  "zai",
+  "venice",
+  "minimax",
+>>>>>>> origin/main
   "ollama",
+  "llamafile",
+  "generic",
 ];
 
 export function formatProviderName(id: string): string {
@@ -45,8 +53,16 @@ export function formatProviderName(id: string): string {
     mira: "Mira",
     galadriel: "Galadriel",
     huggingface: "Hugging Face",
+<<<<<<< HEAD
     azure: "Azure OpenAI",
+=======
+    zai: "Z.ai",
+    venice: "Venice",
+    minimax: "MiniMax",
+>>>>>>> origin/main
     ollama: "Ollama",
+    llamafile: "llamafile",
+    generic: "OpenAI-compatible",
   };
   return names[id] ?? id;
 }

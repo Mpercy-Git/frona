@@ -46,6 +46,12 @@ fn default_base_url(provider: &str) -> Option<&'static str> {
         "galadriel" => Some("https://api.galadriel.com/v1/verified"),
         "huggingface" => Some("https://router.huggingface.co"),
         "ollama" => Some("http://localhost:11434"),
+        "zai" => Some("https://api.z.ai/api/paas/v4"),
+        "venice" => Some("https://api.venice.ai/api/v1"),
+        "minimax" => Some("https://api.minimax.io/v1"),
+        "llamafile" => Some("http://localhost:8080"),
+        // `generic` has no default host on purpose - the configured base_url
+        // is the only thing that identifies the endpoint.
         _ => None,
     }
 }
@@ -62,7 +68,9 @@ fn models_endpoint(provider: &str) -> Option<(&'static str, ResponseFormat)> {
     match provider {
         "openrouter" => Some(("/models", ResponseFormat::OpenRouter)),
         "openai" | "groq" | "cohere" | "mistral" | "together" | "xai" | "hyperbolic"
-        | "moonshot" | "deepseek" => Some(("/models", ResponseFormat::OpenAi)),
+        | "moonshot" | "deepseek" | "zai" | "venice" | "minimax" | "llamafile" | "generic" => {
+            Some(("/models", ResponseFormat::OpenAi))
+        }
         "anthropic" => Some(("/v1/models", ResponseFormat::OpenAi)),
         "perplexity" => Some(("/models", ResponseFormat::OpenAi)),
         "gemini" => Some(("/v1beta/models", ResponseFormat::Gemini)),

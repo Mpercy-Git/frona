@@ -485,18 +485,30 @@ fn request_params(
             (explicit_max.or(max_tokens), additional)
         }
         ProviderModel::OpenRouter { params } => (max_tokens, serialize_params(params)),
+<<<<<<< HEAD
         // Azure hosts the same gpt-5/o-series models as OpenAI, so it needs the
         // same `max_tokens` -> `max_completion_tokens` move — but via
         // `hooks::openai` rather than the arm below, which also resolves the
         // Responses-vs-chat protocol split that Azure's client doesn't have.
         ProviderModel::Azure { params }
         | ProviderModel::Groq { params }
+=======
+        // Plain OpenAI-compatible chat-completions endpoints. `max_tokens`
+        // stays top-level: unlike gpt-5/o-series, these accept it, and
+        // rewriting it to `max_completion_tokens` is what breaks them.
+        ProviderModel::Groq { params }
+>>>>>>> origin/main
         | ProviderModel::DeepSeek { params }
         | ProviderModel::XAI { params }
         | ProviderModel::Together { params }
-        | ProviderModel::Hyperbolic { params } => (max_tokens, serialize_params(params)),
+        | ProviderModel::Hyperbolic { params }
+        | ProviderModel::Zai { params }
+        | ProviderModel::Venice { params }
+        | ProviderModel::MiniMax { params }
+        | ProviderModel::Llamafile { params }
+        | ProviderModel::Generic { params } => (max_tokens, serialize_params(params)),
         ProviderModel::Gemini { params } => (max_tokens, serialize_params(params)),
-        ProviderModel::Generic | ProviderModel::Custom { .. } => (max_tokens, None),
+        ProviderModel::Custom { .. } => (max_tokens, None),
     };
 
     let params = super::hooks::RequestParams {
@@ -1173,6 +1185,7 @@ mod tests {
         );
     }
 
+<<<<<<< HEAD
     /// Azure serves the same gpt-5/o-series models as OpenAI, which reject
     /// `max_tokens` outright, so the cap has to be rewritten on the way out
     /// exactly as it is for the `openai` provider.
@@ -1183,11 +1196,26 @@ mod tests {
             provider: ProviderModel::Azure {
                 params: OpenAICompatParams {
                     reasoning_effort: Some("high".to_string()),
+=======
+    /// The reason `generic` exists rather than pointing the `openai` provider
+    /// at a custom `base_url`: that path runs `hooks::openai`, which moves
+    /// `max_tokens` into `max_completion_tokens`. vLLM, LM Studio and
+    /// llama.cpp's server take the former and reject the latter, so the cap
+    /// has to survive the trip unchanged.
+    #[test]
+    fn generic_request_leaves_max_tokens_where_compatible_servers_expect_it() {
+        let model = ModelRef {
+            model_id: "some-local-model".to_string(),
+            provider: ProviderModel::Generic {
+                params: OpenAICompatParams {
+                    top_p: Some(0.9),
+>>>>>>> origin/main
                     ..Default::default()
                 },
             },
         };
 
+<<<<<<< HEAD
         let params =
             request_params(&model, Some(64000), None, Some(super::super::hooks::openai)).unwrap();
         assert!(params.max_tokens.is_none());
@@ -1197,6 +1225,14 @@ mod tests {
                 "reasoning_effort": "high",
                 "max_completion_tokens": 64000,
             })),
+=======
+        let params = request_params(&model, Some(8192), None, None).unwrap();
+        assert_eq!(params.max_tokens, Some(8192));
+        assert_eq!(
+            params.additional_params,
+            Some(serde_json::json!({"top_p": 0.9})),
+            "no max_completion_tokens rewrite on the generic path"
+>>>>>>> origin/main
         );
     }
 
