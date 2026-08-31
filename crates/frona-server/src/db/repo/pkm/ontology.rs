@@ -666,6 +666,49 @@ impl PkmRepo {
         Ok(true)
     }
 
+    /// Serializes ontology compare-and-swap across this process.
+    ///
+    /// SurrealDB's embedded engine offers no atomic primitive to build a CAS
+    /// on. Measured against 3.0 with the in-memory engine, 16-32 writers racing
+    /// on one key:
+    ///
+    /// - `UPDATE ... WHERE version = $expected` - two writers both match the
+    ///   guard and both write, the second silently replacing the first.
+    /// - `CREATE` on a fixed record id - two writers both succeed, standalone
+    ///   *and* inside an explicit `BEGIN`/`COMMIT`.
+    /// - Stamping a token and reading the row back - the read races too: a
+    ///   writer can observe its own write before the next one lands, so both
+    ///   still come away winners.
+    ///
+    /// The last one is why this is a lock and not a cleverer query. There is no
+    /// sequence of statements here that decides a single winner.
+    ///
+    /// A process-wide lock is a complete answer rather than a partial one
+    /// *because the database is embedded in this process*: the handle is
+    /// `Surreal<surrealdb::engine::local::Db>` and `db::init` only ever opens
+    /// it with `Surreal::new::<RocksDb>(path)` - there is no remote-engine path
+    /// - and RocksDB holds an exclusive lock on that directory, so no second
+    /// process can be writing these rows. Keyed by user so one user's edit
+    /// never waits on another's. The map holds one entry per user seen, which
+    /// is bounded by the user count.
+    ///
+    /// **If the store ever becomes a shared or remote SurrealDB, this stops
+    /// being sufficient** and the mutual exclusion has to move into the
+    /// database - at which point the engine needs to actually provide it.
+    fn ontology_cas_lock(user_id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        static LOCKS: std::sync::LazyLock<
+            std::sync::Mutex<
+                std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
+            >,
+        > = std::sync::LazyLock::new(Default::default);
+        LOCKS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(user_id.to_string())
+            .or_default()
+            .clone()
+    }
+
     pub async fn ontology_upsert_cas(
         &self,
         user_id: &str,
@@ -673,6 +716,10 @@ impl PkmRepo {
         format: &str,
         expected_version: i64,
     ) -> Result<Option<i64>, AppError> {
+        // Held across the read, the check and the write: the guard below is
+        // necessary but not sufficient on its own. See `ontology_cas_lock`.
+        let lock = Self::ontology_cas_lock(user_id);
+        let _serialized = lock.lock().await;
         let current = self.ontology_get(user_id).await?;
         let cur_version = current.as_ref().map(|o| o.version).unwrap_or(0);
         if cur_version != expected_version {
