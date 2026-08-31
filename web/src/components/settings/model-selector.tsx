@@ -35,6 +35,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   mira: "Mira",
   galadriel: "Galadriel",
   huggingface: "Hugging Face",
+  azure: "Azure OpenAI",
   zai: "Z.ai",
   venice: "Venice",
   minimax: "MiniMax",

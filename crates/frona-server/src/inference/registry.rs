@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use rig_core::client::Nothing;
 use rig_core::providers::{
-    anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, llamafile, minimax, mira,
-    mistral, moonshot, ollama, openai, openrouter, perplexity, together, venice, xai, zai,
+    anthropic, azure, cohere, deepseek, gemini, groq, huggingface, hyperbolic, llamafile, minimax,
+    mira, mistral, moonshot, ollama, openai, openrouter, perplexity, together, venice, xai, zai,
 };
 
 use super::config::{
@@ -270,6 +270,35 @@ fn init_provider(
                     .with_model_decorator(openrouter_prompt_caching),
             ) as Arc<dyn ModelProvider>)
         }
+        // Azure keys its data plane off a per-resource endpoint plus an API
+        // version in the query string, so neither `Client::new` nor the shared
+        // builder macros fit. The model id is the *deployment* name, which the
+        // caller supplies as usual.
+        "azure" => {
+            let key = require_api_key(name, entry)?;
+            let endpoint = entry.base_url.clone().ok_or_else(|| {
+                InferenceError::ConfigError(
+                    "Provider 'azure' requires a base_url — your resource endpoint, \
+                     e.g. https://<resource>.openai.azure.com"
+                        .to_string(),
+                )
+            })?;
+            // `impl From<S: Into<String>> for AzureOpenAIAuth` yields a bearer
+            // token, which is the Entra ID path. A configured `api_key` means
+            // the resource key, so name the variant explicitly.
+            let mut builder = azure::Client::builder()
+                .api_key(azure::AzureOpenAIAuth::ApiKey(key))
+                .azure_endpoint(endpoint);
+            if let Some(version) = &entry.api_version {
+                builder = builder.api_version(version);
+            }
+            let client = builder
+                .build()
+                .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?;
+            Ok(Arc::new(
+                RigProvider::new(client, counter.clone()).with_hook(hooks::openai),
+            ) as Arc<dyn ModelProvider>)
+        }
         "deepseek" => init_api_key_provider!(name, entry, deepseek, counter),
         "zai" => init_api_key_provider!(name, entry, zai, counter),
         "venice" => init_api_key_provider!(name, entry, venice, counter),
@@ -384,12 +413,54 @@ mod tests {
     use super::*;
     use crate::core::config::OpenAiApi;
 
+    fn azure_entry(base_url: Option<&str>, api_version: Option<&str>) -> ModelProviderConfig {
+        ModelProviderConfig {
+            api_key: Some("test-key".to_string()),
+            base_url: base_url.map(str::to_string),
+            api_version: api_version.map(str::to_string),
+            enabled: true,
+        }
+    }
+
     fn provider_entry(api_key: Option<&str>, base_url: Option<&str>) -> ModelProviderConfig {
         ModelProviderConfig {
             api_key: api_key.map(str::to_string),
             base_url: base_url.map(str::to_string),
             enabled: true,
+            ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn azure_initialises_from_an_endpoint_and_key() {
+        let counter = InferenceCounter::new(BroadcastService::new());
+        for version in [None, Some("2025-01-01-preview")] {
+            assert!(
+                init_provider(
+                    "azure",
+                    &azure_entry(Some("https://example.openai.azure.com"), version),
+                    &counter,
+                )
+                .is_ok(),
+                "api_version {version:?} should build",
+            );
+        }
+    }
+
+    /// Azure has no shared host — every resource has its own endpoint — so a
+    /// missing base_url can't fall back to anything and must fail at startup.
+    #[tokio::test]
+    async fn azure_without_an_endpoint_is_a_config_error() {
+        let counter = InferenceCounter::new(BroadcastService::new());
+        // `expect_err` would need the Ok side to be Debug; `Arc<dyn ModelProvider>`
+        // isn't, so match instead.
+        let Err(err) = init_provider("azure", &azure_entry(None, None), &counter) else {
+            panic!("azure without a base_url must not initialise");
+        };
+        assert!(
+            err.to_string().contains("base_url"),
+            "the error should name what's missing, got: {err}"
+        );
     }
 
     /// `provider: generic` parsed fine long before it could be initialised —

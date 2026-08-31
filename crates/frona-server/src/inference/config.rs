@@ -87,11 +87,27 @@ impl ModelRegistryConfig {
                     name.to_string(),
                     ModelProviderConfig {
                         api_key: Some(key),
-                        base_url: None,
-                        enabled: true,
+                        ..Default::default()
                     },
                 );
             }
+        }
+
+        // Azure needs an endpoint as well as a key, and optionally a pinned
+        // API version, so it can't ride the (name, env_var) table above.
+        if let (Ok(key), Ok(endpoint)) = (
+            std::env::var("AZURE_OPENAI_API_KEY"),
+            std::env::var("AZURE_OPENAI_ENDPOINT"),
+        ) {
+            providers.insert(
+                "azure".to_string(),
+                ModelProviderConfig {
+                    api_key: Some(key),
+                    base_url: Some(endpoint),
+                    api_version: std::env::var("AZURE_OPENAI_API_VERSION").ok(),
+                    enabled: true,
+                },
+            );
         }
 
         // Base-URL-only providers: a local server needs no key, so its URL is
@@ -107,6 +123,7 @@ impl ModelRegistryConfig {
                         api_key: None,
                         base_url: Some(url),
                         enabled: true,
+                        ..Default::default()
                     },
                 );
             }
@@ -121,6 +138,7 @@ impl ModelRegistryConfig {
                     api_key: std::env::var("GENERIC_API_KEY").ok(),
                     base_url: Some(url),
                     enabled: true,
+                    ..Default::default()
                 },
             );
         }
@@ -213,6 +231,9 @@ fn default_model_for_provider(provider: &str) -> &str {
         "cohere" => "command-r-plus",
         "xai" => "grok-2-latest",
         "ollama" => "qwen3-vl:32b",
+        // Azure model ids are deployment names, so this is only a guess at the
+        // most common one; auto-discovery can't know what the resource calls it.
+        "azure" => "gpt-4o",
         "zai" => "glm-4.6",
         "minimax" => "MiniMax-M2",
         "venice" => "venice-uncensored",
@@ -457,6 +478,23 @@ fallbacks:
         assert_eq!(fallbacks.len(), 1);
         assert_eq!(fallbacks[0].provider_name(), "ollama");
         assert_eq!(fallbacks[0].common().model, "qwen3:32b");
+    }
+
+    #[test]
+    fn azure_model_group_takes_the_openai_compatible_params() {
+        let yaml = r#"
+provider: azure
+model: my-gpt-4o-deployment
+reasoning_effort: high
+"#;
+        let config: ModelGroupConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.provider_name(), "azure");
+        // The model id is the Azure *deployment* name, not the model name.
+        assert_eq!(config.common().model, "my-gpt-4o-deployment");
+        let crate::core::config::ProviderModel::Azure { params } = &config.provider else {
+            panic!("expected the azure variant");
+        };
+        assert_eq!(params.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]

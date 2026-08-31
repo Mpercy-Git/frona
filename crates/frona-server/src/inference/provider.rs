@@ -485,10 +485,15 @@ fn request_params(
             (explicit_max.or(max_tokens), additional)
         }
         ProviderModel::OpenRouter { params } => (max_tokens, serialize_params(params)),
+        // Azure hosts the same gpt-5/o-series models as OpenAI, so it needs the
+        // same `max_tokens` -> `max_completion_tokens` move — but via
+        // `hooks::openai` rather than the arm below, which also resolves the
+        // Responses-vs-chat protocol split that Azure's client doesn't have.
+        ProviderModel::Azure { params }
         // Plain OpenAI-compatible chat-completions endpoints. `max_tokens`
         // stays top-level: unlike gpt-5/o-series, these accept it, and
         // rewriting it to `max_completion_tokens` is what breaks them.
-        ProviderModel::Groq { params }
+        | ProviderModel::Groq { params }
         | ProviderModel::DeepSeek { params }
         | ProviderModel::XAI { params }
         | ProviderModel::Together { params }
@@ -1173,6 +1178,33 @@ mod tests {
         assert_eq!(
             params.additional_params,
             Some(serde_json::json!({"top_p": 0.9}))
+        );
+    }
+
+    /// Azure serves the same gpt-5/o-series models as OpenAI, which reject
+    /// `max_tokens` outright, so the cap has to be rewritten on the way out
+    /// exactly as it is for the `openai` provider.
+    #[test]
+    fn azure_request_moves_max_tokens_to_max_completion_tokens() {
+        let model = ModelRef {
+            model_id: "my-gpt-5-deployment".to_string(),
+            provider: ProviderModel::Azure {
+                params: OpenAICompatParams {
+                    reasoning_effort: Some("high".to_string()),
+                    ..Default::default()
+                },
+            },
+        };
+
+        let params =
+            request_params(&model, Some(64000), None, Some(super::super::hooks::openai)).unwrap();
+        assert!(params.max_tokens.is_none());
+        assert_eq!(
+            params.additional_params,
+            Some(serde_json::json!({
+                "reasoning_effort": "high",
+                "max_completion_tokens": 64000,
+            })),
         );
     }
 

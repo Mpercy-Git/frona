@@ -274,6 +274,7 @@ function ProviderParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate
     case "xai":
     case "together":
     case "hyperbolic":
+    case "azure":
     case "zai":
     case "venice":
     case "minimax":
