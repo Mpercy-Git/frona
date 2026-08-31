@@ -73,6 +73,7 @@ pub enum MessageEvent {
         /// Websites consulted (`web_search`/`web_fetch`) while working the
         /// task, derived from tool-call history rather than model prose.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[surreal(default)]
         citations: Vec<crate::agent::task::models::Citation>,
     },
     TaskMatch {
@@ -106,6 +107,7 @@ pub enum DeliveryState {
 pub struct MessageDelivery {
     pub state: DeliveryState,
     #[serde(default)]
+    #[surreal(default)]
     pub attempts: u32,
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub last_attempt_at: Option<DateTime<Utc>>,
@@ -117,6 +119,7 @@ pub struct MessageDelivery {
     /// Cursor: `0..tool_count` walks each tool call's `turn_text`;
     /// `tool_count` is the trailing `Message.content`.
     #[serde(default)]
+    #[surreal(default)]
     pub tool_index: u32,
 }
 
@@ -150,6 +153,7 @@ pub struct Message {
     #[serialize_always]
     pub event: Option<MessageEvent>,
     #[serde(default)]
+    #[surreal(default)]
     pub attachments: Vec<Attachment>,
     pub contact_id: Option<String>,
     pub status: Option<MessageStatus>,
@@ -164,6 +168,7 @@ pub struct Message {
     /// for all assistant/system/etc. roles.
     pub command: Option<MessageCommand>,
     #[serde(default)]
+    #[surreal(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
