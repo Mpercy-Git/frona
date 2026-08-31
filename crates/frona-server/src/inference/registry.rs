@@ -418,7 +418,7 @@ mod tests {
             api_key: Some("test-key".to_string()),
             base_url: base_url.map(str::to_string),
             api_version: api_version.map(str::to_string),
-            enabled: true,
+            ..Default::default()
         }
     }
 
@@ -426,7 +426,6 @@ mod tests {
         ModelProviderConfig {
             api_key: api_key.map(str::to_string),
             base_url: base_url.map(str::to_string),
-            enabled: true,
             ..Default::default()
         }
     }

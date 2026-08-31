@@ -485,15 +485,16 @@ fn request_params(
             (explicit_max.or(max_tokens), additional)
         }
         ProviderModel::OpenRouter { params } => (max_tokens, serialize_params(params)),
-        // Azure hosts the same gpt-5/o-series models as OpenAI, so it needs the
-        // same `max_tokens` -> `max_completion_tokens` move — but via
-        // `hooks::openai` rather than the arm below, which also resolves the
-        // Responses-vs-chat protocol split that Azure's client doesn't have.
-        ProviderModel::Azure { params }
+        // Azure hosts the same gpt-5/o-series models as OpenAI, so it does need
+        // the `max_tokens` -> `max_completion_tokens` move. `hooks::openai`
+        // performs it; this arm only serializes params. Kept out of the group
+        // below precisely because that group's contract is the opposite one —
+        // folding Azure in would make that comment false for its first member.
+        ProviderModel::Azure { params } => (max_tokens, serialize_params(params)),
         // Plain OpenAI-compatible chat-completions endpoints. `max_tokens`
         // stays top-level: unlike gpt-5/o-series, these accept it, and
         // rewriting it to `max_completion_tokens` is what breaks them.
-        | ProviderModel::Groq { params }
+        ProviderModel::Groq { params }
         | ProviderModel::DeepSeek { params }
         | ProviderModel::XAI { params }
         | ProviderModel::Together { params }
