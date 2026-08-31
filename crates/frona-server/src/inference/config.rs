@@ -105,7 +105,7 @@ impl ModelRegistryConfig {
                     api_key: Some(key),
                     base_url: Some(endpoint),
                     api_version: std::env::var("AZURE_OPENAI_API_VERSION").ok(),
-                    enabled: true,
+                    ..Default::default()
                 },
             );
         }
@@ -120,9 +120,7 @@ impl ModelRegistryConfig {
                 providers.insert(
                     name.to_string(),
                     ModelProviderConfig {
-                        api_key: None,
                         base_url: Some(url),
-                        enabled: true,
                         ..Default::default()
                     },
                 );
@@ -137,7 +135,6 @@ impl ModelRegistryConfig {
                 ModelProviderConfig {
                     api_key: std::env::var("GENERIC_API_KEY").ok(),
                     base_url: Some(url),
-                    enabled: true,
                     ..Default::default()
                 },
             );
