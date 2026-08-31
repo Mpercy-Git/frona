@@ -263,3 +263,58 @@ fn default_config_survives_strip_defaults_round_trip() {
     assert!(loaded.providers.contains_key("openrouter"));
     assert!(loaded.models.contains_key("primary"));
 }
+
+/// A model group pointed at an OpenAI-compatible endpoint uses
+/// `provider: generic` — which is also `ProviderModel`'s default variant.
+/// `strip_defaults` used to drop it as "same as default", but `provider` is the
+/// serde tag the group is parsed by, not a value: the trimmed file then failed
+/// to load with `missing configuration field "models.primary.provider"` and
+/// panicked the server on its next startup.
+#[test]
+fn generic_model_group_survives_strip_defaults_round_trip() {
+    use frona::core::config::persist_config;
+
+    let mut value = json!({
+        "providers": {
+            "generic": { "base_url": "http://localhost:8000/v1" }
+        },
+        "models": {
+            "primary": {
+                "provider": "generic",
+                "model": "qwen3-coder",
+                "max_tokens": 32000
+            }
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp
+        .path()
+        .join("config.yaml")
+        .to_string_lossy()
+        .into_owned();
+
+    persist_config(&mut value, &path).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        written.contains("provider: generic"),
+        "provider tag must survive the strip:\n{written}"
+    );
+
+    let loaded: Config = ::config::Config::builder()
+        .add_source(::config::File::from_str(
+            &written,
+            ::config::FileFormat::Yaml,
+        ))
+        .build()
+        .unwrap()
+        .try_deserialize()
+        .unwrap_or_else(|e| panic!("load failed: {e}\n--- written ---\n{written}"));
+
+    let primary = loaded.models.get("primary").expect("primary model present");
+    assert!(matches!(
+        primary.provider,
+        frona::core::config::ProviderModel::Generic { .. }
+    ));
+    assert_eq!(primary.common.model, "qwen3-coder");
+}
