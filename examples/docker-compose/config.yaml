@@ -139,7 +139,6 @@
 #    api_key: "${GALADRIEL_API_KEY}"
 #  huggingface:
 #    api_key: "${HUGGINGFACE_API_KEY}"
-<<<<<<< HEAD
 #  # Azure OpenAI. base_url is your resource endpoint, and api_version pins the
 #  # data-plane version (Azure versions it in the query string; the version
 #  # gates which request fields are accepted). Model ids are DEPLOYMENT names.
@@ -147,14 +146,12 @@
 #    api_key: "${AZURE_OPENAI_API_KEY}"
 #    base_url: "${AZURE_OPENAI_ENDPOINT}"      # https://<resource>.openai.azure.com
 #    api_version: "2024-10-21"
-=======
 #  zai:
 #    api_key: "${ZAI_API_KEY}"
 #  venice:
 #    api_key: "${VENICE_API_KEY}"
 #  minimax:
 #    api_key: "${MINIMAX_API_KEY}"
->>>>>>> origin/main
 #  ollama:
 #    base_url: "${OLLAMA_API_BASE_URL}"
 #  llamafile:
@@ -171,12 +168,8 @@
 
 # Provider options:
 #   api_key: API key string or ${ENV_VAR} reference
-<<<<<<< HEAD
-#   base_url: Custom API endpoint (required for Azure; useful for Ollama, proxies)
+#   base_url: Custom API endpoint (required for Azure and `generic`; useful for Ollama, proxies)
 #   api_version: Azure OpenAI data-plane version. Ignored by other providers
-=======
-#   base_url: Custom API endpoint (required for `generic`; useful for Ollama, proxies)
->>>>>>> origin/main
 #   enabled: true/false (default: true)
 
 # Define named model groups. Agents reference these by name.
@@ -249,15 +242,12 @@ models:
 #       api is optional. The models.dev adapter metadata supplies its default.
 #       Missing or unknown metadata uses chat_completions.
 #     Gemini: thinking_config ({thinking_budget}), top_p, top_k
-<<<<<<< HEAD
 #     Azure: the OpenAI-compatible set (reasoning_effort, top_p, seed, ...).
 #       `model` is the deployment name; the resource endpoint and api_version
 #       live on the provider, not the model group.
-=======
 #     zai / venice / minimax / llamafile / generic: the OpenAI-compatible set
 #       (top_p, seed, stop, frequency_penalty, ...). Unlike `openai`, max_tokens
 #       is sent as-is rather than rewritten to max_completion_tokens.
->>>>>>> origin/main
 #     OpenRouter: prompt_caching (bool), provider_routing ({order, only, ignore,
 #       allow_fallbacks, require_parameters, sort, max_price, quantizations,
 #       data_collection, zdr}), plus the OpenAI-compatible params above.

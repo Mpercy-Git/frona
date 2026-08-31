@@ -58,7 +58,6 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 - **Cost and context windows resolve for aggregator model ids.** `openrouter` + `anthropic/claude-sonnet-4-6` is not a literal models.dev key, so the exact-match lookup missed: every OpenRouter call recorded `cost_usd: None`, and the context window fell back to the 128K floor, firing compaction — and the extra summarisation call it costs — far earlier than a 200K/1M model requires. Both now resolve through the vendor-prefix walk
 - **Cache writes are priced.** They were billed at the plain input rate; Anthropic charges a premium (1.25×) for them, which matters as soon as caching is on
 
-<<<<<<< HEAD
 ### ☁️ Azure OpenAI (net-new)
 
 Upstream has no Azure entry, and Azure doesn't fit the shared provider plumbing: it keys off a per-resource endpoint plus a data-plane version in the query string, and addresses models by *deployment* name.
@@ -67,7 +66,7 @@ Upstream has no Azure entry, and Azure doesn't fit the shared provider plumbing:
 - `api_version` is a new field on provider config, surfaced in the settings UI for Azure only, and auto-discovered from `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_API_VERSION`
 - Azure hosts the same gpt-5/o-series models as OpenAI, so it gets the same `max_tokens` → `max_completion_tokens` rewrite those models require
 - A configured `api_key` is sent as the resource key, not as an Entra ID bearer token — rig's default `Into<String>` conversion picks the token path, which is not what an `api_key` field means everywhere else in this config
-=======
+
 ### 🔌 Any OpenAI-compatible endpoint, plus four more providers (net-new)
 
 Upstream wires each provider by name, and `init_provider` hard-errors on anything else. `provider: generic` *parsed* — `ProviderModel::from_name` has always mapped it — but had no arm in the registry, and provider init only logs a warning on failure, so the provider silently didn't exist and the config surfaced as `ProviderNotConfigured` much later. The only workaround was naming your provider `openai` with a custom `base_url`, which drags in the gpt-5/o-series `max_tokens` → `max_completion_tokens` rewrite that vLLM, LM Studio and llama.cpp's server all reject.
@@ -76,7 +75,6 @@ Upstream wires each provider by name, and `init_provider` hard-errors on anythin
 - **Z.ai (GLM)**, **Venice** (privacy-focused, no-logging), and **MiniMax** added as named API-key providers, with auto-discovery from `ZAI_API_KEY` / `VENICE_API_KEY` / `MINIMAX_API_KEY`
 - **llamafile** added as a second local option beside Ollama, discovered from `LLAMAFILE_API_BASE_URL`
 - `generic` also carries the full OpenAI-compatible parameter set (`top_p`, `seed`, `stop`, penalties), so a local endpoint is tunable rather than a bare marker
->>>>>>> origin/main
 
 ### 🤝 Sharing agents and chats (net-new)
 

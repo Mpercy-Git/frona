@@ -812,7 +812,6 @@ pub enum ProviderModel {
         #[serde(flatten)]
         params: GeminiParams,
     },
-<<<<<<< HEAD
     /// Azure OpenAI. `base_url` is the resource endpoint
     /// (`https://<resource>.openai.azure.com`) and the model id is the
     /// *deployment* name chosen in Azure, not the underlying model name.
@@ -821,7 +820,6 @@ pub enum ProviderModel {
         #[serde(flatten)]
         params: OpenAICompatParams,
     },
-=======
     #[serde(rename = "zai")]
     Zai {
         #[serde(flatten)]
@@ -850,7 +848,6 @@ pub enum ProviderModel {
     /// Distinct from configuring the `openai` provider with a `base_url`: that
     /// path rewrites `max_tokens` into `max_completion_tokens` for gpt-5/o-series
     /// compatibility, which many otherwise-compatible servers reject.
->>>>>>> origin/main
     #[serde(rename = "generic")]
     Generic {
         #[serde(flatten)]
@@ -918,12 +915,9 @@ impl ProviderModel {
             "gemini" => Self::Gemini {
                 params: Default::default(),
             },
-<<<<<<< HEAD
             "azure" => Self::Azure {
                 params: Default::default(),
             },
-            "generic" => Self::Generic,
-=======
             "zai" => Self::Zai {
                 params: Default::default(),
             },
@@ -939,7 +933,6 @@ impl ProviderModel {
             "generic" => Self::Generic {
                 params: Default::default(),
             },
->>>>>>> origin/main
             name => Self::Custom {
                 name: name.to_string(),
             },
@@ -958,16 +951,12 @@ impl ProviderModel {
             Self::Together { .. } => "together",
             Self::Hyperbolic { .. } => "hyperbolic",
             Self::Gemini { .. } => "gemini",
-<<<<<<< HEAD
             Self::Azure { .. } => "azure",
-            Self::Generic => "generic",
-=======
             Self::Zai { .. } => "zai",
             Self::Venice { .. } => "venice",
             Self::MiniMax { .. } => "minimax",
             Self::Llamafile { .. } => "llamafile",
             Self::Generic { .. } => "generic",
->>>>>>> origin/main
             Self::Custom { name } => name,
         }
     }

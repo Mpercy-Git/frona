@@ -3,13 +3,8 @@ use std::sync::Arc;
 
 use rig_core::client::Nothing;
 use rig_core::providers::{
-<<<<<<< HEAD
-    anthropic, azure, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral,
-    moonshot, ollama, openai, openrouter, perplexity, together, xai,
-=======
-    anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, llamafile, minimax, mira,
-    mistral, moonshot, ollama, openai, openrouter, perplexity, together, venice, xai, zai,
->>>>>>> origin/main
+    anthropic, azure, cohere, deepseek, gemini, groq, huggingface, hyperbolic, llamafile, minimax,
+    mira, mistral, moonshot, ollama, openai, openrouter, perplexity, together, venice, xai, zai,
 };
 
 use super::config::{
@@ -418,23 +413,24 @@ mod tests {
     use super::*;
     use crate::core::config::OpenAiApi;
 
-<<<<<<< HEAD
     fn azure_entry(base_url: Option<&str>, api_version: Option<&str>) -> ModelProviderConfig {
         ModelProviderConfig {
             api_key: Some("test-key".to_string()),
             base_url: base_url.map(str::to_string),
             api_version: api_version.map(str::to_string),
-=======
-    fn provider_entry(api_key: Option<&str>, base_url: Option<&str>) -> ModelProviderConfig {
-        ModelProviderConfig {
-            api_key: api_key.map(str::to_string),
-            base_url: base_url.map(str::to_string),
->>>>>>> origin/main
             enabled: true,
         }
     }
 
-<<<<<<< HEAD
+    fn provider_entry(api_key: Option<&str>, base_url: Option<&str>) -> ModelProviderConfig {
+        ModelProviderConfig {
+            api_key: api_key.map(str::to_string),
+            base_url: base_url.map(str::to_string),
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
     #[tokio::test]
     async fn azure_initialises_from_an_endpoint_and_key() {
         let counter = InferenceCounter::new(BroadcastService::new());
@@ -460,7 +456,13 @@ mod tests {
         // isn't, so match instead.
         let Err(err) = init_provider("azure", &azure_entry(None, None), &counter) else {
             panic!("azure without a base_url must not initialise");
-=======
+        };
+        assert!(
+            err.to_string().contains("base_url"),
+            "the error should name what's missing, got: {err}"
+        );
+    }
+
     /// `provider: generic` parsed fine long before it could be initialised —
     /// `init_provider` had no arm for it, and `from_config` only *warns* on a
     /// failed init, so the provider silently didn't exist and the failure
@@ -490,7 +492,6 @@ mod tests {
         // isn't, so match instead.
         let Err(err) = init_provider("generic", &provider_entry(Some("k"), None), &counter) else {
             panic!("generic without a base_url must not initialise");
->>>>>>> origin/main
         };
         assert!(
             err.to_string().contains("base_url"),
@@ -498,8 +499,6 @@ mod tests {
         );
     }
 
-<<<<<<< HEAD
-=======
     // `BroadcastService::new` spawns a task, so these need a runtime.
     #[tokio::test]
     async fn newly_wired_providers_initialise() {
@@ -516,7 +515,6 @@ mod tests {
         );
     }
 
->>>>>>> origin/main
     fn registry_with_protocol_defaults(
         protocol_defaults: HashMap<String, OpenAiApi>,
     ) -> ModelProviderRegistry {

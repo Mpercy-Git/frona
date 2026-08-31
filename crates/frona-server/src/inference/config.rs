@@ -93,7 +93,6 @@ impl ModelRegistryConfig {
             }
         }
 
-<<<<<<< HEAD
         // Azure needs an endpoint as well as a key, and optionally a pinned
         // API version, so it can't ride the (name, env_var) table above.
         if let (Ok(key), Ok(endpoint)) = (
@@ -111,8 +110,6 @@ impl ModelRegistryConfig {
             );
         }
 
-        if std::env::var("OLLAMA_API_BASE_URL").is_ok() {
-=======
         // Base-URL-only providers: a local server needs no key, so its URL is
         // what says "this is configured".
         for (name, env_var) in [
@@ -126,6 +123,7 @@ impl ModelRegistryConfig {
                         api_key: None,
                         base_url: Some(url),
                         enabled: true,
+                        ..Default::default()
                     },
                 );
             }
@@ -134,18 +132,13 @@ impl ModelRegistryConfig {
         // `generic` needs both halves named, since there is no default host to
         // fall back to and the key is optional.
         if let Ok(url) = std::env::var("GENERIC_API_BASE_URL") {
->>>>>>> origin/main
             providers.insert(
                 "generic".to_string(),
                 ModelProviderConfig {
-<<<<<<< HEAD
-                    base_url: std::env::var("OLLAMA_API_BASE_URL").ok(),
-                    ..Default::default()
-=======
                     api_key: std::env::var("GENERIC_API_KEY").ok(),
                     base_url: Some(url),
                     enabled: true,
->>>>>>> origin/main
+                    ..Default::default()
                 },
             );
         }
@@ -238,15 +231,12 @@ fn default_model_for_provider(provider: &str) -> &str {
         "cohere" => "command-r-plus",
         "xai" => "grok-2-latest",
         "ollama" => "qwen3-vl:32b",
-<<<<<<< HEAD
         // Azure model ids are deployment names, so this is only a guess at the
         // most common one; auto-discovery can't know what the resource calls it.
         "azure" => "gpt-4o",
-=======
         "zai" => "glm-4.6",
         "minimax" => "MiniMax-M2",
         "venice" => "venice-uncensored",
->>>>>>> origin/main
         _ => "default",
     }
 }
