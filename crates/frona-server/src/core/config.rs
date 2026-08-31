@@ -1490,7 +1490,43 @@ pub fn build_effective_config(yaml_content: Option<&str>) -> Config {
 
     let built = builder.build().expect("Failed to build config");
 
-    built.try_deserialize().expect("Failed to deserialize config")
+    built
+        .try_deserialize()
+        .unwrap_or_else(|e| panic!("{}", config_load_error(&e.to_string())))
+}
+
+/// A config error at startup is the only thing the user gets to act on — the
+/// process is about to die — so name the file being read, and for the mistakes
+/// that have an obvious fix, say what to write.
+fn config_load_error(err: &str) -> String {
+    let mut msg = format!("Failed to load config from {}: {err}", config_file_path());
+
+    if let Some(group) = missing_provider_group(err) {
+        msg.push_str(&format!(
+            "\n\nhint: every model group needs a `provider:` naming its backend:\
+             \n\n  models:\
+             \n    {group}:\
+             \n      provider: anthropic   # or openai, openrouter, gemini, groq, azure, ollama, ...\
+             \n      model: <model id>\
+             \n\nUse `provider: generic` for any other OpenAI-compatible endpoint \
+             (vLLM, LM Studio, llama.cpp, a LiteLLM proxy)."
+        ));
+    }
+
+    msg
+}
+
+/// Name of the `models` entry a "missing field" error points at, if that is
+/// what `err` is. Matched on the field path rather than the surrounding
+/// wording, which belongs to the `config` crate.
+fn missing_provider_group(err: &str) -> Option<&str> {
+    if !err.contains("missing") {
+        return None;
+    }
+    let (_, after) = err.split_once("models.")?;
+    let (group, rest) = after.split_once('.')?;
+    let rest = rest.trim_end_matches(['"', '\'', '`', '.']);
+    (!group.is_empty() && rest.ends_with(PROVIDER_TAG)).then_some(group)
 }
 
 impl Config {
@@ -1675,18 +1711,38 @@ pub fn strip_defaults(value: &mut serde_json::Value) {
     let defaults = serde_json::to_value(Config::default()).unwrap_or_default();
     strip_defaults_recursive(value, &defaults);
 
-    strip_map_entry_defaults::<ModelProviderConfig>(value, "providers");
-    strip_map_entry_defaults::<ModelGroupConfig>(value, "models");
+    strip_map_entry_defaults::<ModelProviderConfig>(value, "providers", &[]);
+    // `provider` is the serde tag of `ProviderModel`, not an ordinary field: a
+    // model group without it cannot be deserialized at all. Stripping it when it
+    // happened to equal the default variant (`generic`, i.e. any OpenAI-compatible
+    // endpoint) wrote a config.yaml that panicked the next startup with
+    // `missing configuration field "models.<name>.provider"`, so the tag is kept
+    // even when it matches the default.
+    strip_map_entry_defaults::<ModelGroupConfig>(value, "models", &[PROVIDER_TAG]);
 }
 
+/// Serde tag naming the variant of `ProviderModel`, flattened into each
+/// `models` entry.
+const PROVIDER_TAG: &str = "provider";
+
+/// Strips fields matching `T::default()` from every entry of the `key` map.
+/// Keys listed in `preserve` are left alone however they compare, for fields
+/// that carry structure rather than a value (see `PROVIDER_TAG`).
 fn strip_map_entry_defaults<T: Default + serde::Serialize>(
     value: &mut serde_json::Value,
     key: &str,
+    preserve: &[&str],
 ) {
     let Some(map) = value.get_mut(key).and_then(|v| v.as_object_mut()) else {
         return;
     };
-    let entry_defaults = serde_json::to_value(T::default()).unwrap_or_default();
+    let mut entry_defaults = serde_json::to_value(T::default()).unwrap_or_default();
+    if let Some(defaults) = entry_defaults.as_object_mut() {
+        // A key with no default to compare against is never stripped.
+        for k in preserve {
+            defaults.remove(*k);
+        }
+    }
     let keys: Vec<String> = map.keys().cloned().collect();
     for k in keys {
         if let Some(entry) = map.get_mut(&k) {
@@ -2155,6 +2211,55 @@ mod tests {
                     },
                 },
             })
+        );
+    }
+
+    /// `provider` is the serde tag of the flattened `ProviderModel`, so a model
+    /// group that loses it no longer deserializes. It used to be stripped
+    /// whenever it equalled the default variant (`generic`), which meant saving
+    /// an OpenAI-compatible model group from the settings UI wrote a config.yaml
+    /// that panicked the next startup with
+    /// `missing configuration field "models.primary.provider"`.
+    #[test]
+    fn strip_defaults_keeps_provider_tag_matching_the_default_variant() {
+        let mut value = serde_json::json!({
+            "models": {
+                "primary": {
+                    "provider": "generic",
+                    "model": "qwen3-coder",
+                    "fallbacks": [],
+                    "temperature": null,
+                },
+            },
+        });
+        strip_defaults(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "models": {
+                    "primary": { "provider": "generic", "model": "qwen3-coder" },
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn config_load_error_hints_at_the_model_group_missing_a_provider() {
+        let msg = config_load_error("missing configuration field \"models.primary.provider\"");
+        assert!(msg.contains("models.primary.provider"), "{msg}");
+        assert!(msg.contains("hint:"), "{msg}");
+        assert!(msg.contains("    primary:"), "{msg}");
+        assert!(msg.contains("provider: generic"), "{msg}");
+    }
+
+    #[test]
+    fn config_load_error_leaves_unrelated_errors_alone() {
+        let msg =
+            config_load_error("invalid type: string \"x\", expected u16 for key `server.port`");
+        assert!(!msg.contains("hint:"), "{msg}");
+        assert_eq!(
+            missing_provider_group("missing field `model` for models.primary.model"),
+            None
         );
     }
 
