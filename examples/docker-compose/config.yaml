@@ -242,12 +242,13 @@ models:
 #       api is optional. The models.dev adapter metadata supplies its default.
 #       Missing or unknown metadata uses chat_completions.
 #     Gemini: thinking_config ({thinking_budget}), top_p, top_k
-#     Azure: the OpenAI-compatible set (reasoning_effort, top_p, seed, ...).
-#       `model` is the deployment name; the resource endpoint and api_version
-#       live on the provider, not the model group.
 #     zai / venice / minimax / llamafile / generic: the OpenAI-compatible set
 #       (top_p, seed, stop, frequency_penalty, ...). Unlike `openai`, max_tokens
 #       is sent as-is rather than rewritten to max_completion_tokens.
+#     Azure: the same OpenAI-compatible set, but max_tokens IS rewritten to
+#       max_completion_tokens, since Azure serves the same gpt-5/o-series models.
+#       `model` is the deployment name; the resource endpoint and api_version
+#       live on the provider, not the model group.
 #     OpenRouter: prompt_caching (bool), provider_routing ({order, only, ignore,
 #       allow_fallbacks, require_parameters, sort, max_price, quantizations,
 #       data_collection, zdr}), plus the OpenAI-compatible params above.
