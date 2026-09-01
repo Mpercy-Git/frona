@@ -16,6 +16,9 @@ path = "src/main.rs"
 frona-api-types = { path = "../frona-api-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Names the field a failed `submit` decode actually tripped on, so the correction
+# handed back to the model points at the offending key (see inference/structured.rs).
+serde_path_to_error = "0.1"
 serde_with = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
