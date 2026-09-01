@@ -347,6 +347,10 @@ async fn graph_returns_the_user_scoped_memory_network() {
     assert_eq!(me["relationStats"]["outgoing"], 1);
     assert_eq!(me["relationStats"]["incoming"], 0);
     assert_eq!(me["useCount"], 0);
+    assert_eq!(
+        me["memoryCount"], 0,
+        "a skeleton entity has no memories behind it"
+    );
 }
 
 #[tokio::test]
@@ -401,6 +405,19 @@ async fn graph_adds_shared_memory_edges_only_without_a_direct_relation() {
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let memory_count = |path: &str| {
+        json["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["path"] == path)
+            .unwrap()["memoryCount"]
+            .as_u64()
+            .unwrap()
+    };
+    assert_eq!(memory_count("people/a"), 1);
+    assert_eq!(memory_count("people/b"), 2, "B is sourced by both memories");
+    assert_eq!(memory_count("people/c"), 1);
     let edges = json["edges"].as_array().unwrap();
     assert_eq!(edges.len(), 2);
     let shared = edges

@@ -422,6 +422,10 @@ struct GraphNode {
     hover_attributes: Vec<AttributeResponse>,
     additional_attribute_count: usize,
     relation_stats: RelationStats,
+    /// Distinct atomic memories behind this page. Zero marks a skeleton - the seeded
+    /// self-entity, say - that consolidation has created but not yet filled in, which
+    /// the browser needs to distinguish from a page that genuinely has nothing to show.
+    memory_count: usize,
 }
 
 #[derive(Serialize)]
@@ -516,6 +520,17 @@ fn graph_response(read: PkmGraphRead) -> Result<GraphResponse, AppError> {
             false,
         );
     }
+    let mut memories_by_entity: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for source in &read.sources {
+        memories_by_entity
+            .entry(source.entity_path.as_str())
+            .or_default()
+            .insert(source.memory_id.as_str());
+    }
+    let memory_counts = memories_by_entity
+        .into_iter()
+        .map(|(path, memories)| (path.to_string(), memories.len()))
+        .collect::<HashMap<_, _>>();
     let self_path = read
         .entities
         .iter()
@@ -558,6 +573,10 @@ fn graph_response(read: PkmGraphRead) -> Result<GraphResponse, AppError> {
             let hover_attributes = visible_attributes.into_iter().take(3).collect();
             GraphNode {
                 relation_stats: stats.remove(entity.path.as_str()).unwrap_or_default(),
+                memory_count: memory_counts
+                    .get(entity.path.as_str())
+                    .copied()
+                    .unwrap_or_default(),
                 path: entity.path,
                 name: entity.name,
                 description: entity.description,

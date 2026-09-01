@@ -65,6 +65,7 @@ describe("MemoryPage", () => {
           hoverAttributes: [],
           additionalAttributeCount: 0,
           relationStats: { total: 0, incoming: 0, outgoing: 0, asserted: 0, inferred: 0 },
+          memoryCount: 4,
         },
         {
           path: "people/zoe",
@@ -79,6 +80,7 @@ describe("MemoryPage", () => {
           hoverAttributes: [],
           additionalAttributeCount: 0,
           relationStats: { total: 0, incoming: 0, outgoing: 0, asserted: 0, inferred: 0 },
+          memoryCount: 0,
         },
         {
           path: "people/alice",
@@ -93,6 +95,7 @@ describe("MemoryPage", () => {
           hoverAttributes: [],
           additionalAttributeCount: 0,
           relationStats: { total: 0, incoming: 0, outgoing: 0, asserted: 0, inferred: 0 },
+          memoryCount: 0,
         },
       ],
       edges: [],
@@ -106,9 +109,9 @@ describe("MemoryPage", () => {
       open: true,
       searchMode: true,
       browsablePages: [
-        expect.objectContaining({ path: "people/zoe", name: "Zoe" }),
-        expect.objectContaining({ path: "projects/beta", name: "Beta" }),
-        expect.objectContaining({ path: "people/alice", name: "Alice" }),
+        expect.objectContaining({ path: "people/zoe", name: "Zoe", memoryCount: 0 }),
+        expect.objectContaining({ path: "projects/beta", name: "Beta", memoryCount: 4 }),
+        expect.objectContaining({ path: "people/alice", name: "Alice", memoryCount: 0 }),
       ],
     }));
   });

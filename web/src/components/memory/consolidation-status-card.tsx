@@ -24,6 +24,7 @@ export function ConsolidationStatusCard({ value, className = "", compact = false
   const [expanded, setExpanded] = useState(false);
   const controlled = value !== undefined;
   const [loaded, setLoaded] = useState<PkmConsolidationStatus | null>(value ?? null);
+  const [settled, setSettled] = useState(controlled);
   const status = controlled ? value ?? null : loaded;
 
   useEffect(() => {
@@ -32,7 +33,10 @@ export function ConsolidationStatusCard({ value, className = "", compact = false
     const load = async () => {
       try {
         const response = await getPkmStatus();
-        if (!cancelled) setLoaded(response.consolidation ?? null);
+        if (!cancelled) {
+          setLoaded(response.consolidation ?? null);
+          setSettled(true);
+        }
       } catch { /* The graph/settings availability UI owns request errors. */ }
     };
     void load();
@@ -46,8 +50,8 @@ export function ConsolidationStatusCard({ value, className = "", compact = false
     return (
       <div className={className}>
         <button type="button" onClick={() => setExpanded((open) => !open)} className="flex h-[46px] items-center gap-2 rounded-xl border border-border bg-surface-secondary/95 px-3 text-sm text-text-secondary shadow-lg backdrop-blur hover:text-text-primary" aria-expanded={expanded} aria-label="Memory consolidation status">
-          <span className={`h-2 w-2 rounded-full ${status?.status === "failed" ? "bg-danger" : active ? "animate-pulse bg-accent" : "bg-success"}`} />
-          <span className="hidden whitespace-nowrap sm:inline">{status ? (active ? stageName(status.stage) : status.status === "failed" ? "Consolidation failed" : "Memory up to date") : "Memory consolidation"}</span>
+          <span className={`h-2 w-2 rounded-full ${status?.status === "failed" ? "bg-danger" : active ? "animate-pulse bg-accent" : !status && settled ? "bg-surface-tertiary" : "bg-success"}`} />
+          <span className="hidden whitespace-nowrap sm:inline">{status ? (active ? stageName(status.stage) : status.status === "failed" ? "Consolidation failed" : "Memory up to date") : settled ? "Not consolidated yet" : "Memory consolidation"}</span>
           <ChevronDownIcon className={`h-4 w-4 transition ${expanded ? "rotate-180" : ""}`} />
         </button>
         {expanded && <ConsolidationStatusCard value={status} className="absolute right-0 mt-2 w-[min(520px,calc(100vw-24px))]" />}

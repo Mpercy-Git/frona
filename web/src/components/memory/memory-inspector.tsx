@@ -36,6 +36,11 @@ interface MemoryInspectorProps {
   onBackToSearch: () => void;
 }
 
+function memoryCountLabel(count: number) {
+  if (count === 0) return "No memories";
+  return `${count} ${count === 1 ? "memory" : "memories"}`;
+}
+
 function valueText(value: unknown) {
   if (typeof value === "string") return value;
   return JSON.stringify(value, null, 2);
@@ -106,6 +111,12 @@ function SearchResults({
 }) {
   const hasQuery = Boolean(query.trim());
   const displayedPages = hasQuery ? results : browsablePages;
+  // A page with no atomic memories behind it is a skeleton consolidation has not filled
+  // in yet. When every page is one, the panel would otherwise look like a working
+  // browser over nothing, so say what is actually going on.
+  const nothingLearned = !hasQuery
+    && displayedPages.length > 0
+    && displayedPages.every((page) => page.memoryCount === 0);
 
   return (
     <div className="h-full overflow-y-auto p-4 pr-14">
@@ -124,6 +135,16 @@ function SearchResults({
           <p className="mb-3 text-xs text-text-tertiary">
             {displayedPages.length} {hasQuery ? `result${displayedPages.length === 1 ? "" : "s"}` : `page${displayedPages.length === 1 ? "" : "s"}`}
           </p>
+          {nothingLearned && (
+            <div className="mb-3 rounded-xl border border-border bg-surface p-3">
+              <p className="text-sm font-medium text-text-primary">Nothing has been learned yet</p>
+              <p className="mt-1 text-sm leading-5 text-text-secondary">
+                These pages are still empty outlines. Frona fills them in during consolidation, which runs in the
+                background once a conversation has been idle for a while — check the consolidation status for
+                whether a run has happened or failed.
+              </p>
+            </div>
+          )}
           {displayedPages.map((result) => (
             <button
               key={result.path}
@@ -135,7 +156,12 @@ function SearchResults({
                 <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-tertiary">{result.category}</span>
               </div>
               <p className="mt-1 line-clamp-2 text-sm leading-5 text-text-secondary">{result.description}</p>
-              <p className="mt-2 truncate font-mono text-[11px] text-text-tertiary">{result.path}</p>
+              <div className="mt-2 flex items-baseline justify-between gap-3">
+                <p className="min-w-0 truncate font-mono text-[11px] text-text-tertiary">{result.path}</p>
+                {result.memoryCount !== undefined && (
+                  <span className="shrink-0 text-[11px] text-text-tertiary">{memoryCountLabel(result.memoryCount)}</span>
+                )}
+              </div>
             </button>
           ))}
         </div>
@@ -145,6 +171,21 @@ function SearchResults({
 }
 
 function PageBody({ data, onSelect }: { data: MemoryPageResponse; onSelect: (path: string) => void }) {
+  // Skeleton pages (the seeded self-entity, or anything consolidation has created but not
+  // yet authored) carry an empty body, which rendered as a blank panel.
+  if (!data.page.body.trim()) {
+    return (
+      <div className="rounded-xl border border-border bg-surface p-4">
+        <p className="text-sm font-medium text-text-primary">No page written yet</p>
+        <p className="mt-1 text-sm leading-5 text-text-secondary">
+          {data.memories.length === 0
+            ? `Nothing has been learned about ${data.page.name} yet, so there is nothing to summarise. Frona writes this page during consolidation, once it has memories to draw on.`
+            : `Frona has ${memoryCountLabel(data.memories.length).toLowerCase()} for ${data.page.name} but has not written the summary yet. The Memory tab shows the underlying memories.`}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <article className="prose prose-sm max-w-none text-text-primary prose-headings:text-text-primary prose-p:text-text-secondary prose-li:text-text-secondary prose-strong:text-text-primary prose-a:text-accent prose-code:text-text-primary prose-code:before:content-none prose-code:after:content-none prose-pre:bg-transparent prose-pre:p-0 prose-blockquote:text-text-secondary prose-blockquote:border-border prose-hr:border-border prose-th:border-border prose-td:border-border">
       <ReactMarkdown

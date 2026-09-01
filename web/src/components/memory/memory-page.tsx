@@ -122,6 +122,7 @@ export function MemoryPage() {
         name: node.name,
         description: node.description,
         useCount: node.useCount,
+        memoryCount: node.memoryCount,
         origin: node.origin,
         category: node.category,
         types: node.types.map((type) => type.iri),

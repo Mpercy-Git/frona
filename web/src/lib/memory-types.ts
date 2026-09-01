@@ -42,6 +42,7 @@ export interface MemoryGraphNode {
   hoverAttributes: MemoryAttribute[];
   additionalAttributeCount: number;
   relationStats: RelationStats;
+  memoryCount: number;
 }
 
 export interface MemoryGraphEdge {
@@ -119,6 +120,8 @@ export interface MemorySearchResult {
   name: string;
   description: string;
   useCount?: number;
+  /** Only the graph carries this; search results are served without it. */
+  memoryCount?: number;
   origin: PageOrigin;
   category: PageCategory;
   types: string[];
