@@ -21,7 +21,8 @@ use frona::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, ModelE
 use frona::inference::provider::{ModelProvider, ModelRef};
 use frona::inference::registry::ModelProviderRegistry;
 use frona::inference::usage::{
-    InferenceKind, InferenceUsage, InferenceUsageRepository, TimeBucket, UsageContext, UsageService,
+    CompactionTarget, InferenceKind, InferenceUsage, InferenceUsageRepository, TimeBucket,
+    UsageContext, UsageService,
 };
 use frona::inference::{structured_inference, text_inference};
 use rig_core::completion::Message as RigMessage;
@@ -733,4 +734,62 @@ async fn latency_by_bucket_computes_percentiles_in_sql() {
     assert!(rows[0].duration_ms_p50.is_some(), "got {:?}", rows[0]);
     assert!(rows[0].duration_ms_p95.is_some(), "got {:?}", rows[0]);
     assert!(rows[0].duration_ms_p99.is_some(), "got {:?}", rows[0]);
+}
+
+// `Compaction::User` / `Compaction::Space` / `Memory` rows carry no chat, so
+// `chat_id` is NONE on the stored row. SurrealDB's `IS NOT NULL` is true for
+// NONE, so those rows used to survive the filter, form a `GROUP BY chat_id`
+// group keyed on NONE, and blow up deserialization into `ChatCostRow.chat_id:
+// String` with a 500 ("Expected string, got none").
+
+#[tokio::test]
+async fn top_chats_by_user_skips_rootless_rows() {
+    init_metrics();
+    let (db, svc) = fresh_service().await;
+    let provider = Arc::new(MockModelProvider::new(vec![
+        MockResponse::Text("a".into()),
+        MockResponse::Text("b".into()),
+        MockResponse::Text("c".into()),
+        MockResponse::Text("d".into()),
+    ]));
+    let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
+
+    let memory_ctx = UsageContext::new(InferenceKind::Memory, "u1", "primary");
+    let user_compaction_ctx = UsageContext::new(
+        InferenceKind::Compaction {
+            target: CompactionTarget::User,
+        },
+        "u1",
+        "primary",
+    );
+    for ctx in [
+        &chat_usage_ctx("u1", "a1", "c1", "m1"),
+        &chat_usage_ctx("u1", "a1", "c2", "m2"),
+        &memory_ctx,
+        &user_compaction_ctx,
+    ] {
+        text_inference(
+            &registry,
+            &fast_retry_model_group(vec![]),
+            "sys",
+            vec![RigMessage::user("hi")],
+            &svc,
+            ctx,
+        )
+        .await
+        .unwrap();
+    }
+
+    let repo: SurrealRepo<InferenceUsage> = SurrealRepo::new(db.clone());
+    let rows = repo
+        .top_chats_by_user("u1", None, None, 10)
+        .await
+        .expect("top_chats_by_user must not 500 on chat-less rows");
+
+    let mut ids: Vec<&str> = rows.iter().map(|r| r.chat_id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["c1", "c2"], "rootless rows must not form a group");
+    for r in &rows {
+        assert_eq!(r.calls, 1, "got {r:?}");
+    }
 }
