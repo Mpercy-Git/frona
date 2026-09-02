@@ -27,8 +27,9 @@ use models::TokenQuery;
 pub(super) struct TwimlOptions<'a> {
     pub welcome_greeting: Option<&'a str>,
     pub hints: Option<&'a str>,
-    /// Overrides `voice.twilio_voice_id` for this leg — the answering agent's
-    /// own `voice_id`, when it has one.
+    /// Overrides `voice.twilio_voice_id` for this leg — the `voice_id` of the
+    /// agent on the call (the one answering inbound, or the one placing an
+    /// outbound leg), when it has one.
     pub voice_id: Option<&'a str>,
 }
 
@@ -232,17 +233,35 @@ async fn twilio_callback(State(state): State<AppState>, Query(q): Query<TokenQue
         .replace("http://", "ws://");
     let ws_url = format!("{ws_base}/api/voice/twilio/ws?token={}", created.jwt);
 
+    // Speak as whichever agent placed this call, exactly as the inbound path
+    // does. Without it every outbound leg falls back to the server-level
+    // voice — most visibly on `transfer_call`'s callback, where the caller
+    // would hear the target agent introduce itself in the source agent's
+    // voice. A missing or unreadable agent is not worth failing the call
+    // over: fall back to the server default and answer.
+    let agent_voice_id = match state.agent_service.find_by_id(&agent_id).await {
+        Ok(Some(agent)) => agent.voice_id,
+        Ok(None) => {
+            tracing::warn!(agent_id = %agent_id, chat_id = %chat_id, "Voice callback: agent not found — using the server default voice");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, agent_id = %agent_id, chat_id = %chat_id, "Voice callback: agent lookup failed — using the server default voice");
+            None
+        }
+    };
+
     let twiml = build_twiml(
         &ws_url,
         TwimlOptions {
             welcome_greeting: ext.welcome_greeting.as_deref(),
             hints: ext.hints.as_deref(),
-            ..Default::default()
+            voice_id: agent_voice_id.as_deref(),
         },
         &state.config.voice,
     );
 
-    tracing::info!(chat_id = %chat_id, user_id = %user_id, ws_url = %ws_url, "Voice callback: issuing TwiML with ConversationRelay");
+    tracing::info!(chat_id = %chat_id, user_id = %user_id, agent_id = %agent_id, voice_id = ?agent_voice_id, ws_url = %ws_url, "Voice callback: issuing TwiML with ConversationRelay");
 
     let mut response = twiml.into_response();
     response.headers_mut().insert(

@@ -256,9 +256,11 @@ async fn handle_voice_socket(
                 );
 
                 // --- Silence filler ---
-                // Spawn a background task that periodically sends filler phrases
-                // to the caller while the agent is processing. The filler is
-                // cancelled when the turn completes (or errors).
+                // Spawn a background task that speaks a filler phrase when the
+                // line has been quiet for the configured delay — sharing
+                // `last_activity` with the streamer so it stays silent while
+                // the agent is actually talking. Cancelled when the turn
+                // completes (or errors).
                 let filler_cancel = CancellationToken::new();
                 let filler_handle = if remote_is_known && state.config.voice.silence_fill_enabled {
                     let ws = ws_send.clone();
@@ -877,17 +879,51 @@ async fn send_delta(
         .is_ok()
 }
 
-/// Periodically sends filler phrases to the caller while the agent is
-/// processing a turn. Stops when `cancel` is triggered.
+/// How long the line must stay quiet before the caller hears a filler phrase.
 ///
-/// Each filler phrase is sent as `{"type":"text","token":"…","last":true}`
-/// so ConversationRelay speaks it immediately, closing whatever turn is open.
+/// The clock is "time since the caller last heard anything" — the agent's own
+/// streamed speech, or a previous filler — so the first phrase waits out
+/// `initial_delay` of real dead air rather than landing a fixed time after the
+/// caller stopped talking. Once a phrase has gone out the required gap widens
+/// to `interval`, so successive fillers don't stack up.
+struct FillerSchedule {
+    /// Quiet required before the next phrase.
+    required_gap: Duration,
+    /// The gap to use once a phrase has been spoken.
+    interval: Duration,
+}
+
+impl FillerSchedule {
+    fn new(initial_delay: Duration, interval: Duration) -> Self {
+        Self { required_gap: initial_delay, interval }
+    }
+
+    /// How much longer the line must stay quiet before the next phrase is due.
+    /// `Duration::ZERO` means it is due now.
+    fn remaining(&self, quiet_for: Duration) -> Duration {
+        self.required_gap.saturating_sub(quiet_for)
+    }
+
+    /// Record that a phrase went out — the caller is hearing it, so the next
+    /// one is a full interval away.
+    fn spoken(&mut self) {
+        self.required_gap = self.interval;
+    }
+}
+
+/// Speaks filler phrases to the caller during genuine dead air in a turn, and
+/// only then. Stops when `cancel` is triggered.
 ///
-/// Since the agent's own words now stream out token by token, canned filler is
-/// only wanted for genuine dead air — a long tool call, say. `last_activity`
-/// tracks when a real token last went out, and a cycle that lands inside that
-/// quiet window is skipped rather than spoken, so filler never talks over the
-/// agent mid-sentence.
+/// Each phrase is sent as `{"type":"text","token":"…","last":true}` so
+/// ConversationRelay speaks it immediately, closing whatever turn is open.
+///
+/// Since the agent's own words stream out token by token, canned filler is only
+/// wanted for real silence — a long tool call, say. `last_activity` is the one
+/// clock both tasks share: the streamer bumps it on every token that reaches
+/// the caller, and this task bumps it on every phrase it speaks. Waiting on
+/// that clock rather than on the turn's start is what keeps filler out of the
+/// ordinary pause between the caller finishing their sentence and the agent's
+/// first word.
 async fn silence_filler(
     ws_send: WsSend,
     cancel: CancellationToken,
@@ -897,35 +933,34 @@ async fn silence_filler(
     last_activity: Arc<StdMutex<Instant>>,
     chat_id: String,
 ) {
-    // Wait the initial silence period before sending the first filler.
-    tokio::select! {
-        _ = cancel.cancelled() => return,
-        _ = tokio::time::sleep(initial_delay) => {}
+    if phrases.is_empty() {
+        return;
     }
 
+    let mut schedule = FillerSchedule::new(initial_delay, interval);
     let mut idx: usize = 0;
+
     loop {
-        // Real speech went out recently — the caller isn't sitting in silence,
-        // so say nothing this cycle and re-check after the interval.
-        let quiet_for = last_activity
-            .lock()
-            .map(|at| at.elapsed())
-            .unwrap_or(initial_delay);
-        if quiet_for < initial_delay {
+        // Sleep exactly until the next phrase could fall due. Speech in the
+        // meantime pushes `last_activity` forward, so the next pass just waits
+        // again — the caller only ever hears filler after a real silence.
+        let quiet_for = match last_activity.lock() {
+            Ok(at) => at.elapsed(),
+            // A poisoned clock can't tell silence from speech; stay quiet
+            // rather than risk talking over the agent.
+            Err(_) => Duration::ZERO,
+        };
+        let wait = schedule.remaining(quiet_for);
+        if !wait.is_zero() {
             tokio::select! {
                 _ = cancel.cancelled() => return,
-                _ = tokio::time::sleep(interval) => continue,
+                _ = tokio::time::sleep(wait) => continue,
             }
         }
 
         // Pick a phrase — simple rotating index avoids extra dependencies.
-        let phrase = if phrases.is_empty() {
-            return;
-        } else {
-            let p = &phrases[idx % phrases.len()];
-            idx += 1;
-            p.clone()
-        };
+        let phrase = phrases[idx % phrases.len()].clone();
+        idx += 1;
 
         let filler_msg = serde_json::json!({
             "type": "text",
@@ -944,12 +979,13 @@ async fn silence_filler(
                 return;
             }
         }
-        tracing::info!(chat_id = %chat_id, phrase = %phrase, "Silence filler sent");
-
-        tokio::select! {
-            _ = cancel.cancelled() => return,
-            _ = tokio::time::sleep(interval) => {}
+        // The phrase is speech the caller hears, so it resets the shared clock
+        // the same way a streamed token does.
+        if let Ok(mut at) = last_activity.lock() {
+            *at = Instant::now();
         }
+        schedule.spoken();
+        tracing::info!(chat_id = %chat_id, quiet_for_secs = quiet_for.as_secs(), phrase = %phrase, "Silence filler sent");
     }
 }
 
@@ -1294,6 +1330,48 @@ mod tests {
         assert_eq!(
             next_utterance(&mut turn, "Balance: £40".into()),
             Some("40".to_string())
+        );
+    }
+
+    #[test]
+    fn no_filler_until_the_line_has_actually_been_quiet() {
+        // The clock starts when the caller stops speaking, so a reply that
+        // begins within the delay must never be pre-empted by a filler.
+        let schedule = FillerSchedule::new(Duration::from_secs(5), Duration::from_secs(7));
+
+        assert_eq!(
+            schedule.remaining(Duration::from_secs(2)),
+            Duration::from_secs(3),
+            "two seconds of thinking is a normal pause, not dead air"
+        );
+        assert!(schedule.remaining(Duration::from_secs(5)).is_zero());
+        assert!(schedule.remaining(Duration::from_secs(9)).is_zero());
+    }
+
+    #[test]
+    fn later_fillers_wait_the_interval_not_the_initial_delay() {
+        let mut schedule = FillerSchedule::new(Duration::from_secs(5), Duration::from_secs(7));
+        schedule.spoken();
+
+        // Five seconds was enough for the first phrase; it is not for the next.
+        assert_eq!(
+            schedule.remaining(Duration::from_secs(5)),
+            Duration::from_secs(2)
+        );
+        assert!(schedule.remaining(Duration::from_secs(7)).is_zero());
+    }
+
+    #[test]
+    fn speech_during_the_wait_defers_the_filler() {
+        // `silence_filler` re-reads the shared clock each pass; a token that
+        // lands mid-wait resets `quiet_for`, pushing the phrase out again.
+        let schedule = FillerSchedule::new(Duration::from_secs(5), Duration::from_secs(7));
+
+        assert!(schedule.remaining(Duration::from_secs(4)) > Duration::ZERO);
+        // The agent spoke — the clock is back to nearly zero.
+        assert_eq!(
+            schedule.remaining(Duration::from_millis(50)),
+            Duration::from_millis(4950)
         );
     }
 
