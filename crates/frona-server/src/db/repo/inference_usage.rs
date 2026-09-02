@@ -310,8 +310,11 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
     ) -> Result<Vec<ChatCostRow>, AppError> {
         let (window_clause, bindings) = window_clause(since, until);
         // `chat_id` is `Option<String>` on the row — rootless rows
-        // (Compaction::User, Compaction::Space) have it `None` and are
-        // filtered out by `IS NOT NULL`.
+        // (Memory, Compaction::User, Compaction::Space) have it `None` and
+        // must be filtered out, or `GROUP BY chat_id` forms a NONE-keyed
+        // group that can't deserialize into `ChatCostRow.chat_id: String`.
+        // `IS NOT NULL` does NOT do that: SurrealDB treats NONE and NULL as
+        // distinct, so a NONE passes it. `type::is_none` covers both.
         let query = format!(
             "SELECT \
                 chat_id, \
@@ -320,7 +323,7 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
                 math::sum(output_tokens) AS output_tokens, \
                 count() AS calls \
                 FROM inference_usage \
-                WHERE user_id = $user_id AND chat_id IS NOT NULL{window_clause} \
+                WHERE user_id = $user_id AND !type::is_none(chat_id){window_clause} \
                 GROUP BY chat_id \
                 ORDER BY cost_usd DESC \
                 LIMIT {limit}"
