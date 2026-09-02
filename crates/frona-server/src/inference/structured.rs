@@ -229,10 +229,19 @@ pub async fn text_inference_with_tools(
 /// *"the error says missing field `classes` but I clearly included `classes`"*, goes looking
 /// for a fault inside `classes`, finds none, and burns the turn budget. Naming the keys
 /// that were actually present is what makes the failure self-diagnosing.
+///
+/// **Advice is earned, not appended.** The same trap has a second mouth: telling a model to
+/// move fields it already placed correctly sends it hunting for a fault that isn't there,
+/// exactly as a bare `missing field` did. So the nesting advice rides only on a missing-field
+/// error, which is the failure it describes. A wrong *value* under a right key gets the field
+/// path instead (`serde_path_to_error`), because plain serde names the expected type but not
+/// the key that carried it - and "expected a sequence" with no field named is not something a
+/// model can act on. Observed: a `submit` whose `distinct_because` was a JSON-encoded string
+/// drew the nesting advice, was resubmitted unchanged, and exhausted the budget.
 fn deserialize_submission<T: serde::de::DeserializeOwned>(
     args: serde_json::Value,
 ) -> Result<T, String> {
-    let first = match serde_json::from_value::<T>(args.clone()) {
+    let first = match serde_path_to_error::deserialize::<_, T>(args.clone()) {
         Ok(v) => return Ok(v),
         Err(e) => e,
     };
@@ -250,20 +259,44 @@ fn deserialize_submission<T: serde::de::DeserializeOwned>(
         tracing::debug!(wrapper = %key, "unwrapped a submission nested one level down");
         return Ok(v);
     }
-    Err(format!("{first}{}", describe_payload(&args)))
+    let path = first.path().to_string();
+    let cause = first.into_inner().to_string();
+    let located = if path.is_empty() || path == "." {
+        cause.clone()
+    } else {
+        format!("`{path}`: {cause}")
+    };
+    Err(format!(
+        "{located}{}",
+        describe_payload(&args, &path, &cause)
+    ))
 }
 
 /// A short, factual description of what the model actually sent, appended to a serde error.
-fn describe_payload(args: &serde_json::Value) -> String {
+///
+/// `cause` decides which remedy is warranted: see [`deserialize_submission`] for why an
+/// unconditional "move it to the top level" is its own budget-burning misdiagnosis.
+fn describe_payload(args: &serde_json::Value, path: &str, cause: &str) -> String {
     match args {
         serde_json::Value::Object(o) if o.is_empty() => " — you sent an empty object".into(),
         serde_json::Value::Object(o) => {
             let keys: Vec<&str> = o.keys().map(String::as_str).collect();
-            format!(
-                " — the object you sent has these keys: [{}]. Put the required fields at the \
-                 TOP level of the `submit` arguments, not nested inside another key.",
+            let mut described = format!(
+                " — the object you sent has these keys: [{}].",
                 keys.join(", ")
-            )
+            );
+            if cause.starts_with("missing field") {
+                described.push_str(
+                    " Put the required fields at the TOP level of the `submit` arguments, \
+                     not nested inside another key.",
+                );
+            } else if is_double_encoded(args, path, cause) {
+                described.push_str(
+                    " That field holds JSON as *text*: send the value itself, not a string \
+                     containing it.",
+                );
+            }
+            described
         }
         other => format!(
             " — you sent a {}, but `submit` takes an object whose keys are the required fields.",
@@ -277,6 +310,43 @@ fn describe_payload(args: &serde_json::Value) -> String {
             }
         ),
     }
+}
+
+/// Whether the value that failed at `path` is a string carrying the JSON it should have
+/// sent structurally - the double-encoding a model falls into when it serialises a nested
+/// field by hand. Confirmed against the payload rather than guessed from the message, so a
+/// genuinely wrong scalar (a string where a number belongs) is not mislabelled.
+fn is_double_encoded(args: &serde_json::Value, path: &str, cause: &str) -> bool {
+    if !cause.starts_with("invalid type: string") {
+        return false;
+    }
+    // `serde_path_to_error` renders a path as `items[1].side` - dots between fields,
+    // brackets for sequence indices - so a segment carries a name, indices, or both.
+    let mut at = args;
+    for segment in path.split('.').filter(|s| !s.is_empty()) {
+        let (name, indices) = segment.split_once('[').unwrap_or((segment, ""));
+        if !name.is_empty() {
+            at = match at.get(name) {
+                Some(v) => v,
+                None => return false,
+            };
+        }
+        for index in indices.split(']').filter(|s| !s.is_empty()) {
+            let Ok(index) = index.trim_start_matches('[').parse::<usize>() else {
+                return false;
+            };
+            at = match at.get(index) {
+                Some(v) => v,
+                None => return false,
+            };
+        }
+    }
+    at.as_str().is_some_and(|text| {
+        matches!(
+            serde_json::from_str::<serde_json::Value>(text),
+            Ok(serde_json::Value::Array(_) | serde_json::Value::Object(_))
+        )
+    })
 }
 
 /// The `submit` tool definition that terminates a caller-driven structured loop,
@@ -596,6 +666,68 @@ mod submission_tests {
         let err = deserialize_submission::<Classification>(args).unwrap_err();
         assert!(err.contains("[result]"), "names the offending key: {err}");
         assert!(err.contains("TOP level"), "says what to do about it: {err}");
+    }
+
+    /// The second mouth of the trap. A wrong *value* under a right key must not draw the
+    /// nesting advice: the model already put the fields at the top level, so being told to
+    /// move them is a fault it cannot find. This is the submission from the observed
+    /// `topics/2026-f1-season` failure, reduced - `distinct_because` sent as text.
+    #[test]
+    fn a_wrong_value_type_is_not_blamed_on_nesting() {
+        let args = serde_json::json!({
+            "classes": ["schema:Person"],
+            "relations": "[{\"candidate\": \"sports/formula-1\"}]",
+        });
+        let err = deserialize_submission::<Classification>(args).unwrap_err();
+        assert!(
+            !err.contains("TOP level"),
+            "the keys were already at the top level: {err}"
+        );
+        assert!(
+            err.contains("relations"),
+            "names the offending field: {err}"
+        );
+        assert!(
+            err.contains("not a string containing it"),
+            "names the real defect: {err}"
+        );
+    }
+
+    /// A string where a string belongs but the *contents* are wrong is not double-encoding,
+    /// so it must not draw the JSON-as-text advice.
+    #[test]
+    fn a_plain_wrong_scalar_is_not_called_double_encoded() {
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        struct Counted {
+            #[allow(dead_code)]
+            count: u32,
+        }
+        let args = serde_json::json!({ "count": "twelve" });
+        let err = deserialize_submission::<Counted>(args).unwrap_err();
+        assert!(!err.contains("JSON as *text*"), "{err}");
+        assert!(err.contains("count"), "still names the field: {err}");
+    }
+
+    /// The field path is what makes a type error actionable - plain serde names the expected
+    /// type and nothing about which key carried the offending value.
+    #[test]
+    fn a_nested_failure_reports_its_path() {
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        struct Outer {
+            #[allow(dead_code)]
+            items: Vec<Inner>,
+        }
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        struct Inner {
+            #[allow(dead_code)]
+            side: String,
+        }
+        let args = serde_json::json!({ "items": [{ "side": "subject" }, { "side": 7 }] });
+        let err = deserialize_submission::<Outer>(args).unwrap_err();
+        assert!(
+            err.contains("items[1].side"),
+            "points at the bad element: {err}"
+        );
     }
 
     #[test]
