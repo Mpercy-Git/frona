@@ -30,7 +30,7 @@ const MANIFEST: &str = "metadata.json";
 /// duplicate-identity check and leave the server with no catalogue at all.
 const REPAIR_SUBDIR: &str = ".release";
 
-const REPO: &str = "fronalabs/frona-ontologies";
+const REPO: &str = "Mpercy-Git/frona-ontologies";
 
 #[derive(Debug, Deserialize)]
 struct Manifest {

@@ -67,7 +67,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends curl ca-certificates jq \
   && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /ontology && cd /ontology \
-  && curl -fsSL https://api.github.com/repos/fronalabs/frona-ontologies/releases/latest \
+  && curl -fsSL https://api.github.com/repos/Mpercy-Git/frona-ontologies/releases/latest \
      -o /tmp/release.json \
   && jq -r '.assets[].browser_download_url' /tmp/release.json \
      | grep -E '\.ttl\.gz$|/(metadata\.json|NOTICE)$' \

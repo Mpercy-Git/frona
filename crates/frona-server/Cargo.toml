@@ -147,7 +147,7 @@ flate2 = "1"
 # Pinned to a *commit*, not a release tag: tags mark artifact publications and the
 # extractor moves on a different clock. Nothing yet checks that the pinned crate and
 # the pinned artifacts agree - `metadata.json` carrying the building commit is the fix.
-frona-ontologies = { git = "https://github.com/fronalabs/frona-ontologies", rev = "cdabc3a8dba85f418c080d659da36d47b4a9c442", default-features = false }
+frona-ontologies = { git = "https://github.com/Mpercy-Git/frona-ontologies", rev = "0bf0276508bd56a7177776ac97aedc78a7716ae0", default-features = false }
 http = "1"
 web-push = "0.11"
 
