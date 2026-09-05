@@ -27,6 +27,7 @@ const KNOWN_PROVIDERS = [
   "zai",
   "venice",
   "minimax",
+  "byteplus",
   "ollama",
   "llamafile",
   "generic",
@@ -54,12 +55,20 @@ export function formatProviderName(id: string): string {
     zai: "Z.ai",
     venice: "Venice",
     minimax: "MiniMax",
+    byteplus: "BytePlus ModelArk",
     ollama: "Ollama",
     llamafile: "llamafile",
     generic: "OpenAI-compatible",
   };
   return names[id] ?? id;
 }
+
+// Providers whose base URL is worth spelling out: one where it is required
+// (Azure), and one where it picks which account the key belongs to (BytePlus).
+const BASE_URL_PLACEHOLDERS: Record<string, string> = {
+  azure: "https://<resource>.openai.azure.com",
+  byteplus: "https://ark.ap-southeast.bytepluses.com/api/v3",
+};
 
 export type TestStatus = "idle" | "testing" | "success" | "error";
 
@@ -202,6 +211,7 @@ interface ProviderCardProps {
 
 function ProviderCard({ state, onChange, onToggle }: ProviderCardProps) {
   const isAzure = state.id === "azure";
+  const isByteplus = state.id === "byteplus";
   // Spread the current values rather than rebuilding the object field by
   // field, so adding a field to ModelProviderConfig can't silently drop it on
   // the next edit of a different field.
@@ -247,9 +257,14 @@ function ProviderCard({ state, onChange, onToggle }: ProviderCardProps) {
 
       <TextInput
         label="Base URL"
+        description={
+          isByteplus
+            ? "Selects the account: leave blank for BytePlus international, or point at https://ark.cn-beijing.volces.com/api/v3 for the mainland Volcengine deployment (a separate account and key)."
+            : undefined
+        }
         value={state.base_url}
         onChange={(value) => patch({ base_url: value || null })}
-        placeholder={isAzure ? "https://<resource>.openai.azure.com" : "Optional custom base URL"}
+        placeholder={BASE_URL_PLACEHOLDERS[state.id] ?? "Optional custom base URL"}
       />
 
       {isAzure && (

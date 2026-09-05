@@ -279,6 +279,7 @@ function ProviderParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate
     case "venice":
     case "minimax":
     case "llamafile":
+    case "byteplus":
     case "generic":
       return <OpenAIParams group={group} onUpdate={onUpdate} />;
     case "openrouter":

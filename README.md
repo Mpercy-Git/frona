@@ -76,6 +76,17 @@ Upstream wires each provider by name, and `init_provider` hard-errors on anythin
 - **llamafile** added as a second local option beside Ollama, discovered from `LLAMAFILE_API_BASE_URL`
 - `generic` also carries the full OpenAI-compatible parameter set (`top_p`, `seed`, `stop`, penalties), so a local endpoint is tunable rather than a bare marker
 
+### 🌏 BytePlus ModelArk (net-new)
+
+Rig has no ModelArk adapter, and it needs none — Ark's data plane is OpenAI chat-completions under an `/api/v3` prefix, so Rig's OpenAI client reaches it unchanged. What it does need is to be kept *off* the OpenAI request hook, and to be findable in the catalogue.
+
+- **`byteplus` provider** — `api_key` is required; `base_url` is optional and selects the account, defaulting to BytePlus international (`https://ark.ap-southeast.bytepluses.com/api/v3`) and overridable to the mainland Volcengine Ark host. Auto-discovered from `BYTEPLUS_API_KEY` / `BYTEPLUS_API_BASE_URL`
+- **No `max_tokens` → `max_completion_tokens` rewrite.** Ark serves Seed/Doubao over plain chat-completions and rejects the rewritten field, so it sits with the compatible providers rather than with `openai`/`azure`. This is precisely why configuring it as `provider: openai` with a custom `base_url` does not work
+- **Cost and context windows resolve.** models.dev files these models under `volcengine` — the international and mainland halves of one platform — so a `byteplus/…` ref matched nothing: every call recorded `cost_usd: None` and the window fell to the 128K default, firing compaction far earlier than a 256K Seed model requires. A catalogue alias maps `byteplus` onto the `volcengine` section, and the existing prefix walk then handles dated ids like `doubao-seed-1-8-251228`
+- Model ids may be either a foundation-model id (`seed-1-6-250615`) or an inference endpoint id from your account (`ep-…`); both go in the model group's `model` field
+- Structured output rides Ark's **function calling**, not its beta `response_format` — frona gets typed results through a forced `submit` tool call, so nothing here depends on that feature
+- The settings "browse models" button probes OpenAI-shaped `GET /models`. Ark's documented model listing is a Volcengine Management API with its own signing, so this may come back empty; type the model id in that case. Everything on the inference path is unaffected
+
 ### 🤝 Sharing agents and chats (net-new)
 
 Upstream has no sharing concept at all — a `user_id` equality check gated every read. This fork adds two independent grants:

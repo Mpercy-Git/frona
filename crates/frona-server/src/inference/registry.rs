@@ -14,7 +14,7 @@ use super::error::InferenceError;
 use super::hooks;
 use super::provider::{InferenceCounter, ModelProvider, ModelRef, OpenAiProvider, RigProvider};
 use crate::chat::broadcast::BroadcastService;
-use crate::core::config::ProviderModel;
+use crate::core::config::{BYTEPLUS_API_BASE_URL, ProviderModel};
 
 #[derive(Clone)]
 pub struct ModelProviderRegistry {
@@ -341,6 +341,28 @@ fn init_provider(
                 .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?;
             Ok(Arc::new(RigProvider::new(client, counter.clone())) as Arc<dyn ModelProvider>)
         }
+        // BytePlus ModelArk / Volcengine Ark. Rig has no adapter for it, and it
+        // needs none: the data plane is OpenAI chat-completions under a
+        // `/api/v3` prefix, so Rig's OpenAI client reaches
+        // `<base_url>/chat/completions` unchanged.
+        //
+        // Deliberately no `hooks::openai`: unlike `galadriel` above, Ark serves
+        // Seed/Doubao rather than gpt-5/o-series, and rejects the
+        // `max_tokens` -> `max_completion_tokens` rewrite that hook performs.
+        //
+        // `base_url` defaults to the BytePlus (international) host and is
+        // overridable because the mainland Volcengine deployment is a separate
+        // account on a different host, addressed with its own key.
+        "byteplus" => {
+            let key = require_api_key(name, entry)?;
+            let url = entry.base_url.as_deref().unwrap_or(BYTEPLUS_API_BASE_URL);
+            let client = openai::CompletionsClient::builder()
+                .api_key(&key)
+                .base_url(url)
+                .build()
+                .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?;
+            Ok(Arc::new(RigProvider::new(client, counter.clone())) as Arc<dyn ModelProvider>)
+        }
         "gemini" => init_api_key_provider!(name, entry, gemini, counter),
         "cohere" => init_api_key_provider!(name, entry, cohere, counter),
         "mistral" => init_api_key_provider!(name, entry, mistral, counter),
@@ -511,6 +533,41 @@ mod tests {
         assert!(
             init_provider("llamafile", &provider_entry(None, None), &counter).is_ok(),
             "llamafile defaults to its local base URL"
+        );
+    }
+
+    /// BytePlus has a real default host, so a key alone is enough; the
+    /// `base_url` override is what reaches the mainland Volcengine account.
+    // `BroadcastService::new` spawns a task, so these need a runtime.
+    #[tokio::test]
+    async fn byteplus_initialises_from_a_key_with_an_optional_endpoint() {
+        let counter = InferenceCounter::new(BroadcastService::new());
+        for base_url in [None, Some("https://ark.cn-beijing.volces.com/api/v3")] {
+            assert!(
+                init_provider(
+                    "byteplus",
+                    &provider_entry(Some("test-key"), base_url),
+                    &counter,
+                )
+                .is_ok(),
+                "base_url {base_url:?} should build",
+            );
+        }
+    }
+
+    /// Unlike `generic`, Ark is a hosted service that always authenticates, so
+    /// a missing key has to fail at startup rather than 401 on the first turn.
+    #[tokio::test]
+    async fn byteplus_without_a_key_is_a_config_error() {
+        let counter = InferenceCounter::new(BroadcastService::new());
+        // `expect_err` would need the Ok side to be Debug; `Arc<dyn ModelProvider>`
+        // isn't, so match instead.
+        let Err(err) = init_provider("byteplus", &provider_entry(None, None), &counter) else {
+            panic!("byteplus without an api_key must not initialise");
+        };
+        assert!(
+            err.to_string().contains("api_key"),
+            "the error should name what's missing, got: {err}"
         );
     }
 

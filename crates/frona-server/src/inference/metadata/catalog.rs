@@ -123,6 +123,23 @@ pub fn total_prompt_usage(provider: &str, u: &Usage) -> Usage {
     }
 }
 
+/// Map a frona provider name onto the models.dev section that actually
+/// publishes its models.
+///
+/// BytePlus ModelArk and Volcengine Ark are the international and mainland
+/// halves of one platform serving one model family, and upstream catalogues it
+/// under `volcengine` only. Without the alias every BytePlus call records
+/// `cost_usd: None` and pins the context window to the 128K default — which
+/// fires compaction, and the extra summarisation call it costs, far earlier
+/// than a Seed/Doubao model requires. Same failure the OpenRouter vendor-prefix
+/// walk exists to prevent, one lookup earlier.
+fn catalog_provider(provider: &str) -> &str {
+    match provider {
+        "byteplus" => "volcengine",
+        other => other,
+    }
+}
+
 impl ModelEntry {
     /// **Convention:** `usage.input_tokens` is the FRESH input only;
     /// `cached_input_tokens` and `cache_creation_input_tokens` are additive
@@ -415,7 +432,7 @@ impl ModelCatalogSnapshot {
     /// 2. Bare `model_id` - fallback for the hardcoded `defaults()` snapshot
     ///    used pre-fetch, where entries are keyed by bare model id only.
     pub fn lookup(&self, m: &ModelRef) -> Option<&ModelEntry> {
-        let composite = format!("{}/{}", m.provider_name(), m.model_id);
+        let composite = format!("{}/{}", catalog_provider(m.provider_name()), m.model_id);
         if let Some(p) = self.entries.get(&composite) {
             return Some(p);
         }
@@ -458,7 +475,7 @@ impl ModelCatalogSnapshot {
     }
 
     fn prefix_walk(&self, provider: &str, model_id: &str) -> Option<&ModelEntry> {
-        let provider_prefix = format!("{provider}/");
+        let provider_prefix = format!("{}/", catalog_provider(provider));
         let mut best: Option<(usize, &str)> = None;
         for key in self.entries.keys() {
             let normalized = if let Some(stripped) = key.strip_prefix(&provider_prefix) {
@@ -556,6 +573,60 @@ mod tests {
             entries,
             protocol_defaults: HashMap::new(),
         }
+    }
+
+    /// Upstream files BytePlus's models under `volcengine` — the two are the
+    /// international and mainland halves of one platform. Without the alias a
+    /// `byteplus/…` ref misses on both the composite key and the prefix walk,
+    /// so cost comes back `None` and the window falls to the 128K default.
+    #[test]
+    fn byteplus_resolves_against_the_volcengine_catalog_section() {
+        let mut entries = HashMap::new();
+        entries.insert(
+            "volcengine/doubao-seed-1-8".into(),
+            ModelEntry {
+                cost: Some(Cost {
+                    input: 2.0,
+                    output: 8.0,
+                    cache_read: None,
+                    cache_write: None,
+                }),
+                limit: Limit {
+                    context: 256_000,
+                    output: 32_000,
+                    input: None,
+                },
+                ..Default::default()
+            },
+        );
+        let snapshot = ModelCatalogSnapshot {
+            version: "test".to_string(),
+            fetched_at: Utc::now(),
+            entries,
+            protocol_defaults: HashMap::new(),
+        };
+
+        // Exact id, and the dated-suffix form the API actually returns.
+        for model_id in ["doubao-seed-1-8", "doubao-seed-1-8-251228"] {
+            let entry = snapshot
+                .lookup_prefix("byteplus", model_id)
+                .unwrap_or_else(|| panic!("{model_id} should resolve"));
+            assert_eq!(entry.limit.context, 256_000);
+            assert_eq!(entry.max_input_tokens(), Some(224_000));
+        }
+
+        let store = ModelCatalogStore::new(snapshot);
+        let model = ModelRef {
+            model_id: "doubao-seed-1-8-251228".to_string(),
+            provider: ProviderModel::from_name("byteplus"),
+        };
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            ..Default::default()
+        };
+        let (cost, _) = store.compute(&model, &usage);
+        assert_eq!(cost, Some(2.0), "byteplus calls must be priced, not None");
     }
 
     /// `openrouter` + `anthropic/claude-sonnet-4-6` is not a literal catalog

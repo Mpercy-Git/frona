@@ -39,6 +39,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   zai: "Z.ai",
   venice: "Venice",
   minimax: "MiniMax",
+  byteplus: "BytePlus ModelArk",
   ollama: "Ollama",
   llamafile: "llamafile",
   generic: "OpenAI-compatible",
