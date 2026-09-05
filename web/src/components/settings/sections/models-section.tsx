@@ -8,6 +8,7 @@ import { CubeIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import { ComboboxInput } from "@/components/settings/combobox";
 import { ModelSelector } from "@/components/settings/model-selector";
 import { DeleteConfirmDialog } from "@/components/nav/delete-confirm-dialog";
+import { formatProviderName } from "@/components/settings/sections/providers-section";
 
 
 interface ModelsSectionProps {
@@ -134,7 +135,12 @@ function CollapsibleSection({ title, defaultOpen = false, children }: { title: s
 }
 
 function ModelParamsDialog({ group, groupName, onUpdate, onClose }: ModelParamsDialogProps) {
-  const hasProviderParams = !!group.provider && group.provider !== "generic";
+  // Gate on having a provider at all, not on which one. `generic` was excluded
+  // here, which made the `case "generic"` arm in ProviderParams unreachable: the
+  // provider carries the full OpenAI-compatible parameter set server-side
+  // (top_p, seed, stop, penalties), so a local endpoint was documented as
+  // tunable while the UI silently offered no way to tune it.
+  const hasProviderParams = !!group.provider;
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -212,7 +218,7 @@ function ModelParamsDialog({ group, groupName, onUpdate, onClose }: ModelParamsD
           </CollapsibleSection>
 
           {hasProviderParams && (
-            <CollapsibleSection title={group.provider.charAt(0).toUpperCase() + group.provider.slice(1)}>
+            <CollapsibleSection title={formatProviderName(group.provider)}>
               <ProviderParams group={group} onUpdate={onUpdate} />
             </CollapsibleSection>
           )}
@@ -279,6 +285,7 @@ function ProviderParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate
     case "venice":
     case "minimax":
     case "llamafile":
+    case "byteplus":
     case "generic":
       return <OpenAIParams group={group} onUpdate={onUpdate} />;
     case "openrouter":

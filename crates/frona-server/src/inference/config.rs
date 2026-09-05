@@ -110,6 +110,22 @@ impl ModelRegistryConfig {
             );
         }
 
+        // BytePlus can't ride the key-only table above: its base_url selects
+        // which account the key belongs to (BytePlus international vs the
+        // mainland Volcengine deployment), so the override has to be
+        // discoverable too. Absent, `init_provider` falls back to the
+        // international host.
+        if let Ok(key) = std::env::var("BYTEPLUS_API_KEY") {
+            providers.insert(
+                "byteplus".to_string(),
+                ModelProviderConfig {
+                    api_key: Some(key),
+                    base_url: std::env::var("BYTEPLUS_API_BASE_URL").ok(),
+                    ..Default::default()
+                },
+            );
+        }
+
         // Base-URL-only providers: a local server needs no key, so its URL is
         // what says "this is configured".
         for (name, env_var) in [
@@ -231,6 +247,9 @@ fn default_model_for_provider(provider: &str) -> &str {
         // Azure model ids are deployment names, so this is only a guess at the
         // most common one; auto-discovery can't know what the resource calls it.
         "azure" => "gpt-4o",
+        // Ark also addresses models by inference endpoint id (`ep-…`), which is
+        // account-specific; a foundation-model id is the only guessable default.
+        "byteplus" => "seed-1-6-250615",
         "zai" => "glm-4.6",
         "minimax" => "MiniMax-M2",
         "venice" => "venice-uncensored",
@@ -494,6 +513,29 @@ reasoning_effort: high
         assert_eq!(params.reasoning_effort.as_deref(), Some("high"));
     }
 
+    /// Ark addresses a model either by foundation-model id or by inference
+    /// endpoint id (`ep-…`), both in the same field, so neither shape may be
+    /// mangled on the way through.
+    #[test]
+    fn byteplus_model_group_takes_ids_and_endpoint_ids() {
+        for model in ["seed-1-6-250615", "ep-20250101120000-abcde"] {
+            let yaml = format!(
+                r#"
+provider: byteplus
+model: {model}
+top_p: 0.8
+"#
+            );
+            let config: ModelGroupConfig = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(config.provider_name(), "byteplus");
+            assert_eq!(config.common().model, model);
+            let ProviderModel::Byteplus { params } = &config.provider else {
+                panic!("expected the byteplus variant");
+            };
+            assert_eq!(params.top_p, Some(0.8));
+        }
+    }
+
     #[test]
     fn test_model_group_config_generic_provider() {
         let yaml = r#"
@@ -527,7 +569,7 @@ seed: 7
 
     #[test]
     fn newly_wired_provider_names_round_trip() {
-        for name in ["zai", "venice", "minimax", "llamafile", "generic"] {
+        for name in ["zai", "venice", "minimax", "llamafile", "byteplus", "generic"] {
             assert_eq!(
                 ProviderModel::from_name(name).name(),
                 name,

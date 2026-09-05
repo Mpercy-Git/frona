@@ -503,6 +503,7 @@ fn request_params(
         | ProviderModel::Venice { params }
         | ProviderModel::MiniMax { params }
         | ProviderModel::Llamafile { params }
+        | ProviderModel::Byteplus { params }
         | ProviderModel::Generic { params } => (max_tokens, serialize_params(params)),
         ProviderModel::Gemini { params } => (max_tokens, serialize_params(params)),
         ProviderModel::Custom { .. } => (max_tokens, None),
@@ -1232,6 +1233,31 @@ mod tests {
             params.additional_params,
             Some(serde_json::json!({"top_p": 0.9})),
             "no max_completion_tokens rewrite on the generic path"
+        );
+    }
+
+    /// BytePlus rides the OpenAI *client* but not the OpenAI *hook*: Ark serves
+    /// Seed/Doubao over plain chat-completions, which takes `max_tokens` and
+    /// rejects `max_completion_tokens`. Configuring it as `provider: openai`
+    /// with a custom `base_url` is exactly the mistake this arm prevents.
+    #[test]
+    fn byteplus_request_leaves_max_tokens_top_level() {
+        let model = ModelRef {
+            model_id: "seed-1-6-250615".to_string(),
+            provider: ProviderModel::Byteplus {
+                params: OpenAICompatParams {
+                    top_p: Some(0.8),
+                    ..Default::default()
+                },
+            },
+        };
+
+        let params = request_params(&model, Some(32000), None, None).unwrap();
+        assert_eq!(params.max_tokens, Some(32000));
+        assert_eq!(
+            params.additional_params,
+            Some(serde_json::json!({"top_p": 0.8})),
+            "no max_completion_tokens rewrite on the byteplus path"
         );
     }
 

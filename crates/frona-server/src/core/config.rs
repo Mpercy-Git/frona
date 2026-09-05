@@ -757,6 +757,11 @@ pub enum OpenAiApi {
     Responses,
 }
 
+/// BytePlus ModelArk, international. The mainland Volcengine Ark deployment is
+/// a separate account on `https://ark.cn-beijing.volces.com/api/v3`, reached by
+/// overriding `base_url`.
+pub const BYTEPLUS_API_BASE_URL: &str = "https://ark.ap-southeast.bytepluses.com/api/v3";
+
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "provider")]
@@ -837,6 +842,17 @@ pub enum ProviderModel {
     },
     #[serde(rename = "llamafile")]
     Llamafile {
+        #[serde(flatten)]
+        params: OpenAICompatParams,
+    },
+    /// BytePlus ModelArk (and its mainland twin, Volcengine Ark). An
+    /// OpenAI-compatible chat-completions endpoint whose `base_url` selects the
+    /// account: `https://ark.ap-southeast.bytepluses.com/api/v3` for BytePlus
+    /// international, `https://ark.cn-beijing.volces.com/api/v3` for Volcengine.
+    /// The model id is either a foundation-model id (`seed-1-6-250615`) or an
+    /// inference endpoint id (`ep-…`); both go in the same field.
+    #[serde(rename = "byteplus")]
+    Byteplus {
         #[serde(flatten)]
         params: OpenAICompatParams,
     },
@@ -930,6 +946,9 @@ impl ProviderModel {
             "llamafile" => Self::Llamafile {
                 params: Default::default(),
             },
+            "byteplus" => Self::Byteplus {
+                params: Default::default(),
+            },
             "generic" => Self::Generic {
                 params: Default::default(),
             },
@@ -956,6 +975,7 @@ impl ProviderModel {
             Self::Venice { .. } => "venice",
             Self::MiniMax { .. } => "minimax",
             Self::Llamafile { .. } => "llamafile",
+            Self::Byteplus { .. } => "byteplus",
             Self::Generic { .. } => "generic",
             Self::Custom { name } => name,
         }

@@ -156,6 +156,12 @@
 #    base_url: "${OLLAMA_API_BASE_URL}"
 #  llamafile:
 #    base_url: "${LLAMAFILE_API_BASE_URL}"   # defaults to http://localhost:8080
+#  # BytePlus ModelArk (Seed / Doubao). base_url is optional and selects the
+#  # account: omit it for BytePlus international, or set the mainland Volcengine
+#  # Ark host below — the two are separate accounts with separate keys.
+#  byteplus:
+#    api_key: "${BYTEPLUS_API_KEY}"
+#    # base_url: "https://ark.cn-beijing.volces.com/api/v3"   # Volcengine (mainland)
 #  # Any OpenAI-compatible /chat/completions endpoint: vLLM, LM Studio,
 #  # llama.cpp's server, a LiteLLM proxy, or a hosted service with no dedicated
 #  # entry above. base_url is required; api_key is optional, since local servers
@@ -202,6 +208,12 @@ models:
 #    model: gpt-5
 #    api: responses
 #    reasoning_effort: high
+#  byteplus_seed:
+#    provider: byteplus
+#    # Either a foundation-model id or an inference endpoint id from your
+#    # account (`ep-…`); both go in this one field.
+#    model: seed-1-6-250615
+#    max_tokens: 32000
 #  via_openrouter:
 #    provider: openrouter
 #    model: anthropic/claude-sonnet-4-6

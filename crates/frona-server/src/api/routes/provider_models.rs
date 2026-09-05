@@ -50,6 +50,7 @@ fn default_base_url(provider: &str) -> Option<&'static str> {
         "venice" => Some("https://api.venice.ai/api/v1"),
         "minimax" => Some("https://api.minimax.io/v1"),
         "llamafile" => Some("http://localhost:8080"),
+        "byteplus" => Some(crate::core::config::BYTEPLUS_API_BASE_URL),
         // `generic` has no default host on purpose - the configured base_url
         // is the only thing that identifies the endpoint.
         _ => None,
@@ -68,9 +69,8 @@ fn models_endpoint(provider: &str) -> Option<(&'static str, ResponseFormat)> {
     match provider {
         "openrouter" => Some(("/models", ResponseFormat::OpenRouter)),
         "openai" | "groq" | "cohere" | "mistral" | "together" | "xai" | "hyperbolic"
-        | "moonshot" | "deepseek" | "zai" | "venice" | "minimax" | "llamafile" | "generic" => {
-            Some(("/models", ResponseFormat::OpenAi))
-        }
+        | "moonshot" | "deepseek" | "zai" | "venice" | "minimax" | "llamafile" | "generic"
+        | "byteplus" => Some(("/models", ResponseFormat::OpenAi)),
         "anthropic" => Some(("/v1/models", ResponseFormat::OpenAi)),
         "perplexity" => Some(("/models", ResponseFormat::OpenAi)),
         "gemini" => Some(("/v1beta/models", ResponseFormat::Gemini)),
