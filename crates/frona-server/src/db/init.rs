@@ -28,6 +28,7 @@ const USER_OWNED_TABLES: &[(&str, &str)] = &[
     ("app", "user_id"),
     ("mcp_server", "user_id"),
     ("channel", "user_id"),
+    ("cost_report", "user_id"),
 ];
 
 fn build_cascade_user_delete_events() -> String {
@@ -194,6 +195,14 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_iu_kind_created ON TABLE inference_usage COLUMNS kind_tag, created_at;
         DEFINE INDEX IF NOT EXISTS idx_iu_model_created ON TABLE inference_usage COLUMNS model_ref, created_at;
         DEFINE INDEX IF NOT EXISTS idx_iu_pricing_version ON TABLE inference_usage COLUMNS pricing_version;
+        DEFINE INDEX IF NOT EXISTS idx_iu_provider_created ON TABLE inference_usage COLUMNS provider, created_at;
+        DEFINE INDEX IF NOT EXISTS idx_iu_group_created ON TABLE inference_usage COLUMNS model_group, created_at;
+
+        -- Cost reports filed by the cost-analyst agent. `user_id` is the admin
+        -- the run belonged to; the report content itself is instance-wide.
+        DEFINE TABLE IF NOT EXISTS cost_report SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_cost_report_user_created ON TABLE cost_report COLUMNS user_id, created_at;
+        DEFINE INDEX IF NOT EXISTS idx_cost_report_created ON TABLE cost_report COLUMNS created_at;
 
         DEFINE TABLE IF NOT EXISTS app SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_app_agent ON TABLE app COLUMNS agent_id;

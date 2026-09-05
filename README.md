@@ -58,6 +58,18 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 - **Cost and context windows resolve for aggregator model ids.** `openrouter` + `anthropic/claude-sonnet-4-6` is not a literal models.dev key, so the exact-match lookup missed: every OpenRouter call recorded `cost_usd: None`, and the context window fell back to the 128K floor, firing compaction — and the extra summarisation call it costs — far earlier than a 200K/1M model requires. Both now resolve through the vendor-prefix walk
 - **Cache writes are priced.** They were billed at the plain input rate; Anthropic charges a premium (1.25×) for them, which matters as soon as caching is on
 
+### 💷 Cost analyst agent & provider billing model (net-new)
+
+Every call has always recorded a `cost_usd` priced from the models.dev catalogue, but nobody was looking at the total, and the figure meant the same thing whether you paid per token or paid a flat monthly fee. Two gaps, and together they made "are we on the right provider and model mix?" unanswerable.
+
+- **Providers now declare how they bill.** A `billing` block on each provider says `metered` (pay per token), `subscription` (flat fee, with optional included credit or token allowance, currency and renewal day), or `self_hosted`. Local runtimes default to self-hosted; everything else defaults to metered, so existing configs behave exactly as before. The classification is snapshotted onto each usage row alongside `pricing_version`, so switching to a subscription in March doesn't retroactively reclassify February's spend
+- **`cost_usd` deliberately still means list price for every billing kind.** Zeroing it under a subscription would destroy the one number that says whether the plan is worth its fee. The classification travels alongside instead, so a report can separate **money actually spent** from **list-price value consumed under a fee already paid** — and tell you that you pay £20/month for a plan you used £4 of, or that £180 of usage rides a £20 plan
+- **Instance-wide usage, admin-only.** Every rollup upstream is scoped to one user, and the usage API hard-blocks cross-user reads with no admin escape hatch, so an operator could see one person's spend and never the server's. New unscoped aggregations (by provider, model, model group, call kind, user) sit behind a new `view_usage_analytics` Cedar action — kept separate from `list_users` so spend visibility can be granted to, say, a finance group without granting account administration
+- **A `cost-analyst` built-in agent** that admins chat with, and that files a report monthly on its own. It reprices the traffic actually served — real prompt sizes, real cache hit rates, real output lengths — against candidates from the model catalogue, and runs a capability gate (tool calling, vision, structured output, context window, deprecation) so it *cannot* recommend a model that can't do the job: a rejected candidate comes back with its reason attached rather than silently vanishing from the shortlist
+- **The repricing path shares `ModelEntry::cost_for` with live costing**, so a recommendation and an invoice cannot drift apart; a round-trip test pins that a repriced stored row lands on exactly what the live call was charged, for both the Anthropic and OpenAI-shaped token conventions
+- **Reports recommend, never apply.** Model groups and providers stay edited by a human who read the report. Calls the catalogue can't price are surfaced as a *pricing gap* rather than counted as free — unmeasured spend being the more dangerous of the two failure modes
+- Built-in agents can now declare `groups:` (restricting a privileged built-in to a user group instead of cloning it into every account as an agent that can do nothing) and `cron:` (seeding a recurring task on first clone, editable and deletable like any other task)
+
 ### ☁️ Azure OpenAI (net-new)
 
 Upstream has no Azure entry, and Azure doesn't fit the shared provider plumbing: it keys off a per-resource endpoint plus a data-plane version in the query string, and addresses models by *deployment* name.
@@ -166,7 +178,7 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 - **Agent-to-agent delegation:** agents hand off tasks to specialized agents and get results back
 - **Sharing:** hand another registered user an agent to run (without letting them edit it) or a chat to read, with optional credential delegation on shared agents
 - **Spaces:** group conversations that share context. The platform summarizes linked conversations and feeds the context into new chats
-- **Usage and cost visibility:** monitor tokens, cost, context-window usage, and model fallbacks live in each chat, with per-user dashboards for spend, latency, cache efficiency, models, and call types
+- **Usage and cost visibility:** monitor tokens, cost, context-window usage, and model fallbacks live in each chat, with per-user dashboards for spend, latency, cache efficiency, models, and call types. Admins additionally get server-wide spend and a [cost analyst agent](#-cost-analyst-agent--provider-billing-model-net-new) that reviews the provider and model mix on a schedule
 - **Commands:** use slash commands and mentions to invoke built-in actions, installed skills, or other agents directly from chat
 - **Notifications:** agents push status updates (task finished, app deployed, credential needs approval) into a feed in the top bar so nothing important gets lost
 - **Real-time streaming:** token-by-token response streaming over Server-Sent Events

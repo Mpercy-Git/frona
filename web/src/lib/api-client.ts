@@ -698,6 +698,26 @@ export async function testVaultConnection(id: string): Promise<void> {
   return request<void>(`/api/vaults/${encodeURIComponent(id)}/test`, { method: "POST" });
 }
 
+// ---- Cost analysis (admin) ----------------------------------------------
+
+export function getAdminUsage(days: number): Promise<import("./types").AdminSpendAnalysis> {
+  return api.get<import("./types").AdminSpendAnalysis>(`/api/admin/usage?days=${days}`);
+}
+
+export function listCostReports(limit = 50): Promise<import("./types").CostReport[]> {
+  return api.get<import("./types").CostReport[]>(`/api/admin/cost-reports?limit=${limit}`);
+}
+
+export function getCostReport(id: string): Promise<import("./types").CostReport> {
+  return api.get<import("./types").CostReport>(`/api/admin/cost-reports/${encodeURIComponent(id)}`);
+}
+
+/** Queues an analysis; the scheduler picks the task up on its next sweep, so
+ *  this returns immediately rather than waiting on an LLM round-trip. */
+export function runCostAnalysis(): Promise<{ task: import("./types").TaskResponse }> {
+  return api.post<{ task: import("./types").TaskResponse }>("/api/admin/cost-reports/run", {});
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body: unknown) =>

@@ -227,6 +227,24 @@ async fn patch_user(
         .map_err(translate_invariant_violation)?;
     state.user_service.ensure_admin_invariant().await?;
 
+    // A group change can make the user eligible for built-in agents that were
+    // skipped when their account was created (the cost analyst is admin-only).
+    // Idempotent, so re-running it for an unchanged user is a no-op — and
+    // deliberately one-way: a demotion leaves the agent in place rather than
+    // deleting rows the user may have chats against. The tools it can reach
+    // re-check permission at call time, so a demoted user's copy is inert.
+    if let Err(e) = state
+        .agent_service
+        .clone_all_builtins_for_user(&updated.id, &state.storage_service)
+        .await
+    {
+        tracing::warn!(
+            user_id = %updated.id,
+            error = %e,
+            "Group change applied but builtin agent provisioning failed"
+        );
+    }
+
     Ok(Json(AdminUserListItem::from(updated)))
 }
 

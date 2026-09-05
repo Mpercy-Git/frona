@@ -36,6 +36,7 @@ fn make_memory_service(db: Surreal<Db>) -> BasicMemoryService {
         ),
         SurrealRepo::new(db.clone()),
         frona::chat::broadcast::BroadcastService::new(),
+        std::sync::Arc::new(std::collections::HashMap::new()),
     );
     BasicMemoryService::new(
         SurrealRepo::new(db.clone()),

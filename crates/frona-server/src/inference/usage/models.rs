@@ -65,6 +65,24 @@ pub struct InferenceUsage {
     pub cost_usd: Option<f64>,
     pub pricing_version: String,
 
+    /// How the provider was configured to bill when this row was written -
+    /// `"metered"` | `"subscription"` | `"self_hosted"`. Snapshotted for the
+    /// same reason as `pricing_version`: an operator who switches to a
+    /// subscription in March must not have February's spend reclassified
+    /// underneath them.
+    ///
+    /// **`cost_usd` keeps meaning list price for every kind.** Zeroing it for
+    /// subscription providers would destroy the one figure that says whether
+    /// the fee is worth paying; this column is what lets a reader separate
+    /// money actually spent from value consumed under a fee already paid.
+    ///
+    /// Empty on rows written before the column existed. Every provider was
+    /// metered then, so `ProviderBillingKind::from_str_or_metered` reads `""`
+    /// as `Metered`.
+    #[serde(default)]
+    #[surreal(default)]
+    pub billing_kind: String,
+
     pub created_at: DateTime<Utc>,
 }
 

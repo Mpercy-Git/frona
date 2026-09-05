@@ -35,6 +35,9 @@ pub async fn build_user_info(
     let list_users = policy_service
         .authorize_user(&user, PolicyAction::ListUsers)
         .await?;
+    let view_usage_analytics = policy_service
+        .authorize_user(&user, PolicyAction::ViewUsageAnalytics)
+        .await?;
     let is_admin = user.groups.iter().any(|g| g == ADMINS_GROUP);
     Ok(UserInfo {
         id: user.id,
@@ -47,6 +50,7 @@ pub async fn build_user_info(
         permissions: UserPermissions {
             list_users: list_users.allowed,
             is_admin,
+            view_usage_analytics: view_usage_analytics.allowed,
         },
     })
 }

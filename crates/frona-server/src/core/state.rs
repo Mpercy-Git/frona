@@ -174,6 +174,7 @@ pub struct AppState {
     pub browser_session_manager: Arc<BrowserSessionManager>,
     pub active_sessions: ActiveSessions,
     pub notification_service: NotificationService,
+    pub cost_service: crate::cost::CostService,
     pub sandbox_factory: Arc<SandboxFactory>,
     pub sandbox_manager: Arc<SandboxManager>,
     pub cli_tools_config: Arc<Vec<CliToolConfig>>,
@@ -287,6 +288,7 @@ impl AppState {
             model_catalog.clone(),
             SurrealRepo::new(db.clone()),
             broadcast_service.clone(),
+            Arc::new(config.provider_billing_kinds()),
         );
         // Built before the memory backend so PKM receives a *clone* of this exact instance
         // (moka caches are `Arc`-backed, so a clone shares them). One config cache spans the
@@ -523,6 +525,12 @@ impl AppState {
             user_service.clone(),
         );
         agent_service.set_share_service(agent_share_service.clone());
+        // Lets a built-in agent declaring a `cron:` schedule (the cost analyst)
+        // have its recurring task seeded when it is first cloned for a user.
+        agent_service.set_task_service(
+            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            config.server.timezone.clone(),
+        );
 
         let app_manager = Arc::new(AppManager::new(
             sandbox_manager.clone(),
@@ -736,6 +744,13 @@ impl AppState {
             space_service,
             call_service: CallService::new(SurrealRepo::new(db.clone())),
             usage_service,
+            cost_service: crate::cost::CostService::new(
+                SurrealRepo::new(db.clone()),
+                SurrealRepo::new(db.clone()),
+                model_catalog.clone(),
+                config_arc.clone(),
+                notification_service.clone(),
+            ),
             model_catalog,
             contact_service,
             chat_service,
@@ -744,7 +759,13 @@ impl AppState {
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions,
-            notification_service: NotificationService::new(SurrealRepo::new(db.clone())),
+            // Must be the broadcast- and push-wired instance built above, not a
+            // fresh `NotificationService::new`. The bare constructor gets its
+            // own unconnected `BroadcastService` and no push sender, so every
+            // notification raised through `state.notification_service` — app
+            // deploys, supervisor alerts, cost reports — wrote its row and then
+            // reached nobody until the client next polled.
+            notification_service: notification_service.clone(),
             policy_service: policy_service.clone(),
             tool_manager,
             sandbox_factory,

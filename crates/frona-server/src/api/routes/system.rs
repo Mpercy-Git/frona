@@ -137,16 +137,34 @@ async fn logs_stream_handler(
 }
 
 async fn restart_handler(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
-) -> axum::Json<serde_json::Value> {
+) -> Result<axum::Json<serde_json::Value>, ApiError> {
+    // Restarting drains every in-flight request and re-execs the process, so
+    // it is gated on the same operator capability as the log stream above.
+    let caller = state
+        .user_service
+        .find_by_id(&auth.user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("User not found".into()))?;
+    let decision = state
+        .policy_service
+        .authorize_user(&caller, PolicyAction::ListUsers)
+        .await?;
+    if !decision.allowed {
+        return Err(AppError::Forbidden(
+            "Restarting the server requires administrator privileges".into(),
+        )
+        .into());
+    }
+
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         tracing::info!("Restart requested, draining in-flight work...");
         crate::core::shutdown::graceful_drain(&state).await;
         re_exec_self();
     });
-    axum::Json(json!({"status": "restarting"}))
+    Ok(axum::Json(json!({"status": "restarting"})))
 }
 
 fn re_exec_self() -> ! {
