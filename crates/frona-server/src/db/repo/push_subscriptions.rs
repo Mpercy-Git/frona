@@ -63,3 +63,111 @@ impl PushSubscriptionRepository for SurrealRepo<PushSubscription> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::repository::Repository;
+
+    async fn make_repo() -> SurrealPushSubscriptionRepo {
+        use surrealdb::Surreal;
+        use surrealdb::engine::local::Mem;
+        let db = Surreal::new::<Mem>(()).await.unwrap();
+        crate::db::init::setup_schema(&db).await.unwrap();
+        SurrealRepo::new(db)
+    }
+
+    fn make_sub(user_id: &str, endpoint: &str) -> PushSubscription {
+        PushSubscription {
+            id: crate::core::repository::new_id(),
+            user_id: user_id.to_string(),
+            endpoint: endpoint.to_string(),
+            expiration_time: None,
+            p256dh_key: "p256dh".to_string(),
+            auth_secret: "auth".to_string(),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    /// The table has to be declared in `setup_schema`: SurrealDB rejects a
+    /// SELECT against an undefined table, so without the DEFINE every push
+    /// delivery fails with "The table 'push_subscription' does not exist"
+    /// before it ever reaches a push service.
+    #[tokio::test]
+    async fn find_by_user_id_works_on_a_freshly_initialised_schema() {
+        let repo = make_repo().await;
+
+        let subs = repo.find_by_user_id("user-1").await.unwrap();
+        assert!(subs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn subscriptions_round_trip_per_user() {
+        let repo = make_repo().await;
+        repo.create(&make_sub("user-1", "https://push.example/a"))
+            .await
+            .unwrap();
+        repo.create(&make_sub("user-1", "https://push.example/b"))
+            .await
+            .unwrap();
+        repo.create(&make_sub("user-2", "https://push.example/c"))
+            .await
+            .unwrap();
+
+        assert_eq!(repo.find_by_user_id("user-1").await.unwrap().len(), 2);
+        assert_eq!(repo.find_by_user_id("user-2").await.unwrap().len(), 1);
+
+        let found = repo
+            .find_by_endpoint("user-1", "https://push.example/a")
+            .await
+            .unwrap();
+        assert!(found.is_some());
+        // The same endpoint under a different user is a different subscription.
+        assert!(
+            repo.find_by_endpoint("user-2", "https://push.example/a")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        repo.delete_by_endpoint("user-1", "https://push.example/a")
+            .await
+            .unwrap();
+        assert_eq!(repo.find_by_user_id("user-1").await.unwrap().len(), 1);
+    }
+
+    /// Guards the `DEFINE INDEX ... UNIQUE` half of the schema: without it a
+    /// device that re-subscribes would accumulate duplicate rows and get every
+    /// notification twice.
+    #[tokio::test]
+    async fn a_duplicate_endpoint_for_one_user_is_rejected() {
+        let repo = make_repo().await;
+        repo.create(&make_sub("user-1", "https://push.example/a"))
+            .await
+            .unwrap();
+
+        let duplicate = repo
+            .create(&make_sub("user-1", "https://push.example/a"))
+            .await;
+        assert!(
+            duplicate.is_err(),
+            "the unique index should reject a second row for the same endpoint"
+        );
+    }
+
+    /// Two accounts on one device share a push endpoint, so uniqueness is
+    /// scoped to the user rather than the endpoint on its own.
+    #[tokio::test]
+    async fn the_same_endpoint_is_allowed_for_a_second_user() {
+        let repo = make_repo().await;
+        repo.create(&make_sub("user-1", "https://push.example/shared"))
+            .await
+            .unwrap();
+        repo.create(&make_sub("user-2", "https://push.example/shared"))
+            .await
+            .unwrap();
+
+        assert_eq!(repo.find_by_user_id("user-1").await.unwrap().len(), 1);
+        assert_eq!(repo.find_by_user_id("user-2").await.unwrap().len(), 1);
+    }
+}
