@@ -53,7 +53,11 @@ mod version_tests {
         assert_eq!(app_version(), compiled, "empty -> compile-time version");
 
         unsafe { std::env::set_var("FRONA_VERSION", "dev") };
-        assert_eq!(app_version(), compiled, "dev sentinel -> compile-time version");
+        assert_eq!(
+            app_version(),
+            compiled,
+            "dev sentinel -> compile-time version"
+        );
 
         unsafe { std::env::set_var("FRONA_VERSION", "v2026.9.9") };
         assert_eq!(app_version(), "2026.9.9", "leading v stripped");

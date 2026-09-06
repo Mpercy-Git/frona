@@ -608,7 +608,10 @@ async fn execute_heartbeat(
                 // the client this generation was cancelled if a newer one
                 // has already superseded it.
                 let notify = state.active_sessions.is_current(&chat_id, session_id).await;
-                let _ = state.chat_service.cancel_agent_message(response, notify).await;
+                let _ = state
+                    .chat_service
+                    .cancel_agent_message(response, notify)
+                    .await;
             }
             InferenceResponse::ExternalToolPending { .. } => {
                 tracing::warn!(chat_id = %chat_id, "Heartbeat agent hit external tool pending — not supported");

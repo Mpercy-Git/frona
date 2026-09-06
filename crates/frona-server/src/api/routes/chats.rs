@@ -56,7 +56,10 @@ async fn list_delegations(
     let tasks = state.task_service.find_by_source_chat_id(&id).await?;
     let mut out = Vec::new();
     for task in tasks {
-        if !matches!(task.kind, crate::agent::task::models::TaskKind::Delegation { .. }) {
+        if !matches!(
+            task.kind,
+            crate::agent::task::models::TaskKind::Delegation { .. }
+        ) {
             continue;
         }
         let agent_name = state
@@ -102,7 +105,10 @@ async fn get_chat(
 ) -> Result<Json<ChatResponse>, ApiError> {
     // Owner or shared-recipient may view; `get_accessible` returns Forbidden
     // otherwise. Editing endpoints stay owner-only (via `get_chat`).
-    let (chat, is_owner) = state.chat_service.get_accessible(&auth.user_id, &id).await?;
+    let (chat, is_owner) = state
+        .chat_service
+        .get_accessible(&auth.user_id, &id)
+        .await?;
     let response: ChatResponse = if is_owner {
         chat.into()
     } else {

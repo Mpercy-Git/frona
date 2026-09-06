@@ -72,7 +72,10 @@ impl RequestCredentialsTool {
             if items.iter().any(|i| i.query == query) {
                 return;
             }
-            items.push(CredentialRequest { query: query.to_string(), label });
+            items.push(CredentialRequest {
+                query: query.to_string(),
+                label,
+            });
         };
 
         if let Some(arr) = arguments.get("queries").and_then(|v| v.as_array()) {
@@ -172,9 +175,7 @@ impl RequestCredentialsTool {
             }
             // Shared agent with credential delegation: fall back to the owner's
             // durable binding for the same agent principal.
-            if !force
-                && let Some(owner_id) = ctx.delegated_credential_owner.as_deref()
-            {
+            if !force && let Some(owner_id) = ctx.delegated_credential_owner.as_deref() {
                 let owner_binding = self
                     .vault_service
                     .find_binding(owner_id, &principal, &item.query, None)
@@ -259,7 +260,10 @@ impl RequestCredentialsTool {
         Ok(ToolOutput::text("").with_hitl(Hitl {
             prompt,
             url: format!("{}/chat?id={}", self.public_base_url, chat.id),
-            request: HitlRequest::Credentials { items: pending, reason },
+            request: HitlRequest::Credentials {
+                items: pending,
+                reason,
+            },
             status: ToolStatus::Pending,
             response: None,
             delivery: None,

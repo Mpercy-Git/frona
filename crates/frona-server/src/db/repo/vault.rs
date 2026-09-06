@@ -229,11 +229,7 @@ impl VaultGrantRepository for SurrealRepo<VaultGrant> {
         Ok(())
     }
 
-    async fn delete_by_item(
-        &self,
-        user_id: &str,
-        vault_item_id: &str,
-    ) -> Result<(), AppError> {
+    async fn delete_by_item(&self, user_id: &str, vault_item_id: &str) -> Result<(), AppError> {
         self.db()
             .query(
                 "DELETE FROM vault_grant \
@@ -485,11 +481,7 @@ impl PrincipalCredentialBindingRepository for SurrealRepo<PrincipalCredentialBin
         Ok(())
     }
 
-    async fn delete_by_item(
-        &self,
-        user_id: &str,
-        vault_item_id: &str,
-    ) -> Result<(), AppError> {
+    async fn delete_by_item(&self, user_id: &str, vault_item_id: &str) -> Result<(), AppError> {
         self.db()
             .query(
                 "DELETE FROM principal_credential_binding \

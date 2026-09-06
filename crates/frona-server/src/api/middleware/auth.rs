@@ -176,13 +176,12 @@ impl FromRequestParts<AppState> for NavigableAuth {
             });
         }
 
-        let query: Query<PresignTokenQuery> =
-            Query::try_from_uri(&parts.uri).map_err(|_| {
-                ApiError(AppError::Auth {
-                    message: "Missing authorization".into(),
-                    code: AuthErrorCode::InvalidCredentials,
-                })
-            })?;
+        let query: Query<PresignTokenQuery> = Query::try_from_uri(&parts.uri).map_err(|_| {
+            ApiError(AppError::Auth {
+                message: "Missing authorization".into(),
+                code: AuthErrorCode::InvalidCredentials,
+            })
+        })?;
         let token = query.token.as_deref().ok_or_else(|| {
             ApiError(AppError::Auth {
                 message: "Missing authorization".into(),

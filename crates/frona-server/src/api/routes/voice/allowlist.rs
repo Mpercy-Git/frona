@@ -116,7 +116,9 @@ async fn set_inbound_settings(
     Json(req): Json<InboundSettingsRequest>,
 ) -> Result<Json<InboundSettingsResponse>, ApiError> {
     state.set_inbound_agent(&auth.user_id, &req.agent).await?;
-    state.set_inbound_greeting(&auth.user_id, &req.greeting).await?;
+    state
+        .set_inbound_greeting(&auth.user_id, &req.greeting)
+        .await?;
     Ok(Json(read_inbound_settings(&state, &auth.user_id).await))
 }
 

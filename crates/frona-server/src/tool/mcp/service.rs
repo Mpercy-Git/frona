@@ -274,14 +274,25 @@ impl McpServerService {
     ) -> Result<McpServer, AppError> {
         if let Some(remote) = req.remote.clone() {
             return self
-                .install_remote(user_id, user_handle, &req, remote.url, remote.transport, remote.headers, None)
+                .install_remote(
+                    user_id,
+                    user_handle,
+                    &req,
+                    remote.url,
+                    remote.transport,
+                    remote.headers,
+                    None,
+                )
                 .await;
         }
 
         let entry = self.resolve_entry(&req).await?;
         let package = pick_package(&entry).cloned();
         match package {
-            Some(package) => self.install_local(user_id, user_handle, req, entry, package).await,
+            Some(package) => {
+                self.install_local(user_id, user_handle, req, entry, package)
+                    .await
+            }
             None => {
                 let remote_transport = entry.remotes.first().cloned().ok_or_else(|| {
                     AppError::Validation(
@@ -375,7 +386,10 @@ impl McpServerService {
                         .unwrap_or(&entry.name)
                         .to_string()
                 }),
-            description: req.description_override.clone().or_else(|| Some(entry.description.clone())),
+            description: req
+                .description_override
+                .clone()
+                .or_else(|| Some(entry.description.clone())),
             repository_url: entry.repository.as_ref().and_then(|r| r.url.clone()),
             registry_id: Some(entry.name.clone()),
             server_info: None,
@@ -383,29 +397,35 @@ impl McpServerService {
             command,
             args,
             env: req.extra_env.clone(),
-            transports: entry.packages.iter().filter_map(|p| {
-                let pkg_args = build_invocation(p).map(|(_, _, a)| a).ok()?;
-                Some(match p.transport.kind.as_str() {
-                    "streamable-http" | "sse" => TransportConfig::Http {
-                        args: pkg_args,
-                        env: BTreeMap::from([
-                            ("MCP_TRANSPORT_TYPE".into(), "http".into()),
-                        ]),
-                        port_env_var: p.environment_variables.iter()
-                            .find(|v| v.name.ends_with("_PORT") || v.name == "PORT")
-                            .map(|v| v.name.clone()),
-                        endpoint_path: p.transport.url.as_ref()
-                            .and_then(|u| u.rfind('/').map(|i| u[i..].to_string())),
-                        url: None,
-                        headers: BTreeMap::new(),
-                    },
-                    _ => TransportConfig::Stdio {
-                        args: pkg_args,
-                        env: Default::default(),
-                    },
+            transports: entry
+                .packages
+                .iter()
+                .filter_map(|p| {
+                    let pkg_args = build_invocation(p).map(|(_, _, a)| a).ok()?;
+                    Some(match p.transport.kind.as_str() {
+                        "streamable-http" | "sse" => TransportConfig::Http {
+                            args: pkg_args,
+                            env: BTreeMap::from([("MCP_TRANSPORT_TYPE".into(), "http".into())]),
+                            port_env_var: p
+                                .environment_variables
+                                .iter()
+                                .find(|v| v.name.ends_with("_PORT") || v.name == "PORT")
+                                .map(|v| v.name.clone()),
+                            endpoint_path: p
+                                .transport
+                                .url
+                                .as_ref()
+                                .and_then(|u| u.rfind('/').map(|i| u[i..].to_string())),
+                            url: None,
+                            headers: BTreeMap::new(),
+                        },
+                        _ => TransportConfig::Stdio {
+                            args: pkg_args,
+                            env: Default::default(),
+                        },
+                    })
                 })
-            })
-            .collect(),
+                .collect(),
             active_transport: package.transport.kind.clone(),
             status: McpServerStatus::Installed,
             tool_cache: Vec::new(),
@@ -485,7 +505,9 @@ impl McpServerService {
             .to_string_lossy()
             .into_owned();
         std::fs::create_dir_all(&workspace_dir).map_err(|e| {
-            AppError::Tool(format!("creating MCP server workspace {workspace_dir}: {e}"))
+            AppError::Tool(format!(
+                "creating MCP server workspace {workspace_dir}: {e}"
+            ))
         })?;
 
         let now = Utc::now();
@@ -532,7 +554,8 @@ impl McpServerService {
         };
 
         let persisted = self.repo.create(&server).await?;
-        self.write_bindings(user_id, &persisted.id, req.credentials.clone()).await?;
+        self.write_bindings(user_id, &persisted.id, req.credentials.clone())
+            .await?;
         self.installer.install(&persisted).await?;
         let sandbox_policy = req.sandbox_policy.clone().unwrap_or_default();
         self.policy_service
@@ -1078,7 +1101,14 @@ mod tests {
     fn validate_credential_bindings_accepts_exact_match() {
         let mut p = pkg("npm", "stdio");
         p.environment_variables = vec![secret_env_var("GITHUB_TOKEN")];
-        assert!(validate_credential_bindings(&required_from(&p), &[binding("GITHUB_TOKEN")], &BTreeMap::new()).is_ok());
+        assert!(
+            validate_credential_bindings(
+                &required_from(&p),
+                &[binding("GITHUB_TOKEN")],
+                &BTreeMap::new()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1114,16 +1144,31 @@ mod tests {
                 format: None,
             },
         ];
-        assert!(validate_credential_bindings(&required_from(&p), &[binding("SECRET")], &BTreeMap::new()).is_ok());
+        assert!(
+            validate_credential_bindings(
+                &required_from(&p),
+                &[binding("SECRET")],
+                &BTreeMap::new()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn validate_credential_bindings_accepts_header_derived_requirement() {
         let mut headers = BTreeMap::new();
-        headers.insert("Authorization".to_string(), "Bearer ${MCP_TOKEN}".to_string());
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer ${MCP_TOKEN}".to_string(),
+        );
         let required = extract_env_var_refs(&headers);
-        assert!(validate_credential_bindings(&required, &[binding("MCP_TOKEN")], &BTreeMap::new()).is_ok());
-        assert!(validate_credential_bindings(&required, &[binding("OTHER")], &BTreeMap::new()).is_err());
+        assert!(
+            validate_credential_bindings(&required, &[binding("MCP_TOKEN")], &BTreeMap::new())
+                .is_ok()
+        );
+        assert!(
+            validate_credential_bindings(&required, &[binding("OTHER")], &BTreeMap::new()).is_err()
+        );
     }
 
     #[test]

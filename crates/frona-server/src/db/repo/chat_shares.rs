@@ -71,7 +71,9 @@ impl ChatShareRepository for SurrealRepo<ChatShare> {
 
     async fn delete_one(&self, chat_id: &str, recipient_id: &str) -> Result<(), AppError> {
         self.db()
-            .query("DELETE FROM chat_share WHERE chat_id = $chat_id AND recipient_id = $recipient_id")
+            .query(
+                "DELETE FROM chat_share WHERE chat_id = $chat_id AND recipient_id = $recipient_id",
+            )
             .bind(("chat_id", chat_id.to_string()))
             .bind(("recipient_id", recipient_id.to_string()))
             .await

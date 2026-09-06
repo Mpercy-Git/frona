@@ -266,11 +266,17 @@ mod resolve_path_tests {
         // resolve_path, or an unscoped search in a shared run walks the wrong
         // tree.
         assert_eq!(
-            workspace_root(&test_ctx("alice", "bob", "researcher"), &test_storage("/data")),
+            workspace_root(
+                &test_ctx("alice", "bob", "researcher"),
+                &test_storage("/data")
+            ),
             PathBuf::from("/data/users/alice/agents/researcher")
         );
         assert_eq!(
-            workspace_root(&test_ctx("mina", "mina", "system"), &test_storage("/app/data")),
+            workspace_root(
+                &test_ctx("mina", "mina", "system"),
+                &test_storage("/app/data")
+            ),
             PathBuf::from("/app/data/users/mina/agents/system")
         );
     }

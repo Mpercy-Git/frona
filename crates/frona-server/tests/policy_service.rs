@@ -1132,7 +1132,12 @@ mod reconcile {
     async fn sync_agent_tools_emits_forbid_for_unselected() {
         let (_db, service) = setup().await;
         let result = service
-            .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-1"), &["web_search".into()])
+            .reconcile_agent_tools(
+                "user-1",
+                &h("user-1"),
+                &h("agent-1"),
+                &["web_search".into()],
+            )
             .await
             .unwrap();
         // browser, voice → all-deny → 2 ToolGroup forbids
@@ -1174,7 +1179,12 @@ mod reconcile {
         );
 
         let r2 = service
-            .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-x"), &["manage_agent".into()])
+            .reconcile_agent_tools(
+                "user-1",
+                &h("user-1"),
+                &h("agent-x"),
+                &["manage_agent".into()],
+            )
             .await
             .unwrap();
         // browser/voice/search forbids stay (still all-deny in their groups → collapse → forbid).
@@ -1204,7 +1214,8 @@ mod reconcile {
         // Allow everything except the entire voice provider.
         service
             .reconcile_agent_tools(
-                "user-1", &h("user-1"),
+                "user-1",
+                &h("user-1"),
                 &h("agent-z"),
                 &["browser_navigate".into(), "web_search".into()],
             )
@@ -1231,7 +1242,12 @@ mod reconcile {
         let (_db, service) = setup().await;
         // Voice provider: make_voice_call selected, hangup_call not.
         service
-            .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-m"), &["make_voice_call".into()])
+            .reconcile_agent_tools(
+                "user-1",
+                &h("user-1"),
+                &h("agent-m"),
+                &["make_voice_call".into()],
+            )
             .await
             .unwrap();
         let policies = service.list_policies("user-1").await.unwrap();
@@ -1263,7 +1279,8 @@ mod reconcile {
         // mixed intent, falls back to per-tool forbid for hangup_call.
         let r1 = service
             .reconcile_agent_tools(
-                "user-1", &h("user-1"),
+                "user-1",
+                &h("user-1"),
                 &h("agent-i"),
                 &[
                     "browser_navigate".into(),
@@ -1279,7 +1296,8 @@ mod reconcile {
         // per-tool) + 1 create (ToolGroup::voice).
         let r2 = service
             .reconcile_agent_tools(
-                "user-1", &h("user-1"),
+                "user-1",
+                &h("user-1"),
                 &h("agent-i"),
                 &["browser_navigate".into(), "web_search".into()],
             )
@@ -1304,10 +1322,16 @@ mod reconcile {
     async fn collapse_re_reconcile_is_noop() {
         let (_db, service) = setup().await;
         let selected = vec!["browser_navigate".into(), "web_search".into()];
-        let r1 = service.reconcile_agent_tools("user-1", &h("user-1"), &h("agent-r"), &selected).await.unwrap();
+        let r1 = service
+            .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-r"), &selected)
+            .await
+            .unwrap();
         assert_eq!(r1.created, 1, "voice ToolGroup forbid emitted");
 
-        let r2 = service.reconcile_agent_tools("user-1", &h("user-1"), &h("agent-r"), &selected).await.unwrap();
+        let r2 = service
+            .reconcile_agent_tools("user-1", &h("user-1"), &h("agent-r"), &selected)
+            .await
+            .unwrap();
         assert_eq!(r2.created, 0, "no churn on re-reconcile");
         assert_eq!(r2.deleted, 0);
     }
@@ -1319,7 +1343,8 @@ mod reconcile {
         let (_db, service) = setup().await;
         service
             .reconcile_agent_tools(
-                "user-1", &h("user-1"),
+                "user-1",
+                &h("user-1"),
                 &h("agent-s"),
                 &["browser_navigate".into(), "web_search".into()],
             )
@@ -1329,7 +1354,8 @@ mod reconcile {
         // collapse breaks; emit per-tool forbid for hangup_call.
         let r = service
             .reconcile_agent_tools(
-                "user-1", &h("user-1"),
+                "user-1",
+                &h("user-1"),
                 &h("agent-s"),
                 &[
                     "browser_navigate".into(),

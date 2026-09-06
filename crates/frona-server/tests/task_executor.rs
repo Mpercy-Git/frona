@@ -437,15 +437,15 @@ async fn deliver_to_source_skips_direct_tasks() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-            &task,
-            frona::agent::task::executor::TaskLifecycleEvent::Completion {
-                status: TaskStatus::Completed,
-                summary: Some("result".to_string()),
-                citations: Vec::new(),
-            },
-            vec![],
-        )
-        .await;
+        &task,
+        frona::agent::task::executor::TaskLifecycleEvent::Completion {
+            status: TaskStatus::Completed,
+            summary: Some("result".to_string()),
+            citations: Vec::new(),
+        },
+        vec![],
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -476,15 +476,15 @@ async fn deliver_to_source_sends_to_delegation() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-            &task,
-            frona::agent::task::executor::TaskLifecycleEvent::Completion {
-                status: TaskStatus::Completed,
-                summary: Some("All done".to_string()),
-                citations: Vec::new(),
-            },
-            vec![],
-        )
-        .await;
+        &task,
+        frona::agent::task::executor::TaskLifecycleEvent::Completion {
+            status: TaskStatus::Completed,
+            summary: Some("All done".to_string()),
+            citations: Vec::new(),
+        },
+        vec![],
+    )
+    .await;
 
     let messages = state
         .chat_service
@@ -521,15 +521,15 @@ async fn deliver_to_source_sends_to_direct_with_source_chat() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-            &task,
-            frona::agent::task::executor::TaskLifecycleEvent::Completion {
-                status: TaskStatus::Completed,
-                summary: Some("Self-task result".to_string()),
-                citations: Vec::new(),
-            },
-            vec![],
-        )
-        .await;
+        &task,
+        frona::agent::task::executor::TaskLifecycleEvent::Completion {
+            status: TaskStatus::Completed,
+            summary: Some("Self-task result".to_string()),
+            citations: Vec::new(),
+        },
+        vec![],
+    )
+    .await;
 
     let messages = state
         .chat_service
@@ -644,15 +644,15 @@ async fn deliver_to_source_signal_only_sends_empty_content() {
     // Signal-only completion: no result text, no deliverables
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-            &task,
-            frona::agent::task::executor::TaskLifecycleEvent::Completion {
-                status: TaskStatus::Completed,
-                summary: None,
-                citations: Vec::new(),
-            },
-            vec![],
-        )
-        .await;
+        &task,
+        frona::agent::task::executor::TaskLifecycleEvent::Completion {
+            status: TaskStatus::Completed,
+            summary: None,
+            citations: Vec::new(),
+        },
+        vec![],
+    )
+    .await;
 
     let messages = state
         .chat_service
@@ -699,15 +699,15 @@ async fn deliver_to_source_saves_message_to_user_chat() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-            &task,
-            frona::agent::task::executor::TaskLifecycleEvent::Completion {
-                status: TaskStatus::Completed,
-                summary: Some("Done".to_string()),
-                citations: Vec::new(),
-            },
-            vec![],
-        )
-        .await;
+        &task,
+        frona::agent::task::executor::TaskLifecycleEvent::Completion {
+            status: TaskStatus::Completed,
+            summary: Some("Done".to_string()),
+            citations: Vec::new(),
+        },
+        vec![],
+    )
+    .await;
 
     // Message should be delivered
     let messages = state
@@ -854,15 +854,15 @@ async fn deliver_to_source_cron_run_posts_regardless_of_process_result() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-            &run,
-            frona::agent::task::executor::TaskLifecycleEvent::Completion {
-                status: TaskStatus::Completed,
-                summary: Some("Result body".to_string()),
-                citations: Vec::new(),
-            },
-            vec![],
-        )
-        .await;
+        &run,
+        frona::agent::task::executor::TaskLifecycleEvent::Completion {
+            status: TaskStatus::Completed,
+            summary: Some("Result body".to_string()),
+            citations: Vec::new(),
+        },
+        vec![],
+    )
+    .await;
 
     let messages = state
         .chat_service
@@ -905,15 +905,15 @@ async fn deliver_to_source_cron_run_posts_when_process_result_true() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-            &run,
-            frona::agent::task::executor::TaskLifecycleEvent::Completion {
-                status: TaskStatus::Completed,
-                summary: Some("Result body".to_string()),
-                citations: Vec::new(),
-            },
-            vec![],
-        )
-        .await;
+        &run,
+        frona::agent::task::executor::TaskLifecycleEvent::Completion {
+            status: TaskStatus::Completed,
+            summary: Some("Result body".to_string()),
+            citations: Vec::new(),
+        },
+        vec![],
+    )
+    .await;
 
     let messages = state
         .chat_service
@@ -944,15 +944,15 @@ async fn deliver_to_source_cron_run_skips_when_no_source_chat() {
 
     frona::agent::task::executor::deliver_event_to_source(
         &state.chat_service,
-            &run,
-            frona::agent::task::executor::TaskLifecycleEvent::Completion {
-                status: TaskStatus::Completed,
-                summary: Some("Result body".to_string()),
-                citations: Vec::new(),
-            },
-            vec![],
-        )
-        .await;
+        &run,
+        frona::agent::task::executor::TaskLifecycleEvent::Completion {
+            status: TaskStatus::Completed,
+            summary: Some("Result body".to_string()),
+            citations: Vec::new(),
+        },
+        vec![],
+    )
+    .await;
     // No assertion on side-effect (silently no-op); the test passes if it does
     // not panic and no orphan write occurs.
     assert!(matches!(

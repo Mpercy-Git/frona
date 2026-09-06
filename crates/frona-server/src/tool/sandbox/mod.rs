@@ -206,7 +206,11 @@ impl SandboxManager {
 
         let skill_read_paths: Vec<String> = self
             .skill_service
-            .list(&ctx.agent_owner_handle, &ctx.agent.handle, ctx.agent.skills.as_deref())
+            .list(
+                &ctx.agent_owner_handle,
+                &ctx.agent.handle,
+                ctx.agent.skills.as_deref(),
+            )
             .await
             .into_iter()
             .map(|s| s.path)

@@ -371,8 +371,14 @@ mod tests {
         use crate::inference::hitl::CredentialRequest;
         let req = HitlRequest::Credentials {
             items: vec![
-                CredentialRequest { query: "app key".into(), label: Some("App key".into()) },
-                CredentialRequest { query: "user key".into(), label: None },
+                CredentialRequest {
+                    query: "app key".into(),
+                    label: Some("App key".into()),
+                },
+                CredentialRequest {
+                    query: "user key".into(),
+                    label: None,
+                },
             ],
             reason: "Acme API".into(),
         };

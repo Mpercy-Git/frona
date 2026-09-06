@@ -114,9 +114,9 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.user_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
-            state.presign_service.clone(),
-            state.notification_service.clone(),
-            state.usage_service.clone(),
+        state.presign_service.clone(),
+        state.notification_service.clone(),
+        state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
     // Rebuild Harness so it sees the new chat_service with the mock registry.

@@ -214,9 +214,10 @@ fn init_provider(
                     .build()
                     .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?
             };
-            Ok(Arc::new(
-                RigProvider::new(client, counter.clone()).with_hook(hooks::anthropic),
-            ) as Arc<dyn ModelProvider>)
+            Ok(
+                Arc::new(RigProvider::new(client, counter.clone()).with_hook(hooks::anthropic))
+                    as Arc<dyn ModelProvider>,
+            )
         }
         "ollama" => {
             let client: ollama::Client = if let Some(url) = &entry.base_url {
@@ -245,9 +246,10 @@ fn init_provider(
                 groq::Client::new(&key)
                     .map_err(|e| InferenceError::ConfigError(format!("groq: {e}")))?
             };
-            Ok(Arc::new(
-                RigProvider::new(client, counter.clone()).with_hook(hooks::groq),
-            ) as Arc<dyn ModelProvider>)
+            Ok(
+                Arc::new(RigProvider::new(client, counter.clone()).with_hook(hooks::groq))
+                    as Arc<dyn ModelProvider>,
+            )
         }
         // Not via init_api_key_provider! because OpenRouter needs both a
         // request hook (rename `provider_routing` -> `provider`) and a model
@@ -295,9 +297,10 @@ fn init_provider(
             let client = builder
                 .build()
                 .map_err(|e| InferenceError::ConfigError(format!("{name}: {e}")))?;
-            Ok(Arc::new(
-                RigProvider::new(client, counter.clone()).with_hook(hooks::openai),
-            ) as Arc<dyn ModelProvider>)
+            Ok(
+                Arc::new(RigProvider::new(client, counter.clone()).with_hook(hooks::openai))
+                    as Arc<dyn ModelProvider>,
+            )
         }
         "deepseek" => init_api_key_provider!(name, entry, deepseek, counter),
         "zai" => init_api_key_provider!(name, entry, zai, counter),

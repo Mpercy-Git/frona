@@ -20,7 +20,10 @@ use crate::chat::message::models::{Message, MessageEvent};
 const COMPLEX_RENDER_KEY: &str = "summary";
 
 pub fn render_message_body(msg: &Message) -> String {
-    let Some(MessageEvent::TaskCompletion { schema, citations, .. }) = &msg.event else {
+    let Some(MessageEvent::TaskCompletion {
+        schema, citations, ..
+    }) = &msg.event
+    else {
         return msg.content.clone();
     };
     let body = match schema {
@@ -181,7 +184,8 @@ mod tests {
         schema: Option<Value>,
         citations: Vec<Citation>,
     ) -> Message {
-        let mut msg = Message::builder("c1", MessageRole::TaskCompletion, content.to_string()).build();
+        let mut msg =
+            Message::builder("c1", MessageRole::TaskCompletion, content.to_string()).build();
         msg.event = Some(MessageEvent::TaskCompletion {
             task_id: "t1".into(),
             chat_id: None,
@@ -234,8 +238,14 @@ mod tests {
             "raw text",
             None,
             vec![
-                Citation { title: Some("Rust Programming".into()), url: "https://rust-lang.org".into() },
-                Citation { title: None, url: "https://doc.rust-lang.org/book/".into() },
+                Citation {
+                    title: Some("Rust Programming".into()),
+                    url: "https://rust-lang.org".into(),
+                },
+                Citation {
+                    title: None,
+                    url: "https://doc.rust-lang.org/book/".into(),
+                },
             ],
         );
         assert_eq!(
@@ -257,7 +267,10 @@ mod tests {
         let msg = task_completion_with_citations(
             "",
             None,
-            vec![Citation { title: None, url: "https://example.com".into() }],
+            vec![Citation {
+                title: None,
+                url: "https://example.com".into(),
+            }],
         );
         assert_eq!(render_message_body(&msg), "");
     }

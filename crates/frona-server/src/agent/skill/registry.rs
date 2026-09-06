@@ -142,7 +142,9 @@ impl SkillRegistryClient {
             let full_path = repo_dir.join(&relative_path);
             let description = std::fs::read_to_string(&full_path)
                 .ok()
-                .and_then(|content| agent_skills::Skill::parse(&sanitize_metadata_frontmatter(&content)).ok())
+                .and_then(|content| {
+                    agent_skills::Skill::parse(&sanitize_metadata_frontmatter(&content)).ok()
+                })
                 .map(|parsed| parsed.description().as_str().to_string())
                 .unwrap_or_default();
 

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, RwLock};
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use crate::agent::skill::resolver::Skill;
 use crate::agent::workspace::AgentPromptLoader;
@@ -303,7 +303,11 @@ mod tests {
         assert_eq!(loader.read("test.md").unwrap(), "first");
 
         std::fs::write(&path, "second").unwrap();
-        assert_eq!(loader.read("test.md").unwrap(), "first", "served from cache");
+        assert_eq!(
+            loader.read("test.md").unwrap(),
+            "first",
+            "served from cache"
+        );
     }
 
     #[test]

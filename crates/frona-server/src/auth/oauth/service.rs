@@ -66,7 +66,10 @@ impl OAuthService {
             scopes,
             allow_unknown_email_verification: config.sso.allow_unknown_email_verification,
             signups_match_email: config.sso.signups_match_email,
-            pending_states: Arc::new(Mutex::new(HashMap::<String, (String, Nonce, chrono::DateTime<Utc>)>::new())),
+            pending_states: Arc::new(Mutex::new(HashMap::<
+                String,
+                (String, Nonce, chrono::DateTime<Utc>),
+            >::new())),
             repo,
             redirect_uri,
             http: openidconnect::reqwest::Client::new(),
@@ -139,7 +142,10 @@ impl OAuthService {
             .lock()
             .await
             .remove(state)
-            .ok_or_else(|| AppError::Auth { message: "Invalid or expired SSO state".into(), code: AuthErrorCode::CsrfFailed })?;
+            .ok_or_else(|| AppError::Auth {
+                message: "Invalid or expired SSO state".into(),
+                code: AuthErrorCode::CsrfFailed,
+            })?;
 
         let http_client = self.http.clone();
         let issuer_url = self.issuer_url()?;

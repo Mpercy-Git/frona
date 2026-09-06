@@ -569,7 +569,14 @@ seed: 7
 
     #[test]
     fn newly_wired_provider_names_round_trip() {
-        for name in ["zai", "venice", "minimax", "llamafile", "byteplus", "generic"] {
+        for name in [
+            "zai",
+            "venice",
+            "minimax",
+            "llamafile",
+            "byteplus",
+            "generic",
+        ] {
             assert_eq!(
                 ProviderModel::from_name(name).name(),
                 name,

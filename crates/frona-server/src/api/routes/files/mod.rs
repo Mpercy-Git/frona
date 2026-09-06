@@ -39,8 +39,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route(
             "/api/files",
-            post(upload::upload_file)
-                .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_SIZE)),
+            post(upload::upload_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_SIZE)),
         )
         .route("/api/files/presign", post(upload::presign_file))
         .route(

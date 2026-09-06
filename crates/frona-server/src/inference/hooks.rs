@@ -27,7 +27,10 @@ pub fn openai(mut p: RequestParams) -> RequestParams {
 pub fn groq(mut p: RequestParams) -> RequestParams {
     if let Some(mt) = p.max_tokens.take() {
         let mut root = take_object(&mut p.additional_params);
-        root.insert("max_completion_tokens".to_string(), Value::Number(mt.into()));
+        root.insert(
+            "max_completion_tokens".to_string(),
+            Value::Number(mt.into()),
+        );
         p.additional_params = Some(Value::Object(root));
     }
     // Strip OpenAI-specific params that Groq doesn't understand.

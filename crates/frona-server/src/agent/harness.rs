@@ -495,7 +495,8 @@ impl Harness {
                 command_context_registry,
             )
             .await;
-        self.finalize(message_id, user_id, session_id, outcome).await;
+        self.finalize(message_id, user_id, session_id, outcome)
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -676,8 +677,17 @@ impl Harness {
             storage_service: self.storage_service.clone(),
             agent_service: self.agent_service.clone(),
         });
-        self.run_turn(user_id, chat_id, message_id, cancel_token, builder, &[], None, Some(session_id))
-            .await;
+        self.run_turn(
+            user_id,
+            chat_id,
+            message_id,
+            cancel_token,
+            builder,
+            &[],
+            None,
+            Some(session_id),
+        )
+        .await;
         self.active_sessions.remove(chat_id, session_id).await;
         Ok(())
     }
@@ -864,7 +874,10 @@ impl Harness {
                         Some(id) => self.active_sessions.is_current(&response.chat_id, id).await,
                         None => true,
                     };
-                    let _ = self.chat_service.cancel_agent_message(response, notify).await;
+                    let _ = self
+                        .chat_service
+                        .cancel_agent_message(response, notify)
+                        .await;
                 }
                 InferenceResponse::ExternalToolPending { tool_calls, .. } => {
                     let chat_id = response.chat_id.clone();

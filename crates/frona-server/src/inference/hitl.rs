@@ -258,8 +258,14 @@ mod tests {
     fn hitl_request_credentials_round_trip() {
         let req = HitlRequest::Credentials {
             items: vec![
-                CredentialRequest { query: "acme app key".into(), label: Some("App key".into()) },
-                CredentialRequest { query: "acme user key".into(), label: None },
+                CredentialRequest {
+                    query: "acme app key".into(),
+                    label: Some("App key".into()),
+                },
+                CredentialRequest {
+                    query: "acme user key".into(),
+                    label: None,
+                },
             ],
             reason: "Call the Acme API".into(),
         };
@@ -298,7 +304,11 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let back: HitlRequest = serde_json::from_str(&json).unwrap();
         match back {
-            HitlRequest::Skills { items, scope, reason } => {
+            HitlRequest::Skills {
+                items,
+                scope,
+                reason,
+            } => {
                 assert_eq!(scope, SkillInstallScope::Agent);
                 assert_eq!(reason, "The user asked for a filled-in PDF form.");
                 assert_eq!(items.len(), 2);

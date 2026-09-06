@@ -83,7 +83,11 @@ impl ChatSessionContext {
 
         let skills = harness
             .skill_service
-            .list(&agent_owner_handle, &agent.handle, agent_config.skills.as_deref())
+            .list(
+                &agent_owner_handle,
+                &agent.handle,
+                agent_config.skills.as_deref(),
+            )
             .await;
 
         // Load task early so `build_agent_registry` can register
@@ -297,7 +301,9 @@ impl ChatSessionContext {
         // vision-capable model (an override "vision" group, else auto-selected)
         // and inline the text so the agent still gets the content. If no vision
         // model is available, strip the images so the turn still runs.
-        let catalog_vision = harness.usage_service.model_supports_vision(&conv_ctx.model_ref);
+        let catalog_vision = harness
+            .usage_service
+            .model_supports_vision(&conv_ctx.model_ref);
         let effective_vision = crate::inference::vision::resolve_vision_capability(
             &conv_ctx.model_ref,
             &model_group.inference,
@@ -336,9 +342,8 @@ impl ChatSessionContext {
                     }
                 }
                 None => {
-                    let n = crate::inference::conversation::strip_images_from_history(
-                        &mut rig_history,
-                    );
+                    let n =
+                        crate::inference::conversation::strip_images_from_history(&mut rig_history);
                     if n > 0 {
                         tracing::info!(
                             model = %conv_ctx.model_ref.as_str(),

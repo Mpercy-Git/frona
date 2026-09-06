@@ -900,7 +900,9 @@ impl VaultService {
         self.binding_repo
             .delete_by_item(user_id, credential_id)
             .await?;
-        self.grant_repo.delete_by_item(user_id, credential_id).await?;
+        self.grant_repo
+            .delete_by_item(user_id, credential_id)
+            .await?;
         Ok(())
     }
 

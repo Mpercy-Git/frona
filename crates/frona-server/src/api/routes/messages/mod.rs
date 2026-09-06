@@ -74,7 +74,10 @@ async fn list_messages(
     // since attachments must always be presigned under the *owner's*
     // identity — a shared (non-owner) viewer has no access to the owner's
     // files under their own account.
-    let (chat, _is_owner) = state.chat_service.get_accessible(&auth.user_id, &chat_id).await?;
+    let (chat, _is_owner) = state
+        .chat_service
+        .get_accessible(&auth.user_id, &chat_id)
+        .await?;
     let mut result = state
         .chat_service
         .list_messages_paginated(

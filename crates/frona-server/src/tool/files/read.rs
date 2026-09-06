@@ -147,7 +147,12 @@ fn read_image(bytes: &[u8], mime: &str, path_arg: &str) -> Result<ToolOutput, Ap
     ))
 }
 
-fn read_pdf(bytes: &[u8], path_arg: &str, offset: Option<usize>, limit: Option<usize>) -> ToolOutput {
+fn read_pdf(
+    bytes: &[u8],
+    path_arg: &str,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> ToolOutput {
     let text = match pdf_extract::extract_text_from_mem(bytes) {
         Ok(t) => t,
         Err(e) => {

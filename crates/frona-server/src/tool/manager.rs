@@ -59,7 +59,8 @@ fn flatten_top_level_union(schema: &mut Value) {
     };
 
     if obj.contains_key("properties") {
-        obj.entry("type".to_string()).or_insert_with(|| serde_json::json!("object"));
+        obj.entry("type".to_string())
+            .or_insert_with(|| serde_json::json!("object"));
         return;
     }
 
@@ -67,7 +68,9 @@ fn flatten_top_level_union(schema: &mut Value) {
     for branch in &branches {
         if let Some(props) = branch.get("properties").and_then(|p| p.as_object()) {
             for (name, prop_schema) in props {
-                properties.entry(name.clone()).or_insert_with(|| prop_schema.clone());
+                properties
+                    .entry(name.clone())
+                    .or_insert_with(|| prop_schema.clone());
             }
         }
     }
@@ -470,7 +473,10 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             state.policy_service.clone(),
             prompts.clone(),
         )),
-        Arc::new(super::manage_policy::ManagePolicyTool::new(state.policy_service.clone(), prompts.clone())),
+        Arc::new(super::manage_policy::ManagePolicyTool::new(
+            state.policy_service.clone(),
+            prompts.clone(),
+        )),
         Arc::new(super::skills::SkillsTool::new(
             state.skill_service.clone(),
             prompts.clone(),
@@ -523,8 +529,12 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         tools.push(Arc::new(super::voice::HangupCallTool {
             prompts: prompts.clone(),
         }));
-        tools.push(Arc::new(super::voice::SendDtmfTool { prompts: prompts.clone() }));
-        tools.push(Arc::new(super::voice::HangupCallTool { prompts: prompts.clone() }));
+        tools.push(Arc::new(super::voice::SendDtmfTool {
+            prompts: prompts.clone(),
+        }));
+        tools.push(Arc::new(super::voice::HangupCallTool {
+            prompts: prompts.clone(),
+        }));
         tools.push(Arc::new(super::voice::TransferCallTool {
             prompts: prompts.clone(),
             agent_service: state.agent_service.clone(),

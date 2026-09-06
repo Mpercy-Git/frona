@@ -247,7 +247,10 @@ async fn resolve_log_path(
     user_id: &str,
     server_id: &str,
 ) -> Result<std::path::PathBuf, ApiError> {
-    let server = state.mcp_service.find_by_id(server_id).await
+    let server = state
+        .mcp_service
+        .find_by_id(server_id)
+        .await
         .map_err(ApiError::from)?;
     if server.user_id != user_id {
         return Err(ApiError(crate::core::error::AppError::Forbidden(

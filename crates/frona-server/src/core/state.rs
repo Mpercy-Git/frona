@@ -22,7 +22,6 @@ use crate::auth::jwt::JwtService;
 use crate::auth::lockout::LoginAttemptTracker;
 use crate::auth::oauth::service::OAuthService;
 use crate::auth::password_reset::service::PasswordResetService;
-use crate::mail::MailService;
 use crate::auth::token::service::TokenService;
 use crate::call::CallService;
 use crate::chat::broadcast::BroadcastService;
@@ -31,14 +30,15 @@ use crate::contact::ContactService;
 use crate::credential::keypair::service::KeyPairService;
 use crate::credential::presign::PresignService;
 use crate::credential::vault::service::VaultService;
+use crate::db::repo::push_subscriptions::SurrealPushSubscriptionRepo;
 use crate::inference::ModelProviderRegistry;
 use crate::inference::config::ModelRegistryConfig;
+use crate::mail::MailService;
 use crate::memory::basic::BasicMemoryService;
 use crate::memory::pkm::PkmService;
-use crate::notification::service::NotificationService;
-use crate::notification::push_sender::PushSender;
 use crate::notification::push_repository::PushSubscriptionRepository;
-use crate::db::repo::push_subscriptions::SurrealPushSubscriptionRepo;
+use crate::notification::push_sender::PushSender;
+use crate::notification::service::NotificationService;
 use crate::policy::service::PolicyService;
 use crate::space::service::SpaceService;
 use crate::storage::StorageService;
@@ -86,7 +86,9 @@ impl ActiveSessions {
         if let Some((_, existing)) = map.get(chat_id) {
             existing.cancel();
         }
-        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let token = CancellationToken::new();
         map.insert(chat_id.to_string(), (id, token.clone()));
         (id, token)
@@ -103,7 +105,9 @@ impl ActiveSessions {
         if let Some((_, existing)) = map.get(chat_id) {
             existing.cancel();
         }
-        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         map.insert(chat_id.to_string(), (id, token));
         id
     }
@@ -913,11 +917,16 @@ impl AppState {
             Ok(Some(json)) => {
                 // Try new format (Vec<AllowlistEntry>) first, fall back to
                 // legacy Vec<String> and convert.
-                serde_json::from_str::<Vec<AllowlistEntry>>(&json)
-                    .unwrap_or_else(|_| {
-                        let phones: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
-                        phones.into_iter().map(|p| AllowlistEntry { phone: p, name: None }).collect()
-                    })
+                serde_json::from_str::<Vec<AllowlistEntry>>(&json).unwrap_or_else(|_| {
+                    let phones: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+                    phones
+                        .into_iter()
+                        .map(|p| AllowlistEntry {
+                            phone: p,
+                            name: None,
+                        })
+                        .collect()
+                })
             }
             _ => Vec::new(),
         }
@@ -938,9 +947,10 @@ impl AppState {
         }
         let mut list = self.get_allowlist(user_id).await;
         // If the phone already exists, update the name; otherwise add.
-        if let Some(entry) = list.iter_mut().find(|e| {
-            crate::tool::voice::normalize_phone(&e.phone) == normalized
-        }) {
+        if let Some(entry) = list
+            .iter_mut()
+            .find(|e| crate::tool::voice::normalize_phone(&e.phone) == normalized)
+        {
             if let Some(n) = name {
                 entry.name = Some(n.to_string());
             }
@@ -979,10 +989,7 @@ impl AppState {
     ///
     /// Returns `None` when the caller is not on any user's allowlist.
     /// When matched, returns the entry's `name` if set.
-    pub async fn find_user_for_caller(
-        &self,
-        phone: &str,
-    ) -> Option<(String, Option<String>)> {
+    pub async fn find_user_for_caller(&self, phone: &str) -> Option<(String, Option<String>)> {
         let normalized = crate::tool::voice::normalize_phone(phone);
         if normalized.is_empty() || normalized == "+" {
             return None;
@@ -1013,11 +1020,16 @@ impl AppState {
             };
 
             // Try new format (Vec<AllowlistEntry>) first, fall back to Vec<String>.
-            let entries: Vec<AllowlistEntry> = serde_json::from_str(value)
-                .unwrap_or_else(|_| {
-                    let phones: Vec<String> = serde_json::from_str(value).unwrap_or_default();
-                    phones.into_iter().map(|p| AllowlistEntry { phone: p, name: None }).collect()
-                });
+            let entries: Vec<AllowlistEntry> = serde_json::from_str(value).unwrap_or_else(|_| {
+                let phones: Vec<String> = serde_json::from_str(value).unwrap_or_default();
+                phones
+                    .into_iter()
+                    .map(|p| AllowlistEntry {
+                        phone: p,
+                        name: None,
+                    })
+                    .collect()
+            });
             for entry in &entries {
                 if crate::tool::voice::normalize_phone(&entry.phone) == normalized {
                     return Some((user_id.to_string(), entry.name.clone()));
@@ -1088,7 +1100,10 @@ mod tests {
         let (_id2, _second) = sessions.register("chat-1").await;
         sessions.remove("chat-1", id1).await; // stale — no-op
         assert_eq!(sessions.count().await, 1);
-        assert!(sessions.cancel("chat-1").await, "successor token still present");
+        assert!(
+            sessions.cancel("chat-1").await,
+            "successor token still present"
+        );
     }
 
     #[tokio::test]
@@ -1139,7 +1154,10 @@ mod tests {
         let _id = sessions.register_token("chat-1", token.clone()).await;
         assert!(!token.is_cancelled());
         assert!(sessions.cancel("chat-1").await);
-        assert!(token.is_cancelled(), "cancel() must fire the caller's token");
+        assert!(
+            token.is_cancelled(),
+            "cancel() must fire the caller's token"
+        );
     }
 
     #[tokio::test]
@@ -1149,7 +1167,10 @@ mod tests {
         let _id = sessions
             .register_token("chat-1", CancellationToken::new())
             .await;
-        assert!(first.is_cancelled(), "register_token supersedes the prior run");
+        assert!(
+            first.is_cancelled(),
+            "register_token supersedes the prior run"
+        );
         assert_eq!(sessions.count().await, 1);
     }
 

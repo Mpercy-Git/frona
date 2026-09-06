@@ -763,12 +763,13 @@ mod tests {
 
     #[test]
     fn strip_images_replaces_image_with_marker() {
-        let content =
-            vec![UserContent::text("hello"), image_block()];
+        let content = vec![UserContent::text("hello"), image_block()];
         let mut history = vec![RigMessage::User { content }];
         let n = strip_images_from_history(&mut history);
         assert_eq!(n, 1);
-        let RigMessage::User { content } = &history[0] else { panic!("expected user msg") };
+        let RigMessage::User { content } = &history[0] else {
+            panic!("expected user msg")
+        };
         assert!(content.iter().all(|c| !matches!(c, UserContent::Image(_))));
         // original text kept + one marker text block
         assert_eq!(content.iter().count(), 2);
@@ -780,7 +781,9 @@ mod tests {
         let mut history = vec![RigMessage::User { content }];
         let n = strip_images_from_history(&mut history);
         assert_eq!(n, 1);
-        let RigMessage::User { content } = &history[0] else { panic!("expected user msg") };
+        let RigMessage::User { content } = &history[0] else {
+            panic!("expected user msg")
+        };
         // must not be left empty (providers reject empty content)
         assert_eq!(content.iter().count(), 1);
         assert!(content.iter().all(|c| !matches!(c, UserContent::Image(_))));

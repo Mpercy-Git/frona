@@ -21,8 +21,14 @@ pub fn router() -> Router<AppState> {
             "/api/spaces/{id}",
             axum::routing::put(update_space).delete(delete_space),
         )
-        .route("/api/spaces/{id}/archive", axum::routing::post(archive_space))
-        .route("/api/spaces/{id}/unarchive", axum::routing::post(unarchive_space))
+        .route(
+            "/api/spaces/{id}/archive",
+            axum::routing::post(archive_space),
+        )
+        .route(
+            "/api/spaces/{id}/unarchive",
+            axum::routing::post(unarchive_space),
+        )
         .route("/api/spaces/{id}/stream", get(space_stream))
 }
 
