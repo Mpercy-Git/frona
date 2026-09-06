@@ -66,6 +66,52 @@ jobs:
         # others; we see every failure in a single run.
         run: cargo test -p frona-server --locked --no-fail-fast
 
+  # Formatting and lints. These have always been defined in mise.toml
+  # (`fmt:check`, `lint:backend`) but were never enforced anywhere, so `main`
+  # drifted to 92 unformatted files and 9 clippy findings. Gating them here is
+  # what stops that recurring.
+  lint:
+    name: Lint (fmt, clippy)
+    runs-on: ubuntu-latest
+    # Same reason as the backend job: .cargo/config.toml pins build.target-dir
+    # to a Windows path, which is not a valid path on Linux.
+    env:
+      CARGO_TARGET_DIR: target
+    steps:
+      - uses: actions/checkout@v4
+
+      # Clippy type-checks the whole workspace, so it needs the same native
+      # deps the backend job installs (libclang for bindgen-based -sys crates,
+      # protoc for presage's build scripts).
+      - name: Install native build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev protobuf-compiler
+
+      - name: Install Rust 1.97.1
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.97.1"
+          components: rustfmt, clippy
+          # Deliberately empty, for the same reason as the backend job: this
+          # would put -D warnings in RUSTFLAGS for the entire build, including
+          # dependencies, and the project has not adopted a zero-rustc-warning
+          # policy. The clippy step below opts into -D warnings for this
+          # workspace's own lints only, which is exactly what mise's
+          # `lint:backend` task already asks for.
+          rustflags: ""
+
+      # First because it is instant and needs no compilation: a formatting slip
+      # fails in seconds rather than after a full clippy build.
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      # --all-targets is intentionally omitted, matching mise's `lint:backend`.
+      # Test code is therefore not linted; widening that is a follow-up, not a
+      # silent expansion of this gate.
+      - name: Clippy
+        run: cargo clippy --workspace --locked -- -D warnings
+
   web:
     name: Web (typecheck, lint, test)
     runs-on: ubuntu-latest
