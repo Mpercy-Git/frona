@@ -385,7 +385,7 @@ pub(super) async fn twilio_inbound_handler(
         id: user.id.clone(),
         handle: user.handle.clone(),
         groups: user.groups.clone(),
-        deactivated_at: user.deactivated_at.clone(),
+        deactivated_at: user.deactivated_at,
         email: user.email.clone(),
         name: user.name.clone(),
         password_hash: String::new(),

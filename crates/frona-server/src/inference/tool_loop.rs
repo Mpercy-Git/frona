@@ -378,10 +378,7 @@ async fn execute_tool_calls(
             biased;
             res = &mut exec => Some(res),
             _ = ctx.cancel_token.cancelled() => {
-                match tokio::time::timeout(TOOL_CANCEL_GRACE, &mut exec).await {
-                    Ok(res) => Some(res),
-                    Err(_) => None,
-                }
+                tokio::time::timeout(TOOL_CANCEL_GRACE, &mut exec).await.ok()
             }
             _ = &mut timeout_fut => Some(Err(AppError::Internal(format!(
                 "Tool '{tool_name}' timed out after {}s",

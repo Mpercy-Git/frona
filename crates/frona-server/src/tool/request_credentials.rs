@@ -82,15 +82,15 @@ impl RequestCredentialsTool {
             for el in arr {
                 if let Some(s) = el.as_str() {
                     push(s, None);
-                } else if let Some(obj) = el.as_object() {
-                    if let Some(q) = obj.get("query").and_then(|v| v.as_str()) {
-                        let label = obj
-                            .get("label")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty());
-                        push(q, label);
-                    }
+                } else if let Some(obj) = el.as_object()
+                    && let Some(q) = obj.get("query").and_then(|v| v.as_str())
+                {
+                    let label = obj
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    push(q, label);
                 }
             }
         }

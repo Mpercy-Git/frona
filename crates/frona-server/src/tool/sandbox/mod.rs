@@ -810,10 +810,10 @@ impl Sandbox {
             .spawn()
             .map_err(|e| AppError::Tool(format!("Failed to spawn process: {e}")))?;
 
-        if !self.skip_resource_monitor {
-            if let Some(pid) = child.id() {
-                self.resource_manager.register(pid, &self.agent_id);
-            }
+        if !self.skip_resource_monitor
+            && let Some(pid) = child.id()
+        {
+            self.resource_manager.register(pid, &self.agent_id);
         }
 
         Ok(child)

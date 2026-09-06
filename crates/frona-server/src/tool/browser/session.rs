@@ -154,10 +154,10 @@ impl BrowserSessionManager {
         let key = Self::profile_key(user_handle, provider);
 
         // Fast path: no lock needed just to reuse an already-alive connection.
-        if let Some(conn) = self.sessions.read().await.get(&key).cloned() {
-            if conn.is_alive() {
-                return Ok(conn);
-            }
+        if let Some(conn) = self.sessions.read().await.get(&key).cloned()
+            && conn.is_alive()
+        {
+            return Ok(conn);
         }
 
         // Serialize the check-then-create-then-insert sequence per profile so
