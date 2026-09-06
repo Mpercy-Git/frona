@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useHashNavigate } from "@/lib/hash-navigate";
 import {
   AdjustmentsVerticalIcon,
+  BanknotesIcon,
   BeakerIcon,
   Cog6ToothIcon,
   CloudIcon,
@@ -23,7 +24,7 @@ interface ServerEntry {
   label: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
-  requires: "admin" | "list_users";
+  requires: "admin" | "list_users" | "view_costs";
   divider?: boolean;
 }
 
@@ -37,6 +38,7 @@ const ENTRIES: ServerEntry[] = [
   { label: "Browser", href: "/admin/settings#browser", icon: GlobeAltIcon, requires: "admin" },
   { label: "Sandbox", href: "/admin/settings#sandbox", icon: BeakerIcon, requires: "admin" },
   { label: "Users", href: "/admin/settings#users", icon: UsersIcon, requires: "list_users" },
+  { label: "Costs", href: "/admin/settings#costs", icon: BanknotesIcon, requires: "view_costs" },
   { label: "Server Settings", href: "/admin/settings#providers", icon: Cog6ToothIcon, requires: "admin", divider: true },
 ];
 
@@ -54,10 +56,18 @@ export function ServerDropdown() {
 
   const isAdmin = user?.permissions?.is_admin === true;
   const canListUsers = user?.permissions?.list_users === true;
+  const canViewCosts = user?.permissions?.view_usage_analytics === true;
 
-  const visible = ENTRIES.filter((e) =>
-    e.requires === "admin" ? isAdmin : canListUsers,
-  );
+  const visible = ENTRIES.filter((e) => {
+    switch (e.requires) {
+      case "admin":
+        return isAdmin;
+      case "list_users":
+        return canListUsers;
+      case "view_costs":
+        return canViewCosts;
+    }
+  });
 
   useEffect(() => {
     if (!open || mobile) return;

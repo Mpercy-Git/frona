@@ -2,6 +2,7 @@ pub mod annotate;
 pub mod await_signal;
 pub mod browser;
 pub mod cli;
+pub mod cost_analysis;
 pub mod create_agent;
 pub mod files;
 pub mod heartbeat;

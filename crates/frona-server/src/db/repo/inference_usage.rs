@@ -7,7 +7,7 @@ use crate::core::error::AppError;
 use crate::inference::usage::models::UsageRollup;
 use crate::inference::usage::{
     BucketLatencyRow, ChatCostRow, InferenceUsage, InferenceUsageRepository, LatencyPercentiles,
-    ModelLatencyRow, TimeBucket, UsageBucket,
+    ModelLatencyRow, ModelSpendRow, ProviderSpendRow, TimeBucket, UsageBucket, UserCostRow,
 };
 
 use super::generic::SurrealRepo;
@@ -471,6 +471,220 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
             denan(&mut r.ttft_ms_p99);
         }
         Ok(rows)
+    }
+
+    // ---- Instance-wide rollups (see the trait for the authorization note) ---
+
+    async fn aggregate_all(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<UsageRollup, AppError> {
+        // `window_clause` always opens with " AND ", so an unscoped query needs
+        // a WHERE that is already true rather than a second clause-shape to
+        // maintain.
+        let (window_clause, bindings) = window_clause(since, until);
+        let query = format!("{ROLLUP_SELECT} WHERE true{window_clause} GROUP ALL");
+        let mut req = self.db().query(&query);
+        for (k, v) in bindings {
+            req = req.bind((k, v));
+        }
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
+        let rollup: Option<UsageRollup> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(rollup.unwrap_or_default())
+    }
+
+    async fn aggregate_by_provider_all(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ProviderSpendRow>, AppError> {
+        let (window_clause, bindings) = window_clause(since, until);
+        let query = format!(
+            "SELECT \
+                provider, \
+                billing_kind ?? '' AS billing_kind, \
+                math::sum(input_tokens) AS input_tokens, \
+                math::sum(cached_input_tokens) AS cached_input_tokens, \
+                math::sum(output_tokens) AS output_tokens, \
+                <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
+                count() AS calls \
+                FROM inference_usage \
+                WHERE true{window_clause} \
+                GROUP BY provider, billing_kind"
+        );
+        let mut req = self.db().query(&query);
+        for (k, v) in bindings {
+            req = req.bind((k, v));
+        }
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
+        let rows: Vec<ProviderSpendRow> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(rows)
+    }
+
+    async fn aggregate_by_model_all(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ModelSpendRow>, AppError> {
+        let (window_clause, bindings) = window_clause(since, until);
+        // `math::mean` *is* an aggregator, unlike `math::percentile` (see
+        // `latency_by_model`), so mean latency rides the same GROUP BY instead
+        // of costing one subquery per model over an unscoped row set.
+        let query = format!(
+            "SELECT \
+                model_ref, \
+                provider, \
+                model_group, \
+                billing_kind ?? '' AS billing_kind, \
+                math::sum(input_tokens) AS input_tokens, \
+                math::sum(cached_input_tokens) AS cached_input_tokens, \
+                math::sum(output_tokens) AS output_tokens, \
+                <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
+                count() AS calls, \
+                count(cost_usd IS NONE) AS uncosted_calls, \
+                <float>math::mean(duration_ms) AS duration_ms_mean \
+                FROM inference_usage \
+                WHERE true{window_clause} \
+                GROUP BY model_ref, provider, model_group, billing_kind"
+        );
+        let mut req = self.db().query(&query);
+        for (k, v) in bindings {
+            req = req.bind((k, v));
+        }
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
+        let mut rows: Vec<ModelSpendRow> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        for r in &mut rows {
+            denan(&mut r.duration_ms_mean);
+        }
+        Ok(rows)
+    }
+
+    async fn aggregate_by_model_group_all(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<HashMap<String, UsageRollup>, AppError> {
+        self.grouped_rollup_all("model_group", since, until).await
+    }
+
+    async fn aggregate_by_kind_all(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<HashMap<String, UsageRollup>, AppError> {
+        self.grouped_rollup_all("kind_tag", since, until).await
+    }
+
+    async fn top_users_by_cost(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+        limit: usize,
+    ) -> Result<Vec<UserCostRow>, AppError> {
+        let (window_clause, bindings) = window_clause(since, until);
+        let query = format!(
+            "SELECT \
+                user_id, \
+                <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
+                count() AS calls, \
+                math::sum(input_tokens) AS input_tokens, \
+                math::sum(output_tokens) AS output_tokens \
+                FROM inference_usage \
+                WHERE true{window_clause} \
+                GROUP BY user_id \
+                ORDER BY cost_usd DESC \
+                LIMIT {limit}"
+        );
+        let mut req = self.db().query(&query);
+        for (k, v) in bindings {
+            req = req.bind((k, v));
+        }
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
+        let rows: Vec<UserCostRow> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(rows)
+    }
+
+    async fn aggregate_buckets_all(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        bucket: TimeBucket,
+    ) -> Result<Vec<UsageBucket>, AppError> {
+        let dur = bucket.duration_literal();
+        let query = format!(
+            "SELECT \
+                time::floor(created_at, {dur}) AS bucket, \
+                math::sum(input_tokens) AS input_tokens, \
+                math::sum(cached_input_tokens) AS cached_input_tokens, \
+                math::sum(output_tokens) AS output_tokens, \
+                <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
+                count() AS calls \
+                FROM inference_usage \
+                WHERE created_at >= $since AND created_at < $until \
+                GROUP BY bucket \
+                ORDER BY bucket ASC"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("since", since))
+            .bind(("until", until))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let rows: Vec<UsageBucket> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(rows)
+    }
+}
+
+impl SurrealRepo<InferenceUsage> {
+    /// Instance-wide `GROUP BY <column>` rollup. `column` is a literal picked
+    /// by a caller inside this module — never user input — so interpolating it
+    /// is safe; SurrealDB has no bind form for an identifier position.
+    async fn grouped_rollup_all(
+        &self,
+        column: &str,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<HashMap<String, UsageRollup>, AppError> {
+        let (window_clause, bindings) = window_clause(since, until);
+        let query = format!(
+            "SELECT \
+                {column} AS key, \
+                math::sum(input_tokens) AS input_tokens, \
+                math::sum(cached_input_tokens) AS cached_input_tokens, \
+                math::sum(output_tokens) AS output_tokens, \
+                <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
+                count() AS calls \
+                FROM inference_usage \
+                WHERE true{window_clause} \
+                GROUP BY {column}"
+        );
+        let mut req = self.db().query(&query);
+        for (k, v) in bindings {
+            req = req.bind((k, v));
+        }
+        let mut result = req.await.map_err(|e| AppError::Database(e.to_string()))?;
+        let rows: Vec<GroupedRollup> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let key = r.key.clone();
+                (key, r.rollup())
+            })
+            .collect())
     }
 }
 

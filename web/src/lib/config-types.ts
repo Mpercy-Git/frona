@@ -201,6 +201,23 @@ export interface ModelProviderConfig {
   /** Azure OpenAI only — its data plane is versioned in the query string. */
   api_version?: string | null;
   enabled: boolean;
+  /** How this provider charges. Affects cost reporting only, never routing.
+   *  Absent means unstated, which the server resolves per provider: local
+   *  runtimes as self-hosted, everything else as pay-as-you-go. */
+  billing?: ProviderBilling | null;
+}
+
+export type ProviderBillingKind = "metered" | "subscription" | "self_hosted";
+
+export interface ProviderBilling {
+  kind: ProviderBillingKind;
+  monthly_cost?: number | null;
+  currency?: string | null;
+  included_tokens?: number | null;
+  included_spend_usd?: number | null;
+  overage_is_metered: boolean;
+  renewal_day?: number | null;
+  notes?: string | null;
 }
 
 export interface InferenceConfig {

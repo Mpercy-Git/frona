@@ -449,4 +449,22 @@ namespace Policy {
         principal: [User],
         resource: [User],
     };
+
+    // Read instance-wide inference usage and cost - every user's spend, not
+    // just your own. Backs the admin cost dashboard and the cost-analyst
+    // agent's tools. No specific target (the sentinel UID "*" is used at
+    // runtime), and deliberately separate from list_users so spend visibility
+    // and account administration can be granted independently.
+    //
+    // Principal: User    Resource: User (sentinel "*")
+    //
+    // Example:
+    //   // let a finance group see spend without letting them manage accounts
+    //   permit(principal in Policy::UserGroup::"finance",
+    //          action == Policy::Action::"view_usage_analytics",
+    //          resource);
+    action view_usage_analytics appliesTo {
+        principal: [User],
+        resource: [User],
+    };
 }

@@ -27,6 +27,7 @@ import { SkillsSection } from "@/components/settings/sections/skills-section";
 import { SandboxSettingsSection } from "@/components/settings/sections/sandbox-section";
 import { AgentsSection } from "@/components/settings/sections/agents-section";
 import { LogsSection } from "@/components/settings/sections/logs-section";
+import { CostReportsSection } from "@/components/settings/sections/cost-reports-section";
 import { getConfig, updateConfig } from "@/lib/config-types";
 import type { Config } from "@/lib/config-types";
 
@@ -45,6 +46,7 @@ const TABS = [
   { id: "sso", label: "Single Sign-On", saveable: true, divider: false },
   { id: "mail", label: "Email", saveable: true, divider: false },
   { id: "users", label: "Users", saveable: false, divider: false },
+  { id: "costs", label: "Costs", saveable: false, divider: false },
   { id: "timezone", label: "Timezone", saveable: true, divider: true },
   { id: "server", label: "Server", saveable: true, divider: false },
   { id: "advanced", label: "Advanced", saveable: true, divider: false },
@@ -58,7 +60,8 @@ export default function AdminSettingsPage() {
   const { user } = useAuth();
   const isAdmin = user?.permissions?.is_admin === true;
   const canListUsers = user?.permissions?.list_users === true;
-  const hasAccess = isAdmin || canListUsers;
+  const canViewCosts = user?.permissions?.view_usage_analytics === true;
+  const hasAccess = isAdmin || canListUsers || canViewCosts;
 
   useEffect(() => {
     if (user && !hasAccess) router.replace("/settings");
@@ -75,7 +78,8 @@ export default function AdminSettingsPage() {
       const hash = window.location.hash.slice(1);
       if (TABS.some((t) => t.id === hash)) return hash as TabId;
     }
-    return isAdmin ? "providers" : "users";
+    if (isAdmin) return "providers";
+    return canListUsers ? "users" : "costs";
   });
 
   const setActiveTab = useCallback((tab: TabId) => {
@@ -179,8 +183,14 @@ export default function AdminSettingsPage() {
   const { mobileSubNavOpen: sidebarOpen, setMobileSubNavOpen: setSidebarOpen } = useNavigation();
 
   const visibleTabs = useMemo(() => {
-    return TABS.filter((t) => (t.id === "users" ? canListUsers : isAdmin));
-  }, [canListUsers, isAdmin]);
+    return TABS.filter((t) => {
+      if (t.id === "users") return canListUsers;
+      // Spend visibility is its own Cedar capability, so a custom policy can
+      // grant it to a group that isn't `admins`.
+      if (t.id === "costs") return canViewCosts;
+      return isAdmin;
+    });
+  }, [canListUsers, canViewCosts, isAdmin]);
 
   const sidebarContent = (
     <>
@@ -274,6 +284,7 @@ export default function AdminSettingsPage() {
               {activeTab === "skills" && <SkillsSection scope="shared" />}
               {activeTab === "agents" && <AgentsSection />}
               {activeTab === "logs" && <LogsSection />}
+              {activeTab === "costs" && <CostReportsSection />}
               {isConfigTab && configLoading && (
                 <p className="text-sm text-text-tertiary">Loading configuration...</p>
               )}

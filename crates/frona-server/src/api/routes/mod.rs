@@ -8,6 +8,7 @@ pub mod chats;
 pub mod commands;
 pub mod config;
 pub mod contacts;
+pub mod cost;
 pub mod files;
 pub mod mcp;
 pub mod memory_pkm;

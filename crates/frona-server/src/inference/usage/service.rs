@@ -2,11 +2,15 @@
 //! `record()`, which persists the row, emits Prometheus metrics, and
 //! dispatches the SSE event.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use chrono::Utc;
 use metrics::{counter, gauge, histogram};
 use rig_core::completion::request::Usage;
 
 use crate::chat::broadcast::BroadcastService;
+use crate::core::config::ProviderBillingKind;
 use crate::core::repository::{Repository, new_id};
 use crate::db::repo::generic::SurrealRepo;
 use crate::inference::metadata::{ModelCatalogStore, total_prompt_usage};
@@ -51,6 +55,11 @@ pub struct UsageService {
     catalog: ModelCatalogStore,
     repo: SurrealRepo<InferenceUsage>,
     broadcast: BroadcastService,
+    /// Billing kind per provider name, snapshotted from config at boot (see
+    /// `Config::provider_billing_kinds`). Providers absent from the map fall
+    /// back to `ProviderBillingKind::default_for_provider`, which keeps a
+    /// provider reached without an explicit config entry classified sensibly.
+    billing_kinds: Arc<HashMap<String, ProviderBillingKind>>,
 }
 
 impl UsageService {
@@ -58,12 +67,22 @@ impl UsageService {
         catalog: ModelCatalogStore,
         repo: SurrealRepo<InferenceUsage>,
         broadcast: BroadcastService,
+        billing_kinds: Arc<HashMap<String, ProviderBillingKind>>,
     ) -> Self {
         Self {
             catalog,
             repo,
             broadcast,
+            billing_kinds,
         }
+    }
+
+    /// How the provider serving `provider_name` bills, per config at boot.
+    fn billing_kind(&self, provider_name: &str) -> ProviderBillingKind {
+        self.billing_kinds
+            .get(provider_name)
+            .copied()
+            .unwrap_or_else(|| ProviderBillingKind::default_for_provider(provider_name))
     }
 
     /// The only way to record an inference call.
@@ -80,15 +99,12 @@ impl UsageService {
             counter!(MODEL_METADATA_LOOKUP_MISSES_TOTAL, "model_ref" => model_ref.as_str())
                 .increment(1);
         }
-        let row = build_row(
-            usage_ctx,
-            model_ref,
-            usage,
-            fallback_index,
-            latency,
+        let pricing = PricingSnapshot {
             cost_usd,
             pricing_version,
-        );
+            billing_kind: self.billing_kind(model_ref.provider_name()),
+        };
+        let row = build_row(usage_ctx, model_ref, usage, fallback_index, latency, pricing);
 
         // Persistence failure logs but never propagates - observability never
         // blocks the user's reply.
@@ -201,14 +217,23 @@ fn emit_metrics(row: &InferenceUsage) {
     }
 }
 
+/// What was known about price when a row was written, kept together because
+/// the three are only ever meaningful as a set: a `cost_usd` says nothing
+/// without the catalogue version it came from and the billing regime it was
+/// charged under.
+struct PricingSnapshot {
+    cost_usd: Option<f64>,
+    pricing_version: String,
+    billing_kind: ProviderBillingKind,
+}
+
 fn build_row(
     usage_ctx: &UsageContext,
     model_ref: &ModelRef,
     usage: &Usage,
     fallback_index: u8,
     latency: LatencyMetrics,
-    cost_usd: Option<f64>,
-    pricing_version: String,
+    pricing: PricingSnapshot,
 ) -> InferenceUsage {
     let kind = &usage_ctx.kind;
     let output_tokens_per_second = compute_output_tps(usage.output_tokens, latency);
@@ -241,8 +266,9 @@ fn build_row(
         output_tokens_per_second,
         retry_overhead_ms: latency.retry_overhead_ms,
         retry_count: latency.retry_count,
-        cost_usd,
-        pricing_version,
+        cost_usd: pricing.cost_usd,
+        pricing_version: pricing.pricing_version,
+        billing_kind: pricing.billing_kind.as_str().to_string(),
         created_at: Utc::now(),
     }
 }
@@ -289,8 +315,11 @@ mod tests {
             usage,
             0,
             LatencyMetrics::default(),
-            None,
-            "test".to_string(),
+            PricingSnapshot {
+                cost_usd: None,
+                pricing_version: "test".to_string(),
+                billing_kind: ProviderBillingKind::default_for_provider(provider),
+            },
         )
     }
 

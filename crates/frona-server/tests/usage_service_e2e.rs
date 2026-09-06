@@ -63,6 +63,7 @@ async fn fresh_service() -> (Surreal<surrealdb::engine::local::Db>, UsageService
         catalog,
         SurrealRepo::<InferenceUsage>::new(db.clone()),
         BroadcastService::new(),
+        std::sync::Arc::new(std::collections::HashMap::new()),
     );
     (db, svc)
 }

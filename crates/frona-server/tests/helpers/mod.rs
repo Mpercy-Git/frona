@@ -174,6 +174,10 @@ pub fn test_usage_service(db: &Surreal<Db>) -> frona::inference::usage::UsageSer
         ),
         SurrealRepo::new(db.clone()),
         frona::chat::broadcast::BroadcastService::new(),
+        // No configured providers: every provider falls back to
+        // `ProviderBillingKind::default_for_provider`, which is what an
+        // unconfigured install does anyway.
+        std::sync::Arc::new(std::collections::HashMap::new()),
     )
 }
 

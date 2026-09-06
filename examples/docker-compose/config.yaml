@@ -106,11 +106,31 @@
 # API keys are read from environment variables via ${VAR} expansion.
 # Only configure providers whose API keys you've set in .env.
 
+# Each provider may also declare how it bills you, with an optional `billing`
+# block. This is read only by cost reporting - it never affects routing, and
+# omitting it keeps the pre-existing behaviour (pay-as-you-go for hosted
+# providers, self-hosted for Ollama and llamafile).
+#
+# It matters because the recorded cost of a call means something different
+# under each: metered spend is money that left your account, while a
+# subscription's is the list-price value of usage its fee already covers.
+# Telling the server which is which is what lets the cost analyst say whether a
+# plan earns its keep.
+
 # providers:
 #  anthropic:
 #    api_key: "${ANTHROPIC_API_KEY}"
+#    billing:
+#      kind: subscription        # metered | subscription | self_hosted
+#      monthly_cost: 20
+#      currency: USD             # display only - no conversion is performed
+#      included_spend_usd: 20    # allowance at list price, reset each period
+#      overage_is_metered: true  # usage past the allowance bills per token
+#      renewal_day: 1
 #  openai:
 #    api_key: "${OPENAI_API_KEY}"
+#    billing:
+#      kind: metered
 #  groq:
 #    api_key: "${GROQ_API_KEY}"
 #  openrouter:

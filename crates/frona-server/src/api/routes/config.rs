@@ -7,9 +7,40 @@ use crate::core::config::{
     redact_config_for_api,
 };
 use crate::core::state::AppState;
+use crate::policy::models::PolicyAction;
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
+
+/// Server configuration is operator territory. `GET` stays open to any signed-in
+/// user (it is redacted, and the settings UI reads it to render), but writing it
+/// — provider credentials, billing terms, auth secrets — is gated on the same
+/// `list_users` capability the log stream uses to mean "this person operates the
+/// server". The first registered user is promoted to `admins` by
+/// `ensure_admin_invariant` during registration, so the setup wizard still works
+/// on a fresh install.
+async fn require_operator(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
+    let caller = state
+        .user_service
+        .find_by_id(&auth.user_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError(crate::core::error::AppError::NotFound(
+                "User not found".into(),
+            ))
+        })?;
+    let decision = state
+        .policy_service
+        .authorize_user(&caller, PolicyAction::ListUsers)
+        .await?;
+    if decision.allowed {
+        Ok(())
+    } else {
+        Err(ApiError(crate::core::error::AppError::Forbidden(
+            "Changing server configuration requires administrator privileges".into(),
+        )))
+    }
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -39,10 +70,12 @@ async fn get_config(_auth: AuthUser) -> Result<Json<serde_json::Value>, ApiError
 }
 
 async fn update_config(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Json(patch): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    require_operator(&state, &auth).await?;
+
     let path = config_file_path();
 
     let raw_yaml = std::fs::read_to_string(&path).unwrap_or_default();

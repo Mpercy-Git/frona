@@ -378,7 +378,9 @@ impl PolicyService {
                 sender,
                 ..
             } => super::schema::message_source_entity_uid(connector_id, &sender.address),
-            PolicyAction::ListUsers | PolicyAction::ManageUsers { .. } => {
+            PolicyAction::ListUsers
+            | PolicyAction::ManageUsers { .. }
+            | PolicyAction::ViewUsageAnalytics => {
                 return Err(AppError::Internal(
                     "authorize() called with a user-level action; use authorize_user() instead"
                         .into(),
@@ -488,7 +490,9 @@ impl PolicyService {
                     sender,
                 )
             }
-            PolicyAction::ListUsers | PolicyAction::ManageUsers { .. } => {
+            PolicyAction::ListUsers
+            | PolicyAction::ManageUsers { .. }
+            | PolicyAction::ViewUsageAnalytics => {
                 return Err(AppError::Internal(
                     "authorize() called with a user-level action; use authorize_user() instead"
                         .into(),
@@ -570,7 +574,7 @@ impl PolicyService {
         let action_name = action.cedar_action_name();
 
         let target_id = match &action {
-            PolicyAction::ListUsers => "*".to_string(),
+            PolicyAction::ListUsers | PolicyAction::ViewUsageAnalytics => "*".to_string(),
             PolicyAction::ManageUsers { target_user_id } => target_user_id.clone(),
             _ => {
                 return Err(AppError::Internal(

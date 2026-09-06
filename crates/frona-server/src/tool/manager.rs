@@ -465,6 +465,11 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             state.policy_service.clone(),
             prompts.clone(),
         )),
+        Arc::new(super::cost_analysis::CostAnalysisTool::new(
+            state.cost_service.clone(),
+            state.policy_service.clone(),
+            prompts.clone(),
+        )),
         Arc::new(super::manage_policy::ManagePolicyTool::new(state.policy_service.clone(), prompts.clone())),
         Arc::new(super::skills::SkillsTool::new(
             state.skill_service.clone(),

@@ -1,6 +1,10 @@
 export interface UserPermissions {
   list_users: boolean;
   is_admin: boolean;
+  /** May read instance-wide usage and cost. Like `list_users` this is the
+   *  Cedar decision rather than raw group membership, so a custom policy can
+   *  grant it to a non-admin group. */
+  view_usage_analytics: boolean;
 }
 
 export interface UserInfo {
@@ -518,6 +522,7 @@ export type NotificationData =
   | { type: "App"; app_handle: string; action: string }
   | { type: "Agent"; agent_id: string; chat_id: string }
   | { type: "Task"; task_id: string }
+  | { type: "CostReport"; report_id: string }
   | { type: "System" }
   | { type: "Security" };
 
@@ -536,4 +541,110 @@ export interface Notification {
 export interface NavigationResponse {
   spaces: SpaceWithChats[];
   standalone_chats: ChatResponse[];
+}
+
+// ---- Cost analysis -------------------------------------------------------
+
+export type ProviderBillingKind = "metered" | "subscription" | "self_hosted";
+
+export interface ProviderBilling {
+  kind: ProviderBillingKind;
+  monthly_cost?: number | null;
+  currency?: string | null;
+  included_tokens?: number | null;
+  included_spend_usd?: number | null;
+  overage_is_metered: boolean;
+  renewal_day?: number | null;
+  notes?: string | null;
+}
+
+export interface AllowanceStatus {
+  included_tokens: number | null;
+  tokens_used: number;
+  included_spend_usd: number | null;
+  list_value_used_usd: number;
+  used_pct: number;
+  exceeded: boolean;
+  overage_is_metered: boolean;
+}
+
+export interface ProviderSpend {
+  provider: string;
+  billing: ProviderBilling;
+  recorded_kinds: ProviderBillingKind[];
+  rollup: {
+    input_tokens: number;
+    cached_input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+    calls: number;
+  };
+  prorated_fee_usd: number;
+  allowance: AllowanceStatus | null;
+}
+
+export interface ModelSpendRow {
+  model_ref: string;
+  provider: string;
+  model_group: string;
+  billing_kind: string;
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  calls: number;
+  duration_ms_mean: number | null;
+  uncosted_calls: number;
+}
+
+export interface AdminSpendAnalysis {
+  window_since: string;
+  window_until: string;
+  window_days: number;
+  totals: { input_tokens: number; cached_input_tokens: number; output_tokens: number; cost_usd: number; calls: number };
+  metered_cost_usd: number;
+  subscription_cost_usd: number;
+  subscription_list_value_usd: number;
+  self_hosted_list_value_usd: number;
+  uncosted_calls: number;
+  providers: ProviderSpend[];
+  models: ModelSpendRow[];
+  by_model_group: Record<string, { cost_usd: number; calls: number; input_tokens: number; output_tokens: number; cached_input_tokens: number }>;
+  by_kind: Record<string, { cost_usd: number; calls: number; input_tokens: number; output_tokens: number; cached_input_tokens: number }>;
+  top_users: { user_id: string; cost_usd: number; calls: number; input_tokens: number; output_tokens: number }[];
+  pricing_version: string;
+}
+
+export type RecommendationKind =
+  | "switch_model"
+  | "rebalance_provider"
+  | "enable_caching"
+  | "subscription_underused"
+  | "subscription_overrun"
+  | "pricing_gap";
+
+export interface CostRecommendation {
+  kind: RecommendationKind;
+  model_group?: string | null;
+  from?: string | null;
+  to?: string | null;
+  rationale: string;
+  estimated_monthly_delta_usd?: number | null;
+  confidence: "high" | "medium" | "low";
+}
+
+export interface CostReport {
+  id: string;
+  user_id: string;
+  window_since: string;
+  window_until: string;
+  summary: string;
+  recommendations: CostRecommendation[];
+  totals: { input_tokens: number; cached_input_tokens: number; output_tokens: number; cost_usd: number; calls: number };
+  metered_cost_usd: number;
+  subscription_cost_usd: number;
+  subscription_list_value_usd: number;
+  estimated_monthly_savings_usd: number | null;
+  pricing_version: string;
+  created_at: string;
 }

@@ -9,6 +9,7 @@ pub mod chat;
 pub mod cli;
 pub mod contact;
 pub mod core;
+pub mod cost;
 pub mod credential;
 pub mod db;
 pub mod inference;

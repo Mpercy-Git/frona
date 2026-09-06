@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import type { ModelProviderConfig, SensitiveField } from "@/lib/config-types";
+import type { ModelProviderConfig, ProviderBilling, ProviderBillingKind, SensitiveField } from "@/lib/config-types";
 import { getProviderModels } from "@/lib/config-types";
-import { SensitiveInput, TextInput, SectionHeader } from "@/components/settings/field";
+import { SensitiveInput, TextInput, NumberInput, SelectInput, Toggle, SectionHeader } from "@/components/settings/field";
 import { CloudIcon } from "@heroicons/react/24/outline";
 
 const KNOWN_PROVIDERS = [
@@ -78,6 +78,7 @@ export interface ProviderState {
   base_url: string | null;
   api_version: string | null;
   enabled: boolean;
+  billing: ProviderBilling | null;
   testStatus: TestStatus;
   /** Provider error message when testStatus === "error". */
   testError?: string;
@@ -104,6 +105,7 @@ function buildStates(
       base_url: cfg.base_url,
       api_version: cfg.api_version ?? null,
       enabled: cfg.enabled !== false,
+      billing: cfg.billing ?? null,
       testStatus: existing?.testStatus ?? "idle" as TestStatus,
       testError: existing?.testError,
     };
@@ -203,6 +205,116 @@ export function TestStatusIcon({ status }: { status: TestStatus }) {
   return null;
 }
 
+/** Local runtimes have no hosted price, so the server classifies them as
+ *  self-hosted when the operator says nothing. Mirrored here so the form shows
+ *  the same default rather than implying pay-as-you-go. */
+function defaultBillingKind(providerId: string): ProviderBillingKind {
+  return providerId === "ollama" || providerId === "llamafile" ? "self_hosted" : "metered";
+}
+
+const BILLING_KIND_OPTIONS = [
+  { value: "metered", label: "Pay as you go (per token)" },
+  { value: "subscription", label: "Subscription (flat fee)" },
+  { value: "self_hosted", label: "Self-hosted (no billing)" },
+];
+
+/** Billing terms. Read only by cost reporting — nothing here affects routing,
+ *  credentials, or which model serves a request. */
+function BillingFields({
+  providerId,
+  billing,
+  onChange,
+}: {
+  providerId: string;
+  billing: ProviderBilling | null;
+  onChange: (billing: ProviderBilling | null) => void;
+}) {
+  const kind = billing?.kind ?? defaultBillingKind(providerId);
+
+  const patch = (fields: Partial<ProviderBilling>) =>
+    onChange({
+      kind,
+      overage_is_metered: billing?.overage_is_metered ?? false,
+      ...billing,
+      ...fields,
+    });
+
+  return (
+    <div className="space-y-4 rounded-lg border border-border/60 bg-surface p-3">
+      <SelectInput
+        label="Billing"
+        description="Used for cost reporting only. A subscription's recorded cost is the list-price value of usage the fee already covers, not money spent — telling the server which is which is what lets it judge whether a plan is worth its fee."
+        value={kind}
+        allowEmpty={false}
+        onChange={(value) =>
+          patch({ kind: (value as ProviderBillingKind) ?? defaultBillingKind(providerId) })
+        }
+        options={BILLING_KIND_OPTIONS}
+      />
+
+      {kind === "subscription" && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <NumberInput
+              label="Monthly fee"
+              value={billing?.monthly_cost ?? undefined}
+              onChange={(value) => patch({ monthly_cost: value })}
+              min={0}
+              step={0.01}
+              placeholder="20"
+            />
+            <TextInput
+              label="Currency"
+              description="Display only — no conversion is performed."
+              value={billing?.currency ?? null}
+              onChange={(value) => patch({ currency: value || null })}
+              placeholder="USD"
+            />
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <NumberInput
+              label="Included credit (USD)"
+              description="Allowance at list price, reset each period. Leave blank if the plan has no cap."
+              value={billing?.included_spend_usd ?? undefined}
+              onChange={(value) => patch({ included_spend_usd: value })}
+              min={0}
+              step={0.01}
+              placeholder="20"
+            />
+            <NumberInput
+              label="Included tokens"
+              description="Token allowance, if the plan states one."
+              value={billing?.included_tokens ?? undefined}
+              onChange={(value) => patch({ included_tokens: value })}
+              min={0}
+              step={1}
+              placeholder="1000000"
+            />
+          </div>
+
+          <NumberInput
+            label="Renewal day"
+            description="Day of the month the allowance resets, 1–28."
+            value={billing?.renewal_day ?? undefined}
+            onChange={(value) => patch({ renewal_day: value })}
+            min={1}
+            max={28}
+            step={1}
+            placeholder="1"
+          />
+
+          <Toggle
+            label="Usage past the allowance is billed per token"
+            value={billing?.overage_is_metered ?? false}
+            onChange={(value) => patch({ overage_is_metered: value })}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
 interface ProviderCardProps {
   state: ProviderState;
   onChange: (updated: ModelProviderConfig) => void;
@@ -221,6 +333,7 @@ function ProviderCard({ state, onChange, onToggle }: ProviderCardProps) {
       base_url: state.base_url,
       api_version: state.api_version,
       enabled: state.enabled,
+      billing: state.billing,
       ...fields,
     });
   return (
@@ -276,6 +389,12 @@ function ProviderCard({ state, onChange, onToggle }: ProviderCardProps) {
           placeholder="2024-10-21"
         />
       )}
+
+      <BillingFields
+        providerId={state.id}
+        billing={state.billing}
+        onChange={(billing) => patch({ billing })}
+      />
 
       {state.testStatus === "error" && state.testError && (
         <p className="rounded-lg bg-error-bg px-3 py-2 text-xs text-error-text break-words">

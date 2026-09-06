@@ -1021,6 +1021,16 @@ pub struct ModelProviderConfig {
     )]
     #[schemars(description = "Whether this provider is enabled.")]
     pub enabled: bool,
+    /// How this provider charges. Purely descriptive - nothing on the inference
+    /// path reads it. It exists so cost analysis can tell money that actually
+    /// left the account (metered) from usage covered by a flat fee already paid
+    /// (subscription) or by hardware you own (self-hosted). `None` means
+    /// "unstated", which `effective_billing` resolves per provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "How this provider bills you. Optional; affects cost reporting only, never routing."
+    )]
+    pub billing: Option<ProviderBilling>,
 }
 
 impl Default for ModelProviderConfig {
@@ -1030,6 +1040,124 @@ impl Default for ModelProviderConfig {
             base_url: None,
             api_version: None,
             enabled: true,
+            billing: None,
+        }
+    }
+}
+
+impl ModelProviderConfig {
+    /// The billing terms to reason about for `provider_name`, filling in the
+    /// unambiguous cases when the operator stated nothing.
+    ///
+    /// A local runtime has no hosted price at all - models.dev files no `cost`
+    /// for it, so every call already records `cost_usd: None` - and charging it
+    /// at some notional list rate would be fiction. Everything else defaults to
+    /// metered, which is exactly how the whole codebase behaved before this
+    /// field existed.
+    pub fn effective_billing(&self, provider_name: &str) -> ProviderBilling {
+        self.billing.clone().unwrap_or_else(|| ProviderBilling {
+            kind: ProviderBillingKind::default_for_provider(provider_name),
+            ..ProviderBilling::default()
+        })
+    }
+}
+
+/// How an operator pays for a provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderBillingKind {
+    /// Billed per token at the published rate. Recorded `cost_usd` is real spend.
+    #[default]
+    Metered,
+    /// A flat recurring fee, optionally with an allowance. Recorded `cost_usd`
+    /// is the list-price *value* of what was consumed, not money spent.
+    Subscription,
+    /// You run it (Ollama, llamafile, your own vLLM). Marginal cost is hardware
+    /// and electricity, neither of which this codebase can see.
+    SelfHosted,
+}
+
+impl ProviderBillingKind {
+    /// Local runtimes are unambiguous enough to classify without being told.
+    pub fn default_for_provider(provider_name: &str) -> Self {
+        match provider_name {
+            "ollama" | "llamafile" => Self::SelfHosted,
+            _ => Self::Metered,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Metered => "metered",
+            Self::Subscription => "subscription",
+            Self::SelfHosted => "self_hosted",
+        }
+    }
+
+    /// Parse a persisted `billing_kind`. An empty string is a usage row written
+    /// before this field existed; every provider was metered then, so that is
+    /// what it means now.
+    pub fn from_str_or_metered(s: &str) -> Self {
+        match s {
+            "subscription" => Self::Subscription,
+            "self_hosted" => Self::SelfHosted,
+            _ => Self::Metered,
+        }
+    }
+}
+
+/// Billing terms for one provider. Every field bar `kind` is optional: an
+/// operator who only knows "this one is a subscription" still gets useful
+/// analysis, just without allowance arithmetic.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
+pub struct ProviderBilling {
+    #[schemars(
+        description = "metered (pay per token), subscription (flat recurring fee), or self_hosted (you run it)."
+    )]
+    pub kind: ProviderBillingKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Recurring fee per billing period, in `currency`.")]
+    pub monthly_cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "ISO currency code the fee is charged in, e.g. 'GBP'. Display only - no conversion is performed. Defaults to USD."
+    )]
+    pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Token allowance included in the fee, reset each period.")]
+    pub included_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Credit allowance included in the fee, in USD at list price, reset each period."
+    )]
+    pub included_spend_usd: Option<f64>,
+    #[serde(deserialize_with = "deserialize_bool_from_anything")]
+    #[schemars(description = "Whether usage past the allowance is billed per token at list rate.")]
+    pub overage_is_metered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Day of month the allowance resets, 1-28.")]
+    pub renewal_day: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Free-text note for whoever reads the cost report.")]
+    pub notes: Option<String>,
+}
+
+impl ProviderBilling {
+    pub fn currency_or_usd(&self) -> &str {
+        self.currency.as_deref().unwrap_or("USD")
+    }
+
+    /// The fee attributable to a window of `days`, assuming a 30-day period.
+    /// Approximate on purpose: pro-rating a monthly fee onto an arbitrary
+    /// window has no exact answer, and a cost report is a decision aid rather
+    /// than an invoice.
+    pub fn prorated_cost(&self, days: f64) -> f64 {
+        match self.kind {
+            ProviderBillingKind::Subscription => {
+                self.monthly_cost.unwrap_or(0.0) * (days / 30.0).clamp(0.0, f64::MAX)
+            }
+            _ => 0.0,
         }
     }
 }
@@ -1606,6 +1734,21 @@ pub const SENSITIVE_PATHS: &[&[&str]] = &[
 
 /// Provider fields that are sensitive (applied to each provider in the map).
 pub const SENSITIVE_PROVIDER_FIELDS: &[&str] = &["api_key"];
+
+impl Config {
+    /// Billing kind per configured provider name, for the cost-reporting path.
+    ///
+    /// Snapshotted rather than read live: the provider registry itself is built
+    /// from this config at boot and a provider change needs a restart to take
+    /// effect, so a live read would only ever disagree with what actually
+    /// served the call.
+    pub fn provider_billing_kinds(&self) -> HashMap<String, ProviderBillingKind> {
+        self.providers
+            .iter()
+            .map(|(name, cfg)| (name.clone(), cfg.effective_billing(name).kind))
+            .collect()
+    }
+}
 
 /// Panics on explicit invalid config (fail-fast at startup, not silently mis-schedule).
 pub fn resolve_server_timezone(server: &mut ServerConfig) {
@@ -2187,6 +2330,74 @@ mod tests {
                 },
             })
         );
+    }
+
+    /// A provider whose billing an operator has stated must survive
+    /// `strip_defaults` — that is the round-trip `PUT /api/config` performs on
+    /// every save, and silently dropping the block would reclassify a
+    /// subscription as pay-as-you-go the next time settings were touched.
+    #[test]
+    fn strip_defaults_preserves_a_declared_billing_block() {
+        let mut value = serde_json::json!({
+            "providers": {
+                "anthropic": {
+                    "api_key": "sk-123",
+                    "enabled": true,
+                    "billing": { "kind": "subscription", "monthly_cost": 20.0, "overage_is_metered": false },
+                },
+            },
+        });
+        strip_defaults(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "providers": {
+                    "anthropic": {
+                        "api_key": "sk-123",
+                        "billing": { "kind": "subscription", "monthly_cost": 20.0, "overage_is_metered": false },
+                    },
+                },
+            })
+        );
+    }
+
+    /// The other half: a config that never mentioned billing must come back
+    /// out exactly as it went in, so adding the field changes nothing for
+    /// existing installs.
+    #[test]
+    fn strip_defaults_leaves_a_config_without_billing_untouched() {
+        let mut value = serde_json::json!({
+            "providers": { "openai": { "api_key": "sk-123", "enabled": true } },
+        });
+        strip_defaults(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({ "providers": { "openai": { "api_key": "sk-123" } } })
+        );
+    }
+
+    #[test]
+    fn a_provider_config_without_billing_deserializes() {
+        let cfg: ModelProviderConfig =
+            serde_yaml::from_str("api_key: sk-123\nenabled: true").expect("parses");
+        assert!(cfg.billing.is_none());
+        assert_eq!(
+            cfg.effective_billing("openai").kind,
+            ProviderBillingKind::Metered
+        );
+    }
+
+    #[test]
+    fn a_provider_config_with_billing_deserializes() {
+        let cfg: ModelProviderConfig = serde_yaml::from_str(
+            "api_key: sk-123\nbilling:\n  kind: subscription\n  monthly_cost: 20\n  currency: GBP\n  included_spend_usd: 20\n  overage_is_metered: true\n",
+        )
+        .expect("parses");
+        let billing = cfg.effective_billing("anthropic");
+        assert_eq!(billing.kind, ProviderBillingKind::Subscription);
+        assert_eq!(billing.monthly_cost, Some(20.0));
+        assert_eq!(billing.currency_or_usd(), "GBP");
+        assert!(billing.overage_is_metered);
     }
 
     #[test]
