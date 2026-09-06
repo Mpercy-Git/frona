@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Path, State};
-use axum::http::header::SET_COOKIE;
 use axum::http::StatusCode;
+use axum::http::header::SET_COOKIE;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use tower_governor::GovernorLayer;
@@ -15,7 +15,10 @@ use crate::api::cookie::{
     make_sso_csrf_cookie,
 };
 use crate::auth::lockout::{LockStatus, LoginAttemptTracker};
-use crate::auth::models::{AuthResponse, ChangePasswordRequest, LoginRequest, RegisterRequest, UpdateProfileRequest, UpdateHandleRequest, UserInfo};
+use crate::auth::models::{
+    AuthResponse, ChangePasswordRequest, LoginRequest, RegisterRequest, UpdateHandleRequest,
+    UpdateProfileRequest, UserInfo,
+};
 use crate::auth::password_reset::models::{ForgotPasswordRequest, ResetPasswordRequest};
 use crate::auth::token::models::CreatePatRequest;
 use crate::core::error::{AppError, AuthErrorCode};
@@ -228,15 +231,14 @@ async fn forgot_password(
     Json(req): Json<ForgotPasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
     if state.config.sso.disable_local_auth {
-        return Err(ApiError(AppError::Validation(
-            "SSO login required".into(),
-        )));
+        return Err(ApiError(AppError::Validation("SSO login required".into())));
     }
     // Server-level configuration, not account-level: refusing here reveals
     // nothing about any particular user.
     if state.mail_service.is_none() {
         return Err(ApiError(AppError::Validation(
-            "Password reset is not available — this server has no outbound email configured.".into(),
+            "Password reset is not available — this server has no outbound email configured."
+                .into(),
         )));
     }
 
@@ -250,7 +252,13 @@ async fn forgot_password(
         };
         if let Err(e) = bg
             .password_reset_service
-            .send_reset_email(&bg.user_service, mail, &frontend_url, &email, expiry_minutes)
+            .send_reset_email(
+                &bg.user_service,
+                mail,
+                &frontend_url,
+                &email,
+                expiry_minutes,
+            )
             .await
         {
             tracing::warn!(error = %e, "Password reset email failed");
@@ -265,9 +273,7 @@ async fn reset_password(
     Json(req): Json<ResetPasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
     if state.config.sso.disable_local_auth {
-        return Err(ApiError(AppError::Validation(
-            "SSO login required".into(),
-        )));
+        return Err(ApiError(AppError::Validation("SSO login required".into())));
     }
 
     // Validate the new password before burning the token, so a rejected
@@ -282,11 +288,7 @@ async fn reset_password(
 
     // Whoever holds the old password — including whoever the user is resetting
     // because of — loses every live session.
-    let _ = state
-        .token_service
-        .repo()
-        .delete_by_user_id(&user_id)
-        .await;
+    let _ = state.token_service.repo().delete_by_user_id(&user_id).await;
     state.login_tracker.clear(&user.email).await;
     state.login_tracker.clear(user.handle.as_str()).await;
 
@@ -294,10 +296,7 @@ async fn reset_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn me(
-    auth: AuthUser,
-    State(state): State<AppState>,
-) -> Result<Json<UserInfo>, ApiError> {
+async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Json<UserInfo>, ApiError> {
     let user = state
         .user_service
         .find_by_id(&auth.user_id)
@@ -355,8 +354,13 @@ async fn change_password(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<ChangePasswordRequest>,
-) -> Result<([(axum::http::HeaderName, axum::http::HeaderValue); 1], Json<AuthResponse>), ApiError>
-{
+) -> Result<
+    (
+        [(axum::http::HeaderName, axum::http::HeaderValue); 1],
+        Json<AuthResponse>,
+    ),
+    ApiError,
+> {
     // A leaked PAT must not be upgradable into full account takeover.
     if auth.is_pat() {
         return Err(ApiError(AppError::Forbidden(
@@ -388,7 +392,12 @@ async fn change_password(
         .invalidate_for_user(&auth.user_id)
         .await;
 
-    let secure = state.config.server.base_url.as_deref().is_some_and(|u| u.starts_with("https://"));
+    let secure = state
+        .config
+        .server
+        .base_url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("https://"));
     let cookie = make_refresh_cookie(
         &refresh_jwt,
         state.token_service.refresh_expiry_secs(),

@@ -259,9 +259,7 @@ async fn list_local_items(
     let q = query.q.to_lowercase();
     let items: Vec<CredentialResponse> = credentials
         .into_iter()
-        .filter(|c| {
-            c.name.to_lowercase().contains(&q) || c.provider.to_lowercase().contains(&q)
-        })
+        .filter(|c| c.name.to_lowercase().contains(&q) || c.provider.to_lowercase().contains(&q))
         .take(query.max_results)
         .collect();
     Ok(Json(items))

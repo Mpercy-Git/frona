@@ -16,12 +16,10 @@ use super::registry::ModelProviderRegistry;
 use super::usage::{UsageContext, UsageService};
 use super::{InferenceKind, ModelRef};
 
-const TRANSCRIBE_SYSTEM: &str =
-    "You transcribe images for a downstream assistant that cannot see them. \
+const TRANSCRIBE_SYSTEM: &str = "You transcribe images for a downstream assistant that cannot see them. \
      Reply with only the transcription/description — no preamble, no commentary.";
 
-const TRANSCRIBE_INSTRUCTION: &str =
-    "Transcribe all text in the image verbatim, preserving structure (headings, \
+const TRANSCRIBE_INSTRUCTION: &str = "Transcribe all text in the image verbatim, preserving structure (headings, \
      lists, tables, reference numbers). Briefly describe any diagrams, photos, or \
      figures. Do not summarize or add commentary.";
 
@@ -142,7 +140,9 @@ pub async fn transcribe_images_in_history(
         if req_content.is_empty() {
             continue;
         }
-        let req_msg = RigMessage::User { content: req_content };
+        let req_msg = RigMessage::User {
+            content: req_content,
+        };
 
         let usage_ctx = UsageContext::new(
             InferenceKind::Transcription {
@@ -166,7 +166,10 @@ pub async fn transcribe_images_in_history(
         {
             Ok(text) => {
                 transcribed += images.len();
-                format!("<image_transcription>\n{}\n</image_transcription>", text.trim())
+                format!(
+                    "<image_transcription>\n{}\n</image_transcription>",
+                    text.trim()
+                )
             }
             Err(e) => {
                 tracing::warn!(error = %e, "image transcription failed; stripping instead");
@@ -216,7 +219,10 @@ mod tests {
     fn vision_override_forces_true_over_unknown() {
         let mut c = InferenceConfig::default();
         c.vision_models = vec!["some-model".into()];
-        assert_eq!(resolve_vision_capability(&mref("x", "some-model"), &c, None), Some(true));
+        assert_eq!(
+            resolve_vision_capability(&mref("x", "some-model"), &c, None),
+            Some(true)
+        );
     }
 
     #[test]
@@ -224,7 +230,10 @@ mod tests {
         let mut c = InferenceConfig::default();
         c.vision_models = vec!["m".into()];
         c.text_only_models = vec!["m".into()];
-        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c, None), Some(false));
+        assert_eq!(
+            resolve_vision_capability(&mref("x", "m"), &c, None),
+            Some(false)
+        );
     }
 
     #[test]
@@ -233,21 +242,36 @@ mod tests {
         assert_eq!(resolve_vision_capability(&mref("x", "m"), &c, None), None);
         let mut c2 = InferenceConfig::default();
         c2.transcribe_when_vision_unknown = true;
-        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c2, None), Some(false));
+        assert_eq!(
+            resolve_vision_capability(&mref("x", "m"), &c2, None),
+            Some(false)
+        );
     }
 
     #[test]
     fn catalog_passes_through_without_overrides() {
         let c = InferenceConfig::default();
-        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c, Some(true)), Some(true));
-        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c, Some(false)), Some(false));
+        assert_eq!(
+            resolve_vision_capability(&mref("x", "m"), &c, Some(true)),
+            Some(true)
+        );
+        assert_eq!(
+            resolve_vision_capability(&mref("x", "m"), &c, Some(false)),
+            Some(false)
+        );
     }
 
     #[test]
     fn matching_handles_vendor_prefix_and_composite() {
         let list = vec!["deepseek-v4-flash".to_string()];
-        assert!(model_matches_any(&mref("openrouter", "deepseek/deepseek-v4-flash"), &list));
-        assert!(model_matches_any(&mref("deepseek", "deepseek-v4-flash"), &list));
+        assert!(model_matches_any(
+            &mref("openrouter", "deepseek/deepseek-v4-flash"),
+            &list
+        ));
+        assert!(model_matches_any(
+            &mref("deepseek", "deepseek-v4-flash"),
+            &list
+        ));
         assert!(!model_matches_any(&mref("openai", "gpt-4o"), &list));
 
         let composite = vec!["openai/gpt-4o".to_string()];

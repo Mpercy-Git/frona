@@ -16,7 +16,9 @@ pub enum AuthErrorCode {
     AccountDeactivated,
     /// Too many failed logins for this identifier. Carries the remaining
     /// lockout so the response can set `Retry-After`.
-    AccountLocked { retry_after_secs: u64 },
+    AccountLocked {
+        retry_after_secs: u64,
+    },
 }
 
 impl AuthErrorCode {

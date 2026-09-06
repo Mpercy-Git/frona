@@ -61,9 +61,7 @@ impl PasswordResetService {
     /// Validates and burns a reset secret, returning the user it belongs to.
     /// Expired and unknown secrets are reported identically.
     pub async fn consume(&self, secret: &str) -> Result<String, AppError> {
-        let invalid = || {
-            AppError::Validation("This reset link is invalid or has expired.".into())
-        };
+        let invalid = || AppError::Validation("This reset link is invalid or has expired.".into());
 
         let token = self
             .repo

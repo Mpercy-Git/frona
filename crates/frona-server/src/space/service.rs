@@ -141,11 +141,7 @@ impl SpaceService {
         Ok(saved)
     }
 
-    pub async fn archive(
-        &self,
-        user_id: &str,
-        space_id: &str,
-    ) -> Result<SpaceResponse, AppError> {
+    pub async fn archive(&self, user_id: &str, space_id: &str) -> Result<SpaceResponse, AppError> {
         let mut space = self.get(user_id, space_id).await?;
         space.archived_at = Some(chrono::Utc::now());
         space.updated_at = chrono::Utc::now();

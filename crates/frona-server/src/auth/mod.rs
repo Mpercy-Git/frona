@@ -239,8 +239,7 @@ impl AuthService {
             let _ = token_svc.repo().delete(&token.id).await;
         }
 
-        let (access_jwt, refresh_jwt) =
-            token_svc.create_session_pair(keypair_svc, &user).await?;
+        let (access_jwt, refresh_jwt) = token_svc.create_session_pair(keypair_svc, &user).await?;
 
         Ok((
             AuthResponse {
@@ -429,13 +428,15 @@ impl AuthService {
         // Email is user-managed: validate format and enforce uniqueness before
         // applying. An empty string is treated as "no change" (email is
         // required and can't be cleared).
-        if let Some(new_email) = req.email.as_ref().map(|e| e.trim()).filter(|e| !e.is_empty())
+        if let Some(new_email) = req
+            .email
+            .as_ref()
+            .map(|e| e.trim())
+            .filter(|e| !e.is_empty())
             && new_email != user.email
         {
             if !Self::is_valid_email(new_email) {
-                return Err(AppError::Validation(
-                    "Enter a valid email address.".into(),
-                ));
+                return Err(AppError::Validation("Enter a valid email address.".into()));
             }
             if let Some(existing) = user_service.find_by_email(new_email).await?
                 && existing.id != user.id
@@ -445,7 +446,12 @@ impl AuthService {
             user.email = new_email.to_string();
         }
 
-        if let Some(new_name) = req.name.as_ref().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+        if let Some(new_name) = req
+            .name
+            .as_ref()
+            .map(|n| n.trim())
+            .filter(|n| !n.is_empty())
+        {
             user.name = new_name.to_string();
         }
 

@@ -733,7 +733,6 @@ async fn browse_path_traversal_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-
 /// Writes `media.mp3` into a fresh user's files dir and returns the app, that
 /// user's token, and the TempDir the caller must keep alive. The bytes aren't
 /// real MP3 frames — nothing here decodes them, the Range plumbing is what's
@@ -799,7 +798,9 @@ async fn download_serves_requested_byte_range() {
     assert_eq!(resp.headers()["content-range"], "bytes 2-5/10");
     assert_eq!(resp.headers()["content-length"], "4");
 
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(&bytes[..], b"2345");
 }
 
@@ -819,7 +820,9 @@ async fn download_serves_open_ended_and_suffix_ranges() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(resp.headers()["content-range"], "bytes 7-9/10");
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(&bytes[..], b"789");
 
     // "the last 3 bytes" — how players read a trailing metadata atom.
@@ -833,7 +836,9 @@ async fn download_serves_open_ended_and_suffix_ranges() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(resp.headers()["content-range"], "bytes 7-9/10");
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(&bytes[..], b"789");
 }
 
@@ -871,7 +876,9 @@ async fn download_ignores_unsupported_range_forms() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(&bytes[..], b"0123456789");
 }
 

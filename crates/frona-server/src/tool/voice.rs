@@ -76,9 +76,11 @@ pub async fn find_user_by_phone(user_service: &UserService, phone: &str) -> Opti
     // Narrowed to rows that actually carry a phone; the format-insensitive
     // comparison still has to happen here rather than in SQL.
     match user_service.find_all_with_phone().await {
-        Ok(users) => users
-            .into_iter()
-            .find(|u| u.phone.as_deref().is_some_and(|p| normalize_phone(p) == target)),
+        Ok(users) => users.into_iter().find(|u| {
+            u.phone
+                .as_deref()
+                .is_some_and(|p| normalize_phone(p) == target)
+        }),
         Err(e) => {
             tracing::warn!(error = %e, "find_user_by_phone: user lookup failed");
             None
@@ -371,10 +373,7 @@ impl VoiceProvider for PlivoProvider {
         );
 
         // Plivo REST API: POST https://api.plivo.com/v1/Account/{auth_id}/Call/
-        let url = format!(
-            "https://api.plivo.com/v1/Account/{}/Call/",
-            self.auth_id
-        );
+        let url = format!("https://api.plivo.com/v1/Account/{}/Call/", self.auth_id);
 
         let body = serde_json::json!({
             "from": self.from_number,
@@ -386,7 +385,6 @@ impl VoiceProvider for PlivoProvider {
         // Plivo doesn't have ConversationRelay like Twilio — we pass the
         // answer_url which returns our TwiML/XML when the call is answered.
         // The callback handler will generate the appropriate response.
-
 
         let resp = self
             .http_client
@@ -401,9 +399,7 @@ impl VoiceProvider for PlivoProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Tool(format!(
-                "Plivo API error {status}: {text}"
-            )));
+            return Err(AppError::Tool(format!("Plivo API error {status}: {text}")));
         }
 
         let result: serde_json::Value = resp
@@ -415,7 +411,13 @@ impl VoiceProvider for PlivoProvider {
         let call_uuid = result
             .get("request_uuid")
             .and_then(|v| v.as_str())
-            .or_else(|| result.get("request_uuid").and_then(|v| v.as_array()).and_then(|a| a.first()).and_then(|v| v.as_str()))
+            .or_else(|| {
+                result
+                    .get("request_uuid")
+                    .and_then(|v| v.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("")
             .to_string();
 
@@ -437,18 +439,15 @@ pub fn create_voice_provider(
     token_service: TokenService,
     keypair_service: KeyPairService,
 ) -> Option<Arc<dyn VoiceProvider>> {
-    let provider = config
-        .provider
-        .as_deref()
-        .or_else(|| {
-            if config.twilio_account_sid.is_some() {
-                Some("twilio")
-            } else if config.plivo_auth_id.is_some() {
-                Some("plivo")
-            } else {
-                None
-            }
-        })?;
+    let provider = config.provider.as_deref().or_else(|| {
+        if config.twilio_account_sid.is_some() {
+            Some("twilio")
+        } else if config.plivo_auth_id.is_some() {
+            Some("plivo")
+        } else {
+            None
+        }
+    })?;
 
     match provider.to_lowercase().as_str() {
         "twilio" => {
@@ -707,11 +706,18 @@ impl AgentTool for TransferCallTool {
             .unwrap_or_default()
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let target_query = arguments
             .get("target_agent")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::Validation("Missing required parameter: target_agent".into()))?;
+            .ok_or_else(|| {
+                AppError::Validation("Missing required parameter: target_agent".into())
+            })?;
         let note = arguments
             .get("handoff_note")
             .and_then(|v| v.as_str())
@@ -729,12 +735,17 @@ impl AgentTool for TransferCallTool {
             ));
         }
         if !target.enabled {
-            return Err(AppError::Validation(format!("Agent '{}' is disabled", target.name)));
+            return Err(AppError::Validation(format!(
+                "Agent '{}' is disabled",
+                target.name
+            )));
         }
         // The id branch of resolve_agent_by_query isn't owner-scoped (see its
         // doc comment) — this is what actually enforces that the target is
         // one the caller's agent is allowed to hand off to.
-        self.agent_service.get_accessible(owner_id, &target.id).await?;
+        self.agent_service
+            .get_accessible(owner_id, &target.id)
+            .await?;
 
         // `ctx.chat` is optional since detached inference; a transfer only
         // makes sense on a live call, so require the chat here.

@@ -82,7 +82,8 @@ async fn test_browser(auth: AuthUser, Json(req): Json<TestBrowserRequest>) -> Re
         ..BrowserConfig::default()
     };
 
-    match BrowserSessionManager::test_connection(&auth.handle, &config, TEST_CONNECT_TIMEOUT).await {
+    match BrowserSessionManager::test_connection(&auth.handle, &config, TEST_CONNECT_TIMEOUT).await
+    {
         Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
         Err(e) => (
             StatusCode::BAD_GATEWAY,
@@ -107,7 +108,9 @@ async fn debugger_link(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(AppError::NotFound("Credential not found".into())))?;
     if credential.user_id != auth.user_id {
-        return Err(ApiError::from(AppError::Forbidden("Not your credential".into())));
+        return Err(ApiError::from(AppError::Forbidden(
+            "Not your credential".into(),
+        )));
     }
 
     let token = state
@@ -144,21 +147,26 @@ async fn debugger_proxy(
     // own the credential.
     let user_id = auth.user_id().to_string();
     if credential.user_id != user_id {
-        return Err(ApiError::from(AppError::Forbidden("Not your credential".into())));
+        return Err(ApiError::from(AppError::Forbidden(
+            "Not your credential".into(),
+        )));
     }
 
     // Resolve the handle for the profile path — from the auth for a bearer
     // request, or looked up for a presign request.
     let handle = match &auth {
         NavigableAuth::User { handle, .. } => handle.clone(),
-        NavigableAuth::Presigned(_) => {
-            state.user_service.handle_of(&user_id).await.map_err(ApiError::from)?
-        }
+        NavigableAuth::Presigned(_) => state
+            .user_service
+            .handle_of(&user_id)
+            .await
+            .map_err(ApiError::from)?,
     };
 
-    let browser_config = state.browser_session_manager.config().ok_or_else(|| {
-        ApiError::from(AppError::Browser("Browser is not configured".into()))
-    })?;
+    let browser_config = state
+        .browser_session_manager
+        .config()
+        .ok_or_else(|| ApiError::from(AppError::Browser("Browser is not configured".into())))?;
     let browserless_base = browser_config.http_base_url();
 
     let profile_path = browser_config.profile_path(&handle, &credential.provider);

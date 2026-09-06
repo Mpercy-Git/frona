@@ -13,9 +13,9 @@ use crate::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder,
 };
 use crate::inference::provider::ModelRef;
-use crate::notification::service::NotificationService;
-use crate::notification::models::{NotificationData, NotificationLevel};
 use crate::inference::text_inference;
+use crate::notification::models::{NotificationData, NotificationLevel};
+use crate::notification::service::NotificationService;
 use crate::storage::StorageService;
 use rig_core::completion::Message as RigMessage;
 
@@ -270,7 +270,10 @@ impl ChatService {
     /// Chats shared with `user_id` (read-only), as enriched `ChatResponse`s
     /// with `is_shared`/`shared_by` set. Empty when no share service is
     /// attached. Backing chats that have since been deleted are skipped.
-    pub async fn shared_chat_responses(&self, user_id: &str) -> Result<Vec<ChatResponse>, AppError> {
+    pub async fn shared_chat_responses(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<ChatResponse>, AppError> {
         let Some(share_service) = &self.share_service else {
             return Ok(Vec::new());
         };
@@ -608,7 +611,9 @@ impl ChatService {
             )
             .await;
 
-        let catalog_vision = self.usage_service.model_supports_vision(&conv_ctx.model_ref);
+        let catalog_vision = self
+            .usage_service
+            .model_supports_vision(&conv_ctx.model_ref);
         let effective_vision = crate::inference::vision::resolve_vision_capability(
             &conv_ctx.model_ref,
             &model_group.inference,
@@ -887,7 +892,8 @@ impl ChatService {
         // Skip empty "Executing" placeholder messages, system events, and user messages.
         if saved.role == crate::chat::message::models::MessageRole::Agent
             && !saved.content.is_empty()
-            && saved.status.as_ref() != Some(&crate::chat::message::models::MessageStatus::Executing)
+            && saved.status.as_ref()
+                != Some(&crate::chat::message::models::MessageStatus::Executing)
         {
             let agent_name = if let Some(ref agent_id) = saved.agent_id {
                 self.agent_service
@@ -902,7 +908,9 @@ impl ChatService {
             };
 
             let truncated = if saved.content.len() > 200 {
-                let end = saved.content.char_indices()
+                let end = saved
+                    .content
+                    .char_indices()
                     .nth(200)
                     .map(|(i, _)| i)
                     .unwrap_or(saved.content.len());
@@ -1101,7 +1109,9 @@ impl ChatService {
                 };
 
                 let truncated = if updated.content.len() > 200 {
-                    let end = updated.content.char_indices()
+                    let end = updated
+                        .content
+                        .char_indices()
                         .nth(200)
                         .map(|(i, _)| i)
                         .unwrap_or(updated.content.len());

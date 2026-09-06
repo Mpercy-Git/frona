@@ -338,7 +338,11 @@ impl AgentService {
             };
         }
         if let Some(voice_id) = req.voice_id {
-            agent.voice_id = if voice_id.trim().is_empty() { None } else { Some(voice_id) };
+            agent.voice_id = if voice_id.trim().is_empty() {
+                None
+            } else {
+                Some(voice_id)
+            };
         }
         if let Some(ref identity) = req.identity {
             if let Some(avatar) = identity.get("avatar")

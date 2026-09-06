@@ -100,9 +100,9 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.user_service.clone(),
         prompts,
         state.broadcast_service.clone(),
-            state.presign_service.clone(),
-            state.notification_service.clone(),
-            state.usage_service.clone(),
+        state.presign_service.clone(),
+        state.notification_service.clone(),
+        state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
     state.harness = Arc::new(frona::agent::harness::Harness::new(

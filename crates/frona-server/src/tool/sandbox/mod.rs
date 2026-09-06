@@ -206,7 +206,11 @@ impl SandboxManager {
 
         let skill_read_paths: Vec<String> = self
             .skill_service
-            .list(&ctx.agent_owner_handle, &ctx.agent.handle, ctx.agent.skills.as_deref())
+            .list(
+                &ctx.agent_owner_handle,
+                &ctx.agent.handle,
+                ctx.agent.skills.as_deref(),
+            )
             .await
             .into_iter()
             .map(|s| s.path)
@@ -806,10 +810,10 @@ impl Sandbox {
             .spawn()
             .map_err(|e| AppError::Tool(format!("Failed to spawn process: {e}")))?;
 
-        if !self.skip_resource_monitor {
-            if let Some(pid) = child.id() {
-                self.resource_manager.register(pid, &self.agent_id);
-            }
+        if !self.skip_resource_monitor
+            && let Some(pid) = child.id()
+        {
+            self.resource_manager.register(pid, &self.agent_id);
         }
 
         Ok(child)

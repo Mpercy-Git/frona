@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::path::Path as StdPath;
 
+use crate::agent::config::parse_frontmatter;
+use crate::agent::models::{Agent, AgentResponse, CreateAgentRequest, Model, UpdateAgentRequest};
+use crate::chat::broadcast::{BroadcastEvent, BroadcastEventKind};
+use crate::inference::tool_loop::InferenceEventKind;
 use axum::extract::{Multipart, Path, State};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
-use crate::agent::config::parse_frontmatter;
-use crate::agent::models::{Agent, AgentResponse, CreateAgentRequest, Model, UpdateAgentRequest};
-use crate::chat::broadcast::{BroadcastEvent, BroadcastEventKind};
-use crate::inference::tool_loop::InferenceEventKind;
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -183,7 +183,14 @@ async fn create_agent(
     let agent = state.agent_service.create(&auth.user_id, req).await?;
 
     if let Some(tool_list) = tools {
-        sync_agent_tools(&state, &auth.user_id, &auth.handle, &agent.handle, &tool_list).await?;
+        sync_agent_tools(
+            &state,
+            &auth.user_id,
+            &auth.handle,
+            &agent.handle,
+            &tool_list,
+        )
+        .await?;
         state.policy_service.invalidate_all_caches();
     }
 
@@ -260,7 +267,10 @@ async fn get_agent(
 ) -> Result<Json<AgentResponse>, ApiError> {
     // Owner or shared-recipient may view; `get_accessible` returns Forbidden
     // otherwise. Editing endpoints stay owner-only.
-    let (agent, _access) = state.agent_service.get_accessible(&auth.user_id, &id).await?;
+    let (agent, _access) = state
+        .agent_service
+        .get_accessible(&auth.user_id, &id)
+        .await?;
     let response = to_response(&state, &auth.user_id, agent).await?;
     Ok(Json(response))
 }
@@ -276,7 +286,14 @@ async fn update_agent(
     let agent = state.agent_service.update(&auth.user_id, &id, req).await?;
 
     if let Some(tool_list) = tools {
-        sync_agent_tools(&state, &auth.user_id, &auth.handle, &agent.handle, &tool_list).await?;
+        sync_agent_tools(
+            &state,
+            &auth.user_id,
+            &auth.handle,
+            &agent.handle,
+            &tool_list,
+        )
+        .await?;
         // Force-invalidate all caches synchronously — moka's per-key
         // invalidate() is eventually-consistent and the stale decision
         // cache entries can survive long enough for to_response() below
@@ -427,7 +444,10 @@ async fn unshare_agent(
     Path((id, recipient_id)): Path<(String, String)>,
 ) -> Result<Json<Vec<AgentShareResponse>>, ApiError> {
     let _ = state.agent_service.get(&auth.user_id, &id).await?;
-    state.agent_share_service.unshare(&id, &recipient_id).await?;
+    state
+        .agent_share_service
+        .unshare(&id, &recipient_id)
+        .await?;
     let shares = state.agent_share_service.list_for_agent(&id).await?;
     Ok(Json(build_share_responses(&state, shares).await))
 }
@@ -438,16 +458,25 @@ async fn list_agent_skills(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<crate::agent::skill::service::SkillListItem>>, ApiError> {
     // Viewable by owner or shared-recipient; skills resolve under the owner.
-    let (agent, _access) = state.agent_service.get_accessible(&auth.user_id, &id).await?;
+    let (agent, _access) = state
+        .agent_service
+        .get_accessible(&auth.user_id, &id)
+        .await?;
     let owner_handle = state.user_service.handle_of(&agent.user_id).await?;
-    let skills = state.skill_service.list(&owner_handle, &agent.handle, None).await;
-    let items = skills.into_iter().map(|s| crate::agent::skill::service::SkillListItem {
-        name: s.name,
-        description: s.description,
-        source: None,
-        installed_at: None,
-        scope: s.scope,
-    }).collect();
+    let skills = state
+        .skill_service
+        .list(&owner_handle, &agent.handle, None)
+        .await;
+    let items = skills
+        .into_iter()
+        .map(|s| crate::agent::skill::service::SkillListItem {
+            name: s.name,
+            description: s.description,
+            source: None,
+            installed_at: None,
+            scope: s.scope,
+        })
+        .collect();
     Ok(Json(items))
 }
 

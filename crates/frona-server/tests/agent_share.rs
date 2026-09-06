@@ -17,16 +17,15 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem};
 
 fn test_user_service(db: &Surreal<Db>) -> frona::auth::UserService {
-    frona::auth::UserService::new(
-        SurrealRepo::new(db.clone()),
-        &CacheConfig::default(),
-    )
+    frona::auth::UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default())
 }
 
 fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     let schema = frona::policy::schema::build_schema();
     let repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(
+            db.clone(),
+        ));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     PolicyService::new(
         repo,
@@ -127,7 +126,9 @@ async fn share_by_email_resolves_recipient() {
     let agent = seed_agent(&db, "owner").await;
     let svc = share_service(&db);
 
-    svc.share("owner", &agent.id, "wife@example.com").await.unwrap();
+    svc.share("owner", &agent.id, "wife@example.com")
+        .await
+        .unwrap();
     assert_eq!(
         svc.find_level(&agent.id, "wife").await.unwrap(),
         Some(ShareLevel::Use)
@@ -210,18 +211,30 @@ async fn credential_delegation_owner_reflects_flag() {
 
     // Shared but delegation off → no owner.
     assert_eq!(
-        agents.credential_delegation_owner(&agent, "wife").await.unwrap(),
+        agents
+            .credential_delegation_owner(&agent, "wife")
+            .await
+            .unwrap(),
         None
     );
     // The owner never delegates to themselves.
     assert_eq!(
-        agents.credential_delegation_owner(&agent, "owner").await.unwrap(),
+        agents
+            .credential_delegation_owner(&agent, "owner")
+            .await
+            .unwrap(),
         None
     );
 
-    shares.set_delegation(&agent.id, "wife", true).await.unwrap();
+    shares
+        .set_delegation(&agent.id, "wife", true)
+        .await
+        .unwrap();
     assert_eq!(
-        agents.credential_delegation_owner(&agent, "wife").await.unwrap(),
+        agents
+            .credential_delegation_owner(&agent, "wife")
+            .await
+            .unwrap(),
         Some("owner".to_string())
     );
 }
@@ -256,6 +269,9 @@ async fn get_accessible_honors_owner_share_and_forbids_strangers() {
     assert_eq!(access, AgentAccess::SharedUse);
 
     // Everyone else: forbidden.
-    let err = agents.get_accessible("stranger", &agent.id).await.unwrap_err();
+    let err = agents
+        .get_accessible("stranger", &agent.id)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
 }

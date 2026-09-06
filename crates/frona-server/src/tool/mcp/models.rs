@@ -472,7 +472,10 @@ mod tests {
         let remote = parsed.remote.unwrap();
         assert_eq!(remote.url, "https://example.com/mcp");
         assert_eq!(remote.transport, "streamable-http");
-        assert_eq!(remote.headers.get("Authorization").unwrap(), "Bearer ${TOKEN}");
+        assert_eq!(
+            remote.headers.get("Authorization").unwrap(),
+            "Bearer ${TOKEN}"
+        );
         assert!(!parsed.allow_unauthenticated_remote);
     }
 
@@ -489,7 +492,10 @@ mod tests {
     #[test]
     fn interpolate_env_vars_leaves_unknown_var_untouched() {
         let env = BTreeMap::new();
-        assert_eq!(interpolate_env_vars("Bearer ${MISSING}", &env), "Bearer ${MISSING}");
+        assert_eq!(
+            interpolate_env_vars("Bearer ${MISSING}", &env),
+            "Bearer ${MISSING}"
+        );
     }
 
     #[test]
@@ -503,14 +509,20 @@ mod tests {
     #[test]
     fn interpolate_env_vars_ignores_unterminated_placeholder() {
         let env = BTreeMap::new();
-        assert_eq!(interpolate_env_vars("Bearer ${TOKEN", &env), "Bearer ${TOKEN");
+        assert_eq!(
+            interpolate_env_vars("Bearer ${TOKEN", &env),
+            "Bearer ${TOKEN"
+        );
     }
 
     #[test]
     fn extract_env_var_refs_collects_all_names() {
         let mut headers = BTreeMap::new();
         headers.insert("Authorization".to_string(), "Bearer ${TOKEN}".to_string());
-        headers.insert("X-Client".to_string(), "id-${CLIENT_ID}-${TOKEN}".to_string());
+        headers.insert(
+            "X-Client".to_string(),
+            "id-${CLIENT_ID}-${TOKEN}".to_string(),
+        );
         let refs = extract_env_var_refs(&headers);
         assert_eq!(refs.len(), 2);
         assert!(refs.contains("TOKEN"));

@@ -215,7 +215,8 @@ impl ChannelService {
                 channel.status = ChannelStatus::Disconnected;
                 channel.error_message = None;
             } else {
-                channel.error_message = Some(format!("missing required field(s): {}", missing.join(", ")));
+                channel.error_message =
+                    Some(format!("missing required field(s): {}", missing.join(", ")));
             }
         }
 

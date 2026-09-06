@@ -412,17 +412,19 @@ async fn handle_inbound_message(
         inbound_prompt,
     });
 
-    state.harness.run_turn(
-        user_id,
-        &chat.id,
-        &agent_msg.id,
-        cancel_token,
-        builder,
-        &[],
-        None,
-        None,
-    )
-    .await;
+    state
+        .harness
+        .run_turn(
+            user_id,
+            &chat.id,
+            &agent_msg.id,
+            cancel_token,
+            builder,
+            &[],
+            None,
+            None,
+        )
+        .await;
     Ok(())
 }
 

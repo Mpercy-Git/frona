@@ -63,7 +63,11 @@ fn sample_entry(env_vars: Vec<RegistryEnvVar>) -> RegistryServerEntry {
             identifier: "@example/workspace-mcp".into(),
             version: Some("1.0.0".into()),
             runtime_hint: None,
-            transport: RegistryTransport { kind: "stdio".into(), url: None, headers: vec![] },
+            transport: RegistryTransport {
+                kind: "stdio".into(),
+                url: None,
+                headers: vec![],
+            },
             runtime_arguments: vec![],
             package_arguments: vec![],
             environment_variables: env_vars,
@@ -575,7 +579,10 @@ async fn install_remote_rejects_when_unauthenticated_and_not_opted_in() {
         }),
         ..Default::default()
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Validation(_)),
         "expected Validation for unauthenticated remote install without opt-in, got {err:?}"
@@ -595,7 +602,10 @@ async fn install_remote_allows_unauthenticated_with_explicit_opt_in() {
         allow_unauthenticated_remote: true,
         ..Default::default()
     };
-    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    let persisted = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
     assert_eq!(persisted.status, McpServerStatus::Installed);
     assert_eq!(persisted.package.runtime, McpRuntime::Remote);
     assert!(persisted.command.is_empty());
@@ -616,7 +626,10 @@ async fn install_remote_with_bearer_header_succeeds_without_opt_in() {
     let (_db, _vault, service, _tmp) = build_test_harness(vec![]).await;
 
     let mut headers = std::collections::BTreeMap::new();
-    headers.insert("Authorization".to_string(), "Bearer ${MCP_TOKEN}".to_string());
+    headers.insert(
+        "Authorization".to_string(),
+        "Bearer ${MCP_TOKEN}".to_string(),
+    );
 
     let req = McpServerInstall {
         remote: Some(RemoteMcpInstall {
@@ -629,7 +642,10 @@ async fn install_remote_with_bearer_header_succeeds_without_opt_in() {
             .collect(),
         ..Default::default()
     };
-    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    let persisted = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
     match &persisted.transports[0] {
         TransportConfig::Http { headers, .. } => {
             assert_eq!(headers.get("Authorization").unwrap(), "Bearer ${MCP_TOKEN}");
@@ -643,7 +659,10 @@ async fn install_remote_rejects_extraneous_binding_not_referenced_by_headers() {
     let (_db, _vault, service, _tmp) = build_test_harness(vec![]).await;
 
     let mut headers = std::collections::BTreeMap::new();
-    headers.insert("Authorization".to_string(), "Bearer ${MCP_TOKEN}".to_string());
+    headers.insert(
+        "Authorization".to_string(),
+        "Bearer ${MCP_TOKEN}".to_string(),
+    );
 
     let req = McpServerInstall {
         remote: Some(RemoteMcpInstall {
@@ -654,8 +673,14 @@ async fn install_remote_rejects_extraneous_binding_not_referenced_by_headers() {
         credentials: vec![binding("NOT_REFERENCED", "item")],
         ..Default::default()
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
-    assert!(matches!(err, AppError::Forbidden(_) | AppError::Validation(_)));
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AppError::Forbidden(_) | AppError::Validation(_)
+    ));
 }
 
 #[tokio::test]
@@ -671,7 +696,10 @@ async fn install_remote_rejects_unsupported_transport() {
         allow_unauthenticated_remote: true,
         ..Default::default()
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Validation(_)));
 }
 
@@ -691,7 +719,10 @@ async fn install_remote_does_not_require_npm_registry_network_access() {
         allow_unauthenticated_remote: true,
         ..Default::default()
     };
-    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    let persisted = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
     assert_eq!(persisted.package.name, "https://example.com/mcp");
     assert_eq!(persisted.command, "");
 }

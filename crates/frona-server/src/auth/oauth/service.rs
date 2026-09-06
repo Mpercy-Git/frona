@@ -17,6 +17,12 @@ use crate::core::config::Config;
 use crate::core::error::{AppError, AuthErrorCode};
 use crate::credential::keypair::service::KeyPairService;
 
+/// In-flight authorize flows, keyed by CSRF state: `(nonce_secret, Nonce, expiry)`.
+///
+/// Named because the bare type is dense enough to obscure the field it
+/// describes, and it appears in both the struct and the constructor.
+type PendingStates = Arc<Mutex<HashMap<String, (String, Nonce, chrono::DateTime<Utc>)>>>;
+
 #[derive(Clone)]
 pub struct OAuthService {
     authority: String,
@@ -25,9 +31,9 @@ pub struct OAuthService {
     scopes: Vec<String>,
     allow_unknown_email_verification: bool,
     signups_match_email: bool,
-    // Maps CSRF state → (nonce_secret, Nonce, expiry). Entries are pruned on
-    // insert to prevent unbounded growth from abandoned authorize flows.
-    pending_states: Arc<Mutex<HashMap<String, (String, Nonce, chrono::DateTime<Utc>)>>>,
+    // Entries are pruned on insert to prevent unbounded growth from abandoned
+    // authorize flows.
+    pending_states: PendingStates,
     repo: Arc<dyn OAuthRepository>,
     redirect_uri: String,
     http: openidconnect::reqwest::Client,
@@ -66,7 +72,10 @@ impl OAuthService {
             scopes,
             allow_unknown_email_verification: config.sso.allow_unknown_email_verification,
             signups_match_email: config.sso.signups_match_email,
-            pending_states: Arc::new(Mutex::new(HashMap::<String, (String, Nonce, chrono::DateTime<Utc>)>::new())),
+            pending_states: Arc::new(Mutex::new(HashMap::<
+                String,
+                (String, Nonce, chrono::DateTime<Utc>),
+            >::new())),
             repo,
             redirect_uri,
             http: openidconnect::reqwest::Client::new(),
@@ -139,7 +148,10 @@ impl OAuthService {
             .lock()
             .await
             .remove(state)
-            .ok_or_else(|| AppError::Auth { message: "Invalid or expired SSO state".into(), code: AuthErrorCode::CsrfFailed })?;
+            .ok_or_else(|| AppError::Auth {
+                message: "Invalid or expired SSO state".into(),
+                code: AuthErrorCode::CsrfFailed,
+            })?;
 
         let http_client = self.http.clone();
         let issuer_url = self.issuer_url()?;

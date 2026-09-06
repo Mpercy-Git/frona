@@ -6,12 +6,12 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::task::models::{Citation, SignalMode, Task, TaskKind, TaskStatus};
-use crate::inference::conversation::TaskConversationBuilder;
 use crate::chat::message::models::{MessageEvent, MessageRole};
-use crate::inference::tool_call::{TaskEvent, ToolCall};
 use crate::chat::models::CreateChatRequest;
 use crate::core::error::AppError;
 use crate::inference::InferenceResponse;
+use crate::inference::conversation::TaskConversationBuilder;
+use crate::inference::tool_call::{TaskEvent, ToolCall};
 use crate::storage::Attachment;
 
 const MAX_TASK_RETRIES: usize = 10;
@@ -105,7 +105,12 @@ fn citations_from_tool_calls(calls: &[ToolCall]) -> Vec<Citation> {
                 .arguments
                 .get("url")
                 .and_then(|v| v.as_str())
-                .map(|url| vec![Citation { title: None, url: url.to_string() }])
+                .map(|url| {
+                    vec![Citation {
+                        title: None,
+                        url: url.to_string(),
+                    }]
+                })
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
@@ -130,7 +135,10 @@ fn extract_web_search_citations(result: &str) -> Vec<Citation> {
                 .map(strip_leading_number)
                 .filter(|t| !t.is_empty())
                 .map(str::to_string);
-            citations.push(Citation { title, url: trimmed.to_string() });
+            citations.push(Citation {
+                title,
+                url: trimmed.to_string(),
+            });
         }
         if !trimmed.is_empty() {
             prev_line = Some(trimmed);
@@ -198,7 +206,11 @@ fn build_completion_body(
 
 fn build_message_event(task: &Task, event: TaskLifecycleEvent) -> Option<(String, MessageEvent)> {
     match event {
-        TaskLifecycleEvent::Completion { status, summary, citations } => {
+        TaskLifecycleEvent::Completion {
+            status,
+            summary,
+            citations,
+        } => {
             let (content, schema) = build_completion_body(task, &status, summary.as_deref())?;
             let evt = MessageEvent::TaskCompletion {
                 task_id: task.id.clone(),
@@ -579,21 +591,30 @@ impl TaskExecutor {
                 continuation_prompt: continuation_prompt.clone(),
             });
             let filters = tool_filters_for_task(&task);
-            let result = self.harness.run_loop(
-                &task.user_id,
-                &chat_id,
-                &agent_msg_id,
-                cancel_token.clone(),
-                builder,
-                &filters,
-                None,
-            )
-            .await;
+            let result = self
+                .harness
+                .run_loop(
+                    &task.user_id,
+                    &chat_id,
+                    &agent_msg_id,
+                    cancel_token.clone(),
+                    builder,
+                    &filters,
+                    None,
+                )
+                .await;
             // Captured before `remove` so a genuine (not superseded) Stop
             // still reads as current — `remove` would otherwise delete this
             // same generation first and make the peek below always false.
-            let notify_cancel = self.harness.active_sessions.is_current(&chat_id, session_id).await;
-            self.harness.active_sessions.remove(&chat_id, session_id).await;
+            let notify_cancel = self
+                .harness
+                .active_sessions
+                .is_current(&chat_id, session_id)
+                .await;
+            self.harness
+                .active_sessions
+                .remove(&chat_id, session_id)
+                .await;
 
             match result {
                 Ok(crate::agent::harness::AgentLoopOutcome {
@@ -646,8 +667,11 @@ impl TaskExecutor {
                     }
                     InferenceResponse::Cancelled(text) => {
                         response.content = text;
-                        let _ = self.harness.chat_service
-                            .cancel_agent_message(response, notify_cancel).await;
+                        let _ = self
+                            .harness
+                            .chat_service
+                            .cancel_agent_message(response, notify_cancel)
+                            .await;
                         self.handle_cancelled(&task).await?;
                         return Ok(());
                     }
@@ -658,7 +682,8 @@ impl TaskExecutor {
                         // the task can proceed to the next turn rather than staying
                         // permanently InProgress.
                         if let Some(action) = self.find_lifecycle_event(&chat_id).await {
-                            self.handle_lifecycle_action(&task, &chat_id, action).await?;
+                            self.handle_lifecycle_action(&task, &chat_id, action)
+                                .await?;
                             return Ok(());
                         }
                         continue;
@@ -1367,11 +1392,17 @@ mod tests {
 
     #[test]
     fn strip_leading_number_removes_numbering() {
-        assert_eq!(strip_leading_number("1. Rust Programming"), "Rust Programming");
+        assert_eq!(
+            strip_leading_number("1. Rust Programming"),
+            "Rust Programming"
+        );
         assert_eq!(strip_leading_number("10. Rust Book"), "Rust Book");
         assert_eq!(strip_leading_number("Not numbered"), "Not numbered");
         // "v1. 2" isn't a leading numeric prefix — left untouched.
-        assert_eq!(strip_leading_number("v1. 2 release notes"), "v1. 2 release notes");
+        assert_eq!(
+            strip_leading_number("v1. 2 release notes"),
+            "v1. 2 release notes"
+        );
     }
 
     #[test]
@@ -1417,8 +1448,11 @@ mod tests {
 
     #[test]
     fn citations_from_tool_calls_empty_when_no_web_tools_used() {
-        let calls = vec![tool_call("shell", serde_json::json!({"command": "ls"}), "file.txt")];
+        let calls = vec![tool_call(
+            "shell",
+            serde_json::json!({"command": "ls"}),
+            "file.txt",
+        )];
         assert!(citations_from_tool_calls(&calls).is_empty());
     }
-
 }

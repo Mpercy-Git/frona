@@ -1,7 +1,7 @@
-mod models;
-mod websocket;
 pub mod allowlist;
 pub mod inbound;
+mod models;
+mod websocket;
 
 use axum::Router;
 use axum::extract::{Query, State};
@@ -9,10 +9,10 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
+use crate::auth::User;
 use crate::auth::models::Claims;
 use crate::auth::token::models::TokenType;
 use crate::auth::token::service::CreateTokenRequest;
-use crate::auth::User;
 use crate::core::Principal;
 use crate::core::config::VoiceConfig;
 use crate::core::error::AppError;
@@ -225,7 +225,11 @@ async fn twilio_callback(State(state): State<AppState>, Query(q): Query<TokenQue
         }
     };
 
-    let base_url = state.config.voice.callback_base_url.clone()
+    let base_url = state
+        .config
+        .voice
+        .callback_base_url
+        .clone()
         .or_else(|| state.config.server.external_base_url())
         .unwrap_or_else(|| format!("http://localhost:{}", state.config.server.port));
     let ws_base = base_url

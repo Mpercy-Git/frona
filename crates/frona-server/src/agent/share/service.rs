@@ -116,11 +116,7 @@ impl AgentShareService {
 
     /// Revoke a recipient's access. No-op if the share doesn't exist. The
     /// caller MUST have verified ownership.
-    pub async fn unshare(
-        &self,
-        agent_id: &str,
-        recipient_id: &str,
-    ) -> Result<(), AppError> {
+    pub async fn unshare(&self, agent_id: &str, recipient_id: &str) -> Result<(), AppError> {
         self.repo.delete_one(agent_id, recipient_id).await
     }
 
@@ -130,10 +126,7 @@ impl AgentShareService {
     }
 
     /// Agents shared with a recipient (recipient-facing).
-    pub async fn list_shared_with(
-        &self,
-        recipient_id: &str,
-    ) -> Result<Vec<AgentShare>, AppError> {
+    pub async fn list_shared_with(&self, recipient_id: &str) -> Result<Vec<AgentShare>, AppError> {
         self.repo.find_by_recipient(recipient_id).await
     }
 

@@ -1,9 +1,9 @@
 use std::path::Path;
 
+use axum::Json;
 use axum::extract::multipart::MultipartError;
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;
-use axum::Json;
 use tokio::fs;
 
 use crate::storage::{
@@ -42,26 +42,14 @@ pub(crate) async fn upload_file(
     let mut file_data: Option<(String, Vec<u8>)> = None;
     let mut relative_path: Option<String> = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(map_multipart_err)?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(map_multipart_err)? {
         match field.name() {
             Some("path") => {
-                relative_path = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(map_multipart_err)?,
-                );
+                relative_path = Some(field.text().await.map_err(map_multipart_err)?);
             }
             Some("file") | Some("upload") => {
                 let filename = field.file_name().unwrap_or("upload").to_string();
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(map_multipart_err)?;
+                let bytes = field.bytes().await.map_err(map_multipart_err)?;
 
                 if bytes.len() > MAX_FILE_SIZE {
                     return Err(ApiError(AppError::Validation(format!(

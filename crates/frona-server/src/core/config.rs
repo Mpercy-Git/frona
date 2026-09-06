@@ -190,9 +190,13 @@ pub struct AuthConfig {
         description = "Allow anyone to sign up from the registration page. When off, only admins can add users."
     )]
     pub allow_registration: bool,
-    #[schemars(description = "Consecutive failed login attempts before an account is temporarily locked. 0 disables lockout.")]
+    #[schemars(
+        description = "Consecutive failed login attempts before an account is temporarily locked. 0 disables lockout."
+    )]
     pub max_login_attempts: u32,
-    #[schemars(description = "How long an account stays locked after too many failed logins, in minutes.")]
+    #[schemars(
+        description = "How long an account stays locked after too many failed logins, in minutes."
+    )]
     pub lockout_minutes: u64,
     #[schemars(description = "Lifetime of an emailed password-reset link, in minutes.")]
     pub password_reset_expiry_minutes: u64,
@@ -454,9 +458,13 @@ impl Default for ShareConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct PushConfig {
-    #[schemars(description = "VAPID public key (base64url-encoded, uncompressed P-256). Leave unset and the server generates a pair and keeps it in `{data_dir}/system/vapid.json`.")]
+    #[schemars(
+        description = "VAPID public key (base64url-encoded, uncompressed P-256). Leave unset and the server generates a pair and keeps it in `{data_dir}/system/vapid.json`."
+    )]
     pub vapid_public_key: Option<String>,
-    #[schemars(description = "VAPID private key (base64url-encoded P-256 scalar). Leave unset to use the server's generated pair; set it without the matching public key and push stays off.")]
+    #[schemars(
+        description = "VAPID private key (base64url-encoded P-256 scalar). Leave unset to use the server's generated pair; set it without the matching public key and push stays off."
+    )]
     pub vapid_private_key: Option<String>,
     #[schemars(description = "VAPID subject — a mailto: URL or the site's HTTPS URL.")]
     pub subject: String,
@@ -487,7 +495,9 @@ pub enum SmtpTls {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct MailConfig {
-    #[schemars(description = "SMTP server hostname. Leave empty to disable outbound email (and with it, password reset).")]
+    #[schemars(
+        description = "SMTP server hostname. Leave empty to disable outbound email (and with it, password reset)."
+    )]
     pub smtp_host: String,
     #[schemars(description = "SMTP server port.")]
     pub smtp_port: u16,
@@ -608,7 +618,9 @@ pub struct OpenRouterProviderRouting {
     pub order: Option<Vec<String>>,
     /// Whether to allow fallback to other providers if preferred ones fail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "Allow fallback to other providers if preferred ones fail (default true).")]
+    #[schemars(
+        description = "Allow fallback to other providers if preferred ones fail (default true)."
+    )]
     pub allow_fallbacks: Option<bool>,
     /// Require all preferred providers to support the request parameters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -630,12 +642,16 @@ pub struct OpenRouterProviderRouting {
     /// list is ever eligible, so it pins cost and latency to endpoints you
     /// have actually measured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "Hard allowlist of providers, e.g. ['Anthropic']. Only these are eligible.")]
+    #[schemars(
+        description = "Hard allowlist of providers, e.g. ['Anthropic']. Only these are eligible."
+    )]
     pub only: Option<Vec<String>>,
     /// Price ceiling. A request that cannot be served at or under the ceiling
     /// fails instead of silently routing to an expensive endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "Price ceiling in USD per million tokens. Requests that cannot be served under it fail.")]
+    #[schemars(
+        description = "Price ceiling in USD per million tokens. Requests that cannot be served under it fail."
+    )]
     pub max_price: Option<OpenRouterMaxPrice>,
     /// `"allow"` (default) or `"deny"` — deny restricts routing to providers
     /// that do not store prompts non-transiently.
@@ -677,7 +693,9 @@ pub struct OpenRouterParams {
     /// It is NOT a provider name — provider preferences belong in
     /// `provider_routing`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "Model-level routing. The only value OpenRouter accepts is 'fallback'.")]
+    #[schemars(
+        description = "Model-level routing. The only value OpenRouter accepts is 'fallback'."
+    )]
     pub route: Option<String>,
     /// Whether to place an explicit `cache_control` breakpoint on the system
     /// prompt. Defaults to on: frona sends a large, stable system prompt plus
@@ -687,12 +705,20 @@ pub struct OpenRouterParams {
     /// DeepSeek, Grok) ignore the marker. Set to `false` for workloads that are
     /// overwhelmingly one-shot, where the cache write is never read back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "Place a cache_control breakpoint on the system prompt (default true).")]
+    #[schemars(
+        description = "Place a cache_control breakpoint on the system prompt (default true)."
+    )]
     pub prompt_caching: Option<bool>,
     /// Provider routing object. Sent as `provider` in the API request.
     /// Renamed to avoid collision with the `#[serde(tag = "provider")]` enum discriminant.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "provider_routing")]
-    #[schemars(description = "Provider routing preferences (order, fallbacks, etc.). See https://openrouter.ai/docs/guides/routing/provider-selection")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "provider_routing"
+    )]
+    #[schemars(
+        description = "Provider routing preferences (order, fallbacks, etc.). See https://openrouter.ai/docs/guides/routing/provider-selection"
+    )]
     pub provider_routing: Option<OpenRouterProviderRouting>,
 }
 
@@ -1173,13 +1199,21 @@ pub struct InferenceConfig {
     pub compaction_trigger_pct: usize,
     #[schemars(description = "Percentage of history to keep after truncation.")]
     pub history_truncation_pct: usize,
-    #[schemars(description = "Per-tool-call execution timeout in seconds. A hung tool (e.g. an unresponsive MCP server) fails after this instead of stalling the message forever. 0 disables the timeout.")]
+    #[schemars(
+        description = "Per-tool-call execution timeout in seconds. A hung tool (e.g. an unresponsive MCP server) fails after this instead of stalling the message forever. 0 disables the timeout."
+    )]
     pub tool_timeout_secs: u64,
-    #[schemars(description = "Model ids to force as vision-capable, overriding the catalog. Matches the model id (e.g. \"deepseek-v4-flash\"), a \"provider/model\" pair, or a vendor-prefixed suffix.")]
+    #[schemars(
+        description = "Model ids to force as vision-capable, overriding the catalog. Matches the model id (e.g. \"deepseek-v4-flash\"), a \"provider/model\" pair, or a vendor-prefixed suffix."
+    )]
     pub vision_models: Vec<String>,
-    #[schemars(description = "Model ids to force as text-only (no image input), overriding the catalog. Same matching as vision_models. Wins over the catalog and over vision_models.")]
+    #[schemars(
+        description = "Model ids to force as text-only (no image input), overriding the catalog. Same matching as vision_models. Wins over the catalog and over vision_models."
+    )]
     pub text_only_models: Vec<String>,
-    #[schemars(description = "When a model's image support is unknown (absent from the catalog and both override lists), treat it as text-only so images are transcribed or stripped instead of risking a provider 404. Default false.")]
+    #[schemars(
+        description = "When a model's image support is unknown (absent from the catalog and both override lists), treat it as text-only so images are transcribed or stripped instead of risking a provider 404. Default false."
+    )]
     pub transcribe_when_vision_unknown: bool,
 }
 
@@ -1213,9 +1247,13 @@ pub struct VoiceConfig {
     pub twilio_voice_id: Option<String>,
     #[schemars(description = "Twilio speech recognition model.")]
     pub twilio_speech_model: Option<String>,
-    #[schemars(description = "TTS provider for ConversationRelay (e.g. elevenlabs, polly). Defaults to polly when not set.")]
+    #[schemars(
+        description = "TTS provider for ConversationRelay (e.g. elevenlabs, polly). Defaults to polly when not set."
+    )]
     pub twilio_tts_provider: Option<String>,
-    #[schemars(description = "How readily the agent yields when the caller starts speaking: low, medium, or high. Higher cuts the agent off sooner but false-triggers on background noise. Defaults to medium.")]
+    #[schemars(
+        description = "How readily the agent yields when the caller starts speaking: low, medium, or high. Higher cuts the agent off sooner but false-triggers on background noise. Defaults to medium."
+    )]
     pub twilio_interrupt_sensitivity: Option<String>,
     #[schemars(description = "Plivo auth ID.")]
     pub plivo_auth_id: Option<String>,
@@ -1223,21 +1261,33 @@ pub struct VoiceConfig {
     pub plivo_auth_token: Option<String>,
     #[schemars(description = "Plivo phone number to call from.")]
     pub plivo_from_number: Option<String>,
-    #[schemars(description = "Public-facing base URL for voice callbacks. Overrides server.base_url for voice only.")]
+    #[schemars(
+        description = "Public-facing base URL for voice callbacks. Overrides server.base_url for voice only."
+    )]
     pub callback_base_url: Option<String>,
-    #[schemars(description = "Enable inbound call answering. Requires the voice provider to POST to the inbound webhook.")]
+    #[schemars(
+        description = "Enable inbound call answering. Requires the voice provider to POST to the inbound webhook."
+    )]
     pub inbound_enabled: bool,
-    #[schemars(description = "Server-level default greeting spoken when an inbound call connects, used when the owning user has not set their own via /api/voice/inbound-settings.")]
+    #[schemars(
+        description = "Server-level default greeting spoken when an inbound call connects, used when the owning user has not set their own via /api/voice/inbound-settings."
+    )]
     pub inbound_welcome_greeting: Option<String>,
-    #[schemars(description = "Enable silence filling during agent processing — sends periodic filler phrases while the agent is thinking. Only applies when the remote party's number matches a registered user (a user calling in, or the agent calling one of its users); calls with third parties are unaffected, as the agent narrates its own progress there per the active-call prompt.")]
+    #[schemars(
+        description = "Enable silence filling during agent processing — sends periodic filler phrases while the agent is thinking. Only applies when the remote party's number matches a registered user (a user calling in, or the agent calling one of its users); calls with third parties are unaffected, as the agent narrates its own progress there per the active-call prompt."
+    )]
     pub silence_fill_enabled: bool,
-    #[schemars(description = "Seconds of silence before the first filler phrase is sent, measured from the last thing the caller heard. Defaults to 5 — shorter and the filler lands in the ordinary pause before the agent starts its reply.")]
+    #[schemars(
+        description = "Seconds of silence before the first filler phrase is sent, measured from the last thing the caller heard. Defaults to 5 — shorter and the filler lands in the ordinary pause before the agent starts its reply."
+    )]
     #[serde(default = "default_silence_fill_initial_delay_secs")]
     pub silence_fill_initial_delay_secs: u64,
     #[schemars(description = "Seconds between successive filler phrases. Defaults to 7.")]
     #[serde(default = "default_silence_fill_interval_secs")]
     pub silence_fill_interval_secs: u64,
-    #[schemars(description = "Filler phrases spoken to the caller while the agent is processing. Each interval advances to the next phrase in order (rotating). If empty, uses built-in defaults.")]
+    #[schemars(
+        description = "Filler phrases spoken to the caller while the agent is processing. Each interval advances to the next phrase in order (rotating). If empty, uses built-in defaults."
+    )]
     pub silence_fill_phrases: Vec<String>,
 }
 
@@ -1599,21 +1649,23 @@ pub struct LoadedConfig {
 /// handlers so a value set via `FRONA_BROWSER_WS_URL` (etc.) can never look
 /// different — and untested — in the settings UI than what's actually running.
 pub fn build_effective_config(yaml_content: Option<&str>) -> Config {
-    let data_dir = std::env::var("FRONA_SERVER_DATA_DIR")
-        .unwrap_or_else(|_| "data".into());
+    let data_dir = std::env::var("FRONA_SERVER_DATA_DIR").unwrap_or_else(|_| "data".into());
 
     let mut builder = config::Config::builder()
-        .set_default("database.path", format!("{data_dir}/db")).unwrap()
-        .set_default("storage.data_dir", data_dir.clone()).unwrap()
-        .set_default("storage.skills_dir", format!("{data_dir}/skills")).unwrap()
-        .set_default("storage.cache_dir", format!("{data_dir}/system/cache")).unwrap()
-        .set_default("storage.ontology_dir", format!("{data_dir}/ontology")).unwrap();
+        .set_default("database.path", format!("{data_dir}/db"))
+        .unwrap()
+        .set_default("storage.data_dir", data_dir.clone())
+        .unwrap()
+        .set_default("storage.skills_dir", format!("{data_dir}/skills"))
+        .unwrap()
+        .set_default("storage.cache_dir", format!("{data_dir}/system/cache"))
+        .unwrap()
+        .set_default("storage.ontology_dir", format!("{data_dir}/ontology"))
+        .unwrap();
 
     if let Some(content) = yaml_content {
         let expanded = expand_env_vars(content);
-        builder = builder.add_source(
-            config::File::from_str(&expanded, config::FileFormat::Yaml),
-        );
+        builder = builder.add_source(config::File::from_str(&expanded, config::FileFormat::Yaml));
     }
 
     // FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
@@ -2550,7 +2602,10 @@ mod tests {
         let mut api_value = serde_json::to_value(&config).unwrap();
         redact_config_for_api(&mut api_value);
         let rendered = serde_json::to_string(&api_value).unwrap();
-        assert!(!rendered.contains("hunter2-smtp"), "API response leaked the SMTP password");
+        assert!(
+            !rendered.contains("hunter2-smtp"),
+            "API response leaked the SMTP password"
+        );
         assert_eq!(
             api_value.pointer("/mail/smtp_password/is_set"),
             Some(&serde_json::Value::Bool(true))
@@ -2559,7 +2614,10 @@ mod tests {
         let mut log_value = serde_json::to_value(&config).unwrap();
         redact_config_for_log(&mut log_value);
         let rendered = serde_json::to_string(&log_value).unwrap();
-        assert!(!rendered.contains("hunter2-smtp"), "log dump leaked the SMTP password");
+        assert!(
+            !rendered.contains("hunter2-smtp"),
+            "log dump leaked the SMTP password"
+        );
     }
 
     #[test]

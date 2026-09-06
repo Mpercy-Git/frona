@@ -1018,8 +1018,7 @@ fn build_state_with_lockout(state: &AppState, max_attempts: u32, minutes: u64) -
     config.auth.max_login_attempts = max_attempts;
     config.auth.lockout_minutes = minutes;
     new_state.config = std::sync::Arc::new(config);
-    new_state.login_tracker =
-        frona::auth::lockout::LoginAttemptTracker::new(max_attempts, minutes);
+    new_state.login_tracker = frona::auth::lockout::LoginAttemptTracker::new(max_attempts, minutes);
     new_state
 }
 
@@ -1141,8 +1140,7 @@ async fn deactivated_account_does_not_accrue_lockout() {
     let (state, _tmp) = test_app_state().await;
     state.user_group_service.seed_built_in().await.unwrap();
     register_user(&state, "keepadmin", "keepadmin@example.com", "password123").await;
-    let (_, user_id) =
-        register_user(&state, "gonner", "gonner@example.com", "password123").await;
+    let (_, user_id) = register_user(&state, "gonner", "gonner@example.com", "password123").await;
     state.user_service.deactivate(&user_id).await.unwrap();
 
     // Six attempts with the right password: rejected for being deactivated,
@@ -1197,10 +1195,17 @@ async fn change_password_swaps_the_credential() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert!(json["token"].is_string(), "a fresh access token is returned");
+    assert!(
+        json["token"].is_string(),
+        "a fresh access token is returned"
+    );
 
     let resp = attempt_login(&state, "swap@example.com", "password123", 1).await;
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "old password is dead");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "old password is dead"
+    );
 
     let resp = attempt_login(&state, "swap@example.com", "newpassword456", 2).await;
     assert_eq!(resp.status(), StatusCode::OK, "new password works");
@@ -1213,7 +1218,11 @@ async fn change_password_requires_the_current_one() {
 
     let app = build_app(state.clone());
     let resp = app
-        .oneshot(change_password_req(&token, "notmypassword", "newpassword456"))
+        .oneshot(change_password_req(
+            &token,
+            "notmypassword",
+            "newpassword456",
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -1248,7 +1257,11 @@ async fn change_password_revokes_other_sessions() {
 
     let app = build_app(state.clone());
     let resp = app
-        .oneshot(change_password_req(&first_session, "password123", "newpassword456"))
+        .oneshot(change_password_req(
+            &first_session,
+            "password123",
+            "newpassword456",
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1275,7 +1288,8 @@ async fn change_password_revokes_other_sessions() {
 #[tokio::test]
 async fn change_password_clears_an_existing_lockout() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) = register_user(&state, "lockedout", "lockedout@example.com", "password123").await;
+    let (token, _) =
+        register_user(&state, "lockedout", "lockedout@example.com", "password123").await;
 
     for i in 0..5 {
         attempt_login(&state, "lockedout@example.com", "wrong", i + 1).await;
@@ -1434,8 +1448,7 @@ async fn reset_password_revokes_existing_sessions() {
 #[tokio::test]
 async fn changing_the_password_invalidates_an_outstanding_reset_link() {
     let (state, _tmp) = test_app_state().await;
-    let (token, user_id) =
-        register_user(&state, "racer", "racer@example.com", "password123").await;
+    let (token, user_id) = register_user(&state, "racer", "racer@example.com", "password123").await;
 
     // An attacker requests a reset; the real user then changes their password.
     let secret = state.password_reset_service.issue(&user_id).await.unwrap();

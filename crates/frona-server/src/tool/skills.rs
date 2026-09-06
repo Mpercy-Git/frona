@@ -37,7 +37,11 @@ pub struct SkillsTool {
 }
 
 impl SkillsTool {
-    pub fn new(skill_service: SkillService, prompts: PromptLoader, public_base_url: String) -> Self {
+    pub fn new(
+        skill_service: SkillService,
+        prompts: PromptLoader,
+        public_base_url: String,
+    ) -> Self {
         Self {
             skill_service,
             prompts,
@@ -113,7 +117,11 @@ impl SkillsTool {
         Ok(ToolOutput::text(lines.join("\n")))
     }
 
-    async fn browse_repo(&self, repo: &str, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn browse_repo(
+        &self,
+        repo: &str,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let repo = normalize_repo(repo)?;
         let browse = self.skill_service.get_skills(&repo).await?;
         if browse.skills.is_empty() {
@@ -254,7 +262,11 @@ impl SkillsTool {
             let result = match scope {
                 SkillInstallScope::Agent => {
                     self.skill_service
-                        .install_batch(repo, names, Some((&ctx.agent_owner_handle, &ctx.agent.handle)))
+                        .install_batch(
+                            repo,
+                            names,
+                            Some((&ctx.agent_owner_handle, &ctx.agent.handle)),
+                        )
                         .await
                 }
                 SkillInstallScope::User => {
@@ -561,8 +573,14 @@ mod tests {
 
     #[test]
     fn normalize_repo_accepts_owner_repo() {
-        assert_eq!(normalize_repo("anthropics/skills").unwrap(), "anthropics/skills");
-        assert_eq!(normalize_repo("  anthropics/skills  ").unwrap(), "anthropics/skills");
+        assert_eq!(
+            normalize_repo("anthropics/skills").unwrap(),
+            "anthropics/skills"
+        );
+        assert_eq!(
+            normalize_repo("  anthropics/skills  ").unwrap(),
+            "anthropics/skills"
+        );
     }
 
     #[test]
@@ -573,7 +591,11 @@ mod tests {
             "http://www.github.com/anthropics/skills.git",
             "github.com/anthropics/skills",
         ] {
-            assert_eq!(normalize_repo(raw).unwrap(), "anthropics/skills", "failed for {raw}");
+            assert_eq!(
+                normalize_repo(raw).unwrap(),
+                "anthropics/skills",
+                "failed for {raw}"
+            );
         }
     }
 
@@ -587,13 +609,22 @@ mod tests {
     #[test]
     fn parse_skill_names_reads_array_and_dedupes() {
         let args = json!({"skills": ["pdf", "xlsx", "pdf", " docx "]});
-        assert_eq!(parse_skill_names(&args).unwrap(), vec!["pdf", "xlsx", "docx"]);
+        assert_eq!(
+            parse_skill_names(&args).unwrap(),
+            vec!["pdf", "xlsx", "docx"]
+        );
     }
 
     #[test]
     fn parse_skill_names_accepts_singular_forms() {
-        assert_eq!(parse_skill_names(&json!({"name": "pdf"})).unwrap(), vec!["pdf"]);
-        assert_eq!(parse_skill_names(&json!({"skills": "pdf"})).unwrap(), vec!["pdf"]);
+        assert_eq!(
+            parse_skill_names(&json!({"name": "pdf"})).unwrap(),
+            vec!["pdf"]
+        );
+        assert_eq!(
+            parse_skill_names(&json!({"skills": "pdf"})).unwrap(),
+            vec!["pdf"]
+        );
     }
 
     #[test]
@@ -606,7 +637,10 @@ mod tests {
     #[test]
     fn parse_scope_defaults_to_agent() {
         assert_eq!(parse_scope(&json!({})).unwrap(), SkillInstallScope::Agent);
-        assert_eq!(parse_scope(&json!({"scope": "USER"})).unwrap(), SkillInstallScope::User);
+        assert_eq!(
+            parse_scope(&json!({"scope": "USER"})).unwrap(),
+            SkillInstallScope::User
+        );
         assert!(parse_scope(&json!({"scope": "server"})).is_err());
     }
 
@@ -633,7 +667,11 @@ mod tests {
                 description: String::new(),
             },
         ];
-        let prompt = approval_prompt(&items, SkillInstallScope::User, "The user asked for a form.");
+        let prompt = approval_prompt(
+            &items,
+            SkillInstallScope::User,
+            "The user asked for a form.",
+        );
         assert!(prompt.contains("Install 2 skills for all your agents?"));
         assert!(prompt.contains("The user asked for a form."));
         assert!(prompt.contains("pdf (anthropics/skills) — Fill PDF forms."));

@@ -21,14 +21,8 @@ pub fn router() -> Router<AppState> {
             "/api/admin/users/{id}",
             patch(patch_user).delete(delete_user),
         )
-        .route(
-            "/api/admin/users/{id}/deactivate",
-            post(deactivate_user),
-        )
-        .route(
-            "/api/admin/users/{id}/reactivate",
-            post(reactivate_user),
-        )
+        .route("/api/admin/users/{id}/deactivate", post(deactivate_user))
+        .route("/api/admin/users/{id}/reactivate", post(reactivate_user))
         .route("/api/admin/users/{id}/password", put(set_user_password))
         .route("/api/admin/users/{id}/unlock", post(unlock_user))
         .route("/api/admin/groups", get(list_groups))

@@ -686,11 +686,11 @@ impl PkmRepo {
     /// A process-wide lock is a complete answer rather than a partial one
     /// *because the database is embedded in this process*: the handle is
     /// `Surreal<surrealdb::engine::local::Db>` and `db::init` only ever opens
-    /// it with `Surreal::new::<RocksDb>(path)` - there is no remote-engine path
-    /// - and RocksDB holds an exclusive lock on that directory, so no second
-    /// process can be writing these rows. Keyed by user so one user's edit
-    /// never waits on another's. The map holds one entry per user seen, which
-    /// is bounded by the user count.
+    /// it with `Surreal::new::<RocksDb>(path)` - there is no remote-engine
+    /// path - and RocksDB holds an exclusive lock on that directory, so no
+    /// second process can be writing these rows. Keyed by user so one user's
+    /// edit never waits on another's. The map holds one entry per user seen,
+    /// which is bounded by the user count.
     ///
     /// **If the store ever becomes a shared or remote SurrealDB, this stops
     /// being sufficient** and the mutual exclusion has to move into the

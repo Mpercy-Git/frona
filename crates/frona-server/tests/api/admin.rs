@@ -438,7 +438,12 @@ fn auth_put_json(uri: &str, token: &str, body: serde_json::Value) -> Request<Bod
         .unwrap()
 }
 
-async fn login_attempt(state: &AppState, identifier: &str, password: &str, from_ip: u8) -> StatusCode {
+async fn login_attempt(
+    state: &AppState,
+    identifier: &str,
+    password: &str,
+    from_ip: u8,
+) -> StatusCode {
     let app = build_app(state.clone());
     let mut req = Request::builder()
         .method("POST")

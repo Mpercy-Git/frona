@@ -184,9 +184,7 @@ mod tests {
 
     #[test]
     fn rejects_both_targets() {
-        assert!(
-            parse_reset_password(&args(&["--handle", "alice", "--email", "a@b.com"])).is_err()
-        );
+        assert!(parse_reset_password(&args(&["--handle", "alice", "--email", "a@b.com"])).is_err());
     }
 
     #[test]

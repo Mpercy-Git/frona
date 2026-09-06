@@ -53,7 +53,9 @@ impl PushSubscriptionRepository for SurrealRepo<PushSubscription> {
 
     async fn delete_by_endpoint(&self, user_id: &str, endpoint: &str) -> Result<(), AppError> {
         self.db()
-            .query("DELETE FROM push_subscription WHERE user_id = $user_id AND endpoint = $endpoint")
+            .query(
+                "DELETE FROM push_subscription WHERE user_id = $user_id AND endpoint = $endpoint",
+            )
             .bind(("user_id", user_id.to_string()))
             .bind(("endpoint", endpoint.to_string()))
             .await

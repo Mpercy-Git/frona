@@ -145,9 +145,17 @@ impl McpManager {
         });
 
         match config {
-            Some(TransportConfig::Http { url, port_env_var, endpoint_path, args, env, headers }) => {
+            Some(TransportConfig::Http {
+                url,
+                port_env_var,
+                endpoint_path,
+                args,
+                env,
+                headers,
+            }) => {
                 if let Some(url) = url.as_ref().filter(|u| !u.is_empty()) {
-                    self.start_remote_http(server, url.clone(), headers, &resolved_env).await
+                    self.start_remote_http(server, url.clone(), headers, &resolved_env)
+                        .await
                 } else {
                     self.start_local_http(
                         server,
@@ -355,9 +363,15 @@ impl McpManager {
             "connecting to remote MCP server: no child process spawned, only sandbox_policy.network_destinations gates this outbound call"
         );
 
-        let config = rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url)
+        let config =
+            rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(
+                url,
+            )
             .custom_headers(headers);
-        let transport = rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_config(config);
+        let transport =
+            rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_config(
+                config,
+            );
         let client = McpClient::connect(transport, default_client_info()).await?;
         self.register_connection(server, client, None, None, None, None)
             .await

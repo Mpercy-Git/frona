@@ -68,7 +68,11 @@ fn prefix_first_prompt(
 fn parse_transfer_result(result: &str) -> Option<(String, String)> {
     let v: serde_json::Value = serde_json::from_str(result).ok()?;
     let target_agent_id = v.get("target_agent_id")?.as_str()?.to_string();
-    let note = v.get("note").and_then(|n| n.as_str()).unwrap_or_default().to_string();
+    let note = v
+        .get("note")
+        .and_then(|n| n.as_str())
+        .unwrap_or_default()
+        .to_string();
     Some((target_agent_id, note))
 }
 
@@ -126,8 +130,16 @@ pub(crate) async fn twilio_ws_handler(
 
     ws.on_upgrade(move |socket| {
         handle_voice_socket(
-            socket, state, chat_id, user_id, contact_id, call_id, caller_name, caller_phone,
-            transfer_note, is_inbound,
+            socket,
+            state,
+            chat_id,
+            user_id,
+            contact_id,
+            call_id,
+            caller_name,
+            caller_phone,
+            transfer_note,
+            is_inbound,
         )
     })
 }
@@ -161,7 +173,9 @@ async fn handle_voice_socket(
         true
     } else {
         match caller_phone.as_deref() {
-            Some(phone) => find_user_by_phone(&state.user_service, phone).await.is_some(),
+            Some(phone) => find_user_by_phone(&state.user_service, phone)
+                .await
+                .is_some(),
             None => false,
         }
     };
@@ -269,9 +283,8 @@ async fn handle_voice_socket(
                     let initial = Duration::from_secs(
                         state.config.voice.silence_fill_initial_delay_secs.max(1),
                     );
-                    let interval = Duration::from_secs(
-                        state.config.voice.silence_fill_interval_secs.max(1),
-                    );
+                    let interval =
+                        Duration::from_secs(state.config.voice.silence_fill_interval_secs.max(1));
                     let phrases = if state.config.voice.silence_fill_phrases.is_empty() {
                         DEFAULT_SILENCE_FILL_PHRASES
                             .iter()
@@ -414,7 +427,11 @@ async fn handle_voice_socket(
                     let tts_secs = tts_secs.saturating_sub(already_played).max(1);
                     tracing::info!(chat_id = %chat_id, tts_secs, already_played, "Waiting for TTS before ending the relay session");
 
-                    if let TurnOutcome::Transfer { target_agent_id, note } = &outcome {
+                    if let TurnOutcome::Transfer {
+                        target_agent_id,
+                        note,
+                    } = &outcome
+                    {
                         tracing::info!(chat_id = %chat_id, target_agent_id = %target_agent_id, "Transfer requested — ending this call, callback follows once it closes");
                         pending_transfer = Some((target_agent_id.clone(), note.clone()));
                     } else {
@@ -424,7 +441,9 @@ async fn handle_voice_socket(
                     let end_msg = serde_json::json!({ "type": "end" });
                     {
                         let mut send = ws_send.lock().await;
-                        send.send(Message::Text(end_msg.to_string().into())).await.ok();
+                        send.send(Message::Text(end_msg.to_string().into()))
+                            .await
+                            .ok();
                         // Explicitly close our end right after, rather than
                         // just dropping the connection — this avoided a
                         // "failed" session (error 64105, "Websocket ended")
@@ -847,7 +866,11 @@ async fn end_turn(ws_send: &WsSend, chat_id: &str) {
         "last": true
     });
     let mut send = ws_send.lock().await;
-    if send.send(Message::Text(tts.to_string().into())).await.is_err() {
+    if send
+        .send(Message::Text(tts.to_string().into()))
+        .await
+        .is_err()
+    {
         tracing::warn!(chat_id = %chat_id, "Failed to close TTS turn");
     }
 }
@@ -895,7 +918,10 @@ struct FillerSchedule {
 
 impl FillerSchedule {
     fn new(initial_delay: Duration, interval: Duration) -> Self {
-        Self { required_gap: initial_delay, interval }
+        Self {
+            required_gap: initial_delay,
+            interval,
+        }
     }
 
     /// How much longer the line must stay quiet before the next phrase is due.
@@ -998,7 +1024,10 @@ enum TurnOutcome {
     Hangup,
     /// Read by `handle_voice_socket` after this call closes, to place the
     /// callback — see `place_transfer_callback`.
-    Transfer { target_agent_id: String, note: String },
+    Transfer {
+        target_agent_id: String,
+        note: String,
+    },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1074,7 +1103,9 @@ async fn handle_voice_turn(
                 });
                 {
                     let mut send = ws_send.lock().await;
-                    send.send(Message::Text(dtmf_msg.to_string().into())).await.ok();
+                    send.send(Message::Text(dtmf_msg.to_string().into()))
+                        .await
+                        .ok();
                 }
 
                 let _ = state
@@ -1113,9 +1144,14 @@ async fn handle_voice_turn(
                 return Ok((turn_text.clone(), TurnOutcome::Hangup));
             }
             InferenceResponse::ExternalToolPending {
-                ref tool_calls, ref turn_text, ..
+                ref tool_calls,
+                ref turn_text,
+                ..
             } if tool_calls.iter().any(|te| te.name == "transfer_call") => {
-                let tool_call = tool_calls.iter().find(|te| te.name == "transfer_call").unwrap();
+                let tool_call = tool_calls
+                    .iter()
+                    .find(|te| te.name == "transfer_call")
+                    .unwrap();
                 tracing::debug!(chat_id = %chat_id, "Transfer requested by agent");
 
                 // TransferCallTool's result IS this JSON — see tool::voice.
@@ -1124,14 +1160,13 @@ async fn handle_voice_turn(
                     (String::new(), String::new())
                 });
 
-                let _ = state.chat_service
+                let _ = state
+                    .chat_service
                     .resolve_tool_call(&tool_call.id, Some("Transfer initiated".to_string()))
                     .await;
 
                 response.content = turn_text.clone();
-                let _ = state.chat_service
-                    .complete_agent_message(response)
-                    .await;
+                let _ = state.chat_service.complete_agent_message(response).await;
 
                 // This call is over — the target agent picks up via a fresh
                 // outbound call once it actually closes, not by keeping this
@@ -1142,7 +1177,13 @@ async fn handle_voice_turn(
                     tracing::warn!(error = %e, call_id = %cid, "Failed to mark call completed");
                 }
 
-                return Ok((turn_text.clone(), TurnOutcome::Transfer { target_agent_id, note }));
+                return Ok((
+                    turn_text.clone(),
+                    TurnOutcome::Transfer {
+                        target_agent_id,
+                        note,
+                    },
+                ));
             }
             InferenceResponse::Completed {
                 text,
@@ -1153,13 +1194,13 @@ async fn handle_voice_turn(
                 response.content = text.clone();
                 response.attachments = attachments;
                 response.reasoning = reasoning;
-                let _ = state.chat_service
-                    .complete_agent_message(response)
-                    .await;
+                let _ = state.chat_service.complete_agent_message(response).await;
                 return Ok((text, TurnOutcome::Continue));
             }
             InferenceResponse::ExternalToolPending {
-                ref tool_calls, ref turn_text, ..
+                ref tool_calls,
+                ref turn_text,
+                ..
             } => {
                 // The agent called a non-voice tool (search, browser, etc.) and
                 // produced `turn_text` alongside the tool call. The streamer
@@ -1179,20 +1220,21 @@ async fn handle_voice_turn(
                 // Resolve tool calls and continue the loop for the next
                 // inference round.
                 for tc in tool_calls {
-                    let _ = state.chat_service
+                    let _ = state
+                        .chat_service
                         .resolve_tool_call(&tc.id, Some("executed".to_string()))
                         .await;
                 }
                 response.content = turn_text.clone();
-                let _ = state.chat_service
-                    .complete_agent_message(response)
-                    .await;
+                let _ = state.chat_service.complete_agent_message(response).await;
                 // Continue the loop — the harness will process the tool
                 // results and produce the next inference.
             }
             _ => {
-                let _ = state.chat_service
-                    .fail_agent_message(response, "voice inference unexpected branch".to_string()).await;
+                let _ = state
+                    .chat_service
+                    .fail_agent_message(response, "voice inference unexpected branch".to_string())
+                    .await;
                 return Ok((String::new(), TurnOutcome::Continue));
             }
         }
@@ -1222,7 +1264,12 @@ mod tests {
 
     #[test]
     fn inbound_prefix_used_when_no_transfer_note() {
-        let prefixed = prefix_first_prompt("Hello?".to_string(), Some("Alice"), Some("+15555551234"), None);
+        let prefixed = prefix_first_prompt(
+            "Hello?".to_string(),
+            Some("Alice"),
+            Some("+15555551234"),
+            None,
+        );
         assert_eq!(
             prefixed,
             "[INBOUND_CALL: Incoming call from Alice (+15555551234).]\nHello?"

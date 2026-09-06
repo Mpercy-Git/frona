@@ -92,14 +92,13 @@ impl TokenRepository for SurrealRepo<ApiToken> {
     async fn delete_by_refresh_pair(&self, pair_id: &str) -> Result<bool, AppError> {
         // RETURN BEFORE gives back the records that existed before deletion.
         // An empty result means a concurrent request already consumed this pair.
-        let mut result = self.db()
+        let mut result = self
+            .db()
             .query("DELETE api_token WHERE refresh_pair_id = $pair_id RETURN BEFORE")
             .bind(("pair_id", pair_id.to_string()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let deleted: Vec<serde_json::Value> = result
-            .take(0)
-            .unwrap_or_default();
+        let deleted: Vec<serde_json::Value> = result.take(0).unwrap_or_default();
         Ok(!deleted.is_empty())
     }
 

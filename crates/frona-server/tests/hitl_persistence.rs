@@ -225,7 +225,11 @@ async fn skills_request_round_trips_with_approval() {
     let found = repo.find_by_id(&id).await.unwrap().expect("should find");
     let h = found.hitl.expect("hitl should round-trip");
     match h.request {
-        HitlRequest::Skills { items, scope, reason } => {
+        HitlRequest::Skills {
+            items,
+            scope,
+            reason,
+        } => {
             assert_eq!(scope, SkillInstallScope::User);
             assert_eq!(reason, "The user asked for a filled-in form.");
             assert_eq!(items.len(), 2);

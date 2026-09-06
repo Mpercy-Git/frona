@@ -104,7 +104,14 @@ impl UsageService {
             pricing_version,
             billing_kind: self.billing_kind(model_ref.provider_name()),
         };
-        let row = build_row(usage_ctx, model_ref, usage, fallback_index, latency, pricing);
+        let row = build_row(
+            usage_ctx,
+            model_ref,
+            usage,
+            fallback_index,
+            latency,
+            pricing,
+        );
 
         // Persistence failure logs but never propagates - observability never
         // blocks the user's reply.

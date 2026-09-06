@@ -863,7 +863,10 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
 
 /// Same as [`test_chat_service`] but also returns the backing DB handle, for
 /// tests that need to seed rows (chats, shares, …) directly.
-pub async fn test_chat_service_with_db() -> (frona::chat::service::ChatService, surrealdb::Surreal<surrealdb::engine::local::Db>) {
+pub async fn test_chat_service_with_db() -> (
+    frona::chat::service::ChatService,
+    surrealdb::Surreal<surrealdb::engine::local::Db>,
+) {
     use frona::db::repo::generic::SurrealRepo;
     use surrealdb::Surreal;
     use surrealdb::engine::local::Mem;

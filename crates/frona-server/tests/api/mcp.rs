@@ -255,7 +255,11 @@ async fn install_remote_server_with_bearer_token() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "remote install should succeed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "remote install should succeed"
+    );
     let server = body_json(resp).await;
     assert_eq!(server["display_name"], "My Remote Server");
     assert_eq!(server["status"], "installed");
@@ -281,8 +285,13 @@ async fn install_remote_server_with_bearer_token() {
 #[tokio::test]
 async fn install_remote_server_without_auth_is_rejected_by_default() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "mcp-remote-noauth", "mcpremotenoauth@example.com", "password123").await;
+    let (token, _) = register_user(
+        &state,
+        "mcp-remote-noauth",
+        "mcpremotenoauth@example.com",
+        "password123",
+    )
+    .await;
 
     let app = build_app(state);
     let resp = app

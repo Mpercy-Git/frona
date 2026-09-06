@@ -48,11 +48,7 @@ pub trait VaultGrantRepository: Repository<VaultGrant> {
 
     /// Delete every grant referencing a vault item, regardless of principal.
     /// Used to clean up when the underlying credential is deleted.
-    async fn delete_by_item(
-        &self,
-        user_id: &str,
-        vault_item_id: &str,
-    ) -> Result<(), AppError>;
+    async fn delete_by_item(&self, user_id: &str, vault_item_id: &str) -> Result<(), AppError>;
 }
 
 #[async_trait]
@@ -112,11 +108,7 @@ pub trait PrincipalCredentialBindingRepository: Repository<PrincipalCredentialBi
 
     /// Delete every binding referencing a vault item, regardless of principal.
     /// Used to clean up when the underlying credential is deleted.
-    async fn delete_by_item(
-        &self,
-        user_id: &str,
-        vault_item_id: &str,
-    ) -> Result<(), AppError>;
+    async fn delete_by_item(&self, user_id: &str, vault_item_id: &str) -> Result<(), AppError>;
 
     async fn delete_by_chat(&self, chat_id: &str) -> Result<(), AppError>;
 }
