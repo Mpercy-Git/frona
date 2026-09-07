@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::Utc;
 
 use crate::agent::models::Agent;
-use crate::agent::task::models::TaskKind;
+use crate::agent::task::models::{Task, TaskKind};
 use crate::chat::models::CreateChatRequest;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
@@ -241,6 +241,54 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Cancel a built-in's seeded cron template when its owner no longer
+    /// qualifies for the agent. Returns whether the template was retired, so
+    /// the caller can skip firing it.
+    ///
+    /// Cancelling is the disable mechanism the scheduler already has:
+    /// `find_due_cron_templates` only returns templates whose status is
+    /// `Pending`, so a cancelled one is simply never picked up again. It stays
+    /// in the tasks UI, visible and explicable, rather than vanishing -- and if
+    /// the owner is re-promoted a human can restore it, which is the right
+    /// amount of ceremony for a schedule that acts on the whole server's data.
+    ///
+    /// Deliberately narrower than "can this agent still do anything": it asks
+    /// only the question provisioning asked, so it can answer definitively.
+    /// Losing a permission by custom policy rather than group membership is
+    /// not covered here -- the tools still refuse at call time, so that case is
+    /// safe, just noisier.
+    async fn retire_if_owner_ineligible(&self, template: &Task) -> Result<bool, AppError> {
+        let Some(agent) = self
+            .app_state
+            .agent_service
+            .find_by_id(&template.agent_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+
+        if self
+            .app_state
+            .agent_service
+            .owner_still_eligible(&agent, &self.app_state.storage_service)
+            .await?
+        {
+            return Ok(false);
+        }
+
+        self.app_state
+            .task_service
+            .mark_cancelled(&template.id)
+            .await?;
+        tracing::info!(
+            task_id = %template.id,
+            agent_handle = %agent.handle,
+            user_id = %agent.user_id,
+            "Retired a built-in's scheduled run: owner is no longer eligible for the agent"
+        );
+        Ok(true)
+    }
+
     async fn run_cron_tasks(&self) -> Result<(), AppError> {
         if self.app_state.is_shutting_down() {
             return Ok(());
@@ -268,6 +316,27 @@ impl Scheduler {
                 ),
                 _ => continue,
             };
+
+            // A built-in's seeded cron outlives the eligibility that created
+            // it. Demote the owner out of the group that qualified them and
+            // this template keeps firing forever: the agent starts, its first
+            // tool call is refused, and a failed run lands on the account
+            // every period. Nothing leaks -- the tools re-check permission at
+            // call time, which is the actual boundary -- but the noise is
+            // perpetual and the owner has no clue why. Retire the schedule
+            // instead, leaving the agent and its history alone.
+            match self.retire_if_owner_ineligible(&template).await {
+                Ok(true) => continue,
+                Ok(false) => {}
+                // Fire anyway: a transient read failure should not silently
+                // stop a legitimate schedule. The tools refuse on their own if
+                // the owner really has lost access.
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    task_id = %template.id,
+                    "Could not check cron owner eligibility; firing anyway"
+                ),
+            }
 
             tracing::info!(
                 task_id = %template.id,

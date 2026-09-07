@@ -633,6 +633,100 @@ impl AgentService {
         Ok(())
     }
 
+    /// Clone any built-in that existing users are eligible for but never
+    /// received, and report how many were created.
+    ///
+    /// [`Self::clone_all_builtins_for_user`] only runs at the four moments an
+    /// account is created or its groups change. A built-in added to
+    /// `resources/agents/` *after* a user was created therefore never reaches
+    /// them: an admin whose account predates the cost analyst is eligible for
+    /// it but was never given one, and nothing in their normal use of the
+    /// server would ever trigger provisioning. This closes that gap on every
+    /// boot.
+    ///
+    /// Cheap in the steady state, which is what makes it safe to run
+    /// unconditionally: the `find_by_handle` guard is an indexed lookup, so an
+    /// instance with nothing to backfill reads once per user per built-in and
+    /// writes nothing. Deactivated users are skipped -- provisioning an agent
+    /// for an account that cannot sign in would be pure noise.
+    ///
+    /// Failures are logged, never propagated. A built-in that cannot be cloned
+    /// is not a reason to abort startup, and the next boot retries it.
+    pub async fn backfill_builtins_for_all_users(
+        &self,
+        storage: &StorageService,
+    ) -> Result<usize, AppError> {
+        let users = self.user_service.list_all(false).await?;
+        let mut created = 0usize;
+
+        for user in users {
+            for handle in crate::agent::models::BUILTIN_HANDLES {
+                // Skip the overwhelmingly common case before doing any
+                // filesystem work: the user already has this built-in.
+                if self.repo.find_by_handle(&user.id, handle).await?.is_some() {
+                    continue;
+                }
+                match self.clone_builtin_for_user(&user.id, handle, storage).await {
+                    Ok(_) => {
+                        created += 1;
+                        tracing::info!(
+                            user_id = %user.id,
+                            handle = %handle,
+                            "Backfilled missing builtin agent"
+                        );
+                    }
+                    // Not eligible for a group-restricted built-in. The
+                    // designed outcome, not a failure.
+                    Err(AppError::Forbidden(_)) => {}
+                    Err(e) => tracing::warn!(
+                        user_id = %user.id,
+                        handle = %handle,
+                        error = %e,
+                        "Failed to backfill builtin agent"
+                    ),
+                }
+            }
+        }
+
+        Ok(created)
+    }
+
+    /// Whether `agent`'s owner still satisfies the `groups:` restriction its
+    /// built-in template declares.
+    ///
+    /// True for anything unrestricted -- a user-created agent, or a built-in
+    /// that named no groups -- so callers can apply it to any agent. Only a
+    /// built-in that declared `groups:` can return false, and only once its
+    /// owner has left every group named.
+    ///
+    /// Provisioning happens once; group membership keeps changing afterwards.
+    /// Anything that acts on a user's behalf on a schedule needs to re-ask
+    /// rather than trust the answer taken at clone time.
+    pub async fn owner_still_eligible(
+        &self,
+        agent: &Agent,
+        storage: &StorageService,
+    ) -> Result<bool, AppError> {
+        if !crate::agent::models::BUILTIN_HANDLES.contains(&agent.handle) {
+            return Ok(true);
+        }
+
+        let ws = storage.builtin_template_workspace(&agent.handle);
+        let Some(required) = ws
+            .read("AGENT.md")
+            .map(|c| parse_frontmatter(&c))
+            .and_then(|t| t.metadata.get("groups").cloned())
+        else {
+            return Ok(true);
+        };
+
+        let groups = parse_required_groups(&required);
+        if groups.is_empty() {
+            return Ok(true);
+        }
+        self.user_in_any_group(&agent.user_id, &groups).await
+    }
+
     pub async fn set_heartbeat(
         &self,
         agent_id: &str,

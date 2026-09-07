@@ -303,6 +303,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Built-ins are otherwise only provisioned when an account is created or
+    // its groups change, so one added after a user existed never reaches them.
+    // Runs after the admin invariant above so group membership is settled
+    // before eligibility is judged. Never fatal: a server that boots without a
+    // built-in agent still works, and the next boot retries.
+    match state
+        .agent_service
+        .backfill_builtins_for_all_users(&state.storage_service)
+        .await
+    {
+        Ok(0) => {}
+        Ok(n) => info!(count = n, "Backfilled missing builtin agents"),
+        Err(e) => error!(error = %e, "Failed to backfill builtin agents"),
+    }
+
     let mut api = axum::Router::new()
         .merge(routes::admin::router())
         .merge(routes::cost::router())

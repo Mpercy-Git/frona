@@ -185,3 +185,193 @@ async fn the_cost_analyst_is_provisioned_for_admins_only() {
         "the group gate must not affect unrestricted built-ins"
     );
 }
+
+/// Provisioning happens at four moments only — account creation, SSO first
+/// login, admin-creates-user, admin-changes-groups — so a built-in added to
+/// `resources/agents/` after a user existed never reaches them. An admin whose
+/// account predates the cost analyst is eligible for it and would never be
+/// given one. The startup backfill is what closes that.
+#[tokio::test]
+async fn the_backfill_provisions_a_builtin_an_existing_user_never_received() {
+    let (state, _tmp, _, _) = setup().await;
+
+    let admin = state
+        .user_service
+        .find_by_handle(&frona::core::Handle::try_new("costadmin".to_string()).unwrap())
+        .await
+        .unwrap()
+        .expect("admin exists");
+
+    // Stand in for an account that predates the built-in.
+    let existing = state
+        .agent_service
+        .find_by_handle(&admin.id, frona::agent::models::COST_ANALYST_AGENT_HANDLE)
+        .await
+        .unwrap()
+        .expect("provisioned at registration");
+    state
+        .agent_service
+        .delete(&admin.id, &existing.id)
+        .await
+        .unwrap();
+
+    let created = state
+        .agent_service
+        .backfill_builtins_for_all_users(&state.storage_service)
+        .await
+        .unwrap();
+
+    assert_eq!(created, 1, "exactly the one missing built-in");
+    assert!(
+        state
+            .agent_service
+            .find_by_handle(&admin.id, frona::agent::models::COST_ANALYST_AGENT_HANDLE)
+            .await
+            .unwrap()
+            .is_some(),
+        "the backfill should have restored the admin's cost analyst"
+    );
+}
+
+/// The backfill must not become a way in for people the group gate excludes.
+#[tokio::test]
+async fn the_backfill_respects_the_group_restriction() {
+    let (state, _tmp, _, _) = setup().await;
+
+    let member = state
+        .user_service
+        .find_by_handle(&frona::core::Handle::try_new("costmember".to_string()).unwrap())
+        .await
+        .unwrap()
+        .expect("member exists");
+
+    state
+        .agent_service
+        .backfill_builtins_for_all_users(&state.storage_service)
+        .await
+        .unwrap();
+
+    assert!(
+        state
+            .agent_service
+            .find_by_handle(&member.id, frona::agent::models::COST_ANALYST_AGENT_HANDLE)
+            .await
+            .unwrap()
+            .is_none(),
+        "a non-admin must not be handed the agent by the backfill"
+    );
+}
+
+/// It runs on every boot, so a steady-state instance must create nothing.
+#[tokio::test]
+async fn the_backfill_is_idempotent() {
+    let (state, _tmp, _, _) = setup().await;
+
+    let first = state
+        .agent_service
+        .backfill_builtins_for_all_users(&state.storage_service)
+        .await
+        .unwrap();
+    let second = state
+        .agent_service
+        .backfill_builtins_for_all_users(&state.storage_service)
+        .await
+        .unwrap();
+
+    assert_eq!(first, 0, "registration already provisioned everyone");
+    assert_eq!(second, 0, "and a second pass must still create nothing");
+}
+
+/// Eligibility is decided once at clone time but group membership keeps
+/// changing, so anything acting on a schedule has to re-ask. This is the
+/// decision the scheduler uses to retire a demoted owner's seeded cron.
+#[tokio::test]
+async fn eligibility_is_rechecked_against_current_group_membership() {
+    let (state, _tmp, _, _) = setup().await;
+
+    let mut admin = state
+        .user_service
+        .find_by_handle(&frona::core::Handle::try_new("costadmin".to_string()).unwrap())
+        .await
+        .unwrap()
+        .expect("admin exists");
+    let agent = state
+        .agent_service
+        .find_by_handle(&admin.id, frona::agent::models::COST_ANALYST_AGENT_HANDLE)
+        .await
+        .unwrap()
+        .expect("provisioned at registration");
+
+    assert!(
+        state
+            .agent_service
+            .owner_still_eligible(&agent, &state.storage_service)
+            .await
+            .unwrap(),
+        "an admin still in the group is eligible"
+    );
+
+    // A second admin first: the schema refuses to demote the last one
+    // (`refuse_last_admin_loss_on_update`), so without this the demotion below
+    // is rejected rather than tested.
+    let mut member = state
+        .user_service
+        .find_by_handle(&frona::core::Handle::try_new("costmember".to_string()).unwrap())
+        .await
+        .unwrap()
+        .expect("member exists");
+    member.groups.push("admins".to_string());
+    state.user_service.update(&member).await.unwrap();
+
+    // Demote. The agent row deliberately survives — the user may have chats
+    // against it — so eligibility, not existence, is what has to change.
+    admin.groups.retain(|g| g != "admins");
+    state.user_service.update(&admin).await.unwrap();
+
+    assert!(
+        !state
+            .agent_service
+            .owner_still_eligible(&agent, &state.storage_service)
+            .await
+            .unwrap(),
+        "a demoted owner is no longer eligible, so their schedule can be retired"
+    );
+    assert!(
+        state
+            .agent_service
+            .find_by_id(&agent.id)
+            .await
+            .unwrap()
+            .is_some(),
+        "demotion must not delete the agent or the chats hanging off it"
+    );
+}
+
+/// An unrestricted built-in has no `groups:` to lose, so the check must never
+/// retire its schedule.
+#[tokio::test]
+async fn an_unrestricted_builtin_is_always_eligible() {
+    let (state, _tmp, _, _) = setup().await;
+
+    let member = state
+        .user_service
+        .find_by_handle(&frona::core::Handle::try_new("costmember".to_string()).unwrap())
+        .await
+        .unwrap()
+        .expect("member exists");
+    let agent = state
+        .agent_service
+        .find_by_handle(&member.id, frona::agent::models::SYSTEM_AGENT_HANDLE)
+        .await
+        .unwrap()
+        .expect("every user gets the unrestricted built-ins");
+
+    assert!(
+        state
+            .agent_service
+            .owner_still_eligible(&agent, &state.storage_service)
+            .await
+            .unwrap(),
+        "a built-in that named no groups is eligible for anyone who has it"
+    );
+}
