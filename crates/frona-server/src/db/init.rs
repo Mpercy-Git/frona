@@ -22,6 +22,7 @@ const USER_OWNED_TABLES: &[(&str, &str)] = &[
     ("memory", "user_id"),
     ("keypair", "user_id"),
     ("notification", "user_id"),
+    ("push_subscription", "user_id"),
     ("policy", "user_id"),
     ("oauth_identity", "user_id"),
     ("api_token", "user_id"),
@@ -179,6 +180,13 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
 
         DEFINE TABLE IF NOT EXISTS notification SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_notification_user ON TABLE notification COLUMNS user_id;
+
+        -- Web Push subscriptions. The endpoint is unique per browser/device,
+        -- but two accounts signed in on the same device share one endpoint, so
+        -- the uniqueness is per (user, endpoint) rather than endpoint alone.
+        DEFINE TABLE IF NOT EXISTS push_subscription SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_push_subscription_user ON TABLE push_subscription COLUMNS user_id;
+        DEFINE INDEX IF NOT EXISTS idx_push_subscription_user_endpoint ON TABLE push_subscription COLUMNS user_id, endpoint UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS policy SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_policy_user ON TABLE policy COLUMNS user_id;
