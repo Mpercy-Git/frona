@@ -80,6 +80,10 @@ export interface Agent {
    *  into. `null` falls back to the server's default voice. */
   voice_id: string | null;
   identity: Record<string, string>;
+  /** Keep what this agent learns to itself: it never writes to memory the user's
+   *  other agents can read (shared user memory, space summaries, the knowledge
+   *  base). It still reads them. */
+  private_memory: boolean;
   sandbox_policy: SandboxPolicy;
   sandbox_limits: SandboxLimits | null;
   prompt: string | null;
@@ -125,6 +129,8 @@ export interface CreateAgentRequest {
   /** Sent on create; materialized into Cedar policies server-side. */
   sandbox_policy?: SandboxPolicy;
   sandbox_limits?: SandboxLimits;
+  /** Omitted → not private. See `Agent.private_memory`. */
+  private_memory?: boolean;
 }
 
 export interface UpdateAgentRequest {
@@ -137,6 +143,8 @@ export interface UpdateAgentRequest {
   /** When set, re-materializes Cedar policies for this agent. */
   sandbox_policy?: SandboxPolicy;
   sandbox_limits?: SandboxLimits;
+  /** Omitted leaves the setting untouched. See `Agent.private_memory`. */
+  private_memory?: boolean;
 }
 
 export interface SpaceResponse {

@@ -225,6 +225,7 @@ async fn seed_agent(db: &Surreal<Db>) {
             skills: None,
             avatar: None,
             voice_id: None,
+            private_memory: false,
             identity: Default::default(),
             prompt: None,
             heartbeat_interval: None,

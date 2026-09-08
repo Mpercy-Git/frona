@@ -456,6 +456,7 @@ impl BasicMemoryService {
     async fn run_space_sweep(
         &self,
         chat_service: &crate::chat::service::ChatService,
+        agent_service: &crate::agent::service::AgentService,
         group: &ModelGroup,
     ) -> Result<(), AppError> {
         for space in self.space_repo.find_all().await? {
@@ -465,6 +466,14 @@ impl BasicMemoryService {
             }
             let mut summaries = Vec::new();
             for chat in &chats {
+                // Space memory is read by every agent that shares the space, so a
+                // private-memory agent's conversations must not be summarised into
+                // it. A chat whose agent is gone is summarised as before.
+                if let Ok(Some(agent)) = agent_service.find_by_id(&chat.agent_id).await
+                    && agent.private_memory
+                {
+                    continue;
+                }
                 let title = chat.title.clone().unwrap_or_else(|| "Untitled".to_string());
                 let summary = chat_service
                     .compactor()
@@ -473,6 +482,9 @@ impl BasicMemoryService {
                     .summary
                     .unwrap_or_else(|| format!("(No summary available for chat: {title})"));
                 summaries.push((title, summary));
+            }
+            if summaries.is_empty() {
+                continue;
             }
             if let Err(e) = self
                 .compact_space(&space.user_id, &space.id, summaries, group)
@@ -511,6 +523,16 @@ impl MemoryService for BasicMemoryService {
         if !section.is_empty() {
             mcx.system_prompt.push_str("\n\n");
             mcx.system_prompt.push_str(&section);
+        }
+        // A private-memory agent has no `store_user_memory` tool; say so, or the
+        // guide above reads as an instruction to call something it cannot see.
+        // Constant per agent, so it stays inside the cacheable prefix.
+        if mcx.ctx.agent.private_memory {
+            let note = self.prompts.read("MEMORY_PRIVATE.md").unwrap_or_default();
+            if !note.is_empty() {
+                mcx.system_prompt.push_str("\n\n");
+                mcx.system_prompt.push_str(&note);
+            }
         }
 
         let user_id = mcx.ctx.user.id.clone();
@@ -624,11 +646,13 @@ impl MemoryService for BasicMemoryService {
 
         let me = self.clone();
         let chats = scheduler.app_state.chat_service.clone();
+        let agents = scheduler.app_state.agent_service.clone();
         scheduler.register_periodic(space_interval, "space_compaction", move || {
             let me = me.clone();
             let chats = chats.clone();
+            let agents = agents.clone();
             let group = group.clone();
-            async move { me.run_space_sweep(&chats, &group).await }
+            async move { me.run_space_sweep(&chats, &agents, &group).await }
         });
     }
 }

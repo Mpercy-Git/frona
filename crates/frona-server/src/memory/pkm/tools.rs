@@ -93,7 +93,12 @@ impl RememberTool {
     ) -> Result<ToolOutput, AppError> {
         let content = arg(&arguments, "content")?;
         let chat = active_chat(ctx)?;
-        self.repo.remember(&ctx.user.id, &chat.id, content).await?;
+        // A private-memory agent's note is scoped to the agent, so it never reaches
+        // the user's other agents or the consolidation that builds the vault.
+        let private_agent = ctx.agent.private_memory.then_some(ctx.agent.id.as_str());
+        self.repo
+            .remember(&ctx.user.id, &chat.id, content, private_agent)
+            .await?;
         Ok(ToolOutput::text(format!("Remembered: {content}")))
     }
 }

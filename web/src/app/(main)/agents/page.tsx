@@ -88,6 +88,7 @@ import type { SkillBrowserHandle } from "@/components/skills/skill-browser";
 import { SandboxSection } from "@/components/agents/configure/sandbox-section";
 import { CredsSection } from "@/components/agents/configure/creds-section";
 import { ShareSection } from "@/components/agents/configure/share-section";
+import { MemorySection } from "@/components/agents/configure/memory-section";
 import { ConfigSidebar } from "@/components/layout/config-sidebar";
 
 // Superset (includes "share", owner-only) — used for typing + URL validation.
@@ -98,6 +99,7 @@ const SECTIONS = [
   { id: "prompt", label: "Prompt" },
   { id: "tools", label: "Tools" },
   { id: "skills", label: "Skills" },
+  { id: "memory", label: "Memory" },
   { id: "sandbox", label: "Sandbox" },
   { id: "creds", label: "Credentials" },
   { id: "share", label: "Share" },
@@ -314,6 +316,12 @@ function AgentSettings() {
                 sandbox={(patch.sandbox_form as SandboxFormShape | undefined) ?? fromAgent(merged)}
                 onChange={(v) => update({ sandbox_form: v })}
                 onValidChange={setSandboxValid}
+              />
+            )}
+            {activeSection === "memory" && (
+              <MemorySection
+                privateMemory={(merged.private_memory as boolean) ?? false}
+                onChange={update}
               />
             )}
             {activeSection === "creds" && <CredsSection principalKind="agent" principalId={agentId} />}

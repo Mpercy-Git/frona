@@ -108,6 +108,15 @@ Upstream has no sharing concept at all — a `user_id` equality check gated ever
 - **Share a chat read-only** — the recipient views messages and attachments but cannot send, archive, delete, or resolve human-in-the-loop prompts. Attachments presign under the chat owner's identity so a non-owner viewer can actually load them. Shared chats are merged into listing and navigation with `is_shared`/`shared_by`, and the composer renders read-only for chats you don't own
 - Registered-user sharing only; a public/anonymous read-only link is a separate follow-up
 
+### 🔒 Private-memory agents (net-new)
+
+Every agent shares one memory: user-scoped facts (Basic) or a user-scoped knowledge base (PKM) that any of your agents can read. There was no way to run an agent whose conversations stay out of it. A per-agent **Private memory** setting adds one:
+
+- **Nothing it learns reaches your other agents.** Under Basic it loses `store_user_memory` and its chats are excluded from space summaries; under PKM its `memory_remember` notes are scoped to the agent and its transcripts are never consolidated into the vault
+- **It still remembers.** Basic keeps its agent-scoped `store_agent_memory` notes; PKM keeps `memory_remember`, writing short memories only it reads back. Private means siloed, not amnesiac
+- **Reads are unchanged** — shared user memory, space context, `memory_search`/`memory_cite` all still work, so a private agent draws on what you know without adding to it
+- The agent is told, in its own prompt, which write surface it does not have, so it says so plainly instead of hallucinating a tool call
+
 ### 📂 Files, media & previews (net-new)
 
 - **In-app preview dialog in the Files tab** — images, audio and video, text/markdown/source, and PDFs render without leaving the app. Anything else falls back to Open / Download. Previously the only way to view a file was a context-menu action that presigned it into a new tab
@@ -189,7 +198,7 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 
 - **Agents** are the main building blocks. Each agent has a name, a system prompt that defines its behavior, a model group that determines which LLM it uses, and a list of tools it can access. Frona ships with built-in agents (Assistant, Researcher, Developer, Receptionist) and you can create your own.
 - **Policies** authorize every action: tool calls, delegations, file reads, network connections, and inbound channel messages. The same engine controls tool access and sandbox rules, so authorization lives in one place.
-- **Memory** persists knowledge across conversations. Basic memory maintains compact user-scoped facts shared across agents and private agent-scoped notes. PKM builds a user-scoped knowledge graph of grounded atomic memories, entities, relationships, attributes, playbooks, and readable Markdown pages backed by an ontology.
+- **Memory** persists knowledge across conversations. Basic memory maintains compact user-scoped facts shared across agents and private agent-scoped notes. PKM builds a user-scoped knowledge graph of grounded atomic memories, entities, relationships, attributes, playbooks, and readable Markdown pages backed by an ontology. Any agent can be set to [private memory](#-private-memory-agents-net-new), which keeps everything it learns out of the scopes its sibling agents read.
 - **Tools** are capabilities you give to agents. Browser automation, web search, file operations, shell commands, voice calls, task scheduling, and more. Tools run server-side and return results to the agent.
 - **MCP servers** are first-class citizens. Each runs in its own sandbox as its own principal with its own filesystem, network, and resource policies, and surfaces its tools to agents through bridge mode by default.
 - **Channels** connect an agent to messaging providers. Each channel is bound to a single agent and space, with policy-gated `receive_message` and `receive_signal` actions deciding what an inbound is allowed to do.

@@ -19,8 +19,14 @@ use super::vault::VaultScope;
 use crate::memory::service::MemoryContext;
 
 impl PkmService {
-    async fn short_memory_block(&self, user_id: &str) -> Result<Option<String>, AppError> {
-        let rows = self.repo.list_short_memory(user_id).await?;
+    /// `agent_id` is the reading agent: it sees the user's shared rows plus its own
+    /// private ones (a private-memory agent's `memory_remember` writes the latter).
+    async fn short_memory_block(
+        &self,
+        user_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<String>, AppError> {
+        let rows = self.repo.list_short_memory(user_id, Some(agent_id)).await?;
         if rows.is_empty() {
             return Ok(None);
         }
@@ -110,6 +116,16 @@ impl PkmService {
             mcx.system_prompt.push_str("\n\n");
             mcx.system_prompt.push_str(section.trim_end());
         }
+        // A private-memory agent's `memory_remember` writes only for itself and its
+        // chats never reach consolidation, so the guide's account of where its notes
+        // end up would otherwise be wrong. Constant per agent → still cache-prefixed.
+        if mcx.ctx.agent.private_memory
+            && let Some(note) = self.prompts.read("pkm/private_section.md")
+            && !note.is_empty()
+        {
+            mcx.system_prompt.push_str("\n\n");
+            mcx.system_prompt.push_str(note.trim_end());
+        }
 
         // <user_profile>: always injected. Header is live from the `User` record
         // (never stale, authoritative); enrichment is the self-page's learned
@@ -149,7 +165,10 @@ impl PkmService {
         // demand through the tools. The playbook index carries only name +
         // description + path, so the agent knows which procedures exist and can
         // `read(<path>)` the body without a blind `memory_search` first.
-        if let Some(block) = self.short_memory_block(&mcx.ctx.user.id).await? {
+        if let Some(block) = self
+            .short_memory_block(&mcx.ctx.user.id, &mcx.ctx.agent.id)
+            .await?
+        {
             mcx.system_prompt.push_str("\n\n<short_memory>\n");
             mcx.system_prompt.push_str(&block);
             mcx.system_prompt.push_str("</short_memory>");

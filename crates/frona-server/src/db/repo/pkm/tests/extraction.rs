@@ -114,10 +114,10 @@ async fn extract_commit_rolls_back_when_memory_insert_fails() {
     )
     .await
     .unwrap();
-    r.remember("u", "short-chat", "unvalidated source")
+    r.remember("u", "short-chat", "unvalidated source", None)
         .await
         .unwrap();
-    let short_memory_id = r.list_short_memory("u").await.unwrap()[0].id.clone();
+    let short_memory_id = r.list_short_memory("u", None).await.unwrap()[0].id.clone();
 
     let second_record = KnowledgeConsolidationRecord {
         id: new_id(),
@@ -157,7 +157,7 @@ async fn extract_commit_rolls_back_when_memory_insert_fails() {
         "the checkpoint must not advance after a failed memory insert",
     );
     assert!(
-        !r.list_short_memory("u").await.unwrap()[0].validated,
+        !r.list_short_memory("u", None).await.unwrap()[0].validated,
         "short memory must stay unvalidated after the failed memory insert",
     );
 }

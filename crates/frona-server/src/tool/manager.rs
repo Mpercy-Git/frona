@@ -334,6 +334,13 @@ impl ToolManager {
             }
         }
 
+        // A private-memory agent never gets the writes that land in a scope its
+        // sibling agents read. Applied last so nothing registered above can
+        // reintroduce one.
+        if agent.private_memory {
+            registry.deny(crate::memory::PRIVATE_MEMORY_WITHHELD_TOOLS);
+        }
+
         registry
     }
 
