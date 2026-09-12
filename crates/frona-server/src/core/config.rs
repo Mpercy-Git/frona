@@ -1520,6 +1520,12 @@ pub struct MemoryConfig {
     pub basic_space_compaction_secs: u64,
     #[schemars(description = "pkm: max hits returned by `memory_search`.")]
     pub pkm_search_top_k: i64,
+    #[schemars(
+        description = "pkm: how many `memory_search` calls one agent turn may make \
+        before the tool stops answering and tells the agent to answer from what it has. \
+        Guards against a search loop burning `inference.max_tool_turns`. 0 disables the cap."
+    )]
+    pub pkm_max_lookups_per_turn: usize,
     #[schemars(description = "pkm: recency-decay half-life (seconds) for short memory.")]
     pub pkm_short_memory_half_life_secs: u64,
     #[schemars(description = "pkm: drop short memory once its decay score falls below this.")]
@@ -1613,6 +1619,10 @@ impl Default for MemoryConfig {
             basic_compaction_secs: 7200,
             basic_space_compaction_secs: 3600,
             pkm_search_top_k: 8,
+            // Generous for a legitimately field-by-field lookup (building a connection
+            // string is several searches), tight enough that a loop ends in one turn
+            // instead of consuming all 200 tool turns.
+            pkm_max_lookups_per_turn: 12,
             pkm_short_memory_half_life_secs: 14 * 24 * 3600,
             pkm_short_memory_demote_threshold: 0.1,
             pkm_short_memory_top_n: 16,
@@ -2117,6 +2127,7 @@ mod tests {
         assert_eq!(config.storage.skills_dir, "data/skills");
         assert_eq!(config.memory.basic_space_compaction_secs, 3600);
         assert_eq!(config.memory.pkm_consolidation_max_tool_turns, 8);
+        assert_eq!(config.memory.pkm_max_lookups_per_turn, 12);
         assert_eq!(config.memory.pkm_consolidation_max_submissions, 8);
         assert_eq!(config.memory.pkm_playbook_max_tool_turns, 20);
         assert_eq!(config.memory.pkm_playbook_max_submissions, 20);

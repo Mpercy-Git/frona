@@ -254,6 +254,7 @@ export interface MemoryConfig {
   basic_compaction_secs: number;
   basic_space_compaction_secs: number;
   pkm_search_top_k: number;
+  pkm_max_lookups_per_turn: number;
   pkm_short_memory_half_life_secs: number;
   pkm_short_memory_demote_threshold: number;
   pkm_short_memory_top_n: number;

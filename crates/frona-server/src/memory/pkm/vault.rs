@@ -96,6 +96,54 @@ impl VaultScope {
         format!("{}.md", self.root.join(vault_path).display())
     }
 
+    /// Every entity path a path the agent cited could mean, most likely first.
+    ///
+    /// `memory_search` hands out two shapes of absolute path, because the two page
+    /// origins are addressed differently: an Internal page at
+    /// `<root>/<directory>/services/postgres.md` is the entity `services/postgres`,
+    /// while an External note at `<root>/Work Notes/standup.md` *is* the entity
+    /// `Work Notes/standup` - its identity is its location. [`page_from_any`] only
+    /// knows the first, so citing a User Vault note used to fail with "unknown entity
+    /// path" no matter what the agent passed, and the advice to "use the path
+    /// `memory_search` returned" sent it round the same search-then-cite loop forever.
+    /// Both spellings are offered here and the caller lets the database pick. Every
+    /// candidate is vault-relative and cannot climb out of the vault, so an absolute
+    /// path from somewhere else on the filesystem yields none.
+    pub fn entity_path_candidates(&self, input: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |candidate: String| {
+            if !candidate.is_empty()
+                && !candidate.split('/').any(|seg| seg == "..")
+                && !out.contains(&candidate)
+            {
+                out.push(candidate);
+            }
+        };
+        if let Some(page) = self.page_from_any(input) {
+            push(page);
+        }
+        if let Some(note) = self.vault_relative_from_any(input) {
+            push(note);
+        }
+        out
+    }
+
+    /// The vault-relative form of a path under the mirror root - an External note's
+    /// own identity (`Work Notes/standup`). `None` if `input` is not under the root
+    /// (a bare relative path is returned unchanged, since that is already the form).
+    fn vault_relative_from_any(&self, input: &str) -> Option<String> {
+        let trimmed = input.trim().trim_end_matches(".md");
+        let abs_root = std::path::absolute(&self.root).unwrap_or_else(|_| self.root.clone());
+        for root in [&self.root, &abs_root] {
+            if let Ok(rel) = Path::new(trimmed).strip_prefix(root) {
+                let cleaned = rel.to_string_lossy().trim_matches('/').to_string();
+                return (!cleaned.is_empty()).then_some(cleaned);
+            }
+        }
+        // An absolute path that is not under this user's root is not addressable.
+        (!trimmed.starts_with('/')).then(|| trimmed.trim_matches('/').to_string())
+    }
+
     /// Recover a clean page path from whatever the agent supplied - an absolute path
     /// (`<root>/<directory>/people/bob.md`) or a vault-relative one
     /// (`<directory>/people/bob`). `None` if it isn't under the Memory directory.

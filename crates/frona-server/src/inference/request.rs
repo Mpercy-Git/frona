@@ -45,6 +45,11 @@ pub struct InferenceContext {
     pub shutdown_token: CancellationToken,
     /// User-initiated cancellation token - tools should check/use this to abort early.
     pub cancel_token: CancellationToken,
+    /// Memory lookups already served in this run, so a repeated one can be
+    /// answered honestly instead of looking like progress. Run-scoped shared
+    /// state, like `vault_env_vars`: the memory tools are built once at boot and
+    /// shared by every run, so the ledger cannot live in the tool.
+    pub memory_lookups: crate::memory::service::MemoryLookupLedger,
 }
 
 impl InferenceContext {
@@ -73,6 +78,7 @@ impl InferenceContext {
             file_paths: Vec::new(),
             shutdown_token,
             cancel_token,
+            memory_lookups: Default::default(),
         }
     }
 
@@ -98,6 +104,7 @@ impl InferenceContext {
             file_paths: Vec::new(),
             shutdown_token,
             cancel_token,
+            memory_lookups: Default::default(),
         }
     }
 

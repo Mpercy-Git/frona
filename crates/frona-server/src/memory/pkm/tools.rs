@@ -12,6 +12,7 @@ use frona_derive::agent_tool;
 use crate::agent::prompt::PromptLoader;
 use crate::auth::user_service::UserService;
 use crate::core::error::AppError;
+use crate::memory::service::LookupVerdict;
 use crate::tool::{InferenceContext, ToolOutput, active_chat, str_arg};
 
 use super::model::{EntityCategory, EntityOrigin};
@@ -24,6 +25,7 @@ pub fn all(
     storage: PkmStorage,
     prompts: PromptLoader,
     user_service: UserService,
+    max_lookups_per_run: usize,
 ) -> Vec<Arc<dyn crate::tool::AgentTool>> {
     let vault = VaultResolver {
         storage,
@@ -38,6 +40,7 @@ pub fn all(
             repo: repo.clone(),
             prompts: prompts.clone(),
             vault: vault.clone(),
+            max_lookups_per_run,
         }),
         Arc::new(CitePageTool {
             repo,
@@ -107,6 +110,9 @@ pub struct SearchTool {
     repo: Arc<PkmRepo>,
     prompts: PromptLoader,
     vault: VaultResolver,
+    /// `memory.pkm_max_lookups_per_turn` - how many searches one run may make
+    /// before the tool stops answering. `0` disables the cap.
+    max_lookups_per_run: usize,
 }
 
 #[agent_tool(name = "memory_search", dir = "pkm")]
@@ -118,20 +124,62 @@ impl SearchTool {
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
         let query = arg(&arguments, "query")?;
+        // Charge the lookup to this run before doing any work, so a loop is cut off
+        // at the point the agent stops learning anything - not after it has burned
+        // the whole tool-turn budget and failed the turn with "Max tool turns
+        // reached".
+        let verdict = ctx.memory_lookups.record(query, self.max_lookups_per_run);
+        if let LookupVerdict::Exhausted { spent } = verdict {
+            tracing::warn!(
+                user = %ctx.user.id,
+                agent = %ctx.agent.id,
+                query = %query,
+                spent,
+                "memory_search: run lookup budget spent"
+            );
+            return Ok(ToolOutput::text(format!(
+                "Memory-lookup budget for this turn is spent ({spent} searches). \
+                 Another search will not return anything new. Answer from what you \
+                 have already read, or tell the user which value you could not find \
+                 and ask them for it."
+            )));
+        }
         let hits = self.repo.search_entities(&ctx.user.id, query).await?;
         if hits.is_empty() {
-            return Ok(ToolOutput::text(
-                "No pages matched. The KB doesn't model this yet — ask the user, or reformulate.",
-            ));
+            return Ok(ToolOutput::text(match verdict {
+                // Repeating a query that found nothing is the cheapest loop to fall
+                // into, so the second identical miss closes the door rather than
+                // inviting another reformulation.
+                LookupVerdict::Repeat { .. } => {
+                    "No pages matched - the same answer as the last time you ran this \
+                     exact query in this turn. The KB does not model this. Stop \
+                     searching for it: ask the user, or tell them it isn't in your \
+                     knowledge base."
+                }
+                _ => {
+                    "No pages matched. The KB doesn't model this yet - reformulate once \
+                     with the specific name if another query could plausibly find it; \
+                     otherwise ask the user instead of searching again."
+                }
+            }));
         }
         let vault = self.vault.for_caller(ctx).await?;
+        let mut out = String::new();
+        if let LookupVerdict::Repeat { nth } = verdict {
+            out.push_str(&format!(
+                "Repeat lookup - this is search #{nth} for this exact query in this turn, \
+                 and the knowledge base has not changed since the first. What follows is \
+                 the same result. Don't run it again: read one of the paths, or tell the \
+                 user the value isn't in the KB.\n\n"
+            ));
+        }
         // Emit the ABSOLUTE `.md` file path so the agent can `read(<path>)`
         // verbatim - no root-prepending or extension-guessing (both of which it
         // gets wrong, e.g. reading `.../me` before retrying `.../me.md`).
         // Internal (Memory) pages are directory-prefixed under the root; External
         // (User Vault) notes live at their own full vault path and are tagged
         // `[external]` (read-only - the agent may read/cite but never edit them).
-        let mut out = String::from("Top matches — read(<path>) to open one:\n\n");
+        out.push_str("Top matches — read(<path>) to open one:\n\n");
         for h in hits {
             let (tag, abspath) = match h.origin {
                 EntityOrigin::External => ("external".to_string(), vault.abs_vault_file(&h.path)),
@@ -148,8 +196,27 @@ impl SearchTool {
                     (tag, vault.abs_page_file(&h.path))
                 }
             };
+            // A row is searchable from the moment the entity is created, but its file
+            // only exists once the Author stage projects it (or, for a User Vault note,
+            // once the mirror write lands). Handing out a path to a file that isn't
+            // there earns a `file not found` from `read`, which the agent answers with
+            // another search for the same page - so say what is actually true instead.
+            let readable = tokio::fs::try_exists(&abspath).await.unwrap_or(false);
+            if !readable {
+                tracing::warn!(
+                    user = %ctx.user.id,
+                    page = %h.path,
+                    file = %abspath,
+                    "memory_search: page has no file on disk yet"
+                );
+            }
+            let locator = if readable {
+                abspath
+            } else {
+                "(not written to disk yet — nothing to read; don't search for it again)".to_string()
+            };
             out.push_str(&format!(
-                "- {}  [{tag}]\n  {}\n  {abspath}\n\n",
+                "- {}  [{tag}]\n  {}\n  {locator}\n\n",
                 h.name, h.description
             ));
         }
@@ -173,19 +240,37 @@ impl CitePageTool {
     ) -> Result<ToolOutput, AppError> {
         let raw = arg(&arguments, "path")?;
         let vault = self.vault.for_caller(ctx).await?;
-        // Accept the vault-relative path memory_search returned (or an absolute
-        // one); fall back to a bare page path for resilience.
-        let page_path = vault
-            .page_from_any(raw)
-            .unwrap_or_else(|| raw.trim_end_matches(".md").to_string());
-        match self.repo.bump_entity_use(&ctx.user.id, &page_path).await {
-            Ok(n) => Ok(ToolOutput::text(format!(
-                "Cited '{page_path}' (total uses: {n})."
-            ))),
-            Err(AppError::Validation(msg)) => Ok(ToolOutput::text(format!(
-                "Couldn't cite: {msg}. Use the absolute path returned by memory_search."
-            ))),
-            Err(e) => Err(e),
+        // A Memory page and a User Vault note are addressed differently, and the agent
+        // is handed whichever `memory_search` emitted - so try every spelling the path
+        // could mean and let the database pick.
+        let candidates = vault.entity_path_candidates(raw);
+        let mut last_rejection = None;
+        for candidate in &candidates {
+            match self.repo.bump_entity_use(&ctx.user.id, candidate).await {
+                Ok(n) => {
+                    return Ok(ToolOutput::text(format!(
+                        "Cited '{candidate}' (total uses: {n})."
+                    )));
+                }
+                Err(AppError::Validation(msg)) => last_rejection = Some(msg),
+                Err(e) => return Err(e),
+            }
         }
+        // Terminal on purpose. The old wording ("use the absolute path returned by
+        // memory_search") read as an instruction to search again, and since the next
+        // search returned the same path the agent had just been refused, it looped.
+        // Citing only biases future ranking, so there is nothing here worth another
+        // lookup.
+        tracing::debug!(
+            path = %raw,
+            tried = ?candidates,
+            rejection = ?last_rejection,
+            "memory_cite: no entity matched the cited path"
+        );
+        Ok(ToolOutput::text(format!(
+            "Couldn't cite '{raw}' - no page in the knowledge base has that path. \
+             Citing only biases future ranking, so nothing is lost: answer from what \
+             you already read. Do NOT search again to find a citable path."
+        )))
     }
 }
