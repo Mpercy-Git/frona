@@ -342,3 +342,34 @@ async fn agent_service_delete_invalidates_cache() {
 
     assert!(svc.find_by_id(&agent.id).await.unwrap().is_none());
 }
+
+/// An agent row as every release before per-agent private memory wrote it: no
+/// `private_memory` key at all. Reads go through `SurrealValue`, whose derive
+/// ignores `#[serde(default)]`, so such a row used to fail every read with
+/// `Failed to deserialize field 'private_memory' on type 'Agent': Expected
+/// bool, got none` — an upgraded install couldn't load the agents it had.
+#[tokio::test]
+async fn an_agent_row_written_before_private_memory_still_loads() {
+    let db = test_db().await;
+    let now = Utc::now();
+    db.query(
+        "CREATE type::record('agent', 'legacy') SET \
+         user_id = 'user-1', handle = 'legacy', name = 'Legacy', description = '', \
+         model_group = 'primary', enabled = true, identity = {}, \
+         created_at = $now, updated_at = $now",
+    )
+    .bind(("now", now))
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+
+    let repo = SurrealAgentRepo::new(db);
+    let found = repo.find_by_id("legacy").await.unwrap().unwrap();
+
+    assert_eq!(found.name, "Legacy");
+    assert!(
+        !found.private_memory,
+        "a row with no private_memory key reads as not private"
+    );
+}

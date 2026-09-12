@@ -31,7 +31,10 @@ pub struct Agent {
     /// into. `None` falls back to the server-level `voice.twilio_voice_id`.
     #[serde(default)]
     pub voice_id: Option<String>,
+    /// `surreal` as well as `serde`: the database read path honours only the
+    /// former, and a row written before this field existed has no key at all.
     #[serde(default)]
+    #[surreal(default)]
     pub identity: BTreeMap<String, String>,
     /// Keep this agent's memory to itself. When set, the agent never writes to
     /// any user-scoped memory the user's other agents can read - shared user
@@ -39,11 +42,14 @@ pub struct Agent {
     /// and what it does remember is scoped to the agent. It still *reads* what
     /// the user has chosen to remember.
     ///
-    /// `#[serde(default)]` covers serde alone — agent rows are read back through
-    /// `SurrealValue`, which has no such attribute, so rows written before this
-    /// field existed are filled in by the `backfill_agent_private_memory`
-    /// migration instead.
+    /// Agent rows are read back through `SurrealValue`, not serde, so
+    /// `#[serde(default)]` alone left every row written before this field
+    /// existed unreadable (`Expected bool, got none`). Both defaults are needed:
+    /// the `surreal` one is what the database path reads. The
+    /// `backfill_agent_private_memory` migration writes the value in as well, so
+    /// queries that filter on it see the same thing the struct does.
     #[serde(default)]
+    #[surreal(default)]
     pub private_memory: bool,
     #[serde(default)]
     pub prompt: Option<String>,
