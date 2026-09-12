@@ -197,6 +197,7 @@ impl AgentService {
             max_concurrent_tasks: None,
             avatar: None,
             voice_id: req.voice_id,
+            private_memory: req.private_memory.unwrap_or(false),
             identity: std::collections::BTreeMap::new(),
             prompt: None,
             heartbeat_interval: None,
@@ -343,6 +344,9 @@ impl AgentService {
             } else {
                 Some(voice_id)
             };
+        }
+        if let Some(private_memory) = req.private_memory {
+            agent.private_memory = private_memory;
         }
         if let Some(ref identity) = req.identity {
             if let Some(avatar) = identity.get("avatar")
@@ -515,6 +519,7 @@ impl AgentService {
             max_concurrent_tasks: None,
             avatar: None,
             voice_id: None,
+            private_memory: false,
             identity: std::collections::BTreeMap::new(),
             prompt: None,
             heartbeat_interval: None,

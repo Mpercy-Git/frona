@@ -173,6 +173,7 @@ async fn seed_user_and_two_agents(state: &AppState) -> (String, String) {
         max_concurrent_tasks: None,
         avatar: None,
         voice_id: None,
+        private_memory: false,
         identity: Default::default(),
         prompt: Some("You are the default agent.".into()),
         heartbeat_interval: None,

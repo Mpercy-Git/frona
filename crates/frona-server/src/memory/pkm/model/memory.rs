@@ -295,6 +295,13 @@ pub enum EntityOrigin {
 pub struct KnowledgeShortMemory {
     pub id: String,
     pub user_id: String,
+    /// Set only when the writing agent has `private_memory` on: the row is then
+    /// that agent's alone - read back for it, hidden from the user's other
+    /// agents, and never consolidated into the user-scoped knowledge base.
+    /// `None` is the ordinary user-scoped row. Defaults so existing rows
+    /// deserialize.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     pub content: String,
     pub created_at: DateTime<Utc>,
     pub last_accessed_at: DateTime<Utc>,

@@ -660,6 +660,7 @@ pub fn mock_context() -> InferenceContext {
             max_concurrent_tasks: None,
             avatar: None,
             voice_id: None,
+            private_memory: false,
             identity: Default::default(),
             prompt: None,
             heartbeat_interval: None,

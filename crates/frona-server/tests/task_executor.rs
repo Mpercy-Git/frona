@@ -115,6 +115,7 @@ async fn seed_user_and_agent(state: &AppState) {
             max_concurrent_tasks: None,
             avatar: None,
             voice_id: None,
+            private_memory: false,
             identity: std::collections::BTreeMap::new(),
             prompt: None,
             heartbeat_interval: None,

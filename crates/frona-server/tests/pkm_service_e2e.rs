@@ -146,6 +146,7 @@ async fn seed_agent_and_chat(db: &Surreal<Db>) {
             skills: None,
             avatar: None,
             voice_id: None,
+            private_memory: false,
             identity: Default::default(),
             prompt: None,
             heartbeat_interval: None,
@@ -390,7 +391,10 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
         .await
         .unwrap();
     assert_eq!(
-        repo.list_short_memory("test-user").await.unwrap().len(),
+        repo.list_short_memory("test-user", None)
+            .await
+            .unwrap()
+            .len(),
         1,
         "memory_remember wrote a short memory"
     );
@@ -1087,6 +1091,57 @@ async fn self_entity_write_through_updates_user_timezone() {
     );
 }
 
+/// A private-memory agent's `memory_remember` row belongs to that agent alone: it
+/// reads back for the writer, is invisible to the user's other agents, and never
+/// reaches the consolidation that would turn it into a user-scoped knowledge page.
+#[tokio::test]
+async fn private_agent_short_memory_is_scoped_to_that_agent() {
+    let db = test_db().await;
+    let repo = PkmRepo::new(db.clone(), 8);
+
+    repo.remember("u", "c1", "shared note", None).await.unwrap();
+    repo.remember("u", "c1", "private note", Some("agent-private"))
+        .await
+        .unwrap();
+
+    let mine = repo
+        .list_short_memory("u", Some("agent-private"))
+        .await
+        .unwrap();
+    let mut mine: Vec<&str> = mine.iter().map(|r| r.content.as_str()).collect();
+    mine.sort();
+    assert_eq!(
+        mine,
+        ["private note", "shared note"],
+        "the private agent reads its own row plus the user's shared ones"
+    );
+
+    let theirs = repo
+        .list_short_memory("u", Some("agent-other"))
+        .await
+        .unwrap();
+    let theirs: Vec<&str> = theirs.iter().map(|r| r.content.as_str()).collect();
+    assert_eq!(
+        theirs,
+        ["shared note"],
+        "another agent never sees the private row"
+    );
+
+    assert_eq!(
+        repo.list_short_memory("u", None).await.unwrap().len(),
+        2,
+        "maintenance still owns every row, private ones included"
+    );
+
+    let queued = repo.unconsolidated_short_memories("c1").await.unwrap();
+    let queued: Vec<&str> = queued.iter().map(|r| r.content.as_str()).collect();
+    assert_eq!(
+        queued,
+        ["shared note"],
+        "the private row is never fed to consolidation"
+    );
+}
+
 /// Consolidation wiring - the new repo layer: short-memory consume/validate,
 /// the per-chat watermark, and the real `chats_needing_consolidation` eligibility
 /// query (idle + first-time via `?? epoch`).
@@ -1096,7 +1151,7 @@ async fn checkpoint_commit_consumes_short_memory_advances_watermark_and_selects_
     let repo = PkmRepo::new(db.clone(), 8);
 
     // Short memory: create → unconsolidated → mark validated → gone from the queue.
-    repo.remember("u", "c1", "Postgres port is 5433")
+    repo.remember("u", "c1", "Postgres port is 5433", None)
         .await
         .unwrap();
     let sm = repo.unconsolidated_short_memories("c1").await.unwrap();

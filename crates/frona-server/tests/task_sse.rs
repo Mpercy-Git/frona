@@ -213,6 +213,7 @@ async fn seed_agent(db: &Surreal<Db>) {
         max_concurrent_tasks: None,
         avatar: None,
         voice_id: None,
+        private_memory: false,
         identity: Default::default(),
         prompt: Some("You are a test agent. Do what the user asks.".to_string()),
         heartbeat_interval: None,

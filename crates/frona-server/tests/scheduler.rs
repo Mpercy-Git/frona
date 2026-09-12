@@ -60,6 +60,7 @@ fn make_agent(
         max_concurrent_tasks: None,
         avatar: None,
         voice_id: None,
+        private_memory: false,
         identity: BTreeMap::new(),
         prompt: None,
         heartbeat_interval,

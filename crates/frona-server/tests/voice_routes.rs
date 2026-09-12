@@ -230,6 +230,7 @@ async fn twilio_callback_uses_the_calling_agents_voice() {
         skills: None,
         avatar: None,
         voice_id: Some("en-GB-Standard-B".to_string()),
+        private_memory: false,
         identity: Default::default(),
         prompt: None,
         heartbeat_interval: None,

@@ -528,7 +528,17 @@ impl PkmService {
         let Some(user) = self.user_service.find_by_id(user_id).await? else {
             return Ok(None);
         };
-        let Some(agent) = agent_service.list(user_id).await?.into_iter().next() else {
+        // Prefer an agent that is not private-memory: the pass runs *as* whoever is
+        // picked, and a private agent is precisely the one that should not be driving
+        // writes into the user-scoped knowledge base. Fall back to whatever exists so
+        // an open record still gets resumed.
+        let agents = agent_service.list(user_id).await?;
+        let Some(agent) = agents
+            .iter()
+            .find(|a| !a.private_memory)
+            .or_else(|| agents.first())
+            .cloned()
+        else {
             return Ok(None);
         };
         let vault =
@@ -558,7 +568,10 @@ impl PkmService {
             return Ok(Vec::new());
         };
         if let Ok(Some(agent)) = services.agent.find_by_id(&chat.agent_id).await
-            && agent.heartbeat_chat_id.as_deref() == Some(chat_id)
+            // A heartbeat chat is the agent talking to itself, and a private-memory
+            // agent's transcripts must not reach the user-scoped knowledge base at
+            // all. Neither ever mines, so neither advances a watermark.
+            && (agent.heartbeat_chat_id.as_deref() == Some(chat_id) || agent.private_memory)
         {
             return Ok(Vec::new());
         }

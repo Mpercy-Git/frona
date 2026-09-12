@@ -33,6 +33,13 @@ pub struct Agent {
     pub voice_id: Option<String>,
     #[serde(default)]
     pub identity: BTreeMap<String, String>,
+    /// Keep this agent's memory to itself. When set, the agent never writes to
+    /// any user-scoped memory the user's other agents can read - shared user
+    /// memory, space summaries, and the PKM knowledge base are all off-limits -
+    /// and what it does remember is scoped to the agent. It still *reads* what
+    /// the user has chosen to remember. Defaults so existing rows deserialize.
+    #[serde(default)]
+    pub private_memory: bool,
     #[serde(default)]
     pub prompt: Option<String>,
     pub heartbeat_interval: Option<u64>,
@@ -58,6 +65,9 @@ pub struct CreateAgentRequest {
     pub sandbox_limits: Option<SandboxLimits>,
     #[serde(default)]
     pub voice_id: Option<String>,
+    /// Omitted → not private. See [`Agent::private_memory`].
+    #[serde(default)]
+    pub private_memory: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, bon::Builder)]
@@ -80,6 +90,10 @@ pub struct UpdateAgentRequest {
     /// blank-clears convention as `set_inbound_agent`/`set_inbound_greeting`.
     #[serde(default)]
     pub voice_id: Option<String>,
+    /// `None` (key omitted) leaves the setting untouched. See
+    /// [`Agent::private_memory`].
+    #[serde(default)]
+    pub private_memory: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,6 +119,8 @@ pub struct AgentResponse {
     pub avatar_url: Option<String>,
     pub voice_id: Option<String>,
     pub identity: BTreeMap<String, String>,
+    /// See [`Agent::private_memory`].
+    pub private_memory: bool,
     pub prompt: Option<String>,
     pub default_prompt: String,
     pub is_builtin: bool,
@@ -156,6 +172,7 @@ impl AgentResponse {
             avatar_url: None,
             voice_id: agent.voice_id,
             identity: agent.identity,
+            private_memory: agent.private_memory,
             prompt: agent.prompt,
             default_prompt: String::new(),
             is_builtin,

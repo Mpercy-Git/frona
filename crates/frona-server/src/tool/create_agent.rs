@@ -93,6 +93,7 @@ impl CreateAgentTool {
             sandbox_policy: None,
             sandbox_limits: None,
             voice_id: None,
+            private_memory: None,
         };
 
         let agent = self.agent_service.create(&ctx.user.id, req).await?;

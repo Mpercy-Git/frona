@@ -149,6 +149,55 @@ async fn update_agent() {
 }
 
 #[tokio::test]
+async fn private_memory_defaults_off_and_round_trips() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "privatememory",
+        "privatememory@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "Diary").await;
+    let id = agent["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        agent["private_memory"], false,
+        "a new agent shares memory unless asked otherwise"
+    );
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_put_json(
+            &format!("/api/agents/{id}"),
+            &token,
+            serde_json::json!({"private_memory": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["private_memory"], true);
+
+    // Persisted, not just echoed - and an unrelated update leaves it alone.
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_put_json(
+            &format!("/api/agents/{id}"),
+            &token,
+            serde_json::json!({"name": "Diary II"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(body_json(resp).await["private_memory"], true);
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_get(&format!("/api/agents/{id}"), &token))
+        .await
+        .unwrap();
+    assert_eq!(body_json(resp).await["private_memory"], true);
+}
+
+#[tokio::test]
 async fn delete_agent_then_get_returns_404() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) = register_user(&state, "delagent", "delagent@example.com", "password123").await;

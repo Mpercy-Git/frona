@@ -1,16 +1,20 @@
 use super::*;
 
 impl PkmRepo {
+    /// `private_agent_id` is `Some` only for an agent with `private_memory` set:
+    /// the row is then scoped to that agent instead of to the user.
     pub async fn remember(
         &self,
         user_id: &str,
         chat_id: &str,
         content: &str,
+        private_agent_id: Option<&str>,
     ) -> Result<(), AppError> {
         let now = Utc::now();
         let row = KnowledgeShortMemory {
             id: new_id(),
             user_id: user_id.to_string(),
+            agent_id: private_agent_id.map(|a| a.to_string()),
             content: content.to_string(),
             created_at: now,
             last_accessed_at: now,
@@ -26,18 +30,36 @@ impl PkmRepo {
         Ok(())
     }
 
+    /// `agent` narrows the read to what one agent may see: the user's shared rows
+    /// plus that agent's own private ones. `None` returns every row, private ones
+    /// included - the maintenance view (decay), which owns rows it must not read
+    /// *for* anyone.
     pub async fn list_short_memory(
         &self,
         user_id: &str,
+        agent: Option<&str>,
     ) -> Result<Vec<KnowledgeShortMemory>, AppError> {
-        let mut q = self
-            .db
-            .query(format!(
-                "{SELECT} FROM knowledge_short_memory WHERE user_id = $uid"
-            ))
-            .bind(("uid", user_id.to_string()))
-            .await
-            .map_err(|e| Self::err("list_sm", e))?;
+        let mut q = match agent {
+            Some(agent_id) => {
+                self.db
+                    .query(format!(
+                        "{SELECT} FROM knowledge_short_memory
+                         WHERE user_id = $uid AND (agent_id = NONE OR agent_id = $aid)"
+                    ))
+                    .bind(("uid", user_id.to_string()))
+                    .bind(("aid", agent_id.to_string()))
+                    .await
+            }
+            None => {
+                self.db
+                    .query(format!(
+                        "{SELECT} FROM knowledge_short_memory WHERE user_id = $uid"
+                    ))
+                    .bind(("uid", user_id.to_string()))
+                    .await
+            }
+        }
+        .map_err(|e| Self::err("list_sm", e))?;
         q.take(0).map_err(|e| Self::err("list_sm_take", e))
     }
 
@@ -51,7 +73,9 @@ impl PkmRepo {
     }
 
     /// Short memories from a chat not yet consolidated into the wiki (fed into the
-    /// next consolidation pass).
+    /// next consolidation pass). Agent-scoped rows are excluded: consolidation
+    /// writes into the user-scoped knowledge base, which is exactly where a
+    /// private-memory agent's notes must not go.
     pub async fn unconsolidated_short_memories(
         &self,
         chat_id: &str,
@@ -59,7 +83,8 @@ impl PkmRepo {
         let mut q = self
             .db
             .query(format!(
-                "{SELECT} FROM knowledge_short_memory WHERE source_chat_id = $chat AND validated = false"
+                "{SELECT} FROM knowledge_short_memory
+                 WHERE source_chat_id = $chat AND validated = false AND agent_id = NONE"
             ))
             .bind(("chat", chat_id.to_string()))
             .await
@@ -126,7 +151,7 @@ impl PkmRepo {
                 .db
                 .query(
                     "SELECT VALUE source_chat_id FROM knowledge_short_memory
-                     WHERE validated = false AND source_chat_id != NONE",
+                     WHERE validated = false AND source_chat_id != NONE AND agent_id = NONE",
                 )
                 .await
                 .map_err(|e| Self::err("chats_needing_short", e))?;

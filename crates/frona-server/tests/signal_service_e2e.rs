@@ -168,6 +168,7 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
             max_concurrent_tasks: Some(5),
             avatar: None,
             voice_id: None,
+            private_memory: false,
             identity: Default::default(),
             // Inline prompt avoids needing an AGENT.md file in the workspace.
             prompt: Some("You are a test agent.".into()),
