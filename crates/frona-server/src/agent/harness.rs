@@ -672,6 +672,29 @@ impl Harness {
         message_id: &str,
     ) -> Result<(), AppError> {
         let (session_id, cancel_token) = self.active_sessions.register(chat_id).await;
+        self.resume_registered(user_id, chat_id, message_id, session_id, cancel_token)
+            .await
+    }
+
+    /// Resume a turn whose session was already registered by the caller.
+    ///
+    /// A resume that registers its own session (see [`resume`](Self::resume))
+    /// can only do so once it is running, which for the HTTP handlers means
+    /// after they have already answered the client. The UI flips to "running"
+    /// on that response, so a Stop pressed immediately afterwards raced the
+    /// registration: `active_sessions.cancel` found no entry, reported nothing
+    /// cancelled, and the resumed turn then registered a fresh token and ran
+    /// to completion regardless. Handlers register before spawning and hand
+    /// the session in here, so the token is always reachable by the time the
+    /// client can press Stop.
+    pub async fn resume_registered(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        session_id: u64,
+        cancel_token: CancellationToken,
+    ) -> Result<(), AppError> {
         let builder = Box::new(DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),

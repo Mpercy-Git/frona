@@ -253,6 +253,16 @@ export class ChatStore {
     } catch {
       // leave any optimistic/SSE-delivered messages alone
     }
+    // A chat can be opened while a turn is in flight — a reload mid-run, or a
+    // task working through its turns. `isRunning` gates the composer's Stop
+    // button, so without seeding it from the loaded row the user lands on a
+    // spinning message with no way to stop it until the next SSE event happens
+    // to arrive, which can be minutes away while one long tool call runs. A
+    // row left `executing` by a crash self-corrects: Stop reports that there
+    // was nothing to cancel and the thread returns to idle.
+    if (this.messages[this.messages.length - 1]?.status === "executing") {
+      this.isRunning = true;
+    }
     this.hydrateExternalTools();
     this.loaded = true;
     this.notify();
@@ -643,6 +653,15 @@ export class ChatStore {
     }
   }
 
+  /**
+   * Drop the in-flight turn's state and return the thread to idle.
+   *
+   * This notifies: callers outside `handleEvent` (a send that failed, a Stop
+   * the server had nothing to cancel) were otherwise clearing `isRunning`
+   * without ever waking `useSyncExternalStore`, so the composer kept showing
+   * a spinner and a Stop button for a turn that no longer existed — and Stop
+   * could never clear it, because there was nothing left to stop.
+   */
   clearStreaming() {
     this.isRunning = false;
     this.streamingText = "";
@@ -656,6 +675,7 @@ export class ChatStore {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
+    this.notify();
   }
 }
 

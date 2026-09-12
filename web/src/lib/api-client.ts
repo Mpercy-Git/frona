@@ -470,16 +470,17 @@ export async function listCommands(chatId: string): Promise<CommandsResponse> {
   return request<CommandsResponse>(`/api/chats/${chatId}/commands`);
 }
 
-export async function cancelGeneration(chatId: string): Promise<void> {
-  const tokenResult = await ensureAccessToken();
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (tokenResult.ok) {
-    headers["Authorization"] = `Bearer ${tokenResult.token}`;
-  }
-  await fetch(`${API_URL}/api/chats/${chatId}/cancel`, {
-    method: "POST",
-    headers,
-  });
+export interface CancelResult {
+  /** False when the server found nothing running to stop for this chat. */
+  cancelled: boolean;
+  /** The chat's in-flight turn was cancelled. */
+  turn_cancelled?: boolean;
+  /** The task driving this chat was cancelled, so it won't start a new turn. */
+  task_cancelled?: boolean;
+}
+
+export async function cancelGeneration(chatId: string): Promise<CancelResult> {
+  return api.post<CancelResult>(`/api/chats/${chatId}/cancel`, {});
 }
 
 export async function cancelTask(taskId: string): Promise<void> {
