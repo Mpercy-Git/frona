@@ -7274,3 +7274,190 @@ async fn task_lifecycle_episodes_require_the_applicable_task_dates() {
         "Extract did not return both missing task dates in one correction: {histories}",
     );
 }
+
+/// The foreground lookup surface must not send the agent round in circles. Three
+/// loops were reachable here, and each is a fixed point the agent cannot escape by
+/// trying harder: `memory_cite` refused every User Vault note while telling the
+/// agent to "use the absolute path returned by memory_search" (which is exactly
+/// what it had passed); `memory_search` handed out the path of a page the Author
+/// stage had not written yet, so `read` answered `file not found`; and an identical
+/// repeated query looked, from the transcript, like a fresh attempt.
+#[tokio::test]
+async fn foreground_lookups_do_not_loop() {
+    let db = test_db().await;
+    seed_identity(&db).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().to_string_lossy().to_string();
+    let config = Config {
+        storage: StorageConfig {
+            data_dir: base.clone(),
+            shared_config_dir: format!("{base}/config"),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mock = Arc::new(MockModelProvider::new(vec![]));
+    let memory_config = frona::core::config::MemoryConfig::default();
+    let registry = Arc::new(test_registry_with_group(
+        "mock",
+        mock.clone(),
+        &memory_config.model_group,
+        test_model_group(),
+    ));
+    let service = PkmService::new(
+        db.clone(),
+        StorageService::new(&config),
+        registry,
+        frona::agent::prompt::PromptLoader::new(resources_prompts()),
+        memory_config.clone(),
+        test_user_service(&db),
+        ontology_base(),
+    );
+    let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
+    let tools = service.tools();
+    let search = tools.iter().find(|t| t.name() == "memory_search").unwrap();
+    let cite = tools.iter().find(|t| t.name() == "memory_cite").unwrap();
+    let ctx = mock_context();
+
+    // A User Vault note, as `PkmSyncService` leaves it: an External row plus the
+    // read-only mirror under the vault root (never under Memory/).
+    let note_path = "Work Notes/standup";
+    let note = "# Standup\n\nDeploy Postgres at 3pm.";
+    repo.upsert_external_page(
+        "test-user",
+        note_path,
+        note,
+        &frona::memory::pkm::sha256_hex(note),
+    )
+    .await
+    .unwrap();
+    service
+        .storage()
+        .write_user_note(&frona::handle!("testuser"), note_path, note)
+        .unwrap();
+
+    let note_abs = format!("{base}/users/testuser/pkm/{note_path}.md");
+    let text = search
+        .execute("memory_search", json!({"query": "standup"}), &ctx)
+        .await
+        .unwrap()
+        .text_content()
+        .to_string();
+    assert!(
+        text.contains(&note_abs),
+        "the note's mirrored file is offered for reading:\n{text}"
+    );
+
+    // The path search handed out is citable. Before the fix this returned
+    // "Couldn't cite: unknown entity path" for every External note.
+    let cited = cite
+        .execute("memory_cite", json!({"path": note_abs.clone()}), &ctx)
+        .await
+        .unwrap()
+        .text_content()
+        .to_string();
+    assert!(
+        cited.contains("Cited 'Work Notes/standup'"),
+        "an external note is citable by the path memory_search gave:\n{cited}"
+    );
+    assert_eq!(
+        repo.entity_by_path("test-user", note_path)
+            .await
+            .unwrap()
+            .unwrap()
+            .use_count,
+        1,
+        "the cite landed on the note's own entity row"
+    );
+
+    // A cite that genuinely matches nothing ends there - no instruction that reads
+    // as "search again for a better path".
+    let refused = cite
+        .execute(
+            "memory_cite",
+            json!({"path": "services/nothing-here"}),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .text_content()
+        .to_string();
+    assert!(
+        refused.contains("Do NOT search again"),
+        "a refused cite is terminal:\n{refused}"
+    );
+
+    // An entity the Author stage hasn't projected yet: searchable, but there is no
+    // file behind it, so it must not be advertised as a `read` target.
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "services/redis",
+        EntityCategory::Concept,
+        &[],
+        "Redis",
+        "the cache nobody has authored yet",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "services/redis",
+        "Redis",
+        "the cache nobody has authored yet",
+        &json!({}),
+    )
+    .await
+    .unwrap();
+    let text = search
+        .execute("memory_search", json!({"query": "redis cache"}), &ctx)
+        .await
+        .unwrap()
+        .text_content()
+        .to_string();
+    assert!(
+        text.contains("Redis") && !text.contains("services/redis.md"),
+        "no path is offered for a page with no file:\n{text}"
+    );
+    assert!(
+        text.contains("not written to disk yet"),
+        "the agent is told why there's nothing to read:\n{text}"
+    );
+
+    // The same query again is answered as a repeat, not as a fresh attempt.
+    let repeated = search
+        .execute("memory_search", json!({"query": "Redis   CACHE"}), &ctx)
+        .await
+        .unwrap()
+        .text_content()
+        .to_string();
+    assert!(
+        repeated.starts_with("Repeat lookup"),
+        "a re-run query says so:\n{repeated}"
+    );
+
+    // And the turn's lookup budget is finite, so a loop that ignores all of the
+    // above still ends in this turn instead of eating `inference.max_tool_turns`.
+    let mut refusal = None;
+    for n in 0..memory_config.pkm_max_lookups_per_turn + 2 {
+        let out = search
+            .execute(
+                "memory_search",
+                json!({"query": format!("distinct query {n}")}),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .text_content()
+            .to_string();
+        if out.contains("budget for this turn is spent") {
+            refusal = Some(out);
+            break;
+        }
+    }
+    assert!(
+        refusal.is_some_and(|out| out.contains("ask them for it")),
+        "the run's lookup budget stops the search surface"
+    );
+}

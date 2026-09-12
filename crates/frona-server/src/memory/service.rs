@@ -89,3 +89,135 @@ pub trait MemoryService: Send + Sync {
     /// Called once at `Scheduler::start()`.
     fn register_maintenance(&self, _scheduler: &crate::scheduler::Scheduler) {}
 }
+
+/// What one memory lookup costs against the run it belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookupVerdict {
+    /// Nothing like it this run. Serve it quietly.
+    Fresh,
+    /// This exact query already ran in this run - `nth` counts this one. The
+    /// knowledge base has not changed since, so the answer is the previous
+    /// answer, and the caller says so instead of letting the agent believe it
+    /// has made progress.
+    Repeat { nth: usize },
+    /// The run has spent its lookup budget. Refuse, and tell the agent to
+    /// answer from what it has.
+    Exhausted { spent: usize },
+}
+
+/// The memory lookups one inference run has already made.
+///
+/// A looping agent is not a bug the tool can see from inside a single call: the
+/// same `memory_search` returns the same rows forever, and nothing in the
+/// transcript tells the model its last three calls were identical. The ledger is
+/// that memory. It rides on [`InferenceContext`](crate::inference::InferenceContext)
+/// rather than in the tool because tools are built once at boot and shared by
+/// every run of every user, while "have I asked this already?" is a question
+/// only about *this* run.
+///
+/// The background consolidation stages have had a hard research-tool budget from
+/// the start (`Research-tool budget exhausted. Submit the best complete result
+/// now.`); this is the same idea for the foreground surface, which had none.
+#[derive(Clone, Default)]
+pub struct MemoryLookupLedger {
+    queries: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl MemoryLookupLedger {
+    /// Record one lookup and say what it is worth. `budget` is the maximum number
+    /// of lookups allowed in a run; `0` means unlimited.
+    pub fn record(&self, query: &str, budget: usize) -> LookupVerdict {
+        let normalized = Self::normalize(query);
+        let mut queries = match self.queries.lock() {
+            Ok(guard) => guard,
+            // A poisoned lock means some other lookup panicked mid-record. Losing
+            // loop detection is not worth failing a turn over.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if budget > 0 && queries.len() >= budget {
+            return LookupVerdict::Exhausted {
+                spent: queries.len(),
+            };
+        }
+        let seen = queries.iter().filter(|q| **q == normalized).count();
+        queries.push(normalized);
+        match seen {
+            0 => LookupVerdict::Fresh,
+            n => LookupVerdict::Repeat { nth: n + 1 },
+        }
+    }
+
+    /// Case- and whitespace-insensitive: an agent that loops rarely retypes a
+    /// query byte-for-byte, and `Postgres  port` is not a different question
+    /// from `postgres port`.
+    fn normalize(query: &str) -> String {
+        query
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LookupVerdict, MemoryLookupLedger};
+
+    #[test]
+    fn ledger_reports_repeats_ignoring_case_and_spacing() {
+        let ledger = MemoryLookupLedger::default();
+        assert_eq!(ledger.record("postgres port", 0), LookupVerdict::Fresh);
+        assert_eq!(
+            ledger.record("  Postgres   PORT ", 0),
+            LookupVerdict::Repeat { nth: 2 },
+            "a retyped query is the same query"
+        );
+        assert_eq!(
+            ledger.record("postgres port", 0),
+            LookupVerdict::Repeat { nth: 3 }
+        );
+        assert_eq!(
+            ledger.record("redis port", 0),
+            LookupVerdict::Fresh,
+            "a different question is not a repeat"
+        );
+    }
+
+    #[test]
+    fn ledger_stops_a_run_at_its_budget() {
+        let ledger = MemoryLookupLedger::default();
+        assert_eq!(ledger.record("a", 2), LookupVerdict::Fresh);
+        assert_eq!(ledger.record("b", 2), LookupVerdict::Fresh);
+        assert_eq!(
+            ledger.record("c", 2),
+            LookupVerdict::Exhausted { spent: 2 },
+            "the third lookup in a 2-lookup run is refused"
+        );
+        assert_eq!(
+            ledger.record("d", 2),
+            LookupVerdict::Exhausted { spent: 2 },
+            "a refused lookup doesn't itself count, so the message stays stable"
+        );
+    }
+
+    #[test]
+    fn ledger_budget_of_zero_is_unlimited() {
+        let ledger = MemoryLookupLedger::default();
+        for _ in 0..50 {
+            assert!(!matches!(
+                ledger.record("anything", 0),
+                LookupVerdict::Exhausted { .. }
+            ));
+        }
+    }
+
+    /// The ledger is shared by clone (it rides on a cloned `InferenceContext`),
+    /// so two holders must see one run's history, not two.
+    #[test]
+    fn ledger_clones_share_one_history() {
+        let ledger = MemoryLookupLedger::default();
+        let other = ledger.clone();
+        assert_eq!(ledger.record("same", 0), LookupVerdict::Fresh);
+        assert_eq!(other.record("same", 0), LookupVerdict::Repeat { nth: 2 });
+    }
+}

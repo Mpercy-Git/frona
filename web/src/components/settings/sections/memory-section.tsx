@@ -231,6 +231,13 @@ export function MemorySection({ memory, models, activeBackend, onChange }: Memor
               onChange={(v) => onChange({ ...memory, pkm_search_top_k: v })}
               min={1}
             />
+            <NumberInput
+              label="Lookups per turn"
+              description="How many memory_search calls one agent turn may make before the tool stops answering, so a search loop can't burn the whole tool-turn budget. 0 = unlimited."
+              value={memory.pkm_max_lookups_per_turn}
+              onChange={(v) => onChange({ ...memory, pkm_max_lookups_per_turn: v })}
+              min={0}
+            />
           </SectionPanel>
 
           <SectionPanel title="Short-term memory" icon={BoltIcon}>

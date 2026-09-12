@@ -567,6 +567,40 @@ mod tests {
         assert_eq!(vault.page_from_any("Work Notes/standup"), None);
     }
 
+    /// The cite surface has to resolve both page origins from one argument: a Memory
+    /// page is addressed by its clean path, a User Vault note by its own vault path.
+    #[test]
+    fn entity_path_candidates_cover_both_origins() {
+        let (_storage, vault, _tmp) = test_storage();
+
+        let page_abs = vault.root().join("Memory/services/postgres.md");
+        assert_eq!(
+            vault.entity_path_candidates(&page_abs.to_string_lossy())[0],
+            "services/postgres",
+            "a Memory page resolves to its clean path first"
+        );
+
+        let note_abs = vault.root().join("Work Notes/standup.md");
+        let candidates = vault.entity_path_candidates(&note_abs.to_string_lossy());
+        assert!(
+            candidates.contains(&"Work Notes/standup".to_string()),
+            "a User Vault note resolves to its own vault path: {candidates:?}"
+        );
+
+        // Already-clean input still works, and an escape attempt is never offered.
+        assert!(
+            vault
+                .entity_path_candidates("Work Notes/standup")
+                .contains(&"Work Notes/standup".to_string())
+        );
+        for outside in ["../../etc/passwd", "/etc/passwd"] {
+            assert!(
+                vault.entity_path_candidates(outside).is_empty(),
+                "no candidate may point outside the vault: {outside}"
+            );
+        }
+    }
+
     /// `VaultScope::new` validates the directory, but storage re-checks it at the point
     /// of use - the write backstop. These scopes are built with `new_unchecked` precisely
     /// to prove the second check is real: a bad value that reached storage by some path

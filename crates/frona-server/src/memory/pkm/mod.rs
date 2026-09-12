@@ -116,6 +116,7 @@ impl MemoryService for PkmService {
             self.storage.clone(),
             self.prompts.clone(),
             self.user_service.clone(),
+            self.memory_config.pkm_max_lookups_per_turn,
         )
     }
 
