@@ -215,7 +215,11 @@ function SetupWizard() {
           updatePatch("memory", { ...cfg.memory, backend: "pkm" });
         }
       })
-      .catch(() => setError("Failed to load configuration"))
+      // Keep what the server said — a config.yaml it can't read comes back
+      // naming the file and the field to fix.
+      .catch((err) =>
+        setError(err instanceof Error && err.message ? err.message : "Failed to load configuration")
+      )
       .finally(() => setLoading(false));
   }, [updatePatch]);
 
@@ -265,7 +269,9 @@ function SetupWizard() {
   if (!config) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <p className="text-sm text-error-text">{error || "Failed to load configuration"}</p>
+        <pre className="max-w-xl whitespace-pre-wrap break-words px-6 text-sm text-error-text">
+          {error || "Failed to load configuration"}
+        </pre>
       </div>
     );
   }

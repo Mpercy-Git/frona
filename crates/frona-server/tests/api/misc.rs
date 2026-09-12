@@ -209,8 +209,13 @@ async fn get_config_schema_returns_json() {
     );
 }
 
+/// `FRONA_CONFIG` is process-global, so the tests that read the config file
+/// take turns rather than racing each other's env.
+static CONFIG_FILE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[tokio::test]
 async fn get_config_returns_redacted() {
+    let _guard = CONFIG_FILE_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let (state, _tmp) = test_app_state().await;
     let (token, _) = register_user(&state, "cfg-get", "cfgget@example.com", "password123").await;
 
@@ -220,6 +225,41 @@ async fn get_config_returns_redacted() {
     let json = body_json(resp).await;
     // Should have config structure but secrets redacted
     assert!(json.is_object());
+}
+
+/// A config.yaml the loader can't read used to panic inside the handler: the
+/// connection died mid-response and the settings page could only say "Failed
+/// to load configuration". It answers 422 with the loader's own message now,
+/// so the operator sees which file and which field to fix.
+#[tokio::test]
+async fn get_config_reports_an_unreadable_config_file() {
+    let _guard = CONFIG_FILE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "cfg-bad", "cfgbad@example.com", "password123").await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.yaml");
+    // A model group missing its `provider` — the shape an older build could
+    // write, and the one with a hint attached.
+    std::fs::write(&path, "models:\n  primary:\n    model: gpt-5\n").unwrap();
+    let previous = std::env::var("FRONA_CONFIG").ok();
+    unsafe { std::env::set_var("FRONA_CONFIG", &path) };
+
+    let app = build_app(state);
+    let resp = app.oneshot(auth_get("/api/config", &token)).await.unwrap();
+    let status = resp.status();
+    let json = body_json(resp).await;
+
+    match previous {
+        Some(v) => unsafe { std::env::set_var("FRONA_CONFIG", v) },
+        None => unsafe { std::env::remove_var("FRONA_CONFIG") },
+    }
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let error = json["error"].as_str().expect("error message");
+    assert!(error.contains("config.yaml"), "{error}");
+    assert!(error.contains("models.primary.provider"), "{error}");
+    assert!(error.contains("hint:"), "{error}");
 }
 
 #[tokio::test]

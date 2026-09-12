@@ -1648,7 +1648,22 @@ pub struct LoadedConfig {
 /// on top (env always wins). Shared by `Config::load()` and the `/api/config`
 /// handlers so a value set via `FRONA_BROWSER_WS_URL` (etc.) can never look
 /// different — and untested — in the settings UI than what's actually running.
+///
+/// Panics on a config it cannot read, which is what startup wants. Request
+/// handlers want the same build without taking the process down with them —
+/// see [`try_build_effective_config`].
 pub fn build_effective_config(yaml_content: Option<&str>) -> Config {
+    try_build_effective_config(yaml_content).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// The fallible half of [`build_effective_config`], for callers that are
+/// serving a request rather than booting: a config.yaml that no longer
+/// deserializes (hand-edited, or written by an older build) used to panic
+/// inside the `/api/config` handler, which drops the connection and leaves the
+/// settings page saying only "Failed to load configuration". Returning the
+/// error — the same message, hints and all, that startup would have printed —
+/// lets the UI show the operator which file and which field to fix.
+pub fn try_build_effective_config(yaml_content: Option<&str>) -> Result<Config, String> {
     let data_dir = std::env::var("FRONA_SERVER_DATA_DIR").unwrap_or_else(|_| "data".into());
 
     let mut builder = config::Config::builder()
@@ -1688,11 +1703,13 @@ pub fn build_effective_config(yaml_content: Option<&str>) -> Config {
             .try_parsing(true),
     );
 
-    let built = builder.build().expect("Failed to build config");
+    let built = builder
+        .build()
+        .map_err(|e| config_load_error(&e.to_string()))?;
 
     built
         .try_deserialize()
-        .unwrap_or_else(|e| panic!("{}", config_load_error(&e.to_string())))
+        .map_err(|e| config_load_error(&e.to_string()))
 }
 
 /// A config error at startup is the only thing the user gets to act on — the
@@ -2524,6 +2541,34 @@ mod tests {
                 },
             })
         );
+    }
+
+    /// The API path builds the same config as startup but must not take the
+    /// process down when it can't: a panic in the handler drops the connection
+    /// and the settings page is left with nothing to show.
+    #[test]
+    fn try_build_effective_config_returns_the_error_instead_of_panicking() {
+        let err = try_build_effective_config(Some("models:\n  primary:\n    model: gpt-5\n"))
+            .expect_err("a model group with no provider cannot be read");
+        assert!(err.contains("config.yaml"), "{err}");
+        assert!(err.contains("models.primary.provider"), "{err}");
+        assert!(err.contains("hint:"), "{err}");
+    }
+
+    #[test]
+    fn try_build_effective_config_reports_a_yaml_syntax_error() {
+        let err = try_build_effective_config(Some("server:\n  port: 3001\n bad-indent: x\n"))
+            .expect_err("invalid YAML cannot be read");
+        assert!(err.contains("config.yaml"), "{err}");
+    }
+
+    #[test]
+    fn try_build_effective_config_reads_a_good_config() {
+        let config = try_build_effective_config(Some(
+            "models:\n  primary:\n    provider: anthropic\n    model: claude\n",
+        ))
+        .expect("a well-formed config loads");
+        assert_eq!(config.models["primary"].provider_name(), "anthropic");
     }
 
     #[test]
