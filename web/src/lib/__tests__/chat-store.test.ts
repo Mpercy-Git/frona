@@ -585,6 +585,22 @@ describe("ChatStore", () => {
       expect(store.streamingToolResults.size).toBe(0);
       expect(store.retryInfo).toBeNull();
     });
+
+    // Callers outside handleEvent (a send that failed, a Stop the server had
+    // nothing to cancel) rely on this to repaint: without the notify, the
+    // snapshot kept reporting isRunning and the composer sat there with a
+    // spinner and a Stop button for a turn that no longer existed.
+    it("notifies subscribers so the thread stops showing as running", () => {
+      const listener = vi.fn();
+      store.addUserMessage("Hello");
+      expect(store.getSnapshot().isRunning).toBe(true);
+
+      store.subscribe(listener);
+      store.clearStreaming();
+
+      expect(listener).toHaveBeenCalled();
+      expect(store.getSnapshot().isRunning).toBe(false);
+    });
   });
 
   describe("getDisplayMessages with existing executing message", () => {

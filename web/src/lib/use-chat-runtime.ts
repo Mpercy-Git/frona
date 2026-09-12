@@ -7,6 +7,7 @@ import type { ExternalStoreAdapter } from "@assistant-ui/react";
 import { ChatStore, type RetryInfo } from "./chat-store";
 import { sseBus } from "./sse-event-bus";
 import { sendMessage as apiSendMessage, cancelGeneration, api, uploadFile } from "./api-client";
+import type { CancelResult } from "./api-client";
 import { computeTimeMarkers, useTimezone } from "./format-time";
 import type { MessageResponse, ChatResponse, Attachment } from "./types";
 import { renderMessageBody, getCitations } from "./task-result-render";
@@ -482,10 +483,28 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
 
   const onCancel = useCallback(async () => {
     const id = currentChatIdRef.current;
-    if (id) {
-      await cancelGeneration(id).catch(() => {});
+    if (!id) {
+      // Nothing to stop server-side (the chat isn't created yet), but the
+      // thread is showing as running — clear it so Stop isn't a dead button.
+      store.clearStreaming();
+      return;
     }
-  }, []);
+    let result: CancelResult;
+    try {
+      result = await cancelGeneration(id);
+    } catch {
+      toast.error("Couldn't stop the agent — please try again.");
+      return;
+    }
+    // `cancelled: false` means the server had no turn and no task to stop for
+    // this chat, so the running state we're showing is stale (a send that
+    // failed, a completion event missed while the tab was away). Stop should
+    // still put the thread back to idle instead of spinning forever — the
+    // agent's own events would set it running again if one were live.
+    if (!result.cancelled) {
+      store.clearStreaming();
+    }
+  }, [store, toast]);
 
   // Send a steering message *while the agent is running*. The backend registers
   // a fresh cancellation token per turn, which cancels the in-flight turn and

@@ -9,6 +9,7 @@ use axum::{Json, Router};
 use futures::stream::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+use crate::agent::task::models::TaskStatus;
 use crate::chat::message::models::{
     MessageQuery, MessageResponse, PaginatedMessagesResponse, ResolveToolRequest,
     SendMessageRequest, UpdateMessageRequest,
@@ -107,8 +108,35 @@ async fn cancel_generation(
         .await
         .map_err(ApiError::from)?;
 
-    let cancelled = state.active_sessions.cancel(&chat_id).await;
-    Ok(Json(serde_json::json!({ "cancelled": cancelled })))
+    // Fire the chat's active turn token, if a turn is registered right now.
+    let turn_cancelled = state.active_sessions.cancel(&chat_id).await;
+
+    // A task chat's agent keeps working across many turns, and the executor
+    // holds no session entry between them (it deregisters when a turn ends and
+    // re-registers when the next one starts). A Stop landing in that gap used
+    // to hit nothing at all and the task carried on to its next turn — so also
+    // cancel the task that owns this chat, the way `/api/tasks/{id}/cancel`
+    // does. That persists Cancelled before firing the token, which closes the
+    // startup window too: a run that hasn't registered yet sees the status and
+    // bails. Terminal tasks are left alone so Stop in a finished task's chat
+    // can't rewrite its outcome.
+    let mut task_cancelled = false;
+    if let Ok(Some(task)) = state.task_service.find_by_chat_id(&chat_id).await
+        && task.user_id == auth.user_id
+        && !matches!(
+            task.status,
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+        )
+    {
+        state.task_executor.cancel_task(&task.id).await;
+        task_cancelled = true;
+    }
+
+    Ok(Json(serde_json::json!({
+        "cancelled": turn_cancelled || task_cancelled,
+        "turn_cancelled": turn_cancelled,
+        "task_cancelled": task_cancelled,
+    })))
 }
 
 async fn resolve_tool_calls(
@@ -165,10 +193,30 @@ async fn resolve_tool_calls(
             {
                 let h = state.harness.clone();
                 let exec = state.task_executor.clone();
+                // Same reasoning as the HITL path in `stream.rs`: register the
+                // resumed turn's cancel token before answering the client, so
+                // Stop can reach it immediately. A task resume registers its
+                // own token inside the executor, and the chat-level Stop
+                // reaches it through `cancel_task` instead.
+                let session = if task_id.is_none() {
+                    Some(state.active_sessions.register(&chat_id).await)
+                } else {
+                    None
+                };
                 tokio::spawn(async move {
                     if let Some(tid) = task_id {
                         let _ = exec.run_task_by_id(&tid).await;
-                    } else if let Err(e) = h.resume(&user_id, &chat_id, &message_id).await {
+                    } else if let Some((session_id, cancel_token)) = session
+                        && let Err(e) = h
+                            .resume_registered(
+                                &user_id,
+                                &chat_id,
+                                &message_id,
+                                session_id,
+                                cancel_token,
+                            )
+                            .await
+                    {
                         tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume chat after HITL resolve");
                     }
                 });
