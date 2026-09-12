@@ -37,7 +37,12 @@ pub struct Agent {
     /// any user-scoped memory the user's other agents can read - shared user
     /// memory, space summaries, and the PKM knowledge base are all off-limits -
     /// and what it does remember is scoped to the agent. It still *reads* what
-    /// the user has chosen to remember. Defaults so existing rows deserialize.
+    /// the user has chosen to remember.
+    ///
+    /// `#[serde(default)]` covers serde alone — agent rows are read back through
+    /// `SurrealValue`, which has no such attribute, so rows written before this
+    /// field existed are filled in by the `backfill_agent_private_memory`
+    /// migration instead.
     #[serde(default)]
     pub private_memory: bool,
     #[serde(default)]
