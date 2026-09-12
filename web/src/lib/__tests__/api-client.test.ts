@@ -133,3 +133,23 @@ describe("api-client: expired access tokens", () => {
     expect(client.getAccessToken()).toBe("stale");
   });
 });
+
+describe("api-client: server-side failures", () => {
+  /// The config endpoints answer 422 with the loader's own message (which
+  /// names data/config.yaml and the field to fix) — the settings page shows
+  /// whatever comes back here, so it must survive the client.
+  it("surfaces the server's message on a 4xx", async () => {
+    const client = await loadClient();
+    client.setAccessToken("good");
+
+    handler = () =>
+      json(
+        { error: "Failed to load config from data/config.yaml: missing field\n\nhint: ..." },
+        422,
+      );
+
+    const err = await client.api.get("/api/config").catch((e: unknown) => e);
+    expect((err as Error).message).toContain("data/config.yaml");
+    expect((err as Error).message).toContain("hint:");
+  });
+});

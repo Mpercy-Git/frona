@@ -16,6 +16,12 @@
 //! 3. Never rename or delete an applied migration's file or fn. Removing it
 //!    from source means the runner has nothing to re-check; the DB row stays
 //!    whatever shape it was left in.
+//! 4. Adding a non-`Option` field to a stored entity needs a backfill migration.
+//!    Rows are read back through `SurrealValue`, whose derive has no `default`
+//!    attribute, so `#[serde(default)]` does not save you: the field is missing
+//!    on every existing row and every read of one fails with
+//!    `Expected <type>, got none`. Either make it `Option<T>` or write the
+//!    value in (see `backfill_agent_private_memory`).
 
 use std::future::Future;
 use std::pin::Pin;
@@ -24,6 +30,7 @@ use chrono::{DateTime, Utc};
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
+mod backfill_agent_private_memory;
 mod backfill_channel_enabled_and_reset_status;
 mod backfill_empty_metadata;
 mod drop_refuse_user_delete_event;

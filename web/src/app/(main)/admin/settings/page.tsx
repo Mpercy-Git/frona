@@ -113,12 +113,21 @@ export default function AdminSettingsPage() {
       setConfigLoading(false);
       return;
     }
+    setConfigLoading(true);
+    setError(null);
     try {
       const cfg = await getConfig();
       setConfig(cfg);
-      setActiveBackend(cfg.memory.backend);
-    } catch {
-      setError("Failed to load configuration");
+      setActiveBackend(cfg.memory?.backend ?? null);
+    } catch (err) {
+      // The server names the file and the field when config.yaml can't be
+      // read (and 422s rather than dying mid-response), so show what it said:
+      // "Failed to load configuration" alone leaves an operator with a dead
+      // settings page and nothing to act on.
+      setConfig(null);
+      setError(
+        err instanceof Error && err.message ? err.message : "Failed to load configuration"
+      );
     } finally {
       setConfigLoading(false);
     }
@@ -275,7 +284,9 @@ export default function AdminSettingsPage() {
           <div className="max-w-2xl mx-auto p-4 md:p-8 space-y-6">
             {showRestart && <RestartBanner visible={showRestart} />}
 
-            {error && isConfigTab && (
+            {/* Save errors. A load failure renders its own block below, with
+                the retry — showing both said the same thing twice. */}
+            {error && isConfigTab && config && (
               <div className="rounded-lg bg-error-bg p-3 text-sm text-error-text">{error}</div>
             )}
 
@@ -290,7 +301,29 @@ export default function AdminSettingsPage() {
               )}
 
               {isConfigTab && !configLoading && !config && (
-                <p className="text-sm text-error-text">{error || "Failed to load configuration"}</p>
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-error-text">
+                    {isAdmin
+                      ? "Couldn't load the server configuration"
+                      : "Server configuration is visible to administrators only."}
+                  </p>
+                  {isAdmin && (
+                    <>
+                      {/* The loader's message is multi-line: it names
+                          data/config.yaml and, for the common mistakes, the
+                          YAML to write. Keep the line breaks. */}
+                      <pre className="whitespace-pre-wrap break-words rounded-lg bg-error-bg p-3 text-xs text-error-text">
+                        {error || "Failed to load configuration"}
+                      </pre>
+                      <button
+                        onClick={handleRefresh}
+                        className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
+                      >
+                        Try again
+                      </button>
+                    </>
+                  )}
+                </div>
               )}
 
               {config && (
