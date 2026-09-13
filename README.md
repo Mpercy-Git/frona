@@ -135,6 +135,9 @@ A dedicated review pass fixed issues not present upstream, including:
 
 - SSRF guard on push subscription endpoints; IDOR fixes on tool-call and MCP log endpoints; presigned-token subject validation; refresh-token replay race; OAuth CSRF state TTL; path-traversal guards on workspace and file routes; stored-XSS mitigation for served SVG/HTML
 - UTF-8 byte-index truncation panics fixed; cancelled-scheduler push state fix; config `GET /api/config` now reads from disk so saved settings don't silently revert; a channel leaves `Setup` for `Disconnected` once required fields are provided
+- **A config the loader can't read now says why.** "Failed to load configuration" was every failure the settings page could report, because an unreadable `config.yaml` — hand-edited, or written by an older build — panicked inside `/api/config` and killed the connection mid-response, sending the loader's actual message (naming the file, the field, and the YAML to write) to a log nobody was reading. `GET`/`PUT` now answer `422` with that message, the save path validates `base` *before* defaults are stripped from it and reads back what it wrote, and a failed read-back restores the previous file and refuses the save rather than bricking both the settings page and the next start-up
+- **Memory lookups can no longer loop until the run dies.** Three fixed points each ended as `memory_search` called over and over until "Max tool turns reached": `memory_cite` could not address a User Vault note (whose identity *is* its location) and failed telling the agent to pass exactly what it had just passed; `memory_search` handed out the path of a page the Author stage had not projected yet, so `read` answered "file not found" for a path the prompt says to read verbatim; and a repeated identical query looked like a fresh attempt from the transcript. Cite accepts both spellings and a genuine miss ends there, an unprojected hit is listed without a path and marked not yet readable, and a per-run ledger reports a repeat as a repeat and caps lookups per turn (`memory.pkm_max_lookups_per_turn`, default 12, `0` = unlimited) — the budget the background consolidation stages always had and the foreground lacked
+- **Agents written before a new stored field still load.** `private_memory` arrived as a non-`Option` field, and `#[serde(default)]` doesn't cover it: agent rows come back through `SurrealValue`, which never consults serde's default, so every pre-release row failed to deserialize. The read path itself now defaults (`#[surreal(default)]`, also applied to `identity`), so a row loads whatever state the database is in, and a re-entrant backfill keeps queries that filter on the field agreeing with the struct. The migration module's rules for authors state the general case, since any non-`Option` field added to a stored entity has the same failure waiting for it
 - **Space management:** spaces can be archived or deleted from the chat sidebar (mirroring chats); deleting a channel no longer deletes its space, since spaces are independent and can hold chats
 - Chat file-upload robustness: friendlier over-size errors, no silent attachment drops, no leaked blob URLs
 - **Shared-agent workspace paths:** the file tools resolved relative paths under the *runner* while the sandbox mounts the *owner's* workspace. Harmless for an owned agent (the two are the same user) but it put every path in a shared run outside the mount, so reads and writes were denied outright. Both now resolve under the owner, and the resolver takes the whole inference context so the pairing can't be mismatched again
@@ -157,7 +160,8 @@ deleting and recreating the account.
 
 ### 🏗️ Build & release (fork-only)
 
-- Release workflow publishing multi-arch images to **this fork's GHCR** (`ghcr.io/mpercy-git/frona`)
+- Release workflow publishing multi-arch images to **this fork's GHCR** (`ghcr.io/mpercy-git/frona`), which also bumps the image tag in the docker-compose and Kubernetes examples on release, so a published example never points at a tag that doesn't exist
+- CI gates formatting, clippy, the backend test suite, and the frontend typecheck/lint/tests on every push
 - Faster Docker builds: shared `rust-base` stage (installs toolchain once), persistent local BuildKit cache, and a `Makefile` for native-arch local builds
 
 ## Security First
@@ -184,20 +188,22 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 - **App deployment:** agents build and deploy web applications and services on your behalf, with an approval workflow before anything goes live
 - **Skills:** instruction packages that teach agents new capabilities. Install shared skills or create agent-specific ones
 - **Scheduling and heartbeats:** recurring tasks via cron and agent-managed heartbeat checklists for ongoing monitoring
-- **Voice calls:** outbound phone calls via Twilio with speech recognition and DTMF navigation (optional)
+- **Voice calls:** inbound *and* outbound phone calls via Twilio or Plivo, with speech recognition, DTMF navigation, streaming agent speech, and ElevenLabs or Polly TTS (optional). Answering inbound calls is a [fork enhancement](#-inbound-voice-calls-upstream-is-outbound-only)
 - **Agent-to-agent delegation:** agents hand off tasks to specialized agents and get results back
 - **Sharing:** hand another registered user an agent to run (without letting them edit it) or a chat to read, with optional credential delegation on shared agents
 - **Spaces:** group conversations that share context. The platform summarizes linked conversations and feeds the context into new chats
 - **Usage and cost visibility:** monitor tokens, cost, context-window usage, and model fallbacks live in each chat, with per-user dashboards for spend, latency, cache efficiency, models, and call types. Admins additionally get server-wide spend and a [cost analyst agent](#-cost-analyst-agent--provider-billing-model-net-new) that reviews the provider and model mix on a schedule
 - **Commands:** use slash commands and mentions to invoke built-in actions, installed skills, or other agents directly from chat
 - **Notifications:** agents push status updates (task finished, app deployed, credential needs approval) into a feed in the top bar so nothing important gets lost
+- **Push notifications and PWA:** subscribed devices also get OS-level Web Push for agent replies, and the UI installs to a phone's home screen as a PWA. VAPID keys are generated on first start, so there is nothing to set up ([fork enhancement](#-web-push-notifications--pwa-net-new))
 - **Real-time streaming:** token-by-token response streaming over Server-Sent Events
 - **SSO:** OpenID Connect support for single sign-on with Google, Keycloak, and other OIDC providers
+- **Account recovery:** local-auth accounts get forgot-password over SMTP, a self-service password change, admin reset and unlock, and a break-glass CLI for a locked-out sole admin, with failed-login lockout in front of all of it ([fork enhancement](#-account-recovery--login-lockout-net-new))
 - **Single-container deployment:** the entire backend (API server, embedded database, scheduler, tool execution) runs in one rootless OCI container (compatible with Docker, Podman, and other OCI runtimes). No per-agent containers, even at scale
 
 ## Core Concepts
 
-- **Agents** are the main building blocks. Each agent has a name, a system prompt that defines its behavior, a model group that determines which LLM it uses, and a list of tools it can access. Frona ships with built-in agents (Assistant, Researcher, Developer, Receptionist) and you can create your own.
+- **Agents** are the main building blocks. Each agent has a name, a system prompt that defines its behavior, a model group that determines which LLM it uses, and a list of tools it can access. Frona ships with built-in agents (Assistant, Researcher, Developer, Receptionist, and an admin-only [Cost Analyst](#-cost-analyst-agent--provider-billing-model-net-new)) and you can create your own.
 - **Policies** authorize every action: tool calls, delegations, file reads, network connections, and inbound channel messages. The same engine controls tool access and sandbox rules, so authorization lives in one place.
 - **Memory** persists knowledge across conversations. Basic memory maintains compact user-scoped facts shared across agents and private agent-scoped notes. PKM builds a user-scoped knowledge graph of grounded atomic memories, entities, relationships, attributes, playbooks, and readable Markdown pages backed by an ontology. Any agent can be set to [private memory](#-private-memory-agents-net-new), which keeps everything it learns out of the scopes its sibling agents read.
 - **Tools** are capabilities you give to agents. Browser automation, web search, file operations, shell commands, voice calls, task scheduling, and more. Tools run server-side and return results to the agent.
@@ -285,7 +291,9 @@ See the [docker-compose example](examples/docker-compose) for a full deployment 
 
 Frona auto-discovers providers from your configuration and routes different tasks to the right one. Configure them in the [config file](https://docs.frona.ai/platform/deployment/config-file.html).
 
-**LLM:** Anthropic, OpenAI, Google Gemini, DeepSeek, Mistral, Cohere, xAI (Grok), Groq, OpenRouter, Together, Perplexity, Hyperbolic, Moonshot, Hugging Face, Mira, Galadriel, Ollama (local).
+**LLM:** Anthropic, OpenAI, Azure OpenAI, Google Gemini, DeepSeek, Mistral, Cohere, xAI (Grok), Groq, OpenRouter, Together, Perplexity, Hyperbolic, Moonshot, Z.ai (GLM), MiniMax, Venice, BytePlus ModelArk, Hugging Face, Mira, Galadriel, and Ollama or llamafile (local).
+
+Anything else that speaks the OpenAI `/chat/completions` API — vLLM, LM Studio, llama.cpp's server, a LiteLLM proxy, or a hosted service with no dedicated entry — is reachable through `provider: generic`, no code change required. Azure OpenAI, BytePlus, Z.ai, Venice, MiniMax, llamafile and `generic` are [fork enhancements](#-fork-enhancements--unique-to-this-repository).
 
 **Search:** SearXNG (self-hosted), Tavily, Brave Search.
 
@@ -338,9 +346,15 @@ mise run container:dev    # Run the containerized dev stack with hot-reload
 mise run container:prod   # Build and run the production container stack
 
 mise run check            # Check all Rust crates
+mise run fmt              # Format Rust code
 mise run lint             # Check formatting and lint backend + frontend
 mise run test             # Run the workspace test suite
+mise run test:all         # Run the test suite including end-to-end tests
 ```
+
+CI runs formatting, clippy, the backend tests, and the frontend typecheck, lint
+and tests, so `mise run lint` and `mise run test` before pushing is the quickest
+way to keep a branch green.
 
 See [mise.toml](mise.toml) for all available targets.
 
