@@ -160,7 +160,14 @@ impl ChatSessionContext {
                 .filter(|s| allowed_handles.contains(s.handle.as_str()))
                 .map(|s| {
                     let desc = s.description.unwrap_or_else(|| s.display_name.clone());
-                    (s.handle.to_string(), desc)
+                    // The cache is populated when the server starts, so the tools
+                    // cost nothing to name here - and naming them is what stops a
+                    // discovery call, or a fallback to memory, standing in for the
+                    // call the question actually wanted.
+                    let tools: Vec<String> = s.tool_cache.iter().map(|t| t.name.clone()).collect();
+                    let handle = s.handle.to_string();
+                    let line = crate::agent::prompt::mcp_server_line(&handle, &desc, &tools);
+                    (handle, line)
                 })
                 .collect()
         } else {
