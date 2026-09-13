@@ -138,6 +138,47 @@ pub fn append_tagged_section(
     result.push_str(&format!("</{tag}>"));
 }
 
+/// Cap on tool names spelled out for one server in `<mcpservers>`. A server with
+/// more than this is summarised and the tail left to `--help`: the point is to
+/// show what the server is *for*, which the first couple of dozen names do.
+const MCP_TOOLS_LISTED: usize = 24;
+
+/// How one running MCP server introduces itself in `<mcpservers>`.
+///
+/// The tool names are already in hand - the manager caches them when the server
+/// starts - and leaving them out of the prompt was quietly costing calls. A model
+/// weighing `mcpctl homeassistant --help` (a round-trip that answers nothing by
+/// itself) against `memory_search` (a round-trip that might answer everything)
+/// picks memory, and then answers a question about a live system from notes about
+/// that system. Naming the tools puts the capability in front of it for free.
+pub fn mcp_server_line(handle: &str, description: &str, tools: &[String]) -> String {
+    let desc = description
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('.');
+    let mut line = if desc.is_empty() {
+        String::new()
+    } else {
+        format!("{desc}. ")
+    };
+    if tools.is_empty() {
+        line.push_str(&format!("Tools: run `mcpctl {handle} --help`"));
+        return line;
+    }
+    let shown = tools.len().min(MCP_TOOLS_LISTED);
+    line.push_str("Tools: ");
+    line.push_str(&tools[..shown].join(", "));
+    if tools.len() > shown {
+        line.push_str(&format!(
+            " (+{} more: `mcpctl {handle} --help`)",
+            tools.len() - shown
+        ));
+    }
+    line
+}
+
 /// Assemble the agent's full system prompt (identity, agent prompt files,
 /// skills, MCP, available agents, temporal context). The **memory** service
 /// contributes only `memory_section` (its static `MEMORY.md`); the dynamic
@@ -356,6 +397,36 @@ mod tests {
             content,
             "[CALL_CONNECTED: Now speaking with Alice (+1234567890). Goal: Schedule meeting.]"
         );
+    }
+
+    #[test]
+    fn a_server_names_its_tools_so_no_call_is_spent_discovering_them() {
+        let line = mcp_server_line(
+            "homeassistant",
+            "Home Assistant",
+            &["get_state".into(), "call_service".into()],
+        );
+        assert_eq!(line, "Home Assistant. Tools: get_state, call_service");
+    }
+
+    #[test]
+    fn a_server_with_too_many_tools_shows_the_first_and_points_at_help() {
+        let tools: Vec<String> = (0..MCP_TOOLS_LISTED + 5).map(|i| format!("t{i}")).collect();
+        let line = mcp_server_line("github", "GitHub.", &tools);
+        assert!(line.contains("t0, t1"), "{line}");
+        assert!(
+            line.ends_with("(+5 more: `mcpctl github --help`)"),
+            "the tail is reachable, not lost:\n{line}"
+        );
+        assert!(!line.contains(&format!("t{}", MCP_TOOLS_LISTED)), "{line}");
+    }
+
+    /// A server whose cache is empty (just installed, never started) still has to
+    /// say how to reach it - silence reads as "nothing here".
+    #[test]
+    fn a_server_with_no_cached_tools_still_points_at_help() {
+        let line = mcp_server_line("weather", "Forecasts", &[]);
+        assert_eq!(line, "Forecasts. Tools: run `mcpctl weather --help`");
     }
 
     #[test]
