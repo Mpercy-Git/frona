@@ -39,6 +39,16 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 - **Streaming agent speech** — the agent's reply reaches the caller as it is generated, instead of the whole loop (tool rounds included) having to finish before a single word is spoken. A retried turn no longer speaks its opening twice
 - Voice settings surfaced in the UI: inbound enable, silence-fill phrases/timing, caller allowlist, phone profile field
 
+### 🔦 Live conversation activity in the sidebar (net-new)
+
+Upstream shows the animated "working" ring only on the conversation you have open, so a turn running anywhere else — an inbound Slack or Signal message, an answered phone call, a cron task, a delegate agent, or a chat you navigated away from — is invisible until you go looking for it.
+
+- **The same ring, on every list row** — the chat list, archived chats, the space page and task rows all mark the conversations an agent is actively working in, using the animated halo the open conversation already uses
+- **A distinct, static badge for "waiting on you"** — a turn parked on a human-in-the-loop prompt is the state most likely to sit unnoticed for hours. It never animates, so it is never mistaken for work in progress
+- **Spaces, the collapsed rail and the mobile drawer button carry a summary dot** — the panel never lists the chats inside a space, and on mobile the whole list is behind a button, so activity out of view still surfaces where you can see it
+- **Truthful after a reload** — a `/api/chats/activity` snapshot (live runs from the server's session registry, paused turns from the message rows) seeds the indicators at boot and is re-read whenever the event stream reconnects or the tab comes back, so a turn that has been grinding through a long tool call since before the page loaded still shows. A stale `working` mark is swept rather than left spinning if its chat never reports finishing
+- **Respects `prefers-reduced-motion`** — the rotation gives way to a slow fade, and the indicator stays
+
 ### 🔔 Web Push notifications & PWA (net-new)
 
 - **Web Push with VAPID** — a service worker delivers OS-level push notifications for agent replies to subscribed devices, including mobile

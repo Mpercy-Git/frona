@@ -148,6 +148,13 @@ impl ActiveSessions {
     pub async fn count(&self) -> usize {
         self.inner.lock().await.len()
     }
+
+    /// Every chat with a live run, for the "what is the agent working on right
+    /// now" snapshot. This is the whole server's map, so callers MUST filter it
+    /// to chats the requesting user owns before it leaves the process.
+    pub async fn active_chat_ids(&self) -> Vec<String> {
+        self.inner.lock().await.keys().cloned().collect()
+    }
 }
 
 #[derive(Clone)]

@@ -14,11 +14,48 @@ import {
   TrashIcon,
 } from "@heroicons/react/24/outline";
 import { api } from "@/lib/api-client";
+import { useActivityOf, useAggregateActivity } from "@/lib/chat-activity-context";
+import { ChatActivityIndicator } from "@/components/ui/activity-indicator";
 import { useNavigation, neighborRoute } from "@/lib/navigation-context";
 import { useSession } from "@/lib/session-context";
 import { ChatActions } from "./chat-actions";
 import { DeleteConfirmDialog } from "./delete-confirm-dialog";
 import type { SpaceResponse, SpaceWithChats } from "@/lib/types";
+
+/// Marks a chat row the agent is busy in, or one parked waiting on an answer.
+/// Its own component so each row can subscribe individually — a hook cannot be
+/// called inside the list's `map`.
+function ChatRowActivity({ chatId, title }: { chatId: string; title: string | null }) {
+  const activity = useActivityOf(chatId);
+  if (activity === "idle") return null;
+  const name = title ?? "New chat";
+  return (
+    <span className="mr-1 flex items-center">
+      <ChatActivityIndicator
+        activity={activity}
+        workingLabel={`${name}: agent is working`}
+        waitingLabel={`${name}: waiting for your answer`}
+      />
+    </span>
+  );
+}
+
+/// A space stands in for the chats inside it: the panel lists spaces, never
+/// their chats, so without this an agent working inside a space is invisible
+/// until you open it.
+function SpaceRowActivity({ chatIds, name }: { chatIds: string[]; name: string }) {
+  const activity = useAggregateActivity(chatIds);
+  if (activity === "idle") return null;
+  return (
+    <span className="mr-1 flex items-center">
+      <ChatActivityIndicator
+        activity={activity}
+        workingLabel={`${name}: agent is working in this space`}
+        waitingLabel={`${name}: a chat is waiting for your answer`}
+      />
+    </span>
+  );
+}
 
 export function ChatsTab() {
   const {
@@ -185,6 +222,7 @@ export function ChatsTab() {
             <span className="truncate">{space.name}</span>
             <span className="ml-auto text-[10px] text-text-tertiary">{space.chats.length}</span>
           </button>
+          <SpaceRowActivity chatIds={space.chats.map((c) => c.id)} name={space.name} />
           <button
             onClick={() => setSpaceMenu((id) => (id === space.id ? null : space.id))}
             className="mr-1 rounded p-0.5 text-text-tertiary opacity-0 transition hover:text-text-primary group-hover:opacity-100 focus:opacity-100"
@@ -302,6 +340,7 @@ export function ChatsTab() {
                   <span className="ml-1.5 text-[10px] text-text-tertiary">(shared)</span>
                 )}
               </button>
+              <ChatRowActivity chatId={chat.id} title={chat.title} />
               {!chat.is_shared && (
                 <ChatActions
                   isArchived={false}
@@ -344,6 +383,7 @@ export function ChatsTab() {
               >
                 {chat.title ?? "New chat"}
               </button>
+              <ChatRowActivity chatId={chat.id} title={chat.title} />
               <ChatActions
                 isArchived
                 onArchive={() => {}}

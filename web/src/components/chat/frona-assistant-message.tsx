@@ -12,6 +12,7 @@ import { TimeMarkers } from "./time-markers";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/components/ui/code-block";
+import { WorkingRing } from "@/components/ui/activity-indicator";
 import { agentDisplayName } from "@/lib/types";
 import type { Attachment } from "@/lib/types";
 import { MediaAttachment } from "@/components/preview/media-attachment";
@@ -101,25 +102,18 @@ function AgentAvatar({ name, avatar }: { name: string; avatar?: string | null })
 function LastMessageAvatar({ avatar, letter }: { avatar?: string | null; letter: string }) {
   const isRunning = useThreadIsRunning();
 
+  // Same ring the navigation rows use, at avatar size — one mark for "the
+  // agent is working here", wherever you happen to be looking.
+  if (isRunning) {
+    return (
+      <WorkingRing size={32} halo>
+        <AvatarContent avatar={avatar} letter={letter} />
+      </WorkingRing>
+    );
+  }
+
   return (
     <div className="relative shrink-0 h-8 w-8">
-      {isRunning && (
-        <>
-          <div className="absolute inset-[-3px] rounded-full animate-spin" style={{
-            background: "conic-gradient(from 0deg, transparent 0%, var(--accent) 30%, transparent 60%)",
-            mask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #fff calc(100% - 2px))",
-            WebkitMask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #fff calc(100% - 2px))",
-            animationDuration: "1.2s",
-          }} />
-          <div className="absolute inset-[-3px] rounded-full animate-spin" style={{
-            background: "conic-gradient(from 180deg, transparent 0%, var(--accent) 20%, transparent 50%)",
-            mask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #fff calc(100% - 2px))",
-            WebkitMask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #fff calc(100% - 2px))",
-            animationDuration: "1.2s",
-            opacity: 0.5,
-          }} />
-        </>
-      )}
       <AvatarContent avatar={avatar} letter={letter} />
     </div>
   );

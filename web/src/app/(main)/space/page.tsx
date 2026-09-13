@@ -9,6 +9,23 @@ import { useNavigation, useSystemAgent } from "@/lib/navigation-context";
 import { useChatRuntime } from "@/lib/use-chat-runtime";
 import { FronaComposer } from "@/components/chat/frona-composer";
 import type { Attachment, ChatResponse } from "@/lib/types";
+import { useActivityOf } from "@/lib/chat-activity-context";
+import { ChatActivityIndicator } from "@/components/ui/activity-indicator";
+
+/// The space page is the only place these chats are listed, so it carries the
+/// same working/waiting marks as the navigation panel.
+function SpaceChatActivity({ chatId, title }: { chatId: string; title: string | null }) {
+  const activity = useActivityOf(chatId);
+  if (activity === "idle") return null;
+  const name = title ?? "New chat";
+  return (
+    <ChatActivityIndicator
+      activity={activity}
+      workingLabel={`${name}: agent is working`}
+      waitingLabel={`${name}: waiting for your answer`}
+    />
+  );
+}
 
 function SpaceComposer({ spaceId }: { spaceId: string }) {
   const router = useRouter();
@@ -66,13 +83,14 @@ function SpaceView({ spaceId }: { spaceId: string }) {
                 <button
                   key={chat.id}
                   onClick={() => router.push(`/chat?id=${chat.id}`)}
-                  className={`w-full rounded-lg px-4 py-2.5 text-left text-sm transition truncate ${
+                  className={`flex w-full items-center gap-2 rounded-lg px-4 py-2.5 text-left text-sm transition ${
                     activeChatId === chat.id
                       ? "bg-surface-tertiary text-text-primary"
                       : "text-text-secondary hover:bg-surface-secondary"
                   }`}
                 >
-                  {chat.title ?? "New chat"}
+                  <span className="min-w-0 flex-1 truncate">{chat.title ?? "New chat"}</span>
+                  <SpaceChatActivity chatId={chat.id} title={chat.title} />
                 </button>
               ))}
             </div>

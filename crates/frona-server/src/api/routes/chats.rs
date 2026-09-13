@@ -12,6 +12,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/chats", get(list_chats).post(create_chat))
         .route("/api/chats/archived", get(list_archived_chats))
+        .route("/api/chats/activity", get(get_chat_activity))
         .route(
             "/api/chats/{id}",
             get(get_chat).put(update_chat).delete(delete_chat),
@@ -27,6 +28,58 @@ pub fn router() -> Router<AppState> {
             "/api/chats/{id}/shares/{recipient_id}",
             axum::routing::delete(unshare_chat),
         )
+}
+
+/// Which of the caller's chats the agent is busy in right now, and which are
+/// parked waiting on them.
+///
+/// The live SSE stream carries these transitions, but only for turns that
+/// start while a client is connected. A page load mid-run — or a reconnect
+/// after a dropped stream — has no way to learn that an agent has been working
+/// in some chat for the last four minutes, so this is the snapshot the client
+/// seeds from and re-reads whenever its stream drops.
+#[derive(Debug, Serialize)]
+struct ChatActivityResponse {
+    /// Chats with a live inference run.
+    working: Vec<String>,
+    /// Chats holding a message paused on a human (HITL).
+    waiting: Vec<String>,
+}
+
+async fn get_chat_activity(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<ChatActivityResponse>, ApiError> {
+    // `ActiveSessions` is a server-wide map keyed by chat id with no notion of
+    // ownership, so every id is checked against the caller before it is
+    // returned. Owner-only (`get_chat`, not `get_accessible`) on purpose: the
+    // broadcast fan-out is keyed on the owning user, so a viewer of a shared
+    // chat never receives the matching lifecycle events and a ring seeded here
+    // would hang until the client's watchdog swept it.
+    let mut working = Vec::new();
+    for chat_id in state.active_sessions.active_chat_ids().await {
+        if state
+            .chat_service
+            .get_chat(&auth.user_id, &chat_id)
+            .await
+            .is_ok()
+        {
+            working.push(chat_id);
+        }
+    }
+
+    // Already scoped to the user by the query. A chat that is both paused and
+    // running (the loop resumed but the row has not been flipped yet) counts as
+    // working — that is the more urgent of the two states.
+    let waiting = state
+        .chat_service
+        .find_paused_chat_ids_for_user(&auth.user_id)
+        .await?
+        .into_iter()
+        .filter(|id| !working.contains(id))
+        .collect();
+
+    Ok(Json(ChatActivityResponse { working, waiting }))
 }
 
 /// One delegated sub-task spawned from a chat — enough to show its live status

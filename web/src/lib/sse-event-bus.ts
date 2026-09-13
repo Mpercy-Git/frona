@@ -1,4 +1,5 @@
 import { ensureAccessToken, refreshStaleToken, API_URL } from "./api-client";
+import { isPendingHitl } from "./types";
 import type { MessageResponse, Notification, PauseReason } from "./types";
 
 
@@ -39,12 +40,52 @@ export interface UsageRecorded {
 /// `EntityAction` in `crates/frona-server/src/chat/broadcast.rs`.
 export type EntityAction = "created" | "updated" | "deleted";
 
+/// What a chat is doing, from the nav's point of view. `working` = the agent
+/// has a live turn; `waiting` = the turn is parked on a human (HITL); `idle` =
+/// neither, so the row shows nothing.
+export type ChatActivity = "working" | "waiting" | "idle";
+
+/// How each stream event reads as chat activity. Streaming events count as
+/// `working` so a chat whose `inference_start` we missed — page loaded
+/// mid-turn, stream dropped and reconnected — still lights up on the next
+/// token instead of staying dark until the turn ends.
+const ACTIVITY_BY_EVENT: Record<string, ChatActivity> = {
+  token: "working",
+  reasoning: "working",
+  tool_call: "working",
+  tool_result: "working",
+  retry: "working",
+  inference_start: "working",
+  inference_resume: "working",
+  inference_paused: "waiting",
+  inference_done: "idle",
+  inference_cancelled: "idle",
+  inference_error: "idle",
+};
+
+/// The agent loop can park on a fresh set of HITL prompts and signal that with
+/// `inference_done` rather than `inference_paused` (see `ChatStore.handleEvent`),
+/// so the payload decides between waiting and idle for that one event.
+function activityForEvent(
+  eventType: string,
+  parsed: Record<string, unknown>,
+): ChatActivity | null {
+  const activity = ACTIVITY_BY_EVENT[eventType];
+  if (!activity) return null;
+  if (eventType === "inference_done") {
+    const message = parsed.message as MessageResponse | undefined;
+    if (message?.tool_calls?.some(isPendingHitl)) return "waiting";
+  }
+  return activity;
+}
+
 export type GlobalSSEEvent =
   | { type: "title"; chatId: string; title: string }
   | { type: "entity_updated"; chatId: string; table: string; recordId: string; action: EntityAction; spaceId: string | null; fields: Record<string, unknown> }
   | { type: "task_update"; taskId: string; status: string; sourceChatId: string | null; title: string; chatId: string | null; resultSummary: string | null }
   | { type: "inference_count"; count: number }
-  | { type: "notification"; notification: Notification };
+  | { type: "notification"; notification: Notification }
+  | { type: "chat_activity"; chatId: string; activity: ChatActivity };
 
 
 interface ChatSubscriber {
@@ -181,6 +222,16 @@ export class SSEEventBus {
     }
   }
 
+  /// A re-established stream: per-chat subscribers restart, and everything
+  /// that caches stream-derived state re-reads it. Exposed so tests can drive
+  /// a reconnect without standing up a real stream.
+  handleReconnect() {
+    this.notifySubscribersReconnect();
+    for (const listener of this.reconnectListeners) {
+      try { listener(); } catch { /* ignore */ }
+    }
+  }
+
   private notifySubscribersReconnect() {
     for (const subs of this.chatSubscribers.values()) {
       for (const sub of subs) {
@@ -203,12 +254,7 @@ export class SSEEventBus {
     while (!signal.aborted) {
       try {
         const isReconnect = hadConnection;
-        await this.connectStream(signal, isReconnect ? () => {
-          this.notifySubscribersReconnect();
-          for (const listener of this.reconnectListeners) {
-            try { listener(); } catch { /* ignore */ }
-          }
-        } : undefined);
+        await this.connectStream(signal, isReconnect ? () => this.handleReconnect() : undefined);
         hadConnection = true;
         delay = 1000;
       } catch {
@@ -291,6 +337,16 @@ export class SSEEventBus {
   }
 
   routeEvent(eventType: string, chatId: string, parsed: Record<string, unknown>) {
+    // Lifecycle events are dispatched twice on purpose: `dispatchChat` below
+    // feeds the open conversation's store, and this feeds the global activity
+    // map that marks up every *other* chat in the nav. Per-chat events are
+    // buffered when nobody is subscribed, so without this second dispatch a
+    // background chat's activity is invisible until you open it.
+    const activity = activityForEvent(eventType, parsed);
+    if (activity && chatId) {
+      this.dispatchGlobal({ type: "chat_activity", chatId, activity });
+    }
+
     switch (eventType) {
       case "token":
         this.dispatchChat(chatId, { type: "token", content: parsed.content as string });

@@ -548,6 +548,19 @@ export function getArchivedChats() {
   return request<import("./types").ChatResponse[]>("/api/chats/archived");
 }
 
+/// Snapshot of what the agent is doing right now, across every chat the caller
+/// owns. Seeds the nav indicators at boot and after a stream drop, where the
+/// live SSE deltas alone would have nothing to say about a turn that started
+/// before this client connected.
+export interface ChatActivitySnapshot {
+  working: string[];
+  waiting: string[];
+}
+
+export function getChatActivity() {
+  return request<ChatActivitySnapshot>("/api/chats/activity");
+}
+
 export function getContacts() {
   return request<import("./types").Contact[]>("/api/contacts");
 }

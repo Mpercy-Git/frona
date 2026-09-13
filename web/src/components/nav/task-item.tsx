@@ -8,6 +8,8 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { TaskActions } from "./task-actions";
+import { useActivityOf } from "@/lib/chat-activity-context";
+import { ChatActivityIndicator } from "@/components/ui/activity-indicator";
 import { DeleteConfirmDialog } from "./delete-confirm-dialog";
 
 const statusColors: Record<string, string> = {
@@ -48,6 +50,7 @@ export function TaskItem({ task }: TaskItemProps) {
   const canCancel = isCron ? task.status !== "cancelled" : activeStatuses.has(task.status);
   const canDelete = terminalStatuses.has(task.status);
   const isActive = activeTaskId === task.id;
+  const activity = useActivityOf(task.chat_id);
 
   const cronNextRun = (() => {
     if (task.kind.type !== "Cron" || !task.kind.next_run_at) return null;
@@ -104,6 +107,18 @@ export function TaskItem({ task }: TaskItemProps) {
             <div className="text-[10px] text-text-tertiary truncate mt-0.5">Next: {cronNextRun}</div>
           )}
         </button>
+        {/* `status` says the task hasn't finished; this says a turn is live in
+            its chat right now — a queued or parked task looks identical
+            otherwise. */}
+        {activity !== "idle" && (
+          <span className="mr-1 flex items-center">
+            <ChatActivityIndicator
+              activity={activity}
+              workingLabel={`${task.title}: agent is working`}
+              waitingLabel={`${task.title}: waiting for your answer`}
+            />
+          </span>
+        )}
         <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0 ${colorClass}`}>
           {isCron ? "Recurring" : label}
         </span>

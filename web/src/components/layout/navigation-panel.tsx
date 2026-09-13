@@ -4,6 +4,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { usePathname, useSearchParams, useRouter } from "next/navigation";
 import { ChevronLeftIcon, Bars3Icon, XMarkIcon, FolderIcon } from "@heroicons/react/24/outline";
 import { useNavigation } from "@/lib/navigation-context";
+import { NavActivityDot } from "./nav-activity-dot";
 import { useMobile } from "@/lib/use-mobile";
 import { TabBar } from "./tab-bar";
 import { ChatsTab } from "../nav/chats-tab";
@@ -148,6 +149,11 @@ export function NavigationPanel() {
         className="group/nav relative flex h-full flex-col items-center border-r border-border bg-surface-nav w-6 shrink-0 cursor-pointer transition-colors hover:bg-surface-tertiary/30"
       >
         <Bars3Icon className="h-4 w-4 mt-3 text-text-tertiary" />
+        {/* The list is the only place activity is marked up, and it is hidden
+            here — so the rail carries the summary. */}
+        <div className="mt-2">
+          <NavActivityDot />
+        </div>
       </div>
     );
   }

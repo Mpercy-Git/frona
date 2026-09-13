@@ -9,6 +9,7 @@ import { useNavigation } from "@/lib/navigation-context";
 import { useMobile } from "@/lib/use-mobile";
 import { useHashNavigate } from "@/lib/hash-navigate";
 import { Logo } from "../logo";
+import { NavActivityDot } from "./nav-activity-dot";
 import { NotificationDropdown } from "./notification-dropdown";
 import { AgentDropdown } from "./agent-dropdown";
 import { AppDropdown } from "./app-dropdown";
@@ -83,9 +84,14 @@ export function TopBar() {
               setMobileNavOpen(!mobileNavOpen);
             }
           }}
-          className="flex items-center justify-center h-10 w-10 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition"
+          className="relative flex items-center justify-center h-10 w-10 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition"
         >
           <Bars3Icon className="h-6 w-6" />
+          {/* On mobile the whole chat list lives behind this button, so the
+              activity summary has to surface on the button itself. */}
+          <span className="absolute right-1.5 top-1.5">
+            <NavActivityDot />
+          </span>
         </button>
 
         <button

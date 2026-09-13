@@ -411,6 +411,46 @@ body {
   30% { transform: translateY(-6px); opacity: 1; }
 }
 
+/* "The agent is working here" ring — the animated halo on the last message's
+   avatar, and the same mark shrunk into navigation rows. Its own keyframes
+   rather than Tailwind's `animate-spin` so the reduced-motion variant below
+   can replace the rotation outright. */
+.working-ring {
+  animation: workingSpin 1.2s linear infinite;
+}
+
+.working-ring-trail {
+  opacity: 0.5;
+}
+
+.activity-dot-pulse {
+  animation: workingPulse 2s ease-in-out infinite;
+}
+
+@keyframes workingSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes workingPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Keep the indicator, drop the spin: one ring fading in and out still
+     distinguishes "working" from the static "waiting" badge. */
+  .working-ring {
+    animation: workingPulse 2s ease-in-out infinite;
+  }
+  .working-ring-trail {
+    display: none;
+  }
+  .activity-dot-pulse {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 @keyframes toolStatusSlideIn {
   from { opacity: 0; transform: translateY(100%); }
   to { opacity: 1; transform: translateY(0); }

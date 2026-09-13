@@ -399,3 +399,80 @@ describe("SSEEventBus: reconnect behavior", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 });
+
+describe("SSEEventBus: chat activity routing", () => {
+  let bus: SSEEventBus;
+  let seen: GlobalSSEEvent[];
+
+  beforeEach(() => {
+    bus = new SSEEventBus();
+    seen = [];
+    bus.onGlobal((e) => seen.push(e));
+  });
+
+  const activity = () =>
+    seen.filter((e) => e.type === "chat_activity") as Extract<
+      GlobalSSEEvent,
+      { type: "chat_activity" }
+    >[];
+
+  it("reports a started turn as working", () => {
+    bus.routeEvent("inference_start", "chat-1", {});
+
+    expect(activity()).toEqual([{ type: "chat_activity", chatId: "chat-1", activity: "working" }]);
+  });
+
+  it("treats streamed output as working, so a turn already in flight still lights up", () => {
+    // No inference_start — this client connected mid-turn.
+    bus.routeEvent("token", "chat-1", { content: "hi" });
+    bus.routeEvent("tool_call", "chat-1", { id: "t1", name: "shell", arguments: {} });
+
+    expect(activity().map((e) => e.activity)).toEqual(["working", "working"]);
+  });
+
+  it("reports the end of a turn as idle", () => {
+    for (const event of ["inference_done", "inference_cancelled", "inference_error"]) {
+      bus.routeEvent(event, "chat-1", { message: { id: "m1" } });
+    }
+
+    expect(activity().map((e) => e.activity)).toEqual(["idle", "idle", "idle"]);
+  });
+
+  it("reports a paused turn as waiting, and a resumed one as working again", () => {
+    bus.routeEvent("inference_paused", "chat-1", {
+      reason: { type: "Hitl" },
+      message: { id: "m1" },
+    });
+    bus.routeEvent("inference_resume", "chat-1", { message: { id: "m1" } });
+
+    expect(activity().map((e) => e.activity)).toEqual(["waiting", "working"]);
+  });
+
+  it("reads an inference_done that parks on fresh HITL prompts as waiting", () => {
+    // The loop can pause on a new set of prompts and signal it with done
+    // rather than paused; the payload is what distinguishes the two.
+    bus.routeEvent("inference_done", "chat-1", {
+      message: { id: "m1", tool_calls: [{ id: "t1", hitl: { status: "pending" } }] },
+    });
+
+    expect(activity().map((e) => e.activity)).toEqual(["waiting"]);
+  });
+
+  it("still delivers lifecycle events to the open chat's subscriber", async () => {
+    const controller = new AbortController();
+    const iter = bus.subscribe("chat-1", controller.signal)[Symbol.asyncIterator]();
+
+    bus.routeEvent("inference_start", "chat-1", {});
+
+    expect((await iter.next()).value).toEqual({ type: "inference_start" });
+    expect(activity()).toHaveLength(1);
+    controller.abort();
+  });
+
+  it("says nothing about activity for events that do not bear on it", () => {
+    bus.routeEvent("title", "chat-1", { title: "Renamed" });
+    bus.routeEvent("usage_recorded", "chat-1", { chat_id: "chat-1" });
+
+    expect(activity()).toHaveLength(0);
+  });
+});

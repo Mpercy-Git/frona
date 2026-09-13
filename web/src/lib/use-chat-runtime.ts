@@ -6,6 +6,7 @@ import type { CompleteAttachment, AppendMessage, AttachmentAdapter, PendingAttac
 import type { ExternalStoreAdapter } from "@assistant-ui/react";
 import { ChatStore, type RetryInfo } from "./chat-store";
 import { sseBus } from "./sse-event-bus";
+import { useChatActivityOptional, type ChatActivity } from "./chat-activity-context";
 import { sendMessage as apiSendMessage, cancelGeneration, api, uploadFile } from "./api-client";
 import type { CancelResult } from "./api-client";
 import { computeTimeMarkers, useTimezone } from "./format-time";
@@ -544,6 +545,28 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
       return { ...msg, _daySeparator: marker.daySeparator, _gap: marker.gap };
     });
   }, [storeSnapshot.messages, timeZone]);
+
+  // Publish this chat's state to the navigation indicators. The store knows
+  // before the stream does — sending marks the turn running immediately — and
+  // while this chat is mounted its own view overrides the stream-derived one.
+  // Derived as a primitive so the effect fires on real transitions rather than
+  // on every streamed token.
+  const localActivity: ChatActivity = storeSnapshot.isRunning
+    ? "working"
+    : storeSnapshot.pendingTools.length > 0
+      ? "waiting"
+      : "idle";
+  const chatActivity = useChatActivityOptional();
+  const setLocalActivity = chatActivity?.setLocalActivity;
+  const clearLocalActivity = chatActivity?.clearLocalActivity;
+  useEffect(() => {
+    if (!chatId || !setLocalActivity || !clearLocalActivity) return;
+    setLocalActivity(chatId, localActivity);
+    // Unmount drops the override rather than reporting idle: a chat you
+    // navigate away from usually carries on working, and the stream is
+    // authoritative for it again the moment this view is gone.
+    return () => clearLocalActivity(chatId);
+  }, [chatId, localActivity, setLocalActivity, clearLocalActivity]);
 
   const attachmentAdapter = useMemo(
     () => createFronaAttachmentAdapter((message) => toast.error(message)),

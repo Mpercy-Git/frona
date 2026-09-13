@@ -1584,6 +1584,37 @@ impl ChatService {
         Ok(message)
     }
 
+    /// Chats of `user_id` holding a message parked on a human — the snapshot
+    /// half of the "waiting on you" badge, so a chat that paused before this
+    /// client connected is still surfaced. `PauseReason` has one variant
+    /// (`Hitl`), so a Paused row always means a person has to answer.
+    pub async fn find_paused_chat_ids_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let query = "SELECT VALUE chat_id FROM message WHERE status = $status AND chat_id IN (SELECT VALUE meta::id(id) FROM chat WHERE user_id = $user_id)";
+        let mut result = self
+            .message_repo
+            .db()
+            .query(query)
+            .bind(("status", MessageStatus::Paused))
+            .bind(("user_id", user_id.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let chat_ids: Vec<String> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // One chat can hold several paused messages; the caller wants the chat
+        // listed once.
+        let mut seen = std::collections::HashSet::new();
+        Ok(chat_ids
+            .into_iter()
+            .filter(|id| seen.insert(id.clone()))
+            .collect())
+    }
+
     /// Strictly Executing - Paused messages are waiting on a human and MUST
     /// NOT be auto-resumed (doing so would feed the loop empty HITL answers).
     pub async fn find_executing_chat_messages(&self) -> Vec<Message> {
