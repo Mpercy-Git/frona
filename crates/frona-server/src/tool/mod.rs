@@ -54,6 +54,42 @@ pub fn str_arg<'a>(arguments: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
+/// Read a "one or many" argument: the singular key (a string) and the plural key (an
+/// array of strings), collapsed into one list in the order given, blanks dropped and
+/// duplicates collapsed.
+///
+/// A batchable tool takes both spellings, because the two are there for different
+/// reasons. The plural is the point: one call instead of N, which is the difference
+/// between reading five memory pages costing five tool turns and costing one. The
+/// singular stays because it is what the model already knows - every prompt example
+/// spells it, and an MCP client may have it hard-coded - and because a tool that
+/// answers a familiar argument with a validation error buys a retry, not a saving.
+/// Either key may carry either shape for the same reason.
+pub fn str_list_arg(arguments: &Value, singular: &str, plural: &str) -> Vec<String> {
+    fn push(out: &mut Vec<String>, candidate: &str) {
+        let trimmed = candidate.trim();
+        if !trimmed.is_empty() && !out.iter().any(|existing| existing == trimmed) {
+            out.push(trimmed.to_string());
+        }
+    }
+
+    let mut out = Vec::new();
+    for key in [singular, plural] {
+        match arguments.get(key) {
+            Some(Value::String(s)) => push(&mut out, s),
+            Some(Value::Array(arr)) => {
+                for element in arr {
+                    if let Some(s) = element.as_str() {
+                        push(&mut out, s);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Accepts unix timestamp or naive ISO 8601 (interpreted in `tz`). Rejects
 /// offset-bearing strings - the agent must use naive + `timezone` parameter.
 pub fn parse_run_at(
@@ -291,6 +327,10 @@ impl ToolOutput {
         self.hitl.take()
     }
 
+    pub fn take_images(&mut self) -> Vec<ImageData> {
+        std::mem::take(&mut self.images)
+    }
+
     pub fn task_event(&self) -> Option<&crate::inference::tool_call::TaskEvent> {
         self.task_event.as_ref()
     }
@@ -449,6 +489,43 @@ pub fn load_tool_definition_with_vars(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn str_list_arg_takes_singular_plural_or_both() {
+        assert_eq!(
+            str_list_arg(&json!({"path": "a.md"}), "path", "paths"),
+            vec!["a.md"],
+            "the singular spelling every prompt example uses still works"
+        );
+        assert_eq!(
+            str_list_arg(&json!({"paths": ["a.md", "b.md"]}), "path", "paths"),
+            vec!["a.md", "b.md"],
+        );
+        // A model that sends both, or sends a list under the singular key, gets what it
+        // asked for rather than a validation error and a retry.
+        assert_eq!(
+            str_list_arg(
+                &json!({"path": ["a.md"], "paths": ["b.md"]}),
+                "path",
+                "paths"
+            ),
+            vec!["a.md", "b.md"],
+        );
+    }
+
+    #[test]
+    fn str_list_arg_drops_blanks_duplicates_and_non_strings() {
+        assert_eq!(
+            str_list_arg(
+                &json!({"path": " a.md ", "paths": ["a.md", "", "   ", 7, "b.md"]}),
+                "path",
+                "paths"
+            ),
+            vec!["a.md", "b.md"],
+        );
+        assert!(str_list_arg(&json!({}), "path", "paths").is_empty());
+        assert!(str_list_arg(&json!({"path": ""}), "path", "paths").is_empty());
+    }
 
     #[test]
     fn build_parameters_json_passes_through_any_of() {

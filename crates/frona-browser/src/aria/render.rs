@@ -1,7 +1,7 @@
 use crate::aria::node::{AriaChecked, AriaChild, AriaNode, AriaPressed};
 use crate::aria::yaml::yaml_scalar;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RenderMode {
     Ai,
     Compact,

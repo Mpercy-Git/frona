@@ -120,7 +120,23 @@ pub enum LookupVerdict {
 /// now.`); this is the same idea for the foreground surface, which had none.
 #[derive(Clone, Default)]
 pub struct MemoryLookupLedger {
-    queries: Arc<std::sync::Mutex<Vec<String>>>,
+    inner: Arc<std::sync::Mutex<Ledger>>,
+}
+
+/// One run's lookups: the queries it has asked, the pages each of them returned, and
+/// the pages whose text has already been put in front of the agent.
+#[derive(Default)]
+struct Ledger {
+    queries: Vec<String>,
+    served: Vec<Served>,
+    text_sent: std::collections::BTreeSet<String>,
+}
+
+/// The pages one query returned, so a later query that returns nothing new can be told
+/// so even though its wording is new.
+struct Served {
+    query: String,
+    paths: std::collections::BTreeSet<String>,
 }
 
 impl MemoryLookupLedger {
@@ -128,22 +144,73 @@ impl MemoryLookupLedger {
     /// of lookups allowed in a run; `0` means unlimited.
     pub fn record(&self, query: &str, budget: usize) -> LookupVerdict {
         let normalized = Self::normalize(query);
-        let mut queries = match self.queries.lock() {
+        let mut ledger = self.lock();
+        if budget > 0 && ledger.queries.len() >= budget {
+            return LookupVerdict::Exhausted {
+                spent: ledger.queries.len(),
+            };
+        }
+        let seen = ledger.queries.iter().filter(|q| **q == normalized).count();
+        ledger.queries.push(normalized);
+        match seen {
+            0 => LookupVerdict::Fresh,
+            n => LookupVerdict::Repeat { nth: n + 1 },
+        }
+    }
+
+    /// Record which pages a query returned, and name an earlier query if this one
+    /// surfaced nothing the run has not already been handed.
+    ///
+    /// [`record`](Self::record) only catches a query retyped verbatim, and an agent
+    /// circling a subject almost never retypes one: "upstairs motion sensors", "first
+    /// floor motion sensors", "Home Assistant motion sensors" are three fresh queries
+    /// over the same handful of pages. Ranked retrieval is why - every rewording of one
+    /// subject ranks the same pages first - so the pages, not the wording, are what say
+    /// the search has stopped making progress.
+    pub fn record_hits(&self, query: &str, paths: &[String]) -> Option<String> {
+        let normalized = Self::normalize(query);
+        let mut ledger = self.lock();
+        let seen_before: std::collections::BTreeSet<&str> = ledger
+            .served
+            .iter()
+            .flat_map(|s| s.paths.iter().map(String::as_str))
+            .collect();
+        // Union, not any single earlier query: two searches that each returned half of
+        // these pages have between them left this one with nothing to add.
+        let nothing_new =
+            !paths.is_empty() && paths.iter().all(|p| seen_before.contains(p.as_str()));
+        let first_to_serve = nothing_new
+            .then(|| {
+                ledger
+                    .served
+                    .iter()
+                    .find(|s| paths.iter().any(|p| s.paths.contains(p)))
+                    .map(|s| s.query.clone())
+            })
+            .flatten();
+        ledger.served.push(Served {
+            query: normalized,
+            paths: paths.iter().cloned().collect(),
+        });
+        first_to_serve
+    }
+
+    /// Whether this page's text still has to be sent, marking it sent if so.
+    ///
+    /// A run that searches four ways around one subject is handed the same top pages
+    /// every time. Their text is already in the transcript by then, so sending it again
+    /// spends the context the inlining exists to save - and the agent can simply use
+    /// what it was given.
+    pub fn text_needs_sending(&self, page: &str) -> bool {
+        self.lock().text_sent.insert(page.to_string())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Ledger> {
+        match self.inner.lock() {
             Ok(guard) => guard,
             // A poisoned lock means some other lookup panicked mid-record. Losing
             // loop detection is not worth failing a turn over.
             Err(poisoned) => poisoned.into_inner(),
-        };
-        if budget > 0 && queries.len() >= budget {
-            return LookupVerdict::Exhausted {
-                spent: queries.len(),
-            };
-        }
-        let seen = queries.iter().filter(|q| **q == normalized).count();
-        queries.push(normalized);
-        match seen {
-            0 => LookupVerdict::Fresh,
-            n => LookupVerdict::Repeat { nth: n + 1 },
         }
     }
 
@@ -180,6 +247,67 @@ mod tests {
             ledger.record("redis port", 0),
             LookupVerdict::Fresh,
             "a different question is not a repeat"
+        );
+    }
+
+    /// The loop that actually happens: not one query retyped, but one subject reworded
+    /// until the turn runs out of budget, every rewording ranking the same pages first.
+    #[test]
+    fn ledger_reports_a_reworded_query_that_returns_pages_already_served() {
+        let ledger = MemoryLookupLedger::default();
+        let upstairs = ["devices/upstairs-motion".to_string()];
+        let both = [
+            "devices/upstairs-motion".to_string(),
+            "devices/landing-motion".to_string(),
+        ];
+        assert_eq!(
+            ledger.record_hits("upstairs motion sensors", &both),
+            None,
+            "the first search of a run has nothing to repeat"
+        );
+        assert_eq!(
+            ledger
+                .record_hits("home assistant motion sensors upstairs", &upstairs)
+                .as_deref(),
+            Some("upstairs motion sensors"),
+            "a rewording that surfaces nothing new names the search that served it"
+        );
+        assert_eq!(
+            ledger.record_hits(
+                "landing lights",
+                &["devices/landing-light".to_string(), both[1].clone()]
+            ),
+            None,
+            "one page the run has not seen makes the search worth its turn"
+        );
+    }
+
+    /// Half from one search, half from another: between them the run has it all, and a
+    /// third search that returns only those pages is still a lap of the same loop.
+    #[test]
+    fn ledger_pools_pages_across_earlier_searches() {
+        let ledger = MemoryLookupLedger::default();
+        ledger.record_hits("upstairs sensors", &["devices/a".to_string()]);
+        ledger.record_hits("first floor sensors", &["devices/b".to_string()]);
+        assert_eq!(
+            ledger
+                .record_hits(
+                    "motion sensors",
+                    &["devices/a".to_string(), "devices/b".to_string()]
+                )
+                .as_deref(),
+            Some("upstairs sensors"),
+        );
+    }
+
+    #[test]
+    fn a_search_that_found_nothing_is_not_a_repeat_of_everything() {
+        let ledger = MemoryLookupLedger::default();
+        ledger.record_hits("upstairs sensors", &["devices/a".to_string()]);
+        assert_eq!(
+            ledger.record_hits("quantum mechanics", &[]),
+            None,
+            "an empty result has its own wording for the miss"
         );
     }
 

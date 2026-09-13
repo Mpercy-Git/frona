@@ -129,6 +129,14 @@ Every agent shares one memory: user-scoped facts (Basic) or a user-scoped knowle
 - **The agent can find and add skills itself** — upstream, an agent only sees the skills already installed, so a task nobody installed a skill for looks like a task no skill exists for. `search_skills` reads the registry (keyword search, or a repo listing with descriptions) and `add_skill` proposes an install that pauses for the user's approval — the same consent shape as the vault: the agent can ask, but nothing is written without a yes. Approved skills land on this agent or on every agent the user owns, and are usable on the very next turn
 - **Website citations in task completion summaries** — sources from `web_search`/`web_fetch` are preserved structurally rather than surviving only if the model happens to retype them
 
+### ⚡ Fewer tool calls per task (fork-only)
+
+The same work, in a fraction of the round-trips — each one is a full re-send of the conversation, so the count is what the user waits on and pays for.
+
+- **Browser actions answer with the page they changed.** Upstream, `browser_click` returns the word `clicked` and `browser_go_back` returns nothing at all, so the agent is blind until it spends a second call on `browser_snapshot` — every action, all task long. Actions now carry the resulting page themselves: a compact ARIA diff for in-page actions (a click usually moves a handful of lines), the full compact tree for navigations and tab switches, bounded and best-effort so a failed snapshot never turns a successful click into an error
+- **One call, many items.** `read`, `memory_search`, `memory_remember`, `memory_cite`, `store_user_memory` and `store_agent_memory` all take a list (`read(paths=[…])`, `memory_search(queries=[…])`, …). Looking a connection string up field by field is still the right instinct — and still charges one lookup per field against the loop budget — it just no longer costs a tool turn per field. The singular spelling keeps working
+- **The prompts stopped asking for the opposite.** The memory guidance said "treat every field as a separate lookup. Don't batch"; it now distinguishes separate *lookups* (right) from separate *calls* (waste), and a **Tool Economy** section in the tool guide states the rule once: batch, emit independent calls together, don't verify what the tool already confirmed, don't re-fetch what's already in context
+
 ### 🛡️ Security & correctness hardening (fork-only fixes)
 
 A dedicated review pass fixed issues not present upstream, including:

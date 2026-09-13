@@ -20,17 +20,19 @@ impl BrowserConnection {
         let interactive_count = ax.refs.len();
         self.store_snapshot_refs(ax.refs);
 
-        let output = if incremental && let Some(prev) = self.take_last_snapshot() {
-            diff_snapshots(&prev, &rendered)
-        } else {
-            rendered.clone()
+        let previous = incremental.then(|| self.last_snapshot_in(mode)).flatten();
+        let diffed = previous.is_some();
+        let output = match previous {
+            Some(prev) => diff_snapshots(&prev, &rendered),
+            None => rendered.clone(),
         };
 
-        self.store_last_snapshot(rendered);
+        self.store_last_snapshot(mode, rendered);
 
         Ok(Snapshot {
             tree: output,
             interactive_count,
+            diffed,
         })
     }
 }

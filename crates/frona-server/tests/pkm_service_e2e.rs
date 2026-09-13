@@ -398,6 +398,24 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
         1,
         "memory_remember wrote a short memory"
     );
+    // Several facts from one turn ride in one call - stored separately, as if the
+    // agent had spent a tool turn on each.
+    remember
+        .execute(
+            "memory_remember",
+            json!({"contents": ["the port is 5433", "the host is db.local"]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.list_short_memory("test-user", None)
+            .await
+            .unwrap()
+            .len(),
+        3,
+        "a batched memory_remember writes one row per statement"
+    );
 
     let scope = ConsolidationScope {
         user_id: "test-user".into(),
@@ -450,8 +468,15 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
         .unwrap();
     let text = out.text_content();
     assert!(
-        text.contains("read(<path>)"),
-        "header tells the agent to read the path verbatim:\n{text}"
+        text.contains("read(paths=[…])"),
+        "header tells the agent it can open the hits in one call:\n{text}"
+    );
+    // The hit carries the page's prose, so the question is answerable from the search
+    // result alone - the `read` per hit was the biggest multiplier on a knowledge
+    // question's tool count, and the text was in hand all along.
+    assert!(
+        text.contains(&format!("<page path=\"{pg_abs}\">")),
+        "the page's own text comes back with the hit:\n{text}"
     );
     assert!(
         text.contains(&pg_abs),
@@ -489,19 +514,56 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
         "no body Playbooks section:\n{file}"
     );
 
-    let cite = tools.iter().find(|t| t.name() == "memory_cite").unwrap();
-    cite.execute("memory_cite", json!({"path": pg_abs}), &ctx)
+    // Several queries in one call: each is its own lookup, and each answer arrives
+    // under its own heading - the field-by-field config lookup the memory prompt asks
+    // for, at one tool turn instead of one per field.
+    let batched = search
+        .execute(
+            "memory_search",
+            json!({"queries": ["postgres restart", "postgres"]}),
+            &ctx,
+        )
         .await
         .unwrap();
-    assert_eq!(
-        repo.entity_by_path("test-user", "services/postgres")
-            .await
-            .unwrap()
-            .unwrap()
-            .use_count,
-        1,
-        "memory_cite bumped use_count via the absolute .md path"
+    let batched = batched.text_content();
+    assert!(
+        batched.contains("### postgres restart") && batched.contains("### postgres\n"),
+        "each query answers under its own heading:\n{batched}"
     );
+    assert!(
+        batched.contains(&pb_abs) && batched.contains(&pg_abs),
+        "both queries' hits come back from the one call:\n{batched}"
+    );
+    // Both queries rank the same pages first, and the run has already been handed them.
+    // Saying so is what stops the "search, reword, search again" lap: the wording is new
+    // every time, the pages never are.
+    assert!(
+        batched.contains("same pages your earlier search"),
+        "a query that surfaces nothing new says so:\n{batched}"
+    );
+    assert!(
+        batched.contains("already sent this turn"),
+        "and text this turn already sent is not sent twice:\n{batched}"
+    );
+
+    let cite = tools.iter().find(|t| t.name() == "memory_cite").unwrap();
+    cite.execute("memory_cite", json!({"paths": [&pg_abs, &pb_abs]}), &ctx)
+        .await
+        .unwrap();
+    for (path, label) in [
+        ("services/postgres", "concept page"),
+        ("procedures/restart-postgres", "playbook"),
+    ] {
+        assert_eq!(
+            repo.entity_by_path("test-user", path)
+                .await
+                .unwrap()
+                .unwrap()
+                .use_count,
+            1,
+            "one memory_cite call bumped the {label}'s use_count via its absolute .md path"
+        );
+    }
 }
 
 #[tokio::test]

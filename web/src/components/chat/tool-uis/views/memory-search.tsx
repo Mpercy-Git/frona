@@ -1,6 +1,7 @@
 "use client";
 
 import { DocumentTextIcon } from "@heroicons/react/24/outline";
+import { strListArg } from "./args";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -64,8 +65,9 @@ export const MemorySearchView: ToolView = ({
   isExpanded,
   onToggle,
 }) => {
-  const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
-  const query = typeof a.query === "string" ? a.query : "";
+  // A batched search carries several queries; each answers under its own heading in
+  // the result, which the parser below skips over, so the hits still list as one set.
+  const query = strListArg(args, "query", "queries").join(" · ");
   const resultText =
     typeof result === "string"
       ? result
