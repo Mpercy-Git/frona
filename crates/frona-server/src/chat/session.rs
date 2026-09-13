@@ -197,6 +197,14 @@ impl ChatSessionContext {
         let max_output = model_group
             .max_tokens
             .unwrap_or(model_group.inference.default_max_tokens) as usize;
+        // Fetched before compaction, not after: the tool calls are most of what
+        // the builder will replay, so the compactor has to weigh them when it
+        // decides whether this conversation still fits.
+        let tool_calls = harness
+            .chat_service
+            .get_tool_calls(&chat.id)
+            .await
+            .unwrap_or_default();
         let loaded = harness
             .chat_service
             .compactor()
@@ -205,6 +213,7 @@ impl ChatSessionContext {
                 &chat.id,
                 &chat.agent_id,
                 &system_prompt,
+                &tool_calls,
                 model_group.context_window,
                 max_output,
             )
@@ -218,12 +227,6 @@ impl ChatSessionContext {
             .rev()
             .find(|m| matches!(m.role, MessageRole::User))
             .cloned();
-        let tool_calls = harness
-            .chat_service
-            .get_tool_calls(&chat.id)
-            .await
-            .unwrap_or_default();
-
         // Apply two slash-command transformations to the message list the
         // builder will see:
         //   1. For user messages with `command: Some(Skill { name, prompt })`,
