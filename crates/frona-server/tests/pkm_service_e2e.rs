@@ -471,6 +471,13 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
         text.contains("read(paths=[…])"),
         "header tells the agent it can open the hits in one call:\n{text}"
     );
+    // The hit carries the page's prose, so the question is answerable from the search
+    // result alone - the `read` per hit was the biggest multiplier on a knowledge
+    // question's tool count, and the text was in hand all along.
+    assert!(
+        text.contains(&format!("<page path=\"{pg_abs}\">")),
+        "the page's own text comes back with the hit:\n{text}"
+    );
     assert!(
         text.contains(&pg_abs),
         "lists the concept page's absolute .md path:\n{text}"
@@ -526,6 +533,17 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
     assert!(
         batched.contains(&pb_abs) && batched.contains(&pg_abs),
         "both queries' hits come back from the one call:\n{batched}"
+    );
+    // Both queries rank the same pages first, and the run has already been handed them.
+    // Saying so is what stops the "search, reword, search again" lap: the wording is new
+    // every time, the pages never are.
+    assert!(
+        batched.contains("same pages your earlier search"),
+        "a query that surfaces nothing new says so:\n{batched}"
+    );
+    assert!(
+        batched.contains("already sent this turn"),
+        "and text this turn already sent is not sent twice:\n{batched}"
     );
 
     let cite = tools.iter().find(|t| t.name() == "memory_cite").unwrap();
