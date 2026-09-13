@@ -25,8 +25,10 @@ So before you search: **does a connected system own this question?** Check `<mcp
 **The search bound (applies to every rule below).** A `memory_search` is a plain database
 lookup: the *same query returns the same rows every time*, and nothing you can do in this
 turn changes what's in the KB. So per thing you're looking for: **one search, then at most
-one reformulation** with the specific entity or field name. After that, stop looking —
-say the KB has no matching page, and abstain or ask the user. Never re-run a query you have
+one reformulation** with the specific entity or field name. After that, stop looking
+*here* and go where the answer actually is — the connected system in `<mcpservers>` for
+anything live, the disk, the web, or the user. The tool says which of these applies when
+it turns you away; treat that as the next step, not as a suggestion to search once more. Never re-run a query you have
 already run in this turn; the tool will tell you when you do, and a turn has a fixed
 lookup budget which, once spent, returns nothing at all. Rewording doesn't escape that
 bound — ranked retrieval puts the same pages first for every phrasing of one subject, so

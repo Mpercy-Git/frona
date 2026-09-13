@@ -144,20 +144,35 @@ impl ChatSessionContext {
         let agent_summaries =
             crate::tool::registry::build_agent_summaries(harness, user_id, &chat.agent_id).await;
 
+        // Resolved whatever the bridge setting is: the prompt section below is
+        // bridge-only, but every run wants to know which systems it can reach - a
+        // tool that turns the agent away from memory has to name somewhere to go.
+        let allowed_handles: std::collections::HashSet<String> = allowed_tool_groups
+            .iter()
+            .filter_map(|id| id.strip_prefix("mcp:").map(|handle| handle.to_string()))
+            .collect();
+        let running_servers: Vec<crate::tool::mcp::models::McpServer> =
+            if allowed_handles.is_empty() {
+                Vec::new()
+            } else {
+                harness
+                    .mcp_service
+                    .list_for_user(user_id)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|s| s.status == crate::tool::mcp::models::McpServerStatus::Running)
+                    .filter(|s| allowed_handles.contains(s.handle.as_str()))
+                    .collect()
+            };
+        let mcp_handles: Vec<String> = running_servers
+            .iter()
+            .map(|s| s.handle.to_string())
+            .collect();
+
         let mcp_servers: Vec<(String, String)> = if harness.config.mcp.bridge_mode {
-            let servers = harness
-                .mcp_service
-                .list_for_user(user_id)
-                .await
-                .unwrap_or_default();
-            let allowed_handles: std::collections::HashSet<String> = allowed_tool_groups
-                .iter()
-                .filter_map(|id| id.strip_prefix("mcp:").map(|handle| handle.to_string()))
-                .collect();
-            servers
+            running_servers
                 .into_iter()
-                .filter(|s| s.status == crate::tool::mcp::models::McpServerStatus::Running)
-                .filter(|s| allowed_handles.contains(s.handle.as_str()))
                 .map(|s| {
                     let desc = s.description.unwrap_or_else(|| s.display_name.clone());
                     // The cache is populated when the server starts, so the tools
@@ -386,7 +401,8 @@ impl ChatSessionContext {
             cancel_token.clone(),
         )
         .with_agent_owner_handle(agent_owner_handle)
-        .with_delegated_credential_owner(delegated_credential_owner.clone());
+        .with_delegated_credential_owner(delegated_credential_owner.clone())
+        .with_mcp_servers(mcp_handles);
         tool_ctx.file_paths = file_paths;
         tool_ctx.task = task;
 

@@ -188,9 +188,9 @@ impl SearchTool {
             );
             return Ok(format!(
                 "Memory-lookup budget for this turn is spent ({spent} searches). \
-                 Another search will not return anything new. Answer from what you \
-                 have already read, or tell the user which value you could not find \
-                 and ask them for it."
+                 Another search will not return anything new - the knowledge base has \
+                 not changed since the first one.\n{}",
+                elsewhere(&ctx.mcp_servers)
             ));
         }
         let hits = self.repo.search_entities(&ctx.user.id, query).await?;
@@ -199,19 +199,19 @@ impl SearchTool {
                 // Repeating a query that found nothing is the cheapest loop to fall
                 // into, so the second identical miss closes the door rather than
                 // inviting another reformulation.
-                LookupVerdict::Repeat { .. } => {
+                LookupVerdict::Repeat { .. } => format!(
                     "No pages matched - the same answer as the last time you ran this \
-                     exact query in this turn. The KB does not model this. Stop \
-                     searching for it: ask the user, or tell them it isn't in your \
-                     knowledge base."
-                }
-                _ => {
+                     exact query in this turn. The KB does not model this, and no \
+                     wording changes that.\n{}",
+                    elsewhere(&ctx.mcp_servers)
+                ),
+                _ => format!(
                     "No pages matched. The KB doesn't model this yet - reformulate once \
                      with the specific name if another query could plausibly find it; \
-                     otherwise ask the user instead of searching again."
-                }
-            }
-            .to_string());
+                     otherwise the answer is somewhere else.\n{}",
+                    elsewhere(&ctx.mcp_servers)
+                ),
+            });
         }
         let mut out = String::new();
         if let LookupVerdict::Repeat { nth } = verdict {
@@ -230,9 +230,10 @@ impl SearchTool {
             out.push_str(&format!(
                 "These are the same pages your earlier search ({earlier:?}) already \
                  returned - a rewording finds them again because they rank first for \
-                 the whole subject. Nothing here is new. Answer from what you have, or \
-                 tell the user the KB doesn't hold it; searching for it a third way \
-                 will return these pages a third time.\n\n"
+                 the whole subject. Nothing here is new, and a third wording returns \
+                 them a third time. If these pages don't answer it, the answer isn't \
+                 in the KB.\n{}\n",
+                elsewhere(&ctx.mcp_servers)
             ));
         }
         // Emit the ABSOLUTE `.md` file path so the agent can `read(<path>)`
@@ -303,6 +304,45 @@ impl SearchTool {
 /// it. A knowledge question is usually answered by the top page or two; the budget is
 /// what stops a batch of five queries from answering with a small library.
 const INLINE_TOTAL_CHARS: usize = 6000;
+
+/// At most this many server handles are named before the list is summarised - enough
+/// to point somewhere without turning a refusal into an inventory.
+const ELSEWHERE_SERVERS_NAMED: usize = 8;
+
+/// Where the answer is, when it isn't in the knowledge base.
+///
+/// "Stop searching" on its own is an instruction an agent can only obey by giving up,
+/// so it doesn't: it rewords the query, or moves the same question to `grep`, and the
+/// turn ends having looked in the one place that was never going to have the answer.
+/// Every refusal here names somewhere to go instead, starting with the systems this run
+/// can actually reach - which is where a question about live state was always going to
+/// be answered.
+fn elsewhere(servers: &[String]) -> String {
+    let mut out = String::from("\nWhere the answer lives instead:\n");
+    if !servers.is_empty() {
+        let named = servers.len().min(ELSEWHERE_SERVERS_NAMED);
+        let mut list = servers[..named].join(", ");
+        if servers.len() > named {
+            list.push_str(&format!(
+                " (+{} more in <mcpservers>)",
+                servers.len() - named
+            ));
+        }
+        out.push_str(&format!(
+            "- What a connected system knows right now - state, readings, messages, \
+             entries, what is actually configured there: call that server. You have \
+             {list}. Memory holds notes ABOUT these systems; it never holds their \
+             current state, so no search here can answer that question.\n"
+        ));
+    }
+    out.push_str(
+        "- Something on disk: `read`, `grep`, or the shell.\n\
+         - Something on the open web: `web_search`.\n\
+         - Something only the user knows: ask them. That is a better answer than \
+         another search, and a much better one than a plausible guess.\n",
+    );
+    out
+}
 
 /// How much of that budget any single page may take, so one long page can't crowd out
 /// the text of every hit under it.
@@ -428,6 +468,42 @@ impl CitePageTool {
              Citing only biases future ranking, so nothing is lost: answer from what \
              you already read. Do NOT search again to find a citable path."
         ))
+    }
+}
+
+#[cfg(test)]
+mod elsewhere_tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_names_the_servers_this_run_can_reach() {
+        let out = elsewhere(&["homeassistant".into(), "gmail".into()]);
+        assert!(out.contains("homeassistant, gmail"), "{out}");
+        assert!(
+            out.contains("never holds their current state"),
+            "and says why memory was the wrong place to ask:\n{out}"
+        );
+    }
+
+    /// With nothing connected there is still somewhere to go - the refusal must not
+    /// collapse back to "stop", which is the advice that produced the rewording loop.
+    #[test]
+    fn with_no_servers_it_still_names_the_other_surfaces() {
+        let out = elsewhere(&[]);
+        assert!(!out.contains("connected system"), "{out}");
+        for expected in ["`grep`", "`web_search`", "ask them"] {
+            assert!(out.contains(expected), "missing {expected}:\n{out}");
+        }
+    }
+
+    #[test]
+    fn a_long_server_list_is_summarised_rather_than_recited() {
+        let servers: Vec<String> = (0..ELSEWHERE_SERVERS_NAMED + 3)
+            .map(|i| format!("srv{i}"))
+            .collect();
+        let out = elsewhere(&servers);
+        assert!(out.contains("(+3 more in <mcpservers>)"), "{out}");
+        assert!(!out.contains("srv10"), "{out}");
     }
 }
 
