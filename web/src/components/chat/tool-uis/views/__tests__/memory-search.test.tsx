@@ -87,4 +87,17 @@ describe("MemorySearchView", () => {
     );
     expect(screen.getByRole("button")).toBeDisabled();
   });
+
+  it("lists every query of a batched search in the subtitle", () => {
+    render(
+      <MemorySearchView
+        {...mkProps({
+          toolName: "memory_search",
+          args: { queries: ["postgres host", "postgres port"] },
+          result: RESULT,
+        })}
+      />,
+    );
+    expect(screen.getByText(/postgres host · postgres port/)).toBeInTheDocument();
+  });
 });

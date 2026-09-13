@@ -10,13 +10,17 @@ use tokio::task::JoinHandle;
 
 use crate::Result;
 use crate::aria::axtree::AxRef;
+use crate::aria::render::RenderMode;
 use crate::error::Error;
 
 struct Handle {
     browser: Browser,
     handler_task: Mutex<Option<JoinHandle<()>>>,
     snapshot_refs: Mutex<Option<Vec<AxRef>>>,
-    last_snapshot: Mutex<Option<String>>,
+    /// The last rendered tree AND the mode it was rendered in: a diff is only
+    /// meaningful between two trees rendered the same way, and the two modes now
+    /// interleave (an action renders compact, an explicit `browser_snapshot` may not).
+    last_snapshot: Mutex<Option<(RenderMode, String)>>,
     alive: AtomicBool,
     /// Set shorter than Browserless's per-job timeout so we self-evict before
     /// Browserless force-closes the WS mid-op.
@@ -147,13 +151,21 @@ impl BrowserConnection {
             .ok_or(Error::UnknownSnapshotIndex(index))
     }
 
-    pub(crate) fn take_last_snapshot(&self) -> Option<String> {
-        self.inner.last_snapshot.lock().ok().and_then(|g| g.clone())
+    /// The previous tree, if it was rendered in `mode` - a tree rendered the other way
+    /// would diff as a wholesale rewrite, which is worse than no diff at all.
+    pub(crate) fn last_snapshot_in(&self, mode: RenderMode) -> Option<String> {
+        self.inner
+            .last_snapshot
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .filter(|(prev_mode, _)| *prev_mode == mode)
+            .map(|(_, rendered)| rendered)
     }
 
-    pub(crate) fn store_last_snapshot(&self, rendered: String) {
+    pub(crate) fn store_last_snapshot(&self, mode: RenderMode, rendered: String) {
         if let Ok(mut guard) = self.inner.last_snapshot.lock() {
-            *guard = Some(rendered);
+            *guard = Some((mode, rendered));
         }
     }
 

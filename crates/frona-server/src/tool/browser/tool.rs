@@ -31,6 +31,96 @@ fn default_true() -> bool {
     true
 }
 
+/// How much post-action page state one action result may carry before it is cut off.
+/// A compact ARIA diff after a click is usually a few lines; a full compact tree for a
+/// dense page is the thing worth bounding.
+const PAGE_STATE_MAX_CHARS: usize = 8000;
+
+/// How long to let the page settle before reading it back. A click that starts a
+/// navigation or opens a menu returns before the DOM catches up, and the agent's own
+/// follow-up `browser_snapshot` used to provide this delay incidentally — a whole model
+/// round-trip of it. A fraction of a second buys most of that back for a fraction of
+/// the cost; anything slower is what `browser_wait` is for.
+const PAGE_SETTLE: Duration = Duration::from_millis(400);
+
+/// What the agent should see of the page an action just changed.
+#[derive(Clone, Copy)]
+enum PageState {
+    /// A unified diff against the page as it was before the action — a click or a
+    /// keystroke usually moves a handful of lines, and the diff is what the agent
+    /// would have gone looking for next.
+    Diff,
+    /// The whole compact tree, for actions that replace the page outright
+    /// (navigation, tab switches) where a diff would be the entire page anyway.
+    Full,
+}
+
+/// Render the page as it stands after an action.
+///
+/// Every state-changing browser action used to answer with a bare acknowledgement
+/// ("clicked"), which said nothing about the page the agent had just changed — so each
+/// one was reliably followed by a `browser_snapshot` call, and a browser task cost
+/// twice the tool turns it needed. The action now carries that state itself.
+///
+/// Best-effort on purpose: the action already happened, so a snapshot that fails must
+/// not turn a successful click into an error. The agent still has `browser_snapshot`.
+async fn page_state_after(
+    mgr: &BrowserSessionManager,
+    session_key: &crate::core::Handle,
+    provider: &str,
+    mode: PageState,
+) -> String {
+    tokio::time::sleep(PAGE_SETTLE).await;
+    let incremental = matches!(mode, PageState::Diff);
+    let snap = run_with_reconnect(mgr, session_key, provider, |c| async move {
+        c.snapshot(incremental, true).await
+    })
+    .await;
+    let snap = match snap {
+        Ok(snap) => snap,
+        Err(e) => {
+            tracing::warn!(error = %e, "browser: could not snapshot the page after an action");
+            return String::new();
+        }
+    };
+
+    render_page_state(snap.diffed, snap.tree, snap.interactive_count)
+}
+
+/// The suffix an action's result carries. Split out from the snapshot call so the
+/// bounding and the "you already have this" wording are testable without a browser.
+///
+/// `diffed` comes from the snapshot rather than from the requested mode: a diff was
+/// asked for, but the first look at a page has nothing to diff against and answers with
+/// the whole tree. Labelling that as "changes" would read as "everything just changed".
+fn render_page_state(diffed: bool, tree: String, interactive_count: usize) -> String {
+    let label = if diffed {
+        "page changes (compact ARIA diff)"
+    } else {
+        "page now (compact ARIA)"
+    };
+    let mut tree = if tree.trim().is_empty() {
+        if diffed {
+            "(nothing changed on the page)".to_string()
+        } else {
+            "(no interactive content on the page)".to_string()
+        }
+    } else {
+        tree
+    };
+    if let Some(cut) = tree
+        .char_indices()
+        .nth(PAGE_STATE_MAX_CHARS)
+        .map(|(i, _)| i)
+    {
+        tree.truncate(cut);
+        tree.push_str("\n[truncated — call browser_snapshot for the full tree]");
+    }
+    format!(
+        "\n\n--- {label}, {interactive_count} interactive elements. This is the post-action state: don't call browser_snapshot just to see it. ---\n{tree}"
+    )
+}
+
 fn element_target(
     selector: Option<&str>,
     index: Option<usize>,
@@ -58,7 +148,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_navigate".to_string(),
-                description: "Navigate to a URL in the browser.".to_string(),
+                description: "Navigate to a URL in the browser. Returns the loaded page as a compact ARIA tree with indexed interactive elements — no follow-up browser_snapshot needed.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -71,13 +161,13 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_go_back".to_string(),
-                description: "Navigate back in browser history.".to_string(),
+                description: "Navigate back in browser history. Returns the resulting page as a compact ARIA tree.".to_string(),
                 parameters: serde_json::json!({"type":"object","properties":{}}),
             },
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_go_forward".to_string(),
-                description: "Navigate forward in browser history.".to_string(),
+                description: "Navigate forward in browser history. Returns the resulting page as a compact ARIA tree.".to_string(),
                 parameters: serde_json::json!({"type":"object","properties":{}}),
             },
             ToolDefinition {
@@ -119,7 +209,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_snapshot".to_string(),
-                description: "Get an ARIA snapshot of the page with indexed interactive elements.".to_string(),
+                description: "Get an ARIA snapshot of the page with indexed interactive elements. Actions already return the page they changed, so reach for this only when you need the FULL tree (e.g. the diff an action returned was truncated, or the page changed by itself).".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -157,7 +247,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_click".to_string(),
-                description: "Click on a DOM element by CSS selector or snapshot index.".to_string(),
+                description: "Click on a DOM element by CSS selector or snapshot index. Returns what the click changed on the page — don't follow it with browser_snapshot.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -169,7 +259,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_hover".to_string(),
-                description: "Hover over a DOM element by CSS selector or snapshot index.".to_string(),
+                description: "Hover over a DOM element by CSS selector or snapshot index. Returns what the hover changed on the page.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -181,7 +271,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_select".to_string(),
-                description: "Select an option in a dropdown element.".to_string(),
+                description: "Select an option in a dropdown element. Returns what the selection changed on the page.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -195,7 +285,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_input_fill".to_string(),
-                description: "Type text into an input element by CSS selector or snapshot index.".to_string(),
+                description: "Type text into an input element by CSS selector or snapshot index. Returns what typing changed on the page — don't follow it with browser_snapshot.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -210,7 +300,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_press_key".to_string(),
-                description: "Press a keyboard key (e.g. Enter, Tab, Escape, ArrowDown).".to_string(),
+                description: "Press a keyboard key (e.g. Enter, Tab, Escape, ArrowDown). Returns what the keypress changed on the page.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {"key": {"type":"string","description":"Name of the key to press"}},
@@ -220,7 +310,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_scroll".to_string(),
-                description: "Scroll the page by a pixel amount. Positive = down, negative = up. Omit to scroll to bottom.".to_string(),
+                description: "Scroll the page by a pixel amount. Positive = down, negative = up. Omit to scroll to bottom. Returns what scrolling brought into the tree.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {"amount": {"type":"integer","description":"Pixels to scroll (positive=down, negative=up). Omit to scroll to bottom."}}
@@ -229,7 +319,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_wait".to_string(),
-                description: "Wait for a DOM element matching a CSS selector to appear.".to_string(),
+                description: "Wait for a DOM element matching a CSS selector to appear. Returns what changed on the page while waiting.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -242,7 +332,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_new_tab".to_string(),
-                description: "Open a new tab and navigate to the specified URL.".to_string(),
+                description: "Open a new tab and navigate to the specified URL. Returns the new tab's page as a compact ARIA tree.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {"url": {"type":"string","description":"URL to open in the new tab"}},
@@ -258,7 +348,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_switch_tab".to_string(),
-                description: "Switch to a specific tab by index.".to_string(),
+                description: "Switch to a specific tab by index. Returns that tab's page as a compact ARIA tree.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {"index": {"type":"integer","minimum":0,"description":"Tab index to switch to (0-based)"}},
@@ -268,7 +358,7 @@ impl AgentTool for BrowserTool {
             ToolDefinition {
                 provider_id: "browser".to_string(),
                 id: "browser_close_tab".to_string(),
-                description: "Close the current active tab.".to_string(),
+                description: "Close the current active tab. Returns the page that becomes active as a compact ARIA tree.".to_string(),
                 parameters: serde_json::json!({"type":"object","properties":{}}),
             },
         ]
@@ -306,7 +396,11 @@ impl AgentTool for BrowserTool {
                     c.navigate(url, wait).await
                 })
                 .await?;
-                Ok(ToolOutput::text(serde_json::to_string(&info)?))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Full).await;
+                Ok(ToolOutput::text(format!(
+                    "{}{state}",
+                    serde_json::to_string(&info)?
+                )))
             }
             "browser_go_back" => {
                 run_with_reconnect(
@@ -316,14 +410,16 @@ impl AgentTool for BrowserTool {
                     |c| async move { c.go_back().await },
                 )
                 .await?;
-                Ok(ToolOutput::text(String::new()))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Full).await;
+                Ok(ToolOutput::text(format!("navigated back{state}")))
             }
             "browser_go_forward" => {
                 run_with_reconnect(mgr, session_key, &provider, |c| async move {
                     c.go_forward().await
                 })
                 .await?;
-                Ok(ToolOutput::text(String::new()))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Full).await;
+                Ok(ToolOutput::text(format!("navigated forward{state}")))
             }
             "browser_close" => {
                 mgr.close_session(session_key, &provider).await?;
@@ -451,7 +547,8 @@ impl AgentTool for BrowserTool {
                     c.click(target).await
                 })
                 .await?;
-                Ok(ToolOutput::text("clicked"))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Diff).await;
+                Ok(ToolOutput::text(format!("clicked{state}")))
             }
             "browser_hover" => {
                 #[derive(Deserialize)]
@@ -465,7 +562,8 @@ impl AgentTool for BrowserTool {
                     c.hover(target).await
                 })
                 .await?;
-                Ok(ToolOutput::text("hovered"))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Diff).await;
+                Ok(ToolOutput::text(format!("hovered{state}")))
             }
             "browser_select" => {
                 #[derive(Deserialize)]
@@ -481,7 +579,8 @@ impl AgentTool for BrowserTool {
                     c.select(target, value).await
                 })
                 .await?;
-                Ok(ToolOutput::text("selected"))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Diff).await;
+                Ok(ToolOutput::text(format!("selected{state}")))
             }
             "browser_input_fill" => {
                 #[derive(Deserialize)]
@@ -500,7 +599,8 @@ impl AgentTool for BrowserTool {
                     c.input_fill(target, text, clear).await
                 })
                 .await?;
-                Ok(ToolOutput::text("input filled"))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Diff).await;
+                Ok(ToolOutput::text(format!("input filled{state}")))
             }
             "browser_press_key" => {
                 #[derive(Deserialize)]
@@ -513,7 +613,8 @@ impl AgentTool for BrowserTool {
                     c.press_key(key).await
                 })
                 .await?;
-                Ok(ToolOutput::text(format!("pressed {}", p.key)))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Diff).await;
+                Ok(ToolOutput::text(format!("pressed {}{state}", p.key)))
             }
             "browser_scroll" => {
                 #[derive(Deserialize)]
@@ -525,7 +626,8 @@ impl AgentTool for BrowserTool {
                     c.scroll(p.amount).await
                 })
                 .await?;
-                Ok(ToolOutput::text("scrolled"))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Diff).await;
+                Ok(ToolOutput::text(format!("scrolled{state}")))
             }
             "browser_wait" => {
                 #[derive(Deserialize)]
@@ -544,7 +646,8 @@ impl AgentTool for BrowserTool {
                     c.wait_for_selector(selector, timeout).await
                 })
                 .await?;
-                Ok(ToolOutput::text(format!("found {}", p.selector)))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Diff).await;
+                Ok(ToolOutput::text(format!("found {}{state}", p.selector)))
             }
             "browser_new_tab" => {
                 #[derive(Deserialize)]
@@ -557,7 +660,11 @@ impl AgentTool for BrowserTool {
                     c.new_tab(url).await
                 })
                 .await?;
-                Ok(ToolOutput::text(serde_json::to_string(&info)?))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Full).await;
+                Ok(ToolOutput::text(format!(
+                    "{}{state}",
+                    serde_json::to_string(&info)?
+                )))
             }
             "browser_tab_list" => {
                 let tabs =
@@ -580,14 +687,19 @@ impl AgentTool for BrowserTool {
                     c.switch_tab(p.index).await
                 })
                 .await?;
-                Ok(ToolOutput::text(format!("switched to tab {}", p.index)))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Full).await;
+                Ok(ToolOutput::text(format!(
+                    "switched to tab {}{state}",
+                    p.index
+                )))
             }
             "browser_close_tab" => {
                 run_with_reconnect(mgr, session_key, &provider, |c| async move {
                     c.close_active_tab().await
                 })
                 .await?;
-                Ok(ToolOutput::text("tab closed"))
+                let state = page_state_after(mgr, session_key, &provider, PageState::Full).await;
+                Ok(ToolOutput::text(format!("tab closed{state}")))
             }
             other => Err(AppError::Tool(format!("Unknown browser sub-tool: {other}"))),
         }
@@ -595,5 +707,43 @@ impl AgentTool for BrowserTool {
 
     async fn cleanup(&self) -> Result<(), AppError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The point of the suffix: an action answers with the page it changed, so the
+    /// agent has no reason to spend a second tool call on `browser_snapshot`.
+    #[test]
+    fn page_state_carries_the_tree_and_says_not_to_snapshot() {
+        let out = render_page_state(true, "+ button \"Save\" [index=3]".into(), 12);
+        assert!(out.contains("+ button \"Save\" [index=3]"));
+        assert!(out.contains("12 interactive elements"));
+        assert!(out.contains("don't call browser_snapshot"));
+    }
+
+    #[test]
+    fn an_action_that_changed_nothing_says_so_rather_than_trailing_blank() {
+        let out = render_page_state(true, "   \n".into(), 4);
+        assert!(out.contains("(nothing changed on the page)"));
+    }
+
+    /// An action asks for a diff, but the first look at a page has nothing to diff
+    /// against - that is the whole tree, and saying "changes" would misread as "all of
+    /// it just changed".
+    #[test]
+    fn a_first_look_is_labelled_as_the_page_not_as_changes() {
+        let out = render_page_state(false, "- button \"Save\" [index=3]".into(), 1);
+        assert!(out.contains("page now (compact ARIA)"), "{out}");
+        assert!(!out.contains("diff"), "{out}");
+    }
+
+    #[test]
+    fn an_oversized_tree_is_bounded_and_points_at_the_full_snapshot() {
+        let out = render_page_state(false, "x".repeat(PAGE_STATE_MAX_CHARS * 2), 1);
+        assert!(out.len() < PAGE_STATE_MAX_CHARS * 2);
+        assert!(out.ends_with("[truncated — call browser_snapshot for the full tree]"));
     }
 }

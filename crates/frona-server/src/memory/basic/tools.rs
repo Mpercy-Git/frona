@@ -6,7 +6,7 @@ use crate::inference::config::ModelGroup;
 use crate::memory::basic::BasicMemoryService;
 use frona_derive::agent_tool;
 
-use crate::tool::{InferenceContext, ToolOutput, active_chat, str_arg};
+use crate::tool::{InferenceContext, ToolOutput, active_chat, str_list_arg};
 
 pub struct StoreAgentMemoryTool {
     memory_service: BasicMemoryService,
@@ -36,8 +36,12 @@ impl StoreAgentMemoryTool {
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        let memory = str_arg(&arguments, "memory")
-            .ok_or_else(|| AppError::Validation("Missing 'memory' parameter".into()))?;
+        // Storing is per-fact, calling needn't be: a turn that learned three things
+        // about the user cost three tool turns, and each spawned its own compaction.
+        let memories = str_list_arg(&arguments, "memory", "memories");
+        if memories.is_empty() {
+            return Err(AppError::Validation("Missing 'memory' parameter".into()));
+        }
 
         let overrides = arguments
             .get("overrides")
@@ -50,14 +54,16 @@ impl StoreAgentMemoryTool {
 
         tracing::debug!(
             agent_id = %agent_id,
-            memory = %memory,
+            memories = ?memories,
             overrides = overrides,
             "store_agent_memory tool called"
         );
 
-        self.memory_service
-            .store_memory_entry(agent_id, memory, Some(chat_id))
-            .await?;
+        for memory in &memories {
+            self.memory_service
+                .store_memory_entry(agent_id, memory, Some(chat_id))
+                .await?;
+        }
 
         if let Some(ref group) = self.compaction_group {
             let ms = self.memory_service.clone();
@@ -81,7 +87,10 @@ impl StoreAgentMemoryTool {
             }
         }
 
-        Ok(ToolOutput::text(format!("Stored: {memory}")))
+        Ok(ToolOutput::text(format!(
+            "Stored: {}",
+            memories.join(" | ")
+        )))
     }
 }
 
@@ -113,8 +122,10 @@ impl StoreUserMemoryTool {
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        let memory = str_arg(&arguments, "memory")
-            .ok_or_else(|| AppError::Validation("Missing 'memory' parameter".into()))?;
+        let memories = str_list_arg(&arguments, "memory", "memories");
+        if memories.is_empty() {
+            return Err(AppError::Validation("Missing 'memory' parameter".into()));
+        }
 
         let overrides = arguments
             .get("overrides")
@@ -127,14 +138,16 @@ impl StoreUserMemoryTool {
 
         tracing::debug!(
             user_id = %user_id,
-            memory = %memory,
+            memories = ?memories,
             overrides = overrides,
             "store_user_memory tool called"
         );
 
-        self.memory_service
-            .store_user_memory_entry(user_id, memory, Some(chat_id))
-            .await?;
+        for memory in &memories {
+            self.memory_service
+                .store_user_memory_entry(user_id, memory, Some(chat_id))
+                .await?;
+        }
 
         if let Some(ref group) = self.compaction_group {
             let ms = self.memory_service.clone();
@@ -157,6 +170,9 @@ impl StoreUserMemoryTool {
             }
         }
 
-        Ok(ToolOutput::text(format!("Stored for user: {memory}")))
+        Ok(ToolOutput::text(format!(
+            "Stored for user: {}",
+            memories.join(" | ")
+        )))
     }
 }

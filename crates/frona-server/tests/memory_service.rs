@@ -115,6 +115,48 @@ async fn test_compact_entries_if_needed_skips_below_threshold() {
     );
 }
 
+/// Several facts learned in one turn ride in one call. Each is still its own entry -
+/// the saving is the tool turn, not the bookkeeping.
+#[tokio::test]
+async fn test_store_user_memory_tool_stores_a_batch_as_separate_entries() {
+    let db = test_db().await;
+    let svc = make_memory_service(db.clone());
+    let tool = frona::memory::basic::tools::StoreUserMemoryTool::new(
+        svc,
+        None,
+        PromptLoader::new(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("resources")
+                .join("prompts"),
+        ),
+    );
+
+    tool.execute(
+        "store_user_memory",
+        serde_json::json!({ "memories": ["Name is Alice", "Works at Acme", "   "] }),
+        &helpers::mock_context(),
+    )
+    .await
+    .expect("a batched store succeeds");
+
+    let repo: SurrealMemoryEntryRepo = SurrealRepo::new(db);
+    let mut stored: Vec<String> = repo
+        .find_by_user_id("test-user")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.content)
+        .collect();
+    stored.sort();
+    assert_eq!(
+        stored,
+        ["Name is Alice", "Works at Acme"],
+        "one entry per statement, and the blank one is dropped"
+    );
+}
+
 /// A memory that is only whitespace is not a memory. It used to be stored verbatim -
 /// the arg was read without a trim or a blank check, unlike every other memory tool.
 #[tokio::test]

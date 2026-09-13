@@ -8,7 +8,7 @@ use crate::storage::service::StorageService;
 use frona_derive::agent_tool;
 
 use super::super::sandbox::SandboxManager;
-use super::super::{ImageData, InferenceContext, ToolOutput};
+use super::super::{ImageData, InferenceContext, ToolOutput, str_list_arg};
 
 const MAX_LINES: usize = 2000;
 const MAX_BYTES: usize = 50 * 1024;
@@ -42,10 +42,10 @@ impl ReadTool {
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        let path_arg = arguments
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::Validation("Missing 'path' parameter".into()))?;
+        let paths = str_list_arg(&arguments, "path", "paths");
+        let [first, rest @ ..] = paths.as_slice() else {
+            return Err(AppError::Validation("Missing 'path' parameter".into()));
+        };
         let offset = arguments
             .get("offset")
             .and_then(|v| v.as_u64())
@@ -55,8 +55,45 @@ impl ReadTool {
             .and_then(|v| v.as_u64())
             .map(|n| n as usize);
 
-        let resolved = super::resolve_path(path_arg, ctx, &self.storage)?;
         let sandbox = self.sandbox_manager.for_tool(ctx).await?;
+        if rest.is_empty() {
+            return self.read_one(first, offset, limit, ctx, &sandbox).await;
+        }
+
+        // A batch is what the agent would otherwise spend one tool turn per file
+        // on, so one bad path must not sink the rest: each file gets its own
+        // section, and the call only fails when every file did. `offset`/`limit`
+        // address a single file's lines, so they are not applied here - a
+        // paginated read is a single-path read.
+        let mut body = String::new();
+        let mut images = Vec::new();
+        let mut any_ok = false;
+        for path in &paths {
+            let mut out = self.read_one(path, None, None, ctx, &sandbox).await?;
+            any_ok |= out.is_success();
+            let text = out.text_content().to_string();
+            images.extend(out.take_images());
+            body.push_str(&format!("===== {path} =====\n{text}\n\n"));
+        }
+        let body = body.trim_end().to_string();
+        if any_ok {
+            Ok(ToolOutput::mixed(body, images))
+        } else {
+            Ok(ToolOutput::error(body))
+        }
+    }
+}
+
+impl ReadTool {
+    async fn read_one(
+        &self,
+        path_arg: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+        ctx: &InferenceContext,
+        sandbox: &crate::tool::sandbox::Sandbox,
+    ) -> Result<ToolOutput, AppError> {
+        let resolved = super::resolve_path(path_arg, ctx, &self.storage)?;
         if !sandbox.is_readable(&resolved) {
             return Ok(ToolOutput::error(format!(
                 "Read denied by sandbox policy: {} (resolved: {})",

@@ -112,6 +112,31 @@ describe("memoryDefaultExpanded", () => {
   });
 });
 
+describe("batched memories", () => {
+  it("renders every statement of a batched call, one per line", () => {
+    render(
+      <StoreUserMemoryView
+        {...mkProps({
+          toolName: "store_user_memory",
+          args: { memories: ["Lives in Bristol", "Works at Acme"] },
+        })}
+      />,
+    );
+    expect(screen.getByText("— Lives in Bristol")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === "P" && el.textContent === "Lives in Bristol\nWorks at Acme",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("expands a batch by default, since the subtitle only shows the first", () => {
+    expect(memoryDefaultExpanded({ contents: ["one", "two"] })).toBe(true);
+    expect(memoryDefaultExpanded({ memories: ["only one"] })).toBe(false);
+  });
+});
+
 describe("StoreUserMemoryView", () => {
   it("uses 'Remember about user' as title", () => {
     render(

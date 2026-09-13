@@ -1,6 +1,7 @@
 "use client";
 
 import type { FC } from "react";
+import { strListArg } from "./args";
 import { ToolRow } from "./tool-row";
 import type { ToolView, ToolViewProps } from "./types";
 
@@ -11,12 +12,14 @@ function firstLine(text: string, maxLen: number): string {
 }
 
 // The remembered text: `memory` for the basic backend, `content` for PKM's
-// `memory_remember` - both surface through the same "Remember" row.
+// `memory_remember` - both surface through the same "Remember" row. Either may arrive
+// as a batch (`memories` / `contents`), one statement per line.
 function memoryText(args: unknown): string {
-  const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
-  if (typeof a.memory === "string") return a.memory;
-  if (typeof a.content === "string") return a.content;
-  return "";
+  const entries = [
+    ...strListArg(args, "memory", "memories"),
+    ...strListArg(args, "content", "contents"),
+  ];
+  return entries.join("\n");
 }
 
 function makeMemoryView(title: string): ToolView {
