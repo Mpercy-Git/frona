@@ -383,9 +383,13 @@ impl ChatSessionContext {
         let mut file_paths = Vec::new();
         for msg in &stored_messages {
             for att in &msg.attachments {
-                let resolved =
-                    resolve_attachment_path(att, &harness.user_service, &harness.storage_service)
-                        .await;
+                let resolved = resolve_attachment_path(
+                    att,
+                    user_id,
+                    &harness.user_service,
+                    &harness.storage_service,
+                )
+                .await;
                 if !file_paths.contains(&resolved) {
                     file_paths.push(resolved);
                 }

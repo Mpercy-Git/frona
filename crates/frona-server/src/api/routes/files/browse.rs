@@ -40,7 +40,7 @@ pub(crate) async fn download_user_file(
     }
 
     let vpath = VirtualPath::user(&handle, &filename);
-    super::serve_file(&vpath, &state, &headers).await
+    super::serve_file(&handle, &vpath, &state, &headers).await
 }
 
 pub(crate) async fn download_agent_file(
@@ -99,7 +99,9 @@ pub(crate) async fn delete_user_file(
     }
 
     let vpath = VirtualPath::user(&handle, &filename);
-    let resolved = state.storage_service.resolve_virtual_path(&vpath)?;
+    let resolved = state
+        .storage_service
+        .resolve_virtual_path_for_user(&handle, &vpath)?;
 
     if !resolved.exists() {
         return Err(ApiError(AppError::NotFound("File not found".into())));

@@ -84,6 +84,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
                         build_user_message(
                             &msg.content,
                             &msg.attachments,
+                            &ctx.user_id,
                             &self.user_service,
                             &self.storage_service,
                         )
@@ -105,6 +106,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
                         build_user_message(
                             &content,
                             &msg.attachments,
+                            &ctx.user_id,
                             &self.user_service,
                             &self.storage_service,
                         )
@@ -117,6 +119,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
                         build_user_message(
                             &content,
                             &msg.attachments,
+                            &ctx.user_id,
                             &self.user_service,
                             &self.storage_service,
                         )
@@ -187,6 +190,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                         build_user_message(
                             &msg.content,
                             &msg.attachments,
+                            &ctx.user_id,
                             &self.user_service,
                             &self.storage_service,
                         )
@@ -208,6 +212,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                         build_user_message(
                             &content,
                             &msg.attachments,
+                            &ctx.user_id,
                             &self.user_service,
                             &self.storage_service,
                         )
@@ -220,6 +225,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                         build_user_message(
                             &content,
                             &msg.attachments,
+                            &ctx.user_id,
                             &self.user_service,
                             &self.storage_service,
                         )
@@ -345,6 +351,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
                         build_user_message(
                             &msg.content,
                             &msg.attachments,
+                            &ctx.user_id,
                             &self.user_service,
                             &self.storage_service,
                         )
@@ -366,6 +373,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
                         build_user_message(
                             &content,
                             &msg.attachments,
+                            &ctx.user_id,
                             &self.user_service,
                             &self.storage_service,
                         )
@@ -378,6 +386,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
                         build_user_message(
                             &content,
                             &msg.attachments,
+                            &ctx.user_id,
                             &self.user_service,
                             &self.storage_service,
                         )
@@ -615,22 +624,31 @@ fn task_completion_content(msg: &Message) -> String {
 
 pub async fn resolve_attachment_path(
     attachment: &Attachment,
+    owner_user_id: &str,
     user_service: &UserService,
     storage_service: &StorageService,
 ) -> String {
-    let vpath = if let Some(user_id) = attachment.owner.strip_prefix("user:") {
+    // An agent attachment resolves under the user whose chat it belongs to, so the
+    // owning handle is resolved first and both namespaces are bound to it.
+    let (owner_handle, vpath) = if let Some(user_id) = attachment.owner.strip_prefix("user:") {
         match user_service.find_by_id(user_id).await {
-            Ok(Some(user)) => VirtualPath::user(&user.handle, &attachment.path),
+            Ok(Some(user)) => (
+                user.handle.clone(),
+                VirtualPath::user(&user.handle, &attachment.path),
+            ),
             _ => return attachment.path.clone(),
         }
     } else if let Some(agent_id) = attachment.owner.strip_prefix("agent:") {
-        VirtualPath::agent(agent_id, &attachment.path)
+        match user_service.find_by_id(owner_user_id).await {
+            Ok(Some(user)) => (user.handle, VirtualPath::agent(agent_id, &attachment.path)),
+            _ => return attachment.path.clone(),
+        }
     } else {
         return attachment.path.clone();
     };
 
     storage_service
-        .resolve_virtual_path(&vpath)
+        .resolve_virtual_path_for_user(&owner_handle, &vpath)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| attachment.path.clone())
 }
@@ -638,6 +656,7 @@ pub async fn resolve_attachment_path(
 pub async fn format_files_block(
     content: &str,
     attachments: &[Attachment],
+    owner_user_id: &str,
     user_service: &UserService,
     storage_service: &StorageService,
 ) -> String {
@@ -646,7 +665,8 @@ pub async fn format_files_block(
     }
     let mut paths = Vec::with_capacity(attachments.len());
     for att in attachments {
-        paths.push(resolve_attachment_path(att, user_service, storage_service).await);
+        paths
+            .push(resolve_attachment_path(att, owner_user_id, user_service, storage_service).await);
     }
     format!("{content}\n<files>\n{}\n</files>", paths.join("\n"))
 }
@@ -654,6 +674,7 @@ pub async fn format_files_block(
 pub async fn build_user_message(
     content: &str,
     attachments: &[Attachment],
+    owner_user_id: &str,
     user_service: &UserService,
     storage_service: &StorageService,
 ) -> RigMessage {
@@ -666,7 +687,8 @@ pub async fn build_user_message(
 
     for att in attachments {
         if is_embeddable_image(att) {
-            let path = resolve_attachment_path(att, user_service, storage_service).await;
+            let path =
+                resolve_attachment_path(att, owner_user_id, user_service, storage_service).await;
             images.push((path, att.clone()));
         } else {
             non_images.push(att);
@@ -678,7 +700,9 @@ pub async fn build_user_message(
     } else {
         let mut paths = Vec::with_capacity(non_images.len());
         for att in &non_images {
-            paths.push(resolve_attachment_path(att, user_service, storage_service).await);
+            paths.push(
+                resolve_attachment_path(att, owner_user_id, user_service, storage_service).await,
+            );
         }
         format!("{content}\n<files>\n{}\n</files>", paths.join("\n"))
     };

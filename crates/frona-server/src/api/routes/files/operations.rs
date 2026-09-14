@@ -19,7 +19,9 @@ pub(crate) async fn rename_user_file(
 ) -> Result<(), ApiError> {
     let trimmed = req.path.trim_start_matches('/');
     let vpath = VirtualPath::user(&auth.handle, trimmed);
-    let resolved = state.storage_service.resolve_virtual_path(&vpath)?;
+    let resolved = state
+        .storage_service
+        .resolve_virtual_path_for_user(&auth.handle, &vpath)?;
 
     if !resolved.exists() {
         return Err(ApiError(AppError::NotFound("File not found".into())));
@@ -52,24 +54,18 @@ fn resolve_file_virtual_path(
     auth: &AuthUser,
     storage: &crate::storage::StorageService,
 ) -> Result<PathBuf, ApiError> {
-    if let Some(rest) = path.strip_prefix("user://") {
-        let slash = rest.find('/').unwrap_or(rest.len());
-        let path_handle = &rest[..slash];
-        if auth.handle != *path_handle {
-            return Err(ApiError(AppError::Forbidden(
-                "Cannot access another user's files".into(),
-            )));
-        }
-        let vpath = VirtualPath::parse(path)?;
-        storage.resolve_virtual_path(&vpath).map_err(ApiError)
-    } else if path.starts_with("agent://") {
-        let vpath = VirtualPath::parse(path)?;
-        storage.resolve_virtual_path(&vpath).map_err(ApiError)
+    // Every branch resolves against the caller. The `user://` branch used to be the
+    // only one that checked, and `agent://` went straight to the resolver - where an
+    // agent namespace was rooted at the handle in the URI, so `agent://victim/…`
+    // named the victim's workspace and copied out of it.
+    let vpath = if path.starts_with("user://") || path.starts_with("agent://") {
+        VirtualPath::parse(path)?
     } else {
-        let trimmed = path.trim_start_matches('/');
-        let vpath = VirtualPath::user(&auth.handle, trimmed);
-        storage.resolve_virtual_path(&vpath).map_err(ApiError)
-    }
+        VirtualPath::user(&auth.handle, path.trim_start_matches('/'))
+    };
+    storage
+        .resolve_virtual_path_for_user(&auth.handle, &vpath)
+        .map_err(ApiError)
 }
 
 fn ensure_user_destination(path: &str) -> Result<(), ApiError> {
@@ -95,6 +91,14 @@ pub(crate) async fn copy_files(
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
 
     for source in &req.sources {
+        // `move_files` has refused agent sources all along; copy did not, which is
+        // how a caller reached an agent workspace at all. Same rule, same reason:
+        // these routes serve a user's own files.
+        if source.starts_with("agent://") {
+            return Err(ApiError(AppError::Forbidden(
+                "Cannot copy from agent workspaces".into(),
+            )));
+        }
         let src = resolve_file_virtual_path(source, &auth, &state.storage_service)?;
         if !src.exists() {
             continue;
@@ -195,7 +199,9 @@ pub(crate) async fn create_user_folder(
     validate_relative_path(trimmed)?;
 
     let vpath = VirtualPath::user(&auth.handle, trimmed);
-    let resolved = state.storage_service.resolve_virtual_path(&vpath)?;
+    let resolved = state
+        .storage_service
+        .resolve_virtual_path_for_user(&auth.handle, &vpath)?;
 
     fs::create_dir_all(&resolved)
         .await
