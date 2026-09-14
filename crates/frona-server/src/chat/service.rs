@@ -577,6 +577,9 @@ impl ChatService {
         let max_output = model_group
             .max_tokens
             .unwrap_or(model_group.inference.default_max_tokens) as usize;
+        // Fetched ahead of compaction: the replayed tool calls are most of what
+        // this conversation will weigh, so the compactor has to see them.
+        let tool_calls = self.get_tool_calls(chat_id).await?;
         let loaded = self
             .compactor
             .compact_chat(
@@ -584,6 +587,7 @@ impl ChatService {
                 chat_id,
                 &chat.agent_id,
                 &system_prompt,
+                &tool_calls,
                 model_group.context_window,
                 max_output,
             )
@@ -601,7 +605,6 @@ impl ChatService {
             model_ref: model_group.main.clone(),
             user_id: user_id.to_string(),
         };
-        let tool_calls = self.get_tool_calls(chat_id).await?;
         let mut rig_history = conv_builder
             .build(
                 &stored_messages,

@@ -25,6 +25,7 @@ use crate::db::repo::chat_summaries::SurrealChatSummaryRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
 use crate::inference::context::{estimate_message_tokens, estimate_tokens};
 use crate::inference::conversation::{convert_agent_message, format_files_block_simple};
+use crate::inference::tool_call::ToolCall;
 use crate::inference::usage::{CompactionTarget, InferenceKind, UsageContext, UsageService};
 use crate::inference::{ModelProviderRegistry, text_inference};
 
@@ -168,12 +169,17 @@ impl ChatCompactor {
     /// exceeds the trigger threshold. No-op (returns `false`) when under
     /// threshold. Returns `true` when a new/updated summary was written.
     /// Retains compacted messages (does not delete them).
+    // Matches `build_augmented_system_prompt`: the inputs are a flat list of
+    // conversation facts, and bundling them into a struct would only move the
+    // argument list one call further out.
+    #[allow(clippy::too_many_arguments)]
     pub async fn compact_chat(
         &self,
         user_id: &str,
         chat_id: &str,
         chat_agent_id: &str,
         system_prompt: &str,
+        tool_calls: &[ToolCall],
         context_window: usize,
         max_output_tokens: usize,
     ) -> Result<CompactionOutcome, AppError> {
@@ -198,16 +204,28 @@ impl ChatCompactor {
             return Ok(unchanged(existing_summary, live));
         }
 
-        let rig_messages = self.to_rig(&live, chat_agent_id);
+        // One cost per live message, index-aligned with `live`. A row the builder
+        // drops (a System note, an agent turn still executing) costs nothing but
+        // must keep its slot: the split point below indexes into `live`, so a
+        // filtered-out row used to shift it and compact a message more than
+        // intended.
+        let costs: Vec<usize> = live
+            .iter()
+            .map(|msg| {
+                let body = Self::to_rig(msg, chat_agent_id)
+                    .as_ref()
+                    .map(estimate_message_tokens)
+                    .unwrap_or(0);
+                body + tool_turn_tokens(&msg.id, tool_calls)
+            })
+            .collect();
         let available = context_window.saturating_sub(max_output_tokens);
 
         let mut total_tokens = estimate_tokens(system_prompt);
         if let Some(ref s) = existing {
             total_tokens += estimate_tokens(&s.content);
         }
-        for msg in &rig_messages {
-            total_tokens += estimate_message_tokens(msg);
-        }
+        total_tokens += costs.iter().sum::<usize>();
         if total_tokens <= available * COMPACT_TRIGGER_PCT / 100 {
             return Ok(unchanged(existing_summary, live));
         }
@@ -221,14 +239,20 @@ impl ChatCompactor {
         }
         let mut keep_from_idx = live.len();
         let mut running = 0usize;
-        for (i, msg) in rig_messages.iter().enumerate().rev() {
-            let cost = estimate_message_tokens(msg);
+        for (i, cost) in costs.iter().enumerate().rev() {
             if running + cost + summary_budget > target {
                 break;
             }
             running += cost;
             keep_from_idx = i;
         }
+        // The newest message is never compactable. Without this floor, a system
+        // prompt (or a single long message) bigger than `target` breaks the loop
+        // on its first step, leaving `keep_from_idx` at `live.len()` - every
+        // message goes into the summary and the model is handed a conversation
+        // with no messages at all, including the question just asked. It then
+        // answers that it received nothing.
+        keep_from_idx = keep_from_idx.min(live.len().saturating_sub(1));
         if keep_from_idx == 0 {
             return Ok(unchanged(existing_summary, live));
         }
@@ -294,25 +318,55 @@ impl ChatCompactor {
         })
     }
 
-    /// Approximate rig messages for token *estimation* only - coarser than the
-    /// conversation builder (roles grouped, tool calls omitted). `System` rows drop.
-    fn to_rig(&self, messages: &[Message], chat_agent_id: &str) -> Vec<RigMessage> {
-        messages
-            .iter()
-            .filter_map(|msg| match msg.role {
-                MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
-                    let content = format_files_block_simple(&msg.content, &msg.attachments);
-                    Some(RigMessage::user(&content))
-                }
-                MessageRole::LiveCall => {
-                    let content = format_files_block_simple(&msg.content, &msg.attachments);
-                    Some(RigMessage::user(format!("[LIVE_CALL] {content}")))
-                }
-                MessageRole::Agent => convert_agent_message(msg, chat_agent_id, None),
-                MessageRole::System => None,
-            })
-            .collect()
+    /// Approximate one rig message for token *estimation* only - coarser than the
+    /// conversation builder (roles grouped). `System` rows drop. What the builder
+    /// replays around an agent message - its turn text, its tool calls and their
+    /// results - is counted separately by [`tool_turn_tokens`].
+    fn to_rig(msg: &Message, chat_agent_id: &str) -> Option<RigMessage> {
+        match msg.role {
+            MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
+                let content = format_files_block_simple(&msg.content, &msg.attachments);
+                Some(RigMessage::user(&content))
+            }
+            MessageRole::LiveCall => {
+                let content = format_files_block_simple(&msg.content, &msg.attachments);
+                Some(RigMessage::user(format!("[LIVE_CALL] {content}")))
+            }
+            MessageRole::Agent => convert_agent_message(msg, chat_agent_id, None),
+            MessageRole::System => None,
+        }
     }
+}
+
+/// What one message's tool turns add to the request.
+///
+/// The builder replays every tool call of an agent message - the assistant's turn
+/// text, each call's arguments, and each result - and none of it was being counted
+/// here. On an agentic turn that is most of the payload: a handful of searches and
+/// file reads dwarf the prose around them, so the conversation could sit far over
+/// the window while this estimate still read "under threshold" and compaction
+/// declined to run.
+fn tool_turn_tokens(message_id: &str, tool_calls: &[ToolCall]) -> usize {
+    tool_calls
+        .iter()
+        .filter(|call| call.message_id == message_id)
+        .map(|call| {
+            estimate_tokens(&call.result)
+                + estimate_tokens(&call.arguments.to_string())
+                + call.turn_text.as_deref().map(estimate_tokens).unwrap_or(0)
+                + call
+                    .turn_reasoning
+                    .as_ref()
+                    .map(|r| {
+                        estimate_tokens(&r.content)
+                            + r.raw
+                                .as_ref()
+                                .map(|raw| estimate_tokens(&raw.to_string()))
+                                .unwrap_or(0)
+                    })
+                    .unwrap_or(0)
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -393,7 +447,7 @@ mod tests {
         seed(&messages, chat, 6, 200).await;
 
         let out = compactor
-            .compact_chat("u", chat, "agent", "sys", 200, 0)
+            .compact_chat("u", chat, "agent", "sys", &[], 200, 0)
             .await
             .unwrap();
         assert!(out.compacted, "expected compaction to run");
@@ -437,7 +491,7 @@ mod tests {
         seed(&messages, chat, 1, 20).await;
 
         let out = compactor
-            .compact_chat("u", chat, "agent", "sys", 100_000, 0)
+            .compact_chat("u", chat, "agent", "sys", &[], 100_000, 0)
             .await
             .unwrap();
         assert!(!out.compacted);
@@ -457,14 +511,14 @@ mod tests {
         seed(&messages, chat, 6, 200).await;
 
         let first = compactor
-            .compact_chat("u", chat, "agent", "sys", 200, 0)
+            .compact_chat("u", chat, "agent", "sys", &[], 200, 0)
             .await
             .unwrap();
         assert!(first.compacted);
         let summary = summaries.find_by_chat_id(chat).await.unwrap().unwrap();
 
         let second = compactor
-            .compact_chat("u", chat, "agent", "sys", 100_000, 0)
+            .compact_chat("u", chat, "agent", "sys", &[], 100_000, 0)
             .await
             .unwrap();
         assert!(!second.compacted, "must not re-compact under threshold");
@@ -482,6 +536,130 @@ mod tests {
         );
     }
 
+    fn tool_call(message_id: &str, result_len: usize) -> ToolCall {
+        ToolCall {
+            id: new_id(),
+            chat_id: "chat-1".into(),
+            message_id: message_id.into(),
+            turn: 1,
+            provider_call_id: "p1".into(),
+            name: "memory_search".into(),
+            arguments: serde_json::json!({"query": "motion sensors"}),
+            result: "x".repeat(result_len),
+            success: true,
+            duration_ms: 1,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// The failure this guards against is the worst one the loop can produce: the
+    /// agent replying that it received no question, because it genuinely didn't.
+    /// A system prompt larger than the compaction target used to break the
+    /// newest-first walk on its first step, so every message - the one just sent
+    /// included - went into the summary and the model got an empty conversation.
+    #[tokio::test]
+    async fn the_newest_message_survives_a_system_prompt_larger_than_the_target() {
+        let (compactor, messages, _) = setup(false).await;
+        let chat = "chat-wipe";
+        seed(&messages, chat, 4, 200).await;
+
+        // 4k chars ≈ 1k tokens of system prompt against a 1.2k-token window:
+        // bigger than target (70%), which is the regime a memory manual plus
+        // injected playbooks and short memory actually puts us in.
+        let out = compactor
+            .compact_chat("u", chat, "agent", &"s".repeat(4000), &[], 1200, 0)
+            .await
+            .unwrap();
+
+        assert!(
+            !out.conversation.messages.is_empty(),
+            "the question just asked must reach the model"
+        );
+        let all = messages.find_by_chat_id(chat).await.unwrap();
+        assert_eq!(
+            out.conversation.messages.last().map(|m| m.id.clone()),
+            all.last().map(|m| m.id.clone()),
+            "and the message that survives is the newest one"
+        );
+    }
+
+    /// Tool results are most of an agentic turn's payload. Counting only the prose
+    /// let a conversation sit far over the window while this read "under threshold".
+    #[tokio::test]
+    async fn tool_results_count_towards_the_threshold() {
+        let (compactor, messages, _) = setup(false).await;
+        let chat = "chat-tools";
+        seed(&messages, chat, 3, 100).await;
+        let all = messages.find_by_chat_id(chat).await.unwrap();
+
+        let without = compactor
+            .compact_chat("u", chat, "agent", "sys", &[], 4000, 0)
+            .await
+            .unwrap();
+        assert!(!without.compacted, "prose alone is well under the window");
+
+        let calls: Vec<ToolCall> = all.iter().map(|m| tool_call(&m.id, 8000)).collect();
+        let with = compactor
+            .compact_chat("u", chat, "agent", "sys", &calls, 4000, 0)
+            .await
+            .unwrap();
+        assert!(
+            with.compacted,
+            "the same conversation with 24k chars of tool results does not fit"
+        );
+    }
+
+    /// `keep_from_idx` indexes into the stored messages, but was computed over a
+    /// filtered list. One dropped row (a System note) shifted the split by one and
+    /// swallowed a message that should have stayed live.
+    #[tokio::test]
+    async fn a_filtered_row_does_not_shift_the_split_point() {
+        let (compactor, messages, summaries) = setup(false).await;
+        let chat = "chat-filtered";
+        let base = Utc::now() - Duration::hours(1);
+        for i in 0..6 {
+            // Every other row is a System note, which the builder drops.
+            let role = if i % 2 == 0 {
+                MessageRole::User
+            } else {
+                MessageRole::System
+            };
+            let mut m = Message::builder(chat, role, "x".repeat(200)).build();
+            m.id = new_id();
+            m.created_at = base + Duration::seconds(i);
+            messages.create(&m).await.unwrap();
+        }
+
+        let out = compactor
+            .compact_chat("u", chat, "agent", "sys", &[], 200, 0)
+            .await
+            .unwrap();
+        assert!(out.compacted);
+
+        let summary = summaries.find_by_chat_id(chat).await.unwrap().unwrap();
+        let all = messages.find_by_chat_id(chat).await.unwrap();
+        // Live and compacted must partition the conversation exactly at the cutoff.
+        assert_eq!(
+            out.conversation.messages.len(),
+            all.iter()
+                .filter(|m| m.created_at > summary.compacted_until)
+                .count(),
+            "the split lands on the message the summary says it does"
+        );
+        assert!(
+            out.conversation
+                .messages
+                .iter()
+                .all(|m| m.created_at > summary.compacted_until)
+        );
+    }
+
     #[tokio::test]
     async fn fail_loud_on_summarizer_error() {
         let (compactor, messages, summaries) = setup(true).await;
@@ -489,7 +667,7 @@ mod tests {
         seed(&messages, chat, 6, 200).await;
 
         let err = compactor
-            .compact_chat("u", chat, "agent", "sys", 200, 0)
+            .compact_chat("u", chat, "agent", "sys", &[], 200, 0)
             .await;
         assert!(err.is_err(), "summarizer failure must propagate");
         assert!(

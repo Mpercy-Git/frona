@@ -23,6 +23,15 @@ impl Command for CompactCommand {
         _args: &str,
         ctx: &mut CommandContext<'_>,
     ) -> Result<CommandOutcome, AppError> {
+        // Same weighing as a normal turn: what the builder replays around each
+        // message is mostly its tool calls, so `/compact` has to see them too or
+        // it reports "already at optimal size" on a chat that is over the window.
+        let tool_calls = ctx
+            .harness
+            .chat_service
+            .get_tool_calls(&ctx.chat.id)
+            .await
+            .unwrap_or_default();
         let changed = ctx
             .harness
             .chat_service
@@ -32,6 +41,7 @@ impl Command for CompactCommand {
                 &ctx.chat.id,
                 &ctx.chat.agent_id,
                 &ctx.session.system_prompt,
+                &tool_calls,
                 ctx.session.model_group.context_window,
                 DEFAULT_MAX_OUTPUT_TOKENS,
             )

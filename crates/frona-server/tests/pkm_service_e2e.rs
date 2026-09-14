@@ -7379,7 +7379,9 @@ async fn foreground_lookups_do_not_loop() {
     let tools = service.tools();
     let search = tools.iter().find(|t| t.name() == "memory_search").unwrap();
     let cite = tools.iter().find(|t| t.name() == "memory_cite").unwrap();
-    let ctx = mock_context();
+    // A run with a system attached, which is the case that matters: every refusal
+    // below has somewhere better to send the agent than another query.
+    let ctx = mock_context().with_mcp_servers(vec!["homeassistant".into()]);
 
     // A User Vault note, as `PkmSyncService` leaves it: an External row plus the
     // read-only mirror under the vault root (never under Memory/).
@@ -7518,8 +7520,16 @@ async fn foreground_lookups_do_not_loop() {
             break;
         }
     }
+    let refusal = refusal.expect("the run's lookup budget stops the search surface");
+    // Stopping is only half an instruction - an agent told to stop and nothing else
+    // rewords the query or moves the same question to `grep`. The refusal names the
+    // surface that can actually answer, the connected system first.
     assert!(
-        refusal.is_some_and(|out| out.contains("ask them for it")),
-        "the run's lookup budget stops the search surface"
+        refusal.contains("homeassistant"),
+        "the refusal names the system this run can reach:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("ask them"),
+        "and the user, when nobody else holds it:\n{refusal}"
     );
 }

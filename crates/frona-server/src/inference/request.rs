@@ -50,6 +50,13 @@ pub struct InferenceContext {
     /// state, like `vault_env_vars`: the memory tools are built once at boot and
     /// shared by every run, so the ledger cannot live in the tool.
     pub memory_lookups: crate::memory::service::MemoryLookupLedger,
+    /// Handles of the MCP servers this run may call, running right now.
+    ///
+    /// A tool that has to tell the agent "stop looking here" can only be useful if it
+    /// can say where to look instead, and for a question about a live system that is
+    /// the server that owns it. Empty for runs with no servers attached (and for the
+    /// background passes, which have no session to read them from).
+    pub mcp_servers: Vec<String>,
 }
 
 impl InferenceContext {
@@ -79,6 +86,7 @@ impl InferenceContext {
             shutdown_token,
             cancel_token,
             memory_lookups: Default::default(),
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -105,7 +113,14 @@ impl InferenceContext {
             shutdown_token,
             cancel_token,
             memory_lookups: Default::default(),
+            mcp_servers: Vec::new(),
         }
+    }
+
+    /// The MCP servers this run can reach (see [`InferenceContext::mcp_servers`]).
+    pub fn with_mcp_servers(mut self, handles: Vec<String>) -> Self {
+        self.mcp_servers = handles;
+        self
     }
 
     pub fn with_task(mut self, task: Task) -> Self {
