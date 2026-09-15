@@ -19,7 +19,7 @@ import { ToolUIRegistry } from "./tool-uis";
 import { CronRunsTable } from "./cron-runs-table";
 import type { ChatResponse } from "@/lib/types";
 
-function ChatView({
+export function ChatView({
   chatId,
   agentId,
   onChatPromoted,
