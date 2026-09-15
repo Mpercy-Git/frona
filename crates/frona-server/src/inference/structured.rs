@@ -81,7 +81,7 @@ where
     };
     let mut tool_defs = tool_loop::to_rig_tool_definitions(
         tool_registry.definitions(),
-        tool_registry.mcp_bridge_mode(),
+        tool_registry.mcp_bridge_active(),
     );
     tool_defs.push(submit);
 
@@ -160,7 +160,7 @@ pub async fn text_inference_with_tools(
 ) -> Result<String, AppError> {
     let tool_defs = tool_loop::to_rig_tool_definitions(
         tool_registry.definitions(),
-        tool_registry.mcp_bridge_mode(),
+        tool_registry.mcp_bridge_active(),
     );
     for _ in 0..max_turns.max(1) {
         let (contents, _usage) = retry::inference_with_retry_and_fallback(
@@ -418,7 +418,7 @@ where
         max_tool_turns: usize,
     ) -> Self {
         let exploration_tool_defs =
-            tool_loop::to_rig_tool_definitions(tools.definitions(), tools.mcp_bridge_mode());
+            tool_loop::to_rig_tool_definitions(tools.definitions(), tools.mcp_bridge_active());
         Self {
             registry,
             usage_service,

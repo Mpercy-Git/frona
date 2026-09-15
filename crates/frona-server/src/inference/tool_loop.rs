@@ -562,7 +562,7 @@ pub async fn run_tool_loop(
     message_id: &str,
 ) -> Result<ToolLoopOutcome, AppError> {
     let tool_defs = tool_registry.definitions();
-    let rig_tools = to_rig_tool_definitions(tool_defs, tool_registry.mcp_bridge_mode());
+    let rig_tools = to_rig_tool_definitions(tool_defs, tool_registry.mcp_bridge_active());
 
     let mut all_attachments: Vec<crate::storage::Attachment> = Vec::new();
     let mut current_system_prompt = system_prompt.to_string();
