@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::core::error::AppError;
 
@@ -74,11 +74,35 @@ pub fn validate_no_traversal(resolved: &Path, base: &str) -> Result<(), AppError
         }
     }
 
-    let base_canonical = std::fs::canonicalize(base).unwrap_or_else(|_| PathBuf::from(base));
-    let resolved_canonical =
-        std::fs::canonicalize(resolved).unwrap_or_else(|_| resolved.to_path_buf());
+    let base_path = Path::new(base);
+    if !resolved.starts_with(base_path) {
+        return Err(AppError::Validation(
+            "Path escapes allowed directory".into(),
+        ));
+    }
+    if !base_path.exists() {
+        return Ok(());
+    }
 
-    if !resolved_canonical.starts_with(&base_canonical) && !resolved.starts_with(base) {
+    // A path that does not exist yet cannot be canonicalised, and the old code
+    // fell back to comparing it uncanonicalised - so a symlinked parent pointing
+    // out of the root was followed on the write that created the file. Canonicalise
+    // the nearest ancestor that does exist instead, which is the component a
+    // symlink would have to live in.
+    let base_canonical = std::fs::canonicalize(base_path)
+        .map_err(|error| AppError::Internal(format!("Failed to resolve storage root: {error}")))?;
+    let mut existing_ancestor = resolved.to_path_buf();
+    while !existing_ancestor.exists() {
+        if !existing_ancestor.pop() {
+            return Err(AppError::Validation(
+                "Path escapes allowed directory".into(),
+            ));
+        }
+    }
+    let ancestor_canonical = std::fs::canonicalize(&existing_ancestor)
+        .map_err(|error| AppError::Internal(format!("Failed to resolve path: {error}")))?;
+
+    if !ancestor_canonical.starts_with(&base_canonical) {
         return Err(AppError::Validation(
             "Path escapes allowed directory".into(),
         ));
@@ -222,6 +246,50 @@ mod tests {
 
         assert_eq!(dedup_filename(&dir, "archive.tar.gz"), "archive.tar-1.gz");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The old check canonicalised the resolved path and, when that failed - which
+    /// it always does for a file that does not exist yet - compared the raw path
+    /// instead. So a symlinked directory inside the root passed validation, and the
+    /// write that created the file followed the link straight out of the root.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_parent_cannot_smuggle_a_new_file_out_of_the_root() {
+        let tmp = std::env::temp_dir().join("frona_test_symlink_escape");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let root = tmp.join("root");
+        let outside = tmp.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+
+        // The file itself does not exist yet - this is the write path.
+        let target = root.join("escape").join("payload.txt");
+        let result = validate_no_traversal(&target, &root.to_string_lossy());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(
+            result.is_err(),
+            "a path through a symlink out of the root must be refused"
+        );
+    }
+
+    /// The hardening must not reject the ordinary case it exists to allow: a new
+    /// file in a real directory inside the root.
+    #[test]
+    fn a_new_file_inside_the_root_still_validates() {
+        let tmp = std::env::temp_dir().join("frona_test_new_file_ok");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let root = tmp.join("root");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+
+        let result = validate_no_traversal(
+            &root.join("sub").join("brand-new.txt"),
+            &root.to_string_lossy(),
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(result.is_ok(), "got {result:?}");
     }
 
     #[test]

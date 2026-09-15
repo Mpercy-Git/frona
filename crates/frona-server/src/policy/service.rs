@@ -702,7 +702,7 @@ impl PolicyService {
             return Ok(raw);
         }
         let mut resolved = (*raw).clone();
-        resolved.resolve_virtual_paths(&self.storage);
+        resolved.resolve_virtual_paths(principal.user_handle, &self.storage);
         Ok(Arc::new(resolved))
     }
 

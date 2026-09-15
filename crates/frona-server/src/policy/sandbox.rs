@@ -79,7 +79,11 @@ impl SandboxPolicy {
     /// `write_paths`, and `denied_paths` into absolute host paths via
     /// `StorageService`. Absolute paths pass through unchanged. Entries that
     /// fail to parse or resolve are dropped with a warning.
-    pub fn resolve_virtual_paths(&mut self, storage: &StorageService) {
+    pub fn resolve_virtual_paths(
+        &mut self,
+        user_handle: &crate::core::Handle,
+        storage: &StorageService,
+    ) {
         for list in [
             &mut self.read_paths,
             &mut self.write_paths,
@@ -87,7 +91,7 @@ impl SandboxPolicy {
         ] {
             *list = list
                 .iter()
-                .filter_map(|raw| match storage.resolve(raw) {
+                .filter_map(|raw| match storage.resolve_for_user(user_handle, raw) {
                     Ok(p) => Some(p.to_string_lossy().into_owned()),
                     Err(_) => {
                         tracing::warn!(path = %raw, "dropping unresolvable sandbox path entry");
@@ -922,7 +926,7 @@ mod tests {
             read_paths: vec!["/data".into()],
             ..Default::default()
         };
-        policy.resolve_virtual_paths(&test_storage());
+        policy.resolve_virtual_paths(&crate::handle!("test-user"), &test_storage());
         assert_eq!(policy.read_paths, vec!["/data".to_string()]);
     }
 
@@ -932,7 +936,7 @@ mod tests {
             read_paths: vec!["user://mina/foo.csv".into()],
             ..Default::default()
         };
-        policy.resolve_virtual_paths(&test_storage());
+        policy.resolve_virtual_paths(&crate::handle!("mina"), &test_storage());
         assert_eq!(policy.read_paths.len(), 1);
         assert!(policy.read_paths[0].ends_with("data/users/mina/files/foo.csv"));
     }
@@ -943,9 +947,24 @@ mod tests {
             write_paths: vec!["agent://dev/output.csv".into()],
             ..Default::default()
         };
-        policy.resolve_virtual_paths(&test_storage());
+        policy.resolve_virtual_paths(&crate::handle!("mina"), &test_storage());
         assert_eq!(policy.write_paths.len(), 1);
-        assert!(policy.write_paths[0].ends_with("data/users/dev/agents/dev/output.csv"));
+        // The agent workspace belongs to the principal the policy is being resolved
+        // for. It used to root at the agent's own handle, as if the agent were a user.
+        assert!(policy.write_paths[0].ends_with("data/users/mina/agents/dev/output.csv"));
+    }
+
+    #[test]
+    /// A policy entry naming somebody else's files resolves to nothing rather than
+    /// widening the sandbox to their tree.
+    #[test]
+    fn resolve_virtual_paths_drops_another_users_uri() {
+        let mut policy = SandboxPolicy {
+            read_paths: vec!["user://victim/foo.csv".into()],
+            ..Default::default()
+        };
+        policy.resolve_virtual_paths(&crate::handle!("mina"), &test_storage());
+        assert!(policy.read_paths.is_empty());
     }
 
     #[test]
@@ -954,7 +973,7 @@ mod tests {
             read_paths: vec!["bad-entry".into(), "/keepme".into()],
             ..Default::default()
         };
-        policy.resolve_virtual_paths(&test_storage());
+        policy.resolve_virtual_paths(&crate::handle!("test-user"), &test_storage());
         assert_eq!(policy.read_paths, vec!["/keepme".to_string()]);
     }
 

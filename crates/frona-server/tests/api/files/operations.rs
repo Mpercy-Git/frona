@@ -396,3 +396,57 @@ async fn mkdir_null_char_in_path_returns_400() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+/// The `user://` branch of `resolve_file_virtual_path` checks the handle in the
+/// path against the caller. The `agent://` branch checked nothing, and an agent
+/// namespace resolves under `data/users/<name>/agents/<name>/` - so the name in
+/// the URI picked the victim's tree and any authenticated user could copy out of
+/// it. Reported upstream as `fix: make file operations ownership safe`.
+#[tokio::test]
+async fn copying_from_another_users_agent_workspace_is_refused() {
+    let (state, tmp) = test_app_state().await;
+    let (_victim_token, _) =
+        register_user(&state, "victim", "victim@example.com", "password123").await;
+    let (thief_token, _) = register_user(&state, "thief", "thief@example.com", "password123").await;
+
+    // A file in the victim's own agent workspace.
+    let victim_agent_dir = tmp
+        .path()
+        .join("users")
+        .join("victim")
+        .join("agents")
+        .join("victim");
+    fs::create_dir_all(&victim_agent_dir).await.unwrap();
+    fs::write(victim_agent_dir.join("secrets.env"), b"API_KEY=hunter2")
+        .await
+        .unwrap();
+
+    let thief_dir = tmp.path().join("users").join("thief").join("files");
+    fs::create_dir_all(&thief_dir).await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/copy",
+            &thief_token,
+            serde_json::json!({
+                "sources": ["agent://victim/secrets.env"],
+                "destination": "",
+            }),
+        ))
+        .await
+        .unwrap();
+
+    // The material harm first: whatever the status code, the bytes must not move.
+    let leaked = thief_dir.join("secrets.env").exists();
+    let status = resp.status();
+    assert!(
+        !leaked,
+        "the victim's file was copied into the caller's directory (status {status})"
+    );
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "another user's workspace must not resolve"
+    );
+}

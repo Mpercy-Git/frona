@@ -146,13 +146,23 @@ pub(crate) async fn presign_file(
     let vpath = if req.owner.starts_with("user:") {
         VirtualPath::user(&auth.handle, &req.path)
     } else if let Some(agent_id) = req.owner.strip_prefix("agent:") {
-        VirtualPath::agent(agent_id, &req.path)
+        // The owner arrives as an agent id, and an agent workspace lives under its
+        // owning user - so resolve the agent as one this caller owns and use its
+        // handle. Passing the id straight through made it the directory name, which
+        // is what let the namespace pick a tree.
+        let agent = state
+            .agent_service
+            .owned_by(&auth.user_id, agent_id)
+            .await?;
+        VirtualPath::agent(agent.handle.as_ref(), &req.path)
     } else {
         return Err(ApiError(AppError::Validation(
             "Invalid owner prefix".into(),
         )));
     };
-    let _ = state.storage_service.resolve_virtual_path(&vpath)?;
+    let _ = state
+        .storage_service
+        .resolve_virtual_path_for_user(&auth.handle, &vpath)?;
 
     let url = state
         .presign_service

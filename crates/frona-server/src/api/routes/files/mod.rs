@@ -106,11 +106,14 @@ impl FromRequestParts<AppState> for FileAuth {
 }
 
 pub(super) async fn serve_file(
+    owner: &crate::core::Handle,
     vpath: &VirtualPath,
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Response, ApiError> {
-    let resolved = state.storage_service.resolve_virtual_path(vpath)?;
+    let resolved = state
+        .storage_service
+        .resolve_virtual_path_for_user(owner, vpath)?;
     serve_path(&resolved, headers).await
 }
 
