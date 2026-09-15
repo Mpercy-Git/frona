@@ -567,6 +567,7 @@ impl AgentTool for MockInternalTool {
 pub struct MockAttachmentTool {
     pub tool_name: String,
     pub attachment: frona::storage::Attachment,
+    pub task_event: Option<frona::inference::tool_call::TaskEvent>,
 }
 
 impl MockAttachmentTool {
@@ -574,7 +575,13 @@ impl MockAttachmentTool {
         Self {
             tool_name: name.to_string(),
             attachment,
+            task_event: None,
         }
+    }
+
+    pub fn with_task_event(mut self, task_event: frona::inference::tool_call::TaskEvent) -> Self {
+        self.task_event = Some(task_event);
+        self
     }
 }
 
@@ -599,7 +606,11 @@ impl AgentTool for MockAttachmentTool {
         _arguments: Value,
         _ctx: &InferenceContext,
     ) -> Result<ToolOutput, frona::core::error::AppError> {
-        Ok(ToolOutput::text("file produced").with_attachment(self.attachment.clone()))
+        let mut output = ToolOutput::text("file produced").with_attachment(self.attachment.clone());
+        if let Some(task_event) = &self.task_event {
+            output = output.with_task_event(task_event.clone());
+        }
+        Ok(output)
     }
 }
 
