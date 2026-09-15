@@ -221,13 +221,23 @@ impl SydArgsBuilder {
         // Allow read+stat on each ancestor of the workspace dir so tools
         // (e.g. Node.js realpathSync) can traverse the directory tree.
         // Syd hides non-allowed siblings, so this doesn't leak other workspaces.
+        //
+        // The root is one of those ancestors. It used to be skipped - the loop
+        // broke on reaching it instead of allowing it - so every ancestor of the
+        // workspace was reachable except the one every absolute path starts from,
+        // and a bare `stat("/")` came back denied. Anything that canonicalises a
+        // path walks the root: `realpath`, Rust's `fs::canonicalize`, most
+        // runtimes' startup. Granting it is not a widening, because the rule is
+        // `/` and not `/***`: it exposes the root directory entry itself, while
+        // its children stay governed by the rules below.
         {
             let mut ancestor = std::path::Path::new(&config.workspace_dir);
+            let root = std::path::Path::new("/");
             while let Some(parent) = ancestor.parent() {
-                if parent == std::path::Path::new("/") {
+                self.allow_read(parent.to_str().unwrap_or_default());
+                if parent == root {
                     break;
                 }
-                self.allow_read(parent.to_str().unwrap_or_default());
                 ancestor = parent;
             }
         }
@@ -388,6 +398,46 @@ mod tests {
             .build();
         assert!(args.contains(&"allow/read+/workspace/agent_1/***".to_string()));
         assert!(args.contains(&"allow/write+/workspace/agent_1/***".to_string()));
+    }
+
+    /// Every ancestor of the workspace is traversable, the root included.
+    /// Skipping the root denied a bare `stat("/")`, which anything that
+    /// canonicalises a path performs.
+    #[test]
+    fn workspace_ancestors_include_the_root() {
+        let args = SydArgsBuilder::new()
+            .filesystem_rules(&test_config())
+            .build();
+        assert!(
+            args.contains(&"allow/read+/workspace".to_string()),
+            "{args:?}"
+        );
+        assert!(args.contains(&"allow/read+/".to_string()), "{args:?}");
+        assert!(args.contains(&"allow/stat+/".to_string()), "{args:?}");
+    }
+
+    /// The root is granted as `/`, never `/***` - the entry itself, not the
+    /// whole filesystem under it, which the rules below still govern.
+    #[test]
+    fn allowing_the_root_does_not_open_the_filesystem() {
+        let args = SydArgsBuilder::new()
+            .filesystem_rules(&test_config())
+            .build();
+        assert!(!args.contains(&"allow/read+/***".to_string()), "{args:?}");
+        assert!(!args.contains(&"allow/write+/***".to_string()), "{args:?}");
+    }
+
+    /// A workspace one level below the root still terminates, and still gets
+    /// the root - the loop's break moved after the grant, so an off-by-one
+    /// there would either lose `/` again or spin.
+    #[test]
+    fn a_workspace_directly_under_the_root_still_gets_it() {
+        let config = SandboxConfig {
+            workspace_dir: "/workspace".into(),
+            ..Default::default()
+        };
+        let args = SydArgsBuilder::new().filesystem_rules(&config).build();
+        assert!(args.contains(&"allow/stat+/".to_string()), "{args:?}");
     }
 
     #[test]
