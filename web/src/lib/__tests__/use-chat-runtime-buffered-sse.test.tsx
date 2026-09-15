@@ -48,7 +48,15 @@ vi.mock("@/lib/session-context", () => ({
 }));
 
 vi.mock("@/lib/navigation-context", () => ({
-  useNavigation: () => ({ addStandaloneChat: vi.fn() }),
+  // This fork's ChatView also reads the boot-loaded chat lists (to gate the
+  // composer on a shared chat) and the system agent, so the upstream mock of
+  // `addStandaloneChat` alone leaves it reading `.find` off undefined.
+  useNavigation: () => ({
+    addStandaloneChat: vi.fn(),
+    standaloneChats: [],
+    spaces: [],
+  }),
+  useSystemAgent: () => null,
 }));
 
 vi.mock("@/lib/activity-context", () => ({

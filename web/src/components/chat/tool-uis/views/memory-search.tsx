@@ -10,20 +10,28 @@ interface MemoryHit {
   tag: string;
   description: string;
   path: string;
+  /** The page's own prose, which the result now carries inline. */
+  page: string | null;
 }
 
 /**
  * Parse the `memory_search` result text emitted by the backend
  * (crates/frona-server/src/memory/pkm/tools.rs). Keep in lockstep:
  *
- *   Top matches - read(<memory-root>/<path>.md) to open one:
+ *   Top matches, page text included — call read(paths=[…]) only for …
  *
  *   - Name  [tag]
  *     description
  *     path/to/page
+ *   <page path="path/to/page">
+ *   the page's prose
+ *   </page>
  *
- *   - Name  [tag]
- *     ...
+ * A hit's first three lines are fixed; everything after them is the inline
+ * page block, or a one-line note in its place (frontmatter only, text already
+ * sent, budget spent). Reading the path off the LAST line of the block - which
+ * is what this did before the text was inlined - now picks up `</page>` and
+ * folds the whole page into the description.
  *
  * Returns [] for the empty ("No pages matched") case and null on parse
  * failure so the caller can fall back to raw text.
@@ -42,15 +50,22 @@ function parseMemoryResult(text: string): MemoryHit[] | null {
 
     const head = lines[0].match(/^-\s+(.*?)\s+\[(.+?)\]\s*$/);
     if (!head || lines.length < 3) return null;
+    const rest = lines.slice(3);
+    const openIdx = rest.findIndex((l) => l.trimStart().startsWith("<page"));
+    const closeIdx = rest.findIndex((l) => l.trim() === "</page>");
+    const page =
+      openIdx !== -1 && closeIdx > openIdx
+        ? rest
+            .slice(openIdx + 1, closeIdx)
+            .join("\n")
+            .trim()
+        : null;
     hits.push({
       name: head[1].trim(),
       tag: head[2].trim(),
-      path: lines[lines.length - 1].trim(),
-      description: lines
-        .slice(1, -1)
-        .map((l) => l.trim())
-        .join(" ")
-        .trim(),
+      description: lines[1].trim(),
+      path: lines[2].trim(),
+      page: page || null,
     });
   }
 
@@ -117,6 +132,11 @@ export const MemorySearchView: ToolView = ({
                       <DocumentTextIcon className="h-3 w-3 shrink-0" />
                       {hit.path}
                     </span>
+                  )}
+                  {hit.page && (
+                    <p className="text-xs text-text-tertiary m-0 mt-1 whitespace-pre-wrap border-l-2 border-border-secondary pl-2">
+                      {hit.page}
+                    </p>
                   )}
                 </li>
               ))}
