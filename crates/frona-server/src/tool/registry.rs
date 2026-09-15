@@ -8,6 +8,10 @@ use crate::core::error::AppError;
 
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 
+/// The shell tool's id, as declared by `resources/prompts/tools/shell.md`. It is
+/// the sandbox command runner, and so the only way to invoke `mcpctl`.
+pub const SHELL_TOOL_ID: &str = "shell";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolFilter {
     /// Lock the agent to a small set of tools. Used by signal-mode and
@@ -57,6 +61,25 @@ impl AgentToolRegistry {
 
     pub fn mcp_bridge_mode(&self) -> bool {
         self.mcp_bridge_mode
+    }
+
+    /// Whether MCP calls should actually be routed through the `mcpctl` bridge.
+    ///
+    /// Bridge mode trades every `mcp__*` tool definition for a single `mcpctl`
+    /// command line, and `mcpctl` is a binary in the sandbox - the shell tool is
+    /// the only thing that can run it. An agent whose tool list has no shell -
+    /// restricted by `tools:` frontmatter, denied by Cedar, or filtered down by
+    /// `apply_filter` - cannot reach it, so bridging there would strip the
+    /// `mcp__*` definitions and leave *nothing* able to call the server while
+    /// the prompt still advertises it. Fall back to plain tool definitions
+    /// instead. Read at call time, not at construction, because the filters that
+    /// remove the shell run after `new`.
+    pub fn mcp_bridge_active(&self) -> bool {
+        self.mcp_bridge_mode && self.has_tool(SHELL_TOOL_ID)
+    }
+
+    pub fn has_tool(&self, tool_id: &str) -> bool {
+        self.definitions.iter().any(|d| d.id == tool_id)
     }
 
     pub fn apply_filter(&mut self, filter: &ToolFilter) {
@@ -413,5 +436,62 @@ mod tests {
         registry.register(Arc::new(MockTool));
         registry.restrict_to(&[]);
         assert!(registry.is_empty());
+    }
+
+    fn def(id: &str, provider_id: &str) -> ToolDefinition {
+        ToolDefinition {
+            id: id.to_string(),
+            provider_id: provider_id.to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }
+    }
+
+    fn bridged(defs: Vec<ToolDefinition>) -> AgentToolRegistry {
+        AgentToolRegistry::new(HashMap::new(), HashMap::new(), defs, true)
+    }
+
+    #[test]
+    fn bridge_is_active_only_when_the_agent_can_run_mcpctl() {
+        let with_shell = bridged(vec![
+            def(SHELL_TOOL_ID, "shell"),
+            def("mcp__ha__get_state", "mcp:ha"),
+        ]);
+        assert!(with_shell.mcp_bridge_active());
+
+        // The failure this guards: bridge mode hides every `mcp__*` tool in
+        // favour of `mcpctl`, so an agent with no shell is left holding neither.
+        let without_shell = bridged(vec![
+            def("read", "files"),
+            def("memory_search", "memory"),
+            def("mcp__ha__get_state", "mcp:ha"),
+        ]);
+        assert!(!without_shell.mcp_bridge_active());
+        assert!(without_shell.mcp_bridge_mode());
+    }
+
+    #[test]
+    fn bridge_stays_off_when_the_config_flag_is_off() {
+        let registry = AgentToolRegistry::new(
+            HashMap::new(),
+            HashMap::new(),
+            vec![def(SHELL_TOOL_ID, "shell")],
+            false,
+        );
+        assert!(!registry.mcp_bridge_active());
+    }
+
+    #[test]
+    fn losing_the_shell_to_a_filter_deactivates_the_bridge() {
+        let mut registry = bridged(vec![
+            def(SHELL_TOOL_ID, "shell"),
+            def("mcp__ha__get_state", "mcp:ha"),
+        ]);
+        assert!(registry.mcp_bridge_active());
+
+        // Signal-mode and quarantined tasks restrict after construction, which is
+        // why the predicate reads the live definitions rather than a stored bool.
+        registry.apply_filter(&ToolFilter::DenyList(&[SHELL_TOOL_ID]));
+        assert!(!registry.mcp_bridge_active());
     }
 }

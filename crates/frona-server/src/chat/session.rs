@@ -170,7 +170,11 @@ impl ChatSessionContext {
             .map(|s| s.handle.to_string())
             .collect();
 
-        let mcp_servers: Vec<(String, String)> = if harness.config.mcp.bridge_mode {
+        // `mcp_bridge_active`, not the raw config flag: the section below teaches
+        // `mcpctl`, which needs the shell. Emitting it for a shell-less agent
+        // would describe a bridge it cannot cross - and the same predicate gates
+        // hiding the `mcp__*` tools, so prompt and tool list never disagree.
+        let mcp_servers: Vec<(String, String)> = if tool_registry.mcp_bridge_active() {
             running_servers
                 .into_iter()
                 .map(|s| {
