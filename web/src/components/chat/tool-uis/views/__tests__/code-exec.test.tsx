@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { NodeView } from "../node";
+import { execTranscript } from "../code-exec";
 import { PythonView } from "../python";
 import { mkProps } from "./helpers";
 
@@ -25,17 +26,20 @@ vi.mock("@/components/ui/code-block", () => ({
     language,
     wrap,
     lineNumbers,
+    copyText,
   }: {
     code: string;
     language?: string;
     wrap?: boolean;
     lineNumbers?: boolean;
+    copyText?: string;
   }) => (
     <pre
       data-testid="code-block"
       data-lang={language ?? ""}
       data-wrap={wrap ? "1" : "0"}
       data-line-numbers={lineNumbers ? "1" : "0"}
+      data-copy-text={copyText ?? ""}
     >
       {code}
     </pre>
@@ -201,5 +205,70 @@ describe("NodeView", () => {
       <NodeView {...mkProps({ toolName: "node", args: {}, result: undefined })} />,
     );
     expect(screen.getByRole("button")).toBeDisabled();
+  });
+});
+
+describe("execTranscript", () => {
+  it("joins the command and its output so a copy carries both", () => {
+    expect(execTranscript("ls -la", "total 0", null)).toBe("ls -la\n\ntotal 0");
+  });
+
+  it("keeps the raw output rather than what the sandbox summary renders", () => {
+    // The panel lifts syd events out of `remainingText` and draws them as a
+    // grouped block, so the parsed view never shows the original line. A paste
+    // of a denial is only useful with that line intact.
+    const raw = '{"cap":"stat","act":"deny","sys":"newfstatat","path":"/"}';
+    expect(execTranscript("mcpctl list", raw, null)).toContain('"path":"/"');
+  });
+
+  it("appends an error that says something the result doesn't", () => {
+    expect(execTranscript("bad", "stdout", "Error: boom")).toBe(
+      "bad\n\nstdout\n\nError: boom",
+    );
+  });
+
+  it("does not repeat an error identical to the result", () => {
+    expect(execTranscript("bad", "Error: boom", "Error: boom")).toBe(
+      "bad\n\nError: boom",
+    );
+  });
+
+  it("omits empty sections rather than leaving blank runs", () => {
+    expect(execTranscript("ls", "", null)).toBe("ls");
+    expect(execTranscript("", "orphan output", null)).toBe("orphan output");
+  });
+});
+
+describe("copy affordance", () => {
+  it("hands the code block the command and output together", () => {
+    render(
+      <PythonView
+        {...mkProps({
+          toolName: "python",
+          args: { code: "print('hello')" },
+          result: "hello",
+        })}
+      />,
+    );
+    expect(screen.getAllByTestId("code-block")[0]).toHaveAttribute(
+      "data-copy-text",
+      "print('hello')\n\nhello",
+    );
+  });
+
+  it("includes the output on the failure path too", () => {
+    render(
+      <NodeView
+        {...mkProps({
+          toolName: "node",
+          args: { code: "throw new Error('x')" },
+          status: { type: "incomplete", reason: "error", error: "Error: x" },
+        })}
+      />,
+    );
+    expect(screen.getAllByTestId("code-block")[0]).toHaveAttribute(
+      "data-copy-text",
+      "throw new Error('x')\n\nError: x",
+    );
   });
 });

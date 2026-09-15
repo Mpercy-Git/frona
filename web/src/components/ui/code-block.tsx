@@ -6,14 +6,14 @@ import { ClipboardDocumentIcon, CheckIcon } from "@heroicons/react/24/outline";
 import { CODE_THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-function CopyButton({ code }: { code: string }) {
+function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(code);
+    navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }, [code]);
+  }, [text]);
 
   return (
     <button
@@ -34,11 +34,19 @@ export function CodeBlock({
   language,
   lineNumbers = false,
   wrap = false,
+  copyText,
 }: {
   code: string;
   language?: string;
   lineNumbers?: boolean;
   wrap?: boolean;
+  /**
+   * What the copy button puts on the clipboard, when that differs from what is
+   * rendered. A panel that shows a command here and its output in sibling
+   * elements passes both, so one click copies the whole thing. Defaults to
+   * `code`, which is what a standalone block wants.
+   */
+  copyText?: string;
 }) {
   const [html, setHtml] = useState<string | null>(null);
 
@@ -85,7 +93,7 @@ export function CodeBlock({
           <code>{code}</code>
         </pre>
       )}
-      <CopyButton code={code} />
+      <CopyButton text={copyText ?? code} />
     </div>
   );
 }
