@@ -35,6 +35,29 @@ export interface CodeExecConfig {
   summarize?: (code: string) => { title: string; subtitle: string };
 }
 
+/**
+ * What the panel's copy button puts on the clipboard: the command and what it
+ * produced, rather than the command alone.
+ *
+ * Built from the *raw* result, not the parsed blocks rendered below it. A
+ * sandbox denial is shown as a tidy summary - capability, count, targets - but
+ * someone copying a failure into a bug report needs the original line it was
+ * summarised from, and `parseShellOutput` has already lifted that out of
+ * `remainingText`. Passing the unparsed text keeps the paste faithful to what
+ * the tool actually emitted.
+ */
+export function execTranscript(
+  code: string,
+  resultText: string,
+  errorText: string | null,
+): string {
+  const parts = [code, resultText];
+  // An error equal to the result is the same text twice; the panel elides it
+  // when rendering for that reason, so the clipboard should too.
+  if (errorText && errorText !== resultText) parts.push(errorText);
+  return parts.filter((part) => part.length > 0).join("\n\n");
+}
+
 export function makeCodeExecView(config: CodeExecConfig): ToolView {
   const Component: FC<ToolViewProps> = ({
     toolName,
@@ -69,6 +92,7 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
 
     const { events: sandboxEvents, remainingText } = parseShellOutput(resultText);
     const sandboxSeverity = bestSeverity(sandboxEvents);
+    const copyText = execTranscript(code, resultText, errorText);
 
     const expandable =
       code.length > 0 || resultText.length > 0 || sandboxEvents.length > 0;
@@ -112,6 +136,7 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
                 language={config.language}
                 wrap={config.wrap}
                 lineNumbers={config.lineNumbers}
+                copyText={copyText}
               />
             )}
             {sandboxEvents.length > 0 && <SandboxBlock events={sandboxEvents} />}
@@ -131,6 +156,7 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
                 language={config.language}
                 wrap={config.wrap}
                 lineNumbers={config.lineNumbers}
+                copyText={copyText}
               />
             )}
             {sandboxEvents.length > 0 && <SandboxBlock events={sandboxEvents} />}
