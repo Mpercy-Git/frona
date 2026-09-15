@@ -336,10 +336,7 @@ fn elsewhere(servers: &[String]) -> String {
         let named = servers.len().min(ELSEWHERE_SERVERS_NAMED);
         let mut list = servers[..named].join(", ");
         if servers.len() > named {
-            list.push_str(&format!(
-                " (+{} more in <mcpservers>)",
-                servers.len() - named
-            ));
+            list.push_str(&format!(" (+{} more connected)", servers.len() - named));
         }
         out.push_str(&format!(
             "- What a connected system knows right now - state, readings, messages, \
@@ -599,7 +596,7 @@ mod elsewhere_tests {
             .map(|i| format!("srv{i}"))
             .collect();
         let out = elsewhere(&servers);
-        assert!(out.contains("(+3 more in <mcpservers>)"), "{out}");
+        assert!(out.contains("(+3 more connected)"), "{out}");
         assert!(!out.contains("srv10"), "{out}");
     }
 }
