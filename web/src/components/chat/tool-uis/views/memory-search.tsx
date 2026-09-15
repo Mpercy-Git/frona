@@ -48,7 +48,10 @@ function parseMemoryResult(text: string): MemoryHit[] | null {
     // The header line ("Top matches - …") and any stray prose don't start an item.
     if (!lines[0].startsWith("- ")) continue;
 
-    const head = lines[0].match(/^-\s+(.*?)\s+\[(.+?)\]\s*$/);
+    // The tag is empty for a page the Classify stage has not typed yet - the backend
+    // emits `- Name  []`. Requiring a non-empty tag here failed the whole parse, so a
+    // single untyped hit dropped the entire result back to raw text.
+    const head = lines[0].match(/^-\s+(.*?)\s+\[(.*?)\]\s*$/);
     if (!head || lines.length < 3) return null;
     const rest = lines.slice(3);
     const openIdx = rest.findIndex((l) => l.trimStart().startsWith("<page"));

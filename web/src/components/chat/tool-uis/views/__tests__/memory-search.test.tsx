@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemorySearchView } from "../memory-search";
@@ -30,22 +33,19 @@ const RESULT = `Top matches — read(<path>) to open one:
   Mina follows football (soccer) and is currently tracking the World Cup.
   /app/data/users/mina/pkm/Memory/topic/football.md`;
 
-// The format the backend emits since page text was inlined: three fixed lines per
-// hit, then a `<page>` block. Reading the path off the last line of the block used
-// to pick up `</page>` and fold the prose into the description.
-const RESULT_WITH_PAGES = `Top matches, page text included — call read(paths=[…]) only for a page whose text is cut off or not shown below:
-
-- Mina  [person]
-  Mina is a software engineer.
-  /app/data/users/mina/pkm/Memory/people/me.md
-<page path="/app/data/users/mina/pkm/Memory/people/me.md">
-Mina lives in Atherton and works on Frona.
-</page>
-
-- Football  [Topic]
-  Mina follows football.
-  /app/data/users/mina/pkm/Memory/topic/football.md
-  (no page text — frontmatter only; read it if you need the attributes)`;
+// The other half of the pairing with the backend. This file is emitted by
+// crates/frona-server/src/memory/pkm/tools.rs and asserted there by
+// `result_shape_matches_the_committed_fixture`; parsing it here is what stops the
+// two drifting apart again. A backend format change fails the Rust test, and
+// regenerating this file to match fails the tests below until the parser is taught
+// the new shape - which is the step that was missing when page text was inlined.
+const FIXTURE = readFileSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../../../../../../resources/fixtures/memory_search_result.txt",
+  ),
+  "utf8",
+);
 
 describe("MemorySearchView", () => {
   it("reads the path and description off their own lines when page text is inlined", () => {
@@ -53,7 +53,7 @@ describe("MemorySearchView", () => {
       <MemorySearchView
         {...mkProps({
           args: { query: "mina" },
-          result: RESULT_WITH_PAGES,
+          result: FIXTURE,
           isExpanded: true,
         })}
       />,
@@ -65,7 +65,24 @@ describe("MemorySearchView", () => {
     expect(screen.getByText("Mina is a software engineer.")).toBeInTheDocument();
     // The page markup must never reach the rendered hit.
     expect(screen.queryByText(/<\/page>/)).not.toBeInTheDocument();
-    expect(screen.getByText(/2 matches/)).toBeInTheDocument();
+    expect(screen.getByText(/3 matches/)).toBeInTheDocument();
+  });
+
+  // Found by the fixture the moment it was shared with the backend: the third hit in
+  // it is an untyped page, which the backend emits as `- Redis  []`. The parser's
+  // regex required a non-empty tag, so that one hit failed the whole parse and the
+  // view fell back to raw text for every result containing an unclassified page.
+  it("parses a hit whose page has not been typed yet", () => {
+    render(
+      <MemorySearchView
+        {...mkProps({ args: { query: "redis" }, result: FIXTURE, isExpanded: true })}
+      />,
+    );
+
+    expect(screen.getByText("Redis")).toBeInTheDocument();
+    expect(screen.getByText("the cache nobody has authored yet")).toBeInTheDocument();
+    // The other hits still render - the failure mode was all-or-nothing.
+    expect(screen.getByText("Mina")).toBeInTheDocument();
   });
 
   it("shows the inlined page text, and copes with a hit that has none", () => {
@@ -73,7 +90,7 @@ describe("MemorySearchView", () => {
       <MemorySearchView
         {...mkProps({
           args: { query: "mina" },
-          result: RESULT_WITH_PAGES,
+          result: FIXTURE,
           isExpanded: true,
         })}
       />,

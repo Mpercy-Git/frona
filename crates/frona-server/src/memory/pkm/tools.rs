@@ -242,11 +242,7 @@ impl SearchTool {
         // Internal (Memory) pages are directory-prefixed under the root; External
         // (User Vault) notes live at their own full vault path and are tagged
         // `[external]` (read-only - the agent may read/cite but never edit them).
-        out.push_str(
-            "Top matches, page text included — call read(paths=[…]) only for a page \
-             whose text is cut off or not shown below, or when you need a page's \
-             frontmatter (attributes, links):\n\n",
-        );
+        out.push_str(RESULT_HEADER);
         for h in hits {
             let (tag, abspath) = match h.origin {
                 EntityOrigin::External => ("external".to_string(), vault.abs_vault_file(&h.path)),
@@ -282,10 +278,7 @@ impl SearchTool {
             } else {
                 "(not written to disk yet — nothing to read; don't search for it again)".to_string()
             };
-            out.push_str(&format!(
-                "- {}  [{tag}]\n  {}\n  {locator}\n",
-                h.name, h.description
-            ));
+            out.push_str(&render_hit_head(&h.name, &tag, &h.description, &locator));
             // The page's own prose, which the agent used to spend a `read` call on for
             // every hit it cared about - the single biggest multiplier on a knowledge
             // question's tool count. It is already in hand (the search row carries the
@@ -304,6 +297,26 @@ impl SearchTool {
 /// it. A knowledge question is usually answered by the top page or two; the budget is
 /// what stops a batch of five queries from answering with a small library.
 const INLINE_TOTAL_CHARS: usize = 6000;
+
+/// The line that opens a result, before the first hit.
+pub(crate) const RESULT_HEADER: &str = "Top matches, page text included — call read(paths=[…]) only for a page \
+     whose text is cut off or not shown below, or when you need a page's \
+     frontmatter (attributes, links):\n\n";
+
+/// The three fixed lines that open one hit: name and tag, description, locator.
+///
+/// This shape is parsed on the other side by the `memory_search` tool view
+/// (`web/src/components/chat/tool-uis/views/memory-search.tsx`), which reads each
+/// line by position and treats everything after these three as the page block. The
+/// two are pinned together by `resources/fixtures/memory_search_result.txt`: this
+/// crate's `result_shape_matches_the_committed_fixture` asserts the fixture is what
+/// we emit, and the view's own test asserts the fixture is what it can parse. A
+/// format change fails the first; regenerating the fixture to match then fails the
+/// second until the parser is taught the new shape. Inlining the page text broke
+/// that view precisely because nothing connected the two files.
+pub(crate) fn render_hit_head(name: &str, tag: &str, description: &str, locator: &str) -> String {
+    format!("- {name}  [{tag}]\n  {description}\n  {locator}\n")
+}
 
 /// At most this many server handles are named before the list is summarised - enough
 /// to point somewhere without turning a refusal into an inventory.
@@ -468,6 +481,90 @@ impl CitePageTool {
              Citing only biases future ranking, so nothing is lost: answer from what \
              you already read. Do NOT search again to find a citable path."
         ))
+    }
+}
+
+/// The committed sample of a `memory_search` result, shared with the web tool view.
+///
+/// Built from the same helpers the tool emits with, so it cannot drift from the code
+/// while still matching the file: `result_shape_matches_the_committed_fixture` fails
+/// if the emitted shape changes, and the view's test fails if the file changes into
+/// something its parser cannot read.
+#[cfg(test)]
+fn sample_result() -> String {
+    let mut out = String::from(RESULT_HEADER);
+
+    // A hit with inlined page text - the common case.
+    out.push_str(&render_hit_head(
+        "Mina",
+        "person",
+        "Mina is a software engineer.",
+        "/app/data/users/mina/pkm/Memory/people/me.md",
+    ));
+    out.push_str(&format!(
+        "<page path=\"{}\">\n{}\n</page>\n",
+        "/app/data/users/mina/pkm/Memory/people/me.md",
+        "Mina lives in Atherton and works on Frona."
+    ));
+    out.push('\n');
+
+    // A hit whose page is frontmatter only, so a note stands in for the block.
+    out.push_str(&render_hit_head(
+        "Football",
+        "Topic",
+        "Mina follows football.",
+        "/app/data/users/mina/pkm/Memory/topic/football.md",
+    ));
+    out.push_str("  (no page text — frontmatter only; read it if you need the attributes)\n");
+    out.push('\n');
+
+    // A hit the Author stage has not written to disk: no path to read, no block.
+    out.push_str(&render_hit_head(
+        "Redis",
+        "",
+        "the cache nobody has authored yet",
+        "(not written to disk yet — nothing to read; don't search for it again)",
+    ));
+    out.push('\n');
+
+    out
+}
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+
+    fn fixture_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("resources")
+            .join("fixtures")
+            .join("memory_search_result.txt")
+    }
+
+    /// One half of the pairing. The other half lives in the web tool view's test,
+    /// which parses this same file. Changing the emitted shape fails here; making
+    /// the file match again fails there until the parser is updated too.
+    #[test]
+    fn result_shape_matches_the_committed_fixture() {
+        let path = fixture_path();
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        let emitted = sample_result();
+        if committed != emitted {
+            // Write the current shape next to the fixture so the diff is one command
+            // away, rather than making the developer reconstruct it from an assert.
+            let actual = path.with_extension("actual.txt");
+            let _ = std::fs::write(&actual, &emitted);
+            panic!(
+                "the emitted memory_search shape no longer matches {}.\n\nIf the format \
+                 change is intended, copy {} over it - and then fix \
+                 web/src/components/chat/tool-uis/views/memory-search.tsx, whose test \
+                 parses the same file and will now fail.",
+                path.display(),
+                actual.display(),
+            );
+        }
     }
 }
 

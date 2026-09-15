@@ -1,0 +1,18 @@
+Top matches, page text included — call read(paths=[…]) only for a page whose text is cut off or not shown below, or when you need a page's frontmatter (attributes, links):
+
+- Mina  [person]
+  Mina is a software engineer.
+  /app/data/users/mina/pkm/Memory/people/me.md
+<page path="/app/data/users/mina/pkm/Memory/people/me.md">
+Mina lives in Atherton and works on Frona.
+</page>
+
+- Football  [Topic]
+  Mina follows football.
+  /app/data/users/mina/pkm/Memory/topic/football.md
+  (no page text — frontmatter only; read it if you need the attributes)
+
+- Redis  []
+  the cache nobody has authored yet
+  (not written to disk yet — nothing to read; don't search for it again)
+

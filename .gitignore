@@ -36,3 +36,7 @@ Thumbs.db
 # path here makes cargo build an invalid library path on Linux/macOS and every
 # build fails before compiling. Keep it local, never commit it.
 /.cargo/config.toml
+
+# Written by the memory_search fixture test when the emitted shape drifts, so the
+# diff against the committed fixture is one command away. Never committed.
+resources/fixtures/*.actual.txt
