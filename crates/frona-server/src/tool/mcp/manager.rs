@@ -386,7 +386,7 @@ impl McpManager {
         log_path_override: Option<std::path::PathBuf>,
         token_guard: Option<EphemeralTokenGuard>,
     ) -> Result<Vec<ToolDefinition>, AppError> {
-        let cached = client.cached_tools().await;
+        let cached = client.cached_tools();
         let tools: Vec<ToolDefinition> = cached
             .into_iter()
             .map(|c| ToolDefinition {
@@ -551,6 +551,50 @@ impl McpManager {
         &self,
     ) -> tokio::sync::RwLockWriteGuard<'_, std::collections::HashMap<String, McpConnection>> {
         self.connections.write().await
+    }
+
+    pub async fn supports_resources(&self, server_id: &str) -> bool {
+        self.connections
+            .read()
+            .await
+            .get(server_id)
+            .is_some_and(|c| c.client.supports_resources())
+    }
+
+    pub async fn list_resources(
+        &self,
+        server_id: &str,
+    ) -> Result<Vec<rmcp::model::Resource>, AppError> {
+        let connections = self.connections.read().await;
+        let connection = connections
+            .get(server_id)
+            .ok_or_else(|| AppError::Tool(format!("MCP server not running: {server_id}")))?;
+        connection.client.list_resources().await
+    }
+
+    pub async fn read_resource(
+        &self,
+        server_id: &str,
+        uri: &str,
+    ) -> Result<rmcp::model::ReadResourceResult, AppError> {
+        let connections = self.connections.read().await;
+        let connection = connections
+            .get(server_id)
+            .ok_or_else(|| AppError::Tool(format!("MCP server not running: {server_id}")))?;
+        connection.client.read_resource(uri).await
+    }
+
+    /// The live tool-list slot for a running server, so `McpTool` can track
+    /// `tools/list_changed` instead of freezing the handshake snapshot.
+    pub async fn tool_cache_handle(
+        &self,
+        server_id: &str,
+    ) -> Option<Arc<std::sync::RwLock<Vec<super::models::CachedMcpTool>>>> {
+        self.connections
+            .read()
+            .await
+            .get(server_id)
+            .map(|c| c.client.tool_cache_handle())
     }
 
     pub async fn restart_count(&self, server_id: &str) -> u32 {

@@ -71,7 +71,7 @@ async fn spawn_fake_server() -> McpClient {
 async fn connect_seeds_tool_cache() {
     let client = spawn_fake_server().await;
 
-    let cached = client.cached_tools().await;
+    let cached = client.cached_tools();
     let names: Vec<&str> = cached.iter().map(|t| t.name.as_str()).collect();
     assert!(names.contains(&"echo"), "missing echo tool: {names:?}");
     assert!(names.contains(&"add"), "missing add tool: {names:?}");
@@ -145,7 +145,7 @@ async fn refresh_tools_returns_live_server_state() {
     let refreshed = client.refresh_tools().await.expect("refresh_tools");
     assert_eq!(refreshed.len(), 2);
 
-    let cached = client.cached_tools().await;
+    let cached = client.cached_tools();
     assert_eq!(cached.len(), 2);
 
     client.shutdown().await.unwrap();
