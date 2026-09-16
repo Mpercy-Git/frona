@@ -775,6 +775,8 @@ impl McpServerService {
                 self.manager.clone(),
                 server.handle.as_str(),
                 tool_cache,
+                server.id.clone(),
+                self.manager.supports_resources(&server.id).await,
             ));
             self.tool_manager
                 .register_user_tool(user_id, mcp_tool)

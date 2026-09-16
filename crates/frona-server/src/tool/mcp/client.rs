@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rmcp::ServiceExt;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Implementation,
-    ServerPeerInfo, Tool,
+    ReadResourceRequestParams, ReadResourceResult, Resource, ServerPeerInfo, Tool,
 };
 use rmcp::service::{NotificationContext, RoleClient, RunningService};
 use rmcp::transport::IntoTransport;
@@ -99,7 +99,10 @@ impl McpClient {
             .list_all_tools()
             .await
             .map_err(|e| AppError::Tool(format!("MCP tools/list failed: {e}")))?;
-        store_tools(&cached_tools, tools.into_iter().map(cached_from_rmcp_tool).collect());
+        store_tools(
+            &cached_tools,
+            tools.into_iter().map(cached_from_rmcp_tool).collect(),
+        );
 
         Ok(Self {
             running,
@@ -131,6 +134,30 @@ impl McpClient {
     /// than freezing the list it was built with.
     pub fn tool_cache_handle(&self) -> Arc<RwLock<Vec<CachedMcpTool>>> {
         self.cached_tools.clone()
+    }
+
+    /// Whether the server declared the `resources` capability during initialize.
+    /// Servers that never offer resources should not grow resource tools they would
+    /// only reject.
+    pub fn supports_resources(&self) -> bool {
+        self.running
+            .peer_info()
+            .and_then(|info| info.capabilities.resources.clone())
+            .is_some()
+    }
+
+    pub async fn list_resources(&self) -> Result<Vec<Resource>, AppError> {
+        self.running
+            .list_all_resources()
+            .await
+            .map_err(|e| AppError::Tool(format!("MCP resources/list failed: {e}")))
+    }
+
+    pub async fn read_resource(&self, uri: &str) -> Result<ReadResourceResult, AppError> {
+        self.running
+            .read_resource(ReadResourceRequestParams::new(uri.to_string()))
+            .await
+            .map_err(|e| AppError::Tool(format!("MCP resources/read failed for {uri}: {e}")))
     }
 
     pub async fn call_tool(
