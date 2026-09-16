@@ -238,9 +238,18 @@ pub async fn text_inference_with_tools(
 /// the key that carried it - and "expected a sequence" with no field named is not something a
 /// model can act on. Observed: a `submit` whose `distinct_because` was a JSON-encoded string
 /// drew the nesting advice, was resubmitted unchanged, and exhausted the budget.
-fn deserialize_submission<T: serde::de::DeserializeOwned>(
-    args: serde_json::Value,
-) -> Result<T, String> {
+///
+/// **The repair.** Better than a good error message is not needing one. When the only fault
+/// is a field the model serialised by hand - valid JSON sitting inside a string where the
+/// schema wants an array or object - the value is decoded in place and the payload retried.
+/// Two guards keep that from accepting something the model didn't mean: `T`'s own schema has
+/// to say that field takes the kind of thing the string decoded to, and the whole repaired
+/// payload still has to deserialize as `T`. A submission recovered here costs nothing; the
+/// same submission explained back costs a round trip, and the correction is not always taken.
+fn deserialize_submission<T>(args: serde_json::Value) -> Result<T, String>
+where
+    T: schemars::JsonSchema + serde::de::DeserializeOwned,
+{
     let first = match serde_path_to_error::deserialize::<_, T>(args.clone()) {
         Ok(v) => return Ok(v),
         Err(e) => e,
@@ -259,6 +268,14 @@ fn deserialize_submission<T: serde::de::DeserializeOwned>(
         tracing::debug!(wrapper = %key, "unwrapped a submission nested one level down");
         return Ok(v);
     }
+    if let Some(repaired) = submission_validator::<T>()
+        .as_ref()
+        .and_then(|validator| repair_json_text_fields(&args, validator))
+        && let Ok(v) = serde_json::from_value::<T>(repaired)
+    {
+        tracing::debug!("decoded JSON text in structured submission fields");
+        return Ok(v);
+    }
     let path = first.path().to_string();
     let cause = first.into_inner().to_string();
     let located = if path.is_empty() || path == "." {
@@ -270,6 +287,54 @@ fn deserialize_submission<T: serde::de::DeserializeOwned>(
         "{located}{}",
         describe_payload(&args, &path, &cause)
     ))
+}
+
+/// `T`'s own JSON schema, compiled for validation. `None` when the schema cannot be built
+/// or compiled, which only costs the repair attempt - the decode error is reported either way.
+fn submission_validator<T: schemars::JsonSchema>() -> Option<jsonschema::Validator> {
+    let schema = serde_json::to_value(schemars::schema_for!(T)).ok()?;
+    jsonschema::validator_for(&schema).ok()
+}
+
+/// Decode model-authored arrays or objects that arrived as JSON inside a string. A schema
+/// type error selects the field, so a string that merely *looks* like JSON is left alone
+/// wherever the schema wanted a string; the caller still re-checks the whole payload
+/// against `T` before accepting it.
+fn repair_json_text_fields(
+    args: &serde_json::Value,
+    validator: &jsonschema::Validator,
+) -> Option<serde_json::Value> {
+    let repairs = validator
+        .iter_errors(args)
+        .filter_map(|error| {
+            let jsonschema::error::ValidationErrorKind::Type { kind } = error.kind() else {
+                return None;
+            };
+            let serde_json::Value::String(text) = error.instance().as_ref() else {
+                return None;
+            };
+            let parsed = serde_json::from_str::<serde_json::Value>(text).ok()?;
+            let parsed_type = match parsed {
+                serde_json::Value::Array(_) => jsonschema::JsonType::Array,
+                serde_json::Value::Object(_) => jsonschema::JsonType::Object,
+                _ => return None,
+            };
+            let expected_type = match kind {
+                jsonschema::error::TypeKind::Single(expected) => *expected == parsed_type,
+                jsonschema::error::TypeKind::Multiple(expected) => expected.contains(parsed_type),
+            };
+            expected_type.then(|| (error.instance_path().to_string(), parsed))
+        })
+        .collect::<Vec<_>>();
+    if repairs.is_empty() {
+        return None;
+    }
+
+    let mut repaired = args.clone();
+    for (path, value) in repairs {
+        *repaired.pointer_mut(&path)? = value;
+    }
+    Some(repaired)
 }
 
 /// A short, factual description of what the model actually sent, appended to a serde error.
@@ -591,7 +656,7 @@ where
 mod submission_tests {
     use super::*;
 
-    #[derive(Debug, PartialEq, serde::Deserialize)]
+    #[derive(Debug, PartialEq, serde::Deserialize, schemars::JsonSchema)]
     struct Classification {
         classes: Vec<String>,
         #[serde(default)]
@@ -672,6 +737,11 @@ mod submission_tests {
     /// nesting advice: the model already put the fields at the top level, so being told to
     /// move them is a fault it cannot find. This is the submission from the observed
     /// `topics/2026-f1-season` failure, reduced - `distinct_because` sent as text.
+    ///
+    /// It also pins the repair's second guard: the string parses as an array, so the schema
+    /// type matches and a repair is attempted, but the elements are objects where strings
+    /// belong. The repaired payload fails to deserialize, so the repair is discarded and the
+    /// model gets the diagnosis rather than a silently wrong answer.
     #[test]
     fn a_wrong_value_type_is_not_blamed_on_nesting() {
         let args = serde_json::json!({
@@ -691,6 +761,32 @@ mod submission_tests {
             err.contains("not a string containing it"),
             "names the real defect: {err}"
         );
+    }
+
+    /// The repair: a field the model serialised by hand is decoded in place rather than
+    /// explained back to it. One round trip saved, and the correction is not always taken.
+    #[test]
+    fn a_json_encoded_field_is_decoded_rather_than_reported() {
+        let args = serde_json::json!({
+            "classes": ["schema:Person"],
+            "relations": "[\"works for\"]",
+        });
+        let got: Classification = deserialize_submission(args).expect("repaired");
+        assert_eq!(got.classes, ["schema:Person"]);
+        assert_eq!(got.relations, ["works for"]);
+    }
+
+    /// The schema is what licenses a repair. A string field whose contents happen to parse
+    /// as JSON is the value the model meant, so it is left exactly as sent.
+    #[test]
+    fn a_string_field_holding_json_text_is_left_alone() {
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        struct Note {
+            body: String,
+        }
+        let args = serde_json::json!({ "body": "[1, 2, 3]" });
+        let got: Note = deserialize_submission(args).expect("no repair needed");
+        assert_eq!(got.body, "[1, 2, 3]", "the string survives untouched");
     }
 
     /// A string where a string belongs but the *contents* are wrong is not double-encoding,
