@@ -386,7 +386,7 @@ impl McpManager {
         log_path_override: Option<std::path::PathBuf>,
         token_guard: Option<EphemeralTokenGuard>,
     ) -> Result<Vec<ToolDefinition>, AppError> {
-        let cached = client.cached_tools().await;
+        let cached = client.cached_tools();
         let tools: Vec<ToolDefinition> = cached
             .into_iter()
             .map(|c| ToolDefinition {
@@ -551,6 +551,19 @@ impl McpManager {
         &self,
     ) -> tokio::sync::RwLockWriteGuard<'_, std::collections::HashMap<String, McpConnection>> {
         self.connections.write().await
+    }
+
+    /// The live tool-list slot for a running server, so `McpTool` can track
+    /// `tools/list_changed` instead of freezing the handshake snapshot.
+    pub async fn tool_cache_handle(
+        &self,
+        server_id: &str,
+    ) -> Option<Arc<std::sync::RwLock<Vec<super::models::CachedMcpTool>>>> {
+        self.connections
+            .read()
+            .await
+            .get(server_id)
+            .map(|c| c.client.tool_cache_handle())
     }
 
     pub async fn restart_count(&self, server_id: &str) -> u32 {

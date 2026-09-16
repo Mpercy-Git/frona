@@ -765,11 +765,16 @@ impl McpServerService {
             .collect();
         self.repo.update(&server).await?;
 
-        if !tools.is_empty() {
+        // Hand the tool the live cache rather than this snapshot: a gated server
+        // advertises its full set only after something unlocks it, and that
+        // `tools/list_changed` has to reach the agent without a restart.
+        if !tools.is_empty()
+            && let Some(tool_cache) = self.manager.tool_cache_handle(&server.id).await
+        {
             let mcp_tool = Arc::new(super::mcp_tool::McpTool::new(
                 self.manager.clone(),
                 server.handle.as_str(),
-                tools.clone(),
+                tool_cache,
             ));
             self.tool_manager
                 .register_user_tool(user_id, mcp_tool)

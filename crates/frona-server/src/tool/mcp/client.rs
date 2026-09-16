@@ -8,7 +8,7 @@ use rmcp::model::{
 use rmcp::service::{NotificationContext, RoleClient, RunningService};
 use rmcp::transport::IntoTransport;
 use rmcp::{ClientHandler, ErrorData as McpError};
-use tokio::sync::RwLock;
+use std::sync::RwLock;
 
 use crate::core::error::AppError;
 
@@ -29,6 +29,20 @@ impl McpClientHandler {
             client_info,
         }
     }
+
+    fn store(&self, tools: Vec<CachedMcpTool>) {
+        store_tools(&self.cached_tools, tools);
+    }
+}
+
+/// A poisoned lock here would mean a panic while swapping the list; the tool list is
+/// cache, not state to die over, so recover the guard rather than propagate.
+fn store_tools(slot: &RwLock<Vec<CachedMcpTool>>, tools: Vec<CachedMcpTool>) {
+    *slot.write().unwrap_or_else(|e| e.into_inner()) = tools;
+}
+
+fn read_tools(slot: &RwLock<Vec<CachedMcpTool>>) -> Vec<CachedMcpTool> {
+    slot.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 impl ClientHandler for McpClientHandler {
@@ -43,7 +57,7 @@ impl ClientHandler for McpClientHandler {
                     .into_iter()
                     .map(cached_from_rmcp_tool)
                     .collect::<Vec<_>>();
-                *self.cached_tools.write().await = converted;
+                self.store(converted);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to refresh MCP tool list after notification");
@@ -85,7 +99,7 @@ impl McpClient {
             .list_all_tools()
             .await
             .map_err(|e| AppError::Tool(format!("MCP tools/list failed: {e}")))?;
-        *cached_tools.write().await = tools.into_iter().map(cached_from_rmcp_tool).collect();
+        store_tools(&cached_tools, tools.into_iter().map(cached_from_rmcp_tool).collect());
 
         Ok(Self {
             running,
@@ -102,12 +116,21 @@ impl McpClient {
             .await
             .map_err(|e| AppError::Tool(format!("MCP tools/list failed: {e}")))?;
         let converted: Vec<CachedMcpTool> = tools.into_iter().map(cached_from_rmcp_tool).collect();
-        *self.cached_tools.write().await = converted.clone();
+        store_tools(&self.cached_tools, converted.clone());
         Ok(converted)
     }
 
-    pub async fn cached_tools(&self) -> Vec<CachedMcpTool> {
-        self.cached_tools.read().await.clone()
+    /// The server's current tool list. Synchronous on purpose: `AgentTool::definitions`
+    /// is a sync trait method, and `McpTool` reads this on every registry build so a
+    /// `tools/list_changed` actually reaches the agent.
+    pub fn cached_tools(&self) -> Vec<CachedMcpTool> {
+        read_tools(&self.cached_tools)
+    }
+
+    /// The shared slot itself, for handing to `McpTool` so it tracks refreshes rather
+    /// than freezing the list it was built with.
+    pub fn tool_cache_handle(&self) -> Arc<RwLock<Vec<CachedMcpTool>>> {
+        self.cached_tools.clone()
     }
 
     pub async fn call_tool(

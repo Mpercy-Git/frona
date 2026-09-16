@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -7,19 +7,32 @@ use crate::core::error::AppError;
 use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 
 use super::manager::McpManager;
+use super::models::CachedMcpTool;
 
 pub struct McpTool {
     manager: Arc<McpManager>,
     owner_name: String,
-    cached_definitions: Vec<ToolDefinition>,
+    slug: String,
+    /// The live tool list shared with `McpClient`, not a copy. A gated MCP server
+    /// advertises a subset at handshake and announces the rest later (`tools/list_changed`)
+    /// once unlocked - e.g. a server whose entry tool hands out a
+    /// "read the guide first" acknowledgement key. Holding the startup snapshot meant
+    /// the client learned about those tools and the agent never did, and no restart
+    /// fixed it because the handshake happens while the server is still locked.
+    tool_cache: Arc<RwLock<Vec<CachedMcpTool>>>,
 }
 
 impl McpTool {
-    pub fn new(manager: Arc<McpManager>, slug: &str, definitions: Vec<ToolDefinition>) -> Self {
+    pub fn new(
+        manager: Arc<McpManager>,
+        slug: &str,
+        tool_cache: Arc<RwLock<Vec<CachedMcpTool>>>,
+    ) -> Self {
         Self {
             manager,
             owner_name: format!("mcp__{slug}"),
-            cached_definitions: definitions,
+            slug: slug.to_string(),
+            tool_cache,
         }
     }
 }
@@ -31,7 +44,17 @@ impl AgentTool for McpTool {
     }
 
     fn definitions(&self) -> Vec<ToolDefinition> {
-        self.cached_definitions.clone()
+        self.tool_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|c| ToolDefinition {
+                id: format!("mcp__{}__{}", self.slug, c.name),
+                provider_id: format!("mcp:{}", self.slug),
+                description: c.description.clone(),
+                parameters: c.input_schema.clone(),
+            })
+            .collect()
     }
 
     async fn execute(
