@@ -19,9 +19,9 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080
       - SEARXNG_SECRET=change-me-to-something-random
-    configs:
-      - source: searxng-settings
-        target: /etc/searxng/settings.yml
+      - FORCE_OWNERSHIP=false
+    volumes:
+      - ./dev/searxng-settings.yml:/etc/searxng/settings.yml:ro
     restart: ${CONTAINER_RESTART_POLICY:-unless-stopped}
 
   frona-dev:
@@ -87,9 +87,6 @@ services:
       - FRONA_VOICE_TWILIO_VOICE_ID
       - FRONA_VOICE_TWILIO_SPEECH_MODEL
       - FRONA_VOICE_TWILIO_TTS_PROVIDER
-      - FRONA_VOICE_PLIVO_AUTH_ID
-      - FRONA_VOICE_PLIVO_AUTH_TOKEN
-      - FRONA_VOICE_PLIVO_FROM_NUMBER
       - FRONA_VOICE_INBOUND_ENABLED
       - FRONA_VOICE_INBOUND_USER_ID
       - FRONA_VOICE_INBOUND_AGENT_ID
@@ -131,9 +128,6 @@ services:
       - FRONA_VOICE_TWILIO_VOICE_ID
       - FRONA_VOICE_TWILIO_SPEECH_MODEL
       - FRONA_VOICE_TWILIO_TTS_PROVIDER
-      - FRONA_VOICE_PLIVO_AUTH_ID
-      - FRONA_VOICE_PLIVO_AUTH_TOKEN
-      - FRONA_VOICE_PLIVO_FROM_NUMBER
       - FRONA_VOICE_INBOUND_ENABLED
       - FRONA_VOICE_INBOUND_USER_ID
       - FRONA_VOICE_INBOUND_AGENT_ID
@@ -160,32 +154,6 @@ services:
       - NGROK_AUTHTOKEN
     ports:
       - "4040:4040"
-
-configs:
-  searxng-settings:
-    content: |
-      # `remove`, not `disabled`: SearXNG loads disabled engines too, and
-      # these three can't load here. ahmia and torch are onion engines,
-      # skipped (and logged as an error) whenever Tor isn't configured;
-      # wikidata's init calls query.wikidata.org, which 403s most
-      # self-hosted instances. Frona reads SearXNG's plain results and
-      # ignores infoboxes, so losing wikidata costs it nothing -- drop the
-      # line if your instance can reach WDQS.
-      use_default_settings:
-        engines:
-          remove:
-            - ahmia
-            - torch
-            - wikidata
-      server:
-        limiter: false
-      engines:
-        - name: radio browser
-          disabled: true
-      search:
-        formats:
-          - html
-          - json
 
 volumes:
   cargo-cache:

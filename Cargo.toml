@@ -4,6 +4,12 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
+# The development/fallback version, deliberately NOT bumped per release: doing
+# so changes every crate's fingerprint and forces a full recompile inside the
+# Docker build. Release images carry their real version in `FRONA_VERSION`
+# (a build-arg set from the git tag), which `core::app_version` prefers over
+# this value - so a published image reports its tag, not what is written here.
+# This number is what a locally built binary reports.
 version = "2026.8.5"
 
 [workspace.dependencies]

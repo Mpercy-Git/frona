@@ -30,7 +30,6 @@ The features and fixes below have been added on top of upstream. They are mainta
 Upstream Frona can only place **outbound** calls via Twilio. This fork adds full **inbound call answering**:
 
 - **Answer incoming calls** and route them to an agent, with a **per-user allowlist** that locks who can reach which agent (malformed rows are skipped gracefully, ownership is enforced)
-- **Plivo voice provider** alongside Twilio — pick `twilio`, `plivo`, or `none`
 - **ElevenLabs TTS** for Twilio ConversationRelay (in addition to the default Polly)
 - **Agent-narrated silence filling** — the agent speaks contextual filler during long tool calls instead of dead air, staying silent on outbound narration and narrating on inbound
 - **Caller resolution by handle or name**, not just user ID, with a username (handle) inbound fallback
@@ -196,7 +195,7 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 - **App deployment:** agents build and deploy web applications and services on your behalf, with an approval workflow before anything goes live
 - **Skills:** instruction packages that teach agents new capabilities. Install shared skills or create agent-specific ones
 - **Scheduling and heartbeats:** recurring tasks via cron and agent-managed heartbeat checklists for ongoing monitoring
-- **Voice calls:** inbound *and* outbound phone calls via Twilio or Plivo, with speech recognition, DTMF navigation, streaming agent speech, and ElevenLabs or Polly TTS (optional). Answering inbound calls is a [fork enhancement](#-inbound-voice-calls-upstream-is-outbound-only)
+- **Voice calls:** inbound *and* outbound phone calls via Twilio, with speech recognition, DTMF navigation, streaming agent speech, and ElevenLabs or Polly TTS (optional). Answering inbound calls is a [fork enhancement](#-inbound-voice-calls-upstream-is-outbound-only)
 - **Agent-to-agent delegation:** agents hand off tasks to specialized agents and get results back
 - **Sharing:** hand another registered user an agent to run (without letting them edit it) or a chat to read, with optional credential delegation on shared agents
 - **Spaces:** group conversations that share context. The platform summarizes linked conversations and feeds the context into new chats
@@ -305,7 +304,7 @@ Anything else that speaks the OpenAI `/chat/completions` API — vLLM, LM Studio
 
 **Search:** SearXNG (self-hosted), Tavily, Brave Search.
 
-**Voice:** Twilio and Plivo, with ElevenLabs or Polly TTS — inbound *and* outbound calls (inbound answering is a [fork enhancement](#-fork-enhancements--unique-to-this-repository)).
+**Voice:** Twilio, with ElevenLabs or Polly TTS — inbound *and* outbound calls (inbound answering is a [fork enhancement](#-fork-enhancements--unique-to-this-repository)).
 
 **Channels:** Telegram, Slack, Discord, WhatsApp Cloud API, WhatsApp Personal, Signal, and Twilio SMS. WhatsApp Personal and Signal use linked-device integrations; review the provider-specific notices in the [channel documentation](https://docs.frona.ai/platform/agents/channels/overview.html) before enabling them.
 
