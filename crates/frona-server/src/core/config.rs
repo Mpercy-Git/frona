@@ -1235,7 +1235,7 @@ impl Default for InferenceConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct VoiceConfig {
-    #[schemars(description = "Voice provider (twilio, plivo, or none).")]
+    #[schemars(description = "Voice provider (twilio, or none).")]
     pub provider: Option<String>,
     #[schemars(description = "Twilio account SID.")]
     pub twilio_account_sid: Option<String>,
@@ -1255,12 +1255,6 @@ pub struct VoiceConfig {
         description = "How readily the agent yields when the caller starts speaking: low, medium, or high. Higher cuts the agent off sooner but false-triggers on background noise. Defaults to medium."
     )]
     pub twilio_interrupt_sensitivity: Option<String>,
-    #[schemars(description = "Plivo auth ID.")]
-    pub plivo_auth_id: Option<String>,
-    #[schemars(description = "Plivo auth token.")]
-    pub plivo_auth_token: Option<String>,
-    #[schemars(description = "Plivo phone number to call from.")]
-    pub plivo_from_number: Option<String>,
     #[schemars(
         description = "Public-facing base URL for voice callbacks. Overrides server.base_url for voice only."
     )]
@@ -1800,8 +1794,6 @@ pub const SENSITIVE_PATHS: &[&[&str]] = &[
     &["sso", "client_secret"],
     &["voice", "twilio_account_sid"],
     &["voice", "twilio_auth_token"],
-    &["voice", "plivo_auth_id"],
-    &["voice", "plivo_auth_token"],
     &["vault", "onepassword_service_account_token"],
     &["vault", "bitwarden_client_secret"],
     &["vault", "bitwarden_master_password"],

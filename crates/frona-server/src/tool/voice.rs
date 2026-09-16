@@ -310,126 +310,6 @@ impl VoiceProvider for TwilioProvider {
 }
 
 // ---------------------------------------------------------------------------
-// PlivoProvider
-// ---------------------------------------------------------------------------
-
-pub struct PlivoProvider {
-    pub auth_id: String,
-    pub auth_token: String,
-    pub from_number: String,
-    pub base_url: String,
-    pub token_service: TokenService,
-    pub keypair_service: KeyPairService,
-    pub callback_ttl_secs: u64,
-    pub http_client: reqwest::Client,
-}
-
-#[async_trait]
-impl VoiceProvider for PlivoProvider {
-    fn name(&self) -> &str {
-        "plivo"
-    }
-
-    async fn initiate_call(
-        &self,
-        to: &str,
-        chat_id: &str,
-        user: &User,
-        agent_id: &str,
-        welcome_greeting: Option<&str>,
-        hints: Option<&str>,
-        contact_id: Option<String>,
-        transfer_note: Option<&str>,
-    ) -> Result<String, AppError> {
-        let extensions = serde_json::to_value(VoiceCallbackExtensions {
-            chat_id: chat_id.to_string(),
-            welcome_greeting: welcome_greeting.map(str::to_string),
-            hints: hints.map(str::to_string),
-            contact_id,
-            transfer_note: transfer_note.map(str::to_string),
-        })
-        .map_err(|e| AppError::Internal(format!("voice callback claims encode: {e}")))?;
-
-        let created = self
-            .token_service
-            .create_token(
-                &self.keypair_service,
-                user,
-                CreateTokenRequest {
-                    token_type: TokenType::Access,
-                    principal: Principal::agent(agent_id),
-                    ttl_secs: self.callback_ttl_secs,
-                    name: "voice_callback".into(),
-                    scopes: Vec::new(),
-                    refresh_pair_id: None,
-                    extensions: Some(extensions),
-                },
-            )
-            .await?;
-
-        let answer_url = format!(
-            "{}/api/voice/twilio/callback?token={}",
-            self.base_url, created.jwt
-        );
-
-        // Plivo REST API: POST https://api.plivo.com/v1/Account/{auth_id}/Call/
-        let url = format!("https://api.plivo.com/v1/Account/{}/Call/", self.auth_id);
-
-        let body = serde_json::json!({
-            "from": self.from_number,
-            "to": to,
-            "answer_url": answer_url,
-            "answer_method": "POST",
-        });
-
-        // Plivo doesn't have ConversationRelay like Twilio — we pass the
-        // answer_url which returns our TwiML/XML when the call is answered.
-        // The callback handler will generate the appropriate response.
-
-        let resp = self
-            .http_client
-            .post(&url)
-            .basic_auth(&self.auth_id, Some(&self.auth_token))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AppError::Tool(format!("Plivo API request failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Tool(format!("Plivo API error {status}: {text}")));
-        }
-
-        let result: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Tool(format!("Plivo response parse error: {e}")))?;
-
-        // Plivo returns request_uuid as the call identifier
-        let call_uuid = result
-            .get("request_uuid")
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                result
-                    .get("request_uuid")
-                    .and_then(|v| v.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|v| v.as_str())
-            })
-            .unwrap_or("")
-            .to_string();
-
-        if call_uuid.is_empty() {
-            return Err(AppError::Tool("Plivo API returned no request_uuid".into()));
-        }
-
-        Ok(call_uuid)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -439,15 +319,10 @@ pub fn create_voice_provider(
     token_service: TokenService,
     keypair_service: KeyPairService,
 ) -> Option<Arc<dyn VoiceProvider>> {
-    let provider = config.provider.as_deref().or_else(|| {
-        if config.twilio_account_sid.is_some() {
-            Some("twilio")
-        } else if config.plivo_auth_id.is_some() {
-            Some("plivo")
-        } else {
-            None
-        }
-    })?;
+    let provider = config
+        .provider
+        .as_deref()
+        .or_else(|| config.twilio_account_sid.is_some().then_some("twilio"))?;
 
     match provider.to_lowercase().as_str() {
         "twilio" => {
@@ -466,23 +341,12 @@ pub fn create_voice_provider(
                 callback_ttl_secs: 300,
             }))
         }
-        "plivo" => {
-            let auth_id = config.plivo_auth_id.clone()?;
-            let auth_token = config.plivo_auth_token.clone()?;
-            let from_number = config.plivo_from_number.clone()?;
-            Some(Arc::new(PlivoProvider {
-                auth_id,
-                auth_token,
-                from_number,
-                base_url: base_url.to_string(),
-                token_service,
-                keypair_service,
-                callback_ttl_secs: 300,
-                http_client: reqwest::Client::new(),
-            }))
-        }
         other => {
-            tracing::warn!(provider = %other, "Unknown voice provider; voice calling disabled");
+            tracing::warn!(
+                provider = %other,
+                "Unsupported voice provider; voice calling disabled. The only provider is \
+                 `twilio` - set voice.provider to that, or remove it to disable voice"
+            );
             None
         }
     }

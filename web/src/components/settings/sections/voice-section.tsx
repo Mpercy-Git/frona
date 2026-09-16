@@ -17,10 +17,7 @@ interface VoiceSectionProps {
   onChange: (voice: VoiceConfig) => void;
 }
 
-const voiceProviders = [
-  { value: "twilio", label: "Twilio" },
-  { value: "plivo", label: "Plivo" },
-];
+const voiceProviders = [{ value: "twilio", label: "Twilio" }];
 
 const interruptSensitivities = [
   { value: "low", label: "Low" },
@@ -31,7 +28,6 @@ const interruptSensitivities = [
 function inferProvider(voice: VoiceConfig): string | null {
   if (voice.provider) return voice.provider;
   if (isSensitiveSet(voice.twilio_account_sid)) return "twilio";
-  if (isSensitiveSet(voice.plivo_auth_id)) return "plivo";
   return null;
 }
 
@@ -169,41 +165,6 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
         </>
       )}
 
-      {effectiveProvider === "plivo" && (
-        <>
-          <SensitiveInput
-            label="Auth ID"
-            description="Plivo authentication ID"
-            value={voice.plivo_auth_id}
-            onChange={(plivo_auth_id) => onChange({ ...voice, plivo_auth_id })}
-            placeholder="MAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-          />
-
-          <SensitiveInput
-            label="Auth Token"
-            description="Plivo authentication token"
-            value={voice.plivo_auth_token}
-            onChange={(plivo_auth_token) => onChange({ ...voice, plivo_auth_token })}
-            placeholder="Enter auth token"
-          />
-
-          <TextInput
-            label="From Number"
-            description="Plivo phone number to make calls from"
-            value={voice.plivo_from_number}
-            onChange={(plivo_from_number) => onChange({ ...voice, plivo_from_number })}
-            placeholder="+15551234567"
-          />
-
-          <TextInput
-            label="Callback Base URL"
-            description="Public URL Plivo should use for voice webhooks (defaults to server.base_url)"
-            value={voice.callback_base_url}
-            onChange={(callback_base_url) => onChange({ ...voice, callback_base_url })}
-            placeholder="https://your-public-domain.com"
-          />
-        </>
-      )}
       </SectionPanel>
 
       {voice.inbound_enabled && (
