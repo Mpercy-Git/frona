@@ -135,6 +135,7 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.policy_service.clone(),
         state.broadcast_service.clone(),
         state.active_sessions.clone(),
+        state.execution_registry.clone(),
         state.shutdown_token.clone(),
         state.prompts.clone(),
         state.config.clone(),

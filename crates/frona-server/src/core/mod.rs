@@ -1,6 +1,7 @@
 pub mod config;
 pub mod error;
 pub mod event_bus;
+pub mod execution;
 pub mod handle;
 pub mod log_stream;
 pub mod metadata;
