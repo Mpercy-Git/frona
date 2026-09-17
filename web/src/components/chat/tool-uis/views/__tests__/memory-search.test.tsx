@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { SafeToolView } from "../safe-tool-view";
 import { MemorySearchView } from "../memory-search";
 import { mkProps } from "./helpers";
 
@@ -143,13 +144,16 @@ describe("MemorySearchView", () => {
     expect(screen.getByText("No pages matched.")).toBeInTheDocument();
   });
 
-  it("falls back to raw <pre> output when the result doesn't match the expected format", () => {
+  it("uses the generic view when the result doesn't match the expected format", () => {
+    const oldResult = JSON.stringify({ results: [{ name: "Mina" }] });
     render(
-      <MemorySearchView
-        {...mkProps({ toolName: "memory_search", args: { query: "x" }, result: "Unparseable blob" })}
+      <SafeToolView
+        view={MemorySearchView}
+        {...mkProps({ toolName: "memory_search", args: { query: "x" }, result: oldResult })}
       />,
     );
-    expect(screen.getByText("Unparseable blob")).toBeInTheDocument();
+    expect(screen.getByText("Result:")).toBeInTheDocument();
+    expect(screen.getByText(oldResult)).toBeInTheDocument();
   });
 
   it("disables expansion when there's no result yet", () => {
