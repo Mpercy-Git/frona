@@ -2,7 +2,7 @@
 
 import { DocumentTextIcon } from "@heroicons/react/24/outline";
 import { strListArg } from "./args";
-import { ToolViewFallback } from "./safe-tool-view";
+import { shouldUseToolViewFallback, ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -94,7 +94,7 @@ export const MemorySearchView: ToolView = ({
         ? JSON.stringify(result, null, 2)
         : "";
   const hits = parseMemoryResult(resultText);
-  if (result !== undefined && hits === null) {
+  if (shouldUseToolViewFallback(result, hits !== null, status)) {
     return <ToolViewFallback />;
   }
 
