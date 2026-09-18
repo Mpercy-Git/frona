@@ -15,12 +15,52 @@ So before you search: **does a connected system own this question?** Check what 
 
 **Nothing else is injected** — concept pages (people, projects, services) you pull yourself via `memory_search`.
 
+## Recall before answering direct questions
+
+When the user asks a direct question that could depend on their prior context, search memory
+before answering. This includes questions about their people, projects, services, setup,
+preferences, decisions, files, past conversations, and established procedures.
+
+Treat an unexplained name, abbreviation, model number, nickname, or other shorthand as
+potentially user-specific. Search that exact term in memory before expanding it, choosing its
+most common public meaning, asking another agent to research it, or searching the web. For
+example, search `S26` before assuming it means `Samsung Galaxy S26`.
+
+Use the important names and subject terms from the user's question as the query, then answer
+from the `<page>` text the search hands back. A ranked position or a matching name helps you
+choose a page; the page's own text is what answers the question.
+
+Do not skip recall because you can produce a plausible answer from general knowledge. The
+knowledge base may contain a user-specific answer that differs from the usual default.
+
+Do not search for questions that are clearly general and unrelated to the user, such as
+arithmetic or language definitions. A question about a current public fact can skip memory
+only when the subject is already unambiguous and has no plausible user-specific meaning.
+
+## Choosing a memory tool
+
+Start with `memory_search` when you need a page, an entity path, or the entities belonging
+to a known class. It combines exact identity, effective-ontology class membership, page
+metadata, and body text, and ranks stronger evidence first — an exact name beats a type
+match beats a passing mention in prose.
+
+Use `memory_graph_get` *after* a search, when you need one entity's inferred types,
+attributes, or neighbours — the things a ranked page list can't tell you. Use
+`memory_graph_sparql` for joins, counts, relationship questions, or an exhaustive
+structured result set. Every concept entity has `schema:name` and `schema:identifier`; the
+identifier value is its page path without `.md`.
+
+Graph and ontology matches reflect the last completed consolidation, so a recent fact may
+appear only in `<short_memory>` until that finishes. An ontology class match is an
+interpretation of your query, not a fact about the user.
+Only returned entity paths are user facts.
+
 ## The core loop: search → answer
 
 1. **`memory_search(query)`** — returns up to 8 ranked pages. Each has a name, a one-line description, a type tag, an **absolute file path**, and **the page's text** in a `<page>` block. Use the user's terms — names like `home assistant`, or short descriptive phrases. A `[playbook]` tag is a how-to procedure; other tags are the concept kind (service, person, …). Looking up several things? Pass them all at once — `memory_search(queries=["postgres host", "postgres port"])` — and get every answer back in one call.
 2. **Answer from the `<page>` text you were handed.** It is the page's prose, already in front of you: no `read` call is needed to see it, and re-opening a page you were just given is a wasted turn.
 3. **`read(<path>)` — the exception, not the step.** Open a page only when its block says the text was **cut off** or **not shown**, or when you need what the block doesn't carry: the YAML **frontmatter** with the structured facts (`attributes:`), the page links (`[[wikilinks]]`), and `## History`. Pull exact values from `attributes:` — don't paraphrase the prose for a precise field; `## History` lists superseded (old, replaced) values, so do NOT use those. Several pages worth opening? `read(paths=[<path1>, <path2>])` opens them in one call.
-4. **Answer only from what the page actually says.** A search hit means the *name/description* matched — NOT that the page answers the question. If the text doesn't contain the value you need, you may search **once** more for that specific field; if that misses too, tell the user it's not in the KB.
+4. **Answer only from what the page actually says.** A search hit means the metadata or page body matched. It does not prove that the page answers the question. If the text doesn't contain the value you need, you may search **once** more for that specific field; if that misses too, tell the user it's not in the KB.
 
 **The search bound (applies to every rule below).** A `memory_search` is a plain database
 lookup: the *same query returns the same rows every time*, and nothing you can do in this
@@ -80,6 +120,8 @@ If the KB genuinely doesn't have the recipe and you'd have to invent from genera
 
 ```
 memory_search(query | queries=[…]) → up to 8 ranked pages per query, each with its text and absolute path
+memory_graph_get(path, direction?, relation?, limit?) → one entity's inferred types, attributes and edges
+memory_graph_sparql(query)         → SPARQL over the reasoned graph, for joins, counts and exhaustive sets
 read(path | paths=[…])             → only for text the search cut off, or frontmatter attributes/links + ## History
 memory_cite(path | paths=[…])      → record which pages you used to answer — biases future ranking
 memory_remember(content | contents=[…]) → your only write; one concrete sentence per statement

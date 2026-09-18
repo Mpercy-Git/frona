@@ -39,12 +39,14 @@ mod abox;
 mod catalogue;
 mod prefixes;
 mod release;
+mod retrieval;
 pub(crate) mod schema;
 pub(crate) mod sparql;
 mod validation;
 
 mod commit;
 mod composition;
+mod graph_query;
 mod inspection;
 mod lifecycle;
 mod planning;
@@ -53,10 +55,14 @@ mod reasoning;
 pub use catalogue::Roots;
 pub(crate) use catalogue::{OntologyCatalogue, OntologyScope, VocabHit};
 pub(crate) use composition::{ComposedOntology, UserOntology};
+pub(crate) use graph_query::GraphDirection;
 pub use inspection::OntologyExport;
 pub(crate) use planning::TypePlan;
 pub use prefixes::PrefixMap;
 pub(crate) use prefixes::{TermKind, individual_iri, path_from_individual};
+pub(crate) use retrieval::{
+    ClassInterpretation, IdentityAmbiguity, SemanticCandidate, SemanticMatch, SemanticSearchResult,
+};
 pub use schema::{AlignKind, Catalog, Characteristic, OverrideTarget, SchemaEdit};
 pub use validation::Violation;
 pub(crate) use validation::{EditImpact, GraphValidation, ValidationDiagnostic};
@@ -84,6 +90,8 @@ pub struct OntologyManager {
     /// a pass that is already running.
     catalogue: Arc<ArcSwapOption<OntologyCatalogue>>,
     repo: Arc<PkmRepo>,
+    /// Shared so every manager clone observes the same invalidations.
+    reasoned_graphs: Arc<reasoning::ReasonedGraphCache>,
     /// Where the catalogue is assembled from, so the manager can install or reload one
     /// after boot without making catalogue availability a server-start precondition.
     roots: Roots,

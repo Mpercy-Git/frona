@@ -77,10 +77,13 @@ impl PkmRepo {
                  SELECT VALUE object::keys(attributes) FROM knowledge_entity \
                      WHERE user_id = $uid AND type::is_object(attributes);
                  SELECT VALUE relation FROM knowledge_entity_link \
-                     WHERE user_id = $uid AND origin != $inferred;",
+                     WHERE user_id = $uid AND origin != $inferred;
+                 SELECT VALUE path FROM knowledge_entity \
+                     WHERE user_id = $uid AND category = $concept LIMIT 1;",
             )
             .bind(("uid", user_id.to_string()))
             .bind(("inferred", LinkOrigin::Inferred))
+            .bind(("concept", EntityCategory::Concept))
             .await
             .map_err(|e| Self::err("ontology_terms", e))?;
 
@@ -93,6 +96,11 @@ impl PkmRepo {
         let relations: Vec<String> = q
             .take(2)
             .map_err(|e| Self::err("ontology_terms_relations", e))?;
+        // One concept page is enough: the built-in properties are declared per user,
+        // not per page, so this asks "does this user have a graph at all?".
+        let concepts: Vec<String> = q
+            .take(3)
+            .map_err(|e| Self::err("ontology_terms_concepts", e))?;
 
         let mut out: Vec<String> = kinds
             .into_iter()
@@ -101,6 +109,12 @@ impl PkmRepo {
             .chain(relations)
             .filter(|t| !t.trim().is_empty())
             .collect();
+        if !concepts.is_empty() {
+            out.extend([
+                ENTITY_NAME_PROPERTY_IRI.to_string(),
+                ENTITY_PATH_PROPERTY_IRI.to_string(),
+            ]);
+        }
         out.sort();
         out.dedup();
         Ok(out)

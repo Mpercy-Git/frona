@@ -1,5 +1,4 @@
-//! Foreground tool surface for the knowledge service: `memory_search`,
-//! `memory_remember`, `memory_cite`. Reading a page is the general `read`
+//! Foreground tool surface for the knowledge service. Reading a page is the general `read`
 //! tool (pages are self-describing `.md` files). Tool definitions live in
 //! `resources/prompts/tools/pkm/<name>.md` (loaded by the `#[agent_tool]` macro).
 
@@ -13,9 +12,11 @@ use crate::agent::prompt::PromptLoader;
 use crate::auth::user_service::UserService;
 use crate::core::error::AppError;
 use crate::memory::service::LookupVerdict;
-use crate::tool::{InferenceContext, ToolOutput, active_chat, str_list_arg};
+use crate::tool::{InferenceContext, ToolOutput, active_chat, str_arg, str_list_arg};
 
 use super::model::{EntityCategory, EntityOrigin};
+use super::ontology::{GraphDirection, OntologyManager};
+use super::search::MemorySearch;
 use super::storage::PkmStorage;
 use super::vault::VaultScope;
 use crate::db::repo::pkm::PkmRepo;
@@ -23,6 +24,7 @@ use crate::db::repo::pkm::PkmRepo;
 pub fn all(
     repo: Arc<PkmRepo>,
     storage: PkmStorage,
+    ontology: OntologyManager,
     prompts: PromptLoader,
     user_service: UserService,
     max_lookups_per_run: usize,
@@ -31,23 +33,108 @@ pub fn all(
         storage,
         user_service,
     };
+    let ontology_for_tools = ontology.clone();
     vec![
         Arc::new(RememberTool {
             repo: repo.clone(),
             prompts: prompts.clone(),
         }),
         Arc::new(SearchTool {
-            repo: repo.clone(),
+            search: MemorySearch::new(repo.clone(), ontology.clone()),
             prompts: prompts.clone(),
             vault: vault.clone(),
             max_lookups_per_run,
         }),
         Arc::new(CitePageTool {
             repo,
+            prompts: prompts.clone(),
+            vault: vault.clone(),
+        }),
+        Arc::new(GraphGetTool {
+            ontology: ontology_for_tools.clone(),
+            prompts: prompts.clone(),
+        }),
+        Arc::new(GraphSparqlTool {
+            ontology: ontology_for_tools,
             prompts,
-            vault,
         }),
     ]
+}
+
+/// A required string argument. The graph tools take one scalar each, where the
+/// page tools take `str_list_arg` batches.
+fn arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, AppError> {
+    str_arg(args, key).ok_or_else(|| AppError::Validation(format!("missing '{key}'")))
+}
+
+/// Answers a SPARQL query against the user's reasoned graph. Structured output, unlike
+/// `memory_search`: the caller asked for rows, not pages to read.
+pub struct GraphSparqlTool {
+    ontology: OntologyManager,
+    prompts: PromptLoader,
+}
+
+#[agent_tool(name = "memory_graph_sparql", dir = "pkm")]
+impl GraphSparqlTool {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        let query = arg(&arguments, "query")?;
+        let result = self.ontology.query_graph(&ctx.user.id, query, 200).await?;
+        Ok(ToolOutput::text(serde_json::to_string_pretty(&result)?))
+    }
+}
+
+/// One page's edges in the reasoned graph, which `memory_search` cannot answer: it
+/// ranks pages by relevance, not by what a given page is connected to.
+pub struct GraphGetTool {
+    ontology: OntologyManager,
+    prompts: PromptLoader,
+}
+
+#[agent_tool(name = "memory_graph_get", dir = "pkm")]
+impl GraphGetTool {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        let path = arg(&arguments, "path")?.trim_end_matches(".md");
+        let direction = match arguments
+            .get("direction")
+            .and_then(Value::as_str)
+            .unwrap_or("both")
+        {
+            "outgoing" => GraphDirection::Outgoing,
+            "incoming" => GraphDirection::Incoming,
+            "both" => GraphDirection::Both,
+            value => {
+                return Err(AppError::Validation(format!(
+                    "invalid 'direction' value '{value}'"
+                )));
+            }
+        };
+        let relation = str_arg(&arguments, "relation");
+        let limit = arguments
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(50)
+            .clamp(1, 100) as usize;
+        let Some(entity) = self
+            .ontology
+            .graph_entity(&ctx.user.id, path, direction, relation, limit)
+            .await?
+        else {
+            return Ok(ToolOutput::text(format!(
+                "No reasoned entity exists at '{path}'."
+            )));
+        };
+        Ok(ToolOutput::text(serde_json::to_string_pretty(&entity)?))
+    }
 }
 
 /// The two dependencies [`VaultScope::resolve`] needs, as one collaborator.
@@ -117,7 +204,11 @@ impl RememberTool {
 }
 
 pub struct SearchTool {
-    repo: Arc<PkmRepo>,
+    /// Upstream's retrieval: semantic evidence from the reasoned graph merged with
+    /// full-text ranking over metadata and body. The budget and repeat detection
+    /// below sit on top of it, unchanged — they govern how often an agent may search,
+    /// which is a different question from what a search should return.
+    search: MemorySearch,
     prompts: PromptLoader,
     vault: VaultResolver,
     /// `memory.pkm_max_lookups_per_turn` - how many searches one run may make
@@ -193,7 +284,7 @@ impl SearchTool {
                 elsewhere(&ctx.mcp_servers)
             ));
         }
-        let hits = self.repo.search_entities(&ctx.user.id, query).await?;
+        let hits = self.search.ranked_hits(&ctx.user.id, query, vault).await?;
         if hits.is_empty() {
             return Ok(match verdict {
                 // Repeating a query that found nothing is the cheapest loop to fall
