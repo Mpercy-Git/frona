@@ -15,6 +15,24 @@ So before you search: **does a connected system own this question?** Check what 
 
 **Nothing else is injected** — concept pages (people, projects, services) you pull yourself via `memory_search`.
 
+## Choosing a memory tool
+
+Start with `memory_search` when you need a page, an entity path, or the entities belonging
+to a known class. It combines exact identity, effective-ontology class membership, page
+metadata, and body text, and ranks stronger evidence first — an exact name beats a type
+match beats a passing mention in prose.
+
+Use `memory_graph_get` *after* a search, when you need one entity's inferred types,
+attributes, or neighbours — the things a ranked page list can't tell you. Use
+`memory_graph_sparql` for joins, counts, relationship questions, or an exhaustive
+structured result set. Every concept entity has `schema:name` and `schema:identifier`; the
+identifier value is its page path without `.md`.
+
+Graph and ontology matches reflect the last completed consolidation, so a recent fact may
+appear only in `<short_memory>` until that finishes. An ontology class match is an
+interpretation of your query, not a fact about the user.
+Only returned entity paths are user facts.
+
 ## The core loop: search → answer
 
 1. **`memory_search(query)`** — returns up to 8 ranked pages. Each has a name, a one-line description, a type tag, an **absolute file path**, and **the page's text** in a `<page>` block. Use the user's terms — names like `home assistant`, or short descriptive phrases. A `[playbook]` tag is a how-to procedure; other tags are the concept kind (service, person, …). Looking up several things? Pass them all at once — `memory_search(queries=["postgres host", "postgres port"])` — and get every answer back in one call.
@@ -80,6 +98,8 @@ If the KB genuinely doesn't have the recipe and you'd have to invent from genera
 
 ```
 memory_search(query | queries=[…]) → up to 8 ranked pages per query, each with its text and absolute path
+memory_graph_get(path, direction?, relation?, limit?) → one entity's inferred types, attributes and edges
+memory_graph_sparql(query)         → SPARQL over the reasoned graph, for joins, counts and exhaustive sets
 read(path | paths=[…])             → only for text the search cut off, or frontmatter attributes/links + ## History
 memory_cite(path | paths=[…])      → record which pages you used to answer — biases future ranking
 memory_remember(content | contents=[…]) → your only write; one concrete sentence per statement

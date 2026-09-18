@@ -229,6 +229,29 @@ fn render_playbook_index(lines: &[String], cap: usize) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The prompt is the only thing that routes a question to the right tool, so a tool
+    /// added or renamed without touching it is a tool the agent never reaches.
+    #[test]
+    fn agent_prompt_routes_every_foreground_graph_tool() {
+        let prompt = include_str!("../../../../../resources/prompts/pkm/agent_section.md");
+        for tool in ["memory_search", "memory_graph_get", "memory_graph_sparql"] {
+            assert!(prompt.contains(tool), "agent prompt does not route {tool}");
+        }
+        for removed in [
+            "memory_graph_find",
+            "memory_schema_search",
+            "memory_schema_inspect",
+            "memory_graph_query",
+        ] {
+            assert!(
+                !prompt.contains(removed),
+                "agent prompt still routes {removed}"
+            );
+        }
+        assert!(prompt.contains("last completed consolidation"));
+        assert!(prompt.contains("Only returned entity paths are user facts"));
+    }
+
     #[test]
     fn playbook_index_no_marker_when_all_fit() {
         let lines = vec![

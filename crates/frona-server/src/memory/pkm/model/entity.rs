@@ -1,5 +1,12 @@
 use super::*;
 
+/// The two datatype properties every concept page carries implicitly. They are not
+/// stored on entities, so nothing in the data references them - but a SPARQL query
+/// over the user's graph needs them declared, or `?page schema:name ?n` is a term
+/// the effective ontology has never heard of.
+pub const ENTITY_NAME_PROPERTY_IRI: &str = "https://schema.org/name";
+pub const ENTITY_PATH_PROPERTY_IRI: &str = "https://schema.org/identifier";
+
 /// Many-to-many bridge: memory (by id) ↔ entity (by path). The fact-attachment
 /// layer - entities are reconstructed from their linked memories.
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]

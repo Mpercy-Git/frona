@@ -1,5 +1,4 @@
-//! Foreground tool surface for the knowledge service: `memory_search`,
-//! `memory_remember`, `memory_cite`. Reading a page is the general `read`
+//! Foreground tool surface for the knowledge service. Reading a page is the general `read`
 //! tool (pages are self-describing `.md` files). Tool definitions live in
 //! `resources/prompts/tools/pkm/<name>.md` (loaded by the `#[agent_tool]` macro).
 
@@ -13,10 +12,10 @@ use crate::agent::prompt::PromptLoader;
 use crate::auth::user_service::UserService;
 use crate::core::error::AppError;
 use crate::memory::service::LookupVerdict;
-use crate::tool::{InferenceContext, ToolOutput, active_chat, str_list_arg};
+use crate::tool::{InferenceContext, ToolOutput, active_chat, str_arg, str_list_arg};
 
 use super::model::{EntityCategory, EntityOrigin};
-use super::ontology::OntologyManager;
+use super::ontology::{GraphDirection, OntologyManager};
 use super::search::MemorySearch;
 use super::storage::PkmStorage;
 use super::vault::VaultScope;
@@ -34,23 +33,108 @@ pub fn all(
         storage,
         user_service,
     };
+    let ontology_for_tools = ontology.clone();
     vec![
         Arc::new(RememberTool {
             repo: repo.clone(),
             prompts: prompts.clone(),
         }),
         Arc::new(SearchTool {
-            search: MemorySearch::new(repo.clone(), ontology),
+            search: MemorySearch::new(repo.clone(), ontology.clone()),
             prompts: prompts.clone(),
             vault: vault.clone(),
             max_lookups_per_run,
         }),
         Arc::new(CitePageTool {
             repo,
+            prompts: prompts.clone(),
+            vault: vault.clone(),
+        }),
+        Arc::new(GraphGetTool {
+            ontology: ontology_for_tools.clone(),
+            prompts: prompts.clone(),
+        }),
+        Arc::new(GraphSparqlTool {
+            ontology: ontology_for_tools,
             prompts,
-            vault,
         }),
     ]
+}
+
+/// A required string argument. The graph tools take one scalar each, where the
+/// page tools take `str_list_arg` batches.
+fn arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, AppError> {
+    str_arg(args, key).ok_or_else(|| AppError::Validation(format!("missing '{key}'")))
+}
+
+/// Answers a SPARQL query against the user's reasoned graph. Structured output, unlike
+/// `memory_search`: the caller asked for rows, not pages to read.
+pub struct GraphSparqlTool {
+    ontology: OntologyManager,
+    prompts: PromptLoader,
+}
+
+#[agent_tool(name = "memory_graph_sparql", dir = "pkm")]
+impl GraphSparqlTool {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        let query = arg(&arguments, "query")?;
+        let result = self.ontology.query_graph(&ctx.user.id, query, 200).await?;
+        Ok(ToolOutput::text(serde_json::to_string_pretty(&result)?))
+    }
+}
+
+/// One page's edges in the reasoned graph, which `memory_search` cannot answer: it
+/// ranks pages by relevance, not by what a given page is connected to.
+pub struct GraphGetTool {
+    ontology: OntologyManager,
+    prompts: PromptLoader,
+}
+
+#[agent_tool(name = "memory_graph_get", dir = "pkm")]
+impl GraphGetTool {
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        let path = arg(&arguments, "path")?.trim_end_matches(".md");
+        let direction = match arguments
+            .get("direction")
+            .and_then(Value::as_str)
+            .unwrap_or("both")
+        {
+            "outgoing" => GraphDirection::Outgoing,
+            "incoming" => GraphDirection::Incoming,
+            "both" => GraphDirection::Both,
+            value => {
+                return Err(AppError::Validation(format!(
+                    "invalid 'direction' value '{value}'"
+                )));
+            }
+        };
+        let relation = str_arg(&arguments, "relation");
+        let limit = arguments
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(50)
+            .clamp(1, 100) as usize;
+        let Some(entity) = self
+            .ontology
+            .graph_entity(&ctx.user.id, path, direction, relation, limit)
+            .await?
+        else {
+            return Ok(ToolOutput::text(format!(
+                "No reasoned entity exists at '{path}'."
+            )));
+        };
+        Ok(ToolOutput::text(serde_json::to_string_pretty(&entity)?))
+    }
 }
 
 /// The two dependencies [`VaultScope::resolve`] needs, as one collaborator.
