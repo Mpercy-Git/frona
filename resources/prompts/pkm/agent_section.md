@@ -15,6 +15,28 @@ So before you search: **does a connected system own this question?** Check what 
 
 **Nothing else is injected** — concept pages (people, projects, services) you pull yourself via `memory_search`.
 
+## Recall before answering direct questions
+
+When the user asks a direct question that could depend on their prior context, search memory
+before answering. This includes questions about their people, projects, services, setup,
+preferences, decisions, files, past conversations, and established procedures.
+
+Treat an unexplained name, abbreviation, model number, nickname, or other shorthand as
+potentially user-specific. Search that exact term in memory before expanding it, choosing its
+most common public meaning, asking another agent to research it, or searching the web. For
+example, search `S26` before assuming it means `Samsung Galaxy S26`.
+
+Use the important names and subject terms from the user's question as the query, then answer
+from the `<page>` text the search hands back. A ranked position or a matching name helps you
+choose a page; the page's own text is what answers the question.
+
+Do not skip recall because you can produce a plausible answer from general knowledge. The
+knowledge base may contain a user-specific answer that differs from the usual default.
+
+Do not search for questions that are clearly general and unrelated to the user, such as
+arithmetic or language definitions. A question about a current public fact can skip memory
+only when the subject is already unambiguous and has no plausible user-specific meaning.
+
 ## Choosing a memory tool
 
 Start with `memory_search` when you need a page, an entity path, or the entities belonging

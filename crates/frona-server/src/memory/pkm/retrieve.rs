@@ -252,6 +252,15 @@ mod tests {
         assert!(prompt.contains("Only returned entity paths are user facts"));
     }
 
+    /// An unexplained shorthand only becomes a memory lookup rather than a guess because
+    /// the prompt says so, so the recall rule has to survive later prompt edits.
+    #[test]
+    fn agent_prompt_requires_recall_before_answering() {
+        let prompt = include_str!("../../../../../resources/prompts/pkm/agent_section.md");
+        assert!(prompt.contains("Recall before answering direct questions"));
+        assert!(prompt.contains("potentially user-specific"));
+    }
+
     #[test]
     fn playbook_index_no_marker_when_all_fit() {
         let lines = vec![
