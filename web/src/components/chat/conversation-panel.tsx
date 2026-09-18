@@ -86,7 +86,7 @@ export function ChatView({
       )}
       <ToolUIRegistry />
       {loaded && currentChatId && <DelegationsPanel chatId={currentChatId} />}
-      {loaded ? <AssistantThread /> : <div className="flex-1" />}
+      {loaded ? <AssistantThread chatId={currentChatId ?? undefined} /> : <div className="flex-1" />}
     </>
   );
 

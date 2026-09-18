@@ -13,6 +13,9 @@ use crate::chat::service::ChatService;
 use crate::chat::session::ChatSessionContext;
 use crate::core::config::Config;
 use crate::core::error::AppError;
+use crate::core::execution::{
+    ExecutionKind, ExecutionRegistry, ExecutionSource, ExecutionSourceKind, NewExecution,
+};
 use crate::core::state::ActiveSessions;
 use crate::credential::vault::service::VaultService;
 use crate::inference::config::ModelGroup;
@@ -60,6 +63,7 @@ pub struct Harness {
     pub(crate) policy_service: PolicyService,
     pub(crate) broadcast_service: BroadcastService,
     pub(crate) active_sessions: ActiveSessions,
+    pub(crate) execution_registry: ExecutionRegistry,
     pub(crate) shutdown_token: CancellationToken,
     pub(crate) prompts: PromptLoader,
     pub(crate) config: Arc<Config>,
@@ -84,6 +88,7 @@ impl Harness {
         policy_service: PolicyService,
         broadcast_service: BroadcastService,
         active_sessions: ActiveSessions,
+        execution_registry: ExecutionRegistry,
         shutdown_token: CancellationToken,
         prompts: PromptLoader,
         config: Arc<Config>,
@@ -108,6 +113,7 @@ impl Harness {
             policy_service,
             broadcast_service,
             active_sessions,
+            execution_registry,
             shutdown_token,
             prompts,
             config,
@@ -484,6 +490,60 @@ impl Harness {
         command_context_registry: Option<Arc<CommandRegistry>>,
         session_id: Option<u64>,
     ) {
+        let chat = self.chat_service.find_chat(chat_id).await.ok().flatten();
+        let agent_name = match chat.as_ref() {
+            Some(chat) => self
+                .agent_service
+                .find_by_id(&chat.agent_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|agent| agent.name),
+            None => None,
+        };
+        let title = chat
+            .and_then(|chat| chat.title)
+            .unwrap_or_else(|| "Assistant response".to_string());
+        let execution = NewExecution {
+            title,
+            agent_name,
+            kind: ExecutionKind::Inference,
+            action: Some("Generating response".to_string()),
+            source: Some(ExecutionSource {
+                kind: ExecutionSourceKind::Chat,
+                id: Some(chat_id.to_string()),
+            }),
+            related_chat_ids: vec![chat_id.to_string()],
+            can_cancel: true,
+        };
+        self.run_turn_with_execution(
+            user_id,
+            chat_id,
+            message_id,
+            cancel_token,
+            builder,
+            tool_filters,
+            command_context_registry,
+            session_id,
+            execution,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_turn_with_execution(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        cancel_token: CancellationToken,
+        builder: Box<dyn ConversationBuilder>,
+        tool_filters: &[ToolFilter],
+        command_context_registry: Option<Arc<CommandRegistry>>,
+        session_id: Option<u64>,
+        execution: NewExecution,
+    ) {
+        let _execution = self.execution_registry.start(user_id, execution);
         let outcome = self
             .run_loop(
                 user_id,
@@ -709,6 +769,37 @@ impl Harness {
             &[],
             None,
             Some(session_id),
+        )
+        .await;
+        self.active_sessions.remove(chat_id, session_id).await;
+        Ok(())
+    }
+
+    /// Resume a turn under a caller-supplied execution entry, so the activity
+    /// panel names the work that triggered it rather than the chat.
+    pub async fn resume_with_execution(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        execution: NewExecution,
+    ) -> Result<(), AppError> {
+        let (session_id, cancel_token) = self.active_sessions.register(chat_id).await;
+        let builder = Box::new(DefaultConversationBuilder {
+            user_service: self.user_service.clone(),
+            storage_service: self.storage_service.clone(),
+            agent_service: self.agent_service.clone(),
+        });
+        self.run_turn_with_execution(
+            user_id,
+            chat_id,
+            message_id,
+            cancel_token,
+            builder,
+            &[],
+            None,
+            Some(session_id),
+            execution,
         )
         .await;
         self.active_sessions.remove(chat_id, session_id).await;

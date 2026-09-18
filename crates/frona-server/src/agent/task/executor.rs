@@ -9,6 +9,7 @@ use crate::agent::task::models::{Citation, SignalMode, Task, TaskKind, TaskStatu
 use crate::chat::message::models::{MessageEvent, MessageRole};
 use crate::chat::models::CreateChatRequest;
 use crate::core::error::AppError;
+use crate::core::execution::{ExecutionKind, ExecutionSource, ExecutionSourceKind, NewExecution};
 use crate::inference::InferenceResponse;
 use crate::inference::conversation::TaskConversationBuilder;
 use crate::inference::tool_call::{TaskEvent, ToolCall};
@@ -399,7 +400,18 @@ impl TaskExecutor {
             return Ok(());
         }
 
-        let agent_max = self.get_agent_concurrent_limit(&task.agent_id).await;
+        let agent = self
+            .harness
+            .agent_service
+            .find_by_id(&task.agent_id)
+            .await
+            .ok()
+            .flatten();
+        let agent_max = agent
+            .as_ref()
+            .and_then(|agent| agent.max_concurrent_tasks)
+            .unwrap_or(3) as usize;
+        let agent_name = agent.map(|agent| agent.name);
         let key = format!("{}:{}", task.agent_id, task.id);
         let cancel_token = CancellationToken::new();
 
@@ -444,6 +456,39 @@ impl TaskExecutor {
             map: self.active_tasks.clone(),
             key,
         };
+        let (kind, source) = match &task.kind {
+            TaskKind::CronRun { source_cron_id, .. } => (
+                ExecutionKind::Scheduled,
+                ExecutionSource {
+                    kind: ExecutionSourceKind::Schedule,
+                    id: Some(source_cron_id.clone()),
+                },
+            ),
+            _ => (
+                ExecutionKind::Task,
+                ExecutionSource {
+                    kind: ExecutionSourceKind::Task,
+                    id: Some(task.id.clone()),
+                },
+            ),
+        };
+        let _execution = self.harness.execution_registry.start(
+            &task.user_id,
+            NewExecution {
+                title: task.title.clone(),
+                agent_name,
+                kind,
+                action: Some("Running task".to_string()),
+                source: Some(source),
+                related_chat_ids: task
+                    .kind
+                    .source_chat_id()
+                    .map(|chat_id| vec![chat_id.to_string()])
+                    .unwrap_or_default(),
+                // Cancelling the source schedule would also disable future runs.
+                can_cancel: !matches!(&task.kind, TaskKind::CronRun { .. }),
+            },
+        );
         self.execute_task(task, cancel_token).await
     }
 
@@ -506,13 +551,6 @@ impl TaskExecutor {
     pub async fn unregister_cancellation(&self, agent_id: &str, task_id: &str) {
         let key = format!("{}:{}", agent_id, task_id);
         self.active_tasks.lock().await.remove(&key);
-    }
-
-    async fn get_agent_concurrent_limit(&self, agent_id: &str) -> usize {
-        if let Ok(Some(agent)) = self.harness.agent_service.find_by_id(agent_id).await {
-            return agent.max_concurrent_tasks.unwrap_or(3) as usize;
-        }
-        3
     }
 
     async fn execute_task(

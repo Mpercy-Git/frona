@@ -195,7 +195,7 @@ async fn copy_directory_recursive() {
 }
 
 #[tokio::test]
-async fn copy_to_agent_workspace_returns_403() {
+async fn copy_to_an_agent_the_caller_does_not_own_is_refused() {
     let (state, tmp) = test_app_state().await;
     let (token, _) = register_user(&state, "copy-ag", "copyag@example.com", "password123").await;
 
@@ -215,7 +215,7 @@ async fn copy_to_agent_workspace_returns_403() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(resp.status().is_client_error(), "status {}", resp.status());
 }
 
 #[tokio::test]
@@ -269,7 +269,7 @@ async fn move_files_succeeds() {
 }
 
 #[tokio::test]
-async fn move_from_agent_workspace_returns_403() {
+async fn move_from_an_agent_the_caller_does_not_own_is_refused() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) = register_user(&state, "move-ag", "moveag@example.com", "password123").await;
 
@@ -285,11 +285,11 @@ async fn move_from_agent_workspace_returns_403() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(resp.status().is_client_error(), "status {}", resp.status());
 }
 
 #[tokio::test]
-async fn move_to_agent_workspace_returns_403() {
+async fn move_to_an_agent_the_caller_does_not_own_is_refused() {
     let (state, tmp) = test_app_state().await;
     let (token, _) = register_user(&state, "move-ag2", "moveag2@example.com", "password123").await;
 
@@ -309,7 +309,7 @@ async fn move_to_agent_workspace_returns_403() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(resp.status().is_client_error(), "status {}", resp.status());
 }
 
 #[tokio::test]
@@ -444,9 +444,254 @@ async fn copying_from_another_users_agent_workspace_is_refused() {
         !leaked,
         "the victim's file was copied into the caller's directory (status {status})"
     );
+    // 404 rather than 403: the ownership check looks the agent up among the
+    // caller's own, so one that isn't theirs is indistinguishable from one that
+    // does not exist. Answering 403 here would confirm the victim's agent by
+    // name, which is an enumeration oracle the caller should not get.
     assert_eq!(
         status,
-        StatusCode::FORBIDDEN,
+        StatusCode::NOT_FOUND,
         "another user's workspace must not resolve"
+    );
+}
+
+#[tokio::test]
+async fn delete_removes_a_file() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "deleter", "deleter@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("deleter").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("gone.txt"), b"data").await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": ["gone.txt"]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!user_dir.join("gone.txt").exists());
+}
+
+#[tokio::test]
+async fn delete_removes_a_directory_and_its_contents() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "dirdel", "dirdel@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("dirdel").join("files");
+    let nested = user_dir.join("project").join("src");
+    fs::create_dir_all(&nested).await.unwrap();
+    fs::write(nested.join("main.rs"), b"fn main() {}")
+        .await
+        .unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": ["project"]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!user_dir.join("project").exists());
+}
+
+#[tokio::test]
+async fn delete_with_no_paths_returns_400() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "emptydel", "emptydel@example.com", "password123").await;
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": []}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_missing_path_leaves_the_rest_of_the_batch_alone() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "batchdel", "batchdel@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("batchdel").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("keep.txt"), b"data").await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": ["keep.txt", "absent.txt"]}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(
+        user_dir.join("keep.txt").exists(),
+        "the whole batch must fail before anything is removed"
+    );
+}
+
+#[tokio::test]
+async fn delete_rejects_the_workspace_root() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "rootdel", "rootdel@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("rootdel").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("keep.txt"), b"data").await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": [""]}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(user_dir.join("keep.txt").exists());
+    assert!(user_dir.exists(), "the workspace root itself must survive");
+}
+
+#[tokio::test]
+async fn delete_from_an_agent_the_caller_does_not_own_is_refused() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "agentdel", "agentdel@example.com", "password123").await;
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": ["agent://agentdel/notes.txt"]}),
+        ))
+        .await
+        .unwrap();
+    assert!(resp.status().is_client_error(), "status {}", resp.status());
+}
+
+#[tokio::test]
+async fn rename_rejects_the_workspace_root() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "rootren", "rootren@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("rootren").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/rename",
+            &token,
+            serde_json::json!({"path": "", "new_name": "stolen"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(user_dir.exists(), "the workspace root itself must survive");
+}
+
+#[tokio::test]
+async fn copy_into_an_owned_agent_workspace_persists() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "wsowner", "wsowner@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "Helper").await;
+    let agent_handle = agent["handle"].as_str().unwrap().to_string();
+
+    let user_dir = tmp.path().join("users").join("wsowner").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("brief.md"), b"the brief")
+        .await
+        .unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/copy",
+            &token,
+            serde_json::json!({
+                "sources": ["/brief.md"],
+                "destination": format!("agent://{agent_handle}/"),
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let landed = tmp
+        .path()
+        .join("users")
+        .join("wsowner")
+        .join("agents")
+        .join(&agent_handle)
+        .join("brief.md");
+    assert!(
+        landed.exists(),
+        "the file should be in the agent's workspace"
+    );
+    assert!(
+        user_dir.join("brief.md").exists(),
+        "a copy leaves the source"
+    );
+}
+
+#[tokio::test]
+async fn move_out_of_an_owned_agent_workspace_persists() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "wsmover", "wsmover@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "Runner").await;
+    let agent_handle = agent["handle"].as_str().unwrap().to_string();
+
+    let agent_dir = tmp
+        .path()
+        .join("users")
+        .join("wsmover")
+        .join("agents")
+        .join(&agent_handle);
+    fs::create_dir_all(&agent_dir).await.unwrap();
+    fs::write(agent_dir.join("result.csv"), b"a,b")
+        .await
+        .unwrap();
+    let user_dir = tmp.path().join("users").join("wsmover").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/move",
+            &token,
+            serde_json::json!({
+                "sources": [format!("agent://{agent_handle}/result.csv")],
+                "destination": "",
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        user_dir.join("result.csv").exists(),
+        "the file should have moved out"
+    );
+    assert!(
+        !agent_dir.join("result.csv").exists(),
+        "a move leaves nothing behind"
     );
 }

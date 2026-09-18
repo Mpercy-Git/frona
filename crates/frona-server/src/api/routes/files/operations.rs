@@ -4,11 +4,11 @@ use axum::Json;
 use axum::extract::State;
 use tokio::fs;
 
-use crate::storage::{VirtualPath, validate_relative_path};
+use crate::storage::{Namespace, VirtualPath, validate_relative_path};
 
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;
-use super::models::{CopyMoveRequest, MkdirRequest, RenameRequest};
+use super::models::{CopyMoveRequest, DeleteRequest, MkdirRequest, RenameRequest};
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 
@@ -17,11 +17,8 @@ pub(crate) async fn rename_user_file(
     State(state): State<AppState>,
     Json(req): Json<RenameRequest>,
 ) -> Result<(), ApiError> {
-    let trimmed = req.path.trim_start_matches('/');
-    let vpath = VirtualPath::user(&auth.handle, trimmed);
-    let resolved = state
-        .storage_service
-        .resolve_virtual_path_for_user(&auth.handle, &vpath)?;
+    reject_workspace_root(&req.path, "rename")?;
+    let resolved = resolve_file_virtual_path(&req.path, &auth, &state).await?;
 
     if !resolved.exists() {
         return Err(ApiError(AppError::NotFound("File not found".into())));
@@ -49,30 +46,54 @@ pub(crate) async fn rename_user_file(
     Ok(())
 }
 
-fn resolve_file_virtual_path(
+/// Resolve a path from a file-operation request against the caller.
+///
+/// Two independent guards. `resolve_virtual_path_for_user` binds both namespaces
+/// to the caller, so another user's tree is unreachable whatever the URI says -
+/// the `user://` branch used to be the only one that checked, and `agent://` went
+/// straight to the resolver, where an agent namespace was rooted at the handle in
+/// the URI, so `agent://victim/…` named the victim's workspace and copied out of
+/// it. On top of that, an agent namespace must name an agent this caller owns, so
+/// a path cannot address a workspace for an agent that is not theirs.
+async fn resolve_file_virtual_path(
     path: &str,
     auth: &AuthUser,
-    storage: &crate::storage::StorageService,
+    state: &AppState,
 ) -> Result<PathBuf, ApiError> {
-    // Every branch resolves against the caller. The `user://` branch used to be the
-    // only one that checked, and `agent://` went straight to the resolver - where an
-    // agent namespace was rooted at the handle in the URI, so `agent://victim/…`
-    // named the victim's workspace and copied out of it.
     let vpath = if path.starts_with("user://") || path.starts_with("agent://") {
         VirtualPath::parse(path)?
     } else {
         VirtualPath::user(&auth.handle, path.trim_start_matches('/'))
     };
-    storage
+
+    if let Namespace::Agent(agent_handle) = &vpath.namespace {
+        state
+            .agent_service
+            .owned_by(&auth.user_id, agent_handle)
+            .await?;
+    }
+
+    state
+        .storage_service
         .resolve_virtual_path_for_user(&auth.handle, &vpath)
         .map_err(ApiError)
 }
 
-fn ensure_user_destination(path: &str) -> Result<(), ApiError> {
-    if path.starts_with("agent://") {
-        return Err(ApiError(AppError::Forbidden(
-            "Cannot write to agent workspaces".into(),
-        )));
+/// Refuse an operation aimed at a workspace root rather than something in it.
+///
+/// An empty relative path resolves to the workspace directory itself, so a
+/// rename or delete of `""` would move or erase the whole tree. Callers name a
+/// file; the root is never the intended target.
+fn reject_workspace_root(path: &str, operation: &str) -> Result<(), ApiError> {
+    let relative = if path.starts_with("user://") || path.starts_with("agent://") {
+        VirtualPath::parse(path)?.relative
+    } else {
+        path.trim_start_matches('/').to_string()
+    };
+    if relative.is_empty() {
+        return Err(ApiError(AppError::Validation(format!(
+            "Cannot {operation} a workspace root"
+        ))));
     }
     Ok(())
 }
@@ -82,24 +103,14 @@ pub(crate) async fn copy_files(
     State(state): State<AppState>,
     Json(req): Json<CopyMoveRequest>,
 ) -> Result<(), ApiError> {
-    ensure_user_destination(&req.destination)?;
-
-    let dest_dir = resolve_file_virtual_path(&req.destination, &auth, &state.storage_service)?;
+    let dest_dir = resolve_file_virtual_path(&req.destination, &auth, &state).await?;
 
     fs::create_dir_all(&dest_dir)
         .await
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
 
     for source in &req.sources {
-        // `move_files` has refused agent sources all along; copy did not, which is
-        // how a caller reached an agent workspace at all. Same rule, same reason:
-        // these routes serve a user's own files.
-        if source.starts_with("agent://") {
-            return Err(ApiError(AppError::Forbidden(
-                "Cannot copy from agent workspaces".into(),
-            )));
-        }
-        let src = resolve_file_virtual_path(source, &auth, &state.storage_service)?;
+        let src = resolve_file_virtual_path(source, &auth, &state).await?;
         if !src.exists() {
             continue;
         }
@@ -158,21 +169,14 @@ pub(crate) async fn move_files(
     State(state): State<AppState>,
     Json(req): Json<CopyMoveRequest>,
 ) -> Result<(), ApiError> {
-    ensure_user_destination(&req.destination)?;
-
-    let dest_dir = resolve_file_virtual_path(&req.destination, &auth, &state.storage_service)?;
+    let dest_dir = resolve_file_virtual_path(&req.destination, &auth, &state).await?;
 
     fs::create_dir_all(&dest_dir)
         .await
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
 
     for source in &req.sources {
-        if source.starts_with("agent://") {
-            return Err(ApiError(AppError::Forbidden(
-                "Cannot move from agent workspaces".into(),
-            )));
-        }
-        let src = resolve_file_virtual_path(source, &auth, &state.storage_service)?;
+        let src = resolve_file_virtual_path(source, &auth, &state).await?;
         if !src.exists() {
             continue;
         }
@@ -190,18 +194,59 @@ pub(crate) async fn move_files(
     Ok(())
 }
 
+pub(crate) async fn delete_files(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<DeleteRequest>,
+) -> Result<(), ApiError> {
+    if req.paths.is_empty() {
+        return Err(ApiError(AppError::Validation(
+            "At least one path is required".into(),
+        )));
+    }
+
+    // Resolve and check every path before removing any, so a bad entry late in
+    // the batch fails the request instead of leaving it half applied.
+    let mut resolved_paths = Vec::with_capacity(req.paths.len());
+    for path in &req.paths {
+        reject_workspace_root(path, "delete")?;
+        let resolved = resolve_file_virtual_path(path, &auth, &state).await?;
+        if !resolved.exists() {
+            return Err(ApiError(AppError::NotFound(format!(
+                "File not found: {path}"
+            ))));
+        }
+        resolved_paths.push(resolved);
+    }
+
+    for resolved in resolved_paths {
+        if resolved.is_dir() {
+            fs::remove_dir_all(&resolved)
+                .await
+                .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+        } else {
+            fs::remove_file(&resolved)
+                .await
+                .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn create_user_folder(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<MkdirRequest>,
 ) -> Result<(), ApiError> {
-    let trimmed = req.path.trim_start_matches('/');
-    validate_relative_path(trimmed)?;
+    let relative = if req.path.starts_with("user://") || req.path.starts_with("agent://") {
+        VirtualPath::parse(&req.path)?.relative
+    } else {
+        req.path.trim_start_matches('/').to_string()
+    };
+    validate_relative_path(&relative)?;
 
-    let vpath = VirtualPath::user(&auth.handle, trimmed);
-    let resolved = state
-        .storage_service
-        .resolve_virtual_path_for_user(&auth.handle, &vpath)?;
+    let resolved = resolve_file_virtual_path(&req.path, &auth, &state).await?;
 
     fs::create_dir_all(&resolved)
         .await

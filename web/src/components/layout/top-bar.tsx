@@ -15,6 +15,8 @@ import { AppDropdown } from "./app-dropdown";
 import { ServerDropdown } from "./server-dropdown";
 import { AboutDialog } from "./about-dialog";
 import { getMemoryStatus } from "@/lib/api-client";
+import { useActivity } from "@/lib/activity-context";
+import { ActivityIndicator } from "./activity-indicator";
 
 const topTabs = [
   { id: "chat", label: "Assistant", href: "/chat" },
@@ -25,7 +27,9 @@ export function TopBar() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, logout } = useAuth();
-  const { inferring, setActiveChat } = useSession();
+  const { setActiveChat } = useSession();
+  const { snapshot: activity } = useActivity();
+  const hasActiveExecutions = activity.executions.length > 0;
   const { mobileNavOpen, setMobileNavOpen, mobileSubNavOpen, setMobileSubNavOpen } = useNavigation();
   const mobile = useMobile();
   const hashNavigate = useHashNavigate();
@@ -92,7 +96,7 @@ export function TopBar() {
           onClick={() => { setActiveChat(null); router.push("/home"); }}
           className="flex items-center gap-1 cursor-pointer"
         >
-          <Logo size={52} animate={inferring} />
+          <Logo size={52} />
           <span
             className="text-lg font-bold text-text-primary tracking-wide"
             style={{ fontFamily: "var(--font-brand)" }}
@@ -102,6 +106,8 @@ export function TopBar() {
         </button>
 
         <div className="flex-1" />
+
+        {hasActiveExecutions && <ActivityIndicator compact />}
 
         <div className="flex items-center gap-1">
           <AgentDropdown />
@@ -215,7 +221,7 @@ export function TopBar() {
           onClick={() => { setActiveChat(null); router.push("/home"); }}
           className="flex items-center gap-1 cursor-pointer"
         >
-          <Logo size={68} animate={inferring} />
+          <Logo size={68} />
           <span
             className="text-2xl font-bold text-text-primary tracking-wide"
             style={{ fontFamily: "var(--font-brand)" }}
@@ -242,6 +248,12 @@ export function TopBar() {
       </div>
 
       <div className="flex-1" />
+
+      {hasActiveExecutions && (
+        <div className="mr-2 flex items-center">
+          <ActivityIndicator />
+        </div>
+      )}
 
       <div className="flex items-center gap-2">
       <AgentDropdown />
