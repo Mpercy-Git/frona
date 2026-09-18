@@ -450,3 +450,156 @@ async fn copying_from_another_users_agent_workspace_is_refused() {
         "another user's workspace must not resolve"
     );
 }
+
+#[tokio::test]
+async fn delete_removes_a_file() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "deleter", "deleter@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("deleter").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("gone.txt"), b"data").await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": ["gone.txt"]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!user_dir.join("gone.txt").exists());
+}
+
+#[tokio::test]
+async fn delete_removes_a_directory_and_its_contents() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "dirdel", "dirdel@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("dirdel").join("files");
+    let nested = user_dir.join("project").join("src");
+    fs::create_dir_all(&nested).await.unwrap();
+    fs::write(nested.join("main.rs"), b"fn main() {}")
+        .await
+        .unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": ["project"]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!user_dir.join("project").exists());
+}
+
+#[tokio::test]
+async fn delete_with_no_paths_returns_400() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "emptydel", "emptydel@example.com", "password123").await;
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": []}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_missing_path_leaves_the_rest_of_the_batch_alone() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "batchdel", "batchdel@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("batchdel").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("keep.txt"), b"data").await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": ["keep.txt", "absent.txt"]}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(
+        user_dir.join("keep.txt").exists(),
+        "the whole batch must fail before anything is removed"
+    );
+}
+
+#[tokio::test]
+async fn delete_rejects_the_workspace_root() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "rootdel", "rootdel@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("rootdel").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("keep.txt"), b"data").await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": [""]}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(user_dir.join("keep.txt").exists());
+    assert!(user_dir.exists(), "the workspace root itself must survive");
+}
+
+#[tokio::test]
+async fn delete_from_agent_workspace_returns_403() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "agentdel", "agentdel@example.com", "password123").await;
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": ["agent://agentdel/notes.txt"]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn rename_rejects_the_workspace_root() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "rootren", "rootren@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("rootren").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/rename",
+            &token,
+            serde_json::json!({"path": "", "new_name": "stolen"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(user_dir.exists(), "the workspace root itself must survive");
+}

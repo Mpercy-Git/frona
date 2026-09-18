@@ -8,7 +8,7 @@ use crate::storage::{VirtualPath, validate_relative_path};
 
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;
-use super::models::{CopyMoveRequest, MkdirRequest, RenameRequest};
+use super::models::{CopyMoveRequest, DeleteRequest, MkdirRequest, RenameRequest};
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 
@@ -17,6 +17,7 @@ pub(crate) async fn rename_user_file(
     State(state): State<AppState>,
     Json(req): Json<RenameRequest>,
 ) -> Result<(), ApiError> {
+    reject_workspace_root(&req.path, "rename")?;
     let trimmed = req.path.trim_start_matches('/');
     let vpath = VirtualPath::user(&auth.handle, trimmed);
     let resolved = state
@@ -66,6 +67,25 @@ fn resolve_file_virtual_path(
     storage
         .resolve_virtual_path_for_user(&auth.handle, &vpath)
         .map_err(ApiError)
+}
+
+/// Refuse an operation aimed at a workspace root rather than something in it.
+///
+/// An empty relative path resolves to the workspace directory itself, so a
+/// rename or delete of `""` would move or erase the whole tree. Callers name a
+/// file; the root is never the intended target.
+fn reject_workspace_root(path: &str, operation: &str) -> Result<(), ApiError> {
+    let relative = if path.starts_with("user://") || path.starts_with("agent://") {
+        VirtualPath::parse(path)?.relative
+    } else {
+        path.trim_start_matches('/').to_string()
+    };
+    if relative.is_empty() {
+        return Err(ApiError(AppError::Validation(format!(
+            "Cannot {operation} a workspace root"
+        ))));
+    }
+    Ok(())
 }
 
 fn ensure_user_destination(path: &str) -> Result<(), ApiError> {
@@ -185,6 +205,52 @@ pub(crate) async fn move_files(
         fs::rename(&src, &target)
             .await
             .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn delete_files(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<DeleteRequest>,
+) -> Result<(), ApiError> {
+    if req.paths.is_empty() {
+        return Err(ApiError(AppError::Validation(
+            "At least one path is required".into(),
+        )));
+    }
+
+    // Resolve and check every path before removing any, so a bad entry late in
+    // the batch fails the request instead of leaving it half applied.
+    let mut resolved_paths = Vec::with_capacity(req.paths.len());
+    for path in &req.paths {
+        reject_workspace_root(path, "delete")?;
+        // Same rule as copy and move: these routes serve a user's own files.
+        if path.starts_with("agent://") {
+            return Err(ApiError(AppError::Forbidden(
+                "Cannot delete from agent workspaces".into(),
+            )));
+        }
+        let resolved = resolve_file_virtual_path(path, &auth, &state.storage_service)?;
+        if !resolved.exists() {
+            return Err(ApiError(AppError::NotFound(format!(
+                "File not found: {path}"
+            ))));
+        }
+        resolved_paths.push(resolved);
+    }
+
+    for resolved in resolved_paths {
+        if resolved.is_dir() {
+            fs::remove_dir_all(&resolved)
+                .await
+                .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+        } else {
+            fs::remove_file(&resolved)
+                .await
+                .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+        }
     }
 
     Ok(())
