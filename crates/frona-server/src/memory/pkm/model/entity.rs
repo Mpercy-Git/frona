@@ -372,6 +372,15 @@ pub struct EntityHit {
     pub body: String,
 }
 
+/// A hit with the ranking signals the search layer needs to merge it against
+/// evidence from another source.
+#[derive(Debug, Clone)]
+pub struct RankedEntityHit {
+    pub entity: EntityHit,
+    pub score: f64,
+    pub use_count: i64,
+}
+
 impl EntityHit {
     /// Return the body line that best explains why this page matched the query.
     /// Metadata-only matches intentionally have no snippet.

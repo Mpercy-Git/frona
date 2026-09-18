@@ -16,6 +16,8 @@ use crate::memory::service::LookupVerdict;
 use crate::tool::{InferenceContext, ToolOutput, active_chat, str_list_arg};
 
 use super::model::{EntityCategory, EntityOrigin};
+use super::ontology::OntologyManager;
+use super::search::MemorySearch;
 use super::storage::PkmStorage;
 use super::vault::VaultScope;
 use crate::db::repo::pkm::PkmRepo;
@@ -23,6 +25,7 @@ use crate::db::repo::pkm::PkmRepo;
 pub fn all(
     repo: Arc<PkmRepo>,
     storage: PkmStorage,
+    ontology: OntologyManager,
     prompts: PromptLoader,
     user_service: UserService,
     max_lookups_per_run: usize,
@@ -37,7 +40,7 @@ pub fn all(
             prompts: prompts.clone(),
         }),
         Arc::new(SearchTool {
-            repo: repo.clone(),
+            search: MemorySearch::new(repo.clone(), ontology),
             prompts: prompts.clone(),
             vault: vault.clone(),
             max_lookups_per_run,
@@ -117,7 +120,11 @@ impl RememberTool {
 }
 
 pub struct SearchTool {
-    repo: Arc<PkmRepo>,
+    /// Upstream's retrieval: semantic evidence from the reasoned graph merged with
+    /// full-text ranking over metadata and body. The budget and repeat detection
+    /// below sit on top of it, unchanged — they govern how often an agent may search,
+    /// which is a different question from what a search should return.
+    search: MemorySearch,
     prompts: PromptLoader,
     vault: VaultResolver,
     /// `memory.pkm_max_lookups_per_turn` - how many searches one run may make
@@ -193,7 +200,7 @@ impl SearchTool {
                 elsewhere(&ctx.mcp_servers)
             ));
         }
-        let hits = self.repo.search_entities(&ctx.user.id, query).await?;
+        let hits = self.search.ranked_hits(&ctx.user.id, query, vault).await?;
         if hits.is_empty() {
             return Ok(match verdict {
                 // Repeating a query that found nothing is the cheapest loop to fall
