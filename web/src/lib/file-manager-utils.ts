@@ -10,6 +10,7 @@ export function toSvarEntries(
 ): IEntity[] {
   return entries.map((e) => ({
     id: `${parentPrefix}${e.id}`,
+    parent: e.parent === "/" ? parentPrefix : `${parentPrefix}${e.parent}`,
     size: e.size,
     date: e.date,
     type: e.type,
@@ -23,6 +24,18 @@ export function isWorkspacePath(path: string): boolean {
 
 export function isMyFilesPath(path: string): boolean {
   return path === MYFILES_ROOT || path.startsWith(MYFILES_ROOT + "/");
+}
+
+export function fileBrowserAncestors(path: string): string[] {
+  if (!isMyFilesPath(path) && !isWorkspacePath(path)) return [];
+  const parts = path.split("/").filter(Boolean);
+  const ancestors: string[] = [];
+  let current = "";
+  for (const part of parts) {
+    current += `/${part}`;
+    ancestors.push(current);
+  }
+  return ancestors;
 }
 
 export function userSubpath(path: string): string {
@@ -42,6 +55,29 @@ export function resolveAgentId(path: string, agents: Agent[]): string | null {
   const agentName = rest.split("/")[0];
   const agent = agents.find((a) => a.name === agentName);
   return agent?.id ?? null;
+}
+
+export function resolveAgentHandle(path: string, agents: Agent[]): string | null {
+  if (!path.startsWith(WORKSPACES_ROOT + "/")) return null;
+  const rest = path.slice(WORKSPACES_ROOT.length + 1);
+  const agentName = rest.split("/")[0];
+  const agent = agents.find((candidate) => candidate.name === agentName);
+  return agent?.handle ?? null;
+}
+
+export function fileOperationPath(
+  path: string,
+  userHandle: string,
+  agents: Agent[],
+): string | null {
+  if (isMyFilesPath(path)) {
+    return `user://${userHandle}/${userSubpath(path)}`;
+  }
+  if (isWorkspacePath(path)) {
+    const agentHandle = resolveAgentHandle(path, agents);
+    return agentHandle ? `agent://${agentHandle}/${agentSubpath(path)}` : null;
+  }
+  return null;
 }
 
 export function getFileOwnerPath(

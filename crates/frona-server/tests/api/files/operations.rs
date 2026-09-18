@@ -195,7 +195,7 @@ async fn copy_directory_recursive() {
 }
 
 #[tokio::test]
-async fn copy_to_agent_workspace_returns_403() {
+async fn copy_to_an_agent_the_caller_does_not_own_is_refused() {
     let (state, tmp) = test_app_state().await;
     let (token, _) = register_user(&state, "copy-ag", "copyag@example.com", "password123").await;
 
@@ -215,7 +215,7 @@ async fn copy_to_agent_workspace_returns_403() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(resp.status().is_client_error(), "status {}", resp.status());
 }
 
 #[tokio::test]
@@ -269,7 +269,7 @@ async fn move_files_succeeds() {
 }
 
 #[tokio::test]
-async fn move_from_agent_workspace_returns_403() {
+async fn move_from_an_agent_the_caller_does_not_own_is_refused() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) = register_user(&state, "move-ag", "moveag@example.com", "password123").await;
 
@@ -285,11 +285,11 @@ async fn move_from_agent_workspace_returns_403() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(resp.status().is_client_error(), "status {}", resp.status());
 }
 
 #[tokio::test]
-async fn move_to_agent_workspace_returns_403() {
+async fn move_to_an_agent_the_caller_does_not_own_is_refused() {
     let (state, tmp) = test_app_state().await;
     let (token, _) = register_user(&state, "move-ag2", "moveag2@example.com", "password123").await;
 
@@ -309,7 +309,7 @@ async fn move_to_agent_workspace_returns_403() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(resp.status().is_client_error(), "status {}", resp.status());
 }
 
 #[tokio::test]
@@ -444,9 +444,13 @@ async fn copying_from_another_users_agent_workspace_is_refused() {
         !leaked,
         "the victim's file was copied into the caller's directory (status {status})"
     );
+    // 404 rather than 403: the ownership check looks the agent up among the
+    // caller's own, so one that isn't theirs is indistinguishable from one that
+    // does not exist. Answering 403 here would confirm the victim's agent by
+    // name, which is an enumeration oracle the caller should not get.
     assert_eq!(
         status,
-        StatusCode::FORBIDDEN,
+        StatusCode::NOT_FOUND,
         "another user's workspace must not resolve"
     );
 }
@@ -566,7 +570,7 @@ async fn delete_rejects_the_workspace_root() {
 }
 
 #[tokio::test]
-async fn delete_from_agent_workspace_returns_403() {
+async fn delete_from_an_agent_the_caller_does_not_own_is_refused() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) = register_user(&state, "agentdel", "agentdel@example.com", "password123").await;
 
@@ -579,7 +583,7 @@ async fn delete_from_agent_workspace_returns_403() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(resp.status().is_client_error(), "status {}", resp.status());
 }
 
 #[tokio::test]
@@ -602,4 +606,92 @@ async fn rename_rejects_the_workspace_root() {
 
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert!(user_dir.exists(), "the workspace root itself must survive");
+}
+
+#[tokio::test]
+async fn copy_into_an_owned_agent_workspace_persists() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "wsowner", "wsowner@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "Helper").await;
+    let agent_handle = agent["handle"].as_str().unwrap().to_string();
+
+    let user_dir = tmp.path().join("users").join("wsowner").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("brief.md"), b"the brief")
+        .await
+        .unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/copy",
+            &token,
+            serde_json::json!({
+                "sources": ["/brief.md"],
+                "destination": format!("agent://{agent_handle}/"),
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let landed = tmp
+        .path()
+        .join("users")
+        .join("wsowner")
+        .join("agents")
+        .join(&agent_handle)
+        .join("brief.md");
+    assert!(
+        landed.exists(),
+        "the file should be in the agent's workspace"
+    );
+    assert!(
+        user_dir.join("brief.md").exists(),
+        "a copy leaves the source"
+    );
+}
+
+#[tokio::test]
+async fn move_out_of_an_owned_agent_workspace_persists() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "wsmover", "wsmover@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "Runner").await;
+    let agent_handle = agent["handle"].as_str().unwrap().to_string();
+
+    let agent_dir = tmp
+        .path()
+        .join("users")
+        .join("wsmover")
+        .join("agents")
+        .join(&agent_handle);
+    fs::create_dir_all(&agent_dir).await.unwrap();
+    fs::write(agent_dir.join("result.csv"), b"a,b")
+        .await
+        .unwrap();
+    let user_dir = tmp.path().join("users").join("wsmover").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/move",
+            &token,
+            serde_json::json!({
+                "sources": [format!("agent://{agent_handle}/result.csv")],
+                "destination": "",
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        user_dir.join("result.csv").exists(),
+        "the file should have moved out"
+    );
+    assert!(
+        !agent_dir.join("result.csv").exists(),
+        "a move leaves nothing behind"
+    );
 }
