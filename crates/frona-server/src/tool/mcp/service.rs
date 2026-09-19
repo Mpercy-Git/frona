@@ -27,9 +27,16 @@ use super::models::{
 use super::registry::McpRegistryClient;
 use super::repository::McpServerRepository;
 
+/// The package name a runtime invocation should target, when the warm-up was
+/// the only thing that could discover it. A registry package is invoked by the
+/// identifier the manifest already carries, so the answer is `None`; a direct
+/// spec - a git shorthand, a tarball URL, a local path - names no package until
+/// npm resolves it, and `npx` needs that name to find the bin it installed.
+pub type ResolvedPackageName = Option<String>;
+
 #[async_trait]
 pub trait PackageInstaller: Send + Sync {
-    async fn install(&self, server: &McpServer) -> Result<(), AppError>;
+    async fn install(&self, server: &McpServer) -> Result<ResolvedPackageName, AppError>;
 }
 
 pub struct SandboxedPackageInstaller {
@@ -44,17 +51,32 @@ impl SandboxedPackageInstaller {
 
 #[async_trait]
 impl PackageInstaller for SandboxedPackageInstaller {
-    async fn install(&self, server: &McpServer) -> Result<(), AppError> {
+    async fn install(&self, server: &McpServer) -> Result<ResolvedPackageName, AppError> {
         // No package to warm up, and no sandbox needed: nothing is ever
         // spawned for a remote-only server.
         if server.package.runtime == McpRuntime::Remote {
-            return Ok(());
+            return Ok(None);
         }
 
         let sandbox = self.manager.build_install_sandbox(server);
         sandbox.setup()?;
 
+        let direct_npm_spec =
+            server.package.runtime == McpRuntime::Npm && is_direct_npm_spec(&server.package.name);
+
         let (warmup_cmd, warmup_args) = match server.package.runtime {
+            // A direct spec carries no registry version, so pinning it with
+            // `@{version}` sends npm after a package that cannot exist:
+            // `github:owner/repo@latest` is parsed as the repo `null/latest`.
+            // Installed *with* a save, because the manifest npm writes is the
+            // only record of the name the spec resolved to.
+            McpRuntime::Npm if direct_npm_spec => {
+                seed_workspace_manifest(&server.workspace_dir)?;
+                (
+                    "npm",
+                    vec!["install".to_string(), server.package.name.clone()],
+                )
+            }
             McpRuntime::Npm => {
                 let pkg = format!("{}@{}", server.package.name, server.package.version);
                 (
@@ -66,7 +88,7 @@ impl PackageInstaller for SandboxedPackageInstaller {
                 let pkg = format!("{}=={}", server.package.name, server.package.version);
                 ("uv", vec!["tool".to_string(), "install".to_string(), pkg])
             }
-            McpRuntime::Binary => return Ok(()),
+            McpRuntime::Binary => return Ok(None),
             McpRuntime::Remote => unreachable!("handled above"),
         };
 
@@ -114,13 +136,23 @@ impl PackageInstaller for SandboxedPackageInstaller {
             )));
         }
 
+        let resolved = if direct_npm_spec {
+            Some(resolve_installed_package_name(
+                &server.workspace_dir,
+                &server.package.name,
+            )?)
+        } else {
+            None
+        };
+
         tracing::info!(
             server_id = %server.id,
             package = %server.package.name,
             runtime = %server.package.runtime,
+            resolved_package = ?resolved,
             "package warm-up succeeded"
         );
-        Ok(())
+        Ok(resolved)
     }
 }
 
@@ -128,8 +160,8 @@ pub struct NoopPackageInstaller;
 
 #[async_trait]
 impl PackageInstaller for NoopPackageInstaller {
-    async fn install(&self, _server: &McpServer) -> Result<(), AppError> {
-        Ok(())
+    async fn install(&self, _server: &McpServer) -> Result<ResolvedPackageName, AppError> {
+        Ok(None)
     }
 }
 
@@ -438,7 +470,10 @@ impl McpServerService {
         let persisted = self.repo.create(&server).await?;
         self.write_bindings(user_id, &persisted.id, req.credentials)
             .await?;
-        self.installer.install(&persisted).await?;
+        let persisted = match self.installer.install(&persisted).await? {
+            Some(name) => self.rewrite_invocation_target(persisted, &name).await?,
+            None => persisted,
+        };
         let sandbox_policy = req.sandbox_policy.unwrap_or_default();
         self.policy_service
             .reconcile_sandbox_policy(
@@ -448,6 +483,29 @@ impl McpServerService {
             )
             .await?;
         Ok(persisted)
+    }
+
+    /// Points the stored invocation at the name npm resolved a direct spec to.
+    /// Invoking the spec itself would also run, but `npx` re-fetches a spec from
+    /// the network on every start, while a package name resolves against the
+    /// `node_modules` the warm-up already populated - so a started server needs
+    /// no egress to npm or the forge it was installed from.
+    async fn rewrite_invocation_target(
+        &self,
+        mut server: McpServer,
+        name: &str,
+    ) -> Result<McpServer, AppError> {
+        let spec = server.package.name.clone();
+        swap_invocation_target(&mut server.args, &spec, name);
+        for transport in server.transports.iter_mut() {
+            match transport {
+                TransportConfig::Stdio { args, .. } | TransportConfig::Http { args, .. } => {
+                    swap_invocation_target(args, &spec, name)
+                }
+            }
+        }
+        server.updated_at = Utc::now();
+        self.repo.update(&server).await
     }
 
     /// Installs a server reachable only over a remote streamable-HTTP/SSE
@@ -887,6 +945,91 @@ fn pick_package(entry: &RegistryServerEntry) -> Option<&RegistryPackage> {
     None
 }
 
+/// Whether an npm identifier is something other than a registry name. npm also
+/// takes git shorthands and URLs, tarball URLs, and local paths; none of them
+/// carry a registry version, and none of them say what package they resolve to.
+fn is_direct_npm_spec(identifier: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "github:",
+        "gitlab:",
+        "bitbucket:",
+        "gist:",
+        "git:",
+        "git+",
+        "http://",
+        "https://",
+        "file:",
+        "/",
+        "./",
+        "../",
+    ];
+    if PREFIXES.iter().any(|p| identifier.starts_with(p)) {
+        return true;
+    }
+    // `owner/repo` with no leading `@` is npm's GitHub shorthand - a scoped
+    // registry package is the only other identifier carrying a slash.
+    !identifier.starts_with('@') && identifier.contains('/')
+}
+
+/// `npm install <spec>` records the name a spec resolved to only if there is a
+/// manifest to record it in. Seeds a private, empty one; a manifest already in
+/// the workspace is left alone.
+fn seed_workspace_manifest(workspace_dir: &str) -> Result<(), AppError> {
+    let path = std::path::Path::new(workspace_dir).join("package.json");
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::write(
+        &path,
+        "{\n  \"name\": \"frona-mcp-workspace\",\n  \"version\": \"0.0.0\",\n  \"private\": true\n}\n",
+    )
+    .map_err(|e| AppError::Tool(format!("seeding {}: {e}", path.display())))
+}
+
+/// Reads back the name npm recorded for `spec` in the workspace manifest.
+/// Matching on the recorded value keeps a warm workspace honest; a lone
+/// dependency is taken whatever npm normalised the spec to, since a `file:`
+/// path comes back rewritten relative to the workspace.
+fn resolve_installed_package_name(workspace_dir: &str, spec: &str) -> Result<String, AppError> {
+    let path = std::path::Path::new(workspace_dir).join("package.json");
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| AppError::Tool(format!("reading {}: {e}", path.display())))?;
+    let manifest: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| AppError::Tool(format!("parsing {}: {e}", path.display())))?;
+    let deps = manifest
+        .get("dependencies")
+        .and_then(|d| d.as_object())
+        .ok_or_else(|| {
+            AppError::Tool(format!(
+                "npm recorded no dependency for {spec} in {}",
+                path.display()
+            ))
+        })?;
+
+    if let Some((name, _)) = deps.iter().find(|(_, v)| v.as_str() == Some(spec)) {
+        return Ok(name.clone());
+    }
+    match deps.len() {
+        1 => Ok(deps
+            .keys()
+            .next()
+            .expect("length checked immediately above")
+            .clone()),
+        other => Err(AppError::Tool(format!(
+            "cannot tell which of the workspace's {other} dependencies {spec} installed as"
+        ))),
+    }
+}
+
+/// Replaces the install-time target wherever it appears in an argument list.
+fn swap_invocation_target(args: &mut [String], spec: &str, name: &str) {
+    for arg in args.iter_mut() {
+        if arg == spec {
+            *arg = name.to_string();
+        }
+    }
+}
+
 fn build_invocation(
     package: &RegistryPackage,
 ) -> Result<(McpRuntime, String, Vec<String>), AppError> {
@@ -909,7 +1052,16 @@ fn build_invocation(
 
     match package.registry_type.as_str() {
         "npm" => {
-            let mut args = vec!["--yes".to_string(), pinned];
+            // A direct spec is already a complete instruction to npm; `@{version}`
+            // on top of it is read as a package called `latest`. The target is
+            // swapped for the resolved package name once the warm-up knows it -
+            // see `rewrite_invocation_target`.
+            let target = if is_direct_npm_spec(&package.identifier) {
+                package.identifier.clone()
+            } else {
+                pinned
+            };
+            let mut args = vec!["--yes".to_string(), target];
             args.extend(runtime_args);
             args.extend(package_args);
             Ok((McpRuntime::Npm, "npx".into(), args))
@@ -1057,6 +1209,100 @@ mod tests {
     #[test]
     fn pick_package_returns_none_for_oci_only() {
         assert!(pick_package(&entry_with(vec![pkg("oci", "stdio")])).is_none());
+    }
+
+    #[test]
+    fn is_direct_npm_spec_spots_everything_npm_takes_besides_a_registry_name() {
+        for spec in [
+            "github:Mpercy-Git/meshcentral-mcp",
+            "Mpercy-Git/meshcentral-mcp",
+            "git+https://example.com/a/b.git",
+            "git://example.com/a/b.git",
+            "https://example.com/pkg.tgz",
+            "file:../local",
+            "/srv/pkg",
+            "./pkg",
+        ] {
+            assert!(is_direct_npm_spec(spec), "{spec} should be a direct spec");
+        }
+        for name in ["meshcentral-mcp", "@example/thing", "thing2"] {
+            assert!(!is_direct_npm_spec(name), "{name} is a registry name");
+        }
+    }
+
+    #[test]
+    fn build_invocation_leaves_a_direct_spec_unpinned() {
+        // The failure this guards: `npx --yes github:owner/repo@1.2.3` asks npm
+        // for a repo called `null/1.2.3`, so a versioned manifest would make an
+        // otherwise valid fork uninstallable.
+        let mut p = pkg("npm", "stdio");
+        p.identifier = "github:Mpercy-Git/meshcentral-mcp".into();
+        let (runtime, cmd, args) = build_invocation(&p).unwrap();
+        assert_eq!(runtime, McpRuntime::Npm);
+        assert_eq!(cmd, "npx");
+        assert_eq!(args, vec!["--yes", "github:Mpercy-Git/meshcentral-mcp"]);
+    }
+
+    fn workspace_with_manifest(body: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), body).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_installed_package_name_prefers_the_recorded_spec() {
+        let dir = workspace_with_manifest(
+            r#"{"dependencies":{"other":"1.0.0","meshcentral-mcp":"github:o/r"}}"#,
+        );
+        let name =
+            resolve_installed_package_name(dir.path().to_str().unwrap(), "github:o/r").unwrap();
+        assert_eq!(name, "meshcentral-mcp");
+    }
+
+    #[test]
+    fn resolve_installed_package_name_accepts_a_lone_normalised_dependency() {
+        // npm rewrites a `file:` spec relative to the workspace, so the value it
+        // records no longer matches what was asked for.
+        let dir = workspace_with_manifest(r#"{"dependencies":{"local-mcp":"file:../local"}}"#);
+        let name = resolve_installed_package_name(dir.path().to_str().unwrap(), "file:/srv/local")
+            .unwrap();
+        assert_eq!(name, "local-mcp");
+    }
+
+    #[test]
+    fn resolve_installed_package_name_refuses_to_guess() {
+        let dir = workspace_with_manifest(r#"{"dependencies":{"a":"1.0.0","b":"2.0.0"}}"#);
+        let err =
+            resolve_installed_package_name(dir.path().to_str().unwrap(), "github:o/r").unwrap_err();
+        assert!(matches!(err, AppError::Tool(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn seed_workspace_manifest_does_not_clobber_a_warm_workspace() {
+        let dir = workspace_with_manifest(r#"{"dependencies":{"kept":"1.0.0"}}"#);
+        seed_workspace_manifest(dir.path().to_str().unwrap()).unwrap();
+        let body = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
+        assert!(body.contains("kept"), "existing manifest was overwritten");
+    }
+
+    #[test]
+    fn seed_workspace_manifest_writes_something_npm_can_save_into() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_workspace_manifest(dir.path().to_str().unwrap()).unwrap();
+        let body = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["private"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn swap_invocation_target_replaces_only_the_spec() {
+        let mut args = vec![
+            "--yes".to_string(),
+            "github:o/r".to_string(),
+            "--flag".to_string(),
+        ];
+        swap_invocation_target(&mut args, "github:o/r", "meshcentral-mcp");
+        assert_eq!(args, vec!["--yes", "meshcentral-mcp", "--flag"]);
     }
 
     #[test]
