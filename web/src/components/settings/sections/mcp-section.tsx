@@ -527,6 +527,12 @@ export function McpSection() {
                       placeholder={customRuntime === "npm" ? "@scope/my-mcp-server" : "my-mcp-server"}
                       className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
                     />
+                    {customRuntime === "npm" && (
+                      <p className="mt-1 text-[11px] text-text-tertiary">
+                        A published package name, or anything else npm installs:{" "}
+                        <span className="font-mono">github:owner/repo</span>, a git URL, or a tarball URL. Leave the version blank for those.
+                      </p>
+                    )}
                   </div>
                 </div>
 
