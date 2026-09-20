@@ -536,6 +536,22 @@ impl McpManager {
         self.connections.read().await.contains_key(server_id)
     }
 
+    /// The `serverInfo` a running server reported at initialize. Every MCP
+    /// server states this, whatever it was installed from and whether it was
+    /// installed at all, which makes it the one version available for a remote
+    /// server. `None` once the server stops - it describes a live connection.
+    pub async fn peer_server_info(
+        &self,
+        server_id: &str,
+    ) -> Option<crate::tool::mcp::models::McpServerInfo> {
+        let conns = self.connections.read().await;
+        let peer = conns.get(server_id)?.client.peer_info()?;
+        Some(crate::tool::mcp::models::McpServerInfo {
+            name: peer.server_info.name.clone(),
+            version: peer.server_info.version.clone(),
+        })
+    }
+
     pub async fn read_logs(&self, server_id: &str, max_bytes: u64) -> String {
         let log_path = {
             let conns = self.connections.read().await;

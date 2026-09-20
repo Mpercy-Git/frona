@@ -178,6 +178,13 @@ pub struct McpServer {
     pub server_info: Option<McpServerInfo>,
 
     pub package: McpPackage,
+    /// What the install put on disk, as opposed to what was asked for:
+    /// `{version}`, or `{version}+{short commit}` for a package from git.
+    /// `package.version` records the request, which for an unpinned install is
+    /// only "latest". `None` for a runtime whose installer records nothing
+    /// readable (PyPI) and for a remote server, which installs nothing at all.
+    #[serde(default)]
+    pub resolved_ref: Option<String>,
     pub command: String,
     pub args: Vec<String>,
     #[serde(default)]
