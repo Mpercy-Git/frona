@@ -183,6 +183,7 @@ fn make_server(id: &str, user_id: &str, status: McpServerStatus) -> McpServer {
             name: "@example/test".into(),
             version: "1.0.0".into(),
         },
+        resolved_ref: None,
         command: "echo".into(),
         args: vec![],
         env: BTreeMap::new(),

@@ -27,16 +27,24 @@ use super::models::{
 use super::registry::McpRegistryClient;
 use super::repository::McpServerRepository;
 
-/// The package name a runtime invocation should target, when the warm-up was
-/// the only thing that could discover it. A registry package is invoked by the
-/// identifier the manifest already carries, so the answer is `None`; a direct
-/// spec - a git shorthand, a tarball URL, a local path - names no package until
-/// npm resolves it, and `npx` needs that name to find the bin it installed.
-pub type ResolvedPackageName = Option<String>;
+/// What a warm-up learned that the request could not state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WarmUpOutcome {
+    /// The package name a runtime invocation should target. A registry package
+    /// is invoked by the identifier the manifest already carries, so the answer
+    /// is `None`; a direct spec - a git shorthand, a tarball URL, a local path -
+    /// names no package until npm resolves it, and `npx` needs that name to find
+    /// the bin it installed.
+    pub invocation_name: Option<String>,
+    /// What landed on disk, as opposed to what was asked for: a version, or
+    /// `{version}+{commit}` when the package came from git. `package.version`
+    /// records the request, which for an unpinned install is only "latest".
+    pub resolved_ref: Option<String>,
+}
 
 #[async_trait]
 pub trait PackageInstaller: Send + Sync {
-    async fn install(&self, server: &McpServer) -> Result<ResolvedPackageName, AppError>;
+    async fn install(&self, server: &McpServer) -> Result<WarmUpOutcome, AppError>;
 }
 
 pub struct SandboxedPackageInstaller {
@@ -51,11 +59,11 @@ impl SandboxedPackageInstaller {
 
 #[async_trait]
 impl PackageInstaller for SandboxedPackageInstaller {
-    async fn install(&self, server: &McpServer) -> Result<ResolvedPackageName, AppError> {
+    async fn install(&self, server: &McpServer) -> Result<WarmUpOutcome, AppError> {
         // No package to warm up, and no sandbox needed: nothing is ever
         // spawned for a remote-only server.
         if server.package.runtime == McpRuntime::Remote {
-            return Ok(None);
+            return Ok(WarmUpOutcome::default());
         }
 
         let sandbox = self.manager.build_install_sandbox(server);
@@ -88,7 +96,7 @@ impl PackageInstaller for SandboxedPackageInstaller {
                 let pkg = format!("{}=={}", server.package.name, server.package.version);
                 ("uv", vec!["tool".to_string(), "install".to_string(), pkg])
             }
-            McpRuntime::Binary => return Ok(None),
+            McpRuntime::Binary => return Ok(WarmUpOutcome::default()),
             McpRuntime::Remote => unreachable!("handled above"),
         };
 
@@ -136,7 +144,7 @@ impl PackageInstaller for SandboxedPackageInstaller {
             )));
         }
 
-        let resolved = if direct_npm_spec {
+        let invocation_name = if direct_npm_spec {
             Some(resolve_installed_package_name(
                 &server.workspace_dir,
                 &server.package.name,
@@ -145,14 +153,31 @@ impl PackageInstaller for SandboxedPackageInstaller {
             None
         };
 
+        // Only npm writes a lockfile we can read back; a `uv tool install`
+        // leaves nothing equivalent in the workspace, so a PyPI server has no
+        // resolved ref and the UI says so rather than inventing one.
+        let resolved_ref = match server.package.runtime {
+            McpRuntime::Npm => {
+                let name = invocation_name.as_deref().unwrap_or(&server.package.name);
+                read_installed_ref(&server.workspace_dir, name)
+            }
+            _ => None,
+        };
+
+        let outcome = WarmUpOutcome {
+            invocation_name,
+            resolved_ref,
+        };
+
         tracing::info!(
             server_id = %server.id,
             package = %server.package.name,
             runtime = %server.package.runtime,
-            resolved_package = ?resolved,
+            resolved_package = ?outcome.invocation_name,
+            resolved_ref = ?outcome.resolved_ref,
             "package warm-up succeeded"
         );
-        Ok(resolved)
+        Ok(outcome)
     }
 }
 
@@ -160,9 +185,20 @@ pub struct NoopPackageInstaller;
 
 #[async_trait]
 impl PackageInstaller for NoopPackageInstaller {
-    async fn install(&self, _server: &McpServer) -> Result<ResolvedPackageName, AppError> {
-        Ok(None)
+    async fn install(&self, _server: &McpServer) -> Result<WarmUpOutcome, AppError> {
+        Ok(WarmUpOutcome::default())
     }
+}
+
+/// What a reinstall changed. `changed` compares the resolved ref, so it is
+/// false when the source had not moved - the usual outcome of pressing update
+/// on a server that is already current.
+#[derive(Debug, Clone)]
+pub struct ReinstallResult {
+    pub server: McpServer,
+    pub changed: bool,
+    pub previous_ref: Option<String>,
+    pub restarted: bool,
 }
 
 pub struct McpServerService {
@@ -426,6 +462,7 @@ impl McpServerService {
             registry_id: Some(entry.name.clone()),
             server_info: None,
             package: mcp_package,
+            resolved_ref: None,
             command,
             args,
             env: req.extra_env.clone(),
@@ -470,10 +507,8 @@ impl McpServerService {
         let persisted = self.repo.create(&server).await?;
         self.write_bindings(user_id, &persisted.id, req.credentials)
             .await?;
-        let persisted = match self.installer.install(&persisted).await? {
-            Some(name) => self.rewrite_invocation_target(persisted, &name).await?,
-            None => persisted,
-        };
+        let outcome = self.installer.install(&persisted).await?;
+        let persisted = self.apply_warm_up_outcome(persisted, outcome).await?;
         let sandbox_policy = req.sandbox_policy.unwrap_or_default();
         self.policy_service
             .reconcile_sandbox_policy(
@@ -485,24 +520,35 @@ impl McpServerService {
         Ok(persisted)
     }
 
-    /// Points the stored invocation at the name npm resolved a direct spec to.
-    /// Invoking the spec itself would also run, but `npx` re-fetches a spec from
-    /// the network on every start, while a package name resolves against the
-    /// `node_modules` the warm-up already populated - so a started server needs
-    /// no egress to npm or the forge it was installed from.
-    async fn rewrite_invocation_target(
+    /// Records what the warm-up learned: the name to invoke, and the version or
+    /// commit that actually landed. Persists once, even when both changed.
+    ///
+    /// The invocation is pointed at the resolved name rather than left as the
+    /// spec because `npx` re-fetches a spec from the network on every start,
+    /// while a package name resolves against the `node_modules` the warm-up
+    /// already populated - so a started server needs no egress to npm or to the
+    /// forge it was installed from.
+    async fn apply_warm_up_outcome(
         &self,
         mut server: McpServer,
-        name: &str,
+        outcome: WarmUpOutcome,
     ) -> Result<McpServer, AppError> {
-        let spec = server.package.name.clone();
-        swap_invocation_target(&mut server.args, &spec, name);
-        for transport in server.transports.iter_mut() {
-            match transport {
-                TransportConfig::Stdio { args, .. } | TransportConfig::Http { args, .. } => {
-                    swap_invocation_target(args, &spec, name)
+        if outcome == WarmUpOutcome::default() {
+            return Ok(server);
+        }
+        if let Some(name) = outcome.invocation_name.as_deref() {
+            let spec = server.package.name.clone();
+            swap_invocation_target(&mut server.args, &spec, name);
+            for transport in server.transports.iter_mut() {
+                match transport {
+                    TransportConfig::Stdio { args, .. } | TransportConfig::Http { args, .. } => {
+                        swap_invocation_target(args, &spec, name)
+                    }
                 }
             }
+        }
+        if outcome.resolved_ref.is_some() {
+            server.resolved_ref = outcome.resolved_ref;
         }
         server.updated_at = Utc::now();
         self.repo.update(&server).await
@@ -591,6 +637,7 @@ impl McpServerService {
                 name: url.clone(),
                 version: "-".into(),
             },
+            resolved_ref: None,
             command: String::new(),
             args: Vec::new(),
             env: req.extra_env.clone(),
@@ -813,6 +860,12 @@ impl McpServerService {
         server.status = McpServerStatus::Running;
         server.last_started_at = Some(Utc::now());
         server.updated_at = Utc::now();
+        // The only version a server states about itself, and the only one there
+        // is for a remote server, where nothing was installed locally to read a
+        // ref from. Absent when a server declines to name itself at initialize.
+        if let Some(info) = self.manager.peer_server_info(&server.id).await {
+            server.server_info = Some(info);
+        }
         server.tool_cache = tools
             .iter()
             .map(|t| CachedMcpTool {
@@ -843,6 +896,64 @@ impl McpServerService {
         }
 
         Ok(StartResult { tools })
+    }
+
+    /// Re-runs the warm-up so a server picks up whatever its source now points
+    /// at, keeping the row and everything hanging off it - credential bindings,
+    /// sandbox policy, the handle every agent's tool ids are built from.
+    /// Uninstalling and reinstalling would lose all of that.
+    ///
+    /// Nothing here checks whether an update exists: a moving git branch has no
+    /// version to compare, so the honest answer is to reinstall and report what
+    /// changed. A server that was running is restarted, because a stopped
+    /// server is not what the caller had before they asked.
+    pub async fn reinstall(
+        &self,
+        user_id: &str,
+        server_id: &str,
+    ) -> Result<ReinstallResult, AppError> {
+        let server = self.load_owned(user_id, server_id).await?;
+        if server.package.runtime == McpRuntime::Remote {
+            return Err(AppError::Validation(
+                "a remote server installs nothing locally - there is nothing to update".into(),
+            ));
+        }
+
+        let was_running = matches!(server.status, McpServerStatus::Running);
+        if was_running {
+            self.stop(user_id, server_id).await?;
+        }
+
+        let previous_ref = server.resolved_ref.clone();
+        let server = self.load_owned(user_id, server_id).await?;
+
+        // A failed warm-up leaves the row as it was: the workspace may be half
+        // written, but the invocation and resolved ref still describe the last
+        // install that worked, and the caller is told rather than left with a
+        // server silently pointing at nothing.
+        let outcome = match self.installer.install(&server).await {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                if was_running {
+                    let _ = self.start(user_id, server_id).await;
+                }
+                return Err(e);
+            }
+        };
+
+        let server = self.apply_warm_up_outcome(server, outcome).await?;
+        let new_ref = server.resolved_ref.clone();
+
+        if was_running {
+            self.start(user_id, server_id).await?;
+        }
+
+        Ok(ReinstallResult {
+            server: self.load_owned(user_id, server_id).await?,
+            changed: previous_ref != new_ref,
+            previous_ref,
+            restarted: was_running,
+        })
     }
 
     pub async fn stop(&self, user_id: &str, server_id: &str) -> Result<(), AppError> {
@@ -1021,6 +1132,35 @@ fn resolve_installed_package_name(workspace_dir: &str, spec: &str) -> Result<Str
     }
 }
 
+/// Reads what npm actually put on disk for `name`. The lockfile npm maintains
+/// under `node_modules` carries the resolved version for every install, and the
+/// commit for one that came from git - the only place a git spec's commit is
+/// recorded, since the spec itself may name a moving branch. Returns
+/// `{version}` or `{version}+{short commit}`; `None` when the package is absent
+/// or the lockfile cannot be read, because a missing ref displays as "unknown"
+/// rather than failing an install that otherwise succeeded.
+fn read_installed_ref(workspace_dir: &str, name: &str) -> Option<String> {
+    let path = std::path::Path::new(workspace_dir)
+        .join("node_modules")
+        .join(".package-lock.json");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let lock: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let entry = lock.get("packages")?.get(format!("node_modules/{name}"))?;
+    let version = entry.get("version")?.as_str()?;
+
+    let commit = entry
+        .get("resolved")
+        .and_then(|r| r.as_str())
+        .and_then(|r| r.rsplit_once('#'))
+        .map(|(_, sha)| sha)
+        .filter(|sha| sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()));
+
+    Some(match commit {
+        Some(sha) => format!("{version}+{}", &sha[..7]),
+        None => version.to_string(),
+    })
+}
+
 /// Replaces the install-time target wherever it appears in an argument list.
 fn swap_invocation_target(args: &mut [String], spec: &str, name: &str) {
     for arg in args.iter_mut() {
@@ -1055,7 +1195,7 @@ fn build_invocation(
             // A direct spec is already a complete instruction to npm; `@{version}`
             // on top of it is read as a package called `latest`. The target is
             // swapped for the resolved package name once the warm-up knows it -
-            // see `rewrite_invocation_target`.
+            // see `apply_warm_up_outcome`.
             let target = if is_direct_npm_spec(&package.identifier) {
                 package.identifier.clone()
             } else {
@@ -1292,6 +1432,54 @@ mod tests {
         let body = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["private"], serde_json::json!(true));
+    }
+
+    fn workspace_with_lockfile(body: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let modules = dir.path().join("node_modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::fs::write(modules.join(".package-lock.json"), body).unwrap();
+        dir
+    }
+
+    #[test]
+    fn read_installed_ref_reports_a_registry_version() {
+        let dir = workspace_with_lockfile(
+            r#"{"packages":{"node_modules/thing":{"version":"1.2.3","resolved":"https://registry.npmjs.org/thing/-/thing-1.2.3.tgz"}}}"#,
+        );
+        let got = read_installed_ref(dir.path().to_str().unwrap(), "thing");
+        assert_eq!(got.as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
+    fn read_installed_ref_carries_the_commit_for_a_git_install() {
+        // The version alone is useless for a git spec: a branch moves while
+        // package.json keeps saying 1.0.0, so the commit is the only thing that
+        // distinguishes one install from the next.
+        let dir = workspace_with_lockfile(
+            r#"{"packages":{"node_modules/meshcentral-mcp":{"version":"1.0.0","resolved":"git+ssh://git@github.com/o/r.git#b772fb5e92c29bee8e5ad3f31206271029d91b0d"}}}"#,
+        );
+        let got = read_installed_ref(dir.path().to_str().unwrap(), "meshcentral-mcp");
+        assert_eq!(got.as_deref(), Some("1.0.0+b772fb5"));
+    }
+
+    #[test]
+    fn read_installed_ref_ignores_a_fragment_that_is_not_a_commit() {
+        let dir = workspace_with_lockfile(
+            r#"{"packages":{"node_modules/thing":{"version":"2.0.0","resolved":"https://example.com/thing.tgz#notasha"}}}"#,
+        );
+        let got = read_installed_ref(dir.path().to_str().unwrap(), "thing");
+        assert_eq!(got.as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn read_installed_ref_is_none_rather_than_an_error() {
+        // A missing or unreadable lockfile must not fail an install that
+        // otherwise worked - the ref is for display, so absent reads as unknown.
+        let dir = workspace_with_lockfile(r#"{"packages":{}}"#);
+        assert!(read_installed_ref(dir.path().to_str().unwrap(), "absent").is_none());
+        let empty = tempfile::tempdir().unwrap();
+        assert!(read_installed_ref(empty.path().to_str().unwrap(), "thing").is_none());
     }
 
     #[test]

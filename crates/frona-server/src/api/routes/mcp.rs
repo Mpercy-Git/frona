@@ -47,6 +47,7 @@ pub fn router() -> Router<AppState> {
                 .patch(update_server),
         )
         .route("/api/mcp/servers/{id}/start", post(start_server))
+        .route("/api/mcp/servers/{id}/update", post(update_package))
         .route("/api/mcp/servers/{id}/stop", post(stop_server))
         .route("/api/mcp/servers/{id}/logs", get(get_logs))
         .route("/api/mcp/servers/{id}/logs/stream", get(stream_logs))
@@ -65,6 +66,11 @@ struct McpServerResponse {
     status: String,
     command: String,
     args: Vec<String>,
+    /// What the install resolved to. `server_version` is what the running
+    /// server calls itself; the two answer different questions and a server
+    /// can report a version its package never states.
+    resolved_ref: Option<String>,
+    server_version: Option<String>,
     tool_count: usize,
     active_transport: String,
     transports: Vec<crate::tool::mcp::TransportConfig>,
@@ -88,6 +94,8 @@ impl From<crate::tool::mcp::McpServer> for McpServerResponse {
             status: s.status.to_string(),
             command: s.command,
             args: s.args,
+            resolved_ref: s.resolved_ref,
+            server_version: s.server_info.map(|i| i.version),
             tool_count: s.tool_cache.len(),
             active_transport: s.active_transport,
             transports: s.transports,
@@ -208,6 +216,29 @@ async fn start_server(
             })
             .collect(),
     }))
+}
+
+async fn update_package(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<UpdatePackageResponse>, ApiError> {
+    let result = state.mcp_service.reinstall(&auth.user_id, &id).await?;
+    let server = to_response(&state, &auth.user_id, &auth.handle, result.server).await?;
+    Ok(Json(UpdatePackageResponse {
+        server,
+        changed: result.changed,
+        previous_ref: result.previous_ref,
+        restarted: result.restarted,
+    }))
+}
+
+#[derive(Serialize)]
+struct UpdatePackageResponse {
+    server: McpServerResponse,
+    changed: bool,
+    previous_ref: Option<String>,
+    restarted: bool,
 }
 
 #[derive(Serialize)]

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { ArrowLeftIcon, CpuChipIcon, PlayIcon, StopIcon, TrashIcon, PlusIcon, InformationCircleIcon, CommandLineIcon, DocumentTextIcon, KeyIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
+import { ArrowLeftIcon, ArrowPathIcon, CpuChipIcon, PlayIcon, StopIcon, TrashIcon, PlusIcon, InformationCircleIcon, CommandLineIcon, DocumentTextIcon, KeyIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import { api, API_URL, ensureAccessToken } from "@/lib/api-client";
 import { SectionHeader, SectionPanel, Field, TextInput } from "@/components/settings/field";
 import { formatDistanceToNow } from "date-fns";
@@ -20,6 +20,8 @@ interface McpServer {
   status: string;
   command: string;
   args: string[];
+  resolved_ref: string | null;
+  server_version: string | null;
   tool_count: number;
   active_transport: string;
   transports: Array<
@@ -82,6 +84,7 @@ function McpServerPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [updateNote, setUpdateNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [logs, setLogs] = useState<string>("");
@@ -335,6 +338,28 @@ function McpServerPage() {
     finally { setActionLoading(false); }
   };
 
+  const update = async () => {
+    setActionLoading(true);
+    setError(null);
+    setUpdateNote(null);
+    try {
+      const res = await api.post<{ changed: boolean; previous_ref: string | null; restarted: boolean }>(
+        `/api/mcp/servers/${serverId}/update`,
+        {}
+      );
+      await reload();
+      setUpdateNote(
+        res.changed
+          ? `Updated from ${res.previous_ref ?? "an unknown version"}.${res.restarted ? " Restarted." : ""}`
+          : "Already up to date."
+      );
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Update failed");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const uninstall = async () => {
     if (!confirm("Uninstall this MCP server? This will remove all data and credential bindings.")) return;
     setActionLoading(true);
@@ -475,6 +500,17 @@ function McpServerPage() {
                   <span className="text-sm text-text-tertiary">Tools</span>
                   <span className="text-sm text-text-primary">{server.tool_count}</span>
                 </div>
+                {(server.resolved_ref || server.server_version) && (
+                  <div className="px-4 py-3 flex justify-between">
+                    <span className="text-sm text-text-tertiary">Version</span>
+                    <span className="text-sm text-text-primary font-mono ml-4 truncate">
+                      {server.resolved_ref ?? server.server_version}
+                      {server.resolved_ref && server.server_version && server.server_version !== server.resolved_ref && (
+                        <span className="text-text-tertiary"> · reports {server.server_version}</span>
+                      )}
+                    </span>
+                  </div>
+                )}
                 <div className="px-4 py-3 flex justify-between">
                   <span className="text-sm text-text-tertiary">Installed</span>
                   <span className="text-sm text-text-primary">{formatDistanceToNow(new Date(server.installed_at), { addSuffix: true })}</span>
@@ -508,6 +544,18 @@ function McpServerPage() {
                     {actionLoading ? "Stopping..." : "Stop"}
                   </button>
                 )}
+                {/* A remote server installs nothing locally, so it carries no command and has nothing to reinstall. */}
+                {server.command !== "" && (
+                  <button
+                    onClick={update}
+                    disabled={actionLoading}
+                    title="Reinstall from the same source, keeping credentials, policy and agent access"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-tertiary disabled:opacity-50 transition"
+                  >
+                    <ArrowPathIcon className="h-4 w-4" />
+                    {actionLoading ? "Updating..." : "Update"}
+                  </button>
+                )}
                 <button
                   onClick={uninstall}
                   disabled={actionLoading}
@@ -517,6 +565,9 @@ function McpServerPage() {
                   Uninstall
                 </button>
               </div>
+              {updateNote && (
+                <p className="text-xs text-text-tertiary">{updateNote}</p>
+              )}
             </div>
           )}
 
