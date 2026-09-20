@@ -53,6 +53,51 @@ pub(crate) enum EditOutcome {
     EmptyNeedle,
 }
 
+/// Narrow a match's original-buffer range so that a collapsed whitespace run
+/// at either boundary is consumed only as far as the needle actually spelled
+/// it.
+///
+/// `collapse_whitespace_runs` maps a whole run - `"\n    "` included - onto a
+/// single normalised space that owns every byte of it. Splicing that range
+/// verbatim deletes the newline ending the previous line and the next line's
+/// indent, which `new_string` has no reason to carry, so the surrounding
+/// lines merge. Anchoring each boundary run at its inner edge keeps the
+/// structural whitespace the needle never named byte-identical.
+fn clamp_boundary_runs(
+    file_ns: &NormalizedString,
+    needle_ns: &NormalizedString,
+    needle: &str,
+    nstart: usize,
+    nend: usize,
+    span: std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let bytes = needle.as_bytes();
+    let spelled =
+        |ns: &NormalizedString, i: usize| ns.splice_range_original(i..i + 1).map_or(1, |r| r.len());
+
+    let mut start = span.start;
+    let mut end = span.end;
+
+    if bytes.last() == Some(&b' ')
+        && let Some(run) = file_ns.splice_range_original(nend - 1..nend)
+    {
+        end = run.start + spelled(needle_ns, bytes.len() - 1).min(run.len());
+    }
+    // An all-whitespace needle has one boundary run, not two: clamping both
+    // ends of it would invert the range, so the tail clamp above is enough.
+    let all_ws = bytes.iter().all(|b| *b == b' ');
+    if !all_ws
+        && bytes.first() == Some(&b' ')
+        && let Some(run) = file_ns.splice_range_original(nstart..nstart + 1)
+    {
+        start = run.end - spelled(needle_ns, 0).min(run.len());
+    }
+
+    let start = start.clamp(span.start, span.end);
+    let end = end.clamp(start, span.end);
+    start..end
+}
+
 pub(crate) fn apply_edit(
     original: &str,
     old_string: &str,
@@ -107,9 +152,10 @@ pub(crate) fn apply_edit(
     let mut cursor = 0usize;
     for &nstart in &selected {
         let nend = nstart + needle_len;
-        let Some(orig_range) = file_ns.splice_range_original(nstart..nend) else {
+        let Some(span) = file_ns.splice_range_original(nstart..nend) else {
             return EditOutcome::NotFound;
         };
+        let orig_range = clamp_boundary_runs(&file_ns, &needle_ns, needle, nstart, nend, span);
         if orig_range.start < cursor {
             continue;
         }
@@ -633,6 +679,88 @@ mod tests {
                 );
                 // The edit itself applied.
                 assert!(rewritten.contains("c = 2"));
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    // A needle that carries its line's indentation and trailing newline - the
+    // natural way to name a line - used to splice over the whole collapsed
+    // whitespace run at each boundary, swallowing the previous line's newline
+    // and the next line's indent. The neighbouring lines merged.
+    #[test]
+    fn indented_needle_with_trailing_newline_keeps_line_structure() {
+        let file = "def main():\n    check()\n    sys.exit(2)\n    cleanup()\n";
+        let r = apply(
+            file,
+            "    sys.exit(2)\n",
+            "    sys.exit(2)\n    log(\"bye\")\n",
+        );
+        match r {
+            EditOutcome::Applied { rewritten, .. } => assert_eq!(
+                rewritten,
+                "def main():\n    check()\n    sys.exit(2)\n    log(\"bye\")\n    cleanup()\n"
+            ),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trailing_newline_in_needle_spares_the_next_lines_indent() {
+        let r = apply("a\n    b\n", "a\n", "A\n");
+        match r {
+            EditOutcome::Applied { rewritten, .. } => assert_eq!(rewritten, "A\n    b\n"),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn leading_indent_in_needle_spares_the_previous_lines_newline() {
+        let r = apply("x = 1\n    y = 2\n", "    y = 2", "    y = 3");
+        match r {
+            EditOutcome::Applied { rewritten, .. } => {
+                assert_eq!(rewritten, "x = 1\n    y = 3\n")
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn boundary_clamp_holds_for_crlf_files() {
+        let file = "def main():\r\n    check()\r\n    sys.exit(2)\r\n    cleanup()\r\n";
+        let r = apply(file, "    sys.exit(2)\r\n", "    sys.exit(2)\r\n    log()\r\n");
+        match r {
+            EditOutcome::Applied { rewritten, .. } => assert_eq!(
+                rewritten,
+                "def main():\r\n    check()\r\n    sys.exit(2)\r\n    log()\r\n    cleanup()\r\n"
+            ),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn boundary_clamp_holds_for_replace_all() {
+        let file = "if a:\n    go()\n    stop()\nif b:\n    go()\n    stop()\n";
+        let r = apply_edit(file, "    go()\n", "    run()\n", true);
+        match r {
+            EditOutcome::Applied { rewritten, count } => {
+                assert_eq!(count, 2);
+                assert_eq!(
+                    rewritten,
+                    "if a:\n    run()\n    stop()\nif b:\n    run()\n    stop()\n"
+                );
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_whitespace_needle_does_not_invert_its_range() {
+        // One boundary run, not two - the clamp must not produce start > end.
+        let r = apply("a\n\n\nb", " ", "-");
+        match r {
+            EditOutcome::Applied { rewritten, .. } => {
+                assert!(rewritten.starts_with('a') && rewritten.ends_with('b'))
             }
             other => panic!("expected Applied, got {other:?}"),
         }
