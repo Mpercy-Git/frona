@@ -31,6 +31,7 @@ fn make_server(id: &str, user_id: &str, handle: &str, status: McpServerStatus) -
             name: "@example/mcp-server".to_string(),
             version: "1.0.0".to_string(),
         },
+        resolved_ref: None,
         command: "npx".to_string(),
         args: vec!["-y".to_string(), "@example/mcp-server".to_string()],
         env: BTreeMap::new(),

@@ -47,6 +47,7 @@ fn make_server(id: &str, binary: &str, workspace: &str) -> McpServer {
             name: "fake-mcp-server".into(),
             version: "0.0.0".into(),
         },
+        resolved_ref: None,
         command: binary.to_string(),
         args: vec![],
         env: BTreeMap::new(),
