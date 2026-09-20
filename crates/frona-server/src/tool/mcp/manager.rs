@@ -546,9 +546,12 @@ impl McpManager {
     ) -> Option<crate::tool::mcp::models::McpServerInfo> {
         let conns = self.connections.read().await;
         let peer = conns.get(server_id)?.client.peer_info()?;
+        // Naming yourself is optional in the protocol, so a server may connect
+        // without one.
+        let info = peer.server_info?;
         Some(crate::tool::mcp::models::McpServerInfo {
-            name: peer.server_info.name.clone(),
-            version: peer.server_info.version.clone(),
+            name: info.name,
+            version: info.version,
         })
     }
 

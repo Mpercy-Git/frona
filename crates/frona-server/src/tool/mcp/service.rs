@@ -907,7 +907,11 @@ impl McpServerService {
     /// version to compare, so the honest answer is to reinstall and report what
     /// changed. A server that was running is restarted, because a stopped
     /// server is not what the caller had before they asked.
-    pub async fn reinstall(&self, user_id: &str, server_id: &str) -> Result<ReinstallResult, AppError> {
+    pub async fn reinstall(
+        &self,
+        user_id: &str,
+        server_id: &str,
+    ) -> Result<ReinstallResult, AppError> {
         let server = self.load_owned(user_id, server_id).await?;
         if server.package.runtime == McpRuntime::Remote {
             return Err(AppError::Validation(
@@ -1141,9 +1145,7 @@ fn read_installed_ref(workspace_dir: &str, name: &str) -> Option<String> {
         .join(".package-lock.json");
     let raw = std::fs::read_to_string(&path).ok()?;
     let lock: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let entry = lock
-        .get("packages")?
-        .get(format!("node_modules/{name}"))?;
+    let entry = lock.get("packages")?.get(format!("node_modules/{name}"))?;
     let version = entry.get("version")?.as_str()?;
 
     let commit = entry
@@ -1430,6 +1432,54 @@ mod tests {
         let body = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["private"], serde_json::json!(true));
+    }
+
+    fn workspace_with_lockfile(body: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let modules = dir.path().join("node_modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::fs::write(modules.join(".package-lock.json"), body).unwrap();
+        dir
+    }
+
+    #[test]
+    fn read_installed_ref_reports_a_registry_version() {
+        let dir = workspace_with_lockfile(
+            r#"{"packages":{"node_modules/thing":{"version":"1.2.3","resolved":"https://registry.npmjs.org/thing/-/thing-1.2.3.tgz"}}}"#,
+        );
+        let got = read_installed_ref(dir.path().to_str().unwrap(), "thing");
+        assert_eq!(got.as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
+    fn read_installed_ref_carries_the_commit_for_a_git_install() {
+        // The version alone is useless for a git spec: a branch moves while
+        // package.json keeps saying 1.0.0, so the commit is the only thing that
+        // distinguishes one install from the next.
+        let dir = workspace_with_lockfile(
+            r#"{"packages":{"node_modules/meshcentral-mcp":{"version":"1.0.0","resolved":"git+ssh://git@github.com/o/r.git#b772fb5e92c29bee8e5ad3f31206271029d91b0d"}}}"#,
+        );
+        let got = read_installed_ref(dir.path().to_str().unwrap(), "meshcentral-mcp");
+        assert_eq!(got.as_deref(), Some("1.0.0+b772fb5"));
+    }
+
+    #[test]
+    fn read_installed_ref_ignores_a_fragment_that_is_not_a_commit() {
+        let dir = workspace_with_lockfile(
+            r#"{"packages":{"node_modules/thing":{"version":"2.0.0","resolved":"https://example.com/thing.tgz#notasha"}}}"#,
+        );
+        let got = read_installed_ref(dir.path().to_str().unwrap(), "thing");
+        assert_eq!(got.as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn read_installed_ref_is_none_rather_than_an_error() {
+        // A missing or unreadable lockfile must not fail an install that
+        // otherwise worked - the ref is for display, so absent reads as unknown.
+        let dir = workspace_with_lockfile(r#"{"packages":{}}"#);
+        assert!(read_installed_ref(dir.path().to_str().unwrap(), "absent").is_none());
+        let empty = tempfile::tempdir().unwrap();
+        assert!(read_installed_ref(empty.path().to_str().unwrap(), "thing").is_none());
     }
 
     #[test]
