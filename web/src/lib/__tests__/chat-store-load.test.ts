@@ -78,3 +78,34 @@ describe("ChatStore.loadMessages", () => {
     expect(store.getSnapshot().isRunning).toBe(false);
   });
 });
+
+// The reconnect path reloads history on a store that is still showing the
+// dropped stream as running. When the reload says the turn already finished,
+// the thread has to go back to idle: otherwise the spinner and the Stop
+// button outlive the run that completed while the stream was down, and only
+// a page reload (or pressing Stop) clears them.
+describe("ChatStore.loadMessages after a dropped stream", () => {
+  it("returns to idle when the reload shows the run already finished", async () => {
+    serve([agentMessage({ id: "msg-live", status: "completed", content: "all done" })]);
+
+    const store = new ChatStore();
+    store.handleEvent({ type: "token", content: "all do" });
+    expect(store.isRunning).toBe(true);
+
+    await store.loadMessages("chat-1");
+
+    expect(store.getSnapshot().isRunning).toBe(false);
+    expect(store.streamingText).toBe("");
+  });
+
+  it("keeps the spinner while a just-sent message has no server echo yet", async () => {
+    serve([agentMessage({ id: "msg-old", status: "completed" })]);
+
+    const store = new ChatStore();
+    store.addUserMessage("and one more thing");
+
+    await store.loadMessages("chat-1");
+
+    expect(store.getSnapshot().isRunning).toBe(true);
+  });
+});

@@ -114,12 +114,15 @@ export class SSEEventBus {
             }
           },
           notifyReconnect() {
+            // Drop what the dead stream left buffered — the consumer reloads
+            // the chat's history on reconnect, which is authoritative — but
+            // leave the subscription itself intact. Resolving the pending read
+            // as `done` ends the consumer's `for await` loop, and nothing
+            // re-subscribes for the life of the mount: the chat then goes
+            // permanently silent, so a turn that finishes after the reconnect
+            // never delivers its `inference_done` and the thread keeps showing
+            // the agent as running until the page is reloaded.
             queue.length = 0;
-            if (resolve) {
-              const r = resolve;
-              resolve = null;
-              r({ value: undefined as unknown as ChatSSEEvent, done: true });
-            }
           },
         };
 
@@ -169,7 +172,6 @@ export class SSEEventBus {
   }
 
   private dispatchChat(chatId: string, event: ChatSSEEvent) {
-    console.log("[sse-bus] dispatchChat", event.type, chatId);
     for (const listener of this.chatEventListeners) {
       try {
         listener(chatId, event);

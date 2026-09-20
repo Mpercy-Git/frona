@@ -263,6 +263,16 @@ export class ChatStore {
     // was nothing to cancel and the thread returns to idle.
     if (this.messages[this.messages.length - 1]?.status === "executing") {
       this.isRunning = true;
+    } else if (this.isRunning && !this.messages.some((m) => m.id.startsWith("__user_"))) {
+      // The other direction matters just as much. This reload also runs when
+      // the SSE stream reconnects, and a turn can finish while the stream is
+      // down — its `inference_done` is never delivered. The history we just
+      // fetched says the run is over, so drop the stale streaming state
+      // instead of leaving a spinner and a Stop button for a turn that has
+      // already completed. An optimistic user message with no server echo yet
+      // means we kicked off a turn the history hasn't caught up with, so that
+      // case keeps the spinner.
+      this.clearStreaming();
     }
     this.hydrateExternalTools();
     this.loaded = true;
