@@ -45,22 +45,117 @@ fn normalize(ns: &mut NormalizedString) {
         .collapse_whitespace_runs();
 }
 
+/// Which pass matched. `Exact` never touches the normalising path, so no
+/// span remapping can perturb the bytes around the edit; `Normalized` is the
+/// rescue pass, and the caller says so in its result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MatchTier {
+    Exact,
+    Normalized,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum EditOutcome {
-    Applied { rewritten: String, count: usize },
+    Applied {
+        rewritten: String,
+        count: usize,
+        tier: MatchTier,
+    },
     NotFound,
-    Ambiguous { count: usize },
+    Ambiguous {
+        count: usize,
+    },
     EmptyNeedle,
 }
 
-pub(crate) fn apply_edit(
+/// Byte-exact, non-overlapping occurrences of `needle` in `haystack`.
+fn find_all(haystack: &str, needle: &str) -> Vec<usize> {
+    let mut hits = Vec::new();
+    let mut from = 0usize;
+    while let Some(idx) = haystack[from..].find(needle) {
+        let abs = from + idx;
+        hits.push(abs);
+        from = abs + needle.len();
+    }
+    hits
+}
+
+/// Splice `replacement` over each range, copying everything else verbatim.
+/// Ranges must be ascending; overlapping ones are skipped, so `count` is what
+/// was actually applied rather than what was proposed.
+fn splice_ranges(
+    original: &str,
+    ranges: &[std::ops::Range<usize>],
+    replacement: &str,
+) -> (String, usize) {
+    let mut out = String::with_capacity(original.len());
+    let mut cursor = 0usize;
+    let mut count = 0usize;
+    for r in ranges {
+        if r.start < cursor {
+            continue;
+        }
+        out.push_str(&original[cursor..r.start]);
+        out.push_str(replacement);
+        cursor = r.end;
+        count += 1;
+    }
+    out.push_str(&original[cursor..]);
+    (out, count)
+}
+
+/// Narrow a match's original-buffer range so that a collapsed whitespace run
+/// at either boundary is consumed only as far as the needle actually spelled
+/// it.
+///
+/// `collapse_whitespace_runs` maps a whole run - `"\n    "` included - onto a
+/// single normalised space that owns every byte of it. Splicing that range
+/// verbatim deletes the newline ending the previous line and the next line's
+/// indent, which `new_string` has no reason to carry, so the surrounding
+/// lines merge. Anchoring each boundary run at its inner edge keeps the
+/// structural whitespace the needle never named byte-identical.
+fn clamp_boundary_runs(
+    file_ns: &NormalizedString,
+    needle_ns: &NormalizedString,
+    needle: &str,
+    nstart: usize,
+    nend: usize,
+    span: std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let bytes = needle.as_bytes();
+    let spelled =
+        |ns: &NormalizedString, i: usize| ns.splice_range_original(i..i + 1).map_or(1, |r| r.len());
+
+    let mut start = span.start;
+    let mut end = span.end;
+
+    if bytes.last() == Some(&b' ')
+        && let Some(run) = file_ns.splice_range_original(nend - 1..nend)
+    {
+        end = run.start + spelled(needle_ns, bytes.len() - 1).min(run.len());
+    }
+    // An all-whitespace needle has one boundary run, not two: clamping both
+    // ends of it would invert the range, so the tail clamp above is enough.
+    let all_ws = bytes.iter().all(|b| *b == b' ');
+    if !all_ws
+        && bytes.first() == Some(&b' ')
+        && let Some(run) = file_ns.splice_range_original(nstart..nstart + 1)
+    {
+        start = run.end - spelled(needle_ns, 0).min(run.len());
+    }
+
+    let start = start.clamp(span.start, span.end);
+    let end = end.clamp(start, span.end);
+    start..end
+}
+
+/// Collect the normalising pass's splice ranges, or the outcome that pass
+/// ended in.
+fn normalized_ranges(
     original: &str,
     old_string: &str,
-    new_string: &str,
     replace_all: bool,
-) -> EditOutcome {
-    let line_ending = LineEnding::detect(original);
-
+) -> Result<Vec<std::ops::Range<usize>>, EditOutcome> {
     let mut file_ns = NormalizedString::from(original);
     normalize(&mut file_ns);
 
@@ -69,59 +164,117 @@ pub(crate) fn apply_edit(
     let needle = needle_ns.get();
 
     if needle.is_empty() {
-        return EditOutcome::EmptyNeedle;
+        return Err(EditOutcome::EmptyNeedle);
     }
 
-    let haystack = file_ns.get();
-    let mut matches: Vec<usize> = Vec::new();
-    let mut search_from = 0usize;
-    while let Some(idx) = haystack[search_from..].find(needle) {
-        let abs = search_from + idx;
-        matches.push(abs);
-        search_from = abs + needle.len();
-    }
-
+    let matches = find_all(file_ns.get(), needle);
     if matches.is_empty() {
-        return EditOutcome::NotFound;
+        return Err(EditOutcome::NotFound);
     }
     if matches.len() > 1 && !replace_all {
-        return EditOutcome::Ambiguous {
+        return Err(EditOutcome::Ambiguous {
             count: matches.len(),
-        };
+        });
     }
 
-    let selected: Vec<usize> = if replace_all {
-        matches.clone()
+    let selected = if replace_all {
+        &matches[..]
     } else {
-        vec![matches[0]]
+        &matches[..1]
     };
     let needle_len = needle.len();
 
-    // Normalise the replacement's line endings to match the file. The
-    // bytes outside the match are spliced verbatim — they already use the
-    // file's style — so applying restore() to the full rewritten buffer
-    // (the previous design) corrupted existing `\r\n` into `\r\r\n`.
-    let new_string_matched = line_ending.apply(new_string);
-
-    let mut rewritten = String::with_capacity(original.len());
-    let mut cursor = 0usize;
-    for &nstart in &selected {
+    let mut ranges = Vec::with_capacity(selected.len());
+    for &nstart in selected {
         let nend = nstart + needle_len;
-        let Some(orig_range) = file_ns.splice_range_original(nstart..nend) else {
-            return EditOutcome::NotFound;
+        let Some(span) = file_ns.splice_range_original(nstart..nend) else {
+            return Err(EditOutcome::NotFound);
         };
-        if orig_range.start < cursor {
-            continue;
-        }
-        rewritten.push_str(&original[cursor..orig_range.start]);
-        rewritten.push_str(&new_string_matched);
-        cursor = orig_range.end;
+        ranges.push(clamp_boundary_runs(
+            &file_ns, &needle_ns, needle, nstart, nend, span,
+        ));
     }
-    rewritten.push_str(&original[cursor..]);
+    Ok(ranges)
+}
 
+/// Replace `old_string` with `new_string`, trying a byte-exact match before
+/// falling back to the normalising one.
+///
+/// Exact-first is what keeps a well-formed needle away from the lossy path:
+/// normalisation collapses whitespace runs and remaps spans, and every byte
+/// of that machinery is a chance to disturb text the needle never named. A
+/// needle that matches the file byte-for-byte needs none of it. The fallback
+/// still rescues a needle whose whitespace, quotes, dashes or line endings
+/// have drifted, and the outcome reports which pass fired so the caller can
+/// tell the model its needle was not byte-accurate.
+pub(crate) fn apply_edit(
+    original: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> EditOutcome {
+    if old_string.is_empty() {
+        return EditOutcome::EmptyNeedle;
+    }
+
+    // Normalise the replacement's line endings to match the file. The bytes
+    // outside the match are spliced verbatim — they already use the file's
+    // style — so applying restore() to the full rewritten buffer (the
+    // previous design) corrupted existing `\r\n` into `\r\r\n`.
+    let replacement = LineEnding::detect(original).apply(new_string);
+
+    // Tier 1: byte-exact.
+    let exact = find_all(original, old_string);
+    if exact.len() > 1 && !replace_all {
+        return EditOutcome::Ambiguous { count: exact.len() };
+    }
+
+    // Tier 2 runs when the exact pass found nothing - and also under
+    // `replace_all`, where it decides whether the exact hits already cover
+    // every occurrence. "Rename everywhere" must not stop at the spellings
+    // that happen to match byte-for-byte while a curly-quoted or differently
+    // spaced twin survives untouched.
+    let fuzzy = if exact.is_empty() || replace_all {
+        match normalized_ranges(original, old_string, replace_all) {
+            Ok(ranges) => Some(ranges),
+            Err(outcome) => {
+                if exact.is_empty() {
+                    return outcome;
+                }
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if !exact.is_empty() {
+        // A single exact hit wins even when the normalising pass would find
+        // further near-misses elsewhere: byte equality is the stronger
+        // signal, and reporting it as ambiguous would reject a needle that
+        // names its target precisely. Under `replace_all` it only wins while
+        // it reaches as much as the normalising pass would.
+        let take = if replace_all { &exact[..] } else { &exact[..1] };
+        let fuzzy_reaches_more = fuzzy.as_ref().is_some_and(|f| f.len() > take.len());
+        if !fuzzy_reaches_more {
+            let ranges: Vec<_> = take.iter().map(|&s| s..s + old_string.len()).collect();
+            let (rewritten, count) = splice_ranges(original, &ranges, &replacement);
+            return EditOutcome::Applied {
+                rewritten,
+                count,
+                tier: MatchTier::Exact,
+            };
+        }
+    }
+
+    let Some(ranges) = fuzzy else {
+        return EditOutcome::NotFound;
+    };
+    let (rewritten, count) = splice_ranges(original, &ranges, &replacement);
     EditOutcome::Applied {
         rewritten,
-        count: selected.len(),
+        count,
+        tier: MatchTier::Normalized,
     }
 }
 
@@ -179,7 +332,11 @@ impl EditTool {
                 "old_string matches {} locations in {}; provide more surrounding context to make it unique, or pass replace_all: true",
                 count, path_arg,
             ))),
-            EditOutcome::Applied { rewritten, count } => {
+            EditOutcome::Applied {
+                rewritten,
+                count,
+                tier,
+            } => {
                 atomic_write(&resolved, rewritten.as_bytes()).await?;
                 let snippet = context_snippet(&original, &rewritten, SNIPPET_CONTEXT_LINES);
                 let replacement_word = if count == 1 {
@@ -187,9 +344,20 @@ impl EditTool {
                 } else {
                     "replacements"
                 };
+                // Say when the rescue pass fired: old_string did not match
+                // the file byte-for-byte, which is worth knowing before the
+                // next edit is built from the same stale picture.
+                let drift = match tier {
+                    MatchTier::Exact => "",
+                    MatchTier::Normalized => {
+                        " Matched only after whitespace/punctuation normalisation - old_string \
+                         did not match the file byte-for-byte, so re-read the file before \
+                         relying on its exact contents."
+                    }
+                };
                 let text = format!(
-                    "Edit applied to {} ({} {}). Surrounding context:\n{}",
-                    path_arg, count, replacement_word, snippet
+                    "Edit applied to {} ({} {}).{} Surrounding context:\n{}",
+                    path_arg, count, replacement_word, drift, snippet
                 );
                 Ok(ToolOutput::text(text))
             }
@@ -230,7 +398,9 @@ mod tests {
     fn exact_byte_match() {
         let r = apply("let s = \"hello\";", "\"hello\"", "\"world\"");
         match r {
-            EditOutcome::Applied { rewritten, count } => {
+            EditOutcome::Applied {
+                rewritten, count, ..
+            } => {
                 assert_eq!(rewritten, "let s = \"world\";");
                 assert_eq!(count, 1);
             }
@@ -378,7 +548,9 @@ mod tests {
         let file = "\"foo\" and \u{201C}foo\u{201D}";
         let r = apply_edit(file, "\"foo\"", "X", true);
         match r {
-            EditOutcome::Applied { rewritten, count } => {
+            EditOutcome::Applied {
+                rewritten, count, ..
+            } => {
                 assert_eq!(count, 2);
                 assert_eq!(rewritten, "X and X");
             }
@@ -526,7 +698,9 @@ mod tests {
     fn replace_all_with_three_matches() {
         let r = apply_edit("a X b X c X d", "X", "Y", true);
         match r {
-            EditOutcome::Applied { rewritten, count } => {
+            EditOutcome::Applied {
+                rewritten, count, ..
+            } => {
                 assert_eq!(rewritten, "a Y b Y c Y d");
                 assert_eq!(count, 3);
             }
@@ -539,7 +713,9 @@ mod tests {
         // No characters between matches.
         let r = apply_edit("XXX", "X", "Y", true);
         match r {
-            EditOutcome::Applied { rewritten, count } => {
+            EditOutcome::Applied {
+                rewritten, count, ..
+            } => {
                 assert_eq!(rewritten, "YYY");
                 assert_eq!(count, 3);
             }
@@ -636,5 +812,195 @@ mod tests {
             }
             other => panic!("expected Applied, got {other:?}"),
         }
+    }
+
+    // A needle that carries its line's indentation and trailing newline - the
+    // natural way to name a line - used to splice over the whole collapsed
+    // whitespace run at each boundary, swallowing the previous line's newline
+    // and the next line's indent. The neighbouring lines merged.
+    #[test]
+    fn indented_needle_with_trailing_newline_keeps_line_structure() {
+        let file = "def main():\n    check()\n    sys.exit(2)\n    cleanup()\n";
+        let r = apply(
+            file,
+            "    sys.exit(2)\n",
+            "    sys.exit(2)\n    log(\"bye\")\n",
+        );
+        match r {
+            EditOutcome::Applied { rewritten, .. } => assert_eq!(
+                rewritten,
+                "def main():\n    check()\n    sys.exit(2)\n    log(\"bye\")\n    cleanup()\n"
+            ),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trailing_newline_in_needle_spares_the_next_lines_indent() {
+        let r = apply("a\n    b\n", "a\n", "A\n");
+        match r {
+            EditOutcome::Applied { rewritten, .. } => assert_eq!(rewritten, "A\n    b\n"),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn leading_indent_in_needle_spares_the_previous_lines_newline() {
+        let r = apply("x = 1\n    y = 2\n", "    y = 2", "    y = 3");
+        match r {
+            EditOutcome::Applied { rewritten, .. } => {
+                assert_eq!(rewritten, "x = 1\n    y = 3\n")
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn boundary_clamp_holds_for_crlf_files() {
+        let file = "def main():\r\n    check()\r\n    sys.exit(2)\r\n    cleanup()\r\n";
+        let r = apply(
+            file,
+            "    sys.exit(2)\r\n",
+            "    sys.exit(2)\r\n    log()\r\n",
+        );
+        match r {
+            EditOutcome::Applied { rewritten, .. } => assert_eq!(
+                rewritten,
+                "def main():\r\n    check()\r\n    sys.exit(2)\r\n    log()\r\n    cleanup()\r\n"
+            ),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn boundary_clamp_holds_for_replace_all() {
+        let file = "if a:\n    go()\n    stop()\nif b:\n    go()\n    stop()\n";
+        let r = apply_edit(file, "    go()\n", "    run()\n", true);
+        match r {
+            EditOutcome::Applied {
+                rewritten, count, ..
+            } => {
+                assert_eq!(count, 2);
+                assert_eq!(
+                    rewritten,
+                    "if a:\n    run()\n    stop()\nif b:\n    run()\n    stop()\n"
+                );
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_whitespace_needle_does_not_invert_its_range() {
+        // One boundary run, not two - the clamp must not produce start > end.
+        let r = apply("a\n\n\nb", " ", "-");
+        match r {
+            EditOutcome::Applied { rewritten, .. } => {
+                assert!(rewritten.starts_with('a') && rewritten.ends_with('b'))
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    fn tier_of(r: &EditOutcome) -> MatchTier {
+        match r {
+            EditOutcome::Applied { tier, .. } => *tier,
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn byte_exact_needle_uses_the_exact_tier() {
+        let file = "def main():\n    check()\n    sys.exit(2)\n    cleanup()\n";
+        let r = apply(file, "    sys.exit(2)\n", "    sys.exit(2)\n    log()\n");
+        assert_eq!(tier_of(&r), MatchTier::Exact);
+        match r {
+            EditOutcome::Applied { rewritten, .. } => assert_eq!(
+                rewritten,
+                "def main():\n    check()\n    sys.exit(2)\n    log()\n    cleanup()\n"
+            ),
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drifted_needle_falls_back_to_the_normalized_tier() {
+        // Smart quotes in the file, ASCII quotes in the needle: no exact hit,
+        // so the rescue pass runs and says so.
+        let r = apply(
+            "let s = \u{201c}hi\u{201d};",
+            "let s = \"hi\";",
+            "let s = \"bye\";",
+        );
+        assert_eq!(tier_of(&r), MatchTier::Normalized);
+        match r {
+            EditOutcome::Applied { rewritten, .. } => {
+                assert_eq!(rewritten, "let s = \"bye\";")
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tabs_against_spaces_still_rescued_on_the_normalized_tier() {
+        let r = apply("a    b", "a\tb", "X");
+        assert_eq!(tier_of(&r), MatchTier::Normalized);
+    }
+
+    #[test]
+    fn exact_hit_wins_over_a_normalized_near_miss_elsewhere() {
+        // "x = 1" is byte-exact once; "x  =  1" would also match once the
+        // whitespace collapses. The exact hit is the stronger signal, so this
+        // applies rather than failing as ambiguous.
+        let file = "x  =  1\nx = 1\n";
+        let r = apply(file, "x = 1", "x = 2");
+        assert_eq!(tier_of(&r), MatchTier::Exact);
+        match r {
+            EditOutcome::Applied {
+                rewritten, count, ..
+            } => {
+                assert_eq!(count, 1);
+                assert_eq!(rewritten, "x  =  1\nx = 2\n");
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_exact_hits_are_still_ambiguous() {
+        let r = apply("go()\ngo()\n", "go()", "run()");
+        assert_eq!(r, EditOutcome::Ambiguous { count: 2 });
+    }
+
+    #[test]
+    fn replace_all_on_the_exact_tier_rewrites_every_hit() {
+        let r = apply_edit("go()\ngo()\n", "go()", "run()", true);
+        assert_eq!(tier_of(&r), MatchTier::Exact);
+        match r {
+            EditOutcome::Applied {
+                rewritten, count, ..
+            } => {
+                assert_eq!(count, 2);
+                assert_eq!(rewritten, "run()\nrun()\n");
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lf_needle_against_a_crlf_file_is_rescued_and_keeps_crlf() {
+        let r = apply("a\r\nb\r\n", "a\nb", "A\nB");
+        assert_eq!(tier_of(&r), MatchTier::Normalized);
+        match r {
+            EditOutcome::Applied { rewritten, .. } => {
+                assert_eq!(rewritten, "A\r\nB\r\n")
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_needle_is_rejected_before_either_tier() {
+        assert_eq!(apply("abc", "", "x"), EditOutcome::EmptyNeedle);
     }
 }
