@@ -109,3 +109,72 @@ describe("ChatStore.loadMessages after a dropped stream", () => {
     expect(store.getSnapshot().isRunning).toBe(true);
   });
 });
+
+// A dropped stream reloads history mid-send. The optimistic placeholder and
+// the persisted row are the same message, but they carry different ids, so
+// id-based dedupe cannot pair them: the merge kept both, and the echo that
+// followed overwrote the placeholder with a second copy of the row. Either
+// way the user sees their own message twice.
+describe("ChatStore optimistic message reconciliation", () => {
+  function userMessage(overrides: Partial<MessageResponse> = {}): MessageResponse {
+    return {
+      id: "msg-real",
+      chat_id: "chat-1",
+      role: "user",
+      content: "second message",
+      created_at: "2026-01-01T00:01:00Z",
+      ...overrides,
+    };
+  }
+
+  const userBubbles = (store: ChatStore) =>
+    store.getDisplayMessages().filter((m) => m.role === "user");
+
+  it("does not double a sent message when a reload races the echo", async () => {
+    serve([agentMessage({ id: "msg-first" }), userMessage()]);
+
+    const store = new ChatStore();
+    store.addUserMessage("second message");
+
+    // The reconnect handler's catch-up fetch: the server already persisted it.
+    await store.loadMessages("chat-1");
+
+    expect(userBubbles(store)).toHaveLength(1);
+
+    // The echo then arrives on the reconnected stream.
+    store.handleEvent({ type: "chat_message", message: userMessage() });
+
+    expect(userBubbles(store)).toHaveLength(1);
+    expect(userBubbles(store)[0].id).toBe("msg-real");
+  });
+
+  it("keeps a placeholder the history has not caught up with", async () => {
+    serve([agentMessage({ id: "msg-first" })]);
+
+    const store = new ChatStore();
+    store.addUserMessage("second message");
+
+    await store.loadMessages("chat-1");
+
+    expect(userBubbles(store)).toHaveLength(1);
+    expect(userBubbles(store)[0].id).toMatch(/^__user_/);
+
+    store.handleEvent({ type: "chat_message", message: userMessage() });
+
+    expect(userBubbles(store)).toHaveLength(1);
+    expect(userBubbles(store)[0].id).toBe("msg-real");
+  });
+
+  it("does not double an echo that repeats a message already in the thread", () => {
+    const store = new ChatStore();
+    store.handleEvent({ type: "chat_message", message: userMessage() });
+    store.addUserMessage("a third message");
+    // A replayed echo of the first message, with the second still pending.
+    store.handleEvent({ type: "chat_message", message: userMessage() });
+
+    expect(userBubbles(store).map((m) => m.content)).toEqual([
+      "second message",
+      "a third message",
+    ]);
+  });
+});
