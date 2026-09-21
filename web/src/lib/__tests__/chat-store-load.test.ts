@@ -177,4 +177,59 @@ describe("ChatStore optimistic message reconciliation", () => {
       "a third message",
     ]);
   });
+
+  // Pairing a placeholder to a persisted row on content alone treats the text
+  // as a key. It is not one: people repeat themselves — "ok", "yes", "go on" —
+  // and the second one then reconciles against the first, so the message the
+  // user just sent vanishes from the thread until its own echo arrives.
+  describe("when the same text is sent twice", () => {
+    const earlier = (): MessageResponse =>
+      userMessage({ id: "msg-ok-1", content: "ok", created_at: "2026-01-01T00:00:30Z" });
+
+    it("keeps the pending message when a reload replays the earlier one", async () => {
+      serve([earlier()]);
+
+      const store = new ChatStore();
+      await store.loadMessages("chat-1");
+      // The user says "ok" a second time; the reconnect's catch-up fetch runs
+      // before the server has persisted it.
+      store.addUserMessage("ok");
+      await store.loadMessages("chat-1");
+
+      expect(userBubbles(store).map((m) => m.content)).toEqual(["ok", "ok"]);
+      expect(userBubbles(store)[1].id).toMatch(/^__user_/);
+    });
+
+    it("pairs the placeholder with its own row, not the earlier twin", async () => {
+      const store = new ChatStore();
+      serve([earlier()]);
+      await store.loadMessages("chat-1");
+      store.addUserMessage("ok");
+
+      // The reload now carries both: the earlier row and the one just stored.
+      serve([earlier(), userMessage({ id: "msg-ok-2", content: "ok" })]);
+      await store.loadMessages("chat-1");
+
+      expect(userBubbles(store).map((m) => m.id)).toEqual(["msg-ok-1", "msg-ok-2"]);
+    });
+
+    it("keeps the pending message when the earlier one is re-broadcast", () => {
+      const store = new ChatStore();
+      store.handleEvent({ type: "chat_message", message: earlier() });
+      store.addUserMessage("ok");
+      // The server re-sends the earlier row — an update, or a reconnect replay.
+      store.handleEvent({ type: "chat_message", message: earlier() });
+
+      expect(userBubbles(store).map((m) => m.content)).toEqual(["ok", "ok"]);
+      expect(userBubbles(store)[1].id).toMatch(/^__user_/);
+
+      // The pending message's own echo still lands on its placeholder.
+      store.handleEvent({
+        type: "chat_message",
+        message: userMessage({ id: "msg-ok-2", content: "ok" }),
+      });
+
+      expect(userBubbles(store).map((m) => m.id)).toEqual(["msg-ok-1", "msg-ok-2"]);
+    });
+  });
 });
