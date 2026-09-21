@@ -695,3 +695,206 @@ async fn move_out_of_an_owned_agent_workspace_persists() {
         "a move leaves nothing behind"
     );
 }
+
+// `files/` and `agents/<a>/` are siblings under a user's root, so a source of
+// `user://<self>/` is not the no-op that moving a directory into itself would
+// be: it relocates the user's entire tree into the workspace. `rename` and
+// `delete` were guarded when the empty path was first noticed; `copy` and
+// `move` take the same path and were not.
+#[tokio::test]
+async fn move_rejects_a_workspace_root_source() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "rootmv", "rootmv@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("rootmv").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("keep.txt"), b"data").await.unwrap();
+
+    let app = build_app(state);
+    for source in ["", "/", ".", "./", "user://rootmv/", "user://rootmv/."] {
+        let resp = app
+            .clone()
+            .oneshot(auth_post_json(
+                "/api/files/move",
+                &token,
+                serde_json::json!({
+                    "sources": [source],
+                    "destination": "agent://rootmv/"
+                }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "source {source:?}");
+        assert!(
+            user_dir.join("keep.txt").exists(),
+            "the tree must survive a move of {source:?}"
+        );
+        assert!(user_dir.exists(), "the workspace root itself must survive");
+    }
+}
+
+#[tokio::test]
+async fn copy_rejects_a_workspace_root_source() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "rootcp", "rootcp@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("rootcp").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("keep.txt"), b"data").await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/copy",
+            &token,
+            serde_json::json!({
+                "sources": ["user://rootcp/"],
+                "destination": "/backup"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(user_dir.join("keep.txt").exists());
+    assert!(
+        !user_dir.join("backup").exists(),
+        "nothing may be created for a rejected batch"
+    );
+}
+
+/// The whole batch fails before anything moves, so one bad source cannot leave
+/// the request half applied - the order `delete_files` already took.
+#[tokio::test]
+async fn a_workspace_root_source_fails_the_whole_batch() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "batchmv", "batchmv@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("batchmv").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("first.txt"), b"data").await.unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/move",
+            &token,
+            serde_json::json!({
+                "sources": ["/first.txt", ""],
+                "destination": "/archive"
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        user_dir.join("first.txt").exists(),
+        "the good source must not move when a later one is refused"
+    );
+}
+
+/// The guard is on sources only. A workspace root is an ordinary *destination*
+/// - copying a file to the top of My Files is exactly that request.
+#[tokio::test]
+async fn a_workspace_root_is_still_a_valid_destination() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "rootdst", "rootdst@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("rootdst").join("files");
+    fs::create_dir_all(user_dir.join("nested")).await.unwrap();
+    fs::write(user_dir.join("nested").join("note.txt"), b"data")
+        .await
+        .unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/copy",
+            &token,
+            serde_json::json!({
+                "sources": ["/nested/note.txt"],
+                "destination": ""
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(user_dir.join("note.txt").exists());
+}
+
+// The same root reached by a different spelling. `Path::join` keeps the `.` in
+// the string while every reader of the path skips it, so `"."` names the
+// workspace directory exactly as `""` does - and the guard tested only the
+// empty spelling, leaving `delete` able to take a user's whole tree.
+#[tokio::test]
+async fn a_dot_path_is_the_workspace_root_too() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "dotpath", "dotpath@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("dotpath").join("files");
+    fs::create_dir_all(&user_dir).await.unwrap();
+    fs::write(user_dir.join("keep.txt"), b"data").await.unwrap();
+
+    let app = build_app(state);
+    for path in [".", "./", "./."] {
+        let resp = app
+            .clone()
+            .oneshot(auth_post_json(
+                "/api/files/delete",
+                &token,
+                serde_json::json!({"paths": [path]}),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "delete {path:?}");
+        assert!(
+            user_dir.join("keep.txt").exists(),
+            "the tree must survive a delete of {path:?}"
+        );
+
+        let resp = app
+            .clone()
+            .oneshot(auth_post_json(
+                "/api/files/rename",
+                &token,
+                serde_json::json!({"path": path, "new_name": "taken.txt"}),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "rename {path:?}");
+        assert!(user_dir.exists(), "the workspace root itself must survive");
+    }
+}
+
+/// A `.` inside a path still names a file, so the guard must not read every
+/// dot as the root.
+#[tokio::test]
+async fn a_dot_segment_within_a_path_still_names_a_file() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "dotseg", "dotseg@example.com", "password123").await;
+
+    let user_dir = tmp.path().join("users").join("dotseg").join("files");
+    fs::create_dir_all(user_dir.join("nested")).await.unwrap();
+    fs::write(user_dir.join("nested").join("note.txt"), b"data")
+        .await
+        .unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/files/delete",
+            &token,
+            serde_json::json!({"paths": ["./nested/note.txt"]}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!user_dir.join("nested").join("note.txt").exists());
+    assert!(user_dir.join("nested").exists());
+}

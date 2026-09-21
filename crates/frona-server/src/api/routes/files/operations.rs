@@ -82,18 +82,49 @@ async fn resolve_file_virtual_path(
 /// Refuse an operation aimed at a workspace root rather than something in it.
 ///
 /// An empty relative path resolves to the workspace directory itself, so a
-/// rename or delete of `""` would move or erase the whole tree. Callers name a
-/// file; the root is never the intended target.
+/// rename, delete, copy or move of `""` would erase or relocate the whole
+/// tree. Callers name a file; the root is never the intended *target*.
+///
+/// A destination is the exception and is never checked here: copying a file to
+/// the top of My Files is an ordinary request, and its destination is exactly
+/// that root.
 fn reject_workspace_root(path: &str, operation: &str) -> Result<(), ApiError> {
     let relative = if path.starts_with("user://") || path.starts_with("agent://") {
         VirtualPath::parse(path)?.relative
     } else {
         path.trim_start_matches('/').to_string()
     };
-    if relative.is_empty() {
+    // Test what the path *names*, not how it is spelt. `""`, `"/"`, `"."` and
+    // `"./"` all join to the workspace directory itself: `Path::join` keeps the
+    // `.` in the string, but every reader of it skips the component, so
+    // `file_name()` answers with the root's own name and the operation takes
+    // the whole tree. Only the empty spelling was refused before.
+    //
+    // `..` is not this function's business - `validate_no_traversal` refuses a
+    // ParentDir component wherever it appears.
+    let names_something = relative
+        .split('/')
+        .any(|segment| !segment.is_empty() && segment != ".");
+    if !names_something {
         return Err(ApiError(AppError::Validation(format!(
             "Cannot {operation} a workspace root"
         ))));
+    }
+    Ok(())
+}
+
+/// Apply [`reject_workspace_root`] to every source in a batch, before any of it
+/// runs.
+///
+/// Up front rather than inside the loop for the reason `delete_files` gives: a
+/// bad entry late in the batch should fail the request, not leave it half
+/// applied. It matters more here than the empty path suggests - `files/` and
+/// `agents/<a>/` are siblings, so a source of `user://me/` moved into an agent
+/// workspace is not the no-op that moving a directory into itself would be. It
+/// relocates everything the user has.
+fn reject_workspace_root_sources(sources: &[String], operation: &str) -> Result<(), ApiError> {
+    for source in sources {
+        reject_workspace_root(source, operation)?;
     }
     Ok(())
 }
@@ -103,6 +134,8 @@ pub(crate) async fn copy_files(
     State(state): State<AppState>,
     Json(req): Json<CopyMoveRequest>,
 ) -> Result<(), ApiError> {
+    reject_workspace_root_sources(&req.sources, "copy")?;
+
     let dest_dir = resolve_file_virtual_path(&req.destination, &auth, &state).await?;
 
     fs::create_dir_all(&dest_dir)
@@ -169,6 +202,8 @@ pub(crate) async fn move_files(
     State(state): State<AppState>,
     Json(req): Json<CopyMoveRequest>,
 ) -> Result<(), ApiError> {
+    reject_workspace_root_sources(&req.sources, "move")?;
+
     let dest_dir = resolve_file_virtual_path(&req.destination, &auth, &state).await?;
 
     fs::create_dir_all(&dest_dir)
