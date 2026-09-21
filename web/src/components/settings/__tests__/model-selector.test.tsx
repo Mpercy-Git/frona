@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useState } from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ModelSelector } from "../model-selector";
 import { getProviderModels } from "@/lib/config-types";
 
@@ -86,7 +86,11 @@ describe("ModelSelector model field", () => {
       />,
     );
     await screen.findByRole("combobox", { name: "Model" });
-    expect(onModelInfo).toHaveBeenCalledWith(null);
+    // `onModelInfo` fires from an effect that needs the fetched list, so the
+    // label dropping "(loading...)" is not proof it has run yet. Wait on the
+    // callback itself — asserting straight after the DOM wait failed once on
+    // a loaded CI runner with no calls recorded.
+    await waitFor(() => expect(onModelInfo).toHaveBeenCalledWith(null));
 
     onModelInfo.mockClear();
     rerender(
@@ -100,6 +104,8 @@ describe("ModelSelector model field", () => {
         onModelInfo={onModelInfo}
       />,
     );
-    expect(onModelInfo).toHaveBeenCalledWith({ id: "gpt-4o", name: "GPT-4o" });
+    await waitFor(() =>
+      expect(onModelInfo).toHaveBeenCalledWith({ id: "gpt-4o", name: "GPT-4o" }),
+    );
   });
 });
