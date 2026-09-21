@@ -309,6 +309,7 @@ impl ChatSessionContext {
                 "task_time",
                 None,
                 &items,
+                None,
             );
         }
 

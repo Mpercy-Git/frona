@@ -7,6 +7,7 @@ use crate::agent::workspace::AgentPromptLoader;
 use crate::core::Handle;
 use crate::core::template::render_template;
 use crate::storage::StorageService;
+use crate::tool::registry::AgentSummaries;
 
 #[derive(Clone)]
 pub struct PromptLoader {
@@ -115,17 +116,47 @@ impl PromptLoader {
     }
 }
 
+/// The line `<available_agents>` carries when the delegation policy turned
+/// agents down.
+///
+/// An agent that is shown nothing concludes there is nothing - and tells the
+/// user they have no other agents, which is wrong whenever a policy is what hid
+/// them. Naming them costs a line and turns an invisible denial into something
+/// the user can act on. Deterministic in the order the agents were listed, so
+/// the cacheable prefix stays byte-stable between turns.
+fn denied_delegation_note(denied: &[String]) -> Option<String> {
+    if denied.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Not delegable from here: {}. These agents exist, but the delegation policy \
+         refuses them to you - an agent may only delegate to agents whose tools are a \
+         subset of its own. Do not try; do the work yourself. If the user expected one \
+         of them to take it, say plainly that policy blocks the handoff and that the \
+         fix is to line up the two agents' tool permissions.",
+        denied.join(", ")
+    ))
+}
+
+/// Emit `<tag>`: an optional header, the items, an optional footer. Nothing is
+/// written when there is nothing to say - but a footer alone counts as
+/// something, so a section can report that its list is empty *and why*.
 pub fn append_tagged_section(
     result: &mut String,
     tag: &str,
     header: Option<&str>,
     items: &[(String, String)],
+    footer: Option<&str>,
 ) {
-    if items.is_empty() {
+    let footer = footer.map(str::trim).filter(|f| !f.is_empty());
+    if items.is_empty() && footer.is_none() {
         return;
     }
     result.push_str(&format!("\n\n<{tag}>\n"));
-    if let Some(h) = header {
+    // The header introduces the items, so it is dropped when there are none:
+    // "delegate to these agents" above an empty list is an instruction the
+    // model cannot follow, and the footer is what explains the emptiness.
+    if let Some(h) = header.filter(|_| !items.is_empty()) {
         let trimmed = h.trim();
         if !trimmed.is_empty() {
             result.push_str(trimmed);
@@ -134,6 +165,10 @@ pub fn append_tagged_section(
     }
     for (key, value) in items {
         result.push_str(&format!("- {key}: {value}\n"));
+    }
+    if let Some(f) = footer {
+        result.push_str(f);
+        result.push('\n');
     }
     result.push_str(&format!("</{tag}>"));
 }
@@ -193,7 +228,7 @@ pub fn build_augmented_system_prompt(
     user_handle: &Handle,
     agent_handle: &Handle,
     skills: &[Skill],
-    agent_summaries: &[(String, String)],
+    agent_summaries: &AgentSummaries,
     mcp_servers: &[(String, String)],
     user_timezone: &str,
 ) -> String {
@@ -236,28 +271,29 @@ pub fn build_augmented_system_prompt(
             )
         })
         .collect();
-    append_tagged_section(&mut result, "available_skills", None, &skill_items);
+    append_tagged_section(&mut result, "available_skills", None, &skill_items, None);
 
     if !mcp_servers.is_empty() {
         if let Some(mcp_prompt) = prompts.read("MCP.md") {
             result.push_str("\n\n");
             result.push_str(&mcp_prompt);
         }
-        append_tagged_section(&mut result, "mcpservers", None, mcp_servers);
+        append_tagged_section(&mut result, "mcpservers", None, mcp_servers, None);
     }
 
     append_tagged_section(
         &mut result,
         "available_agents",
         prompts.read("AVAILABLE_AGENTS.md").as_deref(),
-        agent_summaries,
+        &agent_summaries.delegable,
+        denied_delegation_note(&agent_summaries.denied).as_deref(),
     );
 
     let identity_pairs: Vec<(String, String)> = identity
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    append_tagged_section(&mut result, "agent_identity", None, &identity_pairs);
+    append_tagged_section(&mut result, "agent_identity", None, &identity_pairs, None);
 
     // Date-only keeps this byte-stable within a day so prefix caches stay warm.
     let tz: chrono_tz::Tz = user_timezone.parse().unwrap_or(chrono_tz::UTC);
@@ -273,7 +309,7 @@ pub fn build_augmented_system_prompt(
         ),
         ("user_timezone".to_string(), user_timezone.to_string()),
     ];
-    append_tagged_section(&mut result, "temporal_context", None, &items);
+    append_tagged_section(&mut result, "temporal_context", None, &items, None);
 
     result
 }
@@ -445,7 +481,7 @@ mod tests {
             &crate::handle!("user"),
             &crate::handle!("agent"),
             &[],
-            &[],
+            &AgentSummaries::default(),
             &[],
             "UTC",
         );
@@ -457,5 +493,126 @@ mod tests {
             prompt.contains("<temporal_context>"),
             "dynamic temporal tail present"
         );
+    }
+
+    /// A section with no items and nothing to explain stays out of the prompt.
+    #[test]
+    fn an_empty_section_with_no_footer_is_not_emitted() {
+        let mut out = String::new();
+        append_tagged_section(&mut out, "available_agents", Some("Delegate!"), &[], None);
+        assert!(out.is_empty(), "{out}");
+    }
+
+    /// The regression this file exists to prevent: every colleague denied, so
+    /// the list is empty - and the agent is told why instead of being shown
+    /// nothing and concluding the user has no other agents.
+    #[test]
+    fn a_section_whose_items_were_all_denied_still_says_so() {
+        let mut out = String::new();
+        append_tagged_section(
+            &mut out,
+            "available_agents",
+            Some("Delegate to these agents, always."),
+            &[],
+            denied_delegation_note(&["Researcher".into(), "Developer".into()]).as_deref(),
+        );
+        assert!(
+            out.contains("<available_agents>"),
+            "section present:\n{out}"
+        );
+        assert!(out.contains("Researcher, Developer"), "names both:\n{out}");
+        assert!(
+            !out.contains("Delegate to these agents, always."),
+            "the header introduces items there aren't any of:\n{out}"
+        );
+        assert!(out.trim_end().ends_with("</available_agents>"), "{out}");
+    }
+
+    /// A partly-denied view keeps both halves: the reachable agents as items,
+    /// the rest as the footer.
+    #[test]
+    fn a_partly_denied_section_lists_the_reachable_and_names_the_rest() {
+        let mut out = String::new();
+        append_tagged_section(
+            &mut out,
+            "available_agents",
+            Some("Delegate to these agents, always."),
+            &[("Developer".into(), "Writes code".into())],
+            denied_delegation_note(&["Receptionist".into()]).as_deref(),
+        );
+        assert!(out.contains("Delegate to these agents, always."), "{out}");
+        assert!(out.contains("- Developer: Writes code"), "{out}");
+        assert!(
+            out.contains("Not delegable from here: Receptionist."),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn nothing_denied_means_no_note() {
+        assert!(denied_delegation_note(&[]).is_none());
+    }
+
+    /// End to end through the assembler: denied-only summaries still reach the
+    /// prompt as a section.
+    #[test]
+    fn the_assembler_emits_available_agents_when_every_agent_was_denied() {
+        let prompts = PromptLoader::new(shared_prompts_dir());
+        let storage = StorageService::new(&crate::core::config::Config::default());
+        let mut identity = BTreeMap::new();
+        for k in ["name", "creature", "vibe"] {
+            identity.insert(k.to_string(), "x".to_string());
+        }
+        let summaries = AgentSummaries {
+            delegable: Vec::new(),
+            denied: vec!["Researcher".to_string()],
+        };
+        let prompt = build_augmented_system_prompt(
+            "BASE",
+            &identity,
+            &prompts,
+            &storage,
+            &crate::handle!("user"),
+            &crate::handle!("agent"),
+            &[],
+            &summaries,
+            &[],
+            "UTC",
+        );
+        // The closing tag, not the opening one: TOOLS.md tells the agent to
+        // "check `<available_agents>`" in prose, so the opener is in every
+        // prompt whether or not the section was emitted.
+        assert!(
+            prompt.contains("</available_agents>"),
+            "denied agents still open the section:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("Not delegable from here: Researcher."),
+            "{prompt}"
+        );
+    }
+
+    /// No colleagues at all - nothing to report, so no section, as before.
+    #[test]
+    fn the_assembler_omits_available_agents_for_a_lone_agent() {
+        let prompts = PromptLoader::new(shared_prompts_dir());
+        let storage = StorageService::new(&crate::core::config::Config::default());
+        let mut identity = BTreeMap::new();
+        for k in ["name", "creature", "vibe"] {
+            identity.insert(k.to_string(), "x".to_string());
+        }
+        let prompt = build_augmented_system_prompt(
+            "BASE",
+            &identity,
+            &prompts,
+            &storage,
+            &crate::handle!("user"),
+            &crate::handle!("agent"),
+            &[],
+            &AgentSummaries::default(),
+            &[],
+            "UTC",
+        );
+        assert!(!prompt.contains("</available_agents>"), "{prompt}");
     }
 }
