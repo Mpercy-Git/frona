@@ -22,7 +22,7 @@ use frona::tool::mcp::models::{
 };
 use frona::tool::mcp::registry::McpRegistryClient;
 use frona::tool::mcp::repository::McpServerRepository;
-use frona::tool::mcp::service::{McpServerService, NoopPackageInstaller};
+use frona::tool::mcp::service::{McpServerService, NoopPackageInstaller, WarmUpOutcome};
 use frona::tool::mcp::{McpManager, PackageInstaller};
 
 struct FakeRegistry {
@@ -94,8 +94,54 @@ fn secret_env_var(name: &str) -> RegistryEnvVar {
     }
 }
 
+/// Stands in for a package manager that resolves nothing until it does: the
+/// error carries the shape `SandboxedPackageInstaller` builds from npm's own
+/// output, and `start_working` is the package being published, or the name
+/// being corrected, between one attempt and the next.
+struct FlakyInstaller {
+    works: std::sync::atomic::AtomicBool,
+}
+
+impl FlakyInstaller {
+    fn failing() -> Self {
+        Self {
+            works: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn start_working(&self) {
+        self.works.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl PackageInstaller for FlakyInstaller {
+    async fn install(&self, server: &McpServer) -> Result<WarmUpOutcome, AppError> {
+        if self.works.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(WarmUpOutcome::default());
+        }
+        Err(AppError::Tool(format!(
+            "installing {} failed: the npm registry has no version matching \
+             '{}@{}'. Check the package name on the server's registry entry.",
+            server.package.name, server.package.name, server.package.version
+        )))
+    }
+}
+
 async fn build_test_harness(
     env_vars: Vec<RegistryEnvVar>,
+) -> (
+    surrealdb::Surreal<surrealdb::engine::local::Db>,
+    VaultService,
+    McpServerService,
+    tempfile::TempDir,
+) {
+    build_test_harness_with_installer(env_vars, Arc::new(NoopPackageInstaller)).await
+}
+
+async fn build_test_harness_with_installer(
+    env_vars: Vec<RegistryEnvVar>,
+    installer: Arc<dyn PackageInstaller>,
 ) -> (
     surrealdb::Surreal<surrealdb::engine::local::Db>,
     VaultService,
@@ -208,7 +254,6 @@ async fn build_test_harness(
     let registry: Arc<dyn McpRegistryClient> = Arc::new(FakeRegistry {
         entry: sample_entry(env_vars),
     });
-    let installer: Arc<dyn PackageInstaller> = Arc::new(NoopPackageInstaller);
 
     let keypair_service = frona::credential::keypair::service::KeyPairService::new(
         "test-secret",
@@ -725,4 +770,82 @@ async fn install_remote_does_not_require_npm_registry_network_access() {
         .unwrap();
     assert_eq!(persisted.package.name, "https://example.com/mcp");
     assert_eq!(persisted.command, "");
+}
+
+/// The failure this fix was written for: a package the registry lists but npm
+/// cannot resolve. The row is created before anything is fetched, so the
+/// install leaves a server behind either way - what it must not leave behind is
+/// one that says "installed" and answers a start with npm's transcript.
+#[tokio::test]
+async fn a_failed_warm_up_leaves_the_server_saying_why() {
+    let (_db, _vault, service, _tmp) =
+        build_test_harness_with_installer(vec![], Arc::new(FlakyInstaller::failing())).await;
+
+    let req = McpServerInstall {
+        registry_id: Some("io.example/workspace-mcp".into()),
+        manifest: None,
+        display_name_override: None,
+        credentials: vec![],
+        extra_env: Default::default(),
+        sandbox_policy: None,
+        handle: None,
+        ..Default::default()
+    };
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("no version matching"),
+        "the caller is told the cause, not just that something failed: {err}"
+    );
+
+    let servers = service.list_for_user("user1").await.unwrap();
+    assert_eq!(
+        servers.len(),
+        1,
+        "the row outlives the failure, to retry from"
+    );
+    assert_eq!(servers[0].status, McpServerStatus::Failed);
+    assert!(
+        servers[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("no version matching")),
+        "the reason is kept with the server: {:?}",
+        servers[0].last_error
+    );
+}
+
+/// A reinstall that works is the end of the story the failure started: the
+/// reason describes a fetch that has now succeeded.
+#[tokio::test]
+async fn a_reinstall_that_works_clears_the_recorded_failure() {
+    let installer = Arc::new(FlakyInstaller::failing());
+    let (_db, _vault, service, _tmp) =
+        build_test_harness_with_installer(vec![], installer.clone()).await;
+
+    let req = McpServerInstall {
+        registry_id: Some("io.example/workspace-mcp".into()),
+        manifest: None,
+        display_name_override: None,
+        credentials: vec![],
+        extra_env: Default::default(),
+        sandbox_policy: None,
+        handle: None,
+        ..Default::default()
+    };
+    service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
+    let failed = service.list_for_user("user1").await.unwrap().remove(0);
+    assert_eq!(failed.status, McpServerStatus::Failed);
+
+    installer.start_working();
+    service.reinstall("user1", &failed.id).await.unwrap();
+
+    let repaired = service.list_for_user("user1").await.unwrap().remove(0);
+    assert_eq!(repaired.status, McpServerStatus::Installed);
+    assert_eq!(repaired.last_error, None);
 }

@@ -54,6 +54,7 @@ fn make_server(id: &str, binary: &str, workspace: &str) -> McpServer {
         transports: vec![],
         active_transport: "stdio".into(),
         status: McpServerStatus::Installed,
+        last_error: None,
         tool_cache: vec![],
         workspace_dir: workspace.to_string(),
         installed_at: now,

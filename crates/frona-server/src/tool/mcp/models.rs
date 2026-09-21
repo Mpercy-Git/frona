@@ -193,6 +193,11 @@ pub struct McpServer {
     pub active_transport: String,
     pub env: BTreeMap<String, String>,
     pub status: McpServerStatus,
+    /// Why the last install or start gave up, in the words the server page
+    /// leads with. Cleared by anything that succeeds: a running server has
+    /// nothing left to explain.
+    #[serde(default)]
+    pub last_error: Option<String>,
     pub tool_cache: Vec<CachedMcpTool>,
     pub workspace_dir: String,
 

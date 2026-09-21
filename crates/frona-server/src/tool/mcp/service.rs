@@ -103,6 +103,10 @@ impl PackageInstaller for SandboxedPackageInstaller {
         let log_dir = std::path::Path::new(&server.workspace_dir).join("logs");
         std::fs::create_dir_all(&log_dir).ok();
         let log_path = log_dir.join("server.log");
+        // Where this attempt's output starts. The log is appended to across
+        // every install and start a server ever has, so a tail of the whole
+        // file can explain this failure with the last one's reasons.
+        let log_offset = log_len(&log_path);
         let log_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -130,18 +134,28 @@ impl PackageInstaller for SandboxedPackageInstaller {
             .status;
 
         if !status.success() {
-            let log_tail = crate::tool::mcp::manager::read_log_file(&log_path, 4096);
-            return Err(AppError::Tool(format!(
-                "MCP package warm-up for {} exited with {}: {}",
-                server.package.name,
-                status,
-                log_tail
-                    .lines()
-                    .rev()
-                    .take(10)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )));
+            let log = read_log_from(&log_path, log_offset);
+            let detail = super::diagnosis::relevant_tail(&log, 10);
+            // The exit code says a package manager gave up; only its output
+            // says why, and an installer that reads it spares every caller
+            // downstream from parsing npm.
+            return Err(
+                match super::diagnosis::explain_package_failure(
+                    &server.package.runtime,
+                    &server.package.name,
+                    &server.package.version,
+                    &log,
+                ) {
+                    Some(cause) => AppError::Tool(format!(
+                        "installing {} failed: {cause}\n\n{detail}",
+                        server.package.name
+                    )),
+                    None => AppError::Tool(format!(
+                        "installing {} failed ({status}):\n\n{detail}",
+                        server.package.name
+                    )),
+                },
+            );
         }
 
         let invocation_name = if direct_npm_spec {
@@ -497,6 +511,7 @@ impl McpServerService {
                 .collect(),
             active_transport: package.transport.kind.clone(),
             status: McpServerStatus::Installed,
+            last_error: None,
             tool_cache: Vec::new(),
             workspace_dir,
             installed_at: now,
@@ -504,11 +519,39 @@ impl McpServerService {
             updated_at: now,
         };
 
+        // Everything past this point can fail with the row already written, so
+        // it runs where a failure is recorded on the row rather than left for
+        // whoever presses start next. The server used to be left saying
+        // "installed", which it never was: a start re-ran the same doomed fetch
+        // and answered with npm's transcript. Update reinstalls in place once
+        // the cause is fixed, and Uninstall clears it away.
         let persisted = self.repo.create(&server).await?;
+        match self
+            .finish_local_install(user_id, persisted.clone(), req)
+            .await
+        {
+            Ok(server) => Ok(server),
+            Err(e) => {
+                self.record_failure(&persisted.id, &e).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// The half of a local install that happens once the server exists:
+    /// bindings, policy, and the warm-up that actually fetches the package.
+    async fn finish_local_install(
+        &self,
+        user_id: &str,
+        persisted: McpServer,
+        req: McpServerInstall,
+    ) -> Result<McpServer, AppError> {
         self.write_bindings(user_id, &persisted.id, req.credentials)
             .await?;
-        let outcome = self.installer.install(&persisted).await?;
-        let persisted = self.apply_warm_up_outcome(persisted, outcome).await?;
+        // Written before the warm-up rather than after it, so a failed install
+        // keeps the policy the caller asked for: the row survives the failure
+        // for them to retry from, and the retry is a reinstall, which never
+        // revisits this request.
         let sandbox_policy = req.sandbox_policy.unwrap_or_default();
         self.policy_service
             .reconcile_sandbox_policy(
@@ -517,7 +560,9 @@ impl McpServerService {
                 &sandbox_policy,
             )
             .await?;
-        Ok(persisted)
+
+        let outcome = self.installer.install(&persisted).await?;
+        self.apply_warm_up_outcome(persisted, outcome).await
     }
 
     /// Records what the warm-up learned: the name to invoke, and the version or
@@ -651,6 +696,7 @@ impl McpServerService {
             }],
             active_transport: transport_kind,
             status: McpServerStatus::Installed,
+            last_error: None,
             tool_cache: Vec::new(),
             workspace_dir,
             installed_at: now,
@@ -843,6 +889,7 @@ impl McpServerService {
         server.updated_at = Utc::now();
         self.repo.update(&server).await?;
 
+        let log_offset = log_len(&server_log_path(&server));
         let tools = match self
             .manager
             .start_with_token(&server, resolved_env, Some(token_guard))
@@ -850,7 +897,13 @@ impl McpServerService {
         {
             Ok(tools) => tools,
             Err(e) => {
+                // What the handshake can say is that it got nothing back. What
+                // the child wrote on its way out says why - that the package it
+                // was told to run does not exist, most often - and that is the
+                // half the caller cannot reach.
+                let e = explain_from_log(&server, log_offset, e);
                 server.status = McpServerStatus::Failed;
+                server.last_error = Some(e.to_string());
                 server.updated_at = Utc::now();
                 let _ = self.repo.update(&server).await;
                 return Err(e);
@@ -858,6 +911,7 @@ impl McpServerService {
         };
 
         server.status = McpServerStatus::Running;
+        server.last_error = None;
         server.last_started_at = Some(Utc::now());
         server.updated_at = Utc::now();
         // The only version a server states about itself, and the only one there
@@ -941,8 +995,16 @@ impl McpServerService {
             }
         };
 
-        let server = self.apply_warm_up_outcome(server, outcome).await?;
+        let mut server = self.apply_warm_up_outcome(server, outcome).await?;
         let new_ref = server.resolved_ref.clone();
+        // The reason a failed install left behind describes a fetch that has
+        // now succeeded, so it stops being true here rather than at the next
+        // start.
+        if server.last_error.take().is_some() {
+            server.status = McpServerStatus::Installed;
+            server.updated_at = Utc::now();
+            self.repo.update(&server).await?;
+        }
 
         if was_running {
             self.start(user_id, server_id).await?;
@@ -954,6 +1016,26 @@ impl McpServerService {
             previous_ref,
             restarted: was_running,
         })
+    }
+
+    /// Marks a server failed and keeps the reason with it, so its page can lead
+    /// with a cause rather than a transcript - including when nobody was
+    /// watching, which is how the supervisor gives a server up.
+    pub async fn mark_failed(&self, server_id: &str, reason: &str) -> Result<(), AppError> {
+        let mut server = self.find_by_id(server_id).await?;
+        server.status = McpServerStatus::Failed;
+        server.last_error = Some(reason.to_string());
+        server.updated_at = Utc::now();
+        self.repo.update(&server).await?;
+        Ok(())
+    }
+
+    /// Best effort [`Self::mark_failed`]: an install that has already failed is
+    /// not improved by failing to write down why.
+    async fn record_failure(&self, server_id: &str, reason: &AppError) {
+        if let Err(e) = self.mark_failed(server_id, &reason.to_string()).await {
+            tracing::warn!(server_id, error = %e, "could not record why an MCP server failed");
+        }
     }
 
     pub async fn stop(&self, user_id: &str, server_id: &str) -> Result<(), AppError> {
@@ -1159,6 +1241,59 @@ fn read_installed_ref(workspace_dir: &str, name: &str) -> Option<String> {
         Some(sha) => format!("{version}+{}", &sha[..7]),
         None => version.to_string(),
     })
+}
+
+fn server_log_path(server: &McpServer) -> PathBuf {
+    PathBuf::from(&server.workspace_dir)
+        .join("logs")
+        .join("server.log")
+}
+
+/// How long a server's log is, read before an attempt so its failure can be
+/// explained from its own output. `0` for a log that does not exist yet.
+fn log_len(log_path: &std::path::Path) -> u64 {
+    std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0)
+}
+
+/// What was appended to a log after `offset`, capped at the last 64 KiB of it -
+/// a server that fails while shouting should not be read into memory whole.
+fn read_log_from(log_path: &std::path::Path, offset: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    const MAX: u64 = 64 * 1024;
+
+    let Ok(mut file) = std::fs::File::open(log_path) else {
+        return String::new();
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return String::new();
+    };
+    // A log that shrank was rotated or replaced under us; what remains of it is
+    // all this attempt can be judged on.
+    let start = offset.min(len).max(len.saturating_sub(MAX));
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buf = String::new();
+    let _ = file.take(MAX).read_to_string(&mut buf);
+    buf
+}
+
+/// Adds what the child said on its way out to an error that only knows the
+/// connection failed. Returns `e` untouched when the log carries nothing we can
+/// speak for, so a start failure never gains a cause the log does not support.
+fn explain_from_log(server: &McpServer, log_offset: u64, e: AppError) -> AppError {
+    let log = read_log_from(&server_log_path(server), log_offset);
+    match super::diagnosis::explain_package_failure(
+        &server.package.runtime,
+        &server.package.name,
+        &server.package.version,
+        &log,
+    ) {
+        // The cause leads and the original follows: the handshake error is
+        // what a bug report needs and nobody reads first.
+        Some(cause) => AppError::Tool(format!("starting {} failed: {cause} ({e})", server.handle)),
+        None => e,
+    }
 }
 
 /// Replaces the install-time target wherever it appears in an argument list.

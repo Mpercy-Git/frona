@@ -190,6 +190,7 @@ fn make_server(id: &str, user_id: &str, status: McpServerStatus) -> McpServer {
         transports: vec![],
         active_transport: "stdio".into(),
         status,
+        last_error: None,
         tool_cache: vec![],
         workspace_dir: "/tmp/test".into(),
         installed_at: now,

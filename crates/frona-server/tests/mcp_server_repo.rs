@@ -38,6 +38,7 @@ fn make_server(id: &str, user_id: &str, handle: &str, status: McpServerStatus) -
         transports: vec![],
         active_transport: "stdio".into(),
         status,
+        last_error: None,
         tool_cache: vec![],
         workspace_dir: format!("data/mcp/{id}"),
         installed_at: now,

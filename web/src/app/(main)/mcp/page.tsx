@@ -18,6 +18,8 @@ interface McpServer {
   repository_url: string | null;
   registry_id: string | null;
   status: string;
+  /** Why the last install or start gave up. Outlives the request that produced it. */
+  last_error: string | null;
   command: string;
   args: string[];
   resolved_ref: string | null;
@@ -438,13 +440,17 @@ function McpServerPage() {
           {activeSection === "status" && (
             <div className="space-y-6">
               <SectionHeader title="Status" description="Server information and controls" icon={InformationCircleIcon} />
-              {error && (
-                <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400 flex items-center justify-between">
-                  <span>{error}</span>
+              {/* The error from an action this visit, and - when there is none -
+                  the one the server is still carrying from an earlier one. A
+                  server found sitting at "failed" has to say why without the
+                  reader going to the logs to find out. */}
+              {(error || server.last_error) && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400 flex items-start justify-between gap-3">
+                  <span className="min-w-0 whitespace-pre-wrap break-words">{error ?? server.last_error}</span>
                   <button
                     type="button"
                     onClick={() => { setError(null); setActiveSection("logs"); }}
-                    className="text-xs text-red-300 hover:text-red-200 underline shrink-0 ml-3"
+                    className="text-xs text-red-300 hover:text-red-200 underline shrink-0"
                   >
                     View logs
                   </button>

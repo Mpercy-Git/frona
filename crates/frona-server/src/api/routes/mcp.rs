@@ -64,6 +64,11 @@ struct McpServerResponse {
     repository_url: Option<String>,
     registry_id: Option<String>,
     status: String,
+    /// Why the last install or start gave up. The status alone says a server is
+    /// unusable; this says what to do about it, and outlives the request that
+    /// produced it - the reason has to still be there when the page is opened
+    /// a week later.
+    last_error: Option<String>,
     command: String,
     args: Vec<String>,
     /// What the install resolved to. `server_version` is what the running
@@ -92,6 +97,7 @@ impl From<crate::tool::mcp::McpServer> for McpServerResponse {
             repository_url: s.repository_url,
             registry_id: s.registry_id,
             status: s.status.to_string(),
+            last_error: s.last_error,
             command: s.command,
             args: s.args,
             resolved_ref: s.resolved_ref,

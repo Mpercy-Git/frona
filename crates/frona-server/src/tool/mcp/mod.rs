@@ -1,4 +1,5 @@
 pub mod client;
+pub mod diagnosis;
 pub mod manager;
 pub mod mcp_tool;
 pub mod metadata;
@@ -9,6 +10,7 @@ pub mod service;
 pub mod supervisor;
 
 pub use client::{McpClient, McpClientHandler, default_client_info};
+pub use diagnosis::{explain_package_failure, relevant_tail};
 pub use manager::{McpConnection, McpManager};
 pub use metadata::{
     Enrichment, PrebuiltMetadata, RegistryEnvVar, RegistryPackage, RegistryServerEntry,
