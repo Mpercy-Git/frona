@@ -191,23 +191,52 @@ impl AgentToolRegistry {
     }
 }
 
+/// What `<available_agents>` has to say for one agent: who it may delegate to,
+/// and who it may not.
+///
+/// The denied list is the point of the type. Delegation is permitted only to
+/// agents whose tools are a subset of the caller's (the `delegation` policy in
+/// `resources/policy/frona.cedar`), so narrowing one agent's tools silently
+/// empties its view of every colleague that kept a tool it lost. With only the
+/// delegable list the section vanished entirely, leaving an agent that had been
+/// told to "check `<available_agents>`" to conclude the user has no other
+/// agents - and say so. Carrying the denied names keeps the prompt honest: they
+/// exist, they are simply not reachable from here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentSummaries {
+    /// `(name, description)` for each agent this one may delegate to.
+    pub delegable: Vec<(String, String)>,
+    /// Names of the enabled agents the delegation policy turned down.
+    pub denied: Vec<String>,
+}
+
+impl AgentSummaries {
+    /// True when there is genuinely nothing to say - no colleagues at all,
+    /// reachable or otherwise.
+    pub fn is_empty(&self) -> bool {
+        self.delegable.is_empty() && self.denied.is_empty()
+    }
+}
+
 pub async fn build_agent_summaries(
     harness: &Harness,
     user_id: &str,
     current_agent_id: &str,
-) -> Vec<(String, String)> {
+) -> AgentSummaries {
     let current_agent = match harness.agent_service.find_by_id(current_agent_id).await {
         Ok(Some(agent)) => agent,
-        _ => return Vec::new(),
+        _ => return AgentSummaries::default(),
     };
 
     let agents = match harness.agent_service.list(user_id).await {
         Ok(agents) => agents,
-        Err(_) => return Vec::new(),
+        Err(_) => return AgentSummaries::default(),
     };
 
-    let mut summaries = Vec::new();
+    let mut summaries = AgentSummaries::default();
     for target in &agents {
+        // A disabled agent is off on purpose: it is not a permission the user
+        // has to go and fix, so it stays out of both lists.
         if target.id == current_agent_id || !target.enabled {
             continue;
         }
@@ -223,8 +252,23 @@ pub async fn build_agent_summaries(
             )
             .await;
         if decision.is_ok_and(|d| d.allowed) {
-            summaries.push((target.name.clone(), target.description.clone()));
+            summaries
+                .delegable
+                .push((target.name.clone(), target.description.clone()));
+        } else {
+            summaries.denied.push(target.name.clone());
         }
+    }
+
+    if !summaries.denied.is_empty() {
+        // The operator-facing half of the same fact. Whichever agent is
+        // complaining that it cannot see its colleagues, this line names them
+        // and the principal the policy turned down.
+        tracing::debug!(
+            agent = %current_agent.handle,
+            denied = ?summaries.denied,
+            "delegation policy hid agents from <available_agents>"
+        );
     }
 
     summaries
