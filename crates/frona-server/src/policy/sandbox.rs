@@ -954,7 +954,6 @@ mod tests {
         assert!(policy.write_paths[0].ends_with("data/users/mina/agents/dev/output.csv"));
     }
 
-    #[test]
     /// A policy entry naming somebody else's files resolves to nothing rather than
     /// widening the sandbox to their tree.
     #[test]

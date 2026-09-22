@@ -259,16 +259,25 @@ export class ChatStore {
         // pair them — it keeps both, and the user sees what they sent twice.
         // This reload runs on every SSE reconnect, which is exactly when the
         // server has already stored a message we are still showing
-        // optimistically, so pair them on what the user typed and keep the
-        // server's row.
-        const merged = [...historical, ...this.messages];
-        const persisted = new Set(
-          merged
-            .filter((m) => m.role === "user" && !isOptimisticUserMessage(m))
-            .map((m) => m.content ?? ""),
-        );
-        this.messages = merged.filter(
-          (m) => !(isOptimisticUserMessage(m) && persisted.has(m.content ?? "")),
+        // optimistically, so pair them on what the user typed.
+        //
+        // Only a row arriving for the first time may claim a placeholder, and
+        // it claims exactly one. Content is not a key: testing every
+        // placeholder against every persisted message deletes what the user
+        // just sent as soon as they repeat themselves, and "ok" twice in one
+        // chat is two messages. A row already in the thread was reconciled
+        // when it first arrived and has no placeholder left to claim.
+        const claimed = new Set<MessageResponse>();
+        const pending = this.messages.filter(isOptimisticUserMessage);
+        for (const row of historical) {
+          if (row.role !== "user") continue;
+          const match = pending.find(
+            (p) => !claimed.has(p) && (p.content ?? "") === (row.content ?? ""),
+          );
+          if (match) claimed.add(match);
+        }
+        this.messages = [...historical, ...this.messages].filter(
+          (m) => !claimed.has(m),
         );
       }
       this.sortMessagesChronologically();
@@ -501,31 +510,28 @@ export class ChatStore {
         const incoming = event.message;
         const known = this.messages.some((m) => m.id === incoming.id);
         // Replace the optimistic user message with the real one from the
-        // backend. Pair them on what the user typed: taking the first
-        // placeholder in the list replaces whichever message is pending,
-        // which with two in flight swaps one for a copy of the other.
-        if (incoming.role === "user") {
+        // backend — but only for a row the thread has not seen before. The
+        // server re-broadcasts a full `chat_message` whenever a row is
+        // updated (`save_updated_message` does this to the user's own request
+        // message on the command path) and a reconnect replays them, so an
+        // echo is not proof of a new message. A repeat echo was reconciled
+        // the first time it arrived; letting it claim a placeholder again
+        // deletes whatever the user has sent since.
+        if (incoming.role === "user" && !known) {
+          // Pair on what the user typed: with two messages in flight the
+          // first placeholder in the list is not necessarily this one, and
+          // taking it swaps one message for a copy of the other. The oldest
+          // placeholder is the fallback, for a row whose text the server
+          // rewrote on its way to storage.
           const byContent = this.messages.findIndex(
             (m) => isOptimisticUserMessage(m) && m.content === incoming.content,
           );
-          // No content match and a row we have never seen: this is still the
-          // echo for a placeholder (the server may have rewritten the text),
-          // so fall back to the oldest one.
           const optIdx =
             byContent >= 0
               ? byContent
-              : known
-                ? -1
-                : this.messages.findIndex(isOptimisticUserMessage);
+              : this.messages.findIndex(isOptimisticUserMessage);
           if (optIdx >= 0) {
-            if (known) {
-              // The row is already in the thread — a reload beat the echo
-              // here — so the placeholder is a second copy of it, not a
-              // message of its own. Drop it instead of overwriting it.
-              this.messages.splice(optIdx, 1);
-            } else {
-              this.messages[optIdx] = incoming;
-            }
+            this.messages[optIdx] = incoming;
             this.sortMessagesChronologically();
             break;
           }
