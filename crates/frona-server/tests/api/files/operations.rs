@@ -773,7 +773,9 @@ async fn a_workspace_root_source_fails_the_whole_batch() {
 
     let user_dir = tmp.path().join("users").join("batchmv").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
-    fs::write(user_dir.join("first.txt"), b"data").await.unwrap();
+    fs::write(user_dir.join("first.txt"), b"data")
+        .await
+        .unwrap();
 
     let app = build_app(state);
     let resp = app
