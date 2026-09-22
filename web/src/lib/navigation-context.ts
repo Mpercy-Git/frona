@@ -17,7 +17,7 @@ import type {
   Agent,
   Contact,
 } from "./types";
-import { indexContactsById } from "./types";
+import { indexContactsById, SYSTEM_AGENT_HANDLE } from "./types";
 
 type ActiveTab = "chat" | "tasks";
 
@@ -81,7 +81,11 @@ export function NavigationProvider({
 }) {
   const sortAgents = (list: Agent[]) =>
     [...list].sort((a, b) =>
-      a.handle === "system" ? -1 : b.handle === "system" ? 1 : a.name.localeCompare(b.name),
+      a.handle === SYSTEM_AGENT_HANDLE
+        ? -1
+        : b.handle === SYSTEM_AGENT_HANDLE
+          ? 1
+          : a.name.localeCompare(b.name),
     );
 
   const [spaces, setSpaces] = useState<SpaceWithChats[] | undefined>(undefined);
@@ -356,10 +360,10 @@ export function useNavigationRaw(): NavigationContextRaw {
 
 export function useSystemAgent(): Agent {
   const { agents } = useNavigation();
-  const found = agents.find((a) => a.handle === "system");
+  const found = agents.find((a) => a.handle === SYSTEM_AGENT_HANDLE);
   if (!found) {
     throw new Error(
-      "Invariant violated: 'system' agent missing. Every user is supposed to have one cloned at signup.",
+      `Invariant violated: '${SYSTEM_AGENT_HANDLE}' agent missing. Every user is supposed to have one cloned at signup.`,
     );
   }
   return found;

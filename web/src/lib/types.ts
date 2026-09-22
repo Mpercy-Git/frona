@@ -63,6 +63,14 @@ export interface SandboxLimits {
   timeout_secs: number;
 }
 
+/** Handle of the built-in `system` agent — the one every account is given at
+ *  signup, shown first in the sidebar and used as the default assistant.
+ *  Mirrors `SYSTEM_AGENT_HANDLE` on the server, which `build.rs` generates from
+ *  the `resources/agents/system/` directory name. Identify it by handle and
+ *  never by `name`: that one defaults to "Assistant" but the user can rename it.
+ *  `is_builtin` is not a substitute either — it is true of every built-in. */
+export const SYSTEM_AGENT_HANDLE = "system";
+
 export interface Agent {
   id: string;
   handle: string;
@@ -88,6 +96,10 @@ export interface Agent {
   sandbox_limits: SandboxLimits | null;
   prompt: string | null;
   default_prompt: string;
+  /** True for any agent cloned from a `resources/agents/` template — `system`,
+   *  `developer`, `researcher`, `receptionist`, `cost-analyst` — not just the
+   *  system one. Compare `handle` against `SYSTEM_AGENT_HANDLE` for that. */
+  is_builtin: boolean;
   /** True when this agent was shared with you (use-only). Editing is disabled. */
   is_shared: boolean;
   /** Owner's handle when `is_shared` — shown as "Shared by …". */

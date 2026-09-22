@@ -9,7 +9,7 @@ use cedar_policy::{
 use moka::future::Cache;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::agent::models::Agent;
+use crate::agent::models::{Agent, SYSTEM_AGENT_HANDLE};
 use crate::auth::{User, UserService};
 use crate::core::error::AppError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,7 +336,7 @@ impl PolicyService {
         let start = std::time::Instant::now();
         let action_name = action.cedar_action_name();
 
-        if agent.handle == "system"
+        if agent.handle == SYSTEM_AGENT_HANDLE
             && matches!(&action, PolicyAction::InvokeTool { tool_name, .. } if tool_name == "manage_policy")
         {
             crate::core::metrics::record_policy_evaluation(action_name, "allow", start.elapsed());
@@ -1221,4 +1221,26 @@ async fn resolve_agent_tools_for_principal(
         .into_iter()
         .map(|d| d.id)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The escape hatch above is keyed on `SYSTEM_AGENT_HANDLE`, which `build.rs`
+    /// generates from `resources/agents/system/` - rename that directory and this
+    /// file stops compiling. The base policy cannot reach a Rust const, so its
+    /// two privileged rules (agent-management, policy-management) spell the
+    /// handle out, and a rename would leave them pointing at the old name
+    /// silently - un-privileging the system agent rather than failing the
+    /// build. This is the tripwire: it reads the bytes the server loads.
+    #[test]
+    fn base_policies_gate_on_the_generated_system_handle() {
+        let gate = format!("principal.handle == \"{SYSTEM_AGENT_HANDLE}\"");
+        assert!(
+            BASE_POLICIES.contains(&gate),
+            "resources/policy/frona.cedar no longer gates on `{gate}`; the system \
+             agent's privileged rules and SYSTEM_AGENT_HANDLE have drifted apart"
+        );
+    }
 }
