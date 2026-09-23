@@ -547,6 +547,30 @@ async fn execute_tool_calls(
     Ok(result)
 }
 
+/// Transcribe (or strip) any images left in `chat_history` so it can go to a
+/// text-only model. No-op when the history carries no images.
+async fn replace_images(
+    chat_history: &mut [RigMessage],
+    model_group: &ModelGroup,
+    registry: &ModelProviderRegistry,
+    usage_service: &crate::inference::usage::UsageService,
+    ctx: &InferenceContext,
+    message_id: &str,
+) {
+    let chat_id = active_chat(ctx).map(|c| c.id.clone()).unwrap_or_default();
+    crate::inference::vision::replace_images_for_text_only_model(
+        chat_history,
+        &model_group.main,
+        registry,
+        usage_service,
+        &ctx.user.id,
+        &ctx.agent.id,
+        &chat_id,
+        message_id,
+    )
+    .await;
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
     registry: &ModelProviderRegistry,
@@ -568,6 +592,18 @@ pub async fn run_tool_loop(
     let mut current_system_prompt = system_prompt.to_string();
     let mut last_reasoning: Option<Reasoning> = None;
     let mut final_text = String::new();
+
+    // Tool results (file reads, browser screenshots) can add images mid-loop,
+    // after the history's own images were handled at load time. A text-only
+    // model gets those replaced before its next turn; a model the catalog
+    // wrongly thinks is vision-capable is caught by the provider's rejection
+    // below and handled the same way.
+    let mut text_only = crate::inference::vision::resolve_vision_capability(
+        &model_group.main,
+        &model_group.inference,
+        usage_service.model_supports_vision(&model_group.main),
+    ) == Some(false);
+    let mut image_fallback_used = false;
 
     let max_tool_turns = model_group.inference.max_tool_turns;
     let tool_timeout = match model_group.inference.tool_timeout_secs {
@@ -611,20 +647,48 @@ pub async fn run_tool_loop(
             ctx.user.id.clone(),
             model_group.name.clone(),
         );
-        let contents = match stream_with_retry_and_fallback(
-            registry,
-            model_group,
-            &current_system_prompt,
-            &chat_history,
-            &rig_tools,
-            &event_tx,
-            &cancel_token,
-            &mut turn_text,
-            usage_service,
-            &turn_usage_ctx,
-        )
-        .await?
-        {
+        let stream_result = loop {
+            let result = stream_with_retry_and_fallback(
+                registry,
+                model_group,
+                &current_system_prompt,
+                &chat_history,
+                &rig_tools,
+                &event_tx,
+                &cancel_token,
+                &mut turn_text,
+                usage_service,
+                &turn_usage_ctx,
+            )
+            .await;
+            match result {
+                Err(AppError::Inference(msg))
+                    if !image_fallback_used
+                        && crate::inference::vision::is_image_input_unsupported_error(&msg)
+                        && crate::inference::vision::history_has_images(&chat_history) =>
+                {
+                    tracing::info!(
+                        model = %model_group.main.as_str(),
+                        "provider rejected image input; replacing images and retrying turn",
+                    );
+                    image_fallback_used = true;
+                    text_only = true;
+                    crate::inference::vision::mark_text_only(&model_group.main);
+                    replace_images(
+                        &mut chat_history,
+                        model_group,
+                        registry,
+                        usage_service,
+                        ctx,
+                        message_id,
+                    )
+                    .await;
+                    turn_text.clear();
+                }
+                other => break other?,
+            }
+        };
+        let contents = match stream_result {
             StreamResult::Contents { content, usage: _ } => content,
             StreamResult::Cancelled => {
                 return Ok(ToolLoopOutcome::Cancelled(turn_text));
@@ -661,6 +725,18 @@ pub async fn run_tool_loop(
             tool_timeout,
         )
         .await?;
+
+        if text_only {
+            replace_images(
+                &mut chat_history,
+                model_group,
+                registry,
+                usage_service,
+                ctx,
+                message_id,
+            )
+            .await;
+        }
 
         if let Some(outcome) = check_cancellation(&cancel_token, &event_tx, &turn_text).await {
             return Ok(outcome);
