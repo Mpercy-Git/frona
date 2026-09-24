@@ -371,8 +371,10 @@ mod tests {
         assert_eq!(resolve_vision_capability(&m, &c, Some(true)), Some(false));
         assert_eq!(resolve_vision_capability(&m, &c, None), Some(false));
 
-        let mut c2 = InferenceConfig::default();
-        c2.vision_models = vec!["learned-test/text-only-model".into()];
+        let c2 = InferenceConfig {
+            vision_models: vec!["learned-test/text-only-model".into()],
+            ..InferenceConfig::default()
+        };
         assert_eq!(resolve_vision_capability(&m, &c2, Some(true)), Some(true));
     }
 
