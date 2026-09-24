@@ -2,12 +2,14 @@
 //! publish-to-chat-as-attachment primitive; these tools are for working
 //! with files inside the agent's workspace (and Cedar-permitted siblings).
 
+pub mod analyze_image;
 pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod read;
 pub mod write;
 
+pub use analyze_image::AnalyzeImageTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;

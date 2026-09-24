@@ -20,4 +20,4 @@ anyOf:
   - required: [path]
   - required: [paths]
 ---
-Read a text or image file — or several at once via `paths`. Images (PNG/JPG/GIF/WebP) return as inline image content, auto-resized to ≤2000×2000. Text files return their raw bytes, truncated to 2000 lines or 50KB with a continuation hint. Binary files (PDF, archives, etc.) return an error — use produce_file to surface those to the user. Prefer this over `cat`-via-shell for any file you intend to reason about.
+Read a text or image file — or several at once via `paths`. Images (PNG/JPG/GIF/WebP) return as inline image content, auto-resized to ≤2000×2000 — if you can't view images, or only need one detail from one, use analyze_image instead. Text files return their raw bytes, truncated to 2000 lines or 50KB with a continuation hint. Binary files (PDF, archives, etc.) return an error — use produce_file to surface those to the user. Prefer this over `cat`-via-shell for any file you intend to reason about.

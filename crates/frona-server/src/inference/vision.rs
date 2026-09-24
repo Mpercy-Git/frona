@@ -8,6 +8,9 @@
 //! else sensible default" convention the other utilities use, except the
 //! default here is capability-aware (auto-select a model that supports images).
 
+use std::collections::HashSet;
+use std::sync::{LazyLock, RwLock};
+
 use rig_core::completion::Message as RigMessage;
 use rig_core::completion::message::UserContent;
 
@@ -23,10 +26,51 @@ const TRANSCRIBE_INSTRUCTION: &str = "Transcribe all text in the image verbatim,
      lists, tables, reference numbers). Briefly describe any diagrams, photos, or \
      figures. Do not summarize or add commentary.";
 
+/// Models a provider has rejected image input for at runtime (keyed by
+/// `ModelRef::as_str`). The catalog can be missing a model or wrong about it;
+/// once a provider has told us "no image input", later turns handle images up
+/// front instead of paying for another failed request.
+static LEARNED_TEXT_ONLY: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(Default::default);
+
+/// Record that the provider rejected image input for `model_ref`.
+pub fn mark_text_only(model_ref: &ModelRef) {
+    if let Ok(mut set) = LEARNED_TEXT_ONLY.write() {
+        set.insert(model_ref.as_str());
+    }
+}
+
+fn learned_text_only(model_ref: &ModelRef) -> bool {
+    LEARNED_TEXT_ONLY
+        .read()
+        .map(|set| set.contains(&model_ref.as_str()))
+        .unwrap_or(false)
+}
+
+/// Whether a provider error means the request was rejected because it carried
+/// image input the model (or every endpoint routing it) can't accept — e.g.
+/// OpenRouter's 404 "No endpoints found that support image input".
+pub fn is_image_input_unsupported_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("image")
+        && (lower.contains("support image")
+            || lower.contains("not support")
+            || lower.contains("unsupported")
+            || lower.contains("no endpoints found"))
+}
+
+/// Whether any user message in `history` still carries an image block.
+pub fn history_has_images(history: &[RigMessage]) -> bool {
+    history.iter().any(|m| {
+        matches!(m, RigMessage::User { content }
+            if content.iter().any(|c| matches!(c, UserContent::Image(_))))
+    })
+}
+
 /// Effective vision capability for `model_ref`, letting explicit config
 /// overrides win over the catalog result (`catalog_says`).
 ///
-/// Precedence: `text_only_models` → `vision_models` → catalog → unknown. When
+/// Precedence: `text_only_models` → `vision_models` → learned at runtime
+/// (see [`mark_text_only`]) → catalog → unknown. When
 /// the catalog is silent and `transcribe_when_vision_unknown` is set, unknown
 /// resolves to `Some(false)` so images get handled rather than risking a 404.
 pub fn resolve_vision_capability(
@@ -39,6 +83,9 @@ pub fn resolve_vision_capability(
     }
     if model_matches_any(model_ref, &inference.vision_models) {
         return Some(true);
+    }
+    if learned_text_only(model_ref) {
+        return Some(false);
     }
     match catalog_says {
         Some(v) => Some(v),
@@ -85,6 +132,60 @@ pub fn resolve_vision_model_group(
         .collect();
     candidates.sort_by(|a, b| a.name.cmp(&b.name));
     candidates.into_iter().next().cloned()
+}
+
+/// Make `history` safe for a text-only agent model: transcribe its images with
+/// a vision-capable model when one is available, else strip them with a
+/// marker. A resolved vision group whose main model is the agent's own
+/// (`agent_model`) is skipped — the provider has just refused images for it.
+/// Returns the number of images handled.
+#[allow(clippy::too_many_arguments)]
+pub async fn replace_images_for_text_only_model(
+    history: &mut [RigMessage],
+    agent_model: &ModelRef,
+    registry: &ModelProviderRegistry,
+    usage_service: &UsageService,
+    user_id: &str,
+    agent_id: &str,
+    chat_id: &str,
+    message_id: &str,
+) -> usize {
+    if !history_has_images(history) {
+        return 0;
+    }
+    let vision_group = resolve_vision_model_group(registry, usage_service)
+        .filter(|g| g.main.as_str() != agent_model.as_str());
+    match vision_group {
+        Some(group) => {
+            let n = transcribe_images_in_history(
+                history,
+                &group,
+                registry,
+                usage_service,
+                user_id,
+                agent_id,
+                chat_id,
+                message_id,
+            )
+            .await;
+            tracing::info!(
+                agent_model = %agent_model.as_str(),
+                vision_model = %group.main.as_str(),
+                images = n,
+                "transcribed images for text-only agent model",
+            );
+            n
+        }
+        None => {
+            let n = super::conversation::strip_images_from_history(history);
+            tracing::info!(
+                model = %agent_model.as_str(),
+                images = n,
+                "stripped image attachments (no vision model available)",
+            );
+            n
+        }
+    }
 }
 
 /// Derive a transcription-tuned group from the resolved vision base: keep the
@@ -259,6 +360,57 @@ mod tests {
             resolve_vision_capability(&mref("x", "m"), &c, Some(false)),
             Some(false)
         );
+    }
+
+    #[test]
+    fn learned_text_only_beats_catalog_but_not_vision_override() {
+        let m = mref("openrouter", "learned-test/text-only-model");
+        let c = InferenceConfig::default();
+        assert_eq!(resolve_vision_capability(&m, &c, Some(true)), Some(true));
+        mark_text_only(&m);
+        assert_eq!(resolve_vision_capability(&m, &c, Some(true)), Some(false));
+        assert_eq!(resolve_vision_capability(&m, &c, None), Some(false));
+
+        let c2 = InferenceConfig {
+            vision_models: vec!["learned-test/text-only-model".into()],
+            ..InferenceConfig::default()
+        };
+        assert_eq!(resolve_vision_capability(&m, &c2, Some(true)), Some(true));
+    }
+
+    #[test]
+    fn detects_image_input_rejections() {
+        assert!(is_image_input_unsupported_error(
+            r#"Inference error: Completion error: HttpError: Invalid status code 404 Not Found with message: {"error":{"message":"No endpoints found that support image input","code":404}}"#
+        ));
+        assert!(is_image_input_unsupported_error(
+            "This model does not support image input"
+        ));
+        assert!(!is_image_input_unsupported_error(
+            "Invalid status code 404 Not Found: model not found"
+        ));
+        assert!(!is_image_input_unsupported_error(
+            "Invalid status code 400: context length exceeded"
+        ));
+    }
+
+    #[test]
+    fn history_image_detection() {
+        use rig_core::completion::message::{DocumentSourceKind, Image};
+        let text_only = vec![RigMessage::user("hi")];
+        assert!(!history_has_images(&text_only));
+        let with_image = vec![RigMessage::User {
+            content: vec![
+                UserContent::text("look"),
+                UserContent::Image(Image {
+                    data: DocumentSourceKind::Base64("Zm9v".into()),
+                    media_type: None,
+                    detail: None,
+                    additional_params: None,
+                }),
+            ],
+        }];
+        assert!(history_has_images(&with_image));
     }
 
     #[test]
