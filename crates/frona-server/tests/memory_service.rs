@@ -123,7 +123,6 @@ async fn test_store_user_memory_tool_stores_a_batch_as_separate_entries() {
     let svc = make_memory_service(db.clone());
     let tool = frona::memory::basic::tools::StoreUserMemoryTool::new(
         svc,
-        None,
         PromptLoader::new(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("..")
@@ -165,7 +164,6 @@ async fn test_store_user_memory_tool_rejects_a_blank_memory() {
     let svc = make_memory_service(db.clone());
     let tool = frona::memory::basic::tools::StoreUserMemoryTool::new(
         svc,
-        None,
         PromptLoader::new(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("..")

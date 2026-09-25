@@ -2,7 +2,6 @@ use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
-use crate::inference::config::ModelGroup;
 use crate::memory::basic::BasicMemoryService;
 use frona_derive::agent_tool;
 
@@ -10,19 +9,13 @@ use crate::tool::{InferenceContext, ToolOutput, active_chat, str_list_arg};
 
 pub struct StoreAgentMemoryTool {
     memory_service: BasicMemoryService,
-    compaction_group: Option<ModelGroup>,
     prompts: PromptLoader,
 }
 
 impl StoreAgentMemoryTool {
-    pub fn new(
-        memory_service: BasicMemoryService,
-        compaction_group: Option<ModelGroup>,
-        prompts: PromptLoader,
-    ) -> Self {
+    pub fn new(memory_service: BasicMemoryService, prompts: PromptLoader) -> Self {
         Self {
             memory_service,
-            compaction_group,
             prompts,
         }
     }
@@ -65,25 +58,32 @@ impl StoreAgentMemoryTool {
                 .await?;
         }
 
-        if let Some(ref group) = self.compaction_group {
-            let ms = self.memory_service.clone();
-            let aid = agent_id.clone();
-            let uid = ctx.user.id.clone();
-            let group = group.clone();
-            if overrides {
-                tracing::debug!(agent_id = %aid, "Spawning forced memory compaction (overrides=true)");
-                tokio::spawn(async move {
-                    if let Err(e) = ms.compact_entries_forced(&uid, &aid, &group).await {
-                        tracing::warn!(error = %e, agent_id = %aid, "Background forced memory compaction failed");
-                    }
-                });
-            } else {
-                tracing::debug!(agent_id = %aid, "Spawning background memory compaction");
-                tokio::spawn(async move {
-                    if let Err(e) = ms.compact_entries_if_needed(&uid, &aid, &group).await {
-                        tracing::warn!(error = %e, agent_id = %aid, "Background memory compaction failed");
-                    }
-                });
+        match self
+            .memory_service
+            .compaction_model_group(&ctx.agent.model_group)
+        {
+            Ok(group) => {
+                let ms = self.memory_service.clone();
+                let aid = agent_id.clone();
+                let uid = ctx.user.id.clone();
+                if overrides {
+                    tracing::debug!(agent_id = %aid, "Spawning forced memory compaction (overrides=true)");
+                    tokio::spawn(async move {
+                        if let Err(e) = ms.compact_entries_forced(&uid, &aid, &group).await {
+                            tracing::warn!(error = %e, agent_id = %aid, "Background forced memory compaction failed");
+                        }
+                    });
+                } else {
+                    tracing::debug!(agent_id = %aid, "Spawning background memory compaction");
+                    tokio::spawn(async move {
+                        if let Err(e) = ms.compact_entries_if_needed(&uid, &aid, &group).await {
+                            tracing::warn!(error = %e, agent_id = %aid, "Background memory compaction failed");
+                        }
+                    });
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Stored memory without compaction: no model group available");
             }
         }
 
@@ -96,19 +96,13 @@ impl StoreAgentMemoryTool {
 
 pub struct StoreUserMemoryTool {
     memory_service: BasicMemoryService,
-    compaction_group: Option<ModelGroup>,
     prompts: PromptLoader,
 }
 
 impl StoreUserMemoryTool {
-    pub fn new(
-        memory_service: BasicMemoryService,
-        compaction_group: Option<ModelGroup>,
-        prompts: PromptLoader,
-    ) -> Self {
+    pub fn new(memory_service: BasicMemoryService, prompts: PromptLoader) -> Self {
         Self {
             memory_service,
-            compaction_group,
             prompts,
         }
     }
@@ -149,24 +143,31 @@ impl StoreUserMemoryTool {
                 .await?;
         }
 
-        if let Some(ref group) = self.compaction_group {
-            let ms = self.memory_service.clone();
-            let uid = user_id.clone();
-            let group = group.clone();
-            if overrides {
-                tracing::debug!(user_id = %uid, "Spawning forced user memory compaction (overrides=true)");
-                tokio::spawn(async move {
-                    if let Err(e) = ms.compact_user_entries_forced(&uid, &group).await {
-                        tracing::warn!(error = %e, user_id = %uid, "Background forced user memory compaction failed");
-                    }
-                });
-            } else {
-                tracing::debug!(user_id = %uid, "Spawning background user memory compaction");
-                tokio::spawn(async move {
-                    if let Err(e) = ms.compact_user_entries_if_needed(&uid, &group).await {
-                        tracing::warn!(error = %e, user_id = %uid, "Background user memory compaction failed");
-                    }
-                });
+        match self
+            .memory_service
+            .compaction_model_group(&ctx.agent.model_group)
+        {
+            Ok(group) => {
+                let ms = self.memory_service.clone();
+                let uid = user_id.clone();
+                if overrides {
+                    tracing::debug!(user_id = %uid, "Spawning forced user memory compaction (overrides=true)");
+                    tokio::spawn(async move {
+                        if let Err(e) = ms.compact_user_entries_forced(&uid, &group).await {
+                            tracing::warn!(error = %e, user_id = %uid, "Background forced user memory compaction failed");
+                        }
+                    });
+                } else {
+                    tracing::debug!(user_id = %uid, "Spawning background user memory compaction");
+                    tokio::spawn(async move {
+                        if let Err(e) = ms.compact_user_entries_if_needed(&uid, &group).await {
+                            tracing::warn!(error = %e, user_id = %uid, "Background user memory compaction failed");
+                        }
+                    });
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Stored memory without compaction: no model group available");
             }
         }
 

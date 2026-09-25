@@ -5,6 +5,9 @@ pub mod models;
 pub mod repository;
 pub mod tools;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,13 +77,44 @@ impl BasicMemoryService {
         }
     }
 
-    /// Resolve the compaction model group (`memory.model_group` → `primary`).
-    fn compaction_model_group(&self) -> Option<ModelGroup> {
-        self.provider_registry
+    /// Prefer the memory group; otherwise use the model selected for the chat.
+    fn compaction_model_group(&self, chat_model_group: &str) -> Result<ModelGroup, AppError> {
+        match self
+            .provider_registry
             .get_model_group(&self.memory_config.model_group)
-            .or_else(|_| self.provider_registry.get_model_group("primary"))
-            .ok()
-            .cloned()
+        {
+            Ok(group) => Ok(group.clone()),
+            Err(crate::inference::error::InferenceError::ModelGroupNotFound(_)) => Ok(self
+                .provider_registry
+                .get_model_group(chat_model_group)?
+                .clone()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// User and space memories can span chats. Use the most recently active
+    /// chat whose agent still exists, unless a memory group is configured.
+    async fn compaction_model_group_for_chats(
+        &self,
+        agent_service: &crate::agent::service::AgentService,
+        chats: &[crate::chat::models::Chat],
+    ) -> Result<ModelGroup, AppError> {
+        match self
+            .provider_registry
+            .get_model_group(&self.memory_config.model_group)
+        {
+            Ok(group) => return Ok(group.clone()),
+            Err(crate::inference::error::InferenceError::ModelGroupNotFound(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+        for chat in chats {
+            if let Some(agent) = agent_service.find_by_id(&chat.agent_id).await? {
+                return self.compaction_model_group(&agent.model_group);
+            }
+        }
+        Err(AppError::Validation(
+            "No memory model group or chat model available for compaction".into(),
+        ))
     }
 
     /// Load a compaction prompt from the resources dir. Missing → `AppError`
@@ -422,17 +456,19 @@ impl BasicMemoryService {
     async fn run_agent_sweep(
         &self,
         agent_service: &crate::agent::service::AgentService,
-        group: &ModelGroup,
     ) -> Result<(), AppError> {
         let ids = self.memory_entry_repo.find_distinct_agent_ids().await?;
         for id in &ids {
             // Resolve the agent's owning user for the usage row; skip if gone.
             match agent_service.find_by_id(id).await {
                 Ok(Some(agent)) => {
-                    if let Err(e) = self
-                        .compact_entries_if_needed(&agent.user_id, id, group)
-                        .await
-                    {
+                    let result = async {
+                        let group = self.compaction_model_group(&agent.model_group)?;
+                        self.compact_entries_if_needed(&agent.user_id, id, &group)
+                            .await
+                    }
+                    .await;
+                    if let Err(e) = result {
                         tracing::warn!(agent_id = %id, error = %e, "agent memory compaction failed");
                     }
                 }
@@ -443,10 +479,21 @@ impl BasicMemoryService {
         Ok(())
     }
 
-    async fn run_user_sweep(&self, group: &ModelGroup) -> Result<(), AppError> {
+    async fn run_user_sweep(
+        &self,
+        agent_service: &crate::agent::service::AgentService,
+    ) -> Result<(), AppError> {
         let ids = self.memory_entry_repo.find_distinct_user_ids().await?;
         for id in &ids {
-            if let Err(e) = self.compact_user_entries_if_needed(id, group).await {
+            let result = async {
+                let chats = self.chat_repo.find_by_user_id(id).await?;
+                let group = self
+                    .compaction_model_group_for_chats(agent_service, &chats)
+                    .await?;
+                self.compact_user_entries_if_needed(id, &group).await
+            }
+            .await;
+            if let Err(e) = result {
                 tracing::warn!(user_id = %id, error = %e, "user memory compaction failed");
             }
         }
@@ -457,7 +504,6 @@ impl BasicMemoryService {
         &self,
         chat_service: &crate::chat::service::ChatService,
         agent_service: &crate::agent::service::AgentService,
-        group: &ModelGroup,
     ) -> Result<(), AppError> {
         for space in self.space_repo.find_all().await? {
             let chats = self.chat_repo.find_by_space_id(&space.id).await?;
@@ -486,10 +532,15 @@ impl BasicMemoryService {
             if summaries.is_empty() {
                 continue;
             }
-            if let Err(e) = self
-                .compact_space(&space.user_id, &space.id, summaries, group)
-                .await
-            {
+            let result = async {
+                let group = self
+                    .compaction_model_group_for_chats(agent_service, &chats)
+                    .await?;
+                self.compact_space(&space.user_id, &space.id, summaries, &group)
+                    .await
+            }
+            .await;
+            if let Err(e) = result {
                 tracing::warn!(space_id = %space.id, error = %e, "failed to compact space");
             }
         }
@@ -500,16 +551,13 @@ impl BasicMemoryService {
 #[async_trait]
 impl MemoryService for BasicMemoryService {
     fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
-        let group = self.compaction_model_group();
         vec![
             Arc::new(crate::memory::basic::tools::StoreAgentMemoryTool::new(
                 self.clone(),
-                group.clone(),
                 self.prompts.clone(),
             )),
             Arc::new(crate::memory::basic::tools::StoreUserMemoryTool::new(
                 self.clone(),
-                group,
                 self.prompts.clone(),
             )),
         ]
@@ -613,10 +661,6 @@ impl MemoryService for BasicMemoryService {
     }
 
     fn register_maintenance(&self, scheduler: &Scheduler) {
-        let Some(group) = self.compaction_model_group() else {
-            tracing::warn!("no compaction model group available; skipping memory maintenance");
-            return;
-        };
         let cfg = &scheduler.app_state.config.memory;
         let memory_interval = Duration::from_secs(cfg.basic_compaction_secs);
         let space_interval = Duration::from_secs(cfg.basic_space_compaction_secs);
@@ -628,20 +672,18 @@ impl MemoryService for BasicMemoryService {
 
         let me = self.clone();
         let agents = scheduler.app_state.agent_service.clone();
-        let g = group.clone();
         scheduler.register_periodic(memory_interval, "memory_compaction", move || {
             let me = me.clone();
             let agents = agents.clone();
-            let g = g.clone();
-            async move { me.run_agent_sweep(&agents, &g).await }
+            async move { me.run_agent_sweep(&agents).await }
         });
 
         let me = self.clone();
-        let g = group.clone();
+        let agents = scheduler.app_state.agent_service.clone();
         scheduler.register_periodic(memory_interval, "user_memory_compaction", move || {
             let me = me.clone();
-            let g = g.clone();
-            async move { me.run_user_sweep(&g).await }
+            let agents = agents.clone();
+            async move { me.run_user_sweep(&agents).await }
         });
 
         let me = self.clone();
@@ -651,8 +693,7 @@ impl MemoryService for BasicMemoryService {
             let me = me.clone();
             let chats = chats.clone();
             let agents = agents.clone();
-            let group = group.clone();
-            async move { me.run_space_sweep(&chats, &agents, &group).await }
+            async move { me.run_space_sweep(&chats, &agents).await }
         });
     }
 }
