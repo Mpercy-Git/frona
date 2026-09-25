@@ -30,32 +30,78 @@ just by date:
   `652c3e0`, `7cd838e`, `07c3247`, `3bf1277`, `cfe0665`, `c89e25f`, `8e0b37d`,
   `9811c71`, `2dac0a9`, `6960ac9`, `04c59d0`).
 - `f69cf35f` "release: v2026.9.0" — a version tag commit, nothing to port.
+- `22210fe9` "exclude non-chat usage from top chats" — already present verbatim,
+  including the regression test, at `inference_usage.rs:326`.
+- `98cc7742` "configure development web search" — covered by fork's own
+  `083cd3b`, which explicitly backports it alongside `e3ad1c4`.
+
+## Ported this session (2026-09-25)
+
+Six of Group A's nine commits, verified against `cargo check --lib --tests`,
+`npx tsc --noEmit`, `npx vitest run`, and `npx eslint`:
+
+- `058b8ba4` "fall back to the chat model for memory compaction" — adapted to
+  the fork's actual `ModelProviderRegistry` API (`get_model_group` returning
+  `&ModelGroup`, not upstream's post-Group-C `resolve(&ModelRef)`); added a
+  unit test in the new `memory::basic::tests` module covering the
+  most-recent-chat / explicit-group-override behavior.
+- `ae403078` "require the installed skill directory at construction" — ported
+  plus fixed every fork-added call site upstream's commit didn't know about
+  (`tool/skills.rs`, three MCP integration tests) on top of the four upstream
+  touched.
+- `ea7cbb0d` "centralize administrator authorization" — ported as-is
+  (self-contained `AdminUser` extractor + `AuthUser::require_admin`); existing
+  ad-hoc admin checks (e.g. `api/routes/skills.rs`) were left alone since
+  upstream's commit didn't migrate them either.
+- `a444b12a` "describe handle constraints in configuration schemas" — ported
+  as-is.
+- `137de6e2` + `5aee1ead` (settings field label/reset-control fixes) —
+  hand-merged onto the fork's already-diverged `field.tsx`/`combobox.tsx`
+  (different internal state management, an extra fork-only `disabled` prop
+  upstream didn't have yet); ported the accompanying `combobox.test.tsx`
+  unchanged.
 
 ## Genuine gaps
 
-### Group A — small, independent, low-risk (do first)
+### Group A — small, independent, low-risk
 
-No structural conflict with fork-specific code. Straightforward content ports,
-same shape as PRs #104/#111/#112.
+Six of nine landed this session; see "Ported this session" above. Two
+(`22210fe9`, `98cc7742`) were already covered. What's left:
 
 | Commit | Date | What |
 |---|---|---|
-| `22210fe9` | 09-02 | Exclude non-chat usage from "top chats" — usage-accounting bug fix |
-| `98cc7742` | 09-03 | Configure development web search — **check against fork's own `083cd3b` (disable Next telemetry, bind-mount dev SearXNG) first; may already be superseded by a fork-specific approach, in which case skip** |
 | `d4186276` | 09-14 | Persist structured message processing errors (chat) |
 | `c5e95988` | 09-14 | Display structured failures in chat replies (web) |
-| `058b8ba4` | 09-14 | Fall back to the chat model for memory compaction |
-| `137de6e2` | 09-15 | Display labels consistently in settings controls |
-| `5aee1ead` | 09-15 | Inline reset controls on settings inputs |
-| `ae403078` | 09-06 | Require the installed skill directory at construction |
-| `ea7cbb0d` | 09-06 | Centralize administrator authorization (33-line, self-contained) |
-| `a444b12a` | 09-05 | Describe handle constraints in configuration schemas |
 
-Recommend one PR, same style as prior ports: content-diff each commit against
-this tree, port what's missing, call out anything that touches fork-diverged
-files (settings UI in particular has the fork's own voice-settings and
-cost-analyst additions nearby — check for adjacency conflicts, not logic
-conflicts).
+**Not actually small — reclassify as its own effort.** Upstream's
+`chat/message/error.rs` builds a persistable `MessageError` by pattern-matching
+on `AppError::Inference(InferenceError)` (typed) and a new
+`AppError::ToolExecution { tool_name, source: Box<AppError> }` variant. Neither
+exists in this fork: `AppError::Inference` is a bare `String` here (only 4
+call sites construct it), and no tool-execution error carries the tool's name
+anywhere in the tool-call path. Upstream's own unit test for this commit also
+assumes the post-Group-C `ModelConfig { catalog_provider, provider_handle:
+Handle, .. }` shape, which doesn't exist in this fork's provider layer either.
+
+Porting this requires, in order:
+1. Change `AppError::Inference(String)` → `AppError::Inference(InferenceError)`
+   and rewire the 4 call sites (`api/error.rs`, `inference/tool_loop.rs`,
+   `inference/error.rs`, `inference/retry.rs`).
+2. Add `AppError::ToolExecution { tool_name, source: Box<AppError> }` and wire
+   the tool-call path (`tool/registry.rs`, `agent/task/executor.rs`) to
+   construct it instead of flattening tool errors to `AppError::Tool(String)`.
+3. Build `chat/message/error.rs`'s `MessageError`/`MessageErrorDetails`
+   against the fork's actual `InferenceError` shape — notably
+   `AllFallbacksFailed(Vec<(String, String)>)` here vs. upstream's
+   `Vec<InferenceError>`, so per-fallback `retry_count`/`http_status` can't be
+   reconstructed the same way without a matching upstream-side redesign of
+   that variant too.
+4. Only then port the persistence wiring (`chat/service.rs`,
+   `chat/message/models.rs`, `chat/broadcast.rs`) and the frontend
+   (`c5e95988`).
+
+Treat this like Group C: a design decision first, then a port — not a
+same-day PR.
 
 ### Group B — build/test/CI infrastructure (do when convenient, low urgency)
 
@@ -163,10 +209,13 @@ bearing decision.
 
 ## Suggested order
 
-1. Group A (small independent fixes) — one PR, low risk, fast.
+1. ~~Group A (small independent fixes)~~ — done except `d4186276`/`c5e95988`,
+   reclassified above as its own effort.
 2. Group C Step 1 (scoping doc/spike only) — establishes the provider mapping
    before any more upstream provider work lands and the gap widens further.
 3. Group C Steps 2–5 — the multi-PR provider/credential rewrite, in the order
    above.
-4. Group B (build/CI infra) — whenever convenient; doesn't block anything
+4. The `AppError` redesign for `d4186276`/`c5e95988` — independent of Group C,
+   can happen in parallel.
+5. Group B (build/CI infra) — whenever convenient; doesn't block anything
    else and nothing else blocks it.
