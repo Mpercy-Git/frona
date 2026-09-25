@@ -58,7 +58,10 @@ impl StoreAgentMemoryTool {
                 .await?;
         }
 
-        match self.memory_service.compaction_model_group(&ctx.agent.model_group) {
+        match self
+            .memory_service
+            .compaction_model_group(&ctx.agent.model_group)
+        {
             Ok(group) => {
                 let ms = self.memory_service.clone();
                 let aid = agent_id.clone();
@@ -140,7 +143,10 @@ impl StoreUserMemoryTool {
                 .await?;
         }
 
-        match self.memory_service.compaction_model_group(&ctx.agent.model_group) {
+        match self
+            .memory_service
+            .compaction_model_group(&ctx.agent.model_group)
+        {
             Ok(group) => {
                 let ms = self.memory_service.clone();
                 let uid = user_id.clone();

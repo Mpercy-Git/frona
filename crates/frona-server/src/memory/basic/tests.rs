@@ -17,8 +17,8 @@ use crate::policy::service::PolicyService;
 use crate::tool::manager::ToolManager;
 use crate::tool::sandbox::driver::resource_monitor::SystemResourceManager;
 use serde_json::json;
-use surrealdb::engine::local::Mem;
 use surrealdb::Surreal;
+use surrealdb::engine::local::Mem;
 
 /// Never invoked: `compaction_model_group_for_chats` only resolves model
 /// groups against the registry, it doesn't run inference.
@@ -102,11 +102,21 @@ async fn test_user_service(db: &Surreal<surrealdb::engine::local::Db>) -> UserSe
     UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default())
 }
 
-fn test_policy_service(db: &Surreal<surrealdb::engine::local::Db>, users: UserService) -> PolicyService {
-    let repo: std::sync::Arc<dyn crate::policy::repository::PolicyRepository> =
-        std::sync::Arc::new(SurrealRepo::<crate::policy::models::Policy>::new(db.clone()));
+fn test_policy_service(
+    db: &Surreal<surrealdb::engine::local::Db>,
+    users: UserService,
+) -> PolicyService {
+    let repo: std::sync::Arc<dyn crate::policy::repository::PolicyRepository> = std::sync::Arc::new(
+        SurrealRepo::<crate::policy::models::Policy>::new(db.clone()),
+    );
     let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
-    PolicyService::new(repo, build_schema(), Arc::new(ToolManager::new(false)), storage, users)
+    PolicyService::new(
+        repo,
+        build_schema(),
+        Arc::new(ToolManager::new(false)),
+        storage,
+        users,
+    )
 }
 
 /// The most recently active chat in scope decides the compaction model,
@@ -137,7 +147,11 @@ async fn scheduled_memory_uses_latest_chat_in_scope_or_explicit_memory_group() {
     let chat_repo: SurrealChatRepo = SurrealRepo::new(db.clone());
     let now = Utc::now();
     for (index, group) in ["older", "newer", "unrelated"].into_iter().enumerate() {
-        let user_id = if group == "unrelated" { "other-user" } else { "user" };
+        let user_id = if group == "unrelated" {
+            "other-user"
+        } else {
+            "user"
+        };
         let agent = agents
             .create(
                 user_id,
@@ -157,7 +171,11 @@ async fn scheduled_memory_uses_latest_chat_in_scope_or_explicit_memory_group() {
             )
             .await
             .unwrap();
-        let space_id = if group == "unrelated" { "other-space" } else { "space" };
+        let space_id = if group == "unrelated" {
+            "other-space"
+        } else {
+            "space"
+        };
         let chat = crate::chat::models::Chat {
             id: format!("chat-{group}"),
             user_id: user_id.to_string(),

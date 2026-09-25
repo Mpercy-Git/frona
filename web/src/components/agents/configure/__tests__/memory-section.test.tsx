@@ -17,12 +17,7 @@ describe("MemorySection", () => {
     const onChange = vi.fn();
     render(<MemorySection privateMemory={false} onChange={onChange} />);
 
-    // The section renders two buttons: the description's help tip (which carries
-    // aria-expanded) and the toggle itself.
-    const toggle = screen
-      .getAllByRole("button")
-      .find((b) => !b.hasAttribute("aria-expanded"))!;
-    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("switch"));
 
     expect(onChange).toHaveBeenCalledWith({ private_memory: true });
   });
