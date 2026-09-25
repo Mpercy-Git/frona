@@ -119,6 +119,7 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
         frona::agent::skill::resolver::SkillResolver::new(
             "/tmp/frona-test-mcp-e2e-shared",
             storage.clone(),
+            "/tmp/frona-test-mcp-e2e-skills",
         ),
         storage.clone(),
         "/tmp/frona-test-mcp-e2e-skills",

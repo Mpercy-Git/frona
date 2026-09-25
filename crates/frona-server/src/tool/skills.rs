@@ -522,6 +522,7 @@ mod tests {
         let resolver = crate::agent::skill::resolver::SkillResolver::new(
             "/tmp/frona-test-config",
             storage.clone(),
+            "/tmp/frona-test-skills",
         );
         let service = SkillService::new(
             crate::agent::skill::registry::SkillRegistryClient::default(),

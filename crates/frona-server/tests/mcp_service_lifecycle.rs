@@ -214,6 +214,7 @@ async fn build_test_harness_with_installer(
         frona::agent::skill::resolver::SkillResolver::new(
             "/tmp/frona-test-lifecycle-shared",
             storage.clone(),
+            "/tmp/frona-test-lifecycle-skills",
         ),
         storage.clone(),
         "/tmp/frona-test-lifecycle-skills",
