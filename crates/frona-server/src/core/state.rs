@@ -474,6 +474,15 @@ impl AppState {
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("data"));
+        let managed_vault = crate::credential::managed::ManagedVault::new(
+            Arc::new(crate::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+            &config.auth.encryption_secret,
+            crate::credential::managed::GLOBAL_CONNECTION_ID.into(),
+        );
+        let managed_resolver = Arc::new(crate::credential::managed::resolver::ManagedResolver::new(
+            crate::credential::managed::integration::registered(),
+        ));
+        let login_service = crate::credential::managed::login::ManagedLoginService::registered();
         let vault_service = VaultService::new(
             vault_connection_repo,
             vault_grant_repo,
@@ -485,6 +494,9 @@ impl AppState {
             data_dir,
             storage.clone(),
             user_service.clone(),
+            managed_vault,
+            managed_resolver,
+            login_service,
         );
 
         let oauth_service = if config.sso.enabled {

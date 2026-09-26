@@ -10,7 +10,7 @@ use crate::chat::models::Chat;
 use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
 use crate::inference::ModelProviderRegistry;
-use crate::inference::config::ModelGroup;
+use crate::inference::ModelGroup;
 use crate::inference::conversation::{
     ConversationBuilder, ConversationContext, resolve_attachment_path,
 };

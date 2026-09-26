@@ -2109,7 +2109,12 @@ impl Config {
     pub fn provider_billing_kinds(&self) -> HashMap<String, ProviderBillingKind> {
         self.providers
             .iter()
-            .map(|(name, cfg)| (name.clone(), cfg.effective_billing(name).kind))
+            .map(|(name, cfg)| {
+                (
+                    name.as_str().to_string(),
+                    cfg.effective_billing(name.as_str()).kind,
+                )
+            })
             .collect()
     }
 }

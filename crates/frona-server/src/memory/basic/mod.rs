@@ -25,7 +25,7 @@ use crate::db::repo::basic_memory::SurrealMemoryRepo;
 use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::spaces::SurrealSpaceRepo;
 use crate::inference::ModelProviderRegistry;
-use crate::inference::config::ModelGroup;
+use crate::inference::ModelGroup;
 use crate::inference::context::estimate_tokens;
 use crate::inference::text_inference;
 use crate::memory::basic::models::{Memory, MemoryEntry, MemorySourceType};

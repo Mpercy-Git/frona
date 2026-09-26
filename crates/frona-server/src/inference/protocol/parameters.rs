@@ -24,7 +24,12 @@ impl WireDialect {
                 api: Some(OpenAiApi::Responses),
                 ..
             } => Self::Responses,
-            ProviderModel::OpenAI { .. } | ProviderModel::Generic => Self::OpenAiChat,
+            // `Generic` is deliberately excluded: unlike `OpenAI` (whose
+            // `base_url` override still targets the literal OpenAI wire
+            // format), this variant exists precisely so gpt-5/o-series's
+            // max_tokens -> max_completion_tokens rewrite does NOT apply to
+            // otherwise-compatible local servers that reject it.
+            ProviderModel::OpenAI { .. } => Self::OpenAiChat,
             ProviderModel::Anthropic { .. } => Self::Anthropic,
             ProviderModel::Gemini { .. } => Self::Gemini,
             ProviderModel::Ollama { .. } => Self::Ollama,

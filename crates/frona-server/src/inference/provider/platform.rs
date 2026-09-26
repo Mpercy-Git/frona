@@ -702,10 +702,10 @@ macro_rules! build_listable_key_client {
     }};
 }
 
-fn openrouter_prompt_caching(
-    model: rig_core::providers::openrouter::CompletionModel,
+fn openrouter_prompt_caching<H>(
+    model: rig_core::providers::openrouter::CompletionModel<H>,
     model_ref: &ModelConfig,
-) -> rig_core::providers::openrouter::CompletionModel {
+) -> rig_core::providers::openrouter::CompletionModel<H> {
     let enabled = match &model_ref.provider {
         ProviderModel::OpenRouter { params } => params.prompt_caching.unwrap_or(true),
         _ => true,

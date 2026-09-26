@@ -18,7 +18,7 @@ use crate::core::execution::{
 };
 use crate::core::state::ActiveSessions;
 use crate::credential::vault::service::VaultService;
-use crate::inference::config::ModelGroup;
+use crate::inference::ModelGroup;
 use crate::inference::conversation::{ConversationBuilder, DefaultConversationBuilder};
 use crate::inference::hitl::{HitlOutcome, HitlResponse, ResolveOutcome};
 use crate::inference::request::{InferenceContext, InferenceRequest, InferenceResponse};

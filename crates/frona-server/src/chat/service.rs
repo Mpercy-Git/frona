@@ -12,7 +12,6 @@ use crate::inference::ModelProviderRegistry;
 use crate::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder,
 };
-use crate::inference::provider::ModelRef;
 use crate::inference::text_inference;
 use crate::notification::models::{NotificationData, NotificationLevel};
 use crate::notification::service::NotificationService;
@@ -1721,30 +1720,19 @@ impl ChatService {
     fn build_title_model_group(
         &self,
         model_specifier: Option<&str>,
-    ) -> Result<crate::inference::config::ModelGroup, AppError> {
+    ) -> Result<crate::inference::ModelGroup, AppError> {
         let base = match model_specifier {
-            Some(m) if m.contains('/') => {
-                let model_ref =
-                    ModelRef::parse(m).map_err(|e| AppError::Internal(e.to_string()))?;
-                return Ok(crate::inference::config::ModelGroup {
-                    name: "title".to_string(),
-                    main: model_ref,
-                    fallbacks: vec![],
-                    max_tokens: Some(TITLE_MAX_TOKENS),
-                    temperature: None,
-                    context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
-                    retry: Default::default(),
-                    inference: Default::default(),
-                });
-            }
-            Some(group) if !group.is_empty() => {
-                self.provider_registry.get_model_group(group)?.clone()
-            }
+            // `resolve_model_group` handles both an ad-hoc "provider/model"
+            // reference and a named model group.
+            Some(m) if !m.is_empty() => self
+                .provider_registry
+                .resolve_model_group(m)
+                .map_err(|e| AppError::Internal(e.to_string()))?,
             // No explicit override: honor a "title" model group if configured,
             // else fall back to primary — same convention as other utilities.
             _ => self.provider_registry.utility_model_group("title")?,
         };
-        Ok(crate::inference::config::ModelGroup {
+        Ok(crate::inference::ModelGroup {
             name: "title".to_string(),
             main: base.main.clone(),
             fallbacks: base.fallbacks.clone(),
@@ -1753,6 +1741,7 @@ impl ChatService {
             context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
             retry: base.retry.clone(),
             inference: base.inference.clone(),
+            providers: base.providers.clone(),
         })
     }
 

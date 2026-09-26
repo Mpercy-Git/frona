@@ -14,8 +14,8 @@ use crate::chat::broadcast::EventSender;
 use super::config::{ModelGroup, RetryConfig};
 use super::context::truncate_history;
 use super::error::InferenceError;
-use super::provider::{InferenceOutput, ModelRef, StreamToken};
-use super::registry::ModelProviderRegistry;
+use super::provider::{InferenceOutput, ModelConfig, StreamToken};
+use super::provider::registry::ModelProviderRegistry;
 use super::tool_loop::{InferenceEvent, InferenceEventKind};
 use super::usage::UsageContext;
 use super::usage::{LatencyMetrics, UsageService};
@@ -32,7 +32,7 @@ pub struct RetryOutcome<T> {
 
 pub async fn retry_with_backoff<T, F, Fut>(
     retry_config: &RetryConfig,
-    model_ref: &ModelRef,
+    model_ref: &ModelConfig,
     op: F,
 ) -> Result<RetryOutcome<T>, InferenceError>
 where

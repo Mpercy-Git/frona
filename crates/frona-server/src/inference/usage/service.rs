@@ -16,7 +16,7 @@ use crate::db::repo::generic::SurrealRepo;
 use crate::inference::metadata::{
     CatalogLookup, ModelCatalogStore, StorePricing, total_prompt_usage,
 };
-use crate::inference::provider::ModelRef;
+use crate::inference::provider::ModelConfig;
 use crate::inference::usage::UsageContext;
 
 use super::models::InferenceUsage;
@@ -91,7 +91,7 @@ impl UsageService {
     pub async fn record(
         &self,
         usage_ctx: &UsageContext,
-        model_ref: &ModelRef,
+        model_ref: &ModelConfig,
         usage: &Usage,
         fallback_index: u8,
         latency: LatencyMetrics,
@@ -130,7 +130,7 @@ impl UsageService {
     /// Whether the catalog knows this model accepts image input. `None` when
     /// the model isn't in the catalog (capability unknown) — callers should
     /// treat unknown conservatively rather than assume support either way.
-    pub fn model_supports_vision(&self, model_ref: &ModelRef) -> Option<bool> {
+    pub fn model_supports_vision(&self, model_ref: &ModelConfig) -> Option<bool> {
         self.catalog
             .current()
             .lookup_model(model_ref.provider.name(), &model_ref.model_id)
@@ -238,7 +238,7 @@ struct PricingSnapshot {
 
 fn build_row(
     usage_ctx: &UsageContext,
-    model_ref: &ModelRef,
+    model_ref: &ModelConfig,
     usage: &Usage,
     fallback_index: u8,
     latency: LatencyMetrics,
@@ -314,9 +314,12 @@ mod tests {
             "user",
             "primary",
         );
-        let model_ref = ModelRef {
+        let model_ref = ModelConfig {
+            catalog_provider: provider.to_string(),
+            provider_handle: crate::core::Handle::try_new(provider).unwrap(),
             model_id: "test-model".to_string(),
             provider: ProviderModel::from_name(provider),
+            request_settings: Default::default(),
         };
         build_row(
             &ctx,

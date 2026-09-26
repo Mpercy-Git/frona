@@ -13,7 +13,7 @@ use crate::core::error::AppError;
 use crate::tool::registry::AgentToolRegistry;
 
 use super::config::ModelGroup;
-use super::registry::ModelProviderRegistry;
+use super::provider::registry::ModelProviderRegistry;
 use super::tool_call::TaskEvent;
 use super::usage::UsageService;
 

@@ -278,7 +278,7 @@ impl RuntimeCredentials {
                     catalog_provider: String::new(),
                     provider_handle: handle.clone(),
                     model_id: "model-list".into(),
-                    provider: ProviderModel::Generic,
+                    provider: ProviderModel::Generic { params: Default::default() },
                     request_settings: Default::default(),
                 },
                 false,
@@ -534,7 +534,7 @@ impl ModelProvider for PreparedProvider {
             catalog_provider: String::new(),
             provider_handle: connection.handle.clone(),
             model_id: "model-list".into(),
-            provider: ProviderModel::Generic,
+            provider: ProviderModel::Generic { params: Default::default() },
             request_settings: Default::default(),
         };
         self.resolve_selected(&model, false)

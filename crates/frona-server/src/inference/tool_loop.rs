@@ -18,7 +18,7 @@ use crate::tool::registry::AgentToolRegistry;
 use crate::tool::{InferenceContext, ToolDefinition, active_chat};
 
 use super::config::ModelGroup;
-use super::registry::ModelProviderRegistry;
+use super::provider::registry::ModelProviderRegistry;
 use super::retry::StreamResult;
 use super::retry::stream_with_retry_and_fallback;
 

@@ -420,7 +420,7 @@ impl ChannelService {
                     &binding.vault_item_id,
                 )
                 .await?;
-            for (k, v) in project_target(&secret, &binding.target) {
+            for (k, v) in project_target(&secret, &binding.target)? {
                 out.insert(k, serde_json::Value::String(v));
             }
         }

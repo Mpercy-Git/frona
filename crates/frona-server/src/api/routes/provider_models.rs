@@ -217,7 +217,7 @@ async fn list_provider_models(
     Path(provider_id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<ListModelsQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let saved = state.config.providers.get(&provider_id);
+    let saved = state.config.providers.get(provider_id.as_str());
     let api_key = query
         .api_key
         .or_else(|| saved.and_then(|p| p.api_key.clone()));

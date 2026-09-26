@@ -10,7 +10,7 @@ use crate::db::repo::agents::SurrealAgentRepo;
 use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::generic::SurrealRepo;
 use crate::inference::config::RetryConfig;
-use crate::inference::provider::{ModelProvider, ModelRef};
+use crate::inference::provider::{ModelConfig, ModelProvider};
 use crate::inference::ModelProviderRegistry;
 use crate::policy::schema::build_schema;
 use crate::policy::service::PolicyService;
@@ -28,7 +28,7 @@ struct NoopProvider;
 impl ModelProvider for NoopProvider {
     async fn inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
@@ -41,7 +41,7 @@ impl ModelProvider for NoopProvider {
 
     async fn stream_inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
@@ -55,7 +55,7 @@ impl ModelProvider for NoopProvider {
 
     async fn structured_inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _schema: serde_json::Value,
@@ -69,9 +69,12 @@ impl ModelProvider for NoopProvider {
 fn test_model_group(name: &str) -> ModelGroup {
     ModelGroup {
         name: name.into(),
-        main: ModelRef {
+        main: ModelConfig {
+            catalog_provider: "mock".into(),
+            provider_handle: crate::core::Handle::try_new("mock").unwrap(),
             provider: "mock".into(),
             model_id: name.into(),
+            request_settings: Default::default(),
         },
         fallbacks: vec![],
         max_tokens: Some(4096),
@@ -84,6 +87,7 @@ fn test_model_group(name: &str) -> ModelGroup {
             max_backoff_ms: 10,
         },
         inference: Default::default(),
+        providers: Default::default(),
     }
 }
 

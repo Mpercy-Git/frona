@@ -20,7 +20,7 @@ use crate::db::repo::pkm::{
     PageEditBase, PageEditCommit, PageEditMemoryOp, PageEditWrite, PkmRepo,
 };
 use crate::inference::ModelProviderRegistry;
-use crate::inference::config::ModelGroup;
+use crate::inference::ModelGroup;
 use crate::inference::usage::{InferenceKind, UsageContext};
 
 use super::consolidation::{
