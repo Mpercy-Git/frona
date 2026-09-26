@@ -14,7 +14,8 @@ use std::sync::{LazyLock, RwLock};
 use rig_core::completion::Message as RigMessage;
 use rig_core::completion::message::UserContent;
 
-use super::config::{InferenceConfig, ModelGroup};
+use super::ModelGroup;
+use super::config::InferenceConfig;
 use super::provider::registry::ModelProviderRegistry;
 use super::usage::{UsageContext, UsageService};
 use super::{InferenceKind, ModelConfig};
@@ -200,6 +201,7 @@ fn transcription_group(base: &ModelGroup) -> ModelGroup {
         context_window: base.context_window,
         retry: base.retry.clone(),
         inference: base.inference.clone(),
+        providers: base.providers.clone(),
     }
 }
 
@@ -256,7 +258,6 @@ pub async fn transcribe_images_in_history(
         );
 
         let replacement = match crate::inference::text_inference(
-            registry,
             &group,
             TRANSCRIBE_SYSTEM,
             vec![req_msg],

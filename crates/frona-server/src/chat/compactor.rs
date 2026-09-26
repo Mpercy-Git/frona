@@ -107,7 +107,6 @@ impl ChatSummarizer for TextInferenceSummarizer {
             model_group.name.clone(),
         );
         text_inference(
-            &self.provider_registry,
             model_group,
             system_prompt,
             vec![RigMessage::user(input)],

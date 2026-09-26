@@ -17,10 +17,9 @@ use crate::core::metrics;
 use crate::tool::registry::AgentToolRegistry;
 use crate::tool::{InferenceContext, ToolDefinition, active_chat};
 
-use super::config::ModelGroup;
+use super::ModelGroup;
 use super::provider::registry::ModelProviderRegistry;
 use super::retry::StreamResult;
-use super::retry::stream_with_retry_and_fallback;
 
 /// After a turn is cancelled, how long to let an in-flight tool observe the
 /// cancellation and return cleanly (e.g. the sandbox killing its subprocess and
@@ -648,19 +647,21 @@ pub async fn run_tool_loop(
             model_group.name.clone(),
         );
         let stream_result = loop {
-            let result = stream_with_retry_and_fallback(
-                registry,
-                model_group,
-                &current_system_prompt,
-                &chat_history,
-                &rig_tools,
-                &event_tx,
-                &cancel_token,
-                &mut turn_text,
-                usage_service,
-                &turn_usage_ctx,
-            )
-            .await;
+            let result = model_group
+                .stream_inference(
+                    crate::inference::ModelRequest {
+                        system_prompt: &current_system_prompt,
+                        history: chat_history.clone(),
+                        tools: rig_tools.clone(),
+                        usage_service,
+                        usage_context: &turn_usage_ctx,
+                        overrides: Default::default(),
+                    },
+                    &event_tx,
+                    &cancel_token,
+                    &mut turn_text,
+                )
+                .await;
             match result {
                 Err(AppError::Inference(msg))
                     if !image_fallback_used

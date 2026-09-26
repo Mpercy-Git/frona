@@ -12,7 +12,7 @@ use crate::chat::models::Chat;
 use crate::core::error::AppError;
 use crate::tool::registry::AgentToolRegistry;
 
-use super::config::ModelGroup;
+use super::ModelGroup;
 use super::provider::registry::ModelProviderRegistry;
 use super::tool_call::TaskEvent;
 use super::usage::UsageService;
@@ -152,6 +152,10 @@ pub fn active_chat(ctx: &InferenceContext) -> Result<&Chat, AppError> {
 }
 
 pub struct InferenceRequest {
+    /// Needed by the tool loop's vision-fallback path (resolving/streaming to
+    /// an alternate vision-capable model group), which is orthogonal to the
+    /// model group's own inference/streaming (now self-contained via
+    /// `model_group.providers`).
     pub registry: ModelProviderRegistry,
     pub model_group: ModelGroup,
     pub system_prompt: String,

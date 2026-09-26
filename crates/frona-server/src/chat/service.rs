@@ -665,7 +665,6 @@ impl ChatService {
             model_group.name.clone(),
         );
         let response_text = text_inference(
-            &self.provider_registry,
             model_group,
             &system_prompt,
             rig_history,
@@ -1703,7 +1702,6 @@ impl ChatService {
             model_group.name.clone(),
         );
         let result = text_inference(
-            &self.provider_registry,
             &model_group,
             &parsed.template,
             vec![RigMessage::user(user_content)],

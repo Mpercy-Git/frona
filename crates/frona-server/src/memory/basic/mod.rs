@@ -314,7 +314,6 @@ impl BasicMemoryService {
             compaction_model_group.name.clone(),
         );
         let summary = text_inference(
-            &self.provider_registry,
             compaction_model_group,
             &prompt,
             vec![RigMessage::user(&compaction_input)],
@@ -400,7 +399,6 @@ impl BasicMemoryService {
             compaction_model_group.name.clone(),
         );
         let summary = text_inference(
-            &self.provider_registry,
             compaction_model_group,
             &prompt,
             vec![RigMessage::user(&input)],

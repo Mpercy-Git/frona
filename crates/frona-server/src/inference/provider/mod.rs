@@ -365,7 +365,13 @@ type ValidationCheck = Arc<
 
 pub struct OpenAiProvider<H = reqwest::Client>
 where
-    H: rig_core::http_client::HttpClientExt + Clone + std::fmt::Debug + Default + Send + Sync,
+    H: rig_core::http_client::HttpClientExt
+        + Clone
+        + std::fmt::Debug
+        + Default
+        + Send
+        + Sync
+        + 'static,
 {
     chat_completions: RigProvider<rig_core::providers::openai::CompletionsClient<H>>,
     responses: RigProvider<rig_core::providers::openai::Client<H>>,

@@ -135,7 +135,6 @@ impl AnalyzeImageTool {
         );
 
         match crate::inference::text_inference(
-            &self.registry,
             &group,
             SYSTEM_PROMPT,
             vec![request],
