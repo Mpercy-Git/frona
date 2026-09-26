@@ -33,7 +33,7 @@ fn test_redact_config_for_api() {
 fn test_redact_config_for_api_providers() {
     let mut config = Config::default();
     config.providers.insert(
-        "anthropic".into(),
+        frona::core::Handle::try_new("anthropic").unwrap(),
         frona::core::config::ModelProviderConfig {
             api_key: Some("sk-secret".into()),
             ..Default::default()
@@ -201,10 +201,7 @@ fn retry_config_survives_strip_defaults_round_trip() {
         .expect("load must succeed after persist trims retry fields");
 
     let primary = loaded.models.get("primary").expect("primary model present");
-    assert!(matches!(
-        primary.provider,
-        frona::core::config::ProviderModel::OpenRouter { .. }
-    ));
+    assert_eq!(primary.provider, "openrouter");
     let retry = &primary.common.retry;
     assert_eq!(retry.max_retries, 3);
     assert_eq!(retry.initial_backoff_ms, 1000);
@@ -312,9 +309,6 @@ fn generic_model_group_survives_strip_defaults_round_trip() {
         .unwrap_or_else(|e| panic!("load failed: {e}\n--- written ---\n{written}"));
 
     let primary = loaded.models.get("primary").expect("primary model present");
-    assert!(matches!(
-        primary.provider,
-        frona::core::config::ProviderModel::Generic { .. }
-    ));
+    assert_eq!(primary.provider, "generic");
     assert_eq!(primary.common.model, "qwen3-coder");
 }
