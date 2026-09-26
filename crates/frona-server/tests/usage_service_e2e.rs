@@ -14,12 +14,13 @@ use std::sync::Arc;
 
 use frona::chat::broadcast::BroadcastService;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::config::{ModelGroup, RetryConfig};
+use frona::core::Handle;
+use frona::inference::config::RetryConfig;
 use frona::inference::error::InferenceError;
 use frona::inference::metadata::catalog::Cost;
 use frona::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, ModelEntry};
-use frona::inference::provider::{ModelProvider, ModelRef};
-use frona::inference::provider::registry::ModelProviderRegistry;
+use frona::inference::provider::{ModelConfig, ModelProvider};
+use frona::inference::ModelGroup;
 use frona::inference::usage::{
     CompactionTarget, InferenceKind, InferenceUsage, InferenceUsageRepository, TimeBucket,
     UsageContext, UsageService,
@@ -81,14 +82,31 @@ fn chat_usage_ctx(user: &str, agent: &str, chat: &str, message: &str) -> UsageCo
     )
 }
 
-fn fast_retry_model_group(fallbacks: Vec<ModelRef>) -> ModelGroup {
+fn model_config(provider: &str, model_id: &str) -> ModelConfig {
+    ModelConfig {
+        catalog_provider: provider.to_string(),
+        provider_handle: Handle::try_new(provider).unwrap(),
+        provider: provider.into(),
+        model_id: model_id.into(),
+        request_settings: Default::default(),
+    }
+}
+
+fn fast_retry_model_group(
+    providers: Vec<(&str, Arc<dyn ModelProvider>)>,
+    fallbacks: Vec<(&str, &str)>,
+) -> ModelGroup {
+    let providers = providers
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
     ModelGroup {
         name: "primary".into(),
-        main: ModelRef {
-            provider: "mock".into(),
-            model_id: "test-model".into(),
-        },
-        fallbacks,
+        main: model_config("mock", "test-model"),
+        fallbacks: fallbacks
+            .into_iter()
+            .map(|(provider, model_id)| model_config(provider, model_id))
+            .collect(),
         max_tokens: Some(4096),
         temperature: None,
         context_window: 128_000,
@@ -101,15 +119,8 @@ fn fast_retry_model_group(fallbacks: Vec<ModelRef>) -> ModelGroup {
             max_backoff_ms: 0,
         },
         inference: Default::default(),
+        providers: Arc::new(providers),
     }
-}
-
-fn registry_with(providers: Vec<(&str, Arc<dyn ModelProvider>)>) -> ModelProviderRegistry {
-    let map = providers
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect();
-    ModelProviderRegistry::for_testing(map, HashMap::new())
 }
 
 async fn list_all_rows(db: &Surreal<surrealdb::engine::local::Db>) -> Vec<InferenceUsage> {
@@ -130,12 +141,10 @@ async fn single_success_records_one_row_with_zero_retry_and_no_fallback() {
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
         "ok".into(),
     )]));
-    let registry = registry_with(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)]);
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -177,12 +186,10 @@ async fn retry_then_success_records_retry_count_and_overhead() {
         }),
         MockResponse::Text("recovered".into()),
     ]));
-    let registry = registry_with(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)]);
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -211,18 +218,16 @@ async fn main_fails_fallback_succeeds_records_fallback_index_and_model_ref() {
     let fb = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
         "ok".into(),
     )]));
-    let registry = registry_with(vec![
-        ("mock", main as Arc<dyn ModelProvider>),
-        ("fallback", fb as Arc<dyn ModelProvider>),
-    ]);
-    let group = fast_retry_model_group(vec![ModelRef {
-        provider: "fallback".into(),
-        model_id: "fallback-model".into(),
-    }]);
+    let group = fast_retry_model_group(
+        vec![
+            ("mock", main as Arc<dyn ModelProvider>),
+            ("fallback", fb as Arc<dyn ModelProvider>),
+        ],
+        vec![("fallback", "fallback-model")],
+    );
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
-        &registry,
         &group,
         "sys",
         vec![RigMessage::user("hi")],
@@ -258,25 +263,17 @@ async fn second_fallback_records_fallback_index_two() {
     let fb2 = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
         "ok".into(),
     )]));
-    let registry = registry_with(vec![
-        ("mock", main as Arc<dyn ModelProvider>),
-        ("fb1", fb1 as Arc<dyn ModelProvider>),
-        ("fb2", fb2 as Arc<dyn ModelProvider>),
-    ]);
-    let group = fast_retry_model_group(vec![
-        ModelRef {
-            provider: "fb1".into(),
-            model_id: "fallback-1".into(),
-        },
-        ModelRef {
-            provider: "fb2".into(),
-            model_id: "fallback-2".into(),
-        },
-    ]);
+    let group = fast_retry_model_group(
+        vec![
+            ("mock", main as Arc<dyn ModelProvider>),
+            ("fb1", fb1 as Arc<dyn ModelProvider>),
+            ("fb2", fb2 as Arc<dyn ModelProvider>),
+        ],
+        vec![("fb1", "fallback-1"), ("fb2", "fallback-2")],
+    );
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     text_inference(
-        &registry,
         &group,
         "sys",
         vec![RigMessage::user("hi")],
@@ -306,12 +303,10 @@ async fn structured_inference_records_row() {
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
         ("id".into(), "submit".into(), serde_json::json!({"x": 1})),
     ])]));
-    let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let _out: Out = structured_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &fast_retry_model_group(vec![("mock", provider as Arc<dyn ModelProvider>)], vec![]),
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -337,13 +332,11 @@ async fn aggregate_by_chat_sums_rows() {
         MockResponse::Text("b".into()),
         MockResponse::Text("c".into()),
     ]));
-    let registry = registry_with(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)]);
 
     // Three calls scoped to the same chat.
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -374,7 +367,6 @@ async fn aggregate_by_kind_groups_by_kind_tag() {
         MockResponse::Text("title".into()),
         MockResponse::Text("title2".into()),
     ]));
-    let registry = registry_with(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)]);
 
     let chat_ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
     let title_ctx = UsageContext::new(
@@ -388,8 +380,7 @@ async fn aggregate_by_kind_groups_by_kind_tag() {
 
     for ctx in [&chat_ctx, &title_ctx, &title_ctx] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -423,19 +414,17 @@ async fn aggregate_by_model_groups_by_model_ref() {
     let fb = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
         "fb-ok".into(),
     )]));
-    let registry = registry_with(vec![
-        ("mock", main as Arc<dyn ModelProvider>),
-        ("fallback", fb as Arc<dyn ModelProvider>),
-    ]);
-    let group = fast_retry_model_group(vec![ModelRef {
-        provider: "fallback".into(),
-        model_id: "fallback-model".into(),
-    }]);
+    let group = fast_retry_model_group(
+        vec![
+            ("mock", main as Arc<dyn ModelProvider>),
+            ("fallback", fb as Arc<dyn ModelProvider>),
+        ],
+        vec![("fallback", "fallback-model")],
+    );
 
     // Call 1: main retries-exhausted → fallback succeeds. Row on fallback.
     // Call 2: main recovers → row on main.
     text_inference(
-        &registry,
         &group,
         "sys",
         vec![RigMessage::user("hi")],
@@ -445,7 +434,6 @@ async fn aggregate_by_model_groups_by_model_ref() {
     .await
     .unwrap();
     text_inference(
-        &registry,
         &group,
         "sys",
         vec![RigMessage::user("hi")],
@@ -473,12 +461,10 @@ async fn aggregate_by_user_totals_across_chats() {
         MockResponse::Text("b".into()),
         MockResponse::Text("c".into()),
     ]));
-    let registry = registry_with(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)]);
 
     for (chat, msg) in [("c1", "m1"), ("c2", "m2"), ("c3", "m3")] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -510,15 +496,12 @@ async fn aggregate_by_user_totals_across_chats() {
 async fn last_chat_input_tokens_returns_latest_main_chat_row() {
     init_metrics();
     let (db, svc) = fresh_service().await;
-    let registry = registry_with(vec![(
-        "mock",
-        Arc::new(MockModelProvider::new(vec![
-            MockResponse::Text("a".into()),
-            MockResponse::Text("b".into()),
-            MockResponse::Text("c".into()),
-            MockResponse::Text("d".into()),
-        ])) as Arc<dyn ModelProvider>,
-    )]);
+    let provider = Arc::new(MockModelProvider::new(vec![
+        MockResponse::Text("a".into()),
+        MockResponse::Text("b".into()),
+        MockResponse::Text("c".into()),
+        MockResponse::Text("d".into()),
+    ])) as Arc<dyn ModelProvider>;
 
     // Title-kind first (should be ignored), then two Chat-kind, then a
     // Compaction-kind (also ignored). The most recent Chat call's
@@ -537,8 +520,7 @@ async fn last_chat_input_tokens_returns_latest_main_chat_row() {
         &chat_usage_ctx("u1", "a1", "c1", "m2"),
     ] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(vec![("mock", provider.clone())], vec![]),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -560,11 +542,8 @@ async fn last_chat_input_tokens_returns_latest_main_chat_row() {
 async fn last_chat_input_tokens_returns_none_when_no_main_chat_rows() {
     init_metrics();
     let (db, svc) = fresh_service().await;
-    let registry = registry_with(vec![(
-        "mock",
-        Arc::new(MockModelProvider::new(vec![MockResponse::Text("t".into())]))
-            as Arc<dyn ModelProvider>,
-    )]);
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text("t".into())]))
+        as Arc<dyn ModelProvider>;
 
     // Only a Title row; no Chat/ToolTurn - last_chat_input_tokens must be None.
     let title_ctx = UsageContext::new(
@@ -576,8 +555,7 @@ async fn last_chat_input_tokens_returns_none_when_no_main_chat_rows() {
         "primary",
     );
     text_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &fast_retry_model_group(vec![("mock", provider)], vec![]),
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -611,11 +589,9 @@ async fn percentile_query_returns_scalars_after_array_unwrap() {
         MockResponse::Text("d".into()),
         MockResponse::Text("e".into()),
     ]));
-    let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     for msg_id in ["m1", "m2", "m3", "m4", "m5"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -662,11 +638,9 @@ async fn latency_by_model_computes_percentiles_in_sql() {
         MockResponse::Text("b".into()),
         MockResponse::Text("c".into()),
     ]));
-    let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -709,11 +683,9 @@ async fn latency_by_bucket_computes_percentiles_in_sql() {
         MockResponse::Text("b".into()),
         MockResponse::Text("c".into()),
     ]));
-    let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -754,7 +726,6 @@ async fn top_chats_by_user_skips_rootless_rows() {
         MockResponse::Text("c".into()),
         MockResponse::Text("d".into()),
     ]));
-    let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
 
     let memory_ctx = UsageContext::new(InferenceKind::Memory, "u1", "primary");
     let user_compaction_ctx = UsageContext::new(
@@ -771,8 +742,7 @@ async fn top_chats_by_user_skips_rootless_rows() {
         &user_compaction_ctx,
     ] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
