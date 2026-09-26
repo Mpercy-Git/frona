@@ -1,19 +1,31 @@
+pub(crate) mod adapter;
+pub mod group;
+pub mod platform;
+pub(crate) mod registry;
+pub mod service;
+pub mod validation;
+
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
+use rig_core::client::ModelListingClient;
 use rig_core::completion::request::{ToolDefinition as RigToolDefinition, Usage};
 use rig_core::completion::{
     AssistantContent, CompletionModel, CompletionRequest, CompletionResponse,
     Message as RigMessage,
     message::{ToolCall, ToolChoice, ToolFunction},
 };
+use rig_core::model::ModelList;
 use tokio::sync::mpsc;
 
-use super::error::InferenceError;
 use crate::chat::broadcast::BroadcastService;
+use crate::core::Handle;
 use crate::core::config::{OpenAiApi, ProviderModel};
 use crate::core::metrics;
+use crate::inference::error::InferenceError;
 
 pub enum StreamToken {
     Text(String),
@@ -33,6 +45,62 @@ pub struct InferenceOutput {
     pub usage: Usage,
     pub ttft_ms: Option<u64>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderModelListSource {
+    Account,
+    Recipe,
+}
+
+#[derive(Debug, Clone)]
+pub enum ProviderModelList {
+    CatalogFallback,
+    Listed {
+        source: ProviderModelListSource,
+        models: ModelList,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct CredentialValidation {
+    pub models: Option<ProviderModelList>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CredentialValidationError {
+    #[error("provider rejected authentication")]
+    AuthenticationRejected,
+    #[error("this adapter does not implement live credential validation")]
+    Unsupported,
+    #[error("credential validation failed: {0}")]
+    Failed(String),
+}
+
+impl From<rig_core::model::ModelListingError> for CredentialValidationError {
+    fn from(error: rig_core::model::ModelListingError) -> Self {
+        use rig_core::model::ModelListingError;
+        match error {
+            ModelListingError::ApiError {
+                status_code: 401 | 403,
+                ..
+            }
+            | ModelListingError::AuthError { .. } => Self::AuthenticationRejected,
+            ModelListingError::ApiError { status_code, .. } => {
+                Self::Failed(format!("provider returned HTTP {status_code}"))
+            }
+            ModelListingError::RequestError { .. } => {
+                Self::Failed("provider request failed".into())
+            }
+            ModelListingError::ParseError { .. } => {
+                Self::Failed("invalid provider response".into())
+            }
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("model listing failed: {0}")]
+pub struct ModelListError(pub String);
 
 impl InferenceOutput {
     pub fn new(content: Vec<AssistantContent>, usage: Usage) -> Self {
@@ -123,36 +191,46 @@ impl<'a> CompletionRequestBuilder<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ModelRef {
-    pub model_id: String,
-    pub provider: ProviderModel,
-}
+/// Exact name of a configured model group, never an upstream model identifier.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct ModelRef(pub std::borrow::Cow<'static, str>);
 
 impl ModelRef {
-    pub fn parse(s: &str) -> Result<Self, InferenceError> {
-        let (provider, model_id) = s.split_once('/').ok_or_else(|| {
-            InferenceError::InvalidModelRef(format!("expected 'provider/model' format, got '{s}'"))
-        })?;
+    pub const PRIMARY: Self = Self(std::borrow::Cow::Borrowed("primary"));
+    pub const TITLE: Self = Self(std::borrow::Cow::Borrowed("title"));
+    pub const COMPACTION: Self = Self(std::borrow::Cow::Borrowed("compaction"));
+    pub const MEMORY: Self = Self(std::borrow::Cow::Borrowed("memory"));
 
-        if provider.is_empty() || model_id.is_empty() {
-            return Err(InferenceError::InvalidModelRef(format!(
-                "provider and model must be non-empty, got '{s}'"
-            )));
-        }
-
-        Ok(Self {
-            model_id: model_id.to_string(),
-            provider: ProviderModel::from_name(provider),
-        })
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
+}
 
+#[derive(Debug, Clone)]
+pub struct ModelConfig {
+    /// Canonical catalog brand, populated from the prepared connection.
+    pub catalog_provider: String,
+    pub provider_handle: Handle,
+    pub model_id: String,
+    pub provider: ProviderModel,
+    pub request_settings: ModelRequestSettings,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModelRequestSettings {
+    pub max_tokens: Option<u64>,
+    pub temperature: Option<f64>,
+    pub extra_params: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ModelConfig {
     pub fn as_str(&self) -> String {
-        format!("{}/{}", self.provider.name(), self.model_id)
+        format!("{}/{}", self.provider_handle, self.model_id)
     }
 
     pub fn provider_name(&self) -> &str {
-        self.provider.name()
+        self.provider_handle.as_str()
     }
 }
 
@@ -209,9 +287,23 @@ impl Drop for InferenceGuard {
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
+    async fn ensure_usable(&self, _model: &ModelConfig) -> Result<(), InferenceError> {
+        Ok(())
+    }
+
+    async fn validate_credentials(
+        &self,
+    ) -> Result<CredentialValidation, CredentialValidationError> {
+        Err(CredentialValidationError::Unsupported)
+    }
+
+    async fn list_models(&self) -> Result<ProviderModelList, ModelListError> {
+        Ok(ProviderModelList::CatalogFallback)
+    }
+
     async fn inference(
         &self,
-        model: &ModelRef,
+        model: &ModelConfig,
         system_prompt: &str,
         chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
@@ -221,7 +313,7 @@ pub trait ModelProvider: Send + Sync {
 
     async fn stream_inference(
         &self,
-        model: &ModelRef,
+        model: &ModelConfig,
         system_prompt: &str,
         chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
@@ -233,7 +325,7 @@ pub trait ModelProvider: Send + Sync {
     /// For typed extraction use `inference::structured_inference<T>`.
     async fn structured_inference(
         &self,
-        model: &ModelRef,
+        model: &ModelConfig,
         system_prompt: &str,
         chat_history: Vec<RigMessage>,
         schema: serde_json::Value,
@@ -244,51 +336,109 @@ pub trait ModelProvider: Send + Sync {
 
 pub const SUBMIT_TOOL_NAME: &str = "submit";
 
-/// Applied to the freshly-built completion model, before the request is
-/// assembled. Some rig knobs (OpenRouter's prompt caching, for one) are
-/// builder methods on the model rather than fields in the request body, so a
-/// `RequestHook` cannot reach them. The `ModelRef` comes along so the decision
-/// can be per-model-group rather than per-provider.
-pub type ModelDecorator<M> = fn(M, &ModelRef) -> M;
-
-pub struct RigProvider<C: rig_core::client::CompletionClient> {
+pub struct RigProvider<C>
+where
+    C: rig_core::client::CompletionClient,
+{
     client: C,
     counter: InferenceCounter,
-    hook: Option<super::hooks::RequestHook>,
-    decorate: Option<ModelDecorator<C::CompletionModel>>,
+    hook: Option<crate::inference::protocol::hooks::RequestHook>,
+    live_check: Option<LiveCheck>,
+    validation_check: Option<ValidationCheck>,
+    wire_transport: bool,
+    model_decorator: Option<ModelDecorator<C>>,
 }
 
-pub struct OpenAiProvider {
-    chat_completions: RigProvider<rig_core::providers::openai::CompletionsClient>,
-    responses: RigProvider<rig_core::providers::openai::Client>,
+type ModelDecorator<C> = Arc<
+    dyn Fn(<C as rig_core::client::CompletionClient>::CompletionModel, &ModelConfig) -> <C as rig_core::client::CompletionClient>::CompletionModel
+        + Send
+        + Sync,
+>;
+
+type LiveCheckFuture =
+    Pin<Box<dyn Future<Output = Result<ModelList, CredentialValidationError>> + Send + 'static>>;
+type LiveCheck = Arc<dyn Fn() -> LiveCheckFuture + Send + Sync>;
+type ValidationCheck = Arc<
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CredentialValidationError>> + Send>>
+        + Send
+        + Sync,
+>;
+
+pub struct OpenAiProvider<H = reqwest::Client> {
+    chat_completions: RigProvider<rig_core::providers::openai::CompletionsClient<H>>,
+    responses: RigProvider<rig_core::providers::openai::Client<H>>,
 }
 
-impl OpenAiProvider {
+impl<
+    H: rig_core::http_client::HttpClientExt
+        + Clone
+        + std::fmt::Debug
+        + Default
+        + Send
+        + Sync
+        + 'static,
+> OpenAiProvider<H>
+{
     pub fn new(
-        chat_completions: rig_core::providers::openai::CompletionsClient,
-        responses: rig_core::providers::openai::Client,
+        chat_completions: rig_core::providers::openai::CompletionsClient<H>,
+        responses: rig_core::providers::openai::Client<H>,
         counter: InferenceCounter,
     ) -> Self {
+        let validation_client = chat_completions.clone();
         Self {
             chat_completions: RigProvider::new(chat_completions, counter.clone())
-                .with_hook(super::hooks::openai),
+                .with_live_check(move || {
+                    let client = validation_client.clone();
+                    async move {
+                        client
+                            .list_models()
+                            .await
+                            .map_err(CredentialValidationError::from)
+                    }
+                })
+                .with_hook(crate::inference::protocol::hooks::openai),
             responses: RigProvider::new(responses, counter),
         }
     }
 
-    fn api(model: &ModelRef) -> OpenAiApi {
+    fn api(model: &ModelConfig) -> OpenAiApi {
         match &model.provider {
             ProviderModel::OpenAI { api, .. } => api.unwrap_or_default(),
             _ => OpenAiApi::ChatCompletions,
         }
     }
+
+    pub(crate) fn with_wire_transport(mut self) -> Self {
+        self.chat_completions = self.chat_completions.with_wire_transport();
+        self.responses = self.responses.with_wire_transport();
+        self
+    }
 }
 
 #[async_trait]
-impl ModelProvider for OpenAiProvider {
+impl<
+    H: rig_core::http_client::HttpClientExt
+        + Clone
+        + std::fmt::Debug
+        + Default
+        + Send
+        + Sync
+        + 'static,
+> ModelProvider for OpenAiProvider<H>
+{
+    async fn validate_credentials(
+        &self,
+    ) -> Result<CredentialValidation, CredentialValidationError> {
+        self.chat_completions.validate_credentials().await
+    }
+
+    async fn list_models(&self) -> Result<ProviderModelList, ModelListError> {
+        self.chat_completions.list_models().await
+    }
+
     async fn inference(
         &self,
-        model: &ModelRef,
+        model: &ModelConfig,
         system_prompt: &str,
         chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
@@ -325,7 +475,7 @@ impl ModelProvider for OpenAiProvider {
 
     async fn stream_inference(
         &self,
-        model: &ModelRef,
+        model: &ModelConfig,
         system_prompt: &str,
         chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
@@ -365,7 +515,7 @@ impl ModelProvider for OpenAiProvider {
 
     async fn structured_inference(
         &self,
-        model: &ModelRef,
+        model: &ModelConfig,
         system_prompt: &str,
         chat_history: Vec<RigMessage>,
         schema: serde_json::Value,
@@ -401,123 +551,97 @@ impl ModelProvider for OpenAiProvider {
     }
 }
 
-impl<C: rig_core::client::CompletionClient> RigProvider<C> {
+impl<C> RigProvider<C>
+where
+    C: rig_core::client::CompletionClient,
+{
     pub fn new(client: C, counter: InferenceCounter) -> Self {
         Self {
             client,
             counter,
             hook: None,
-            decorate: None,
+            live_check: None,
+            validation_check: None,
+            wire_transport: false,
+            model_decorator: None,
         }
     }
 
-    pub fn with_hook(mut self, hook: super::hooks::RequestHook) -> Self {
+    pub fn with_hook(mut self, hook: crate::inference::protocol::hooks::RequestHook) -> Self {
         self.hook = Some(hook);
         self
     }
 
-    pub fn with_model_decorator(mut self, decorate: ModelDecorator<C::CompletionModel>) -> Self {
-        self.decorate = Some(decorate);
+    /// Post-process the per-request completion model before it's used, for
+    /// brand-specific tweaks the shared request/response path can't express
+    /// (e.g. OpenRouter's `with_prompt_caching()` builder call).
+    pub fn with_model_decorator<F>(mut self, decorate: F) -> Self
+    where
+        F: Fn(C::CompletionModel, &ModelConfig) -> C::CompletionModel + Send + Sync + 'static,
+    {
+        self.model_decorator = Some(Arc::new(decorate));
         self
     }
 
-    fn build_model(&self, model_ref: &ModelRef) -> C::CompletionModel {
-        let model = self.client.completion_model(&model_ref.model_id);
-        match self.decorate {
-            Some(decorate) => decorate(model, model_ref),
-            None => model,
-        }
+    pub(crate) fn with_wire_transport(mut self) -> Self {
+        self.wire_transport = true;
+        self
     }
-}
 
-fn serialize_params<T: serde::Serialize>(params: &T) -> Option<serde_json::Value> {
-    match serde_json::to_value(params) {
-        Ok(serde_json::Value::Object(map)) if !map.is_empty() => {
-            Some(serde_json::Value::Object(map))
+    fn prepare_parameters(
+        &self,
+        model: &ModelConfig,
+        max_tokens: Option<u64>,
+        temperature: Option<f64>,
+        structured: bool,
+    ) -> Result<
+        (
+            crate::inference::protocol::hooks::RequestParams,
+            crate::inference::protocol::parameters::WireParameters,
+        ),
+        InferenceError,
+    > {
+        // Callers pass only explicit request/model values. Application defaults
+        // are used for budgeting in the retry layer, not sent as generation settings.
+        let wire = crate::inference::protocol::parameters::WireParameters::prepare(
+            model,
+            max_tokens,
+            temperature,
+            structured,
+        )?;
+        if !self.wire_transport && !model.request_settings.extra_params.is_empty() {
+            return Err(InferenceError::ConfigError(
+                "extra_params requires the provider platform's native HTTP transport".into(),
+            ));
         }
-        _ => None,
+        let params = match (self.wire_transport, self.hook) {
+            (false, Some(hook)) => hook(wire.request.clone()),
+            _ => wire.request.clone(),
+        };
+        for override_ in &wire.overrides {
+            tracing::warn!(config_path = %override_.config_path, wire_path = ?override_.wire_path, "Custom parameter overrides a typed setting");
+        }
+        Ok((params, wire))
     }
-}
 
-fn request_params(
-    model: &ModelRef,
-    max_tokens: Option<u64>,
-    temperature: Option<f64>,
-    hook: Option<super::hooks::RequestHook>,
-) -> Result<super::hooks::RequestParams, InferenceError> {
-    let (max_tokens, additional_params) = match &model.provider {
-        ProviderModel::Anthropic { params } => (max_tokens, serialize_params(params)),
-        ProviderModel::Ollama { params } => (max_tokens, serialize_params(params)),
-        ProviderModel::OpenAI { api, params } => {
-            let explicit_max = params.max_completion_tokens;
-            let mut additional = serialize_params(params);
-            if let Some(serde_json::Value::Object(map)) = &mut additional {
-                map.remove("max_completion_tokens");
-                if api.unwrap_or_default() == OpenAiApi::Responses {
-                    let unsupported = [
-                        ("min_p", params.min_p.is_some()),
-                        ("frequency_penalty", params.frequency_penalty.is_some()),
-                        ("presence_penalty", params.presence_penalty.is_some()),
-                        ("seed", params.seed.is_some()),
-                        ("logprobs", params.logprobs.is_some()),
-                        ("stop", params.stop.is_some()),
-                    ]
-                    .into_iter()
-                    .filter_map(|(name, present)| present.then_some(name))
-                    .collect::<Vec<_>>();
-                    if !unsupported.is_empty() {
-                        return Err(InferenceError::ConfigError(format!(
-                            "OpenAI Responses does not support: {}",
-                            unsupported.join(", ")
-                        )));
-                    }
-                    if let Some(effort) = map.remove("reasoning_effort") {
-                        map.insert(
-                            "reasoning".to_string(),
-                            serde_json::json!({ "effort": effort }),
-                        );
-                    }
-                }
-                if map.is_empty() {
-                    additional = None;
-                }
-            }
-            (explicit_max.or(max_tokens), additional)
-        }
-        ProviderModel::OpenRouter { params } => (max_tokens, serialize_params(params)),
-        // Azure hosts the same gpt-5/o-series models as OpenAI, so it does need
-        // the `max_tokens` -> `max_completion_tokens` move. `hooks::openai`
-        // performs it; this arm only serializes params. Kept out of the group
-        // below precisely because that group's contract is the opposite one —
-        // folding Azure in would make that comment false for its first member.
-        ProviderModel::Azure { params } => (max_tokens, serialize_params(params)),
-        // Plain OpenAI-compatible chat-completions endpoints. `max_tokens`
-        // stays top-level: unlike gpt-5/o-series, these accept it, and
-        // rewriting it to `max_completion_tokens` is what breaks them.
-        ProviderModel::Groq { params }
-        | ProviderModel::DeepSeek { params }
-        | ProviderModel::XAI { params }
-        | ProviderModel::Together { params }
-        | ProviderModel::Hyperbolic { params }
-        | ProviderModel::Zai { params }
-        | ProviderModel::Venice { params }
-        | ProviderModel::MiniMax { params }
-        | ProviderModel::Llamafile { params }
-        | ProviderModel::Byteplus { params }
-        | ProviderModel::Generic { params } => (max_tokens, serialize_params(params)),
-        ProviderModel::Gemini { params } => (max_tokens, serialize_params(params)),
-        ProviderModel::Custom { .. } => (max_tokens, None),
-    };
+    pub fn with_live_check<F, Fut>(mut self, check: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ModelList, CredentialValidationError>> + Send + 'static,
+    {
+        self.live_check = Some(Arc::new(move || Box::pin(check())));
+        self
+    }
 
-    let params = super::hooks::RequestParams {
-        max_tokens,
-        temperature,
-        additional_params,
-    };
-    Ok(match hook {
-        Some(apply) => apply(params),
-        None => params,
-    })
+    /// A read-only authentication check that does not return model inventory.
+    pub fn with_validation_check<F, Fut>(mut self, check: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), CredentialValidationError>> + Send + 'static,
+    {
+        self.validation_check = Some(Arc::new(move || Box::pin(check())));
+        self
+    }
 }
 
 #[async_trait]
@@ -526,9 +650,45 @@ where
     C: rig_core::client::CompletionClient + Send + Sync,
     C::CompletionModel: CompletionModel + Send + Sync + 'static,
 {
+    async fn validate_credentials(
+        &self,
+    ) -> Result<CredentialValidation, CredentialValidationError> {
+        if let Some(check) = &self.validation_check {
+            check().await?;
+            return Ok(CredentialValidation { models: None });
+        }
+        let check = self
+            .live_check
+            .as_ref()
+            .ok_or(CredentialValidationError::Unsupported)?;
+        let models = check().await?;
+        Ok(CredentialValidation {
+            models: Some(ProviderModelList::Listed {
+                source: ProviderModelListSource::Account,
+                models,
+            }),
+        })
+    }
+
+    async fn list_models(&self) -> Result<ProviderModelList, ModelListError> {
+        let Some(check) = &self.live_check else {
+            return Err(ModelListError(
+                "Live model discovery is unavailable for this adapter and authentication method"
+                    .into(),
+            ));
+        };
+        check()
+            .await
+            .map(|models| ProviderModelList::Listed {
+                source: ProviderModelListSource::Account,
+                models,
+            })
+            .map_err(|error| ModelListError(error.to_string()))
+    }
+
     async fn inference(
         &self,
-        model_ref: &ModelRef,
+        model_ref: &ModelConfig,
         system_prompt: &str,
         chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
@@ -537,11 +697,20 @@ where
     ) -> Result<InferenceOutput, InferenceError> {
         use rig_core::completion::CompletionModel as _;
 
-        let params = request_params(model_ref, max_tokens, temperature, self.hook)?;
+        let (params, wire) = self.prepare_parameters(
+            model_ref,
+            max_tokens,
+            temperature,
+            tools.iter().any(|tool| tool.name == SUBMIT_TOOL_NAME),
+        )?;
         let model_id = model_ref.model_id.as_str();
 
         let _guard = self.counter.guard();
-        let model = self.build_model(model_ref);
+        let model = self.client.completion_model(model_id);
+        let model = match &self.model_decorator {
+            Some(decorate) => decorate(model, model_ref),
+            None => model,
+        };
 
         tracing::debug!(
             model = %model_id,
@@ -552,7 +721,7 @@ where
 
         // Kept only when tracing is on - the builder consumes both, and cloning a whole
         // history per call to satisfy a disabled debug path is not worth it.
-        let traced = super::trace::enabled().then(|| {
+        let traced = crate::inference::trace::enabled().then(|| {
             (
                 chat_history.clone(),
                 tools.clone(),
@@ -567,10 +736,10 @@ where
             .additional_params(params.additional_params)
             .build();
 
-        let response: CompletionResponse = model
-            .completion(request)
-            .await
-            .map_err(InferenceError::CompletionFailed)?;
+        let response: CompletionResponse =
+            crate::inference::protocol::http::scope(wire, model.completion(request))
+                .await
+                .map_err(InferenceError::CompletionFailed)?;
 
         let contents: Vec<AssistantContent> = response.choice.into_iter().collect();
         let usage = response.usage;
@@ -581,8 +750,8 @@ where
             "LLM response"
         );
         if let Some((history, tools, system)) = traced {
-            super::trace::record(
-                super::trace::Exchange {
+            crate::inference::trace::record(
+                crate::inference::trace::Exchange {
                     model: model_id,
                     system: &system,
                     history: &history,
@@ -597,7 +766,7 @@ where
 
     async fn stream_inference(
         &self,
-        model_ref: &ModelRef,
+        model_ref: &ModelConfig,
         system_prompt: &str,
         chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
@@ -607,11 +776,20 @@ where
     ) -> Result<InferenceOutput, InferenceError> {
         use rig_core::completion::CompletionModel as _;
 
-        let params = request_params(model_ref, max_tokens, temperature, self.hook)?;
+        let (params, wire) = self.prepare_parameters(
+            model_ref,
+            max_tokens,
+            temperature,
+            tools.iter().any(|tool| tool.name == SUBMIT_TOOL_NAME),
+        )?;
         let model_id = model_ref.model_id.as_str();
 
         let _guard = self.counter.guard();
-        let model = self.build_model(model_ref);
+        let model = self.client.completion_model(model_id);
+        let model = match &self.model_decorator {
+            Some(decorate) => decorate(model, model_ref),
+            None => model,
+        };
 
         tracing::debug!(
             model = %model_id,
@@ -622,7 +800,7 @@ where
         tracing::debug!(chat_history = ?chat_history, "LLM chat history");
 
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-        let traced = super::trace::enabled().then(|| {
+        let traced = crate::inference::trace::enabled().then(|| {
             (
                 chat_history.clone(),
                 tools.clone(),
@@ -637,18 +815,20 @@ where
             .additional_params(params.additional_params)
             .build();
 
-        let stream = model
-            .stream(request)
-            .await
-            .map_err(InferenceError::CompletionFailed)?;
-
         let StreamConsumed {
             mut accumulated_text,
             mut contents,
             still_buffering,
             usage,
             ttft_ms,
-        } = consume_tool_stream(stream, &token_tx, &tool_names).await?;
+        } = crate::inference::protocol::http::scope(wire, async {
+            let stream = model
+                .stream(request)
+                .await
+                .map_err(InferenceError::CompletionFailed)?;
+            consume_tool_stream(stream, &token_tx, &tool_names).await
+        })
+        .await?;
 
         let has_tool_calls = contents
             .iter()
@@ -683,8 +863,8 @@ where
             "LLM streaming response"
         );
         if let Some((history, tools, system)) = traced {
-            super::trace::record(
-                super::trace::Exchange {
+            crate::inference::trace::record(
+                crate::inference::trace::Exchange {
                     model: model_id,
                     system: &system,
                     history: &history,
@@ -699,7 +879,7 @@ where
 
     async fn structured_inference(
         &self,
-        model_ref: &ModelRef,
+        model_ref: &ModelConfig,
         system_prompt: &str,
         chat_history: Vec<RigMessage>,
         schema: serde_json::Value,
@@ -708,11 +888,15 @@ where
     ) -> Result<serde_json::Value, InferenceError> {
         use rig_core::completion::CompletionModel as _;
 
-        let params = request_params(model_ref, max_tokens, temperature, self.hook)?;
+        let (params, wire) = self.prepare_parameters(model_ref, max_tokens, temperature, true)?;
         let model_id = model_ref.model_id.as_str();
 
         let _guard = self.counter.guard();
-        let model = self.build_model(model_ref);
+        let model = self.client.completion_model(model_id);
+        let model = match &self.model_decorator {
+            Some(decorate) => decorate(model, model_ref),
+            None => model,
+        };
 
         let submit = RigToolDefinition {
             name: SUBMIT_TOOL_NAME.to_string(),
@@ -739,10 +923,10 @@ where
             .additional_params(params.additional_params)
             .build();
 
-        let response: CompletionResponse = model
-            .completion(request)
-            .await
-            .map_err(InferenceError::CompletionFailed)?;
+        let response: CompletionResponse =
+            crate::inference::protocol::http::scope(wire, model.completion(request))
+                .await
+                .map_err(InferenceError::CompletionFailed)?;
 
         let arguments = response
             .choice
@@ -1090,10 +1274,39 @@ pub fn extract_text_from_choice(contents: &[AssistantContent]) -> Result<String,
 mod tests {
     use super::*;
     use crate::core::config::{AnthropicParams, GeminiParams, OpenAICompatParams};
+    use crate::inference::protocol::parameters::WireParameters;
     use rig_core::completion::message::{ToolCall, ToolFunction};
 
-    fn openai_model(api: OpenAiApi, params: OpenAICompatParams) -> ModelRef {
-        ModelRef {
+    #[test]
+    fn model_reference_preserves_exact_configured_name() {
+        let reference: ModelRef = serde_json::from_str("\" Primary \"").unwrap();
+        assert_eq!(reference.as_str(), " Primary ");
+        assert_ne!(reference, ModelRef::PRIMARY);
+        assert_eq!(serde_json::to_string(&reference).unwrap(), "\" Primary \"");
+    }
+
+    #[test]
+    fn known_model_references_are_borrowed_and_round_trip() {
+        for (reference, name) in [
+            (ModelRef::PRIMARY, "primary"),
+            (ModelRef::TITLE, "title"),
+            (ModelRef::COMPACTION, "compaction"),
+            (ModelRef::MEMORY, "memory"),
+        ] {
+            assert!(matches!(reference.0, std::borrow::Cow::Borrowed(_)));
+            assert_eq!(reference.as_str(), name);
+            let json = serde_json::to_string(&reference).unwrap();
+            let restored: ModelRef = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored, reference);
+            assert_eq!(restored, ModelRef(name.to_owned().into()));
+        }
+    }
+
+    fn openai_model(api: OpenAiApi, params: OpenAICompatParams) -> ModelConfig {
+        ModelConfig {
+            request_settings: Default::default(),
+            catalog_provider: String::new(),
+            provider_handle: Handle::const_validated("openai"),
             model_id: "test-model".to_string(),
             provider: ProviderModel::OpenAI {
                 api: Some(api),
@@ -1102,176 +1315,53 @@ mod tests {
         }
     }
 
-    /// The whole point of `hooks::openrouter`. The config names the object
-    /// `provider_routing` to dodge the `#[serde(tag = "provider")]`
-    /// discriminant, so without the rename on the way out every routing
-    /// preference ships under a key OpenRouter ignores.
-    #[test]
-    fn openrouter_request_sends_routing_under_the_provider_key() {
-        use crate::core::config::{
-            OpenRouterMaxPrice, OpenRouterParams, OpenRouterProviderRouting,
-        };
-
-        let model = ModelRef {
-            model_id: "anthropic/claude-sonnet-4-6".to_string(),
-            provider: ProviderModel::OpenRouter {
-                params: OpenRouterParams {
-                    provider_routing: Some(OpenRouterProviderRouting {
-                        order: Some(vec!["Anthropic".to_string()]),
-                        only: Some(vec!["Anthropic".to_string()]),
-                        sort: Some("throughput".to_string()),
-                        max_price: Some(OpenRouterMaxPrice {
-                            prompt: Some(5.0),
-                            ..Default::default()
-                        }),
-                        zdr: Some(true),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-            },
-        };
-
-        let params = request_params(
-            &model,
-            Some(8192),
-            None,
-            Some(super::super::hooks::openrouter),
-        )
-        .unwrap();
-        assert_eq!(params.max_tokens, Some(8192));
-        assert_eq!(
-            params.additional_params,
-            Some(serde_json::json!({
-                "provider": {
-                    "order": ["Anthropic"],
-                    "only": ["Anthropic"],
-                    "sort": "throughput",
-                    "max_price": {"prompt": 5.0},
-                    "zdr": true,
-                }
-            })),
-            "routing must reach the wire as `provider`, not `provider_routing`"
-        );
-    }
-
-    /// `prompt_caching` steers how the completion model is built; it is not an
-    /// OpenRouter API field and must not survive into the request body.
-    #[test]
-    fn openrouter_request_omits_the_prompt_caching_toggle() {
-        use crate::core::config::{OpenAICompatParams, OpenRouterParams};
-
-        let model = ModelRef {
-            model_id: "anthropic/claude-sonnet-4-6".to_string(),
-            provider: ProviderModel::OpenRouter {
-                params: OpenRouterParams {
-                    prompt_caching: Some(false),
-                    compat: OpenAICompatParams {
-                        top_p: Some(0.9),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            },
-        };
-
-        let params =
-            request_params(&model, None, None, Some(super::super::hooks::openrouter)).unwrap();
-        assert_eq!(
-            params.additional_params,
-            Some(serde_json::json!({"top_p": 0.9}))
-        );
-    }
-
-    /// Azure serves the same gpt-5/o-series models as OpenAI, which reject
-    /// `max_tokens` outright, so the cap has to be rewritten on the way out
-    /// exactly as it is for the `openai` provider.
-    #[test]
-    fn azure_request_moves_max_tokens_to_max_completion_tokens() {
-        let model = ModelRef {
-            model_id: "my-gpt-5-deployment".to_string(),
-            provider: ProviderModel::Azure {
-                params: OpenAICompatParams {
-                    reasoning_effort: Some("high".to_string()),
-                    ..Default::default()
-                },
-            },
-        };
-
-        let params =
-            request_params(&model, Some(64000), None, Some(super::super::hooks::openai)).unwrap();
-        assert!(params.max_tokens.is_none());
-        assert_eq!(
-            params.additional_params,
-            Some(serde_json::json!({
-                "reasoning_effort": "high",
-                "max_completion_tokens": 64000,
-            })),
-        );
-    }
-
-    /// The reason `generic` exists rather than pointing the `openai` provider
-    /// at a custom `base_url`: that path runs `hooks::openai`, which moves
-    /// `max_tokens` into `max_completion_tokens`. vLLM, LM Studio and
-    /// llama.cpp's server take the former and reject the latter, so the cap
-    /// has to survive the trip unchanged.
-    #[test]
-    fn generic_request_leaves_max_tokens_where_compatible_servers_expect_it() {
-        let model = ModelRef {
-            model_id: "some-local-model".to_string(),
-            provider: ProviderModel::Generic {
-                params: OpenAICompatParams {
-                    top_p: Some(0.9),
-                    ..Default::default()
-                },
-            },
-        };
-
-        let params = request_params(&model, Some(8192), None, None).unwrap();
-        assert_eq!(params.max_tokens, Some(8192));
-        assert_eq!(
-            params.additional_params,
-            Some(serde_json::json!({"top_p": 0.9})),
-            "no max_completion_tokens rewrite on the generic path"
-        );
-    }
-
-    /// BytePlus rides the OpenAI *client* but not the OpenAI *hook*: Ark serves
-    /// Seed/Doubao over plain chat-completions, which takes `max_tokens` and
-    /// rejects `max_completion_tokens`. Configuring it as `provider: openai`
-    /// with a custom `base_url` is exactly the mistake this arm prevents.
-    #[test]
-    fn byteplus_request_leaves_max_tokens_top_level() {
-        let model = ModelRef {
-            model_id: "seed-1-6-250615".to_string(),
-            provider: ProviderModel::Byteplus {
-                params: OpenAICompatParams {
-                    top_p: Some(0.8),
-                    ..Default::default()
-                },
-            },
-        };
-
-        let params = request_params(&model, Some(32000), None, None).unwrap();
-        assert_eq!(params.max_tokens, Some(32000));
-        assert_eq!(
-            params.additional_params,
-            Some(serde_json::json!({"top_p": 0.8})),
-            "no max_completion_tokens rewrite on the byteplus path"
-        );
-    }
-
     #[test]
     fn typed_provider_params_do_not_serialize_absent_fields() {
-        assert_eq!(serialize_params(&AnthropicParams::default()), None);
-        let params = GeminiParams {
-            top_p: Some(0.5),
-            ..Default::default()
+        let mut model = openai_model(OpenAiApi::ChatCompletions, Default::default());
+        model.provider = ProviderModel::Anthropic {
+            params: AnthropicParams::default(),
         };
+        let plan = WireParameters::prepare(&model, None, None, false).unwrap();
+        assert_eq!(plan.request.additional_params, None);
+        model.provider = ProviderModel::Gemini {
+            params: GeminiParams::default(),
+        };
+        let plan = WireParameters::prepare(&model, None, None, false).unwrap();
+        assert_eq!(plan.request.additional_params, None);
+        model.provider = ProviderModel::Gemini {
+            params: GeminiParams {
+                top_p: Some(0.5),
+                ..Default::default()
+            },
+        };
+        let plan = WireParameters::prepare(&model, None, None, false).unwrap();
         assert_eq!(
-            serialize_params(&params),
-            Some(serde_json::json!({"top_p": 0.5}))
+            plan.request.additional_params,
+            Some(serde_json::json!({"generationConfig": {"topP": 0.5}}))
         );
+    }
+
+    #[test]
+    fn provider_integer_narrowing_is_checked_before_sdk_conversion() {
+        let mut model = openai_model(OpenAiApi::ChatCompletions, Default::default());
+        model.provider = ProviderModel::Gemini {
+            params: GeminiParams {
+                top_k: Some(u64::MAX),
+                ..Default::default()
+            },
+        };
+        let error = WireParameters::prepare_named(&model, None, None, false, "models.primary")
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("models.primary.top_k"));
+        model.provider = ProviderModel::Bedrock {
+            params: Default::default(),
+        };
+        let error =
+            WireParameters::prepare_named(&model, Some(u64::MAX), None, false, "models.primary")
+                .err()
+                .unwrap();
+        assert!(error.to_string().contains("models.primary.max_tokens"));
     }
 
     #[test]
@@ -1284,8 +1374,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        let params =
-            request_params(&model, Some(456), None, Some(super::super::hooks::openai)).unwrap();
+        let plan = WireParameters::prepare(&model, Some(456), None, false).unwrap();
+        let params = crate::inference::protocol::hooks::openai(plan.request);
         assert_eq!(params.max_tokens, None);
         assert_eq!(
             params.additional_params,
@@ -1307,13 +1397,13 @@ mod tests {
                 ..Default::default()
             },
         );
-        let params = request_params(&model, Some(456), None, None).unwrap();
+        let plan = WireParameters::prepare(&model, Some(456), None, false).unwrap();
+        let params = &plan.request;
         assert_eq!(params.max_tokens, Some(123));
         assert_eq!(
             params.additional_params,
             Some(serde_json::json!({
-                "reasoning": {"effort": "high"},
-                "top_logprobs": 5
+                "reasoning": {"effort": "high"}
             }))
         );
     }
@@ -1327,7 +1417,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let error = match request_params(&model, None, None, None) {
+        let error = match WireParameters::prepare(&model, None, None, false) {
             Ok(_) => panic!("unsupported parameter was accepted"),
             Err(error) => error,
         };
@@ -1338,8 +1428,14 @@ mod tests {
     fn openai_provider_selects_api_for_each_model_reference() {
         let chat = openai_model(OpenAiApi::ChatCompletions, Default::default());
         let responses = openai_model(OpenAiApi::Responses, Default::default());
-        assert_eq!(OpenAiProvider::api(&chat), OpenAiApi::ChatCompletions);
-        assert_eq!(OpenAiProvider::api(&responses), OpenAiApi::Responses);
+        assert_eq!(
+            OpenAiProvider::<reqwest::Client>::api(&chat),
+            OpenAiApi::ChatCompletions
+        );
+        assert_eq!(
+            OpenAiProvider::<reqwest::Client>::api(&responses),
+            OpenAiApi::Responses
+        );
     }
 
     #[test]
