@@ -175,8 +175,21 @@ impl ModelProviderRegistry {
         providers: HashMap<String, Arc<dyn ModelProvider>>,
         model_groups: HashMap<String, ModelGroup>,
     ) -> Self {
+        let providers = Arc::new(providers);
+        // Mirror `from_config`/`parse_model_groups_with_catalog`, which wires
+        // the resolved providers map into every group it builds: a test's
+        // model groups must carry the same providers the registry hands out,
+        // or direct `ModelGroup` dispatch fails at runtime with
+        // `ProviderNotConfigured` despite the registry itself being populated.
+        let model_groups = model_groups
+            .into_iter()
+            .map(|(name, mut group)| {
+                group.providers = providers.clone();
+                (name, group)
+            })
+            .collect();
         Self {
-            providers: Arc::new(providers),
+            providers,
             model_groups: Arc::new(model_groups),
             protocol_defaults: Arc::new(HashMap::new()),
             inference: InferenceConfig::default(),

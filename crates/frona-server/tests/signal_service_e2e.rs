@@ -317,7 +317,7 @@ impl ForbidToolsProvider {
 impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
     async fn inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::provider::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
@@ -332,7 +332,7 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
 
     async fn stream_inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::provider::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
@@ -346,7 +346,7 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
 
     async fn structured_inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::provider::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _schema: serde_json::Value,
