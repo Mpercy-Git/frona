@@ -251,8 +251,14 @@ mod tests {
             .await
             .unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
-        let fixture = crate::app_state_fixture::build(&db).await;
-        let usage = &fixture.state.usage_service;
+        let usage = &crate::inference::usage::UsageService::new(
+            crate::inference::metadata::ModelCatalogStore::new(
+                crate::inference::metadata::ModelCatalogSnapshot::empty(),
+            ),
+            crate::db::repo::generic::SurrealRepo::new(db),
+            crate::chat::broadcast::BroadcastService::new(),
+            Arc::new(std::collections::HashMap::new()),
+        );
         let context = UsageContext::new(
             InferenceKind::Text {
                 agent_id: "agent".into(),

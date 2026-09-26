@@ -10,10 +10,11 @@ use async_trait::async_trait;
 use frona::core::metrics;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::Usage;
-use frona::inference::config::{ModelGroup, RetryConfig};
+use frona::inference::config::RetryConfig;
 use frona::inference::error::InferenceError;
-use frona::inference::provider::{ModelProvider, ModelRef, SUBMIT_TOOL_NAME};
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::registry::ModelProviderRegistry;
+use frona::inference::provider::{ModelConfig, ModelProvider, SUBMIT_TOOL_NAME};
+use frona::inference::ModelGroup;
 use frona::policy::service::PolicyService;
 use frona::tool::manager::ToolManager;
 use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
@@ -747,13 +748,20 @@ pub fn mock_context() -> InferenceContext {
     )
 }
 
+fn model_config(provider: &str, model_id: &str) -> ModelConfig {
+    ModelConfig {
+        catalog_provider: provider.to_string(),
+        provider_handle: frona::core::Handle::try_new(provider).unwrap(),
+        provider: provider.into(),
+        model_id: model_id.into(),
+        request_settings: Default::default(),
+    }
+}
+
 pub fn test_model_group() -> ModelGroup {
     ModelGroup {
         name: "test".into(),
-        main: ModelRef {
-            provider: "mock".into(),
-            model_id: "test-model".into(),
-        },
+        main: model_config("mock", "test-model"),
         fallbacks: vec![],
         max_tokens: Some(4096),
         temperature: None,
@@ -765,15 +773,15 @@ pub fn test_model_group() -> ModelGroup {
             max_backoff_ms: 10,
         },
         inference: Default::default(),
+        providers: Default::default(),
     }
 }
 
 pub fn test_model_group_with_fallback(fallback_provider: &str, fallback_model: &str) -> ModelGroup {
     let mut group = test_model_group();
-    group.fallbacks.push(ModelRef {
-        provider: fallback_provider.into(),
-        model_id: fallback_model.into(),
-    });
+    group
+        .fallbacks
+        .push(model_config(fallback_provider, fallback_model));
     group
 }
 

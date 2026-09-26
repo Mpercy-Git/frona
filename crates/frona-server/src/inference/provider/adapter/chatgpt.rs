@@ -569,6 +569,7 @@ mod tests {
             ModelCatalogStore::new(ModelCatalogSnapshot::empty()),
             SurrealRepo::new(db),
             BroadcastService::new(),
+            Arc::new(std::collections::HashMap::new()),
         );
         let context = UsageContext::new(
             InferenceKind::Title {

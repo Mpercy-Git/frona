@@ -588,6 +588,7 @@ async fn fallback_requests_use_their_own_settings() {
         ModelCatalogStore::new(ModelCatalogSnapshot::empty()),
         SurrealRepo::new(db),
         BroadcastService::new(),
+        std::sync::Arc::new(std::collections::HashMap::new()),
     );
     let ctx = UsageContext::new(
         InferenceKind::Title {
