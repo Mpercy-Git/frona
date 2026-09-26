@@ -61,7 +61,19 @@ impl ModelProviderRegistry {
         Ok(Self {
             providers: Arc::new(providers),
             model_groups: Arc::new(model_groups),
-            protocol_defaults: Arc::new(catalog.protocol_defaults.clone()),
+            // `catalog.protocol_defaults` carries raw npm labels
+            // (`frona_model_catalog` is provider-execution-agnostic); resolve
+            // to the wire protocol this fork's OpenAI adapter actually needs.
+            protocol_defaults: Arc::new(
+                catalog
+                    .protocol_defaults
+                    .iter()
+                    .filter_map(|(key, npm)| {
+                        crate::inference::metadata::catalog::openai_api_from_npm(npm)
+                            .map(|api| (key.clone(), api))
+                    })
+                    .collect(),
+            ),
             inference: inference.clone(),
         })
     }

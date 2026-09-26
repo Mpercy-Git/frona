@@ -180,3 +180,49 @@ scope). What it does change: Step 4 (re-homing the fork's own providers),
 previously described as needing a from-scratch mapping decision for each of
 7 providers, is now five mechanical one-line recipe additions plus dropping
 a special case — not a redesign.
+
+## Step 2 progress (2026-09-26): the catalog crate, ported
+
+`frona-model-catalog` is now vendored into this fork (`crates/frona-model-catalog/`,
+copied verbatim from upstream) and `inference/metadata/{catalog,loader}.rs`'s
+own type definitions were deleted in favor of it. This was scoped tighter
+than originally planned here, once actually reading the crate turned up two
+things this document didn't anticipate:
+
+- **The fetch/cache/scheduling mechanism moved into the crate too**, along
+  with a second source (`modelparams.dev`) and a build-time-baking CLI
+  (`frona-model-catalog download`, the thing `385e5dd6`'s Dockerfile stage
+  runs) this fork has no equivalent of. Adopting that wholesale would mean
+  taking on an architecture change (build-time catalog baking vs. this
+  fork's runtime fetch-and-cache) this sandbox has no way to build-test
+  (same Podman-validation gap as Group B's held-back commits). **Not
+  adopted this round** — this fork's own `fetch_metadata`/`fetch_remote`/
+  `save_cache`/`cache_age`/`load_cache_or_defaults` and its own `parse()`
+  (same intermediate `CatalogJson`/`ProviderBlock` structs, same
+  cost-less-entry filter this fork has and upstream's crate-level `parse()`
+  doesn't) stayed in `frona-server`, now just building the crate's
+  `ModelEntry`/`ModelCatalogSnapshot` instead of locally-defined ones.
+- **The crate's own `ModelEntry::cost_for` doesn't price cache-WRITE tokens
+  at all** (`TokenUsage` carries no `cache_creation_input_tokens` field) —
+  calling it directly would have silently stopped billing Anthropic's cache-
+  write premium. Kept this fork's own cache-write-aware pricing as a
+  `CostForUsage::full_cost_for` extension trait method instead of the
+  crate's `cost_for`; same reasoning applies to `lookup`/`lookup_prefix`
+  (need the byteplus→volcengine alias) and `protocol_default` (this fork's
+  `OpenAiApi` enum vs. the crate's raw npm-label strings) — all three
+  became renamed extension-trait methods (`lookup_exact`, `lookup_model`,
+  `model_protocol_default`) rather than same-named ones, since an inherent
+  method the crate already defines always wins silently over a trait method
+  of the same name.
+
+Verified: `cargo check --workspace`, `cargo clippy --workspace --locked --
+-D warnings`, `cargo fmt --check`, the crate's own 20 tests, 161
+`inference::` + 16 `cost::` unit tests (including the
+`repricing_agrees_with_live_costing_for_every_provider_shape` round-trip
+test), and the `usage_service_e2e` integration test (15 tests) all pass.
+
+Still open from the original Step 2 scope: the six shared-brand adapter
+files (azure, cohere, huggingface, hyperbolic, perplexity, together) and the
+`ModelProviderConfig` schema merge. The catalog port didn't touch either —
+this fork's provider dispatch is still the flat `inference/registry.rs`
+match block, now just resolving through the vendored catalog types.

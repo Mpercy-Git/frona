@@ -13,7 +13,9 @@ use crate::chat::broadcast::BroadcastService;
 use crate::core::config::ProviderBillingKind;
 use crate::core::repository::{Repository, new_id};
 use crate::db::repo::generic::SurrealRepo;
-use crate::inference::metadata::{ModelCatalogStore, total_prompt_usage};
+use crate::inference::metadata::{
+    CatalogLookup, ModelCatalogStore, StorePricing, total_prompt_usage,
+};
 use crate::inference::provider::ModelRef;
 use crate::inference::usage::UsageContext;
 
@@ -94,7 +96,7 @@ impl UsageService {
         fallback_index: u8,
         latency: LatencyMetrics,
     ) {
-        let (cost_usd, pricing_version) = self.catalog.compute(model_ref, usage);
+        let (cost_usd, pricing_version) = self.catalog.price(model_ref, usage);
         if cost_usd.is_none() {
             counter!(MODEL_METADATA_LOOKUP_MISSES_TOTAL, "model_ref" => model_ref.as_str())
                 .increment(1);
@@ -131,7 +133,7 @@ impl UsageService {
     pub fn model_supports_vision(&self, model_ref: &ModelRef) -> Option<bool> {
         self.catalog
             .current()
-            .lookup_prefix(model_ref.provider.name(), &model_ref.model_id)
+            .lookup_model(model_ref.provider.name(), &model_ref.model_id)
             .map(|e| e.supports_vision())
     }
 

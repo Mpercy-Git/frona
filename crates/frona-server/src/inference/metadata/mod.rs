@@ -10,4 +10,7 @@
 pub mod catalog;
 pub mod loader;
 
-pub use catalog::{ModelCatalogSnapshot, ModelCatalogStore, ModelEntry, total_prompt_usage};
+pub use catalog::{
+    CatalogLookup, CostForUsage, ModelCatalogSnapshot, ModelCatalogStore, ModelEntry, StorePricing,
+    defaults, total_prompt_usage,
+};
