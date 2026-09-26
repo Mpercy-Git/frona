@@ -1,6 +1,7 @@
 pub mod config;
 pub mod context;
 pub mod conversation;
+pub mod credential;
 pub mod error;
 pub mod hitl;
 pub mod hooks;

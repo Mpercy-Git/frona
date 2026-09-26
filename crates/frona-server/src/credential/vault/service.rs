@@ -30,6 +30,9 @@ pub struct VaultService {
     data_dir: PathBuf,
     storage: crate::storage::service::StorageService,
     user_service: crate::auth::UserService,
+    managed_vault: crate::credential::managed::ManagedVault,
+    managed_resolver: Arc<crate::credential::managed::resolver::ManagedResolver>,
+    login_service: crate::credential::managed::login::ManagedLoginService,
 }
 
 fn ensure_non_user_principal(principal: &Principal) -> Result<(), AppError> {
@@ -54,6 +57,9 @@ impl VaultService {
         data_dir: PathBuf,
         storage: crate::storage::service::StorageService,
         user_service: crate::auth::UserService,
+        managed_vault: crate::credential::managed::ManagedVault,
+        managed_resolver: Arc<crate::credential::managed::resolver::ManagedResolver>,
+        login_service: crate::credential::managed::login::ManagedLoginService,
     ) -> Self {
         let encryption_key = derive_key(encryption_secret);
 
@@ -68,7 +74,29 @@ impl VaultService {
             data_dir,
             storage,
             user_service,
+            managed_vault,
+            managed_resolver,
+            login_service,
         }
+    }
+
+    pub fn login_service(&self) -> &crate::credential::managed::login::ManagedLoginService {
+        &self.login_service
+    }
+
+    pub async fn advance_login(
+        &self,
+        user_id: &str,
+        attempt: uuid::Uuid,
+        completion: Option<&str>,
+    ) -> Result<crate::credential::managed::login::service::LoginAttempt, AppError> {
+        self.login_service
+            .advance_authorized(user_id, attempt, completion, |connection| async move {
+                self.managed_login_vault(user_id, &connection)
+                    .await
+                    .map(|_| ())
+            })
+            .await
     }
 
     pub async fn create_connection(
@@ -76,6 +104,13 @@ impl VaultService {
         user_id: &str,
         req: CreateVaultConnectionRequest,
     ) -> Result<VaultConnectionResponse, AppError> {
+        if (req.provider == VaultProviderType::Managed)
+            != matches!(req.config, VaultConnectionConfig::Managed {})
+        {
+            return Err(AppError::Validation(
+                "managed vault config requires managed provider".into(),
+            ));
+        }
         let (encrypted, nonce) = self.encrypt_config(&req.config)?;
         let now = Utc::now();
         let connection = VaultConnection {
@@ -92,6 +127,22 @@ impl VaultService {
         };
         let connection = self.connection_repo.create(&connection).await?;
         Ok(connection.into())
+    }
+
+    pub(crate) async fn get_connection(
+        &self,
+        user_id: &str,
+        connection_id: &str,
+    ) -> Result<VaultConnection, AppError> {
+        let connection = self
+            .connection_repo
+            .find_by_id(connection_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("vault connection".into()))?;
+        if !connection.enabled || (!connection.system_managed && connection.user_id != user_id) {
+            return Err(AppError::Forbidden("vault connection unavailable".into()));
+        }
+        Ok(connection)
     }
 
     pub async fn list_connections(
@@ -126,6 +177,13 @@ impl VaultService {
         }
         if connection.user_id != user_id {
             return Err(AppError::Forbidden("Not your vault connection".into()));
+        }
+        if connection.provider == VaultProviderType::Managed {
+            return self
+                .managed_vault
+                .for_connection(connection.id)
+                .delete_connection(user_id)
+                .await;
         }
         self.grant_repo
             .delete_by_connection_id(connection_id)
@@ -275,115 +333,147 @@ impl VaultService {
             .await
     }
 
-    pub async fn hydrate_chat_env_vars(
+    /// Resolve under the current binding and grant, including a recheck after
+    /// remote integration work. Chat-only approval is represented by its binding.
+    pub async fn resolve_binding(
         &self,
         user_id: &str,
-        chat_id: &str,
-        agent_id: &str,
-    ) -> Result<Vec<(String, String)>, AppError> {
-        let principal = Principal::agent(agent_id);
-        let bindings = self
-            .binding_repo
-            .find_for_chat(user_id, &principal, chat_id)
+        principal: &Principal,
+        binding: &PrincipalCredentialBinding,
+        chat_id: Option<&str>,
+    ) -> Result<VaultSecret, AppError> {
+        self.authorize_binding(user_id, principal, binding, chat_id)
             .await?;
-        let mut env_vars = Vec::new();
-        for binding in bindings {
-            match self
-                .get_secret(user_id, &binding.connection_id, &binding.vault_item_id)
-                .await
-            {
-                Ok(secret) => env_vars.extend(project_target(&secret, &binding.target)),
-                Err(AppError::NotFound(_)) => {
-                    // The credential was deleted out from under this binding.
-                    // Self-heal: prune the orphan so it stops failing every
-                    // hydration, and don't shout — it's an expected condition.
-                    tracing::debug!(
-                        vault_item_id = %binding.vault_item_id,
-                        "Pruning binding for missing credential"
-                    );
-                    if let Err(e) = self
-                        .binding_repo
-                        .delete_for_item(
-                            user_id,
-                            &binding.principal,
-                            &binding.connection_id,
-                            &binding.vault_item_id,
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            vault_item_id = %binding.vault_item_id,
-                            error = %e,
-                            "Failed to prune orphaned binding"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        vault_item_id = %binding.vault_item_id,
-                        error = %e,
-                        "Failed to fetch secret for binding"
-                    );
-                }
-            }
-        }
-        Ok(env_vars)
+        let secret = self
+            .get_secret(user_id, &binding.connection_id, &binding.vault_item_id)
+            .await?;
+        self.authorize_binding(user_id, principal, binding, chat_id)
+            .await?;
+        project_target(&secret, &binding.target)?;
+        Ok(secret)
     }
 
-    /// Load the *owner's* durable credential bindings for an agent into env
-    /// vars, for a recipient's run of a shared agent (credential delegation).
-    /// Only durable grants delegate; the owner's chat-scoped bindings (their
-    /// other conversations) are skipped. Best-effort — missing secrets are
-    /// logged and skipped, never fatal. Access is logged under the owner.
-    pub async fn hydrate_delegated_env_vars(
+    async fn authorize_binding(
         &self,
-        owner_id: &str,
-        agent_id: &str,
-        chat_id: &str,
-    ) -> Result<Vec<(String, String)>, AppError> {
-        let principal = Principal::agent(agent_id);
-        let bindings = self
+        user_id: &str,
+        principal: &Principal,
+        binding: &PrincipalCredentialBinding,
+        chat_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        ensure_non_user_principal(principal)?;
+        let denied = || {
+            AppError::Forbidden(format!(
+                "vault binding {} is no longer authorized",
+                binding.id
+            ))
+        };
+        let current = self
             .binding_repo
-            .find_for_principal(owner_id, &principal)
-            .await?;
-        let mut env_vars = Vec::new();
-        for binding in bindings {
-            if !matches!(binding.scope, BindingScope::Durable) {
-                continue;
-            }
-            match self
-                .get_secret(owner_id, &binding.connection_id, &binding.vault_item_id)
-                .await
-            {
-                Ok(secret) => {
-                    env_vars.extend(project_target(&secret, &binding.target));
-                    // Audit under the owner so delegated use is visible to them.
-                    let _ = self
-                        .log_access(
-                            owner_id,
-                            principal.clone(),
-                            chat_id,
-                            &binding.connection_id,
-                            &binding.vault_item_id,
-                            None,
-                            &binding.query,
-                            "Shared-agent credential delegation",
-                        )
-                        .await;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        vault_item_id = %binding.vault_item_id,
-                        error = %e,
-                        "Failed to fetch delegated secret for shared agent"
-                    );
-                }
-            }
+            .find_by_id(&binding.id)
+            .await?
+            .ok_or_else(denied)?;
+        if current.user_id != user_id
+            || &current.principal != principal
+            || current.connection_id != binding.connection_id
+            || current.vault_item_id != binding.vault_item_id
+            || current.target != binding.target
+            || current.scope != binding.scope
+            || current
+                .expires_at
+                .is_some_and(|expiry| expiry <= Utc::now())
+        {
+            return Err(denied());
         }
-        Ok(env_vars)
+        match &current.scope {
+            BindingScope::Chat { chat_id: expected } if chat_id == Some(expected.as_str()) => {}
+            BindingScope::Durable
+                if self
+                    .has_grant_for_item(
+                        user_id,
+                        principal,
+                        &current.connection_id,
+                        &current.vault_item_id,
+                    )
+                    .await? => {}
+            _ => return Err(denied()),
+        }
+        let connection = self
+            .connection_repo
+            .find_by_id(&current.connection_id)
+            .await?
+            .ok_or_else(denied)?;
+        if !connection.enabled || (!connection.system_managed && connection.user_id != user_id) {
+            return Err(denied());
+        }
+        Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Resolve a fresh environment for one consumer start. Never retain it on a
+    /// chat or merge it with credential values from a previous start.
+    pub async fn resolve_env(
+        &self,
+        user_id: &str,
+        principal: &Principal,
+        chat_id: Option<&str>,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let bindings = self.startup_bindings(user_id, principal, chat_id).await?;
+        let mut env = Vec::new();
+        for binding in &bindings {
+            let secret = self
+                .resolve_binding(user_id, principal, binding, chat_id)
+                .await
+                .map_err(|_| {
+                    AppError::Validation(format!(
+                        "required vault binding {} for item {} could not be resolved",
+                        binding.id, binding.vault_item_id,
+                    ))
+                })?;
+            env.extend(project_target(&secret, &binding.target)?);
+        }
+        // A slow later integration must not let a revoked earlier binding
+        // deliver its already-resolved fields.
+        for binding in &bindings {
+            self.authorize_binding(user_id, principal, binding, chat_id)
+                .await?;
+        }
+        let current = self.startup_bindings(user_id, principal, chat_id).await?;
+        let ids = |items: &[PrincipalCredentialBinding]| {
+            items
+                .iter()
+                .map(|b| b.id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        if ids(&current) != ids(&bindings) {
+            return Err(AppError::Conflict(
+                "vault bindings changed during startup".into(),
+            ));
+        }
+        Ok(env)
+    }
+
+    async fn startup_bindings(
+        &self,
+        user_id: &str,
+        principal: &Principal,
+        chat_id: Option<&str>,
+    ) -> Result<Vec<PrincipalCredentialBinding>, AppError> {
+        ensure_non_user_principal(principal)?;
+        match chat_id {
+            Some(chat_id) => {
+                self.binding_repo
+                    .find_for_chat(user_id, principal, chat_id)
+                    .await
+            }
+            None => Ok(self
+                .binding_repo
+                .find_for_principal(user_id, principal)
+                .await?
+                .into_iter()
+                .filter(|b| matches!(b.scope, BindingScope::Durable))
+                .collect()),
+        }
+    }
+
     pub async fn has_grant_for_item(
         &self,
         user_id: &str,
@@ -396,9 +486,11 @@ impl VaultService {
             .grant_repo
             .find_by_principal(user_id, principal)
             .await?;
-        Ok(grants
-            .iter()
-            .any(|g| g.connection_id == connection_id && g.vault_item_id == vault_item_id))
+        Ok(grants.iter().any(|g| {
+            g.connection_id == connection_id
+                && g.vault_item_id == vault_item_id
+                && g.expires_at.is_none_or(|expiry| expiry > Utc::now())
+        }))
     }
 
     pub async fn delete_grants_for_principal(
@@ -476,24 +568,32 @@ impl VaultService {
     }
 }
 
-pub fn project_target(secret: &VaultSecret, target: &CredentialTarget) -> Vec<(String, String)> {
+pub fn project_target(
+    secret: &VaultSecret,
+    target: &CredentialTarget,
+) -> Result<Vec<(String, String)>, AppError> {
     match target {
-        CredentialTarget::Prefix { env_var_prefix } => secret.to_env_vars(env_var_prefix),
+        CredentialTarget::Prefix { env_var_prefix } => Ok(secret.to_env_vars(env_var_prefix)),
         CredentialTarget::Single { env_var, field } => {
-            let value = match field {
-                VaultField::Password => secret.password.clone(),
-                VaultField::Username => secret.username.clone(),
-                VaultField::Custom { name } => secret.fields.get(name).cloned().or_else(|| {
-                    secret
-                        .fields
-                        .iter()
-                        .find(|(k, _)| k.eq_ignore_ascii_case(name))
-                        .map(|(_, v)| v.clone())
-                }),
+            let custom = |name: &str| {
+                secret.fields.get(name).cloned().or_else(|| {
+                    secret.fields.iter().find_map(|(key, value)| {
+                        (key.to_uppercase().replace(' ', "_") == name.to_uppercase())
+                            .then(|| value.clone())
+                    })
+                })
             };
-            value
-                .map(|v| vec![(env_var.clone(), v)])
-                .unwrap_or_default()
+            let value = match field {
+                VaultField::Password => secret.password.clone().or_else(|| custom("PASSWORD")),
+                VaultField::Username => secret.username.clone().or_else(|| custom("USERNAME")),
+                VaultField::Custom { name } => custom(name),
+            };
+            value.map(|v| vec![(env_var.clone(), v)]).ok_or_else(|| {
+                AppError::Validation(format!(
+                    "required field is missing from vault item {}",
+                    secret.id
+                ))
+            })
         }
     }
 }
@@ -667,6 +767,12 @@ impl VaultService {
         &self,
     ) -> Vec<(String, VaultProviderType, String, VaultConnectionConfig)> {
         let mut entries = Vec::new();
+        entries.push((
+            crate::credential::managed::GLOBAL_CONNECTION_ID.into(),
+            VaultProviderType::Managed,
+            "Managed credentials (shared)".into(),
+            VaultConnectionConfig::Managed {},
+        ));
 
         if let Some(token) = &self.vault_config.onepassword_service_account_token {
             entries.push((
@@ -892,18 +998,71 @@ impl VaultService {
             return Err(AppError::Forbidden("Not your credential".into()));
         }
 
-        self.credential_repo.delete(credential_id).await?;
+        self.credential_repo.delete(credential_id).await
+    }
 
-        // Cascade: for the local vault a credential's id is its vault_item_id,
-        // so drop any bindings and grants that referenced it. Otherwise they
-        // dangle and fail every future hydration with "Credential not found".
-        self.binding_repo
-            .delete_by_item(user_id, credential_id)
-            .await?;
-        self.grant_repo
-            .delete_by_item(user_id, credential_id)
-            .await?;
-        Ok(())
+    /// Current management authorization for a configured managed vault.
+    pub(crate) async fn managed_login_vault(
+        &self,
+        user_id: &str,
+        connection_id: &str,
+    ) -> Result<crate::credential::managed::ManagedVault, AppError> {
+        let user = self
+            .user_service
+            .find_by_id(user_id)
+            .await?
+            .filter(|user| user.deactivated_at.is_none())
+            .ok_or_else(|| AppError::Forbidden("active user required".into()))?;
+        let connection = self
+            .connection_repo
+            .find_by_id(connection_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("vault connection".into()))?;
+        if !connection.enabled || (!connection.system_managed && connection.user_id != user_id) {
+            return Err(AppError::Forbidden(
+                "vault connection is unavailable".into(),
+            ));
+        }
+        if connection.system_managed
+            && !user
+                .groups
+                .iter()
+                .any(|group| group == crate::auth::models::ADMINS_GROUP)
+        {
+            return Err(AppError::Forbidden(
+                "Administrator privileges required".into(),
+            ));
+        }
+        if connection.provider != VaultProviderType::Managed {
+            return Err(AppError::Validation(
+                "login requires a managed vault".into(),
+            ));
+        }
+        if !matches!(
+            self.decrypt_config(&connection)?,
+            VaultConnectionConfig::Managed {}
+        ) {
+            return Err(AppError::Validation(
+                "invalid managed vault connection".into(),
+            ));
+        }
+        let vault = self.managed_vault.for_connection(connection.id);
+        vault.ensure_available().await?;
+        Ok(vault)
+    }
+
+    pub(crate) async fn delete_managed_item(
+        &self,
+        user_id: &str,
+        connection_id: &str,
+        item_id: uuid::Uuid,
+    ) -> Result<(), AppError> {
+        let vault = self.managed_login_vault(user_id, connection_id).await?;
+        let current = vault
+            .status_by_id(item_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("managed credential".into()))?;
+        vault.delete_by_id(item_id, current.version).await
     }
 
     async fn get_provider(
@@ -934,6 +1093,20 @@ impl VaultService {
         }
 
         let config = self.decrypt_config(&connection)?;
+        if connection.provider == VaultProviderType::Managed {
+            if !matches!(config, VaultConnectionConfig::Managed {}) {
+                return Err(AppError::Validation(
+                    "invalid managed vault connection".into(),
+                ));
+            }
+            return Ok(Box::new(super::providers::managed::ManagedVaultProvider {
+                vault: self.managed_vault.for_connection(connection.id.clone()),
+                resolver: self.managed_resolver.clone(),
+                connection,
+                connections: self.connection_repo.clone(),
+                user_id: user_id.into(),
+            }));
+        }
 
         let home_dir = if connection.system_managed {
             self.data_dir
@@ -958,6 +1131,9 @@ impl VaultService {
         &self,
         config: &VaultConnectionConfig,
     ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
+        if matches!(config, VaultConnectionConfig::Managed {}) {
+            return Ok((Vec::new(), Vec::new()));
+        }
         let json = serde_json::to_vec(config)
             .map_err(|e| AppError::Internal(format!("Config serialization failed: {e}")))?;
 
@@ -978,6 +1154,9 @@ impl VaultService {
         &self,
         connection: &VaultConnection,
     ) -> Result<VaultConnectionConfig, AppError> {
+        if connection.provider == VaultProviderType::Managed {
+            return Ok(VaultConnectionConfig::Managed {});
+        }
         let cipher = Aes256Gcm::new_from_slice(&self.encryption_key)
             .map_err(|e| AppError::Internal(format!("AES init failed: {e}")))?;
 
@@ -1067,8 +1246,10 @@ mod tests {
         let target = CredentialTarget::Prefix {
             env_var_prefix: "GH".into(),
         };
-        let vars: std::collections::HashMap<_, _> =
-            project_target(&secret, &target).into_iter().collect();
+        let vars: std::collections::HashMap<_, _> = project_target(&secret, &target)
+            .unwrap()
+            .into_iter()
+            .collect();
         assert_eq!(vars.get("GH_USERNAME").map(String::as_str), Some("octocat"));
         assert_eq!(vars.get("GH_PASSWORD").map(String::as_str), Some("ghp_xxx"));
         assert_eq!(
@@ -1096,7 +1277,10 @@ mod tests {
         let target = CredentialTarget::Prefix {
             env_var_prefix: "HOME_ASSISTANT".into(),
         };
-        let vars: HashMap<_, _> = project_target(&secret, &target).into_iter().collect();
+        let vars: HashMap<_, _> = project_target(&secret, &target)
+            .unwrap()
+            .into_iter()
+            .collect();
         assert_eq!(vars.len(), 3);
         assert_eq!(
             vars.get("HOME_ASSISTANT_HOSTNAME").map(String::as_str),
@@ -1119,7 +1303,7 @@ mod tests {
             env_var: "GITHUB_TOKEN".into(),
             field: VaultField::Password,
         };
-        let vars = project_target(&secret, &target);
+        let vars = project_target(&secret, &target).unwrap();
         assert_eq!(
             vars,
             vec![("GITHUB_TOKEN".to_string(), "ghp_xxx".to_string())]
@@ -1133,7 +1317,7 @@ mod tests {
             env_var: "GH_USER".into(),
             field: VaultField::Username,
         };
-        let vars = project_target(&secret, &target);
+        let vars = project_target(&secret, &target).unwrap();
         assert_eq!(vars, vec![("GH_USER".to_string(), "octocat".to_string())]);
     }
 
@@ -1146,7 +1330,7 @@ mod tests {
                 name: "api_key".into(),
             },
         };
-        let vars = project_target(&secret, &target);
+        let vars = project_target(&secret, &target).unwrap();
         assert_eq!(
             vars,
             vec![("API_KEY".to_string(), "ghp_custom".to_string())]
@@ -1154,18 +1338,54 @@ mod tests {
     }
 
     #[test]
-    fn project_target_single_returns_empty_when_field_missing() {
+    fn project_target_single_resolves_map_fields_using_picker_names() {
+        let secret = VaultSecret {
+            id: "managed".into(),
+            name: "Composite".into(),
+            username: None,
+            password: None,
+            notes: None,
+            fields: HashMap::from([
+                ("password".into(), "token".into()),
+                ("service account".into(), "account".into()),
+            ]),
+        };
+        for (field, expected) in [
+            (VaultField::Password, "token"),
+            (
+                VaultField::Custom {
+                    name: "SERVICE_ACCOUNT".into(),
+                },
+                "account",
+            ),
+        ] {
+            assert_eq!(
+                project_target(
+                    &secret,
+                    &CredentialTarget::Single {
+                        env_var: "SELECTED".into(),
+                        field,
+                    }
+                )
+                .unwrap(),
+                vec![("SELECTED".into(), expected.into())],
+            );
+        }
+    }
+
+    #[test]
+    fn project_target_single_rejects_missing_when_field_missing() {
         let mut secret = sample_secret();
         secret.password = None;
         let target = CredentialTarget::Single {
             env_var: "GITHUB_TOKEN".into(),
             field: VaultField::Password,
         };
-        assert!(project_target(&secret, &target).is_empty());
+        assert!(project_target(&secret, &target).is_err());
     }
 
     #[test]
-    fn project_target_single_returns_empty_for_unknown_custom_field() {
+    fn project_target_single_rejects_missing_for_unknown_custom_field() {
         let secret = sample_secret();
         let target = CredentialTarget::Single {
             env_var: "X".into(),
@@ -1173,7 +1393,7 @@ mod tests {
                 name: "nonexistent".into(),
             },
         };
-        assert!(project_target(&secret, &target).is_empty());
+        assert!(project_target(&secret, &target).is_err());
     }
 
     #[test]

@@ -1026,9 +1026,43 @@ impl ModelGroupConfig {
     }
 }
 
+/// Compiled request-building strategy for a provider brand. Most brands are
+/// OpenAI-compatible passthroughs and never need their own variant here; this
+/// only grows when a brand's wire format actually differs (Anthropic's
+/// messages API, Bedrock's Converse API, and so on).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdapterId {
+    Openai,
+    Anthropic,
+    Gemini,
+    Bedrock,
+    Cohere,
+    Ollama,
+    Huggingface,
+}
+
+impl AdapterId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::Bedrock => "bedrock",
+            Self::Cohere => "cohere",
+            Self::Ollama => "ollama",
+            Self::Huggingface => "huggingface",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct ModelProviderConfig {
+    #[schemars(description = "Stable ID of an authorized managed credential.")]
+    #[schemars(with = "Option<String>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<uuid::Uuid>,
     #[schemars(description = "API key for this provider. Supports ${ENV_VAR} references.")]
     pub api_key: Option<String>,
     #[schemars(description = "Custom base URL for this provider's API.")]
@@ -1057,16 +1091,47 @@ pub struct ModelProviderConfig {
         description = "How this provider bills you. Optional; affects cost reporting only, never routing."
     )]
     pub billing: Option<ProviderBilling>,
+    /// Explicit provider brand, decoupled from the config map key. Only
+    /// needed when a key doesn't already name a recognized brand (legacy
+    /// entries infer it from the map key instead).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Provider brand. Legacy entries infer it from the map key.")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Compiled logical adapter used for dynamic or direct-YAML brands.")]
+    pub adapter: Option<AdapterId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "AWS profile name for Bedrock. Ignored by other providers.")]
+    pub aws_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "AWS region for Bedrock. Ignored by other providers.")]
+    pub aws_region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Azure credential mode. Ignored by other providers.")]
+    pub azure_credential: Option<String>,
+    /// Brand-specific settings that don't warrant a dedicated field (for
+    /// example Azure's `azure_api_version`). Deliberately separate from
+    /// `api_version` above, which stays a first-class field until the
+    /// adapter that would read this bag is ported.
+    #[serde(flatten)]
+    pub attributes: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for ModelProviderConfig {
     fn default() -> Self {
         Self {
+            credential_id: None,
             api_key: None,
             base_url: None,
             api_version: None,
             enabled: true,
             billing: None,
+            provider: None,
+            adapter: None,
+            aws_profile: None,
+            aws_region: None,
+            azure_credential: None,
+            attributes: serde_json::Map::new(),
         }
     }
 }
@@ -2486,6 +2551,73 @@ mod tests {
         assert_eq!(billing.monthly_cost, Some(20.0));
         assert_eq!(billing.currency_or_usd(), "GBP");
         assert!(billing.overage_is_metered);
+    }
+
+    /// A config that never mentions the new managed-credential/adapter fields
+    /// must still parse and default them to absent, so existing installs are
+    /// unaffected by the fields' addition.
+    #[test]
+    fn a_provider_config_without_the_new_fields_deserializes() {
+        let cfg: ModelProviderConfig =
+            serde_yaml::from_str("api_key: sk-123\nenabled: true").expect("parses");
+        assert!(cfg.credential_id.is_none());
+        assert!(cfg.provider.is_none());
+        assert!(cfg.adapter.is_none());
+        assert!(cfg.aws_profile.is_none());
+        assert!(cfg.aws_region.is_none());
+        assert!(cfg.azure_credential.is_none());
+        assert!(cfg.attributes.is_empty());
+    }
+
+    #[test]
+    fn a_provider_config_with_the_new_fields_deserializes() {
+        let cfg: ModelProviderConfig = serde_yaml::from_str(
+            "credential_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6\nprovider: azure\nadapter: openai\naws_profile: default\naws_region: us-east-1\nazure_credential: entra\nazure_api_version: 2024-10-21\n",
+        )
+        .expect("parses");
+        assert_eq!(
+            cfg.credential_id,
+            Some(uuid::Uuid::parse_str("3fa85f64-5717-4562-b3fc-2c963f66afa6").unwrap())
+        );
+        assert_eq!(cfg.provider.as_deref(), Some("azure"));
+        assert_eq!(cfg.adapter, Some(AdapterId::Openai));
+        assert_eq!(cfg.aws_profile.as_deref(), Some("default"));
+        assert_eq!(cfg.aws_region.as_deref(), Some("us-east-1"));
+        assert_eq!(cfg.azure_credential.as_deref(), Some("entra"));
+        assert_eq!(
+            cfg.attributes
+                .get("azure_api_version")
+                .and_then(|v| v.as_str()),
+            Some("2024-10-21")
+        );
+    }
+
+    /// The flattened `attributes` bag must round-trip through `strip_defaults`
+    /// untouched — it holds operator-set data with no struct-level default to
+    /// compare against, so it should never be silently dropped.
+    #[test]
+    fn strip_defaults_preserves_flattened_attributes() {
+        let mut value = serde_json::json!({
+            "providers": {
+                "azure": {
+                    "api_key": "sk-123",
+                    "enabled": true,
+                    "azure_api_version": "2024-10-21",
+                },
+            },
+        });
+        strip_defaults(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "providers": {
+                    "azure": {
+                        "api_key": "sk-123",
+                        "azure_api_version": "2024-10-21",
+                    },
+                },
+            })
+        );
     }
 
     #[test]
