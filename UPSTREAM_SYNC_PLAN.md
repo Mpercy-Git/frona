@@ -61,6 +61,31 @@ Six of Group A's nine commits, verified against `cargo check --lib --tests`,
   upstream didn't have yet); ported the accompanying `combobox.test.tsx`
   unchanged.
 
+## Ported this session (2026-09-25, continued)
+
+Two of Group B's ten commits, verified against `cargo fmt --check`,
+`cargo clippy --workspace --locked -- -D warnings`, and the relevant unit
+tests; a smoke-run of the third confirms it works but it's not wired
+anywhere yet:
+
+- `557dd9b6` "isolate config tests from environment overrides" — adapted to
+  this fork's flat `core/config.rs` (upstream had already refactored config
+  into a `core/config/` submodule with a `ConfigService` struct in a commit
+  this fork never had; here it's `Config::load()` /
+  `try_build_effective_config()`). Added `*_with_env` variants taking the
+  environment as a `HashMap` instead of reading `std::env::vars()` directly;
+  pointed the six `FRONA_*` override tests at them instead of mutating
+  process-global env vars with `unsafe set_var`/`remove_var`.
+- `b3052bd2` "add a low disk Rust integration test runner" — ported
+  verbatim as `build/validate-rust-integration.mjs`. Smoke-tested against
+  this workspace: disk stayed flat (~3.3–4.5G free) across several targets
+  where a normal `cargo test` run on this same workspace has exhausted the
+  session container's ~38G writable allowance more than once. Not wired
+  into CI or `mise.toml` — upstream's own CI wiring for this script isn't
+  visible in-repo (this fork's `.github/workflows/ci.yml` is fork-only;
+  upstream has no `.github/` at all), so wiring it in is a fork decision,
+  not part of the port.
+
 ## Genuine gaps
 
 ### Group A — small, independent, low-risk
@@ -105,17 +130,38 @@ same-day PR.
 
 ### Group B — build/test/CI infrastructure (do when convenient, low urgency)
 
-All ten remaining commits from 09-17 through 09-22: `385e5dd6`, `38d4f5a5`,
-`b3052bd2`, `f104bd85`, `557dd9b6`, `2b9dfe28`, `341280b7`, `047c9920`,
-`2fcf37c5`, `ac847fc9`. These are upstream's own dev-container/CI tooling
-(Podman parallel builds, Kache-shared compiler artifacts, a low-disk test
-runner, environment-isolated config tests). None of it is user-facing product
-behavior. Worth adopting for maintainability, but this fork's CI/dev
-environment (ghcr.io images, its own container workflow) has already diverged
-some — each commit needs a quick read for whether it assumes upstream's
-specific CI wiring before blindly applying. Not time-sensitive; batch these
-into their own PR separate from Group A so a build-tooling review doesn't
-block behavior fixes.
+Ten commits from 09-17 through 09-22. Two landed this session (see "Ported
+this session" above: `557dd9b6`, `b3052bd2`). The other eight, by why they
+haven't:
+
+**Blocked on Group C — not portable until the provider-adapter rewrite lands:**
+
+| Commit | Date | Why it's blocked |
+|---|---|---|
+| `385e5dd6` | 09-17 | Dockerfile stage builds and runs `frona-model-catalog`, a crate that doesn't exist until Group C's `fcd3d16f`/`b31f3382`. |
+| `38d4f5a5` | 09-17 | `validate-provider-artifact.mjs` also invokes `frona-model-catalog`. |
+| `f104bd85` | 09-18 | `managed_cli_feasibility.rs` imports `inference::credential::store::CredentialMethod` and `inference::provider::platform::ProviderPlatform` — Group C's managed-credential vault types. |
+| `2b9dfe28` | 09-19 | Edits a Bedrock `provider_workflow.rs` test; Bedrock isn't a fork provider yet (Group C Step 3). |
+
+**Held back — real, but I can't validate them in this sandbox:**
+
+| Commit | Date | What |
+|---|---|---|
+| `341280b7` | 09-20 | Reorganizes build output into mount-safe paths (`web/out` → `web/target/out`, a new `.dv/workspace.yaml`) across Dockerfile, docker-compose, `container.sh`, `mise.toml`, `next.config.ts`, `tsconfig.json`, `vitest.config.ts`, and the example configs. |
+| `047c9920` | 09-20 | Shares dev compiler artifacts through Kache (`build/dev/kache.toml`, `install-kache.sh`), reworks `.cargo/config.toml` and the dev docker-compose profile. |
+| `2fcf37c5` | 09-21 | Builds missing Podman images with parallel stages (`build/dev/test-container.py`). |
+| `ac847fc9` | 09-22 | Coordinates stopping dev watchers and containers together. |
+
+This fork's `build/container.sh` already does Podman-first runtime detection
+matching upstream, and its `docker-compose.yml` volume names still match
+upstream's *pre*-Group-B baseline exactly, so these four would likely apply
+close to verbatim rather than needing deep reconciliation. But they compound
+(each edits the Dockerfile/docker-compose/`container.sh` again on top of the
+last) and touch a dev-container tool (`.dv/`) this fork shows no other
+evidence of using. This sandbox has `docker` but no `podman` daemon and no
+`dv` tool, so none of it can be build-tested here — only read for plausibility.
+Land these once someone can actually run `build/container.sh` against the
+result before merging, not on read-through confidence alone.
 
 ### Group C — the big one: managed credentials, vault, and a provider-adapter rewrite (needs a design decision, not just a port)
 
@@ -211,11 +257,16 @@ bearing decision.
 
 1. ~~Group A (small independent fixes)~~ — done except `d4186276`/`c5e95988`,
    reclassified above as its own effort.
-2. Group C Step 1 (scoping doc/spike only) — establishes the provider mapping
+2. ~~Group B, the two portable commits~~ — done (`557dd9b6`, `b3052bd2`).
+3. Group C Step 1 (scoping doc/spike only) — establishes the provider mapping
    before any more upstream provider work lands and the gap widens further.
-3. Group C Steps 2–5 — the multi-PR provider/credential rewrite, in the order
+   Also unblocks Group B's four Group-C-dependent commits (`385e5dd6`,
+   `38d4f5a5`, `f104bd85`, `2b9dfe28`).
+4. Group C Steps 2–5 — the multi-PR provider/credential rewrite, in the order
    above.
-4. The `AppError` redesign for `d4186276`/`c5e95988` — independent of Group C,
+5. The `AppError` redesign for `d4186276`/`c5e95988` — independent of Group C,
    can happen in parallel.
-5. Group B (build/CI infra) — whenever convenient; doesn't block anything
-   else and nothing else blocks it.
+6. Group B's remaining four Podman/Kache dev-container commits (`341280b7`,
+   `047c9920`, `2fcf37c5`, `ac847fc9`) — whenever someone has a Podman/`dv`
+   environment to actually build-test them in; not blocked by anything else,
+   but shouldn't land on read-through confidence alone.

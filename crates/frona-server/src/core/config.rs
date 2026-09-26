@@ -1668,7 +1668,17 @@ pub fn build_effective_config(yaml_content: Option<&str>) -> Config {
 /// error — the same message, hints and all, that startup would have printed —
 /// lets the UI show the operator which file and which field to fix.
 pub fn try_build_effective_config(yaml_content: Option<&str>) -> Result<Config, String> {
-    let data_dir = std::env::var("FRONA_SERVER_DATA_DIR").unwrap_or_else(|_| "data".into());
+    try_build_effective_config_with_env(yaml_content, &std::env::vars().collect())
+}
+
+fn try_build_effective_config_with_env(
+    yaml_content: Option<&str>,
+    env: &HashMap<String, String>,
+) -> Result<Config, String> {
+    let data_dir = env
+        .get("FRONA_SERVER_DATA_DIR")
+        .cloned()
+        .unwrap_or_else(|| "data".into());
 
     let mut builder = config::Config::builder()
         .set_default("database.path", format!("{data_dir}/db"))
@@ -1688,7 +1698,8 @@ pub fn try_build_effective_config(yaml_content: Option<&str>) -> Result<Config, 
     }
 
     // FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
-    let frona_env: HashMap<String, String> = std::env::vars()
+    let frona_env: HashMap<String, String> = env
+        .iter()
         .filter(|(k, _)| k.starts_with(ENV_PREFIX) && !EXCLUDED_ENV_VARS.contains(&k.as_str()))
         .map(|(k, v)| {
             let stripped = k[ENV_PREFIX.len()..].to_lowercase();
@@ -1696,7 +1707,7 @@ pub fn try_build_effective_config(yaml_content: Option<&str>) -> Result<Config, 
                 Some(pos) => format!("{}__{}", &stripped[..pos], &stripped[pos + 1..]),
                 None => stripped,
             };
-            (mapped, v)
+            (mapped, v.clone())
         })
         .collect();
 
@@ -1752,11 +1763,16 @@ fn missing_provider_group(err: &str) -> Option<&str> {
 
 impl Config {
     pub fn load() -> LoadedConfig {
+        Self::load_with_env(std::env::vars().collect())
+    }
+
+    fn load_with_env(env: HashMap<String, String>) -> LoadedConfig {
         let config_path = config_file_path();
 
         let yaml_content = std::fs::read_to_string(&config_path).ok();
 
-        let mut config = build_effective_config(yaml_content.as_deref());
+        let mut config = try_build_effective_config_with_env(yaml_content.as_deref(), &env)
+            .unwrap_or_else(|e| panic!("{e}"));
 
         resolve_server_timezone(&mut config.server);
 
@@ -2218,25 +2234,25 @@ mod tests {
         }
     }
 
+    fn load_with_env_override(key: &str, value: &str) -> LoadedConfig {
+        Config::load_with_env([(key.to_string(), value.to_string())].into())
+    }
+
     #[test]
     fn env_var_overrides_multi_word_field() {
         // The key remapping (replace first _ with __) means FRONA_BROWSER_WS_URL
         // becomes browser__ws_url, which separator("__") resolves to browser.ws_url.
-        unsafe { std::env::set_var("FRONA_BROWSER_WS_URL", "ws://custom:9999") };
-        let loaded = Config::load();
+        let loaded = load_with_env_override("FRONA_BROWSER_WS_URL", "ws://custom:9999");
         assert_eq!(
             loaded.config.browser.as_ref().unwrap().ws_url,
             "ws://custom:9999"
         );
-        unsafe { std::env::remove_var("FRONA_BROWSER_WS_URL") };
     }
 
     #[test]
     fn env_var_overrides_server_port() {
-        unsafe { std::env::set_var("FRONA_SERVER_PORT", "9999") };
-        let loaded = Config::load();
+        let loaded = load_with_env_override("FRONA_SERVER_PORT", "9999");
         assert_eq!(loaded.config.server.port, 9999);
-        unsafe { std::env::remove_var("FRONA_SERVER_PORT") };
     }
 
     #[test]
@@ -2245,35 +2261,35 @@ mod tests {
         // verbatim, so a value pinned by FRONA_BROWSER_WS_URL (which always
         // wins at real startup) could show — and test successfully — as a
         // different, inert value from config.yaml in the settings UI.
-        unsafe { std::env::set_var("FRONA_BROWSER_WS_URL", "ws://from-env:3333") };
         let yaml = "browser:\n  ws_url: ws://from-yaml:3333\n";
-        let config = build_effective_config(Some(yaml));
+        let config = try_build_effective_config_with_env(
+            Some(yaml),
+            &[(
+                "FRONA_BROWSER_WS_URL".to_string(),
+                "ws://from-env:3333".to_string(),
+            )]
+            .into(),
+        )
+        .unwrap();
         assert_eq!(config.browser.unwrap().ws_url, "ws://from-env:3333");
-        unsafe { std::env::remove_var("FRONA_BROWSER_WS_URL") };
     }
 
     #[test]
     fn env_var_overrides_database_path() {
-        unsafe { std::env::set_var("FRONA_DATABASE_PATH", "/tmp/testdb") };
-        let loaded = Config::load();
+        let loaded = load_with_env_override("FRONA_DATABASE_PATH", "/tmp/testdb");
         assert_eq!(loaded.config.database.path, "/tmp/testdb");
-        unsafe { std::env::remove_var("FRONA_DATABASE_PATH") };
     }
 
     #[test]
     fn env_var_overrides_sso_enabled() {
-        unsafe { std::env::set_var("FRONA_SSO_ENABLED", "true") };
-        let loaded = Config::load();
+        let loaded = load_with_env_override("FRONA_SSO_ENABLED", "true");
         assert!(loaded.config.sso.enabled);
-        unsafe { std::env::remove_var("FRONA_SSO_ENABLED") };
     }
 
     #[test]
     fn env_var_overrides_auth_allow_registration() {
-        unsafe { std::env::set_var("FRONA_AUTH_ALLOW_REGISTRATION", "false") };
-        let loaded = Config::load();
+        let loaded = load_with_env_override("FRONA_AUTH_ALLOW_REGISTRATION", "false");
         assert!(!loaded.config.auth.allow_registration);
-        unsafe { std::env::remove_var("FRONA_AUTH_ALLOW_REGISTRATION") };
     }
 
     #[test]
