@@ -735,11 +735,8 @@ pub(crate) fn build_provider(
         FactoryKind::Azure => {
             crate::inference::provider::adapter::azure::build(resolved, config, counter)
         }
-        FactoryKind::Bedrock => Ok(Arc::new(
-            crate::inference::provider::adapter::bedrock::BedrockProvider::new(
-                config.clone(),
-                counter.clone(),
-            ),
+        FactoryKind::Bedrock => Err(InferenceError::ConfigError(
+            "Provider 'bedrock' is not yet available in this build".into(),
         )),
         FactoryKind::OpenAi | FactoryKind::GenericOpenAi => {
             let key = require_api_key(name, config)?;

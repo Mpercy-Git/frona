@@ -1,5 +1,4 @@
 pub(crate) mod azure;
-pub(crate) mod bedrock;
 pub(crate) mod chatgpt;
 pub(crate) mod cohere;
 pub(crate) mod copilot;

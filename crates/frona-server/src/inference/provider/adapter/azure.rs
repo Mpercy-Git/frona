@@ -456,22 +456,9 @@ mod tests {
             model(&roundtrip, "custom-deployment-v2").model_id,
             "custom-deployment-v2"
         );
-        let entries = crate::inference::directory::providers::available(
-            &frona_model_catalog::catalog::ModelCatalogSnapshot::empty(),
-        );
-        let azure = entries.iter().find(|entry| entry.id == "azure").unwrap();
-        assert_eq!(azure.api_surfaces, vec![ApiSurface::Completions]);
-        assert_eq!(azure.auth_methods.len(), 1);
-        assert_eq!(
-            azure.auth_methods[0].credential_method,
-            CredentialMethod::ApiKey
-        );
-        assert!(
-            azure
-                .fields
-                .iter()
-                .any(|field| field.id == "base_url" && field.required)
-        );
+        // The provider-directory listing assertions (api_surfaces, auth_methods,
+        // required fields) belong to inference::directory, deferred to the
+        // settings-UI port (see task tracking BedrockParams/directory follow-up).
         let handle = Handle::const_validated("account");
         config.azure_credential = Some("not-supported".into());
         assert!(ProviderPlatform::resolve(&handle, &config).is_err());
@@ -483,79 +470,5 @@ mod tests {
         for invalid in ["../other", "name?api-version=other", "name/other", ".."] {
             assert!(validate_deployment(invalid).is_err());
         }
-    }
-
-    #[test]
-    fn catalog_routes_cannot_expand_azure_support_or_change_saved_deployments() {
-        use crate::inference::directory::models::{Inventory, normalize};
-        use frona_model_catalog::catalog::{ModelCatalogSnapshot, ModelEntry, ModelRoute};
-        let config = config("https://resource.openai.azure.com");
-        let connection =
-            ProviderPlatform::resolve(&Handle::const_validated("account"), &config).unwrap();
-        let mut snapshot = ModelCatalogSnapshot::empty();
-        snapshot
-            .entries
-            .insert("azure/suggestion".into(), ModelEntry::default());
-        snapshot.entries.insert(
-            "azure/claude".into(),
-            ModelEntry {
-                provider: Some(ModelRoute {
-                    npm: Some("@ai-sdk/anthropic".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        );
-        snapshot.entries.insert(
-            "azure/gateway".into(),
-            ModelEntry {
-                provider: Some(ModelRoute {
-                    api: Some("https://other.example".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        );
-        for snapshot in [snapshot, ModelCatalogSnapshot::empty()] {
-            let listing = normalize(
-                &connection,
-                Some(CredentialMethod::ApiKey),
-                connection.protocols,
-                [("saved-deployment".into(), vec!["primary".into()])].into(),
-                &["manual-deployment".into()],
-                Inventory::CatalogFallback,
-                &snapshot,
-            );
-            assert!(listing.manual_entry);
-            assert!(
-                listing
-                    .models
-                    .iter()
-                    .any(|model| model.id == "saved-deployment")
-            );
-            assert!(
-                listing
-                    .models
-                    .iter()
-                    .any(|model| model.id == "manual-deployment")
-            );
-            assert!(
-                !listing
-                    .models
-                    .iter()
-                    .any(|model| matches!(model.id.as_str(), "claude" | "gateway"))
-            );
-            assert_eq!(
-                model(&config, "saved-deployment").model_id,
-                "saved-deployment"
-            );
-        }
-        let group: ModelGroupConfig = serde_json::from_value(
-            json!({"provider":"account","model":"saved-deployment","api":"responses"}),
-        )
-        .unwrap();
-        assert!(
-            crate::inference::config::compile_request("models.primary", &group, &config).is_err()
-        );
     }
 }

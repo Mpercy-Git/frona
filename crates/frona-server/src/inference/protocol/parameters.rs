@@ -83,7 +83,14 @@ pub fn parameter_bindings(model: &ProviderModel) -> Vec<ParameterBinding> {
         | ProviderModel::DeepSeek { .. }
         | ProviderModel::XAI { .. }
         | ProviderModel::Together { .. }
-        | ProviderModel::Hyperbolic { .. } => OpenAICompatParams::parameter_bindings(dialect),
+        | ProviderModel::Hyperbolic { .. }
+        | ProviderModel::Zai { .. }
+        | ProviderModel::Venice { .. }
+        | ProviderModel::MiniMax { .. }
+        | ProviderModel::Llamafile { .. }
+        | ProviderModel::Byteplus { .. }
+        | ProviderModel::Azure { .. }
+        | ProviderModel::Generic { .. } => OpenAICompatParams::parameter_bindings(dialect),
         ProviderModel::Anthropic { .. } => AnthropicParams::parameter_bindings(dialect),
         ProviderModel::Gemini { .. } => GeminiParams::parameter_bindings(dialect),
         ProviderModel::Ollama { .. } => OllamaParams::parameter_bindings(dialect),
@@ -206,11 +213,18 @@ fn model_settings(model: &ProviderModel) -> Value {
     let value = match model {
         ProviderModel::OpenAI { params, .. }
         | ProviderModel::Groq { params }
-        | ProviderModel::OpenRouter { params }
         | ProviderModel::DeepSeek { params }
         | ProviderModel::XAI { params }
         | ProviderModel::Together { params }
-        | ProviderModel::Hyperbolic { params } => serde_json::to_value(params),
+        | ProviderModel::Hyperbolic { params }
+        | ProviderModel::Zai { params }
+        | ProviderModel::Venice { params }
+        | ProviderModel::MiniMax { params }
+        | ProviderModel::Llamafile { params }
+        | ProviderModel::Byteplus { params }
+        | ProviderModel::Azure { params }
+        | ProviderModel::Generic { params } => serde_json::to_value(params),
+        ProviderModel::OpenRouter { params } => serde_json::to_value(params),
         ProviderModel::Anthropic { params } => serde_json::to_value(params),
         ProviderModel::Gemini { params } => serde_json::to_value(params),
         ProviderModel::Bedrock { params } => serde_json::to_value(params),
@@ -303,8 +317,7 @@ fn request_parameters(
             if let Some(value) = max_tokens {
                 let _: i32 = checked_integer(value, "max_tokens")?;
             }
-            compatibility =
-                crate::inference::provider::adapter::bedrock::inference_settings(params);
+            compatibility = bedrock_inference_settings(params);
             json!({})
         }
         // These settings already have Rig's native additional-parameter shape.
@@ -313,12 +326,19 @@ fn request_parameters(
         ProviderModel::Ollama { params } => serialize(params)?,
         ProviderModel::OpenAI { params, .. }
         | ProviderModel::Groq { params }
-        | ProviderModel::OpenRouter { params }
         | ProviderModel::DeepSeek { params }
         | ProviderModel::XAI { params }
         | ProviderModel::Together { params }
-        | ProviderModel::Hyperbolic { params } => serialize(params)?,
-        ProviderModel::Generic | ProviderModel::Custom { .. } => json!({}),
+        | ProviderModel::Hyperbolic { params }
+        | ProviderModel::Zai { params }
+        | ProviderModel::Venice { params }
+        | ProviderModel::MiniMax { params }
+        | ProviderModel::Llamafile { params }
+        | ProviderModel::Byteplus { params }
+        | ProviderModel::Azure { params }
+        | ProviderModel::Generic { params } => serialize(params)?,
+        ProviderModel::OpenRouter { params } => serialize(params)?,
+        ProviderModel::Custom { .. } => json!({}),
     };
     Ok((
         super::hooks::RequestParams {
@@ -335,6 +355,19 @@ fn request_parameters(
 
 fn serialize(value: &impl Serialize) -> Result<Value, InferenceError> {
     serde_json::to_value(value).map_err(|error| InferenceError::ConfigError(error.to_string()))
+}
+
+/// Self-contained so it works without the (not yet ported) AWS-SDK-backed
+/// bedrock adapter; see the Bedrock adapter follow-up task.
+fn bedrock_inference_settings(params: &crate::core::config::BedrockParams) -> Value {
+    let mut settings = serde_json::Map::new();
+    if let Some(value) = params.top_p {
+        settings.insert("topP".into(), json!(value));
+    }
+    if let Some(value) = &params.stop_sequences {
+        settings.insert("stopSequences".into(), json!(value));
+    }
+    json!({"inferenceConfig": settings})
 }
 
 fn checked_integer<T: TryFrom<u64>>(value: u64, field: &str) -> Result<T, InferenceError> {

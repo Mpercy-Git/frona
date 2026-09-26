@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_aux::field_attributes::deserialize_bool_from_anything;
 use surrealdb::types::SurrealValue;
 
+use crate::core::Handle;
+
 const ENV_PREFIX: &str = "FRONA_";
 
 const EXCLUDED_ENV_VARS: &[&str] = &[
@@ -557,29 +559,53 @@ impl Default for ChannelConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Default, Deserialize, Serialize, JsonSchema, frona_derive::ParameterMetadata,
+)]
 #[serde(default)]
 pub struct CommonModelFields {
     #[schemars(description = "Model ID (without provider prefix).")]
+    #[parameter(skip)]
     pub model: String,
     #[serde(default)]
     #[schemars(description = "Fallback models tried in order if the primary fails.")]
+    #[parameter(skip)]
     pub fallbacks: Vec<ModelGroupConfig>,
     #[serde(default)]
     #[schemars(description = "Maximum tokens to generate per response.")]
+    #[parameter(
+        bedrock = "inferenceConfig.maxTokens",
+        open_ai_chat = "max_completion_tokens",
+        responses = "max_output_tokens",
+        gemini = "generationConfig.maxOutputTokens",
+        ollama = "options.num_predict"
+    )]
     pub max_tokens: Option<u64>,
     #[serde(default)]
     #[schemars(description = "Sampling temperature (0.0-2.0).")]
+    #[parameter(
+        bedrock = "inferenceConfig.temperature",
+        gemini = "generationConfig.temperature",
+        ollama = "options.temperature"
+    )]
     pub temperature: Option<f64>,
     #[serde(default)]
     #[schemars(description = "Context window size override.")]
+    #[parameter(skip)]
     pub context_window: Option<usize>,
     #[serde(default)]
     #[schemars(description = "Retry configuration for this model group.")]
+    #[parameter(skip)]
     pub retry: RetryConfig,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    #[schemars(description = "Additional native request parameters for the selected protocol.")]
+    #[parameter(skip)]
+    pub extra_params: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Default, Deserialize, Serialize, JsonSchema, frona_derive::ParameterMetadata,
+)]
 #[serde(default)]
 pub struct AnthropicThinking {
     #[serde(rename = "type")]
@@ -591,18 +617,28 @@ pub struct AnthropicThinking {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Default, Deserialize, Serialize, JsonSchema, frona_derive::ParameterMetadata,
+)]
 pub struct OpenAICompatParams {
     pub top_p: Option<f64>,
+    #[parameter(responses = false)]
     pub min_p: Option<f64>,
+    #[parameter(responses = false)]
     pub frequency_penalty: Option<f64>,
+    #[parameter(responses = false)]
     pub presence_penalty: Option<f64>,
+    #[parameter(responses = false)]
     pub seed: Option<i64>,
+    #[parameter(responses = "max_output_tokens")]
     pub max_completion_tokens: Option<u64>,
     #[schemars(description = "Reasoning effort level (e.g. 'low', 'medium', 'high').")]
+    #[parameter(responses = "reasoning.effort")]
     pub reasoning_effort: Option<String>,
+    #[parameter(responses = false)]
     pub logprobs: Option<bool>,
     pub top_logprobs: Option<u64>,
+    #[parameter(responses = false)]
     pub stop: Option<Vec<String>>,
 }
 
@@ -683,6 +719,9 @@ pub struct OpenRouterMaxPrice {
 }
 
 /// OpenRouter-specific parameters beyond the OpenAI-compatible fields.
+/// Does not derive `ParameterMetadata`: the derive rejects `#[serde(flatten)]`
+/// fields. `protocol::parameters` delegates to `OpenAICompatParams`'s own
+/// metadata for the flattened `compat` portion instead.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct OpenRouterParams {
     #[serde(flatten)]
@@ -723,15 +762,21 @@ pub struct OpenRouterParams {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, frona_derive::ParameterMetadata)]
+#[serde(deny_unknown_fields)]
 pub struct GeminiThinkingConfig {
+    #[parameter(path = "thinkingBudget")]
     pub thinking_budget: u64,
+    #[parameter(path = "includeThoughts")]
     pub include_thoughts: Option<bool>,
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Default, Deserialize, Serialize, JsonSchema, frona_derive::ParameterMetadata,
+)]
 pub struct AnthropicParams {
+    #[parameter(nested)]
     pub thinking: Option<AnthropicThinking>,
     pub top_p: Option<f64>,
     pub top_k: Option<u64>,
@@ -739,8 +784,12 @@ pub struct AnthropicParams {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Default, Deserialize, Serialize, JsonSchema, frona_derive::ParameterMetadata,
+)]
+#[parameter(prefix = "options")]
 pub struct OllamaParams {
+    #[parameter(root)]
     pub think: Option<bool>,
     pub num_ctx: Option<u64>,
     pub num_predict: Option<u64>,
@@ -766,12 +815,20 @@ pub struct OllamaParams {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Default, Deserialize, Serialize, JsonSchema, frona_derive::ParameterMetadata,
+)]
+#[parameter(prefix = "generationConfig")]
 pub struct GeminiParams {
+    #[parameter(path = "thinkingConfig", nested)]
     pub thinking_config: Option<GeminiThinkingConfig>,
+    #[parameter(path = "topP")]
     pub top_p: Option<f64>,
+    #[parameter(path = "topK")]
     pub top_k: Option<u64>,
+    #[parameter(path = "stopSequences")]
     pub stop_sequences: Option<Vec<String>>,
+    #[parameter(path = "candidateCount")]
     pub candidate_count: Option<u64>,
 }
 
@@ -783,6 +840,66 @@ pub enum OpenAiApi {
     Responses,
 }
 
+/// Stable request protocol names persisted in YAML and returned by authoring APIs.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq, Hash)]
+pub enum ApiSurface {
+    #[serde(
+        rename = "completions",
+        alias = "chat_completions",
+        alias = "openai-chat-completions"
+    )]
+    Completions,
+    #[serde(rename = "responses", alias = "openai-responses")]
+    Responses,
+    #[serde(rename = "anthropic-messages")]
+    AnthropicMessages,
+    #[serde(rename = "google-generate-content")]
+    GoogleGenerateContent,
+    #[serde(rename = "amazon-bedrock-converse")]
+    AmazonBedrockConverse,
+    #[serde(rename = "cohere-chat")]
+    CohereChat,
+    #[serde(rename = "ollama")]
+    Ollama,
+    #[serde(rename = "huggingface")]
+    HuggingFace,
+}
+
+impl From<OpenAiApi> for ApiSurface {
+    fn from(value: OpenAiApi) -> Self {
+        match value {
+            OpenAiApi::ChatCompletions => Self::Completions,
+            OpenAiApi::Responses => Self::Responses,
+        }
+    }
+}
+
+impl TryFrom<ApiSurface> for OpenAiApi {
+    type Error = &'static str;
+
+    fn try_from(value: ApiSurface) -> Result<Self, Self::Error> {
+        match value {
+            ApiSurface::Completions => Ok(Self::ChatCompletions),
+            ApiSurface::Responses => Ok(Self::Responses),
+            _ => Err("protocol is not an OpenAI request surface"),
+        }
+    }
+}
+
+#[serde_with::skip_serializing_none]
+#[derive(
+    Debug, Clone, Default, Deserialize, Serialize, JsonSchema, frona_derive::ParameterMetadata,
+)]
+#[parameter(prefix = "inferenceConfig")]
+pub struct BedrockParams {
+    #[serde(rename = "topP")]
+    #[parameter(path = "topP")]
+    pub top_p: Option<f64>,
+    #[serde(rename = "stopSequences")]
+    #[parameter(path = "stopSequences")]
+    pub stop_sequences: Option<Vec<String>>,
+}
+
 /// BytePlus ModelArk, international. The mainland Volcengine Ark deployment is
 /// a separate account on `https://ark.cn-beijing.volces.com/api/v3`, reached by
 /// overriding `base_url`.
@@ -792,6 +909,11 @@ pub const BYTEPLUS_API_BASE_URL: &str = "https://ark.ap-southeast.bytepluses.com
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "provider")]
 pub enum ProviderModel {
+    #[serde(rename = "bedrock")]
+    Bedrock {
+        #[serde(flatten)]
+        params: BedrockParams,
+    },
     #[serde(rename = "anthropic")]
     Anthropic {
         #[serde(flatten)]
@@ -986,6 +1108,7 @@ impl ProviderModel {
 
     pub fn name(&self) -> &str {
         match self {
+            Self::Bedrock { .. } => "bedrock",
             Self::Anthropic { .. } => "anthropic",
             Self::Ollama { .. } => "ollama",
             Self::OpenAI { .. } => "openai",
@@ -1008,12 +1131,66 @@ impl ProviderModel {
     }
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
+pub struct ModelSettings {
+    pub thinking: Option<AnthropicThinking>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<u64>,
+    pub stop_sequences: Option<Vec<String>>,
+    pub think: Option<bool>,
+    pub num_ctx: Option<u64>,
+    pub num_predict: Option<u64>,
+    pub num_batch: Option<u64>,
+    pub num_keep: Option<i64>,
+    pub num_thread: Option<u64>,
+    pub num_gpu: Option<u64>,
+    pub min_p: Option<f64>,
+    pub repeat_penalty: Option<f64>,
+    pub repeat_last_n: Option<i64>,
+    pub frequency_penalty: Option<f64>,
+    pub presence_penalty: Option<f64>,
+    pub mirostat: Option<u64>,
+    pub mirostat_eta: Option<f64>,
+    pub mirostat_tau: Option<f64>,
+    pub tfs_z: Option<f64>,
+    pub seed: Option<i64>,
+    pub stop: Option<Vec<String>>,
+    pub use_mmap: Option<bool>,
+    pub use_mlock: Option<bool>,
+    pub max_completion_tokens: Option<u64>,
+    pub reasoning_effort: Option<String>,
+    pub logprobs: Option<bool>,
+    pub top_logprobs: Option<u64>,
+    pub thinking_config: Option<GeminiThinkingConfig>,
+    pub candidate_count: Option<u64>,
+    pub route: Option<String>,
+    pub prompt_caching: Option<bool>,
+    pub provider_routing: Option<OpenRouterProviderRouting>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ModelGroupConfig {
+    pub provider: Handle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<ApiSurface>,
     #[serde(flatten)]
     pub common: CommonModelFields,
     #[serde(flatten)]
-    pub provider: ProviderModel,
+    pub settings: ModelSettings,
+}
+
+impl Default for ModelGroupConfig {
+    fn default() -> Self {
+        Self {
+            provider: Handle::const_validated("generic"),
+            api: None,
+            common: CommonModelFields::default(),
+            settings: ModelSettings::default(),
+        }
+    }
 }
 
 impl ModelGroupConfig {
@@ -1022,7 +1199,7 @@ impl ModelGroupConfig {
     }
 
     pub fn provider_name(&self) -> &str {
-        self.provider.name()
+        self.provider.as_str()
     }
 }
 
@@ -1514,8 +1691,43 @@ pub struct Config {
     pub signal: SignalConfig,
     #[serde(default)]
     pub models: HashMap<String, ModelGroupConfig>,
-    #[serde(default)]
-    pub providers: HashMap<String, ModelProviderConfig>,
+    #[serde(default, deserialize_with = "deserialize_provider_configs")]
+    pub providers: HashMap<Handle, ModelProviderConfig>,
+}
+
+fn deserialize_provider_configs<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<Handle, ModelProviderConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct ProviderMapVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for ProviderMapVisitor {
+        type Value = HashMap<Handle, ModelProviderConfig>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map of provider handles to provider configurations")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut providers = HashMap::with_capacity(map.size_hint().unwrap_or(0));
+            while let Some((handle, provider)) = map.next_entry::<Handle, ModelProviderConfig>()? {
+                if providers.insert(handle.clone(), provider).is_some() {
+                    return Err(serde::de::Error::custom(format!(
+                        "provider handle '{}' collides after trimming and lowercasing",
+                        handle
+                    )));
+                }
+            }
+            Ok(providers)
+        }
+    }
+
+    deserializer.deserialize_map(ProviderMapVisitor)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
