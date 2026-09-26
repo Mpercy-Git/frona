@@ -417,14 +417,18 @@ impl ChatSessionContext {
 
         let mut vault_env = harness
             .vault_service
-            .hydrate_chat_env_vars(user_id, &chat.id, &chat.agent_id)
+            .resolve_env(
+                user_id,
+                &crate::core::Principal::agent(&chat.agent_id),
+                Some(&chat.id),
+            )
             .await
             .unwrap_or_default();
         // Credential delegation: also load the owner's durable agent credentials.
         if let Some(ref owner_id) = delegated_credential_owner {
             let delegated = harness
                 .vault_service
-                .hydrate_delegated_env_vars(owner_id, &chat.agent_id, &chat.id)
+                .resolve_delegated_env(owner_id, &chat.agent_id, &chat.id)
                 .await
                 .unwrap_or_default();
             vault_env.extend(delegated);

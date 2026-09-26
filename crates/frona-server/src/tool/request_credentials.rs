@@ -212,7 +212,7 @@ impl RequestCredentialsTool {
                     .await?;
 
                 let env_vars =
-                    crate::credential::vault::service::project_target(&secret, &binding.target);
+                    crate::credential::vault::service::project_target(&secret, &binding.target)?;
                 var_names.extend(env_vars.iter().map(|(k, _)| k.clone()));
                 let mut vault_vars = ctx.vault_env_vars.write().await;
                 vault_vars.extend(env_vars);
@@ -241,7 +241,7 @@ impl RequestCredentialsTool {
                     .await?;
 
                 let env_vars =
-                    crate::credential::vault::service::project_target(&secret, &binding.target);
+                    crate::credential::vault::service::project_target(&secret, &binding.target)?;
                 var_names.extend(env_vars.iter().map(|(k, _)| k.clone()));
                 let mut vault_vars = ctx.vault_env_vars.write().await;
                 vault_vars.extend(env_vars);
@@ -342,7 +342,7 @@ impl RequestCredentialsTool {
                         .await?;
 
                     let env_vars =
-                        crate::credential::vault::service::project_target(&secret, &grant.target);
+                        crate::credential::vault::service::project_target(&secret, &grant.target)?;
                     var_names.extend(env_vars.iter().map(|(k, _)| k.clone()));
                     let mut vault_vars = ctx.vault_env_vars.write().await;
                     vault_vars.extend(env_vars);
@@ -413,7 +413,7 @@ impl RequestCredentialsTool {
                     )
                     .await?;
 
-                let env_vars = crate::credential::vault::service::project_target(&secret, &target);
+                let env_vars = crate::credential::vault::service::project_target(&secret, &target)?;
                 let var_names: Vec<String> = env_vars.iter().map(|(k, _)| k.clone()).collect();
                 let mut vault_vars = ctx.vault_env_vars.write().await;
                 vault_vars.extend(env_vars);

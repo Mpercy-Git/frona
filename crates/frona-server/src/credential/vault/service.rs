@@ -451,6 +451,70 @@ impl VaultService {
         Ok(env)
     }
 
+    /// Load the *owner's* durable credential bindings for an agent into env
+    /// vars, for a recipient's run of a shared agent (credential delegation).
+    /// Only durable grants delegate; the owner's chat-scoped bindings (their
+    /// other conversations) are skipped. Best-effort - missing or revoked
+    /// secrets are logged and skipped, never fatal, since one stale delegated
+    /// binding must not block every other credential a shared agent needs.
+    /// Access is logged under the owner.
+    pub async fn resolve_delegated_env(
+        &self,
+        owner_id: &str,
+        agent_id: &str,
+        chat_id: &str,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let principal = Principal::agent(agent_id);
+        let bindings = self
+            .binding_repo
+            .find_for_principal(owner_id, &principal)
+            .await?
+            .into_iter()
+            .filter(|b| matches!(b.scope, BindingScope::Durable));
+        let mut env_vars = Vec::new();
+        for binding in bindings {
+            match self
+                .resolve_binding(owner_id, &principal, &binding, Some(chat_id))
+                .await
+            {
+                Ok(secret) => {
+                    match project_target(&secret, &binding.target) {
+                        Ok(fields) => env_vars.extend(fields),
+                        Err(error) => {
+                            tracing::warn!(
+                                vault_item_id = %binding.vault_item_id,
+                                error = %error,
+                                "Failed to project delegated secret for shared agent"
+                            );
+                            continue;
+                        }
+                    }
+                    // Audit under the owner so delegated use is visible to them.
+                    let _ = self
+                        .log_access(
+                            owner_id,
+                            principal.clone(),
+                            chat_id,
+                            &binding.connection_id,
+                            &binding.vault_item_id,
+                            None,
+                            &binding.query,
+                            "Shared-agent credential delegation",
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        vault_item_id = %binding.vault_item_id,
+                        error = %error,
+                        "Failed to fetch delegated secret for shared agent"
+                    );
+                }
+            }
+        }
+        Ok(env_vars)
+    }
+
     async fn startup_bindings(
         &self,
         user_id: &str,
