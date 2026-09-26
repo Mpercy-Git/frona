@@ -4,10 +4,9 @@ pub mod conversation;
 pub mod credential;
 pub mod error;
 pub mod hitl;
-pub mod hooks;
 pub mod metadata;
+pub mod protocol;
 pub mod provider;
-pub mod registry;
 pub mod request;
 pub mod retry;
 pub mod structured;
@@ -24,8 +23,9 @@ pub use error::InferenceError;
 pub use hitl::{
     Hitl, HitlDelivery, HitlOutcome, HitlRequest, HitlResponse, ResolveOutcome, VaultGrant,
 };
-pub use provider::ModelRef;
-pub use registry::ModelProviderRegistry;
+pub use provider::group::{ModelGroup, ModelRequest, ModelResponse, RequestOverrides};
+pub use provider::registry::ModelProviderRegistry;
+pub use provider::{ModelConfig, ModelRef};
 pub use request::{InferenceContext, InferenceRequest, InferenceResponse, active_chat};
 pub use rig_core::completion::request::Usage;
 pub use structured::{

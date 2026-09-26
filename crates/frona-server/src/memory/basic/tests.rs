@@ -11,7 +11,7 @@ use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::generic::SurrealRepo;
 use crate::inference::config::RetryConfig;
 use crate::inference::provider::{ModelProvider, ModelRef};
-use crate::inference::registry::ModelProviderRegistry;
+use crate::inference::ModelProviderRegistry;
 use crate::policy::schema::build_schema;
 use crate::policy::service::PolicyService;
 use crate::tool::manager::ToolManager;
