@@ -195,75 +195,75 @@ configure model groups from live provider directories).
    `crates/frona-server/src/inference/provider.rs` with the fork's own
    `azure`, `generic`, `byteplus`, `zai`, `venice`, `minimax`, `llamafile`
    entries inline in it. Upstream deleted that shape entirely in favor of
-   `provider/adapter/*.rs`. There is no clean line-level merge here — every
-   fork-added provider has to be re-homed into the new structure, or the new
-   structure has to be declined and its content ported into the old one by
-   hand. Either choice is a multi-file rewrite, not a port.
+   `provider/adapter/*.rs`.
 2. **Feature overlap, not just structure.** Upstream's `13aadef9` adds its own
-   Azure OpenAI adapter — this fork already has one (README: "☁️ Azure OpenAI
-   (net-new)"), built independently and for reasons upstream's commit message
-   likely doesn't share (this fork's own `api_version`/deployment-name
-   handling, the `Into<String>` api-key-vs-bearer-token fix). These two Azure
-   implementations need a real reconciliation, not a fast-forward.
+   Azure OpenAI adapter — this fork already has one.
 3. **A second, different vault.** This fork already has
    `credential/vault/` (its own provider API-key vault) and `credential/
    share/`. Upstream's new `credential/managed/` is a *different* kind of
    credential — OAuth login sessions for subscription accounts (ChatGPT,
-   Copilot, OpenRouter), not API keys. These can coexist, but the naming and
-   the fork's existing vault UI need a coherent story before the settings-UI
-   commits (Group C's tail) can land without confusing the two.
+   Copilot, OpenRouter), not API keys.
 4. **Bedrock and GitHub Copilot and ChatGPT-subscription are entirely new
-   capability**, not currently in the fork at all. Porting them is additive
-   and lower-risk than the Azure overlap — they just need the adapter
-   scaffolding decision made first, since they're written against it.
+   capability**, not currently in the fork at all.
 
-**Recommended approach**, mirroring how PR #112 scoped the memory/PKM cluster
-before #113 executed it:
+**Step 1 (scoping spike) is done** — see
+[`GROUP_C_PROVIDER_SCOPING.md`](GROUP_C_PROVIDER_SCOPING.md) for the full
+analysis, built from actually reading both trees rather than the surface-level
+concerns above. The short version: concerns 1 and 3 turned out to be much
+smaller than they looked. Upstream's `provider/adapter/*` structure is a
+generalization of the same rig-based approach this fork already uses — the
+"generic" provider *is* upstream's dynamic-adapter mechanism, just hand-rolled
+once instead of built as a general path, and five of this fork's six other
+additions (byteplus, zai, venice, minimax, llamafile) are one
+`Recipe::openai_compatible(FactoryKind::X)` line each once the structure is
+adopted, matching eleven recipes upstream already carries the same way.
+Concern 3 (the vault) isn't a naming conflict at all: upstream's
+`credential/managed/` is a new sibling directory, and this fork's
+`credential/vault/`/`credential/share/` are untouched by it. Only concern 2
+(Azure) is real reconciliation work — and even there, upstream hit the same
+`AzureOpenAIAuth::ApiKey` footgun this fork's code comments describe and fixed
+it identically, so it reads as independent convergence rather than two
+designs to merge from scratch.
 
-- **Step 1 (scoping PR/spike, no behavior change):** decide whether to adopt
-  upstream's `provider/adapter/*` module layout wholesale (probably right —
-  fighting a 119-file upstream refactor forever is not sustainable) and write
-  down, provider by provider, which of the fork's seven added providers
-  (azure, generic, byteplus, zai, venice, minimax, llamafile) map onto an
-  upstream adapter that now exists (azure, bedrock, chatgpt, copilot, cohere,
-  together, hyperbolic, huggingface, perplexity) vs. which stay fork-only
-  (generic-openai-compatible, byteplus, zai, venice, minimax, llamafile have
-  no upstream equivalent yet and become new files in the adopted structure).
-- **Step 2:** port `frona-model-catalog` extraction and the adapter-split
-  commits for the providers upstream and the fork have *in common*
-  (`13aadef9` Azure being the one requiring hand reconciliation with the
-  fork's existing Azure code, not a straight take).
+**Steps 2–5**, revised with the scoping doc's findings (see the doc for full
+detail):
+
+- **Step 2:** port `frona-model-catalog` extraction, the core `provider/*.rs`
+  files, and the adapter files for the six brands upstream and the fork
+  already share (azure, cohere, huggingface, hyperbolic, perplexity,
+  together). Reconcile Azure per the doc (likely close to a straight take).
+  Merge `ModelProviderConfig`'s schema, preserving this fork's `billing`
+  field, which upstream's version doesn't have.
 - **Step 3:** port the managed-credential vault (`86f9f346` through
   `67a0995c`) and the new-capability adapters (Bedrock, ChatGPT subscription,
-  GitHub Copilot) — additive, no fork equivalent to reconcile.
-- **Step 4:** re-home the fork's own providers (generic, byteplus, zai,
-  venice, minimax, llamafile) into the adopted adapter structure — mechanical
-  once Step 1's mapping exists.
+  GitHub Copilot) — additive, no fork equivalent to reconcile, confirmed no
+  naming collision with the fork's existing vault.
+- **Step 4:** add five one-line recipe entries (byteplus, zai, venice,
+  minimax, llamafile) and drop the fork's `generic` special case in favor of
+  upstream's dynamic-adapter path — mechanical, not a redesign.
 - **Step 5:** port the settings-UI commits (`a908db4c`, `99db1d24`,
   `ee6ab0b1`, `7e745ac4`) last, since they're written against the finished
   structure and touch the same settings page the fork's voice/cost-analyst
   settings live in.
 
-This is materially larger than any prior upstream-port PR in this fork's
-history (PR #112/#113 together were ~5,400 lines across 15 commits; Group C
-alone is ~20 commits with one single commit at +15,858/-3,721). It should be
-its own multi-PR effort, tracked separately from Groups A and B, and is the
-one place in this sync where "port everything" is the wrong instinct —
-scoping which upstream pieces are genuinely new capability vs. which
-reimplement something this fork already shipped independently is the load-
-bearing decision.
+This is still materially larger than any prior upstream-port PR in this
+fork's history (PR #112/#113 together were ~5,400 lines across 15 commits;
+Group C alone is ~20 commits with one single commit at +15,858/-3,721) and
+should stay its own multi-PR effort, tracked separately from Groups A and B.
+Steps 2, 3, and 5 are still substantial; what shrank is Step 4 and the
+perceived size of the Step 1 decision itself.
 
 ## Suggested order
 
 1. ~~Group A (small independent fixes)~~ — done except `d4186276`/`c5e95988`,
    reclassified above as its own effort.
 2. ~~Group B, the two portable commits~~ — done (`557dd9b6`, `b3052bd2`).
-3. Group C Step 1 (scoping doc/spike only) — establishes the provider mapping
-   before any more upstream provider work lands and the gap widens further.
-   Also unblocks Group B's four Group-C-dependent commits (`385e5dd6`,
-   `38d4f5a5`, `f104bd85`, `2b9dfe28`).
-4. Group C Steps 2–5 — the multi-PR provider/credential rewrite, in the order
-   above.
+3. ~~Group C Step 1 (scoping spike)~~ — done, see
+   [`GROUP_C_PROVIDER_SCOPING.md`](GROUP_C_PROVIDER_SCOPING.md). Unblocks
+   Group C Steps 2–5 below and Group B's four Group-C-dependent commits
+   (`385e5dd6`, `38d4f5a5`, `f104bd85`, `2b9dfe28`).
+4. Group C Steps 2–5 — the multi-PR provider/credential rewrite, revised order
+   and detail in the scoping doc.
 5. The `AppError` redesign for `d4186276`/`c5e95988` — independent of Group C,
    can happen in parallel.
 6. Group B's remaining four Podman/Kache dev-container commits (`341280b7`,
