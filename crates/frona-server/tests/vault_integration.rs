@@ -57,6 +57,15 @@ fn build_service(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> Vault
         SurrealRepo::new(db.clone()),
         &frona::core::config::CacheConfig::default(),
     );
+    let managed_vault = frona::credential::managed::ManagedVault::new(
+        Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+        "test-secret",
+        frona::credential::managed::GLOBAL_CONNECTION_ID.into(),
+    );
+    let managed_resolver = Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+        frona::credential::managed::integration::registered(),
+    ));
+    let login_service = frona::credential::managed::login::ManagedLoginService::registered();
     VaultService::new(
         connection_repo,
         grant_repo,
@@ -68,6 +77,9 @@ fn build_service(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> Vault
         std::path::PathBuf::from("/tmp/test-data"),
         storage,
         user_service,
+        managed_vault,
+        managed_resolver,
+        login_service,
     )
 }
 
@@ -463,7 +475,7 @@ async fn hydrate_returns_empty_when_no_bindings() {
     let svc = build_service(&db);
 
     let env_vars = svc
-        .hydrate_chat_env_vars("user1", "chat1", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("chat1"))
         .await
         .unwrap();
     assert!(env_vars.is_empty());
@@ -503,7 +515,7 @@ async fn hydrate_projects_durable_bindings_into_env_vars() {
     .unwrap();
 
     let env: std::collections::HashMap<String, String> = svc
-        .hydrate_chat_env_vars("user1", "any-chat", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("any-chat"))
         .await
         .unwrap()
         .into_iter()
@@ -552,13 +564,13 @@ async fn hydrate_honors_chat_scope_isolation() {
     .unwrap();
 
     let in_chat = svc
-        .hydrate_chat_env_vars("user1", "chat1", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("chat1"))
         .await
         .unwrap();
     assert!(!in_chat.is_empty(), "chat1 should see its own binding");
 
     let other_chat = svc
-        .hydrate_chat_env_vars("user1", "chat2", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("chat2"))
         .await
         .unwrap();
     assert!(
