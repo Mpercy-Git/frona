@@ -4,7 +4,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 
 use crate::core::state::AppState;
-use crate::inference::metadata::ModelCatalogSnapshot;
+use crate::inference::metadata::{CatalogLookup, ModelCatalogSnapshot};
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -94,7 +94,7 @@ fn extract_models(
 
     for model in &mut models {
         if (model.context_window.is_none() || model.max_tokens.is_none())
-            && let Some(entry) = catalog.lookup_prefix(provider, &model.id)
+            && let Some(entry) = catalog.lookup_model(provider, &model.id)
         {
             if model.context_window.is_none() && entry.limit.context > 0 {
                 model.context_window = Some(entry.limit.context);

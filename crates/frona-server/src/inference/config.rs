@@ -7,6 +7,7 @@ pub use crate::core::config::{
 
 use super::error::InferenceError;
 use super::provider::ModelRef;
+use crate::inference::metadata::CatalogLookup;
 
 fn resolve_provider_model(
     provider: &ProviderModel,
@@ -17,7 +18,7 @@ fn resolve_provider_model(
         ProviderModel::OpenAI { api, params } => ProviderModel::OpenAI {
             api: Some(
                 (*api)
-                    .or_else(|| catalog.protocol_default("openai", model_id))
+                    .or_else(|| catalog.model_protocol_default("openai", model_id))
                     .unwrap_or_default(),
             ),
             params: params.clone(),
@@ -209,7 +210,7 @@ impl ModelRegistryConfig {
             // model actually requires.
             let context_window = common.context_window.unwrap_or_else(|| {
                 catalog
-                    .lookup_prefix(main.provider_name(), &main.model_id)
+                    .lookup_model(main.provider_name(), &main.model_id)
                     .and_then(|e| e.max_input_tokens().map(|n| n as usize))
                     .unwrap_or(crate::inference::context::DEFAULT_CONTEXT_WINDOW)
             });
@@ -321,9 +322,9 @@ model: anthropic/claude-opus-4-6
             models: HashMap::from([("primary".to_string(), group)]),
             ..ModelRegistryConfig::empty()
         };
-        let catalog = crate::inference::metadata::ModelCatalogSnapshot::defaults();
+        let catalog = crate::inference::metadata::defaults();
         let expected = catalog
-            .lookup_prefix("anthropic", "claude-opus-4-6")
+            .lookup_model("anthropic", "claude-opus-4-6")
             .and_then(|e| e.max_input_tokens())
             .expect("the shipped defaults carry this family") as usize;
 
@@ -600,13 +601,15 @@ fallbacks:
             .models
             .insert("primary".to_string(), serde_yaml::from_str(yaml).unwrap());
         let mut catalog = crate::inference::metadata::ModelCatalogSnapshot::empty();
+        // Raw npm label, the shape `frona_model_catalog` actually stores -
+        // `CatalogLookup::model_protocol_default` resolves it to `OpenAiApi`.
         catalog.protocol_defaults.insert(
             "openai/configured-model".to_string(),
-            crate::core::config::OpenAiApi::Responses,
+            "@ai-sdk/openai".to_string(),
         );
         catalog.protocol_defaults.insert(
             "openai/metadata-model".to_string(),
-            crate::core::config::OpenAiApi::Responses,
+            "@ai-sdk/openai".to_string(),
         );
 
         let groups = registry

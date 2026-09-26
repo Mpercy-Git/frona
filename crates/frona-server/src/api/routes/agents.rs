@@ -4,6 +4,7 @@ use std::path::Path as StdPath;
 use crate::agent::config::parse_frontmatter;
 use crate::agent::models::{Agent, AgentResponse, CreateAgentRequest, Model, UpdateAgentRequest};
 use crate::chat::broadcast::{BroadcastEvent, BroadcastEventKind};
+use crate::inference::metadata::CatalogLookup;
 use crate::inference::tool_loop::InferenceEventKind;
 use axum::extract::{Multipart, Path, State};
 use axum::routing::{get, put};
@@ -30,7 +31,11 @@ fn resolve_model(state: &AppState, model_group_name: &str) -> Option<Model> {
         .provider_registry()
         .resolve_model_group(model_group_name)
         .ok()?;
-    let entry = state.model_catalog.current().lookup(&group.main).cloned();
+    let entry = state
+        .model_catalog
+        .current()
+        .lookup_exact(&group.main)
+        .cloned();
     Some(Model {
         provider: group.main.provider_name().to_string(),
         model_id: group.main.model_id.clone(),

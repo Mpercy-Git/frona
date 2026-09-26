@@ -19,7 +19,7 @@ use crate::core::config::{Config, ProviderBilling, ProviderBillingKind};
 use crate::core::error::AppError;
 use crate::core::repository::{Repository, new_id};
 use crate::db::repo::generic::SurrealRepo;
-use crate::inference::metadata::{ModelCatalogStore, ModelEntry};
+use crate::inference::metadata::{CatalogLookup, CostForUsage, ModelCatalogStore, ModelEntry};
 use crate::inference::usage::{
     InferenceUsage, InferenceUsageRepository, ModelSpendRow, UsageRollup, UserCostRow,
 };
@@ -192,7 +192,7 @@ impl CostService {
         let snapshot = self.catalog.current();
         let baseline_cost = baseline_model_ref
             .and_then(|r| split_model_ref(r))
-            .and_then(|(p, m)| snapshot.lookup_prefix(p, m))
+            .and_then(|(p, m)| snapshot.lookup_model(p, m))
             .and_then(|e| reprice_observed(e, &observed));
 
         let comparisons = candidates
@@ -207,7 +207,7 @@ impl CostService {
                         ],
                     );
                 };
-                let Some(entry) = snapshot.lookup_prefix(provider, model_id) else {
+                let Some(entry) = snapshot.lookup_model(provider, model_id) else {
                     return ModelComparison::rejected(
                         candidate,
                         vec![format!(
@@ -389,7 +389,7 @@ impl ObservedMix {
 
 /// Value an observed mix at a candidate model's published rates.
 pub fn reprice_observed(entry: &ModelEntry, observed: &ObservedMix) -> Option<f64> {
-    entry.cost_for(&observed.as_usage())
+    entry.full_cost_for(&observed.as_usage())
 }
 
 /// What a replacement model has to be able to do. Derived from what the model
@@ -609,7 +609,7 @@ mod tests {
     use super::*;
     use crate::core::config::ModelProviderConfig;
     use crate::inference::metadata::catalog::{Cost, Limit, ModelEntry};
-    use crate::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore};
+    use crate::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, StorePricing};
     use crate::inference::provider::ModelRef;
 
     fn priced_entry() -> ModelEntry {
@@ -688,7 +688,7 @@ mod tests {
                 },
             };
 
-            let (live_cost, _) = store.compute(&model_ref, &raw);
+            let (live_cost, _) = store.price(&model_ref, &raw);
             let live_cost = live_cost.expect("catalog entry is priced");
 
             // What `build_row` would have persisted for that call.

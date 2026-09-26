@@ -56,6 +56,7 @@ async fn fresh_service() -> (Surreal<surrealdb::engine::local::Db>, UsageService
         version: "test".to_string(),
         fetched_at: chrono::Utc::now(),
         entries,
+        providers: std::collections::HashMap::new(),
         protocol_defaults: std::collections::HashMap::new(),
     };
     let catalog = ModelCatalogStore::new(snapshot);

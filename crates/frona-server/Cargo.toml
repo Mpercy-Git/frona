@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 frona-api-types = { path = "../frona-api-types" }
+frona-model-catalog = { path = "../frona-model-catalog" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Names the field a failed `submit` decode actually tripped on, so the correction

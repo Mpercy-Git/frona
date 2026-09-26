@@ -138,8 +138,8 @@ haven't:
 
 | Commit | Date | Why it's blocked |
 |---|---|---|
-| `385e5dd6` | 09-17 | Dockerfile stage builds and runs `frona-model-catalog`, a crate that doesn't exist until Group C's `fcd3d16f`/`b31f3382`. |
-| `38d4f5a5` | 09-17 | `validate-provider-artifact.mjs` also invokes `frona-model-catalog`. |
+| `385e5dd6` | 09-17 | Dockerfile stage builds and runs `frona-model-catalog` — the crate now exists in this fork (Step 2, see above), but the commit itself is a Docker build stage this sandbox has no Podman/build validation for, same gap as the four Group B commits held back below. |
+| `38d4f5a5` | 09-17 | `validate-provider-artifact.mjs` also invokes `frona-model-catalog` — same crate-now-exists-but-unvalidatable-Docker-change situation as `385e5dd6`. |
 | `f104bd85` | 09-18 | `managed_cli_feasibility.rs` imports `inference::credential::store::CredentialMethod` and `inference::provider::platform::ProviderPlatform` — Group C's managed-credential vault types. |
 | `2b9dfe28` | 09-19 | Edits a Bedrock `provider_workflow.rs` test; Bedrock isn't a fork provider yet (Group C Step 3). |
 
@@ -263,7 +263,11 @@ perceived size of the Step 1 decision itself.
    Group C Steps 2–5 below and Group B's four Group-C-dependent commits
    (`385e5dd6`, `38d4f5a5`, `f104bd85`, `2b9dfe28`).
 4. Group C Steps 2–5 — the multi-PR provider/credential rewrite, revised order
-   and detail in the scoping doc.
+   and detail in the scoping doc. Step 2's catalog-crate half is done (the
+   `frona-model-catalog` crate is vendored in and `inference/metadata`
+   rebuilt on it); its remaining half — the six shared-brand adapter files
+   and the `ModelProviderConfig` schema merge — and Steps 3–5 are still
+   open, per the scoping doc's "Step 2 progress" note.
 5. The `AppError` redesign for `d4186276`/`c5e95988` — independent of Group C,
    can happen in parallel.
 6. Group B's remaining four Podman/Kache dev-container commits (`341280b7`,
