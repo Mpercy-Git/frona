@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::core::Handle;
-use crate::core::config::{InferenceConfig, ModelProviderConfig, ProviderModel, RetryConfig};
+use crate::core::config::{InferenceConfig, ProviderModel, RetryConfig};
 use crate::inference::{
     error::InferenceError,
     provider::{

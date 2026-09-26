@@ -213,7 +213,7 @@ fn transcription_group(base: &ModelGroup) -> ModelGroup {
 pub async fn transcribe_images_in_history(
     history: &mut [RigMessage],
     vision_group: &ModelGroup,
-    registry: &ModelProviderRegistry,
+    _registry: &ModelProviderRegistry,
     usage_service: &UsageService,
     user_id: &str,
     agent_id: &str,
