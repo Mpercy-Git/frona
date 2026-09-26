@@ -1,7 +1,7 @@
 pub(crate) mod adapter;
 pub mod group;
 pub mod platform;
-pub(crate) mod registry;
+pub mod registry;
 pub mod validation;
 
 use std::future::Future;
