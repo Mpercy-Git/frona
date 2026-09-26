@@ -207,7 +207,9 @@ mod tests {
             catalog_provider: String::new(),
             provider_handle: Handle::const_validated("fixture"),
             model_id: id.into(),
-            provider: ProviderModel::Generic,
+            provider: ProviderModel::Generic {
+                params: Default::default(),
+            },
             request_settings: ModelRequestSettings {
                 max_tokens: Some(max),
                 temperature: Some(temperature),

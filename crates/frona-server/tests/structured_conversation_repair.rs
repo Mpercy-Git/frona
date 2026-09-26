@@ -19,8 +19,8 @@ mod helpers;
 use std::sync::Arc;
 
 use helpers::{
-    MockInternalTool, MockModelProvider, MockResponse, mock_context, test_model_group,
-    test_registry_with_group, test_usage_ctx, test_usage_service,
+    MockInternalTool, MockModelProvider, MockResponse, mock_context, test_model_group_with_provider,
+    test_usage_ctx, test_usage_service,
 };
 use serde::Deserialize;
 use surrealdb::Surreal;
@@ -91,13 +91,13 @@ async fn a_json_encoded_collection_is_repaired_before_submission() {
             "relations": "[\"works for\"]",
         }),
     )]));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -140,13 +140,13 @@ async fn an_unrepairable_field_gets_field_specific_feedback() {
             }),
         ),
     ]));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -192,13 +192,13 @@ async fn a_malformed_submission_is_returned_to_the_model_and_corrected() {
             serde_json::json!({ "classes": ["schema:Person"] }),
         ),
     ]));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -242,13 +242,13 @@ async fn the_correction_answers_the_submit_call_rather_than_arriving_as_a_user_m
             serde_json::json!({ "classes": ["schema:Person"] }),
         ),
     ]));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -298,13 +298,13 @@ async fn a_tool_call_batched_with_a_bad_submit_still_gets_its_result() {
             serde_json::json!({ "classes": ["schema:Person"] }),
         ),
     ]));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -352,13 +352,13 @@ async fn prose_instead_of_a_submission_is_asked_for_one_rather_than_hung_up_on()
             serde_json::json!({ "classes": ["schema:Person"] }),
         ),
     ]));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -393,13 +393,13 @@ async fn the_nudge_for_prose_is_not_addressed_to_a_tool_call() {
             serde_json::json!({ "classes": ["schema:Person"] }),
         ),
     ]));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -439,13 +439,13 @@ async fn prose_returns_one_missing_submission_per_request() {
             .map(|i| MockResponse::Text(format!("thinking aloud {i}")))
             .collect(),
     ));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -480,13 +480,13 @@ async fn malformed_submissions_do_not_consume_the_tool_turn_limit() {
             .map(|i| submit(&format!("call-{i}"), serde_json::json!({})))
             .collect(),
     ));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
 
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -526,7 +526,7 @@ async fn the_last_tool_turn_can_be_followed_by_a_submission() {
             serde_json::json!({ "classes": ["schema:Person"] }),
         ),
     ]));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
     let mut tools = AgentToolRegistry::empty();
     tools
         .register_required(Arc::new(MockInternalTool::new(
@@ -539,7 +539,7 @@ async fn the_last_tool_turn_can_be_followed_by_a_submission() {
         &usage,
         tools,
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -578,12 +578,12 @@ async fn a_rejected_submission_is_answered_before_the_next_attempt() {
             serde_json::json!({ "classes": ["schema:Person"] }),
         ),
     ]));
-    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider.clone());
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),
@@ -609,12 +609,12 @@ async fn rejection_without_a_pending_submission_is_refused() {
     let db = test_db().await;
     let usage = test_usage_service(&db);
     let provider = Arc::new(MockModelProvider::new(Vec::new()));
-    let registry = test_registry_with_group("mock", provider, "test", test_model_group());
+    let group = test_model_group_with_provider("mock", provider);
     let mut convo = StructuredConversation::<Classification>::new(
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
-        test_model_group(),
+        group,
         "system".into(),
         "classify this".into(),
         test_usage_ctx(),

@@ -748,7 +748,7 @@ pub fn mock_context() -> InferenceContext {
     )
 }
 
-fn model_config(provider: &str, model_id: &str) -> ModelConfig {
+pub fn model_config(provider: &str, model_id: &str) -> ModelConfig {
     ModelConfig {
         catalog_provider: provider.to_string(),
         provider_handle: frona::core::Handle::try_new(provider).unwrap(),
@@ -839,6 +839,18 @@ pub fn test_registry_with_group(
     let mut model_groups = HashMap::new();
     model_groups.insert(group_name.to_string(), group);
     ModelProviderRegistry::for_testing(providers, model_groups)
+}
+
+/// `test_model_group()` with a single named provider wired into
+/// `ModelGroup.providers`, so direct `ModelGroup` dispatch (bypassing
+/// `ModelProviderRegistry`) can actually reach the mock provider.
+pub fn test_model_group_with_provider(
+    provider_name: &str,
+    provider: Arc<dyn ModelProvider>,
+) -> ModelGroup {
+    let mut group = test_model_group();
+    group.providers = Arc::new([(provider_name.to_string(), provider)].into());
+    group
 }
 
 pub fn init_metrics() {

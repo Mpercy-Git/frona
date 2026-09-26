@@ -583,7 +583,7 @@ async fn fallback_requests_use_their_own_settings() {
             Arc::new(runtime.providers()),
         )
         .unwrap();
-    let registry = ModelProviderRegistry::new(runtime.providers(), groups);
+    let registry = ModelProviderRegistry::for_testing(runtime.providers(), groups);
     let usage = UsageService::new(
         ModelCatalogStore::new(ModelCatalogSnapshot::empty()),
         SurrealRepo::new(db),

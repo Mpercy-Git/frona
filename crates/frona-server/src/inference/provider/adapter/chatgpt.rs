@@ -523,7 +523,7 @@ mod tests {
                     Arc::new(runtime.providers()),
                 )
                 .unwrap();
-            crate::inference::provider::registry::ModelProviderRegistry::new(
+            crate::inference::provider::registry::ModelProviderRegistry::for_testing(
                 runtime.providers(),
                 groups,
             )
@@ -607,7 +607,7 @@ mod tests {
                     Arc::new(runtime.providers()),
                 )
                 .unwrap();
-            crate::inference::provider::registry::ModelProviderRegistry::new(
+            crate::inference::provider::registry::ModelProviderRegistry::for_testing(
                 runtime.providers(),
                 groups,
             )
