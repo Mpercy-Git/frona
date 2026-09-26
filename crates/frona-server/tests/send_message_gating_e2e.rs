@@ -24,7 +24,7 @@ use frona::db::init as db_init;
 use frona::db::repo::agents::SurrealAgentRepo;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::DefaultConversationBuilder;
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::registry::ModelProviderRegistry;
 use frona::storage::StorageService;
 use helpers::{MockModelProvider, test_model_group};
 use surrealdb::Surreal;

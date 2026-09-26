@@ -94,7 +94,6 @@ async fn a_json_encoded_collection_is_repaired_before_submission() {
     let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
@@ -144,7 +143,6 @@ async fn an_unrepairable_field_gets_field_specific_feedback() {
     let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
@@ -197,7 +195,6 @@ async fn a_malformed_submission_is_returned_to_the_model_and_corrected() {
     let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
@@ -248,7 +245,6 @@ async fn the_correction_answers_the_submit_call_rather_than_arriving_as_a_user_m
     let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
@@ -305,7 +301,6 @@ async fn a_tool_call_batched_with_a_bad_submit_still_gets_its_result() {
     let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
@@ -360,7 +355,6 @@ async fn prose_instead_of_a_submission_is_asked_for_one_rather_than_hung_up_on()
     let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
@@ -402,7 +396,6 @@ async fn the_nudge_for_prose_is_not_addressed_to_a_tool_call() {
     let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
@@ -449,7 +442,6 @@ async fn prose_returns_one_missing_submission_per_request() {
     let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
@@ -491,7 +483,6 @@ async fn malformed_submissions_do_not_consume_the_tool_turn_limit() {
     let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
 
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
@@ -545,7 +536,6 @@ async fn the_last_tool_turn_can_be_followed_by_a_submission() {
         .unwrap();
 
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         tools,
         mock_context(),
@@ -590,7 +580,6 @@ async fn a_rejected_submission_is_answered_before_the_next_attempt() {
     ]));
     let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),
@@ -622,7 +611,6 @@ async fn rejection_without_a_pending_submission_is_refused() {
     let provider = Arc::new(MockModelProvider::new(Vec::new()));
     let registry = test_registry_with_group("mock", provider, "test", test_model_group());
     let mut convo = StructuredConversation::<Classification>::new(
-        &registry,
         &usage,
         AgentToolRegistry::empty(),
         mock_context(),

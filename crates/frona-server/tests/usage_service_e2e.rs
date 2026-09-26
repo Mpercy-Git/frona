@@ -19,7 +19,7 @@ use frona::inference::error::InferenceError;
 use frona::inference::metadata::catalog::Cost;
 use frona::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, ModelEntry};
 use frona::inference::provider::{ModelProvider, ModelRef};
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::registry::ModelProviderRegistry;
 use frona::inference::usage::{
     CompactionTarget, InferenceKind, InferenceUsage, InferenceUsageRepository, TimeBucket,
     UsageContext, UsageService,

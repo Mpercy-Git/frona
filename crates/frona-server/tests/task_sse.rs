@@ -96,7 +96,7 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
     model_groups.insert("primary".to_string(), test_model_group());
 
     let provider_registry =
-        frona::inference::registry::ModelProviderRegistry::for_testing(providers, model_groups);
+        frona::inference::provider::registry::ModelProviderRegistry::for_testing(providers, model_groups);
 
     let user_service = frona::auth::UserService::new(SurrealRepo::new(db.clone()), &config.cache);
     let prompt_loader = frona::agent::prompt::PromptLoader::new(format!("{base}/prompts"));

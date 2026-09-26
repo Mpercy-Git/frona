@@ -651,7 +651,7 @@ async fn test_fallback_main_fails_fallback_succeeds() {
         "fallback".to_string(),
         fallback_provider.clone() as Arc<dyn frona::inference::provider::ModelProvider>,
     );
-    let registry = frona::inference::registry::ModelProviderRegistry::for_testing(
+    let registry = frona::inference::provider::registry::ModelProviderRegistry::for_testing(
         providers,
         std::collections::HashMap::new(),
     );
@@ -697,7 +697,7 @@ async fn test_fallback_all_fail() {
         "fallback".to_string(),
         fallback_provider as Arc<dyn frona::inference::provider::ModelProvider>,
     );
-    let registry = frona::inference::registry::ModelProviderRegistry::for_testing(
+    let registry = frona::inference::provider::registry::ModelProviderRegistry::for_testing(
         providers,
         std::collections::HashMap::new(),
     );
@@ -771,7 +771,7 @@ async fn test_fallback_non_retryable_skips_retry() {
         "fallback".to_string(),
         fallback_provider.clone() as Arc<dyn frona::inference::provider::ModelProvider>,
     );
-    let registry = frona::inference::registry::ModelProviderRegistry::for_testing(
+    let registry = frona::inference::provider::registry::ModelProviderRegistry::for_testing(
         providers,
         std::collections::HashMap::new(),
     );
@@ -822,7 +822,7 @@ async fn test_fallback_multiple_fallbacks_order() {
         "fb2".to_string(),
         fb2_provider as Arc<dyn frona::inference::provider::ModelProvider>,
     );
-    let registry = frona::inference::registry::ModelProviderRegistry::for_testing(
+    let registry = frona::inference::provider::registry::ModelProviderRegistry::for_testing(
         providers,
         std::collections::HashMap::new(),
     );

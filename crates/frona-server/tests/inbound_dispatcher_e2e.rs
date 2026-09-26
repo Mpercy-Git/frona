@@ -14,7 +14,7 @@ use frona::core::repository::Repository;
 use frona::core::state::AppState;
 use frona::db::init as db_init;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::registry::ModelProviderRegistry;
 use frona::space::models::Space;
 use frona::storage::StorageService;
 use helpers::{MockModelProvider, MockResponse, init_metrics, test_model_group};

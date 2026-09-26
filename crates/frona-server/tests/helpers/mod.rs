@@ -332,7 +332,7 @@ impl MockModelProvider {
 impl ModelProvider for MockModelProvider {
     async fn inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
@@ -390,7 +390,7 @@ impl ModelProvider for MockModelProvider {
 
     async fn stream_inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<RigMessage>,
         _tools: Vec<RigToolDefinition>,
@@ -461,7 +461,7 @@ impl ModelProvider for MockModelProvider {
 
     async fn structured_inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<RigMessage>,
         _schema: serde_json::Value,
@@ -967,7 +967,7 @@ pub async fn test_chat_service_with_db() -> (
         test_policy_service(&db),
         user_service.clone(),
     );
-    let provider_registry = frona::inference::registry::ModelProviderRegistry::for_testing(
+    let provider_registry = frona::inference::provider::registry::ModelProviderRegistry::for_testing(
         HashMap::new(),
         HashMap::new(),
     );
