@@ -172,7 +172,7 @@ pub fn strip_defaults(value: &mut serde_json::Value) {
     strip_defaults_recursive(value, &defaults);
 
     strip_map_entry_defaults::<ModelProviderConfig>(value, "providers");
-    strip_map_entry_defaults::<ModelGroupConfig>(value, "models");
+    strip_model_group_defaults(value);
 }
 
 fn strip_map_entry_defaults<T: Default + serde::Serialize>(
@@ -194,6 +194,40 @@ fn strip_map_entry_defaults<T: Default + serde::Serialize>(
     }
     if map.is_empty() {
         value.as_object_mut().unwrap().remove(key);
+    }
+}
+
+/// Like `strip_map_entry_defaults::<ModelGroupConfig>`, but never removes a
+/// model group's `provider` field, even when it matches
+/// `ModelGroupConfig::default().provider` (`"generic"`). `provider` is the
+/// serde tag identifying which provider connection a group's `model`
+/// resolves against, not just another value that happens to equal the
+/// default — stripping it produces a `config.yaml` that panics on the next
+/// startup with `missing configuration field "models.primary.provider"`.
+fn strip_model_group_defaults(value: &mut serde_json::Value) {
+    let Some(map) = value.get_mut("models").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    let entry_defaults = serde_json::to_value(ModelGroupConfig::default()).unwrap_or_default();
+    let keys: Vec<String> = map.keys().cloned().collect();
+    for k in keys {
+        if let Some(entry) = map.get_mut(&k) {
+            let provider = entry.get("provider").cloned();
+            strip_defaults_recursive(entry, &entry_defaults);
+            if let Some(provider) = provider {
+                entry
+                    .as_object_mut()
+                    .expect("model group entry")
+                    .entry("provider".to_string())
+                    .or_insert(provider);
+            }
+            if entry.as_object().is_some_and(|o| o.is_empty()) {
+                map.remove(&k);
+            }
+        }
+    }
+    if map.is_empty() {
+        value.as_object_mut().unwrap().remove("models");
     }
 }
 
