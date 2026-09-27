@@ -9,12 +9,12 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use frona::core::metrics;
 use frona::db::repo::generic::SurrealRepo;
+use frona::inference::ModelGroup;
 use frona::inference::Usage;
 use frona::inference::config::RetryConfig;
 use frona::inference::error::InferenceError;
 use frona::inference::provider::registry::ModelProviderRegistry;
 use frona::inference::provider::{ModelConfig, ModelProvider, SUBMIT_TOOL_NAME};
-use frona::inference::ModelGroup;
 use frona::policy::service::PolicyService;
 use frona::tool::manager::ToolManager;
 use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
@@ -979,10 +979,11 @@ pub async fn test_chat_service_with_db() -> (
         test_policy_service(&db),
         user_service.clone(),
     );
-    let provider_registry = frona::inference::provider::registry::ModelProviderRegistry::for_testing(
-        HashMap::new(),
-        HashMap::new(),
-    );
+    let provider_registry =
+        frona::inference::provider::registry::ModelProviderRegistry::for_testing(
+            HashMap::new(),
+            HashMap::new(),
+        );
 
     let usage_service = test_usage_service(&db);
 

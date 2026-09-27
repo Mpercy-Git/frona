@@ -54,7 +54,11 @@ fn has_non_retryable_status(msg: &str) -> bool {
 }
 
 impl InferenceError {
-    pub fn for_model(self, model: &crate::inference::provider::ModelConfig, retry_count: u32) -> Self {
+    pub fn for_model(
+        self,
+        model: &crate::inference::provider::ModelConfig,
+        retry_count: u32,
+    ) -> Self {
         Self::ModelFailed {
             provider: model.provider_name().into(),
             model: model.model_id.clone(),

@@ -773,14 +773,9 @@ pub(crate) fn build_provider(
                 hook = hooks::anthropic
             )
         }
-        FactoryKind::Groq => build_listable_key_client!(
-            name,
-            config,
-            endpoint,
-            groq,
-            counter,
-            hook = hooks::groq
-        ),
+        FactoryKind::Groq => {
+            build_listable_key_client!(name, config, endpoint, groq, counter, hook = hooks::groq)
+        }
         FactoryKind::OpenRouter => {
             let key = require_api_key(name, config)?;
             let mut builder = openrouter::Client::builder()

@@ -19,8 +19,8 @@ mod helpers;
 use std::sync::Arc;
 
 use helpers::{
-    MockInternalTool, MockModelProvider, MockResponse, mock_context, test_model_group_with_provider,
-    test_usage_ctx, test_usage_service,
+    MockInternalTool, MockModelProvider, MockResponse, mock_context,
+    test_model_group_with_provider, test_usage_ctx, test_usage_service,
 };
 use serde::Deserialize;
 use surrealdb::Surreal;

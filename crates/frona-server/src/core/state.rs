@@ -479,9 +479,10 @@ impl AppState {
             &config.auth.encryption_secret,
             crate::credential::managed::GLOBAL_CONNECTION_ID.into(),
         );
-        let managed_resolver = Arc::new(crate::credential::managed::resolver::ManagedResolver::new(
-            crate::credential::managed::integration::registered(),
-        ));
+        let managed_resolver =
+            Arc::new(crate::credential::managed::resolver::ManagedResolver::new(
+                crate::credential::managed::integration::registered(),
+            ));
         let login_service = crate::credential::managed::login::ManagedLoginService::registered();
         let vault_service = VaultService::new(
             vault_connection_repo,

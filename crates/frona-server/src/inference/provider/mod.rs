@@ -349,7 +349,10 @@ where
 }
 
 type ModelDecorator<C> = Arc<
-    dyn Fn(<C as rig_core::client::CompletionClient>::CompletionModel, &ModelConfig) -> <C as rig_core::client::CompletionClient>::CompletionModel
+    dyn Fn(
+            <C as rig_core::client::CompletionClient>::CompletionModel,
+            &ModelConfig,
+        ) -> <C as rig_core::client::CompletionClient>::CompletionModel
         + Send
         + Sync,
 >;

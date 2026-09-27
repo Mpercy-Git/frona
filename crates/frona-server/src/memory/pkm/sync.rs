@@ -19,8 +19,8 @@ use crate::core::user_config::{UserConfigPatch, UserMemoryConfig};
 use crate::db::repo::pkm::{
     PageEditBase, PageEditCommit, PageEditMemoryOp, PageEditWrite, PkmRepo,
 };
-use crate::inference::ModelProviderRegistry;
 use crate::inference::ModelGroup;
+use crate::inference::ModelProviderRegistry;
 use crate::inference::usage::{InferenceKind, UsageContext};
 
 use super::consolidation::{

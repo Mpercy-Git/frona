@@ -640,8 +640,10 @@ async fn test_fallback_main_fails_fallback_succeeds() {
         "fallback success".into(),
     )]));
 
-    let mut providers: std::collections::HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
-        std::collections::HashMap::new();
+    let mut providers: std::collections::HashMap<
+        String,
+        Arc<dyn frona::inference::provider::ModelProvider>,
+    > = std::collections::HashMap::new();
     providers.insert("mock".to_string(), main_provider.clone());
     providers.insert("fallback".to_string(), fallback_provider.clone());
 
@@ -677,8 +679,10 @@ async fn test_fallback_all_fail() {
         MockResponse::Error(InferenceError::InferenceFailed("fallback err retry".into())),
     ]));
 
-    let mut providers: std::collections::HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
-        std::collections::HashMap::new();
+    let mut providers: std::collections::HashMap<
+        String,
+        Arc<dyn frona::inference::provider::ModelProvider>,
+    > = std::collections::HashMap::new();
     providers.insert("mock".to_string(), main_provider);
     providers.insert("fallback".to_string(), fallback_provider);
 
@@ -740,8 +744,10 @@ async fn test_fallback_non_retryable_skips_retry() {
         "fallback ok".into(),
     )]));
 
-    let mut providers: std::collections::HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
-        std::collections::HashMap::new();
+    let mut providers: std::collections::HashMap<
+        String,
+        Arc<dyn frona::inference::provider::ModelProvider>,
+    > = std::collections::HashMap::new();
     providers.insert("mock".to_string(), main_provider.clone());
     providers.insert("fallback".to_string(), fallback_provider.clone());
 
@@ -778,8 +784,10 @@ async fn test_fallback_multiple_fallbacks_order() {
         "fb2 ok".into(),
     )]));
 
-    let mut providers: std::collections::HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
-        std::collections::HashMap::new();
+    let mut providers: std::collections::HashMap<
+        String,
+        Arc<dyn frona::inference::provider::ModelProvider>,
+    > = std::collections::HashMap::new();
     providers.insert("mock".to_string(), main_provider);
     providers.insert("fb1".to_string(), fb1_provider);
     providers.insert("fb2".to_string(), fb2_provider);

@@ -13,14 +13,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use frona::chat::broadcast::BroadcastService;
-use frona::db::repo::generic::SurrealRepo;
 use frona::core::Handle;
+use frona::db::repo::generic::SurrealRepo;
+use frona::inference::ModelGroup;
 use frona::inference::config::RetryConfig;
 use frona::inference::error::InferenceError;
 use frona::inference::metadata::catalog::Cost;
 use frona::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, ModelEntry};
 use frona::inference::provider::{ModelConfig, ModelProvider};
-use frona::inference::ModelGroup;
 use frona::inference::usage::{
     CompactionTarget, InferenceKind, InferenceUsage, InferenceUsageRepository, TimeBucket,
     UsageContext, UsageService,
@@ -144,7 +144,10 @@ async fn single_success_records_one_row_with_zero_retry_and_no_fallback() {
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
-        &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
+        &fast_retry_model_group(
+            vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+            vec![],
+        ),
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -189,7 +192,10 @@ async fn retry_then_success_records_retry_count_and_overhead() {
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
-        &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
+        &fast_retry_model_group(
+            vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+            vec![],
+        ),
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -227,15 +233,9 @@ async fn main_fails_fallback_succeeds_records_fallback_index_and_model_ref() {
     );
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
-    let out = text_inference(
-        &group,
-        "sys",
-        vec![RigMessage::user("hi")],
-        &svc,
-        &ctx,
-    )
-    .await
-    .unwrap();
+    let out = text_inference(&group, "sys", vec![RigMessage::user("hi")], &svc, &ctx)
+        .await
+        .unwrap();
     assert_eq!(out, "ok");
 
     let rows = list_all_rows(&db).await;
@@ -273,15 +273,9 @@ async fn second_fallback_records_fallback_index_two() {
     );
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
-    text_inference(
-        &group,
-        "sys",
-        vec![RigMessage::user("hi")],
-        &svc,
-        &ctx,
-    )
-    .await
-    .unwrap();
+    text_inference(&group, "sys", vec![RigMessage::user("hi")], &svc, &ctx)
+        .await
+        .unwrap();
 
     let rows = list_all_rows(&db).await;
     assert_eq!(rows.len(), 1);
@@ -336,7 +330,10 @@ async fn aggregate_by_chat_sums_rows() {
     // Three calls scoped to the same chat.
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -380,7 +377,10 @@ async fn aggregate_by_kind_groups_by_kind_tag() {
 
     for ctx in [&chat_ctx, &title_ctx, &title_ctx] {
         text_inference(
-            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -464,7 +464,10 @@ async fn aggregate_by_user_totals_across_chats() {
 
     for (chat, msg) in [("c1", "m1"), ("c2", "m2"), ("c3", "m3")] {
         text_inference(
-            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -591,7 +594,10 @@ async fn percentile_query_returns_scalars_after_array_unwrap() {
     ]));
     for msg_id in ["m1", "m2", "m3", "m4", "m5"] {
         text_inference(
-            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -640,7 +646,10 @@ async fn latency_by_model_computes_percentiles_in_sql() {
     ]));
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -685,7 +694,10 @@ async fn latency_by_bucket_computes_percentiles_in_sql() {
     ]));
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -742,7 +754,10 @@ async fn top_chats_by_user_skips_rootless_rows() {
         &user_compaction_ctx,
     ] {
         text_inference(
-            &fast_retry_model_group(vec![("mock", provider.clone() as Arc<dyn ModelProvider>)], vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
