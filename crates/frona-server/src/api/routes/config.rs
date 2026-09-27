@@ -9,7 +9,7 @@ use crate::core::state::AppState;
 use crate::policy::models::PolicyAction;
 
 use super::super::error::ApiError;
-use super::super::middleware::auth::AuthUser;
+use super::super::middleware::auth::{AdminUser, AuthUser};
 
 /// Server configuration is operator territory. `GET` stays open to any signed-in
 /// user (it is redacted, and the settings UI reads it to render), but writing it
@@ -45,6 +45,30 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/config/schema", get(get_schema))
         .route("/api/config", get(get_config).put(update_config))
+        .route(
+            "/api/config/environment-variables",
+            get(list_environment_variables),
+        )
+}
+
+/// Names likely to hold a secret, by a keyword in the variable's own name -
+/// heuristic, not a schema, since the server has no registry of every
+/// integration's env var names. Lets the settings UI offer `${VAR}`
+/// references for provider credentials without ever exposing values.
+const ENV_VAR_SECRET_KEYWORDS: &[&str] = &["API", "KEY", "TOKEN", "SECRET", "CREDENTIAL"];
+
+async fn list_environment_variables(_admin: AdminUser) -> Json<Vec<String>> {
+    let mut names: Vec<String> = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| {
+            let upper = name.to_ascii_uppercase();
+            ENV_VAR_SECRET_KEYWORDS
+                .iter()
+                .any(|keyword| upper.contains(keyword))
+        })
+        .collect();
+    names.sort_unstable();
+    Json(names)
 }
 
 /// The response shape for both direct config saves (`PUT /api/config`) and the
