@@ -11,13 +11,13 @@ use crate::policy::models::PolicyAction;
 use super::super::error::ApiError;
 use super::super::middleware::auth::{AdminUser, AuthUser};
 
-/// Server configuration is operator territory. `GET` stays open to any signed-in
-/// user (it is redacted, and the settings UI reads it to render), but writing it
-/// — provider credentials, billing terms, auth secrets — is gated on the same
-/// `list_users` capability the log stream uses to mean "this person operates the
-/// server". The first registered user is promoted to `admins` by
-/// `ensure_admin_invariant` during registration, so the setup wizard still works
-/// on a fresh install.
+/// Server configuration is operator territory, reading it included — even
+/// redacted, it names every configured provider, model group and billing
+/// term. Gated on the same `list_users` capability the log stream uses to
+/// mean "this person operates the server" (rather than a blanket admin-group
+/// check) so a deployment's own policies stay in control of who that is. The
+/// first registered user is promoted to `admins` by `ensure_admin_invariant`
+/// during registration, so the setup wizard still works on a fresh install.
 async fn require_operator(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
     let caller = state
         .user_service
@@ -84,15 +84,17 @@ pub(super) fn response(mut result: SaveResult) -> Result<Json<Value>, ApiError> 
     })))
 }
 
-async fn get_schema(_auth: AuthUser) -> Json<serde_json::Value> {
+async fn get_schema(auth: AuthUser, State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    require_operator(&state, &auth).await?;
     let schema = schemars::schema_for!(Config);
-    Json(serde_json::to_value(schema).unwrap_or_default())
+    Ok(Json(serde_json::to_value(schema).unwrap_or_default()))
 }
 
 async fn get_config(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    require_operator(&state, &auth).await?;
     // The active, already-validated snapshot `ConfigService` loaded at startup
     // (disk YAML + FRONA_* env overrides) — not the persisted document alone,
     // which can differ from what's actually running until a restart.
