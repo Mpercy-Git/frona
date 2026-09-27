@@ -344,7 +344,10 @@ mod tests {
     #[test]
     fn unknown_respects_toggle() {
         let c = InferenceConfig::default();
-        assert_eq!(resolve_vision_capability(&mref("unknown", "m"), &c, None), None);
+        assert_eq!(
+            resolve_vision_capability(&mref("unknown", "m"), &c, None),
+            None
+        );
         let mut c2 = InferenceConfig::default();
         c2.transcribe_when_vision_unknown = true;
         assert_eq!(
