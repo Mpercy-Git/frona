@@ -14,7 +14,7 @@ use crate::auth::token::models::ApiToken;
 use crate::auth::token::repository::TokenRepository;
 use crate::auth::{AuthService, UserService};
 use crate::core::Handle;
-use crate::core::config::Config;
+use crate::core::config::ConfigService;
 use crate::db::init as db;
 use crate::db::repo::generic::SurrealRepo;
 
@@ -112,7 +112,8 @@ pub async fn run_reset_password(args: &[String]) -> Result<(), Box<dyn std::erro
     };
     AuthService::validate_password(&password)?;
 
-    let loaded = Config::load();
+    let loaded = ConfigService::load(crate::core::config::config_file_path())
+        .map_err(|e| format!("{e}"))?;
     let config = loaded.config;
     let surreal = db::init(&config.database.path).await?;
 

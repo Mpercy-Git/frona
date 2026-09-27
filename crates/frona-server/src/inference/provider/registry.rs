@@ -171,13 +171,19 @@ impl ModelProviderRegistry {
         self.model_groups.values()
     }
 
-    pub fn for_testing(
+    /// Build a registry directly from already-resolved providers and model
+    /// groups, without going through [`from_config`](Self::from_config)'s
+    /// config-driven provider construction. Used by
+    /// [`ModelProviderService`](crate::inference::provider::service::ModelProviderService),
+    /// whose providers are instead built from the managed-credential vault
+    /// via `RuntimeCredentials`.
+    pub fn new(
         providers: HashMap<String, Arc<dyn ModelProvider>>,
         model_groups: HashMap<String, ModelGroup>,
     ) -> Self {
         let providers = Arc::new(providers);
         // Mirror `from_config`/`parse_model_groups_with_catalog`, which wires
-        // the resolved providers map into every group it builds: a test's
+        // the resolved providers map into every group it builds: a caller's
         // model groups must carry the same providers the registry hands out,
         // or direct `ModelGroup` dispatch fails at runtime with
         // `ProviderNotConfigured` despite the registry itself being populated.
@@ -194,6 +200,13 @@ impl ModelProviderRegistry {
             protocol_defaults: Arc::new(HashMap::new()),
             inference: InferenceConfig::default(),
         }
+    }
+
+    pub fn for_testing(
+        providers: HashMap<String, Arc<dyn ModelProvider>>,
+        model_groups: HashMap<String, ModelGroup>,
+    ) -> Self {
+        Self::new(providers, model_groups)
     }
 
     pub fn resolve(&self, reference: &ModelRef) -> Result<ModelGroup, InferenceError> {

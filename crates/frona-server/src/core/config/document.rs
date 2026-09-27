@@ -32,6 +32,21 @@ pub(super) fn read_file(path: &std::path::Path) -> Result<Vec<u8>, crate::core::
 /// Provider fields that are sensitive (applied to each provider in the map).
 pub const SENSITIVE_PROVIDER_FIELDS: &[&str] = &["api_key"];
 
+impl Config {
+    /// Billing kind per configured provider name, for the cost-reporting path.
+    ///
+    /// Snapshotted rather than read live: the provider registry itself is built
+    /// from this config at boot and a provider change needs a restart to take
+    /// effect, so a live read would only ever disagree with what actually
+    /// served the call.
+    pub fn provider_billing_kinds(&self) -> std::collections::HashMap<String, ProviderBillingKind> {
+        self.providers
+            .iter()
+            .map(|(name, cfg)| (name.to_string(), cfg.effective_billing(name.as_str()).kind))
+            .collect()
+    }
+}
+
 /// Panics on explicit invalid config (fail-fast at startup, not silently mis-schedule).
 pub fn resolve_server_timezone(server: &mut ServerConfig) {
     if !server.timezone.is_empty() {
