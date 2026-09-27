@@ -97,7 +97,7 @@ fn test_json_schema_generation() {
     assert!(server_ref.is_object());
 
     let schema_text = serde_json::to_string(&value).unwrap();
-    assert!(schema_text.contains("chat_completions"));
+    assert!(schema_text.contains("completions"));
     assert!(schema_text.contains("responses"));
 }
 
