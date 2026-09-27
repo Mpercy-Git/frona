@@ -88,13 +88,13 @@ impl ConfigService {
                 .try_parsing(true),
         );
 
-        let built = builder
-            .build()
-            .map_err(|error| AppError::Validation(error.to_string()))?;
+        let built = builder.build().map_err(|error| {
+            AppError::Validation(config_load_error(&error.to_string(), &config_path))
+        })?;
 
-        let mut config: Config = built
-            .try_deserialize()
-            .map_err(|error| AppError::Validation(error.to_string()))?;
+        let mut config: Config = built.try_deserialize().map_err(|error| {
+            AppError::Validation(config_load_error(&error.to_string(), &config_path))
+        })?;
 
         // Preserve provider credential source references for runtime precedence.
         // Other configuration fields retain the existing expansion behavior.
@@ -151,4 +151,41 @@ impl ConfigService {
             revision,
         })
     }
+}
+
+/// A config error is the operator's to act on - name the file being read, and
+/// for the mistakes that have an obvious fix, say what to write. Ported from
+/// the pre-`ConfigService` `config.rs`'s `config_load_error`/
+/// `missing_provider_group`: ad-hoc-edited or older-build config.yaml files
+/// commonly omit a model group's `provider:` tag, so that specific case gets
+/// a worked example rather than the raw deserialize error alone.
+fn config_load_error(err: &str, path: &Path) -> String {
+    let mut msg = format!("Failed to load config from {}: {err}", path.display());
+
+    if let Some(group) = missing_provider_group(err) {
+        msg.push_str(&format!(
+            "\n\nhint: every model group needs a `provider:` naming its backend:\
+             \n\n  models:\
+             \n    {group}:\
+             \n      provider: anthropic   # or openai, openrouter, gemini, groq, azure, ollama, ...\
+             \n      model: <model id>\
+             \n\nUse `provider: generic` for any other OpenAI-compatible endpoint \
+             (vLLM, LM Studio, llama.cpp, a LiteLLM proxy)."
+        ));
+    }
+
+    msg
+}
+
+/// Name of the `models` entry a "missing field" error points at, if that is
+/// what `err` is. Matched on the field path rather than the surrounding
+/// wording, which belongs to the `config` crate.
+fn missing_provider_group(err: &str) -> Option<&str> {
+    if !err.contains("missing") {
+        return None;
+    }
+    let (_, after) = err.split_once("models.")?;
+    let (group, rest) = after.split_once('.')?;
+    let rest = rest.trim_end_matches(['"', '\'', '`', '.']);
+    (!group.is_empty() && rest.ends_with("provider")).then_some(group)
 }

@@ -93,15 +93,31 @@ async fn get_schema(
     Ok(Json(serde_json::to_value(schema).unwrap_or_default()))
 }
 
+/// A config file the server cannot read is the operator's to fix, not a bug
+/// in the request - so it answers 422 with the loader's own message (which
+/// names the file and, for the common mistakes, what to write) rather than a
+/// 500 the client renders as a bare "Server error".
+fn unreadable_config(error: crate::core::error::AppError) -> ApiError {
+    let message = error.to_string();
+    tracing::error!("{message}");
+    ApiError(crate::core::error::AppError::Http {
+        status: 422,
+        message,
+    })
+}
+
 async fn get_config(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     require_operator(&state, &auth).await?;
-    // The active, already-validated snapshot `ConfigService` loaded at startup
-    // (disk YAML + FRONA_* env overrides) — not the persisted document alone,
-    // which can differ from what's actually running until a restart.
-    let mut value = serde_json::to_value(&*state.config_service.active())
+    // Rebuilt live from disk + FRONA_* env overrides on every request, the
+    // same way the process does at startup - not `config_service.active()`
+    // alone, which is a snapshot from server startup and won't reflect an
+    // out-of-band edit (or a now-unreadable file) until a restart reloads it.
+    let loaded = crate::core::config::ConfigService::load(crate::core::config::config_file_path())
+        .map_err(unreadable_config)?;
+    let mut value = serde_json::to_value(&loaded.config)
         .map_err(|e| ApiError(crate::core::error::AppError::Internal(e.to_string())))?;
     redact_config_for_api(&mut value);
     Ok(Json(value))

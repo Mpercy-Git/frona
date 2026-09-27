@@ -325,7 +325,7 @@ mod tests {
         let mut c = InferenceConfig::default();
         c.vision_models = vec!["some-model".into()];
         assert_eq!(
-            resolve_vision_capability(&mref("x", "some-model"), &c, None),
+            resolve_vision_capability(&mref("unknown", "some-model"), &c, None),
             Some(true)
         );
     }
@@ -336,7 +336,7 @@ mod tests {
         c.vision_models = vec!["m".into()];
         c.text_only_models = vec!["m".into()];
         assert_eq!(
-            resolve_vision_capability(&mref("x", "m"), &c, None),
+            resolve_vision_capability(&mref("unknown", "m"), &c, None),
             Some(false)
         );
     }
@@ -344,11 +344,11 @@ mod tests {
     #[test]
     fn unknown_respects_toggle() {
         let c = InferenceConfig::default();
-        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c, None), None);
+        assert_eq!(resolve_vision_capability(&mref("unknown", "m"), &c, None), None);
         let mut c2 = InferenceConfig::default();
         c2.transcribe_when_vision_unknown = true;
         assert_eq!(
-            resolve_vision_capability(&mref("x", "m"), &c2, None),
+            resolve_vision_capability(&mref("unknown", "m"), &c2, None),
             Some(false)
         );
     }
@@ -357,11 +357,11 @@ mod tests {
     fn catalog_passes_through_without_overrides() {
         let c = InferenceConfig::default();
         assert_eq!(
-            resolve_vision_capability(&mref("x", "m"), &c, Some(true)),
+            resolve_vision_capability(&mref("unknown", "m"), &c, Some(true)),
             Some(true)
         );
         assert_eq!(
-            resolve_vision_capability(&mref("x", "m"), &c, Some(false)),
+            resolve_vision_capability(&mref("unknown", "m"), &c, Some(false)),
             Some(false)
         );
     }

@@ -499,6 +499,21 @@ async fn hydrate_projects_durable_bindings_into_env_vars() {
         .await
         .unwrap();
 
+    // A durable binding is re-authorized against its backing grant on every
+    // resolve (so revoking the grant revokes access even if the binding row
+    // lingers) - production always creates both together (see
+    // tool/request_credentials.rs's on_resume). Match that pairing here.
+    svc.create_grant(
+        "user1",
+        Principal::agent("agent1"),
+        "local",
+        &credential.id,
+        "github",
+        &GrantDuration::Permanent,
+    )
+    .await
+    .unwrap();
+
     svc.create_binding(
         "user1",
         Principal::agent("agent1"),
