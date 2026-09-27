@@ -8,15 +8,6 @@ use surrealdb::types::SurrealValue;
 
 use crate::core::Handle;
 
-const ENV_PREFIX: &str = "FRONA_";
-
-const EXCLUDED_ENV_VARS: &[&str] = &[
-    "FRONA_CONFIG",
-    "FRONA_LOG_CONFIG",
-    "FRONA_LOG_LEVEL",
-    "FRONA_SERVER_DATA_DIR",
-];
-
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -606,7 +597,7 @@ pub struct CommonModelFields {
 #[derive(
     Debug, Clone, Default, Deserialize, Serialize, JsonSchema, frona_derive::ParameterMetadata,
 )]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AnthropicThinking {
     #[serde(rename = "type")]
     #[schemars(description = "'enabled' or 'disabled'.")]
@@ -865,6 +856,32 @@ pub enum ApiSurface {
     HuggingFace,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdapterId {
+    Openai,
+    Anthropic,
+    Gemini,
+    Bedrock,
+    Cohere,
+    Ollama,
+    Huggingface,
+}
+
+impl AdapterId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::Bedrock => "bedrock",
+            Self::Cohere => "cohere",
+            Self::Ollama => "ollama",
+            Self::Huggingface => "huggingface",
+        }
+    }
+}
+
 impl From<OpenAiApi> for ApiSurface {
     fn from(value: OpenAiApi) -> Self {
         match value {
@@ -890,6 +907,7 @@ impl TryFrom<ApiSurface> for OpenAiApi {
 #[derive(
     Debug, Clone, Default, Deserialize, Serialize, JsonSchema, frona_derive::ParameterMetadata,
 )]
+#[serde(default, deny_unknown_fields)]
 #[parameter(prefix = "inferenceConfig")]
 pub struct BedrockParams {
     #[serde(rename = "topP")]
@@ -1048,6 +1066,9 @@ impl From<String> for ProviderModel {
 impl ProviderModel {
     pub fn from_name(name: &str) -> Self {
         match name {
+            "bedrock" => Self::Bedrock {
+                params: Default::default(),
+            },
             "anthropic" => Self::Anthropic {
                 params: Default::default(),
             },
@@ -1203,37 +1224,7 @@ impl ModelGroupConfig {
     }
 }
 
-/// Compiled request-building strategy for a provider brand. Most brands are
-/// OpenAI-compatible passthroughs and never need their own variant here; this
-/// only grows when a brand's wire format actually differs (Anthropic's
-/// messages API, Bedrock's Converse API, and so on).
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq, Hash)]
-#[serde(rename_all = "kebab-case")]
-pub enum AdapterId {
-    Openai,
-    Anthropic,
-    Gemini,
-    Bedrock,
-    Cohere,
-    Ollama,
-    Huggingface,
-}
-
-impl AdapterId {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Openai => "openai",
-            Self::Anthropic => "anthropic",
-            Self::Gemini => "gemini",
-            Self::Bedrock => "bedrock",
-            Self::Cohere => "cohere",
-            Self::Ollama => "ollama",
-            Self::Huggingface => "huggingface",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct ModelProviderConfig {
     #[schemars(description = "Stable ID of an authorized managed credential.")]
@@ -1263,35 +1254,32 @@ pub struct ModelProviderConfig {
     /// left the account (metered) from usage covered by a flat fee already paid
     /// (subscription) or by hardware you own (self-hosted). `None` means
     /// "unstated", which `effective_billing` resolves per provider.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(
         description = "How this provider bills you. Optional; affects cost reporting only, never routing."
     )]
     pub billing: Option<ProviderBilling>,
-    /// Explicit provider brand, decoupled from the config map key. Only
-    /// needed when a key doesn't already name a recognized brand (legacy
-    /// entries infer it from the map key instead).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(description = "Provider brand. Legacy entries infer it from the map key.")]
     pub provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(description = "Compiled logical adapter used for dynamic or direct-YAML brands.")]
     pub adapter: Option<AdapterId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "AWS profile name for Bedrock. Ignored by other providers.")]
     pub aws_profile: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "AWS region for Bedrock. Ignored by other providers.")]
     pub aws_region: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "Azure credential mode. Ignored by other providers.")]
     pub azure_credential: Option<String>,
-    /// Brand-specific settings that don't warrant a dedicated field (for
-    /// example Azure's `azure_api_version`). Deliberately separate from
-    /// `api_version` above, which stays a first-class field until the
-    /// adapter that would read this bag is ported.
     #[serde(flatten)]
     pub attributes: serde_json::Map<String, serde_json::Value>,
+}
+
+impl std::fmt::Debug for ModelProviderConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ModelProviderConfig")
+            .field("provider", &self.provider)
+            .field("adapter", &self.adapter)
+            .field("enabled", &self.enabled)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for ModelProviderConfig {
@@ -1778,7 +1766,7 @@ pub struct MemoryConfig {
     )]
     pub backend: Option<MemoryBackend>,
     #[schemars(
-        description = "Model group for memory background work (basic compaction / pkm consolidation). Falls back to `primary` if undefined."
+        description = "Model group for memory background work. Basic compaction falls back to the chat agent model; pkm consolidation falls back to `primary` when the group is undefined."
     )]
     pub model_group: String,
     #[schemars(description = "basic: skip user/agent memory compaction below this many tokens.")]
@@ -1818,7 +1806,7 @@ pub struct MemoryConfig {
     )]
     pub pkm_consolidate_idle_secs: u64,
     #[schemars(
-        description = "pkm: how many consolidation model calls run at once — chats being \
+        description = "pkm: how many consolidation model calls run at once - chats being \
         mined by the sweep, and pages being authored. Bounded so a first run over a long \
         history does not open one request per chat/page simultaneously."
     )]
@@ -1885,7 +1873,7 @@ impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             backend: None,
-            model_group: "memory".into(),
+            model_group: crate::inference::ModelRef::MEMORY.as_str().into(),
             basic_compaction_token_threshold: 3_000,
             basic_compaction_secs: 7200,
             basic_space_compaction_secs: 3600,
@@ -1916,1132 +1904,5 @@ impl Default for MemoryConfig {
             pkm_consolidation_retry_base_secs: 120,
             pkm_consolidation_keep_records: 20,
         }
-    }
-}
-
-pub struct LoadedConfig {
-    pub config: Config,
-    pub models: Option<crate::inference::config::ModelRegistryConfig>,
-}
-
-/// Builds the effective `Config` the same way the process does at startup:
-/// defaults, then the on-disk YAML (if any), then `FRONA_*` env vars layered
-/// on top (env always wins). Shared by `Config::load()` and the `/api/config`
-/// handlers so a value set via `FRONA_BROWSER_WS_URL` (etc.) can never look
-/// different — and untested — in the settings UI than what's actually running.
-///
-/// Panics on a config it cannot read, which is what startup wants. Request
-/// handlers want the same build without taking the process down with them —
-/// see [`try_build_effective_config`].
-pub fn build_effective_config(yaml_content: Option<&str>) -> Config {
-    try_build_effective_config(yaml_content).unwrap_or_else(|e| panic!("{e}"))
-}
-
-/// The fallible half of [`build_effective_config`], for callers that are
-/// serving a request rather than booting: a config.yaml that no longer
-/// deserializes (hand-edited, or written by an older build) used to panic
-/// inside the `/api/config` handler, which drops the connection and leaves the
-/// settings page saying only "Failed to load configuration". Returning the
-/// error — the same message, hints and all, that startup would have printed —
-/// lets the UI show the operator which file and which field to fix.
-pub fn try_build_effective_config(yaml_content: Option<&str>) -> Result<Config, String> {
-    try_build_effective_config_with_env(yaml_content, &std::env::vars().collect())
-}
-
-fn try_build_effective_config_with_env(
-    yaml_content: Option<&str>,
-    env: &HashMap<String, String>,
-) -> Result<Config, String> {
-    let data_dir = env
-        .get("FRONA_SERVER_DATA_DIR")
-        .cloned()
-        .unwrap_or_else(|| "data".into());
-
-    let mut builder = config::Config::builder()
-        .set_default("database.path", format!("{data_dir}/db"))
-        .unwrap()
-        .set_default("storage.data_dir", data_dir.clone())
-        .unwrap()
-        .set_default("storage.skills_dir", format!("{data_dir}/skills"))
-        .unwrap()
-        .set_default("storage.cache_dir", format!("{data_dir}/system/cache"))
-        .unwrap()
-        .set_default("storage.ontology_dir", format!("{data_dir}/ontology"))
-        .unwrap();
-
-    if let Some(content) = yaml_content {
-        let expanded = expand_env_vars(content);
-        builder = builder.add_source(config::File::from_str(&expanded, config::FileFormat::Yaml));
-    }
-
-    // FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
-    let frona_env: HashMap<String, String> = env
-        .iter()
-        .filter(|(k, _)| k.starts_with(ENV_PREFIX) && !EXCLUDED_ENV_VARS.contains(&k.as_str()))
-        .map(|(k, v)| {
-            let stripped = k[ENV_PREFIX.len()..].to_lowercase();
-            let mapped = match stripped.find('_') {
-                Some(pos) => format!("{}__{}", &stripped[..pos], &stripped[pos + 1..]),
-                None => stripped,
-            };
-            (mapped, v.clone())
-        })
-        .collect();
-
-    builder = builder.add_source(
-        config::Environment::default()
-            .source(Some(frona_env))
-            .separator("__")
-            .try_parsing(true),
-    );
-
-    let built = builder
-        .build()
-        .map_err(|e| config_load_error(&e.to_string()))?;
-
-    built
-        .try_deserialize()
-        .map_err(|e| config_load_error(&e.to_string()))
-}
-
-/// A config error at startup is the only thing the user gets to act on — the
-/// process is about to die — so name the file being read, and for the mistakes
-/// that have an obvious fix, say what to write.
-fn config_load_error(err: &str) -> String {
-    let mut msg = format!("Failed to load config from {}: {err}", config_file_path());
-
-    if let Some(group) = missing_provider_group(err) {
-        msg.push_str(&format!(
-            "\n\nhint: every model group needs a `provider:` naming its backend:\
-             \n\n  models:\
-             \n    {group}:\
-             \n      provider: anthropic   # or openai, openrouter, gemini, groq, azure, ollama, ...\
-             \n      model: <model id>\
-             \n\nUse `provider: generic` for any other OpenAI-compatible endpoint \
-             (vLLM, LM Studio, llama.cpp, a LiteLLM proxy)."
-        ));
-    }
-
-    msg
-}
-
-/// Name of the `models` entry a "missing field" error points at, if that is
-/// what `err` is. Matched on the field path rather than the surrounding
-/// wording, which belongs to the `config` crate.
-fn missing_provider_group(err: &str) -> Option<&str> {
-    if !err.contains("missing") {
-        return None;
-    }
-    let (_, after) = err.split_once("models.")?;
-    let (group, rest) = after.split_once('.')?;
-    let rest = rest.trim_end_matches(['"', '\'', '`', '.']);
-    (!group.is_empty() && rest.ends_with(PROVIDER_TAG)).then_some(group)
-}
-
-impl Config {
-    pub fn load() -> LoadedConfig {
-        Self::load_with_env(std::env::vars().collect())
-    }
-
-    fn load_with_env(env: HashMap<String, String>) -> LoadedConfig {
-        let config_path = config_file_path();
-
-        let yaml_content = std::fs::read_to_string(&config_path).ok();
-
-        let mut config = try_build_effective_config_with_env(yaml_content.as_deref(), &env)
-            .unwrap_or_else(|e| panic!("{e}"));
-
-        resolve_server_timezone(&mut config.server);
-
-        let models = if !config.models.is_empty() || !config.providers.is_empty() {
-            Some(crate::inference::config::ModelRegistryConfig {
-                providers: config.providers.clone().into_iter().collect(),
-                models: config.models.clone().into_iter().collect(),
-                skip_auto_discover: false,
-            })
-        } else {
-            None
-        };
-
-        if yaml_content.is_some() {
-            tracing::info!(path = %config_path, "Loaded config from YAML");
-        } else {
-            tracing::info!("No config file found, using defaults and env vars");
-        }
-
-        if let Ok(mut v) = serde_json::to_value(&config) {
-            redact_config_for_log(&mut v);
-            tracing::debug!(
-                "Effective config:\n{}",
-                serde_json::to_string_pretty(&v).unwrap_or_default()
-            );
-        }
-
-        LoadedConfig { config, models }
-    }
-}
-
-/// Paths to sensitive config fields. Used for both log redaction and API response masking.
-pub const SENSITIVE_PATHS: &[&[&str]] = &[
-    &["auth", "encryption_secret"],
-    &["sso", "client_secret"],
-    &["voice", "twilio_account_sid"],
-    &["voice", "twilio_auth_token"],
-    &["vault", "onepassword_service_account_token"],
-    &["vault", "bitwarden_client_secret"],
-    &["vault", "bitwarden_master_password"],
-    &["vault", "hashicorp_token"],
-    &["vault", "keepass_password"],
-    &["mail", "smtp_password"],
-    &["push", "vapid_private_key"],
-];
-
-/// Provider fields that are sensitive (applied to each provider in the map).
-pub const SENSITIVE_PROVIDER_FIELDS: &[&str] = &["api_key"];
-
-impl Config {
-    /// Billing kind per configured provider name, for the cost-reporting path.
-    ///
-    /// Snapshotted rather than read live: the provider registry itself is built
-    /// from this config at boot and a provider change needs a restart to take
-    /// effect, so a live read would only ever disagree with what actually
-    /// served the call.
-    pub fn provider_billing_kinds(&self) -> HashMap<String, ProviderBillingKind> {
-        self.providers
-            .iter()
-            .map(|(name, cfg)| {
-                (
-                    name.as_str().to_string(),
-                    cfg.effective_billing(name.as_str()).kind,
-                )
-            })
-            .collect()
-    }
-}
-
-/// Panics on explicit invalid config (fail-fast at startup, not silently mis-schedule).
-pub fn resolve_server_timezone(server: &mut ServerConfig) {
-    if !server.timezone.is_empty() {
-        if server.timezone.parse::<chrono_tz::Tz>().is_err() {
-            panic!(
-                "Invalid server.timezone '{}' — must be an IANA timezone (e.g. 'America/Los_Angeles', 'Asia/Tokyo', 'UTC')",
-                server.timezone
-            );
-        }
-        tracing::info!(timezone = %server.timezone, "Server timezone resolved (explicit)");
-        return;
-    }
-
-    // iana_time_zone ignores TZ when /etc/timezone disagrees → "Etc/UTC" in containers.
-    if let Ok(tz_env) = std::env::var("TZ")
-        && !tz_env.is_empty()
-        && tz_env.parse::<chrono_tz::Tz>().is_ok()
-    {
-        tracing::info!(timezone = %tz_env, "Server timezone resolved (TZ env var)");
-        server.timezone = tz_env;
-        return;
-    }
-
-    let detected = iana_time_zone::get_timezone().ok();
-    let resolved = detected
-        .filter(|tz| tz.parse::<chrono_tz::Tz>().is_ok())
-        .unwrap_or_else(|| "UTC".to_string());
-    tracing::info!(timezone = %resolved, "Server timezone resolved (auto-detected)");
-    server.timezone = resolved;
-}
-
-pub fn config_file_path() -> String {
-    let data_dir = std::env::var("FRONA_SERVER_DATA_DIR").unwrap_or_else(|_| "data".into());
-    std::env::var("FRONA_CONFIG").unwrap_or_else(|_| format!("{data_dir}/config.yaml"))
-}
-
-/// Redact sensitive fields in a config JSON value for logging (replaces with "[redacted]").
-pub fn redact_config_for_log(value: &mut serde_json::Value) {
-    for path in SENSITIVE_PATHS {
-        redact(value, path);
-    }
-    if let Some(providers) = value.get_mut("providers").and_then(|p| p.as_object_mut()) {
-        for provider in providers.values_mut() {
-            for field in SENSITIVE_PROVIDER_FIELDS {
-                redact(provider, &[field]);
-            }
-        }
-    }
-}
-
-const DEFAULT_ENCRYPTION_SECRET: &str = "dev-secret-change-in-production";
-
-/// Redact sensitive fields for API responses: replaces with `{"is_set": true/false}`.
-pub fn redact_config_for_api(value: &mut serde_json::Value) {
-    let has_default_secret = value
-        .pointer("/auth/encryption_secret")
-        .and_then(|v| v.as_str())
-        .is_some_and(|s| s == DEFAULT_ENCRYPTION_SECRET);
-
-    for path in SENSITIVE_PATHS {
-        redact_as_is_set(value, path);
-    }
-    if let Some(providers) = value.get_mut("providers").and_then(|p| p.as_object_mut()) {
-        for provider in providers.values_mut() {
-            for field in SENSITIVE_PROVIDER_FIELDS {
-                redact_as_is_set(provider, &[field]);
-            }
-        }
-    }
-
-    if has_default_secret && let Some(auth) = value.get_mut("auth").and_then(|a| a.as_object_mut())
-    {
-        auth.insert(
-            "encryption_secret".into(),
-            serde_json::json!({ "is_set": false }),
-        );
-    }
-}
-
-fn redact_as_is_set(value: &mut serde_json::Value, path: &[&str]) {
-    match path {
-        [] => {}
-        [key] => {
-            if let Some(v) = value.get_mut(*key) {
-                let is_set = match v {
-                    serde_json::Value::Null => false,
-                    serde_json::Value::String(s) => !s.is_empty(),
-                    _ => true,
-                };
-                *v = serde_json::json!({ "is_set": is_set });
-            }
-        }
-        [key, rest @ ..] => {
-            if let Some(child) = value.get_mut(*key) {
-                redact_as_is_set(child, rest);
-            }
-        }
-    }
-}
-
-fn redact(value: &mut serde_json::Value, path: &[&str]) {
-    match path {
-        [] => {}
-        [key] => {
-            if let Some(v) = value.get_mut(*key)
-                && !v.is_null()
-            {
-                *v = serde_json::Value::String("[redacted]".into());
-            }
-        }
-        [key, rest @ ..] => {
-            if let Some(child) = value.get_mut(*key) {
-                redact(child, rest);
-            }
-        }
-    }
-}
-
-/// Recursively remove fields that match the default `Config` values,
-/// keeping config.yaml minimal with only user-changed values.
-pub fn strip_defaults(value: &mut serde_json::Value) {
-    let defaults = serde_json::to_value(Config::default()).unwrap_or_default();
-    strip_defaults_recursive(value, &defaults);
-
-    strip_map_entry_defaults::<ModelProviderConfig>(value, "providers", &[]);
-    // `provider` is the serde tag of `ProviderModel`, not an ordinary field: a
-    // model group without it cannot be deserialized at all. Stripping it when it
-    // happened to equal the default variant (`generic`, i.e. any OpenAI-compatible
-    // endpoint) wrote a config.yaml that panicked the next startup with
-    // `missing configuration field "models.<name>.provider"`, so the tag is kept
-    // even when it matches the default.
-    strip_map_entry_defaults::<ModelGroupConfig>(value, "models", &[PROVIDER_TAG]);
-}
-
-/// Serde tag naming the variant of `ProviderModel`, flattened into each
-/// `models` entry.
-const PROVIDER_TAG: &str = "provider";
-
-/// Strips fields matching `T::default()` from every entry of the `key` map.
-/// Keys listed in `preserve` are left alone however they compare, for fields
-/// that carry structure rather than a value (see `PROVIDER_TAG`).
-fn strip_map_entry_defaults<T: Default + serde::Serialize>(
-    value: &mut serde_json::Value,
-    key: &str,
-    preserve: &[&str],
-) {
-    let Some(map) = value.get_mut(key).and_then(|v| v.as_object_mut()) else {
-        return;
-    };
-    let mut entry_defaults = serde_json::to_value(T::default()).unwrap_or_default();
-    if let Some(defaults) = entry_defaults.as_object_mut() {
-        // A key with no default to compare against is never stripped.
-        for k in preserve {
-            defaults.remove(*k);
-        }
-    }
-    let keys: Vec<String> = map.keys().cloned().collect();
-    for k in keys {
-        if let Some(entry) = map.get_mut(&k) {
-            strip_defaults_recursive(entry, &entry_defaults);
-            if entry.as_object().is_some_and(|o| o.is_empty()) {
-                map.remove(&k);
-            }
-        }
-    }
-    if map.is_empty() {
-        value.as_object_mut().unwrap().remove(key);
-    }
-}
-
-fn strip_defaults_recursive(value: &mut serde_json::Value, defaults: &serde_json::Value) {
-    let (Some(obj), Some(def_obj)) = (value.as_object_mut(), defaults.as_object()) else {
-        return;
-    };
-
-    let keys: Vec<String> = obj.keys().cloned().collect();
-    for key in keys {
-        let Some(def_val) = def_obj.get(&key) else {
-            continue;
-        };
-        let Some(val) = obj.get_mut(&key) else {
-            continue;
-        };
-
-        if val.is_object() && def_val.is_object() {
-            strip_defaults_recursive(val, def_val);
-            if val.as_object().is_some_and(|o| o.is_empty()) {
-                obj.remove(&key);
-            }
-        } else if values_equal(val, def_val) {
-            obj.remove(&key);
-        }
-    }
-}
-
-fn values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
-    match (a, b) {
-        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => a.as_f64() == b.as_f64(),
-        _ => a == b,
-    }
-}
-
-/// Strip defaults from `value` and persist to `path`.
-/// If all values are defaults, deletes the file instead.
-pub fn persist_config(value: &mut serde_json::Value, path: &str) -> Result<(), String> {
-    strip_defaults(value);
-
-    if value.as_object().is_some_and(|o| o.is_empty()) {
-        let _ = std::fs::remove_file(path);
-        return Ok(());
-    }
-
-    let json_str =
-        serde_json::to_string(value).map_err(|e| format!("Failed to serialize config: {e}"))?;
-    let yaml_val: serde_yaml::Value = serde_yaml::from_str(&json_str)
-        .map_err(|e| format!("Failed to convert config to YAML: {e}"))?;
-    let yaml_str =
-        serde_yaml::to_string(&yaml_val).map_err(|e| format!("Failed to serialize config: {e}"))?;
-
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-
-    std::fs::write(path, &yaml_str).map_err(|e| format!("Failed to write config file: {e}"))
-}
-
-/// Deep-merge `patch` into `base`.
-/// - Objects: recursive merge
-/// - `null` values: remove the key
-/// - Values matching `{"is_set": ...}` shape: skip (redaction markers from GET)
-/// - All other values: overwrite
-pub fn deep_merge(base: &mut serde_json::Value, patch: serde_json::Value) {
-    match (base, patch) {
-        (serde_json::Value::Object(base_map), serde_json::Value::Object(patch_map)) => {
-            for (key, value) in patch_map {
-                if value.is_null() {
-                    base_map.remove(&key);
-                } else if value.is_object()
-                    && value
-                        .as_object()
-                        .is_some_and(|o| o.contains_key("is_set") && o.len() == 1)
-                {
-                } else if let Some(existing) = base_map.get_mut(&key) {
-                    if existing.is_object() && value.is_object() {
-                        deep_merge(existing, value);
-                    } else {
-                        *existing = value;
-                    }
-                } else {
-                    base_map.insert(key, value);
-                }
-            }
-        }
-        (base, patch) => {
-            *base = patch;
-        }
-    }
-}
-
-pub fn expand_env_vars(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '$' && chars.peek() == Some(&'{') {
-            chars.next();
-            let mut var_name = String::new();
-            for c in chars.by_ref() {
-                if c == '}' {
-                    break;
-                }
-                var_name.push(c);
-            }
-            if let Ok(val) = std::env::var(&var_name) {
-                result.push_str(&val);
-            }
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_expand_env_vars() {
-        unsafe { std::env::set_var("TEST_KEY_123", "my-secret") };
-        let result = expand_env_vars("key=${TEST_KEY_123}");
-        assert_eq!(result, "key=my-secret");
-        unsafe { std::env::remove_var("TEST_KEY_123") };
-    }
-
-    #[test]
-    fn test_expand_env_vars_missing() {
-        let result = expand_env_vars("key=${NONEXISTENT_VAR_XYZ}");
-        assert_eq!(result, "key=");
-    }
-
-    #[test]
-    fn defaults_are_sensible() {
-        let config = Config::default();
-        assert_eq!(config.server.port, 3001);
-        assert_eq!(
-            config.auth.encryption_secret,
-            "dev-secret-change-in-production"
-        );
-        assert_eq!(config.database.path, "data/db");
-        assert_eq!(config.storage.data_dir, "data");
-        assert_eq!(config.storage.skills_dir, "data/skills");
-        assert_eq!(config.memory.basic_space_compaction_secs, 3600);
-        assert_eq!(config.memory.pkm_consolidation_max_tool_turns, 8);
-        assert_eq!(config.memory.pkm_max_lookups_per_turn, 12);
-        assert_eq!(config.memory.pkm_consolidation_max_submissions, 8);
-        assert_eq!(config.memory.pkm_playbook_max_tool_turns, 20);
-        assert_eq!(config.memory.pkm_playbook_max_submissions, 20);
-        assert!(!config.sso.enabled);
-        assert!(config.sso.signups_match_email);
-        assert!(config.browser.is_none());
-        assert!(config.server.cors_origins.is_none());
-        assert!(config.server.base_url.is_none());
-        assert_eq!(config.server.max_body_size_bytes, 104_857_600);
-        assert!(config.search.provider.is_none());
-        assert!(config.search.searxng_base_url.is_none());
-        assert_eq!(config.inference.max_tool_turns, 200);
-        assert_eq!(config.inference.default_max_tokens, 8192);
-        assert_eq!(config.inference.compaction_trigger_pct, 80);
-        assert_eq!(config.inference.history_truncation_pct, 90);
-    }
-
-    #[test]
-    fn provider_option_serialization_omits_none_values() {
-        let cases = [
-            (
-                "OpenAICompatParams",
-                serde_json::to_value(OpenAICompatParams {
-                    top_p: Some(0.8),
-                    ..Default::default()
-                })
-                .unwrap(),
-                serde_json::json!({ "top_p": 0.8 }),
-            ),
-            (
-                "GeminiThinkingConfig",
-                serde_json::to_value(GeminiThinkingConfig {
-                    thinking_budget: 1024,
-                    include_thoughts: None,
-                })
-                .unwrap(),
-                serde_json::json!({ "thinking_budget": 1024 }),
-            ),
-            (
-                "AnthropicParams",
-                serde_json::to_value(AnthropicParams {
-                    top_k: Some(40),
-                    ..Default::default()
-                })
-                .unwrap(),
-                serde_json::json!({ "top_k": 40 }),
-            ),
-            (
-                "OllamaParams",
-                serde_json::to_value(OllamaParams {
-                    num_ctx: Some(8192),
-                    ..Default::default()
-                })
-                .unwrap(),
-                serde_json::json!({ "num_ctx": 8192 }),
-            ),
-            (
-                "GeminiParams",
-                serde_json::to_value(GeminiParams {
-                    candidate_count: Some(1),
-                    ..Default::default()
-                })
-                .unwrap(),
-                serde_json::json!({ "candidate_count": 1 }),
-            ),
-            (
-                "ProviderModel::OpenAI",
-                serde_json::to_value(ProviderModel::OpenAI {
-                    api: None,
-                    params: OpenAICompatParams::default(),
-                })
-                .unwrap(),
-                serde_json::json!({ "provider": "openai" }),
-            ),
-        ];
-
-        for (name, actual, expected) in cases {
-            assert_eq!(actual, expected, "{name}");
-        }
-    }
-
-    fn load_with_env_override(key: &str, value: &str) -> LoadedConfig {
-        Config::load_with_env([(key.to_string(), value.to_string())].into())
-    }
-
-    #[test]
-    fn env_var_overrides_multi_word_field() {
-        // The key remapping (replace first _ with __) means FRONA_BROWSER_WS_URL
-        // becomes browser__ws_url, which separator("__") resolves to browser.ws_url.
-        let loaded = load_with_env_override("FRONA_BROWSER_WS_URL", "ws://custom:9999");
-        assert_eq!(
-            loaded.config.browser.as_ref().unwrap().ws_url,
-            "ws://custom:9999"
-        );
-    }
-
-    #[test]
-    fn env_var_overrides_server_port() {
-        let loaded = load_with_env_override("FRONA_SERVER_PORT", "9999");
-        assert_eq!(loaded.config.server.port, 9999);
-    }
-
-    #[test]
-    fn build_effective_config_env_overrides_yaml_browser_ws_url() {
-        // Regression test: GET/PUT /api/config used to read config.yaml
-        // verbatim, so a value pinned by FRONA_BROWSER_WS_URL (which always
-        // wins at real startup) could show — and test successfully — as a
-        // different, inert value from config.yaml in the settings UI.
-        let yaml = "browser:\n  ws_url: ws://from-yaml:3333\n";
-        let config = try_build_effective_config_with_env(
-            Some(yaml),
-            &[(
-                "FRONA_BROWSER_WS_URL".to_string(),
-                "ws://from-env:3333".to_string(),
-            )]
-            .into(),
-        )
-        .unwrap();
-        assert_eq!(config.browser.unwrap().ws_url, "ws://from-env:3333");
-    }
-
-    #[test]
-    fn env_var_overrides_database_path() {
-        let loaded = load_with_env_override("FRONA_DATABASE_PATH", "/tmp/testdb");
-        assert_eq!(loaded.config.database.path, "/tmp/testdb");
-    }
-
-    #[test]
-    fn env_var_overrides_sso_enabled() {
-        let loaded = load_with_env_override("FRONA_SSO_ENABLED", "true");
-        assert!(loaded.config.sso.enabled);
-    }
-
-    #[test]
-    fn env_var_overrides_auth_allow_registration() {
-        let loaded = load_with_env_override("FRONA_AUTH_ALLOW_REGISTRATION", "false");
-        assert!(!loaded.config.auth.allow_registration);
-    }
-
-    #[test]
-    fn server_timezone_explicit_valid_passes() {
-        let mut server = ServerConfig {
-            timezone: "Asia/Tokyo".to_string(),
-            ..Default::default()
-        };
-        resolve_server_timezone(&mut server);
-        assert_eq!(server.timezone, "Asia/Tokyo");
-    }
-
-    #[test]
-    #[should_panic(expected = "Invalid server.timezone")]
-    fn server_timezone_explicit_invalid_panics() {
-        let mut server = ServerConfig {
-            timezone: "Mars/Olympus".to_string(),
-            ..Default::default()
-        };
-        resolve_server_timezone(&mut server);
-    }
-
-    #[test]
-    fn server_timezone_empty_falls_back_to_detection() {
-        let mut server = ServerConfig::default();
-        assert!(server.timezone.is_empty());
-        resolve_server_timezone(&mut server);
-        assert!(!server.timezone.is_empty());
-        assert!(
-            server.timezone.parse::<chrono_tz::Tz>().is_ok(),
-            "detected timezone '{}' must be a valid IANA name",
-            server.timezone
-        );
-    }
-
-    #[test]
-    fn auth_allow_registration_defaults_to_true() {
-        let config = AuthConfig::default();
-        assert!(config.allow_registration);
-    }
-
-    #[test]
-    fn browser_config_http_base_url() {
-        let config = BrowserConfig {
-            ws_url: "ws://localhost:3333".into(),
-            ..Default::default()
-        };
-        assert_eq!(config.http_base_url(), "http://localhost:3333");
-    }
-
-    #[test]
-    fn browser_config_profile_path() {
-        let config = BrowserConfig {
-            profiles_path: "/data/profiles".into(),
-            ..Default::default()
-        };
-        let path = config.profile_path(&crate::handle!("bob"), "github");
-        assert_eq!(path, PathBuf::from("/data/profiles/bob/github"));
-    }
-
-    #[test]
-    fn mcp_cache_path_defaults_to_none() {
-        let mcp = McpConfig::default();
-        assert!(mcp.cache_path.is_none());
-    }
-
-    #[test]
-    fn strip_defaults_removes_all_defaults() {
-        let mut value = serde_json::to_value(Config::default()).unwrap();
-        strip_defaults(&mut value);
-        assert_eq!(value, serde_json::json!({}));
-    }
-
-    #[test]
-    fn strip_defaults_keeps_changed_values() {
-        let mut value = serde_json::json!({
-            "server": { "port": 8080, "static_dir": "/app/static" },
-            "auth": { "encryption_secret": "dev-secret-change-in-production" },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "server": { "port": 8080 },
-            })
-        );
-    }
-
-    #[test]
-    fn strip_defaults_keeps_non_default_fields() {
-        let mut value = serde_json::json!({
-            "server": { "cors_origins": "https://example.com" },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "server": { "cors_origins": "https://example.com" },
-            })
-        );
-    }
-
-    #[test]
-    fn strip_defaults_handles_integer_vs_float() {
-        let mut value = serde_json::json!({
-            "sandbox": { "max_cpu_pct": 95, "max_memory_pct": 80 },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(value, serde_json::json!({}));
-    }
-
-    #[test]
-    fn strip_defaults_removes_provider_entry_defaults() {
-        let mut value = serde_json::json!({
-            "providers": {
-                "anthropic": { "base_url": null, "enabled": true },
-                "openai": { "api_key": "sk-123", "enabled": true },
-            },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "providers": {
-                    "openai": { "api_key": "sk-123" },
-                },
-            })
-        );
-    }
-
-    /// A provider whose billing an operator has stated must survive
-    /// `strip_defaults` — that is the round-trip `PUT /api/config` performs on
-    /// every save, and silently dropping the block would reclassify a
-    /// subscription as pay-as-you-go the next time settings were touched.
-    #[test]
-    fn strip_defaults_preserves_a_declared_billing_block() {
-        let mut value = serde_json::json!({
-            "providers": {
-                "anthropic": {
-                    "api_key": "sk-123",
-                    "enabled": true,
-                    "billing": { "kind": "subscription", "monthly_cost": 20.0, "overage_is_metered": false },
-                },
-            },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "providers": {
-                    "anthropic": {
-                        "api_key": "sk-123",
-                        "billing": { "kind": "subscription", "monthly_cost": 20.0, "overage_is_metered": false },
-                    },
-                },
-            })
-        );
-    }
-
-    /// The other half: a config that never mentioned billing must come back
-    /// out exactly as it went in, so adding the field changes nothing for
-    /// existing installs.
-    #[test]
-    fn strip_defaults_leaves_a_config_without_billing_untouched() {
-        let mut value = serde_json::json!({
-            "providers": { "openai": { "api_key": "sk-123", "enabled": true } },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({ "providers": { "openai": { "api_key": "sk-123" } } })
-        );
-    }
-
-    #[test]
-    fn a_provider_config_without_billing_deserializes() {
-        let cfg: ModelProviderConfig =
-            serde_yaml::from_str("api_key: sk-123\nenabled: true").expect("parses");
-        assert!(cfg.billing.is_none());
-        assert_eq!(
-            cfg.effective_billing("openai").kind,
-            ProviderBillingKind::Metered
-        );
-    }
-
-    #[test]
-    fn a_provider_config_with_billing_deserializes() {
-        let cfg: ModelProviderConfig = serde_yaml::from_str(
-            "api_key: sk-123\nbilling:\n  kind: subscription\n  monthly_cost: 20\n  currency: GBP\n  included_spend_usd: 20\n  overage_is_metered: true\n",
-        )
-        .expect("parses");
-        let billing = cfg.effective_billing("anthropic");
-        assert_eq!(billing.kind, ProviderBillingKind::Subscription);
-        assert_eq!(billing.monthly_cost, Some(20.0));
-        assert_eq!(billing.currency_or_usd(), "GBP");
-        assert!(billing.overage_is_metered);
-    }
-
-    /// A config that never mentions the new managed-credential/adapter fields
-    /// must still parse and default them to absent, so existing installs are
-    /// unaffected by the fields' addition.
-    #[test]
-    fn a_provider_config_without_the_new_fields_deserializes() {
-        let cfg: ModelProviderConfig =
-            serde_yaml::from_str("api_key: sk-123\nenabled: true").expect("parses");
-        assert!(cfg.credential_id.is_none());
-        assert!(cfg.provider.is_none());
-        assert!(cfg.adapter.is_none());
-        assert!(cfg.aws_profile.is_none());
-        assert!(cfg.aws_region.is_none());
-        assert!(cfg.azure_credential.is_none());
-        assert!(cfg.attributes.is_empty());
-    }
-
-    #[test]
-    fn a_provider_config_with_the_new_fields_deserializes() {
-        let cfg: ModelProviderConfig = serde_yaml::from_str(
-            "credential_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6\nprovider: azure\nadapter: openai\naws_profile: default\naws_region: us-east-1\nazure_credential: entra\nazure_api_version: 2024-10-21\n",
-        )
-        .expect("parses");
-        assert_eq!(
-            cfg.credential_id,
-            Some(uuid::Uuid::parse_str("3fa85f64-5717-4562-b3fc-2c963f66afa6").unwrap())
-        );
-        assert_eq!(cfg.provider.as_deref(), Some("azure"));
-        assert_eq!(cfg.adapter, Some(AdapterId::Openai));
-        assert_eq!(cfg.aws_profile.as_deref(), Some("default"));
-        assert_eq!(cfg.aws_region.as_deref(), Some("us-east-1"));
-        assert_eq!(cfg.azure_credential.as_deref(), Some("entra"));
-        assert_eq!(
-            cfg.attributes
-                .get("azure_api_version")
-                .and_then(|v| v.as_str()),
-            Some("2024-10-21")
-        );
-    }
-
-    /// The flattened `attributes` bag must round-trip through `strip_defaults`
-    /// untouched — it holds operator-set data with no struct-level default to
-    /// compare against, so it should never be silently dropped.
-    #[test]
-    fn strip_defaults_preserves_flattened_attributes() {
-        let mut value = serde_json::json!({
-            "providers": {
-                "azure": {
-                    "api_key": "sk-123",
-                    "enabled": true,
-                    "azure_api_version": "2024-10-21",
-                },
-            },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "providers": {
-                    "azure": {
-                        "api_key": "sk-123",
-                        "azure_api_version": "2024-10-21",
-                    },
-                },
-            })
-        );
-    }
-
-    #[test]
-    fn strip_defaults_removes_providers_key_when_all_default() {
-        let mut value = serde_json::json!({
-            "providers": {
-                "anthropic": { "base_url": null, "enabled": true },
-            },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(value, serde_json::json!({}));
-    }
-
-    #[test]
-    fn strip_defaults_removes_model_group_entry_defaults() {
-        let mut value = serde_json::json!({
-            "models": {
-                "coding": {
-                    "main": "anthropic/claude-opus-4-6",
-                    "fallbacks": [],
-                    "max_tokens": 32000,
-                    "temperature": null,
-                    "context_window": 200000,
-                    "retry": {
-                        "max_retries": 10,
-                        "initial_backoff_ms": 1000,
-                        "backoff_multiplier": 2,
-                        "max_backoff_ms": 60000,
-                    },
-                },
-            },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "models": {
-                    "coding": {
-                        "main": "anthropic/claude-opus-4-6",
-                        "max_tokens": 32000,
-                        "context_window": 200000,
-                    },
-                },
-            })
-        );
-    }
-
-    /// `provider` is the serde tag of the flattened `ProviderModel`, so a model
-    /// group that loses it no longer deserializes. It used to be stripped
-    /// whenever it equalled the default variant (`generic`), which meant saving
-    /// an OpenAI-compatible model group from the settings UI wrote a config.yaml
-    /// that panicked the next startup with
-    /// `missing configuration field "models.primary.provider"`.
-    #[test]
-    fn strip_defaults_keeps_provider_tag_matching_the_default_variant() {
-        let mut value = serde_json::json!({
-            "models": {
-                "primary": {
-                    "provider": "generic",
-                    "model": "qwen3-coder",
-                    "fallbacks": [],
-                    "temperature": null,
-                },
-            },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "models": {
-                    "primary": { "provider": "generic", "model": "qwen3-coder" },
-                },
-            })
-        );
-    }
-
-    /// The API path builds the same config as startup but must not take the
-    /// process down when it can't: a panic in the handler drops the connection
-    /// and the settings page is left with nothing to show.
-    #[test]
-    fn try_build_effective_config_returns_the_error_instead_of_panicking() {
-        let err = try_build_effective_config(Some("models:\n  primary:\n    model: gpt-5\n"))
-            .expect_err("a model group with no provider cannot be read");
-        assert!(err.contains("config.yaml"), "{err}");
-        assert!(err.contains("models.primary.provider"), "{err}");
-        assert!(err.contains("hint:"), "{err}");
-    }
-
-    #[test]
-    fn try_build_effective_config_reports_a_yaml_syntax_error() {
-        let err = try_build_effective_config(Some("server:\n  port: 3001\n bad-indent: x\n"))
-            .expect_err("invalid YAML cannot be read");
-        assert!(err.contains("config.yaml"), "{err}");
-    }
-
-    #[test]
-    fn try_build_effective_config_reads_a_good_config() {
-        let config = try_build_effective_config(Some(
-            "models:\n  primary:\n    provider: anthropic\n    model: claude\n",
-        ))
-        .expect("a well-formed config loads");
-        assert_eq!(config.models["primary"].provider_name(), "anthropic");
-    }
-
-    #[test]
-    fn config_load_error_hints_at_the_model_group_missing_a_provider() {
-        let msg = config_load_error("missing configuration field \"models.primary.provider\"");
-        assert!(msg.contains("models.primary.provider"), "{msg}");
-        assert!(msg.contains("hint:"), "{msg}");
-        assert!(msg.contains("    primary:"), "{msg}");
-        assert!(msg.contains("provider: generic"), "{msg}");
-    }
-
-    #[test]
-    fn config_load_error_leaves_unrelated_errors_alone() {
-        let msg =
-            config_load_error("invalid type: string \"x\", expected u16 for key `server.port`");
-        assert!(!msg.contains("hint:"), "{msg}");
-        assert_eq!(
-            missing_provider_group("missing field `model` for models.primary.model"),
-            None
-        );
-    }
-
-    #[test]
-    fn persist_config_writes_only_non_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.yaml");
-        let path_str = path.to_str().unwrap();
-
-        let mut value = serde_json::json!({
-            "server": { "port": 8080, "static_dir": "/app/static" },
-        });
-        persist_config(&mut value, path_str).unwrap();
-
-        let written = std::fs::read_to_string(&path).unwrap();
-        let parsed: serde_json::Value = serde_yaml::from_str(&written).unwrap();
-        assert_eq!(parsed, serde_json::json!({ "server": { "port": 8080 } }));
-    }
-
-    #[test]
-    fn persist_config_deletes_file_when_all_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.yaml");
-        let path_str = path.to_str().unwrap();
-
-        std::fs::write(&path, "server:\n  port: 3001\n").unwrap();
-        assert!(path.exists());
-
-        let mut value = serde_json::to_value(Config::default()).unwrap();
-        persist_config(&mut value, path_str).unwrap();
-
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn persist_config_noop_when_no_file_and_all_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.yaml");
-        let path_str = path.to_str().unwrap();
-
-        assert!(!path.exists());
-
-        let mut value = serde_json::to_value(Config::default()).unwrap();
-        persist_config(&mut value, path_str).unwrap();
-
-        assert!(!path.exists());
-    }
-
-    /// Every credential in the config must be redacted on the way out. The SMTP
-    /// password is the one most recently added, and `GET /api/config` is
-    /// reachable by any authenticated user — not just admins.
-    #[test]
-    fn smtp_password_is_redacted_for_api_and_logs() {
-        let mut config = Config::default();
-        config.mail.smtp_password = Some("hunter2-smtp".into());
-
-        let mut api_value = serde_json::to_value(&config).unwrap();
-        redact_config_for_api(&mut api_value);
-        let rendered = serde_json::to_string(&api_value).unwrap();
-        assert!(
-            !rendered.contains("hunter2-smtp"),
-            "API response leaked the SMTP password"
-        );
-        assert_eq!(
-            api_value.pointer("/mail/smtp_password/is_set"),
-            Some(&serde_json::Value::Bool(true))
-        );
-
-        let mut log_value = serde_json::to_value(&config).unwrap();
-        redact_config_for_log(&mut log_value);
-        let rendered = serde_json::to_string(&log_value).unwrap();
-        assert!(
-            !rendered.contains("hunter2-smtp"),
-            "log dump leaked the SMTP password"
-        );
-    }
-
-    #[test]
-    fn unset_smtp_password_reports_as_not_set() {
-        let config = Config::default();
-        let mut api_value = serde_json::to_value(&config).unwrap();
-        redact_config_for_api(&mut api_value);
-        // Absent secrets must not masquerade as configured ones.
-        assert_ne!(
-            api_value.pointer("/mail/smtp_password/is_set"),
-            Some(&serde_json::Value::Bool(true))
-        );
     }
 }

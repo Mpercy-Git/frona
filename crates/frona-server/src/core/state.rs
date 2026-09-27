@@ -539,6 +539,9 @@ impl AppState {
             user_service.clone(),
         );
 
+        let task_service =
+            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone());
+
         let mut agent_service = AgentService::new(
             SurrealRepo::new(db.clone()),
             &config.cache,
@@ -550,7 +553,7 @@ impl AppState {
         // Lets a built-in agent declaring a `cron:` schedule (the cost analyst)
         // have its recurring task seeded when it is first cloned for a user.
         agent_service.set_task_service(
-            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            task_service.clone(),
             config.server.timezone.clone(),
         );
 
@@ -707,9 +710,8 @@ impl AppState {
             agent_service.clone(),
             memory_service.clone(),
             skill_service.clone(),
-            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            task_service.clone(),
             notification_service.clone(),
-            vault_service.clone(),
             mcp_service.clone(),
             tool_manager.clone(),
             policy_service.clone(),
@@ -779,7 +781,7 @@ impl AppState {
             contact_service,
             chat_service,
             chat_share_service: chat_share_service.clone(),
-            task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            task_service,
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions,
