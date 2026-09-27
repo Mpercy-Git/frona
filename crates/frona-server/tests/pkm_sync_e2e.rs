@@ -314,8 +314,16 @@ async fn concurrent_edits_with_one_base_revision_accept_only_one() {
         memory_config.clone(),
         test_user_service(&db),
         frona::agent::prompt::PromptLoader::new(resources_prompts()),
+        // Must be registered under the same provider name as `test_model_group()`'s
+        // hardcoded `main` ("mock"), not a distinct one: `ModelGroup` now carries its
+        // own resolved `providers` map (populated by whichever registry last returned
+        // it), and dispatch resolves through that embedded map rather than through
+        // `harness`'s separate registry. A different name here made `second_sync`'s
+        // edit fail `ensure_usable`'s provider lookup before ever reaching the mock,
+        // leaving `first_sync`'s edit blocked forever on the two-party barrier below
+        // that `second_sync` never joined.
         Arc::new(test_registry_with_group(
-            "mock-second",
+            "mock",
             mock,
             &memory_config.model_group,
             test_model_group(),
