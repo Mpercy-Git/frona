@@ -1,7 +1,18 @@
 use frona::core::config::{
     Config, config_file_path, deep_merge, redact_config_for_api, redact_config_for_log,
+    strip_defaults,
 };
 use serde_json::json;
+
+/// `strip_defaults` then an atomic-enough (for tests) write - the same two
+/// steps `core::config::service::ConfigService::save` performs against the
+/// on-disk document before persisting, exercised here directly against a raw
+/// `Value` rather than through the full `ConfigService` (revision tracking,
+/// patch merging) machinery these round-trip tests don't need.
+fn persist_config(value: &mut serde_json::Value, path: &str) -> std::io::Result<()> {
+    strip_defaults(value);
+    std::fs::write(path, serde_yaml::to_string(value).unwrap())
+}
 
 #[test]
 fn test_config_file_path_default() {
@@ -116,13 +127,23 @@ async fn test_runtime_config_operations() {
             80.0, 80.0, 90.0, 90.0,
         ),
     );
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let state = frona::core::state::AppState::new(
         db,
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
 
     let val = state.get_runtime_config("setup_completed").await.unwrap();
@@ -158,8 +179,6 @@ async fn test_runtime_config_operations() {
 /// crashed the server on next startup.
 #[test]
 fn retry_config_survives_strip_defaults_round_trip() {
-    use frona::core::config::persist_config;
-
     let mut value = json!({
         "auth": { "encryption_secret": "aaaa" },
         "providers": { "openrouter": { "api_key": "sk-or-test" } },
@@ -216,8 +235,6 @@ fn retry_config_survives_strip_defaults_round_trip() {
 /// stripped output must still load back into an equivalent Config.
 #[test]
 fn default_config_survives_strip_defaults_round_trip() {
-    use frona::core::config::persist_config;
-
     // Set one non-default field per vulnerable struct so the entry survives
     // strip_defaults and we exercise the deserializer with a partial shape
     // (the other sibling fields get stripped).
@@ -269,8 +286,6 @@ fn default_config_survives_strip_defaults_round_trip() {
 /// panicked the server on its next startup.
 #[test]
 fn generic_model_group_survives_strip_defaults_round_trip() {
-    use frona::core::config::persist_config;
-
     let mut value = json!({
         "providers": {
             "generic": { "base_url": "http://localhost:8000/v1" }

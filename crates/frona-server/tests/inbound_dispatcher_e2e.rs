@@ -65,13 +65,23 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
 
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
 
     let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =

@@ -133,6 +133,13 @@ impl ConfigService {
         .validate_model_groups()
         .map_err(validation)?;
 
+        // Keep the on-disk document minimal - strip fields that just
+        // reiterate `Config::default()` now that the merged document has
+        // been validated. `validate_document`/expand_config_env_vars must be
+        // able to reconstruct the full config from this trimmed shape (see
+        // the config_api.rs `*_survives_strip_defaults_round_trip` tests).
+        super::document::strip_defaults(&mut target);
+
         let yaml = serde_yaml::to_string(&target)
             .map_err(validation)?
             .into_bytes();
