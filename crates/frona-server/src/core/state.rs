@@ -32,7 +32,6 @@ use crate::credential::keypair::service::KeyPairService;
 use crate::credential::presign::PresignService;
 use crate::credential::vault::service::VaultService;
 use crate::db::repo::push_subscriptions::SurrealPushSubscriptionRepo;
-use crate::inference::ModelProviderRegistry;
 use crate::inference::config::ModelRegistryConfig;
 use crate::mail::MailService;
 use crate::memory::basic::BasicMemoryService;
@@ -250,13 +249,64 @@ impl AppState {
         );
 
         let llm_config = load_models_config(models_config);
-        let provider_registry = ModelProviderRegistry::from_config(
-            llm_config,
-            broadcast_service.clone(),
-            &config.inference,
-            &model_catalog.current(),
-        )
-        .expect("Failed to initialize provider registry");
+
+        // `model_provider_service` is the single resolved set of providers -
+        // built once, here, through the managed-credential vault (so a
+        // provider authenticated via a managed OAuth/subscription login is
+        // usable, not just one with a plain config `api_key`). Everything
+        // that used to hold its own separately-built `ModelProviderRegistry`
+        // (chat inference, memory, PKM) now gets a read-only clone of this
+        // same instance's registry below, instead of re-resolving providers
+        // through a second, independent pass that wouldn't see managed
+        // credentials at all.
+        let managed_vault = crate::credential::managed::ManagedVault::new(
+            Arc::new(crate::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+            &config.auth.encryption_secret,
+            crate::credential::managed::GLOBAL_CONNECTION_ID.into(),
+        );
+        let managed_resolver =
+            Arc::new(crate::credential::managed::resolver::ManagedResolver::new(
+                crate::credential::managed::integration::registered(),
+            ));
+        let provider_credentials = crate::inference::credential::store::ProviderCredentials::new(
+            managed_vault.clone(),
+            managed_resolver.clone(),
+        );
+        let provider_validator =
+            crate::inference::provider::validation::ProviderValidationService::new(
+                provider_credentials.clone(),
+                crate::inference::provider::InferenceCounter::new(broadcast_service.clone()),
+            );
+        let provider_runtime = Arc::new(
+            crate::inference::credential::runtime::RuntimeCredentials::new(
+                llm_config.providers.clone(),
+                provider_credentials.clone(),
+                crate::inference::provider::InferenceCounter::new(broadcast_service.clone()),
+            ),
+        );
+        let provider_groups = llm_config
+            .parse_model_groups_with_catalog(
+                &config.inference,
+                &catalog_sources.models.current(),
+                Arc::new(provider_runtime.providers()),
+            )
+            .expect("Failed to build model provider groups");
+        let model_provider_service = crate::inference::provider::service::ModelProviderService::new(
+            crate::inference::directory::models::ModelDirectoryService::new(
+                catalog_sources.clone(),
+            ),
+            config_service.clone(),
+            provider_credentials,
+            provider_validator,
+            provider_runtime.clone(),
+            config.clone(),
+            provider_groups,
+            provider_runtime.providers(),
+        );
+        // A read-only clone of the same resolved providers/model groups, for
+        // the chat/memory/PKM call sites that take a `ModelProviderRegistry`
+        // directly rather than the full admin-facing `ModelProviderService`.
+        let provider_registry = model_provider_service.registry().clone();
 
         let chat_repo = SurrealRepo::new(db.clone());
         let message_repo = SurrealRepo::new(db.clone());
@@ -480,23 +530,7 @@ impl AppState {
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("data"));
-        let managed_vault = crate::credential::managed::ManagedVault::new(
-            Arc::new(crate::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
-            &config.auth.encryption_secret,
-            crate::credential::managed::GLOBAL_CONNECTION_ID.into(),
-        );
-        let managed_resolver =
-            Arc::new(crate::credential::managed::resolver::ManagedResolver::new(
-                crate::credential::managed::integration::registered(),
-            ));
         let login_service = crate::credential::managed::login::ManagedLoginService::registered();
-        // Model-provider credentials (managed via the settings UI's provider
-        // admin routes) share this same global managed vault — cloned here
-        // before `VaultService::new` takes ownership below.
-        let provider_credentials = crate::inference::credential::store::ProviderCredentials::new(
-            managed_vault.clone(),
-            managed_resolver.clone(),
-        );
         let vault_service = VaultService::new(
             vault_connection_repo,
             vault_grant_repo,
@@ -511,51 +545,6 @@ impl AppState {
             managed_vault,
             managed_resolver,
             login_service,
-        );
-
-        // Admin/settings-facing provider management (validate/save/login
-        // routes under `/api/config/providers/*`), layered over the managed
-        // vault rather than the plain static-config providers the chat-facing
-        // `provider_registry` above resolves. Credential resolution for
-        // managed (OAuth/subscription) providers routes through here; the
-        // chat/memory inference path still resolves providers via
-        // `provider_registry`.
-        let provider_inference_counter =
-            crate::inference::provider::InferenceCounter::new(broadcast_service.clone());
-        let provider_validator =
-            crate::inference::provider::validation::ProviderValidationService::new(
-                provider_credentials.clone(),
-                provider_inference_counter.clone(),
-            );
-        let provider_runtime = Arc::new(
-            crate::inference::credential::runtime::RuntimeCredentials::new(
-                config.providers.clone(),
-                provider_credentials.clone(),
-                provider_inference_counter,
-            ),
-        );
-        let provider_groups = ModelRegistryConfig {
-            providers: config.providers.clone(),
-            models: config.models.clone(),
-            skip_auto_discover: true,
-        }
-        .parse_model_groups_with_catalog(
-            &config.inference,
-            &catalog_sources.models.current(),
-            Arc::new(provider_runtime.providers()),
-        )
-        .expect("Failed to build model-provider-service groups");
-        let model_provider_service = crate::inference::provider::service::ModelProviderService::new(
-            crate::inference::directory::models::ModelDirectoryService::new(
-                catalog_sources.clone(),
-            ),
-            config_service.clone(),
-            provider_credentials,
-            provider_validator,
-            provider_runtime.clone(),
-            config.clone(),
-            provider_groups,
-            provider_runtime.providers(),
         );
 
         let oauth_service = if config.sso.enabled {

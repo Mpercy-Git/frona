@@ -238,6 +238,16 @@ impl ModelProviderService {
         }
     }
 
+    /// The underlying `ModelProviderRegistry` this service resolves through.
+    /// For call sites that pre-date this type (chat inference, memory, PKM,
+    /// the fork's vision/tool-loop plumbing) and take a `ModelProviderRegistry`
+    /// directly rather than the full admin-facing service - a clone of this is
+    /// a read-only view onto the exact same resolved providers/model groups,
+    /// not a second, independently-built set.
+    pub fn registry(&self) -> &crate::inference::provider::registry::ModelProviderRegistry {
+        &self.registry
+    }
+
     pub fn resolve(
         &self,
         reference: &crate::inference::ModelRef,
