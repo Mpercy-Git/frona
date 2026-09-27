@@ -129,6 +129,11 @@ impl VaultService {
         Ok(connection.into())
     }
 
+    /// Single-connection fetch, symmetrical with `create_connection`/
+    /// `list_connections`/`delete_connection` above. No route calls it yet -
+    /// no single-connection GET endpoint exists - kept as ported API surface
+    /// rather than removed, since that endpoint is a natural addition.
+    #[allow(dead_code)]
     pub(crate) async fn get_connection(
         &self,
         user_id: &str,
@@ -1115,6 +1120,10 @@ impl VaultService {
         Ok(vault)
     }
 
+    /// Removes a single item from a managed-vault login. No settings-UI
+    /// route calls it yet; kept as ported API surface for that route rather
+    /// than removed.
+    #[allow(dead_code)]
     pub(crate) async fn delete_managed_item(
         &self,
         user_id: &str,

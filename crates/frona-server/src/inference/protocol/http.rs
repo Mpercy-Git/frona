@@ -11,6 +11,12 @@ pub async fn scope<F: Future>(parameters: WireParameters, future: F) -> F::Outpu
 }
 
 /// SDK transports call this after serialization and before request signing.
+/// `WireClient`'s own `HttpClientExt` impl below goes through `rewrite()`
+/// instead (it owns the full `Request`, not just a JSON body); this is the
+/// lower-level entry point for a transport that builds its own body and
+/// signs directly, e.g. an AWS SigV4-signed adapter - Bedrock isn't a
+/// provider in this fork yet, so nothing calls it yet.
+#[allow(dead_code)]
 pub(crate) fn apply_current(body: &mut serde_json::Value) {
     let _ = PARAMETERS.try_with(|parameters| parameters.apply(body));
 }

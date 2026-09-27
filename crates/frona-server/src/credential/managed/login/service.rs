@@ -242,6 +242,12 @@ impl ManagedLoginService {
         Ok(slot)
     }
 
+    /// Validates a login attempt against the vault connection it was
+    /// started under, as distinct from [`check_connection`](Self::check_connection)'s
+    /// provider-name check. No caller in this fork's routes needs the
+    /// distinction yet; kept as part of the ported API surface rather than
+    /// removed, since a future vault-scoped login route would want it.
+    #[allow(dead_code)]
     pub(crate) async fn check_vault(
         &self,
         user_id: &str,
