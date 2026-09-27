@@ -3,7 +3,8 @@ use std::sync::Arc;
 use rig_core::client::ModelListingClient;
 use rig_core::client::Nothing;
 use rig_core::providers::{
-    anthropic, deepseek, gemini, groq, mira, mistral, moonshot, ollama, openai, openrouter,
+    anthropic, deepseek, gemini, groq, llamafile, minimax, mira, mistral, moonshot, ollama, openai,
+    openrouter, venice, zai,
 };
 
 use crate::core::Handle;
@@ -47,6 +48,11 @@ pub(crate) enum FactoryKind {
     Mira,
     Galadriel,
     HuggingFace,
+    Zai,
+    Venice,
+    MiniMax,
+    Llamafile,
+    Byteplus,
     GenericOpenAi,
 }
 
@@ -125,6 +131,11 @@ impl ResolvedConnection {
             FactoryKind::Mira => "mira",
             FactoryKind::Galadriel => "galadriel",
             FactoryKind::HuggingFace => "huggingface",
+            FactoryKind::Zai => "zai",
+            FactoryKind::Venice => "venice",
+            FactoryKind::MiniMax => "minimax",
+            FactoryKind::Llamafile => "llamafile",
+            FactoryKind::Byteplus => "byteplus",
         }
     }
 }
@@ -231,6 +242,13 @@ const ANONYMOUS_OLLAMA: &[AuthMethodDescriptor] = &[AuthMethodDescriptor {
     method: CredentialMethod::Anonymous,
     priority: 10,
     protocols: OLLAMA_PROTOCOLS,
+}];
+
+const ANONYMOUS_COMPLETIONS: &[AuthMethodDescriptor] = &[AuthMethodDescriptor {
+    id: "anonymous",
+    method: CredentialMethod::Anonymous,
+    priority: 10,
+    protocols: COMPLETIONS,
 }];
 
 impl ProviderPlatform {
@@ -487,6 +505,22 @@ fn recipe(brand: &str) -> Option<Recipe> {
                 API_KEY_HUGGINGFACE,
             )
             .endpoint("https://router.huggingface.co"),
+            "zai" => {
+                Recipe::openai_compatible(FactoryKind::Zai).endpoint("https://api.z.ai/api/paas/v4")
+            }
+            "venice" => Recipe::openai_compatible(FactoryKind::Venice)
+                .endpoint("https://api.venice.ai/api/v1"),
+            "minimax" => Recipe::openai_compatible(FactoryKind::MiniMax)
+                .endpoint("https://api.minimax.io/v1"),
+            "llamafile" => Recipe::new(
+                AdapterId::Openai,
+                FactoryKind::Llamafile,
+                COMPLETIONS,
+                ANONYMOUS_COMPLETIONS,
+            )
+            .endpoint("http://localhost:8080"),
+            "byteplus" => Recipe::openai_compatible(FactoryKind::Byteplus)
+                .endpoint(crate::core::config::BYTEPLUS_API_BASE_URL),
             _ => return None,
         };
     Some(recipe)
@@ -825,15 +859,44 @@ pub(crate) fn build_provider(
             build_listable_key_client!(name, config, endpoint, moonshot, counter)
         }
         FactoryKind::Mira => build_listable_key_client!(name, config, endpoint, mira, counter),
+        FactoryKind::Zai => {
+            let key = require_api_key(name, config)?;
+            let mut builder = zai::Client::builder()
+                .http_client(crate::inference::protocol::http::WireClient::default())
+                .api_key(&key);
+            if let Some(url) = endpoint {
+                builder = builder.base_url(url);
+            }
+            let client = builder.build().map_err(|error| config_error(name, error))?;
+            Ok(Arc::new(
+                RigProvider::new(client, counter.clone()).with_wire_transport(),
+            ))
+        }
+        FactoryKind::Venice => build_listable_key_client!(name, config, endpoint, venice, counter),
+        FactoryKind::MiniMax => {
+            build_listable_key_client!(name, config, endpoint, minimax, counter)
+        }
+        FactoryKind::Llamafile => {
+            let mut builder = llamafile::Client::builder()
+                .http_client(crate::inference::protocol::http::WireClient::default())
+                .api_key(Nothing);
+            if let Some(url) = endpoint {
+                builder = builder.base_url(url);
+            }
+            let client = builder.build().map_err(|error| config_error(name, error))?;
+            Ok(Arc::new(
+                RigProvider::new(client, counter.clone()).with_wire_transport(),
+            ))
+        }
         FactoryKind::HuggingFace => {
             crate::inference::provider::adapter::huggingface::build(resolved, config, counter)
         }
-        FactoryKind::Galadriel | FactoryKind::Xai => {
+        FactoryKind::Galadriel | FactoryKind::Xai | FactoryKind::Byteplus => {
             let key = require_api_key(name, config)?;
             let client = openai::CompletionsClient::builder()
                 .http_client(crate::inference::protocol::http::WireClient::default())
                 .api_key(&key)
-                .base_url(endpoint.expect("Galadriel recipe has an endpoint"))
+                .base_url(endpoint.expect("recipe has an endpoint"))
                 .build()
                 .map_err(|error| config_error(name, error))?;
             Ok(Arc::new(
