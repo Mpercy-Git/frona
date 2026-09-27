@@ -354,6 +354,11 @@ mod tests {
             crate::app_state_fixture::catalogs(&config),
         );
         state.vault_service.sync_config_connections().await.unwrap();
+        // require_operator (GET/PUT /api/config) authorizes through
+        // PolicyService, which only grants the admins group its built-in
+        // list_users permission once base policies are seeded - production
+        // boot always does this (main.rs), so the test must too.
+        state.policy_service.sync_base_policies().await.unwrap();
         state.model_provider_service.validator = state
             .model_provider_service
             .validator
