@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut loaded.config.push,
         &loaded.config.storage.data_dir,
     );
-    let models = loaded.models.clone();
+    let models = loaded.models.take();
     let config_service = ConfigService::new(loaded).unwrap_or_else(|e| panic!("{e}"));
     let config = config_service.active();
 
