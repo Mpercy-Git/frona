@@ -84,7 +84,10 @@ pub(super) fn response(mut result: SaveResult) -> Result<Json<Value>, ApiError> 
     })))
 }
 
-async fn get_schema(auth: AuthUser, State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+async fn get_schema(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     require_operator(&state, &auth).await?;
     let schema = schemars::schema_for!(Config);
     Ok(Json(serde_json::to_value(schema).unwrap_or_default()))
