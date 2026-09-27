@@ -522,10 +522,11 @@ impl AppState {
         // `provider_registry`.
         let provider_inference_counter =
             crate::inference::provider::InferenceCounter::new(broadcast_service.clone());
-        let provider_validator = crate::inference::provider::validation::ProviderValidationService::new(
-            provider_credentials.clone(),
-            provider_inference_counter.clone(),
-        );
+        let provider_validator =
+            crate::inference::provider::validation::ProviderValidationService::new(
+                provider_credentials.clone(),
+                provider_inference_counter.clone(),
+            );
         let provider_runtime = Arc::new(
             crate::inference::credential::runtime::RuntimeCredentials::new(
                 config.providers.clone(),
@@ -609,10 +610,7 @@ impl AppState {
         agent_service.set_share_service(agent_share_service.clone());
         // Lets a built-in agent declaring a `cron:` schedule (the cost analyst)
         // have its recurring task seeded when it is first cloned for a user.
-        agent_service.set_task_service(
-            task_service.clone(),
-            config.server.timezone.clone(),
-        );
+        agent_service.set_task_service(task_service.clone(), config.server.timezone.clone());
 
         let app_manager = Arc::new(AppManager::new(
             sandbox_manager.clone(),

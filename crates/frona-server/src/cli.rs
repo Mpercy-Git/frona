@@ -112,8 +112,8 @@ pub async fn run_reset_password(args: &[String]) -> Result<(), Box<dyn std::erro
     };
     AuthService::validate_password(&password)?;
 
-    let loaded = ConfigService::load(crate::core::config::config_file_path())
-        .map_err(|e| format!("{e}"))?;
+    let loaded =
+        ConfigService::load(crate::core::config::config_file_path()).map_err(|e| format!("{e}"))?;
     let config = loaded.config;
     let surreal = db::init(&config.database.path).await?;
 

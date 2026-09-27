@@ -323,207 +323,207 @@ fn strip_defaults_removes_model_group_entry_defaults() {
         })
     );
 }
-    #[test]
-    fn a_provider_config_without_billing_deserializes() {
-        let cfg: ModelProviderConfig =
-            serde_yaml::from_str("api_key: sk-123\nenabled: true").expect("parses");
-        assert!(cfg.billing.is_none());
-        assert_eq!(
-            cfg.effective_billing("openai").kind,
-            ProviderBillingKind::Metered
-        );
-    }
+#[test]
+fn a_provider_config_without_billing_deserializes() {
+    let cfg: ModelProviderConfig =
+        serde_yaml::from_str("api_key: sk-123\nenabled: true").expect("parses");
+    assert!(cfg.billing.is_none());
+    assert_eq!(
+        cfg.effective_billing("openai").kind,
+        ProviderBillingKind::Metered
+    );
+}
 
-    #[test]
-    fn a_provider_config_with_billing_deserializes() {
-        let cfg: ModelProviderConfig = serde_yaml::from_str(
+#[test]
+fn a_provider_config_with_billing_deserializes() {
+    let cfg: ModelProviderConfig = serde_yaml::from_str(
             "api_key: sk-123\nbilling:\n  kind: subscription\n  monthly_cost: 20\n  currency: GBP\n  included_spend_usd: 20\n  overage_is_metered: true\n",
         )
         .expect("parses");
-        let billing = cfg.effective_billing("anthropic");
-        assert_eq!(billing.kind, ProviderBillingKind::Subscription);
-        assert_eq!(billing.monthly_cost, Some(20.0));
-        assert_eq!(billing.currency_or_usd(), "GBP");
-        assert!(billing.overage_is_metered);
-    }
+    let billing = cfg.effective_billing("anthropic");
+    assert_eq!(billing.kind, ProviderBillingKind::Subscription);
+    assert_eq!(billing.monthly_cost, Some(20.0));
+    assert_eq!(billing.currency_or_usd(), "GBP");
+    assert!(billing.overage_is_metered);
+}
 
-    /// A config that never mentions the new managed-credential/adapter fields
-    /// must still parse and default them to absent, so existing installs are
-    /// unaffected by the fields' addition.
-    #[test]
-    fn a_provider_config_without_the_new_fields_deserializes() {
-        let cfg: ModelProviderConfig =
-            serde_yaml::from_str("api_key: sk-123\nenabled: true").expect("parses");
-        assert!(cfg.credential_id.is_none());
-        assert!(cfg.provider.is_none());
-        assert!(cfg.adapter.is_none());
-        assert!(cfg.aws_profile.is_none());
-        assert!(cfg.aws_region.is_none());
-        assert!(cfg.azure_credential.is_none());
-        assert!(cfg.attributes.is_empty());
-    }
+/// A config that never mentions the new managed-credential/adapter fields
+/// must still parse and default them to absent, so existing installs are
+/// unaffected by the fields' addition.
+#[test]
+fn a_provider_config_without_the_new_fields_deserializes() {
+    let cfg: ModelProviderConfig =
+        serde_yaml::from_str("api_key: sk-123\nenabled: true").expect("parses");
+    assert!(cfg.credential_id.is_none());
+    assert!(cfg.provider.is_none());
+    assert!(cfg.adapter.is_none());
+    assert!(cfg.aws_profile.is_none());
+    assert!(cfg.aws_region.is_none());
+    assert!(cfg.azure_credential.is_none());
+    assert!(cfg.attributes.is_empty());
+}
 
-    #[test]
-    fn a_provider_config_with_the_new_fields_deserializes() {
-        let cfg: ModelProviderConfig = serde_yaml::from_str(
+#[test]
+fn a_provider_config_with_the_new_fields_deserializes() {
+    let cfg: ModelProviderConfig = serde_yaml::from_str(
             "credential_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6\nprovider: azure\nadapter: openai\naws_profile: default\naws_region: us-east-1\nazure_credential: entra\nazure_api_version: 2024-10-21\n",
         )
         .expect("parses");
-        assert_eq!(
-            cfg.credential_id,
-            Some(uuid::Uuid::parse_str("3fa85f64-5717-4562-b3fc-2c963f66afa6").unwrap())
-        );
-        assert_eq!(cfg.provider.as_deref(), Some("azure"));
-        assert_eq!(cfg.adapter, Some(AdapterId::Openai));
-        assert_eq!(cfg.aws_profile.as_deref(), Some("default"));
-        assert_eq!(cfg.aws_region.as_deref(), Some("us-east-1"));
-        assert_eq!(cfg.azure_credential.as_deref(), Some("entra"));
-        assert_eq!(
-            cfg.attributes
-                .get("azure_api_version")
-                .and_then(|v| v.as_str()),
-            Some("2024-10-21")
-        );
-    }
+    assert_eq!(
+        cfg.credential_id,
+        Some(uuid::Uuid::parse_str("3fa85f64-5717-4562-b3fc-2c963f66afa6").unwrap())
+    );
+    assert_eq!(cfg.provider.as_deref(), Some("azure"));
+    assert_eq!(cfg.adapter, Some(AdapterId::Openai));
+    assert_eq!(cfg.aws_profile.as_deref(), Some("default"));
+    assert_eq!(cfg.aws_region.as_deref(), Some("us-east-1"));
+    assert_eq!(cfg.azure_credential.as_deref(), Some("entra"));
+    assert_eq!(
+        cfg.attributes
+            .get("azure_api_version")
+            .and_then(|v| v.as_str()),
+        Some("2024-10-21")
+    );
+}
 
-    /// The flattened `attributes` bag must round-trip through `strip_defaults`
-    /// untouched — it holds operator-set data with no struct-level default to
-    /// compare against, so it should never be silently dropped.
-    #[test]
-    fn strip_defaults_preserves_flattened_attributes() {
-        let mut value = serde_json::json!({
+/// The flattened `attributes` bag must round-trip through `strip_defaults`
+/// untouched — it holds operator-set data with no struct-level default to
+/// compare against, so it should never be silently dropped.
+#[test]
+fn strip_defaults_preserves_flattened_attributes() {
+    let mut value = serde_json::json!({
+        "providers": {
+            "azure": {
+                "api_key": "sk-123",
+                "enabled": true,
+                "azure_api_version": "2024-10-21",
+            },
+        },
+    });
+    strip_defaults(&mut value);
+    assert_eq!(
+        value,
+        serde_json::json!({
             "providers": {
                 "azure": {
                     "api_key": "sk-123",
-                    "enabled": true,
                     "azure_api_version": "2024-10-21",
                 },
             },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "providers": {
-                    "azure": {
-                        "api_key": "sk-123",
-                        "azure_api_version": "2024-10-21",
-                    },
-                },
-            })
-        );
-    }
+        })
+    );
+}
 
-    /// A provider whose billing an operator has stated must survive
-    /// `strip_defaults` — that is the round-trip `PUT /api/config` performs on
-    /// every save, and silently dropping the block would reclassify a
-    /// subscription as pay-as-you-go the next time settings were touched.
-    #[test]
-    fn strip_defaults_preserves_a_declared_billing_block() {
-        let mut value = serde_json::json!({
+/// A provider whose billing an operator has stated must survive
+/// `strip_defaults` — that is the round-trip `PUT /api/config` performs on
+/// every save, and silently dropping the block would reclassify a
+/// subscription as pay-as-you-go the next time settings were touched.
+#[test]
+fn strip_defaults_preserves_a_declared_billing_block() {
+    let mut value = serde_json::json!({
+        "providers": {
+            "anthropic": {
+                "api_key": "sk-123",
+                "enabled": true,
+                "billing": { "kind": "subscription", "monthly_cost": 20.0, "overage_is_metered": false },
+            },
+        },
+    });
+    strip_defaults(&mut value);
+    assert_eq!(
+        value,
+        serde_json::json!({
             "providers": {
                 "anthropic": {
                     "api_key": "sk-123",
-                    "enabled": true,
                     "billing": { "kind": "subscription", "monthly_cost": 20.0, "overage_is_metered": false },
                 },
             },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "providers": {
-                    "anthropic": {
-                        "api_key": "sk-123",
-                        "billing": { "kind": "subscription", "monthly_cost": 20.0, "overage_is_metered": false },
-                    },
-                },
-            })
-        );
-    }
+        })
+    );
+}
 
-    /// The other half: a config that never mentioned billing must come back
-    /// out exactly as it went in, so adding the field changes nothing for
-    /// existing installs.
-    #[test]
-    fn strip_defaults_leaves_a_config_without_billing_untouched() {
-        let mut value = serde_json::json!({
-            "providers": { "openai": { "api_key": "sk-123", "enabled": true } },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({ "providers": { "openai": { "api_key": "sk-123" } } })
-        );
-    }
+/// The other half: a config that never mentioned billing must come back
+/// out exactly as it went in, so adding the field changes nothing for
+/// existing installs.
+#[test]
+fn strip_defaults_leaves_a_config_without_billing_untouched() {
+    let mut value = serde_json::json!({
+        "providers": { "openai": { "api_key": "sk-123", "enabled": true } },
+    });
+    strip_defaults(&mut value);
+    assert_eq!(
+        value,
+        serde_json::json!({ "providers": { "openai": { "api_key": "sk-123" } } })
+    );
+}
 
-    /// `provider` is the serde tag of the flattened `ProviderModel`, so a model
-    /// group that loses it no longer deserializes. It used to be stripped
-    /// whenever it equalled the default variant (`generic`), which meant saving
-    /// an OpenAI-compatible model group from the settings UI wrote a config.yaml
-    /// that panicked the next startup with
-    /// `missing configuration field "models.primary.provider"`.
-    #[test]
-    fn strip_defaults_keeps_provider_tag_matching_the_default_variant() {
-        let mut value = serde_json::json!({
-            "models": {
-                "primary": {
-                    "provider": "generic",
-                    "model": "qwen3-coder",
-                    "fallbacks": [],
-                    "temperature": null,
-                },
+/// `provider` is the serde tag of the flattened `ProviderModel`, so a model
+/// group that loses it no longer deserializes. It used to be stripped
+/// whenever it equalled the default variant (`generic`), which meant saving
+/// an OpenAI-compatible model group from the settings UI wrote a config.yaml
+/// that panicked the next startup with
+/// `missing configuration field "models.primary.provider"`.
+#[test]
+fn strip_defaults_keeps_provider_tag_matching_the_default_variant() {
+    let mut value = serde_json::json!({
+        "models": {
+            "primary": {
+                "provider": "generic",
+                "model": "qwen3-coder",
+                "fallbacks": [],
+                "temperature": null,
             },
-        });
-        strip_defaults(&mut value);
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "models": {
-                    "primary": { "provider": "generic", "model": "qwen3-coder" },
-                },
-            })
-        );
-    }
+        },
+    });
+    strip_defaults(&mut value);
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "models": {
+                "primary": { "provider": "generic", "model": "qwen3-coder" },
+            },
+        })
+    );
+}
 
-    /// Every credential in the config must be redacted on the way out. The SMTP
-    /// password is the one most recently added, and `GET /api/config` is
-    /// reachable by any authenticated user — not just admins.
-    #[test]
-    fn smtp_password_is_redacted_for_api_and_logs() {
-        let mut config = Config::default();
-        config.mail.smtp_password = Some("hunter2-smtp".into());
+/// Every credential in the config must be redacted on the way out. The SMTP
+/// password is the one most recently added, and `GET /api/config` is
+/// reachable by any authenticated user — not just admins.
+#[test]
+fn smtp_password_is_redacted_for_api_and_logs() {
+    let mut config = Config::default();
+    config.mail.smtp_password = Some("hunter2-smtp".into());
 
-        let mut api_value = serde_json::to_value(&config).unwrap();
-        redact_config_for_api(&mut api_value);
-        let rendered = serde_json::to_string(&api_value).unwrap();
-        assert!(
-            !rendered.contains("hunter2-smtp"),
-            "API response leaked the SMTP password"
-        );
-        assert_eq!(
-            api_value.pointer("/mail/smtp_password/is_set"),
-            Some(&serde_json::Value::Bool(true))
-        );
+    let mut api_value = serde_json::to_value(&config).unwrap();
+    redact_config_for_api(&mut api_value);
+    let rendered = serde_json::to_string(&api_value).unwrap();
+    assert!(
+        !rendered.contains("hunter2-smtp"),
+        "API response leaked the SMTP password"
+    );
+    assert_eq!(
+        api_value.pointer("/mail/smtp_password/is_set"),
+        Some(&serde_json::Value::Bool(true))
+    );
 
-        let mut log_value = serde_json::to_value(&config).unwrap();
-        redact_config_for_log(&mut log_value);
-        let rendered = serde_json::to_string(&log_value).unwrap();
-        assert!(
-            !rendered.contains("hunter2-smtp"),
-            "log dump leaked the SMTP password"
-        );
-    }
+    let mut log_value = serde_json::to_value(&config).unwrap();
+    redact_config_for_log(&mut log_value);
+    let rendered = serde_json::to_string(&log_value).unwrap();
+    assert!(
+        !rendered.contains("hunter2-smtp"),
+        "log dump leaked the SMTP password"
+    );
+}
 
-    #[test]
-    fn unset_smtp_password_reports_as_not_set() {
-        let config = Config::default();
-        let mut api_value = serde_json::to_value(&config).unwrap();
-        redact_config_for_api(&mut api_value);
-        // Absent secrets must not masquerade as configured ones.
-        assert_ne!(
-            api_value.pointer("/mail/smtp_password/is_set"),
-            Some(&serde_json::Value::Bool(true))
-        );
-    }
+#[test]
+fn unset_smtp_password_reports_as_not_set() {
+    let config = Config::default();
+    let mut api_value = serde_json::to_value(&config).unwrap();
+    redact_config_for_api(&mut api_value);
+    // Absent secrets must not masquerade as configured ones.
+    assert_ne!(
+        api_value.pointer("/mail/smtp_password/is_set"),
+        Some(&serde_json::Value::Bool(true))
+    );
+}
