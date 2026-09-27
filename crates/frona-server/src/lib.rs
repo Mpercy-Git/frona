@@ -3,6 +3,7 @@ extern crate self as frona;
 pub mod agent;
 pub mod api;
 pub mod app;
+pub mod app_state_fixture;
 pub mod auth;
 pub mod call;
 pub mod chat;

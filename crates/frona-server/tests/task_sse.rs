@@ -118,13 +118,23 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
         ));
 
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage.clone(),
         metrics_handle,
         resource_manager.clone(),
+        catalog_sources,
     );
     // Must reuse `state.broadcast_service` - a fresh BroadcastService here
     // would disconnect events fired inside ChatService from SSE sessions

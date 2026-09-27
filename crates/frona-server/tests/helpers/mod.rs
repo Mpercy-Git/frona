@@ -1072,13 +1072,23 @@ pub fn test_harness(
         ),
     );
     let storage = frona::storage::StorageService::new(config);
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(config);
     let mut state = AppState::new(
         db.clone(),
-        config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
 
     // ChatService wired to the mock provider so all harness inference hits it.

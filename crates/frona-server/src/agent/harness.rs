@@ -57,6 +57,7 @@ pub struct Harness {
     pub(crate) skill_service: SkillService,
     pub(crate) task_service: TaskService,
     pub(crate) notification_service: crate::notification::service::NotificationService,
+    pub(crate) vault_service: VaultService,
     pub(crate) mcp_service: Arc<McpServerService>,
     pub(crate) tool_manager: Arc<ToolManager>,
     pub(crate) policy_service: PolicyService,
@@ -68,7 +69,6 @@ pub struct Harness {
     pub(crate) config: Arc<Config>,
     pub(crate) commands: Arc<CommandRegistry>,
     pub(crate) usage_service: crate::inference::usage::UsageService,
-    pub(crate) vault_service: VaultService,
 }
 
 impl Harness {
@@ -82,6 +82,7 @@ impl Harness {
         skill_service: SkillService,
         task_service: TaskService,
         notification_service: crate::notification::service::NotificationService,
+        vault_service: VaultService,
         mcp_service: Arc<McpServerService>,
         tool_manager: Arc<ToolManager>,
         policy_service: PolicyService,
@@ -92,7 +93,6 @@ impl Harness {
         prompts: PromptLoader,
         config: Arc<Config>,
         usage_service: crate::inference::usage::UsageService,
-        vault_service: VaultService,
     ) -> Self {
         let mut registry = CommandRegistry::new();
         crate::chat::command::builtin::register_all(&mut registry);
@@ -107,6 +107,7 @@ impl Harness {
             skill_service,
             task_service,
             notification_service,
+            vault_service,
             mcp_service,
             tool_manager,
             policy_service,
@@ -118,7 +119,6 @@ impl Harness {
             config,
             commands,
             usage_service,
-            vault_service,
         }
     }
 

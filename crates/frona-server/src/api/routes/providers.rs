@@ -386,6 +386,7 @@ mod tests {
             name: "ordinary".into(),
             password_hash: String::new(),
             timezone: None,
+            phone: None,
             groups: vec![],
             deactivated_at: None,
             created_at: chrono::Utc::now(),

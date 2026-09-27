@@ -769,6 +769,7 @@ impl AppState {
             skill_service.clone(),
             task_service.clone(),
             notification_service.clone(),
+            vault_service.clone(),
             mcp_service.clone(),
             tool_manager.clone(),
             policy_service.clone(),
@@ -779,7 +780,6 @@ impl AppState {
             prompt_loader.clone(),
             config_arc.clone(),
             usage_service.clone(),
-            vault_service.clone(),
         ));
         let task_executor = Arc::new(crate::agent::task::executor::TaskExecutor::new(
             harness.clone(),
