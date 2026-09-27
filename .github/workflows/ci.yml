@@ -15,6 +15,13 @@ jobs:
   backend:
     name: Backend (cargo test)
     runs-on: ubuntu-latest
+    # Observed baseline on main: ~17 min to compile tests + ~25 min to run
+    # them (~43 min total). Without a cap, a genuine hang in a test (a stuck
+    # future, a retry loop, a credential-refresh call reaching out for real)
+    # burns the default 360-minute runner timeout in silence instead of
+    # failing visibly. 60 min gives headroom over the observed baseline
+    # while still turning a hang into an actionable failure quickly.
+    timeout-minutes: 60
     # The repo's .cargo/config.toml pins build.target-dir to a Windows path
     # (C:/temp/...). On Linux the "C:" colon makes cargo assemble an invalid
     # dynamic-library path and fail before compiling anything. Override it.
