@@ -209,8 +209,14 @@ impl ModelProviderRegistry {
         Self::new(providers, model_groups)
     }
 
+    /// Exact lookup by name - unlike [`resolve_model_group`](Self::resolve_model_group),
+    /// never falls back to `primary` on a miss (a typo'd or removed group name is
+    /// a caller error to surface, not something to silently paper over) and
+    /// doesn't parse ad-hoc "provider/model" references. Falling back is
+    /// [`resolve_with_fallback`](Self::resolve_with_fallback)'s job, with an
+    /// explicit fallback target.
     pub fn resolve(&self, reference: &ModelRef) -> Result<ModelGroup, InferenceError> {
-        self.resolve_model_group(reference.as_str())
+        self.get_model_group(reference.as_str()).cloned()
     }
 
     pub fn resolve_with_fallback(
