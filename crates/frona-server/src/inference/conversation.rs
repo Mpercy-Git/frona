@@ -830,6 +830,7 @@ mod tests {
             attachments: vec![],
             contact_id: None,
             status: None,
+            error: None,
             reasoning: None,
             from_address: None,
             delivery: None,

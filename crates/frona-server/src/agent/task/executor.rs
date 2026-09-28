@@ -737,7 +737,7 @@ impl TaskExecutor {
                         let _ = self
                             .harness
                             .chat_service
-                            .fail_agent_message(msg, e.to_string())
+                            .fail_agent_message(msg, (&e).into())
                             .await;
                     }
                     self.handle_error(&task, &e).await?;
@@ -1032,7 +1032,7 @@ impl TaskExecutor {
                     let _ = self
                         .harness
                         .chat_service
-                        .fail_agent_message(msg, e.to_string())
+                        .fail_agent_message(msg, (&e).into())
                         .await;
                 }
                 tracing::warn!(
