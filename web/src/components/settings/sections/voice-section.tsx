@@ -99,10 +99,29 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
 
           <TextInput
             label="TTS Provider"
-            description="Text-to-speech provider (e.g. elevenlabs, polly). Leave empty for default (Polly)."
+            description="Text-to-speech provider (e.g. elevenlabs, polly). Twilio now defaults to ElevenLabs when left empty; set to polly to use Amazon Polly instead."
             value={voice.twilio_tts_provider}
             onChange={(twilio_tts_provider) => onChange({ ...voice, twilio_tts_provider })}
             placeholder="elevenlabs"
+          />
+
+          <SelectInput
+            label="ElevenLabs Text Normalization"
+            description="Whether ElevenLabs normalizes text (numbers, dates, etc.) before speaking it. On costs extra latency but reads awkward text more naturally; off is faster. Only applies when TTS Provider is elevenlabs."
+            value={voice.twilio_elevenlabs_text_normalization}
+            onChange={(twilio_elevenlabs_text_normalization) => onChange({ ...voice, twilio_elevenlabs_text_normalization })}
+            options={[
+              { value: "on", label: "On" },
+              { value: "off", label: "Off" },
+            ]}
+          />
+
+          <TextInput
+            label="Language"
+            description="STT/TTS language (BCP-47, e.g. en-US, en-GB), or \"multi\" to auto-detect the caller's language per turn. \"multi\" requires TTS Provider elevenlabs and a Deepgram Speech Model. Leave empty for en-US."
+            value={voice.twilio_language}
+            onChange={(twilio_language) => onChange({ ...voice, twilio_language })}
+            placeholder="en-US"
           />
 
           <TextInput

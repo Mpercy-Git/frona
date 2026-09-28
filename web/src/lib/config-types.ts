@@ -85,6 +85,8 @@ export interface VoiceConfig {
   twilio_voice_id: string | null;
   twilio_speech_model: string | null;
   twilio_tts_provider: string | null;
+  twilio_elevenlabs_text_normalization: string | null;
+  twilio_language: string | null;
   twilio_interrupt_sensitivity: string | null;
   callback_base_url: string | null;
   inbound_enabled: boolean;

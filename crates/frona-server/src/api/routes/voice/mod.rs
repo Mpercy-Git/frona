@@ -52,9 +52,11 @@ pub(super) fn build_twiml(ws_url: &str, opts: TwimlOptions, voice: &VoiceConfig)
         .as_deref()
         .unwrap_or("medium");
 
+    let language = voice.twilio_language.as_deref().unwrap_or("en-US");
+
     let mut relay = XmlEvent::start_element("ConversationRelay")
         .attr("url", ws_url)
-        .attr("language", "en-US")
+        .attr("language", language)
         .attr("interruptible", "any")
         .attr("interruptSensitivity", interrupt_sensitivity)
         .attr("welcomeGreetingInterruptible", "any");
@@ -71,6 +73,9 @@ pub(super) fn build_twiml(ws_url: &str, opts: TwimlOptions, voice: &VoiceConfig)
     }
     if let Some(tp) = voice.twilio_tts_provider.as_deref() {
         relay = relay.attr("ttsProvider", tp);
+    }
+    if let Some(n) = voice.twilio_elevenlabs_text_normalization.as_deref() {
+        relay = relay.attr("elevenlabsTextNormalization", n);
     }
     if let Some(h) = opts.hints {
         relay = relay.attr("hints", h);
