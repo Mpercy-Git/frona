@@ -246,6 +246,42 @@ detail):
   structure and touch the same settings page the fork's voice/cost-analyst
   settings live in.
 
+**Status as of 2026-09-28: Steps 2–4 done.** PR #131 ("Group C:
+managed-credential vault + provider-adapter rewrite (Steps 2-3, unified)")
+landed the full `inference/provider/{mod,registry,group,platform,service,
+validation}.rs` + `provider/adapter/*.rs` structure (Step 2, including the
+six shared-brand adapters and the `ModelProviderConfig` schema merge with
+`billing` preserved), `credential/managed/*` (Step 3, no naming collision
+confirmed), and the five one-line `byteplus`/`zai`/`venice`/`minimax`/
+`llamafile` recipe entries plus the `generic` case dropped in favor of
+`dynamic_recipe()` (Step 4) — all verified present in
+`crates/frona-server/src/inference/provider/platform.rs` and
+`credential/managed/`. This document and `GROUP_C_PROVIDER_SCOPING.md`
+weren't updated when that PR merged; they still read as if only the
+catalog-crate half of Step 2 had landed. Corrected here.
+
+Step 5 (settings UI) is partially done: `99db1d24` ("manage account logins
+from vault settings" — the "Managed" vault-provider option in
+`vault-section.tsx`, wired to `VaultConnectionConfig::Managed{}`) was ported
+separately, before PR #131 merged (fork commit `f30bac1`). The other three —
+`a908db4c` (configure named provider connections in settings — the
+`providers-section.tsx` rewrite onto the new per-handle connection API),
+`ee6ab0b1` (configure model groups from live provider directories), and
+`7e745ac4` (custom request parameters accordion) — were still unstarted as
+of this audit and are a real gap: this fork's frontend `providers-section.tsx`
+still edits the old flat `providers: Record<string, ModelProviderConfig>`
+shape directly and never calls any of the new
+`/api/config/providers/{handle}/...` routes (catalog, inspect, validate,
+accept, credentials, login/start|status|complete) that the Step 2–3 backend
+already exposes. Confirmed via a fresh comparison against upstream's
+`web/src/lib/provider-admin.ts`: this fork's Rust `ProviderInspection`/
+`PublicCredential`/`SavedCredential`/`ValidationResult`/`MutationResult`
+structs (`inference/provider/service.rs`) match upstream's TS client types
+field-for-field, since PR #131's backend was itself a faithful port — so
+`a908db4c`/`ee6ab0b1`/`7e745ac4` are a genuine diff-based port against this
+fork's actual API, not a from-scratch redesign, same as Steps 2–4 turned out
+to be.
+
 This is still materially larger than any prior upstream-port PR in this
 fork's history (PR #112/#113 together were ~5,400 lines across 15 commits;
 Group C alone is ~20 commits with one single commit at +15,858/-3,721) and
@@ -262,12 +298,15 @@ perceived size of the Step 1 decision itself.
    [`GROUP_C_PROVIDER_SCOPING.md`](GROUP_C_PROVIDER_SCOPING.md). Unblocks
    Group C Steps 2–5 below and Group B's four Group-C-dependent commits
    (`385e5dd6`, `38d4f5a5`, `f104bd85`, `2b9dfe28`).
-4. Group C Steps 2–5 — the multi-PR provider/credential rewrite, revised order
-   and detail in the scoping doc. Step 2's catalog-crate half is done (the
-   `frona-model-catalog` crate is vendored in and `inference/metadata`
-   rebuilt on it); its remaining half — the six shared-brand adapter files
-   and the `ModelProviderConfig` schema merge — and Steps 3–5 are still
-   open, per the scoping doc's "Step 2 progress" note.
+4. ~~Group C Steps 2–4~~ — done, landed in PR #131. Step 5 is in progress:
+   `99db1d24` done (`f30bac1`); `a908db4c`, `ee6ab0b1`, `7e745ac4` are the
+   remaining gap (see "Status as of 2026-09-28" above).
+4a. Group B's four commits unblocked by Group C landing (`385e5dd6`,
+   `38d4f5a5`, `f104bd85`, `2b9dfe28`) — no longer blocked on Group C, but
+   three still need Podman/Docker build validation this sandbox can't do
+   (same gap as 4b below); `f104bd85` (the `managed_cli_feasibility.rs` test)
+   may be portable without that constraint now that `credential::managed`
+   exists — worth checking first.
 5. The `AppError` redesign for `d4186276`/`c5e95988` — independent of Group C,
    can happen in parallel.
 6. Group B's remaining four Podman/Kache dev-container commits (`341280b7`,
