@@ -260,40 +260,63 @@ confirmed), and the five one-line `byteplus`/`zai`/`venice`/`minimax`/
 weren't updated when that PR merged; they still read as if only the
 catalog-crate half of Step 2 had landed. Corrected here.
 
-Step 5 (settings UI) is two-thirds done: `99db1d24` ("manage account logins
-from vault settings" — the "Managed" vault-provider option in
-`vault-section.tsx`, wired to `VaultConnectionConfig::Managed{}`) was ported
-separately, before PR #131 merged (fork commit `f30bac1`). `a908db4c`
-("configure named provider connections in settings" — the
-`providers-section.tsx` rewrite onto the new per-handle connection API) is now
-ported too: `web/src/lib/provider-admin.ts` and `provider-drafts.ts` are new,
-`providers-section.tsx` is catalog-driven (add/edit/validate/accept/login
-flows against `/api/config/providers/{handle}/...`) rather than editing the
-old flat `providers: Record<string, ModelProviderConfig>` shape directly, and
-`config-types.ts`/`api-client.ts` carry the `persisted_revision`-aware
-`updateConfig`/`getConfigDocument` upstream's commit depends on. Adapted from
-upstream in a few places the fork's actual Rust types required: `GET
-/api/config` didn't return a `persisted_revision` at all (needed for the
-provider edit/delete routes' mandatory `expected_persisted_revision`) — added
-via `ConfigService::active_revision()` plus a small change to
-`api/routes/config.rs::get_config`, matching the shape `PUT /api/config`
-already returned; `PUT /api/config` requires the `{patch,
-expected_persisted_revision}` envelope unconditionally (no bare-patch
-fallback, unlike upstream's own backend); this fork's `ModelProviderConfig`
-already has `billing`, `credential_id`, `provider`, `adapter`, `aws_*`, and a
-flattened `attributes` bag, all preserved and round-tripped through the new
-UI's `BillingFields`/generic field renderer. The other two — `ee6ab0b1`
-(configure model groups from live provider directories) and `7e745ac4`
-(custom request parameters accordion) — remain unstarted; they're
-`ModelsSection`'s concern, not `providers-section.tsx`'s, and stay a separate
-follow-up per that commit's own scoping.
+**Step 5 (settings UI) is now done**, all four commits ported:
 
-This is still materially larger than any prior upstream-port PR in this
-fork's history (PR #112/#113 together were ~5,400 lines across 15 commits;
-Group C alone is ~20 commits with one single commit at +15,858/-3,721) and
-should stay its own multi-PR effort, tracked separately from Groups A and B.
-Steps 2, 3, and 5 are still substantial; what shrank is Step 4 and the
-perceived size of the Step 1 decision itself.
+- `99db1d24` ("manage account logins from vault settings" — the "Managed"
+  vault-provider option in `vault-section.tsx`, wired to
+  `VaultConnectionConfig::Managed{}`) — ported before PR #131 merged (fork
+  commit `f30bac1`).
+- `a908db4c` ("configure named provider connections in settings" — fork
+  commit `fb47936`) — `web/src/lib/provider-admin.ts` and `provider-drafts.ts`
+  are new; `providers-section.tsx` is catalog-driven (add/edit/validate/
+  accept/login flows against `/api/config/providers/{handle}/...`) rather
+  than editing the old flat `providers: Record<string, ModelProviderConfig>`
+  shape directly; `config-types.ts`/`api-client.ts` carry the
+  `persisted_revision`-aware `updateConfig`/`getConfigDocument` the commit
+  depends on. Adapted from upstream where the fork's actual Rust types
+  required it: `GET /api/config` didn't return a `persisted_revision` at all
+  (needed for the provider edit/delete routes' mandatory
+  `expected_persisted_revision`) — added via `ConfigService::active_revision()`
+  plus a small change to `api/routes/config.rs::get_config`, matching the
+  shape `PUT /api/config` already returned; `PUT /api/config` requires the
+  `{patch, expected_persisted_revision}` envelope unconditionally (no
+  bare-patch fallback, unlike upstream's own backend); this fork's
+  `ModelProviderConfig` already has `billing`, `credential_id`, `provider`,
+  `adapter`, `aws_*`, and a flattened `attributes` bag, all preserved and
+  round-tripped through the new UI's `BillingFields`/generic field renderer.
+- `ee6ab0b1` + `7e745ac4` ("configure model groups from live provider
+  directories" + "edit custom request parameters in a separate accordion" —
+  fork commit `68e0cfe`, one commit for both since the second is a direct
+  continuation of the first's new file) — `models-section.tsx`/
+  `model-selector.tsx` rewritten onto the live per-connection directories
+  (`GET`/`POST /api/config/providers/{handle}/models`); new
+  `model-authoring.ts` (schema-lite validation, patch diffing) and
+  `use-model-directories.ts` (per-connection directory cache); new
+  `model-settings.tsx` for the schema-driven typed/extra-params split,
+  including the second commit's "Custom request parameters" accordion.
+  Preserved fork-only features with no upstream equivalent: OpenRouter's
+  `route`/`provider_routing`/`prompt_caching` fields (confirmed via
+  `inference/protocol/parameters.rs` that the backend's live
+  `ModelSettingInfo` directory can't describe these — `OpenRouterParams`
+  wraps its base params via `#[serde(flatten)]`, which the `ParameterMetadata`
+  derive doesn't support — so they'd have silently disappeared without manual
+  preservation, the same class of gap `billing` was in `a908db4c`), and this
+  fork's permissive (not lowercase-only) group-rename validation, since
+  `models: HashMap<String, ModelGroupConfig>` has no `Handle`-style casing
+  constraint server-side.
+
+All three ported commits' verification: `npx tsc --noEmit` clean, `npx eslint`
+clean, full `npx vitest run` passing throughout (503 → 546 tests as each
+commit added its own), `cargo check --workspace` clean. `cargo test` was
+deliberately not run for these — see Group B's disk-allowance note below;
+`cargo check`/`clippy -D warnings`/`fmt --check` is the verification ceiling
+used here for Rust-touching frontend work in this sandbox.
+
+This was materially larger than any prior upstream-port PR in this fork's
+history (PR #112/#113 together were ~5,400 lines across 15 commits; Group C
+alone is ~20 commits with one single commit at +15,858/-3,721), landed across
+several PRs as its own multi-PR effort rather than one, per the original plan.
+With Step 5 done, Group C's full scope (Steps 1–5) is closed.
 
 ## Suggested order
 
@@ -304,9 +327,9 @@ perceived size of the Step 1 decision itself.
    [`GROUP_C_PROVIDER_SCOPING.md`](GROUP_C_PROVIDER_SCOPING.md). Unblocks
    Group C Steps 2–5 below and Group B's four Group-C-dependent commits
    (`385e5dd6`, `38d4f5a5`, `f104bd85`, `2b9dfe28`).
-4. ~~Group C Steps 2–4~~ — done, landed in PR #131. Step 5 is in progress:
-   `99db1d24` (`f30bac1`) and `a908db4c` done; `ee6ab0b1`, `7e745ac4` are the
-   remaining gap (see "Status as of 2026-09-28" above).
+4. ~~Group C Steps 2–5~~ — done. Steps 2–4 landed in PR #131; Step 5's four
+   commits landed as `f30bac1`, `fb47936`, and `68e0cfe` (see "Status as of
+   2026-09-28" above). **Group C is complete.**
 4a. Group B's four commits unblocked by Group C landing (`385e5dd6`,
    `38d4f5a5`, `f104bd85`, `2b9dfe28`) — no longer blocked on Group C, but
    three still need Podman/Docker build validation this sandbox can't do
