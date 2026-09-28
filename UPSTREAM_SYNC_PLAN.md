@@ -260,27 +260,33 @@ confirmed), and the five one-line `byteplus`/`zai`/`venice`/`minimax`/
 weren't updated when that PR merged; they still read as if only the
 catalog-crate half of Step 2 had landed. Corrected here.
 
-Step 5 (settings UI) is partially done: `99db1d24` ("manage account logins
+Step 5 (settings UI) is two-thirds done: `99db1d24` ("manage account logins
 from vault settings" — the "Managed" vault-provider option in
 `vault-section.tsx`, wired to `VaultConnectionConfig::Managed{}`) was ported
-separately, before PR #131 merged (fork commit `f30bac1`). The other three —
-`a908db4c` (configure named provider connections in settings — the
-`providers-section.tsx` rewrite onto the new per-handle connection API),
-`ee6ab0b1` (configure model groups from live provider directories), and
-`7e745ac4` (custom request parameters accordion) — were still unstarted as
-of this audit and are a real gap: this fork's frontend `providers-section.tsx`
-still edits the old flat `providers: Record<string, ModelProviderConfig>`
-shape directly and never calls any of the new
-`/api/config/providers/{handle}/...` routes (catalog, inspect, validate,
-accept, credentials, login/start|status|complete) that the Step 2–3 backend
-already exposes. Confirmed via a fresh comparison against upstream's
-`web/src/lib/provider-admin.ts`: this fork's Rust `ProviderInspection`/
-`PublicCredential`/`SavedCredential`/`ValidationResult`/`MutationResult`
-structs (`inference/provider/service.rs`) match upstream's TS client types
-field-for-field, since PR #131's backend was itself a faithful port — so
-`a908db4c`/`ee6ab0b1`/`7e745ac4` are a genuine diff-based port against this
-fork's actual API, not a from-scratch redesign, same as Steps 2–4 turned out
-to be.
+separately, before PR #131 merged (fork commit `f30bac1`). `a908db4c`
+("configure named provider connections in settings" — the
+`providers-section.tsx` rewrite onto the new per-handle connection API) is now
+ported too: `web/src/lib/provider-admin.ts` and `provider-drafts.ts` are new,
+`providers-section.tsx` is catalog-driven (add/edit/validate/accept/login
+flows against `/api/config/providers/{handle}/...`) rather than editing the
+old flat `providers: Record<string, ModelProviderConfig>` shape directly, and
+`config-types.ts`/`api-client.ts` carry the `persisted_revision`-aware
+`updateConfig`/`getConfigDocument` upstream's commit depends on. Adapted from
+upstream in a few places the fork's actual Rust types required: `GET
+/api/config` didn't return a `persisted_revision` at all (needed for the
+provider edit/delete routes' mandatory `expected_persisted_revision`) — added
+via `ConfigService::active_revision()` plus a small change to
+`api/routes/config.rs::get_config`, matching the shape `PUT /api/config`
+already returned; `PUT /api/config` requires the `{patch,
+expected_persisted_revision}` envelope unconditionally (no bare-patch
+fallback, unlike upstream's own backend); this fork's `ModelProviderConfig`
+already has `billing`, `credential_id`, `provider`, `adapter`, `aws_*`, and a
+flattened `attributes` bag, all preserved and round-tripped through the new
+UI's `BillingFields`/generic field renderer. The other two — `ee6ab0b1`
+(configure model groups from live provider directories) and `7e745ac4`
+(custom request parameters accordion) — remain unstarted; they're
+`ModelsSection`'s concern, not `providers-section.tsx`'s, and stay a separate
+follow-up per that commit's own scoping.
 
 This is still materially larger than any prior upstream-port PR in this
 fork's history (PR #112/#113 together were ~5,400 lines across 15 commits;
@@ -299,7 +305,7 @@ perceived size of the Step 1 decision itself.
    Group C Steps 2–5 below and Group B's four Group-C-dependent commits
    (`385e5dd6`, `38d4f5a5`, `f104bd85`, `2b9dfe28`).
 4. ~~Group C Steps 2–4~~ — done, landed in PR #131. Step 5 is in progress:
-   `99db1d24` done (`f30bac1`); `a908db4c`, `ee6ab0b1`, `7e745ac4` are the
+   `99db1d24` (`f30bac1`) and `a908db4c` done; `ee6ab0b1`, `7e745ac4` are the
    remaining gap (see "Status as of 2026-09-28" above).
 4a. Group B's four commits unblocked by Group C landing (`385e5dd6`,
    `38d4f5a5`, `f104bd85`, `2b9dfe28`) — no longer blocked on Group C, but

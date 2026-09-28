@@ -18,8 +18,9 @@ import { BrowserSection } from "@/components/settings/sections/browser-section";
 import { SearchSection } from "@/components/settings/sections/search-section";
 import { VoiceSection } from "@/components/settings/sections/voice-section";
 import { SandboxSettingsSection } from "@/components/settings/sections/sandbox-section";
-import { getConfig, updateConfig, isSensitiveSet } from "@/lib/config-types";
-import type { Config } from "@/lib/config-types";
+import { getConfigDocument, updateConfig, isSensitiveSet } from "@/lib/config-types";
+import type { Config, ConfigUpdateResponse } from "@/lib/config-types";
+import { acceptProviderDrafts, type ProviderDrafts } from "@/lib/provider-drafts";
 import { Logo } from "@/components/logo";
 
 function generateStrongSecret(length: number): string {
@@ -177,6 +178,8 @@ function SetupWizard() {
   const router = useRouter();
   const [config, setConfig] = useState<Config | null>(null);
   const [patch, setPatch] = useState<Record<string, unknown>>({});
+  const [persistedRevision, setPersistedRevision] = useState("");
+  const [providerDrafts, setProviderDrafts] = useState<ProviderDrafts>({});
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
   const [completed, setCompleted] = useState(false);
@@ -200,9 +203,27 @@ function SetupWizard() {
     setConfig((prev) => prev ? { ...prev, models } : prev);
   }, []);
 
+  const updateProviders = useCallback((providers: Config["providers"], removed: string[] = []) => {
+    setPatch((previous) => {
+      const value: Record<string, unknown> = { ...(previous.providers as Record<string, unknown> ?? {}), ...providers };
+      for (const handle of removed) value[handle] = null;
+      return { ...previous, providers: value };
+    });
+    setConfig((previous) => previous ? { ...previous, providers } : previous);
+  }, []);
+
+  const providerSaved = useCallback((result: ConfigUpdateResponse) => {
+    setConfig(result.config);
+    setPersistedRevision(result.persisted_revision);
+    setPatch({});
+    setProviderDrafts({});
+  }, []);
+
   useEffect(() => {
-    getConfig()
-      .then((cfg) => {
+    getConfigDocument()
+      .then((document) => {
+        const cfg = document.config;
+        setPersistedRevision(document.persisted_revision);
         setConfig(cfg);
         if (!isSensitiveSet(cfg.auth.encryption_secret)) {
           const secret = generateStrongSecret(64);
@@ -243,8 +264,21 @@ function SetupWizard() {
     setSaving(true);
     setError(null);
     try {
-      const result = await updateConfig(patch);
+      if (providersBlock) throw new Error(providersBlock);
+      if (modelsBlock) throw new Error(modelsBlock);
+      const acceptedPatch = await acceptProviderDrafts(patch, providerDrafts, (handle, connection) => {
+        setConfig((previous) => (previous ? { ...previous, providers: { ...previous.providers, [handle]: connection } } : previous));
+        setPatch((previous) => ({ ...previous, providers: { ...(previous.providers as Record<string, unknown>), [handle]: connection } }));
+        setProviderDrafts((previous) => {
+          const next = { ...previous };
+          delete next[handle];
+          return next;
+        });
+      });
+      const result = await updateConfig(acceptedPatch, { expectedPersistedRevision: persistedRevision });
       setConfig(result.config);
+      setPersistedRevision(result.persisted_revision);
+      setProviderDrafts({});
       setPatch({});
       setCompleted(true);
     } catch (err) {
@@ -252,7 +286,7 @@ function SetupWizard() {
     } finally {
       setSaving(false);
     }
-  }, [patch]);
+  }, [patch, persistedRevision, providersBlock, modelsBlock, providerDrafts]);
 
   if (loading) {
     return (
@@ -317,7 +351,13 @@ function SetupWizard() {
             {currentStep.id === "providers" && (
               <ProvidersSection
                 providers={config.providers}
-                onChange={(v) => updatePatch("providers", v)}
+                onChange={updateProviders}
+                drafts={providerDrafts}
+                onDraftsChange={setProviderDrafts}
+                persistedRevision={persistedRevision}
+                hasUnsavedChanges={Object.keys(patch).length > 0}
+                onSaved={providerSaved}
+                requireEnabledProvider
                 onReadyChange={setProvidersBlock}
               />
             )}

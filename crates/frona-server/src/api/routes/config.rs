@@ -109,7 +109,7 @@ fn unreadable_config(error: crate::core::error::AppError) -> ApiError {
 async fn get_config(
     auth: AuthUser,
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     require_operator(&state, &auth).await?;
     // Rebuilt live from disk + FRONA_* env overrides on every request, the
     // same way the process does at startup - not `config_service.active()`
@@ -120,7 +120,19 @@ async fn get_config(
     let mut value = serde_json::to_value(&loaded.config)
         .map_err(|e| ApiError(crate::core::error::AppError::Internal(e.to_string())))?;
     redact_config_for_api(&mut value);
-    Ok(Json(value))
+    // Carries the same `persisted_revision`/`active_revision`/`restart_required`
+    // triple as `response()` below, so the provider-connections UI (whose
+    // edit/delete routes require an `expected_persisted_revision`) can source
+    // it from the initial load rather than needing a prior save first.
+    let persisted_revision = loaded.revision().to_owned();
+    let active_revision = state.config_service.active_revision().to_owned();
+    let restart_required = persisted_revision != active_revision;
+    Ok(Json(serde_json::json!({
+        "config": value,
+        "persisted_revision": persisted_revision,
+        "active_revision": active_revision,
+        "restart_required": restart_required,
+    })))
 }
 
 #[derive(Deserialize)]

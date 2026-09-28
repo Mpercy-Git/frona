@@ -149,6 +149,11 @@ export interface OpenRouterProviderRouting {
 export interface ModelGroupConfig {
   provider: string;
   model: string;
+  /** Protocol/API surface override. See `crates/frona-server/src/core/config/types.rs::ApiSurface`. */
+  api?: import("./provider-admin").ProviderProtocol;
+  /** Arbitrary request fields with no typed home on `ModelGroupConfig` yet -
+   *  passed through to the provider's request body verbatim. */
+  extra_params?: Record<string, unknown>;
   fallbacks?: ModelGroupConfig[];
   max_tokens?: number | null;
   temperature?: number | null;
@@ -193,7 +198,17 @@ export interface ModelGroupConfig {
 }
 
 export interface ModelProviderConfig {
-  api_key: SensitiveField;
+  /** Stable ID of an authorized managed credential (`credential/managed`).
+   *  Set once a connection's credential is accepted; mutually exclusive in
+   *  practice with a literal `api_key`. */
+  credential_id?: string | null;
+  /** Provider brand (e.g. "openai", "byteplus"). Legacy entries infer it from
+   *  the providers-map key instead. */
+  provider?: string | null;
+  /** Compiled logical adapter for dynamic/direct-YAML brands. See
+   *  `crates/frona-server/src/core/config/types.rs::AdapterId`. */
+  adapter?: string | null;
+  api_key: SensitiveField | null;
   base_url: string | null;
   /** Azure OpenAI only — its data plane is versioned in the query string. */
   api_version?: string | null;
@@ -202,6 +217,11 @@ export interface ModelProviderConfig {
    *  Absent means unstated, which the server resolves per provider: local
    *  runtimes as self-hosted, everything else as pay-as-you-go. */
   billing?: ProviderBilling | null;
+  /** Other adapter-specific fields (`aws_region`, `aws_profile`,
+   *  `azure_credential`, and the flattened `attributes` bag - e.g. Azure's
+   *  `azure_api_version`) round-trip through here rather than being
+   *  enumerated one by one. */
+  [key: string]: unknown;
 }
 
 export type ProviderBillingKind = "metered" | "subscription" | "self_hosted";
@@ -308,8 +328,16 @@ export interface JsonSchema {
   $ref?: string;
 }
 
+/** The shape `super::config::response()` (`api/routes/config.rs`) produces for
+ *  both `PUT /api/config` and every provider-admin mutation route, and that
+ *  `GET /api/config` now also returns. Unlike upstream, this fork's backend
+ *  has no `authoring_document`/`parameter_overrides` fields — it doesn't
+ *  track per-field parameter-override provenance the way upstream's
+ *  post-Group-C config service does. */
 export interface ConfigUpdateResponse {
   config: Config;
+  persisted_revision: string;
+  active_revision: string;
   restart_required: boolean;
 }
 
@@ -317,24 +345,77 @@ export function getConfigSchema(): Promise<JsonSchema> {
   return api.get<JsonSchema>("/api/config/schema");
 }
 
-export function getConfig(): Promise<Config> {
-  return api.get<Config>("/api/config");
+export function getConfigDocument(): Promise<ConfigUpdateResponse> {
+  return api.get<ConfigUpdateResponse>("/api/config");
 }
 
-function stripRedactedSensitiveFields(obj: unknown): unknown {
+export async function getConfig(): Promise<Config> {
+  const document = await getConfigDocument();
+  return document.config;
+}
+
+/** Provider-field sensitivity plus the handful of other single-field secrets
+ *  redacted by `redact_config_for_api` (`core/config/document.rs::SENSITIVE_PATHS`
+ *  / `SENSITIVE_PROVIDER_FIELDS`). Path-scoped rather than "any `{is_set}`
+ *  object anywhere" so a `models.*.extra_params` value that happens to look
+ *  like `{is_set: true}` (arbitrary passthrough request JSON) isn't mistaken
+ *  for a redaction marker and silently dropped from the patch.
+ */
+const SENSITIVE_FIELD_PATHS: [string, string][] = [
+  ["auth", "encryption_secret"],
+  ["sso", "client_secret"],
+  ["voice", "twilio_account_sid"],
+  ["voice", "twilio_auth_token"],
+  ["vault", "onepassword_service_account_token"],
+  ["vault", "bitwarden_client_secret"],
+  ["vault", "bitwarden_master_password"],
+  ["vault", "hashicorp_token"],
+  ["vault", "keepass_password"],
+  ["mail", "smtp_password"],
+  ["push", "vapid_private_key"],
+];
+
+function stripRedactedSensitiveFields(obj: unknown, path: string[] = []): unknown {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj !== "object") return obj;
-  if (Array.isArray(obj)) return obj.map(stripRedactedSensitiveFields);
+  if (Array.isArray(obj)) {
+    return obj.map((value, index) => stripRedactedSensitiveFields(value, [...path, String(index)]));
+  }
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-    if (typeof value === "object" && value !== null && "is_set" in value) continue;
-    result[key] = stripRedactedSensitiveFields(value);
+    const nextPath = [...path, key];
+    const sensitive =
+      (nextPath.length === 3 && nextPath[0] === "providers" && key === "api_key") ||
+      (nextPath.length === 2 &&
+        SENSITIVE_FIELD_PATHS.some(([section, field]) => nextPath[0] === section && key === field));
+    if (
+      sensitive &&
+      typeof value === "object" &&
+      value !== null &&
+      "is_set" in value &&
+      Object.keys(value).length === 1 &&
+      typeof (value as { is_set: unknown }).is_set === "boolean"
+    ) {
+      continue;
+    }
+    result[key] = stripRedactedSensitiveFields(value, nextPath);
   }
   return result;
 }
 
-export function updateConfig(patch: Record<string, unknown>): Promise<ConfigUpdateResponse> {
-  return api.put<ConfigUpdateResponse>("/api/config", stripRedactedSensitiveFields(patch) as Record<string, unknown>);
+export function updateConfig(
+  patch: Record<string, unknown>,
+  metadata?: { expectedPersistedRevision?: string },
+): Promise<ConfigUpdateResponse> {
+  const cleaned = stripRedactedSensitiveFields(patch) as Record<string, unknown>;
+  // `PUT /api/config` (`api/routes/config.rs::update_config`) always expects
+  // `{patch, expected_persisted_revision}` - `expected_persisted_revision` is
+  // optional server-side (skips the optimistic-concurrency check when
+  // absent), but the `patch` wrapper itself is not.
+  return api.put<ConfigUpdateResponse>("/api/config", {
+    patch: cleaned,
+    expected_persisted_revision: metadata?.expectedPersistedRevision,
+  });
 }
 
 export interface ModelInfo {
@@ -344,17 +425,39 @@ export interface ModelInfo {
   max_tokens?: number;
 }
 
-export function getProviderModels(
+/** Legacy per-provider "test connection" helper, kept for the Models tab's
+ *  provider dropdown (`model-selector.tsx`), which still keys off provider
+ *  brand ids rather than named connection handles. Routed through the new
+ *  provider-admin validate/models endpoints rather than the retired
+ *  `GET /api/config/providers/{id}/models?api_key=...` flat-config route. */
+export async function getProviderModels(
   providerId: string,
-  opts?: { apiKey?: string; baseUrl?: string }
+  opts?: { apiKey?: string; baseUrl?: string },
 ): Promise<{ models: ModelInfo[] }> {
-  const params = new URLSearchParams();
-  if (opts?.apiKey) params.set("api_key", opts.apiKey);
-  if (opts?.baseUrl) params.set("base_url", opts.baseUrl);
-  const qs = params.toString();
-  return api.get<{ models: ModelInfo[] }>(
-    `/api/config/providers/${providerId}/models${qs ? `?${qs}` : ""}`
-  );
+  const { providerAdmin } = await import("./provider-admin");
+  const toModelInfo = (model: { id: string; name: string | null; context_window: number | null; max_tokens: number | null }): ModelInfo => ({
+    id: model.id,
+    name: model.name ?? undefined,
+    context_window: model.context_window ?? undefined,
+    max_tokens: model.max_tokens ?? undefined,
+  });
+  if (opts?.apiKey) {
+    const config = { provider: providerId, base_url: opts.baseUrl };
+    const proof = await providerAdmin.validate(providerId, config, { source: "api_key", api_key: opts.apiKey });
+    const models =
+      proof.models ??
+      (
+        await providerAdmin.draftModels(providerId, {
+          config,
+          validation_id: proof.validation_id,
+          method: "api_key",
+          source: "database",
+        })
+      ).models;
+    return { models: models.map(toModelInfo) };
+  }
+  const result = await providerAdmin.models(providerId);
+  return { models: result.models.map(toModelInfo) };
 }
 
 export function isSensitiveSet(value: SensitiveField): boolean {

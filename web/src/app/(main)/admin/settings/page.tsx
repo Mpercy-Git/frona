@@ -28,8 +28,9 @@ import { SandboxSettingsSection } from "@/components/settings/sections/sandbox-s
 import { AgentsSection } from "@/components/settings/sections/agents-section";
 import { LogsSection } from "@/components/settings/sections/logs-section";
 import { CostReportsSection } from "@/components/settings/sections/cost-reports-section";
-import { getConfig, updateConfig } from "@/lib/config-types";
-import type { Config } from "@/lib/config-types";
+import { getConfigDocument, updateConfig } from "@/lib/config-types";
+import type { Config, ConfigUpdateResponse } from "@/lib/config-types";
+import { acceptProviderDrafts, type ProviderDrafts } from "@/lib/provider-drafts";
 
 const TABS = [
   { id: "providers", label: "Providers", saveable: true, divider: false },
@@ -73,6 +74,13 @@ export default function AdminSettingsPage() {
   // switch only takes effect after a restart + reload).
   const [activeBackend, setActiveBackend] = useState<Config["memory"]["backend"] | null>(null);
   const [patch, setPatch] = useState<Record<string, unknown>>({});
+  const [persistedRevision, setPersistedRevision] = useState("");
+  const [providerDrafts, setProviderDrafts] = useState<ProviderDrafts>({});
+  const [providerBlock, setProviderBlock] = useState<string | null>(null);
+  // Bumped whenever the provider form's own state (drafts, per-card local
+  // state) must be thrown away - after a save/load/discard - by remounting
+  // both `ProvidersSection` and `ModelsSection` (which reads provider configs).
+  const [providerFormEpoch, setProviderFormEpoch] = useState(0);
   const [activeTab, setActiveTabState] = useState<TabId>(() => {
     if (typeof window !== "undefined") {
       const hash = window.location.hash.slice(1);
@@ -116,9 +124,13 @@ export default function AdminSettingsPage() {
     setConfigLoading(true);
     setError(null);
     try {
-      const cfg = await getConfig();
-      setConfig(cfg);
-      setActiveBackend(cfg.memory?.backend ?? null);
+      const document = await getConfigDocument();
+      setConfig(document.config);
+      setPersistedRevision(document.persisted_revision);
+      setShowRestart(document.restart_required);
+      setProviderDrafts({});
+      setProviderFormEpoch((epoch) => epoch + 1);
+      setActiveBackend(document.config.memory?.backend ?? null);
     } catch (err) {
       // The server names the file and the field when config.yaml can't be
       // read (and 422s rather than dying mid-response), so show what it said:
@@ -144,9 +156,25 @@ export default function AdminSettingsPage() {
     setSaving(true);
     setError(null);
     try {
+      // A provider connection with an unresolved block reason (still
+      // validating, failed validation, no accepted credential yet) must not
+      // reach the config save - `providerBlock` names why.
+      if (patch.providers && providerBlock) throw new Error(providerBlock);
       if (Object.keys(patch).length > 0) {
-        const result = await updateConfig(patch);
+        const acceptedPatch = await acceptProviderDrafts(patch, providerDrafts, (handle, connection) => {
+          setConfig((previous) => (previous ? { ...previous, providers: { ...previous.providers, [handle]: connection } } : previous));
+          setPatch((previous) => ({ ...previous, providers: { ...(previous.providers as Record<string, unknown>), [handle]: connection } }));
+          setProviderDrafts((previous) => {
+            const next = { ...previous };
+            delete next[handle];
+            return next;
+          });
+        });
+        const result = await updateConfig(acceptedPatch, { expectedPersistedRevision: persistedRevision });
         setConfig(result.config);
+        setPersistedRevision(result.persisted_revision);
+        setProviderDrafts({});
+        setProviderFormEpoch((epoch) => epoch + 1);
         setPatch({});
         if (result.restart_required) setShowRestart(true);
       }
@@ -158,9 +186,10 @@ export default function AdminSettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [patch, hasPendingChanges, sectionHandlers]);
+  }, [patch, hasPendingChanges, sectionHandlers, persistedRevision, providerBlock, providerDrafts]);
 
   const handleDiscard = useCallback(() => {
+    setProviderFormEpoch((epoch) => epoch + 1);
     setPatch({});
     loadConfig();
     for (const handler of sectionHandlers.values()) {
@@ -186,6 +215,24 @@ export default function AdminSettingsPage() {
       return { ...prev, models: modelPatch };
     });
     setConfig((prev) => prev ? { ...prev, models } : prev);
+  }, []);
+
+  const updateProviders = useCallback((providers: Config["providers"], removed: string[] = []) => {
+    setPatch((previous) => {
+      const value: Record<string, unknown> = { ...(previous.providers as Record<string, unknown> ?? {}), ...providers };
+      for (const handle of removed) value[handle] = null;
+      return { ...previous, providers: value };
+    });
+    setConfig((previous) => previous ? { ...previous, providers } : previous);
+  }, []);
+
+  const providerSaved = useCallback((result: ConfigUpdateResponse) => {
+    setConfig(result.config);
+    setPersistedRevision(result.persisted_revision);
+    setPatch({});
+    setProviderDrafts({});
+    setShowRestart(result.restart_required);
+    setProviderFormEpoch((epoch) => epoch + 1);
   }, []);
 
   const mobile = useMobile();
@@ -330,12 +377,20 @@ export default function AdminSettingsPage() {
                 <>
                   {activeTab === "providers" && (
                     <ProvidersSection
+                      key={providerFormEpoch}
                       providers={config.providers}
-                      onChange={(v) => updatePatch("providers", v)}
+                      onChange={updateProviders}
+                      drafts={providerDrafts}
+                      onDraftsChange={setProviderDrafts}
+                      persistedRevision={persistedRevision}
+                      hasUnsavedChanges={hasPendingChanges}
+                      onReadyChange={setProviderBlock}
+                      onSaved={providerSaved}
                     />
                   )}
                   {activeTab === "models" && (
                     <ModelsSection
+                      key={providerFormEpoch}
                       models={config.models}
                       enabledProviders={Object.entries(config.providers)
                         .filter(([, provider]) => provider.enabled !== false)
@@ -441,7 +496,8 @@ export default function AdminSettingsPage() {
                 </button>
                 <button
                   onClick={handleSave}
-                  disabled={!hasPendingChanges || saving}
+                  disabled={!hasPendingChanges || saving || !!(patch.providers && providerBlock)}
+                  title={((patch.providers && providerBlock) || undefined) as string | undefined}
                   className="w-28 rounded-lg bg-accent py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50 transition"
                 >
                   {saving ? "Saving..." : "Save"}
