@@ -140,8 +140,8 @@ haven't:
 |---|---|---|
 | `385e5dd6` | 09-17 | Dockerfile stage builds and runs `frona-model-catalog` — the crate now exists in this fork (Step 2, see above), but the commit itself is a Docker build stage this sandbox has no Podman/build validation for, same gap as the four Group B commits held back below. |
 | `38d4f5a5` | 09-17 | `validate-provider-artifact.mjs` also invokes `frona-model-catalog` — same crate-now-exists-but-unvalidatable-Docker-change situation as `385e5dd6`. |
-| `f104bd85` | 09-18 | `managed_cli_feasibility.rs` imports `inference::credential::store::CredentialMethod` and `inference::provider::platform::ProviderPlatform` — Group C's managed-credential vault types. |
-| `2b9dfe28` | 09-19 | Edits a Bedrock `provider_workflow.rs` test; Bedrock isn't a fork provider yet (Group C Step 3). |
+| ~~`f104bd85`~~ | 09-18 | Was blocked on `inference::credential::store::CredentialMethod`/`inference::provider::platform::ProviderPlatform`, both of which exist now — unblocked and in progress as of 2026-09-28 (see below). |
+| `2b9dfe28` | 09-19 | Still blocked, for a sharper reason than "Bedrock isn't a fork provider yet": Bedrock *is* now a recognized brand in `provider/platform.rs` (recipe, protocols, auth methods, attribute validation all wired), but its actual adapter `build()` deliberately returns `Err(InferenceError::ConfigError("Provider 'bedrock' is not yet available in this build"))` (`platform.rs:772`) — scaffolded, not implemented. This commit's test also assumes a `crates/frona-server/tests/provider_workflow.rs` integration-test file this fork doesn't have at all. Porting it requires first building a real Bedrock adapter (AWS SDK integration, live foundation-model discovery) — a standalone effort, not covered by this plan's existing scope. |
 
 **Held back — real, but I can't validate them in this sandbox:**
 
@@ -259,6 +259,21 @@ confirmed), and the five one-line `byteplus`/`zai`/`venice`/`minimax`/
 `credential/managed/`. This document and `GROUP_C_PROVIDER_SCOPING.md`
 weren't updated when that PR merged; they still read as if only the
 catalog-crate half of Step 2 had landed. Corrected here.
+
+**One caveat found on closer inspection (2026-09-28):** Step 3's "new-capability
+adapters" line names Bedrock alongside ChatGPT-subscription and GitHub Copilot,
+but only the latter two actually got a working adapter
+(`provider/adapter/{chatgpt,copilot}.rs` exist; there is no `bedrock.rs`).
+Bedrock is a recognized brand in `platform.rs` — recipe, protocols
+(`ApiSurface::AmazonBedrockConverse`), auth methods, and attribute validation
+(`aws_profile`/`aws_region`) are all wired — but its adapter `build()` is a
+deliberate stub: `Err(InferenceError::ConfigError("Provider 'bedrock' is not
+yet available in this build"))` (`platform.rs:772`). So "Bedrock ... entirely
+new capability" (this document's Group C intro, below) is still true in
+practice; only the scaffolding landed. See `2b9dfe28`'s corrected entry in the
+Group B table above — that commit, and real Bedrock support generally, needs
+its own effort (AWS SDK integration, live foundation-model discovery), not
+covered by anything currently planned here.
 
 **Step 5 (settings UI) is now done**, all four commits ported:
 
