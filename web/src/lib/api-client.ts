@@ -1,15 +1,20 @@
+import type { MessageError } from "./types";
+import { isMessageError } from "./message-error";
+
 export const API_URL = process.env.NEXT_PUBLIC_FRONA_SERVER_BACKEND_URL || "";
 
 /// `kind: "unavailable"` (network failure or 5xx) means "don't infer
 /// session validity" - callers should retry / show offline, not log out.
 /// `code` is the server's machine-readable auth code (`token_expired`,
-/// `invalid_credentials`, ...) when the body carried one.
+/// `invalid_credentials`, ...) when the body carried one. `messageError` is
+/// the server's structured `MessageError`, when the body carried one.
 class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
     public kind: "http" | "unavailable" = "http",
     public code?: string,
+    public messageError?: MessageError,
   ) {
     super(message);
   }
@@ -184,16 +189,18 @@ async function request<T>(
   const res = await apiFetch(path, { ...options, headers });
 
   if (!res.ok) {
-    if (res.status >= 500) {
-      throw new ApiError(res.status, "Server error", "unavailable");
-    }
     const body = await res.json().catch(() => ({ error: res.statusText }));
+    const messageError = isMessageError(body.message_error) ? body.message_error : undefined;
+    if (res.status >= 500) {
+      throw new ApiError(res.status, "Server error", "unavailable", undefined, messageError);
+    }
     const code = typeof body.code === "string" ? body.code : undefined;
     throw new ApiError(
       res.status,
       authMessage(code) ?? body.error ?? "Request failed",
       "http",
       code,
+      messageError,
     );
   }
 
