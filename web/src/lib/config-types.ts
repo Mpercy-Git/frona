@@ -325,6 +325,10 @@ export interface JsonSchemaProperty {
 export interface JsonSchema {
   properties?: Record<string, JsonSchemaProperty>;
   definitions?: Record<string, JsonSchemaProperty>;
+  // schemars 1.x (this fork's version) emits draft 2020-12 `$defs` rather than
+  // the older `definitions` keyword; both are read so a schema built either
+  // way resolves.
+  $defs?: Record<string, JsonSchemaProperty>;
   $ref?: string;
 }
 
@@ -416,48 +420,6 @@ export function updateConfig(
     patch: cleaned,
     expected_persisted_revision: metadata?.expectedPersistedRevision,
   });
-}
-
-export interface ModelInfo {
-  id: string;
-  name?: string;
-  context_window?: number;
-  max_tokens?: number;
-}
-
-/** Legacy per-provider "test connection" helper, kept for the Models tab's
- *  provider dropdown (`model-selector.tsx`), which still keys off provider
- *  brand ids rather than named connection handles. Routed through the new
- *  provider-admin validate/models endpoints rather than the retired
- *  `GET /api/config/providers/{id}/models?api_key=...` flat-config route. */
-export async function getProviderModels(
-  providerId: string,
-  opts?: { apiKey?: string; baseUrl?: string },
-): Promise<{ models: ModelInfo[] }> {
-  const { providerAdmin } = await import("./provider-admin");
-  const toModelInfo = (model: { id: string; name: string | null; context_window: number | null; max_tokens: number | null }): ModelInfo => ({
-    id: model.id,
-    name: model.name ?? undefined,
-    context_window: model.context_window ?? undefined,
-    max_tokens: model.max_tokens ?? undefined,
-  });
-  if (opts?.apiKey) {
-    const config = { provider: providerId, base_url: opts.baseUrl };
-    const proof = await providerAdmin.validate(providerId, config, { source: "api_key", api_key: opts.apiKey });
-    const models =
-      proof.models ??
-      (
-        await providerAdmin.draftModels(providerId, {
-          config,
-          validation_id: proof.validation_id,
-          method: "api_key",
-          source: "database",
-        })
-      ).models;
-    return { models: models.map(toModelInfo) };
-  }
-  const result = await providerAdmin.models(providerId);
-  return { models: result.models.map(toModelInfo) };
 }
 
 export function isSensitiveSet(value: SensitiveField): boolean {

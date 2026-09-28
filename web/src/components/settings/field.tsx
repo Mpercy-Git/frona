@@ -159,9 +159,12 @@ interface ToggleProps {
   onChange: (value: boolean) => void;
   warning?: string;
   disabled?: boolean;
+  // A control rendered on the same row as the switch (e.g. a
+  // `InputResetButton`, for a setting whose value can be reset to default).
+  action?: React.ReactNode;
 }
 
-export function Toggle({ label, description, value, onChange, warning, disabled }: ToggleProps) {
+export function Toggle({ label, description, value, onChange, warning, disabled, action }: ToggleProps) {
   const id = useId();
   return (
     <Field label={label} description={description} htmlFor={id}>
@@ -186,6 +189,7 @@ export function Toggle({ label, description, value, onChange, warning, disabled 
         {warning && value && (
           <span className="text-xs text-warning">{warning}</span>
         )}
+        {action}
       </div>
     </Field>
   );
