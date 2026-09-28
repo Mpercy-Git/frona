@@ -377,10 +377,13 @@ mod tests {
         assert!((total - 17.5).abs() < 1e-9);
     }
 
-    fn model_ref(provider: &str, model_id: &str) -> crate::inference::provider::ModelRef {
-        crate::inference::provider::ModelRef {
+    fn model_ref(provider: &str, model_id: &str) -> crate::inference::provider::ModelConfig {
+        crate::inference::provider::ModelConfig {
+            catalog_provider: provider.to_string(),
+            provider_handle: crate::core::Handle::try_new(provider).unwrap(),
             model_id: model_id.into(),
             provider: crate::core::config::ProviderModel::from_name(provider),
+            request_settings: Default::default(),
         }
     }
 

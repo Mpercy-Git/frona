@@ -16,8 +16,8 @@ use frona::tool::registry::AgentToolRegistry;
 use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 
 use helpers::{
-    MockModelProvider, MockResponse, mock_context, test_model_group, test_registry_with_provider,
-    test_usage_ctx, test_usage_service,
+    MockModelProvider, MockResponse, mock_context, test_model_group_with_provider, test_usage_ctx,
+    test_usage_service,
 };
 
 /// A trivial read-only "tool" the resolver would use to navigate the vault.
@@ -64,7 +64,7 @@ async fn structured_inference_with_tools_loops_then_submits() {
             json!({"path": "organizations/amazon"}),
         )]),
     ]));
-    let registry = test_registry_with_provider("mock", mock.clone());
+    let group = test_model_group_with_provider("mock", mock.clone());
 
     let mut tools: HashMap<String, Arc<dyn AgentTool>> = HashMap::new();
     tools.insert("grep".into(), Arc::new(EchoTool));
@@ -75,8 +75,7 @@ async fn structured_inference_with_tools_loops_then_submits() {
     let usage_ctx = test_usage_ctx();
 
     let result: Resolution = frona::inference::structured_inference_with_tools(
-        &registry,
-        &test_model_group(),
+        &group,
         "Resolve the entity to a canonical page path.",
         vec![rig_core::completion::Message::user("Proposed: Amazon Inc")],
         &tool_registry,

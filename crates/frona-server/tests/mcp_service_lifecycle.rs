@@ -167,6 +167,15 @@ async fn build_test_harness_with_installer(
         SurrealRepo::new(db.clone()),
         &frona::core::config::CacheConfig::default(),
     );
+    let managed_vault = frona::credential::managed::ManagedVault::new(
+        Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+        "test-secret",
+        frona::credential::managed::GLOBAL_CONNECTION_ID.into(),
+    );
+    let managed_resolver = Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+        frona::credential::managed::integration::registered(),
+    ));
+    let login_service = frona::credential::managed::login::ManagedLoginService::registered();
     let vault = VaultService::new(
         Arc::new(SurrealRepo::<VaultConnection>::new(db.clone())),
         Arc::new(SurrealRepo::<VaultGrant>::new(db.clone())),
@@ -178,6 +187,9 @@ async fn build_test_harness_with_installer(
         tmp.path().to_path_buf(),
         test_storage.clone(),
         test_user_service,
+        managed_vault,
+        managed_resolver,
+        login_service,
     );
     vault.sync_config_connections().await.unwrap();
 

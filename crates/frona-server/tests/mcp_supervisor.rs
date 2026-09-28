@@ -116,6 +116,15 @@ async fn build_mcp_supervisor() -> (
         },
         ..Default::default()
     });
+    let managed_vault = frona::credential::managed::ManagedVault::new(
+        Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+        "test-secret",
+        frona::credential::managed::GLOBAL_CONNECTION_ID.into(),
+    );
+    let managed_resolver = Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+        frona::credential::managed::integration::registered(),
+    ));
+    let login_service = frona::credential::managed::login::ManagedLoginService::registered();
     let vault = VaultService::new(
         Arc::new(SurrealRepo::<VaultConnection>::new(db.clone())),
         Arc::new(SurrealRepo::<VaultGrant>::new(db.clone())),
@@ -127,6 +136,9 @@ async fn build_mcp_supervisor() -> (
         tmp.path().to_path_buf(),
         vault_storage,
         user_service.clone(),
+        managed_vault,
+        managed_resolver,
+        login_service,
     );
     let registry: Arc<dyn McpRegistryClient> = Arc::new(PrebuiltMcpRegistryClient::new(
         frona::build_http_client(),

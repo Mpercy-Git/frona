@@ -170,7 +170,13 @@ impl CostService {
             .config
             .providers
             .iter()
-            .map(|(name, cfg)| (name.clone(), cfg.effective_billing(name), cfg.enabled))
+            .map(|(name, cfg)| {
+                (
+                    name.as_str().to_string(),
+                    cfg.effective_billing(name.as_str()),
+                    cfg.enabled,
+                )
+            })
             .collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         rows
@@ -610,7 +616,7 @@ mod tests {
     use crate::core::config::ModelProviderConfig;
     use crate::inference::metadata::catalog::{Cost, Limit, ModelEntry};
     use crate::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, StorePricing};
-    use crate::inference::provider::ModelRef;
+    use crate::inference::provider::ModelConfig;
 
     fn priced_entry() -> ModelEntry {
         ModelEntry {
@@ -663,9 +669,12 @@ mod tests {
                 .entries
                 .insert(format!("{provider}/test-model"), entry.clone());
             let store = ModelCatalogStore::new(snapshot);
-            let model_ref = ModelRef {
+            let model_ref = ModelConfig {
+                catalog_provider: provider.to_string(),
+                provider_handle: crate::core::Handle::try_new(provider).unwrap(),
                 model_id: "test-model".to_string(),
                 provider: crate::core::config::ProviderModel::from_name(provider),
+                request_settings: Default::default(),
             };
 
             // A raw provider response, in that provider's native shape.

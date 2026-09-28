@@ -1112,7 +1112,7 @@ impl McpServerService {
                 )
                 .await?;
             for (k, v) in
-                crate::credential::vault::service::project_target(&secret, &binding.target)
+                crate::credential::vault::service::project_target(&secret, &binding.target)?
             {
                 out.insert(k, v);
             }

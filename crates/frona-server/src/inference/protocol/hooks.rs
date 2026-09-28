@@ -1,5 +1,6 @@
 use serde_json::{Map, Value};
 
+#[derive(Clone)]
 pub struct RequestParams {
     pub max_tokens: Option<u64>,
     pub temperature: Option<f64>,
@@ -15,6 +16,24 @@ pub fn openai(mut p: RequestParams) -> RequestParams {
         let mut root = take_object(&mut p.additional_params);
         root.entry("max_completion_tokens".to_string())
             .or_insert_with(|| Value::Number(mt.into()));
+        p.additional_params = Some(Value::Object(root));
+    }
+    p
+}
+
+/// Legacy hook for callers without Frona's native transport. Rig now handles
+/// common Ollama parameters itself; retain this hook for its existing callers.
+pub fn ollama(mut p: RequestParams) -> RequestParams {
+    if let Some(mt) = p.max_tokens.take() {
+        let mut root = take_object(&mut p.additional_params);
+        let mut options = match root.remove("options") {
+            Some(Value::Object(m)) => m,
+            _ => Map::new(),
+        };
+        options
+            .entry("num_predict".to_string())
+            .or_insert_with(|| Value::Number(mt.into()));
+        root.insert("options".to_string(), Value::Object(options));
         p.additional_params = Some(Value::Object(root));
     }
     p
@@ -38,24 +57,6 @@ pub fn groq(mut p: RequestParams) -> RequestParams {
         root.remove("reasoning_effort");
         root.remove("logprobs");
         root.remove("top_logprobs");
-    }
-    p
-}
-
-/// Ollama silently ignores top-level `max_tokens` — the cap belongs in
-/// `options.num_predict`. Rig's Ollama provider doesn't do this rewrite.
-pub fn ollama(mut p: RequestParams) -> RequestParams {
-    if let Some(mt) = p.max_tokens.take() {
-        let mut root = take_object(&mut p.additional_params);
-        let mut options = match root.remove("options") {
-            Some(Value::Object(m)) => m,
-            _ => Map::new(),
-        };
-        options
-            .entry("num_predict".to_string())
-            .or_insert_with(|| Value::Number(mt.into()));
-        root.insert("options".to_string(), Value::Object(options));
-        p.additional_params = Some(Value::Object(root));
     }
     p
 }
@@ -234,6 +235,18 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_preserves_user_supplied_cache_control() {
+        let p = anthropic(params(
+            None,
+            Some(json!({"cache_control": {"type": "ephemeral", "ttl": "1h"}})),
+        ));
+        assert_eq!(
+            p.additional_params,
+            Some(json!({"cache_control": {"type": "ephemeral", "ttl": "1h"}})),
+        );
+    }
+
+    #[test]
     fn openrouter_renames_provider_routing_to_provider() {
         let p = openrouter(params(
             Some(8192),
@@ -268,18 +281,6 @@ mod tests {
         assert_eq!(
             p.additional_params,
             Some(json!({"reasoning_effort": "low"}))
-        );
-    }
-
-    #[test]
-    fn anthropic_preserves_user_supplied_cache_control() {
-        let p = anthropic(params(
-            None,
-            Some(json!({"cache_control": {"type": "ephemeral", "ttl": "1h"}})),
-        ));
-        assert_eq!(
-            p.additional_params,
-            Some(json!({"cache_control": {"type": "ephemeral", "ttl": "1h"}})),
         );
     }
 }

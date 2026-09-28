@@ -62,13 +62,23 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
         ),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let state = AppState::new(
         db,
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
     // Seed the agent + user the test fixtures reference via `agent_id: "agent-1"`
     // / `user_id: "user-1"`, so chat creation (which now validates agent
@@ -1034,13 +1044,23 @@ async fn test_app_state_no_spawning() -> (AppState, tempfile::TempDir) {
         ),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let state = AppState::new(
         db,
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
     seed_user_and_agent(&state).await;
     (state, tmp)

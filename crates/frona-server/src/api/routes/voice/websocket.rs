@@ -669,7 +669,6 @@ async fn summarise_call(
     );
 
     match crate::inference::text_inference(
-        state.chat_service.provider_registry(),
         &model_group,
         &prompt,
         vec![rig_core::completion::Message::user(transcript)],

@@ -24,7 +24,7 @@ use frona::db::init as db_init;
 use frona::db::repo::agents::SurrealAgentRepo;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::DefaultConversationBuilder;
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::registry::ModelProviderRegistry;
 use frona::storage::StorageService;
 use helpers::{MockModelProvider, test_model_group};
 use surrealdb::Surreal;
@@ -83,13 +83,23 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
 
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
 
     // Replace the default chat_service with one wired to a mock provider so

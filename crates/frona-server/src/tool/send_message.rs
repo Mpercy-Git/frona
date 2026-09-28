@@ -230,7 +230,6 @@ impl SendMessageTool {
             model_group.name.clone(),
         );
         let response = inference::text_inference(
-            registry,
             model_group,
             &system_prompt,
             vec![RigMessage::user("Which chat should this message go to?")],

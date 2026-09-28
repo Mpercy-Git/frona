@@ -127,13 +127,23 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
         ),
     );
     let metrics = setup_metrics_recorder();
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics,
         resource_manager,
+        catalog_sources,
     );
 
     // Override the MCP service with a noop package installer so tests don't

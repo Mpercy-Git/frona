@@ -14,10 +14,11 @@ use std::sync::{LazyLock, RwLock};
 use rig_core::completion::Message as RigMessage;
 use rig_core::completion::message::UserContent;
 
-use super::config::{InferenceConfig, ModelGroup};
-use super::registry::ModelProviderRegistry;
+use super::ModelGroup;
+use super::config::InferenceConfig;
+use super::provider::registry::ModelProviderRegistry;
 use super::usage::{UsageContext, UsageService};
-use super::{InferenceKind, ModelRef};
+use super::{InferenceKind, ModelConfig};
 
 const TRANSCRIBE_SYSTEM: &str = "You transcribe images for a downstream assistant that cannot see them. \
      Reply with only the transcription/description — no preamble, no commentary.";
@@ -33,13 +34,13 @@ const TRANSCRIBE_INSTRUCTION: &str = "Transcribe all text in the image verbatim,
 static LEARNED_TEXT_ONLY: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(Default::default);
 
 /// Record that the provider rejected image input for `model_ref`.
-pub fn mark_text_only(model_ref: &ModelRef) {
+pub fn mark_text_only(model_ref: &ModelConfig) {
     if let Ok(mut set) = LEARNED_TEXT_ONLY.write() {
         set.insert(model_ref.as_str());
     }
 }
 
-fn learned_text_only(model_ref: &ModelRef) -> bool {
+fn learned_text_only(model_ref: &ModelConfig) -> bool {
     LEARNED_TEXT_ONLY
         .read()
         .map(|set| set.contains(&model_ref.as_str()))
@@ -74,7 +75,7 @@ pub fn history_has_images(history: &[RigMessage]) -> bool {
 /// the catalog is silent and `transcribe_when_vision_unknown` is set, unknown
 /// resolves to `Some(false)` so images get handled rather than risking a 404.
 pub fn resolve_vision_capability(
-    model_ref: &ModelRef,
+    model_ref: &ModelConfig,
     inference: &InferenceConfig,
     catalog_says: Option<bool>,
 ) -> Option<bool> {
@@ -97,7 +98,7 @@ pub fn resolve_vision_capability(
 /// Match a model ref against a configured id list. An entry matches the bare
 /// model id, the "provider/model_id" pair, or the final path segment of the
 /// model id (handling vendor-prefixed ids like "deepseek/deepseek-v4-flash").
-fn model_matches_any(model_ref: &ModelRef, list: &[String]) -> bool {
+fn model_matches_any(model_ref: &ModelConfig, list: &[String]) -> bool {
     let model_id = model_ref.model_id.as_str();
     let composite = format!("{}/{}", model_ref.provider.name(), model_id);
     let last_segment = model_id.rsplit('/').next().unwrap_or(model_id);
@@ -142,7 +143,7 @@ pub fn resolve_vision_model_group(
 #[allow(clippy::too_many_arguments)]
 pub async fn replace_images_for_text_only_model(
     history: &mut [RigMessage],
-    agent_model: &ModelRef,
+    agent_model: &ModelConfig,
     registry: &ModelProviderRegistry,
     usage_service: &UsageService,
     user_id: &str,
@@ -200,6 +201,7 @@ fn transcription_group(base: &ModelGroup) -> ModelGroup {
         context_window: base.context_window,
         retry: base.retry.clone(),
         inference: base.inference.clone(),
+        providers: base.providers.clone(),
     }
 }
 
@@ -211,7 +213,7 @@ fn transcription_group(base: &ModelGroup) -> ModelGroup {
 pub async fn transcribe_images_in_history(
     history: &mut [RigMessage],
     vision_group: &ModelGroup,
-    registry: &ModelProviderRegistry,
+    _registry: &ModelProviderRegistry,
     usage_service: &UsageService,
     user_id: &str,
     agent_id: &str,
@@ -256,7 +258,6 @@ pub async fn transcribe_images_in_history(
         );
 
         let replacement = match crate::inference::text_inference(
-            registry,
             &group,
             TRANSCRIBE_SYSTEM,
             vec![req_msg],
@@ -298,12 +299,15 @@ mod tests {
     use super::*;
     use crate::core::config::ProviderModel;
 
-    fn mref(provider: &str, model_id: &str) -> ModelRef {
-        ModelRef {
+    fn mref(provider: &str, model_id: &str) -> ModelConfig {
+        ModelConfig {
+            catalog_provider: provider.to_string(),
+            provider_handle: crate::core::Handle::try_new(provider).unwrap(),
             provider: ProviderModel::Custom {
                 name: provider.into(),
             },
             model_id: model_id.into(),
+            request_settings: Default::default(),
         }
     }
 
@@ -321,7 +325,7 @@ mod tests {
         let mut c = InferenceConfig::default();
         c.vision_models = vec!["some-model".into()];
         assert_eq!(
-            resolve_vision_capability(&mref("x", "some-model"), &c, None),
+            resolve_vision_capability(&mref("unknown", "some-model"), &c, None),
             Some(true)
         );
     }
@@ -332,7 +336,7 @@ mod tests {
         c.vision_models = vec!["m".into()];
         c.text_only_models = vec!["m".into()];
         assert_eq!(
-            resolve_vision_capability(&mref("x", "m"), &c, None),
+            resolve_vision_capability(&mref("unknown", "m"), &c, None),
             Some(false)
         );
     }
@@ -340,11 +344,14 @@ mod tests {
     #[test]
     fn unknown_respects_toggle() {
         let c = InferenceConfig::default();
-        assert_eq!(resolve_vision_capability(&mref("x", "m"), &c, None), None);
+        assert_eq!(
+            resolve_vision_capability(&mref("unknown", "m"), &c, None),
+            None
+        );
         let mut c2 = InferenceConfig::default();
         c2.transcribe_when_vision_unknown = true;
         assert_eq!(
-            resolve_vision_capability(&mref("x", "m"), &c2, None),
+            resolve_vision_capability(&mref("unknown", "m"), &c2, None),
             Some(false)
         );
     }
@@ -353,11 +360,11 @@ mod tests {
     fn catalog_passes_through_without_overrides() {
         let c = InferenceConfig::default();
         assert_eq!(
-            resolve_vision_capability(&mref("x", "m"), &c, Some(true)),
+            resolve_vision_capability(&mref("unknown", "m"), &c, Some(true)),
             Some(true)
         );
         assert_eq!(
-            resolve_vision_capability(&mref("x", "m"), &c, Some(false)),
+            resolve_vision_capability(&mref("unknown", "m"), &c, Some(false)),
             Some(false)
         );
     }

@@ -318,7 +318,6 @@ impl SignalService {
         );
 
         let output: SignalOutput = match crate::inference::structured_inference::<SignalOutput>(
-            registry,
             &model_group,
             &system_prompt,
             history,

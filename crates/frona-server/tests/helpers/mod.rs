@@ -9,11 +9,12 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use frona::core::metrics;
 use frona::db::repo::generic::SurrealRepo;
+use frona::inference::ModelGroup;
 use frona::inference::Usage;
-use frona::inference::config::{ModelGroup, RetryConfig};
+use frona::inference::config::RetryConfig;
 use frona::inference::error::InferenceError;
-use frona::inference::provider::{ModelProvider, ModelRef, SUBMIT_TOOL_NAME};
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::registry::ModelProviderRegistry;
+use frona::inference::provider::{ModelConfig, ModelProvider, SUBMIT_TOOL_NAME};
 use frona::policy::service::PolicyService;
 use frona::tool::manager::ToolManager;
 use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
@@ -331,7 +332,7 @@ impl MockModelProvider {
 impl ModelProvider for MockModelProvider {
     async fn inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
@@ -389,7 +390,7 @@ impl ModelProvider for MockModelProvider {
 
     async fn stream_inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<RigMessage>,
         _tools: Vec<RigToolDefinition>,
@@ -460,7 +461,7 @@ impl ModelProvider for MockModelProvider {
 
     async fn structured_inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<RigMessage>,
         _schema: serde_json::Value,
@@ -747,13 +748,20 @@ pub fn mock_context() -> InferenceContext {
     )
 }
 
+pub fn model_config(provider: &str, model_id: &str) -> ModelConfig {
+    ModelConfig {
+        catalog_provider: provider.to_string(),
+        provider_handle: frona::core::Handle::try_new(provider).unwrap(),
+        provider: provider.into(),
+        model_id: model_id.into(),
+        request_settings: Default::default(),
+    }
+}
+
 pub fn test_model_group() -> ModelGroup {
     ModelGroup {
         name: "test".into(),
-        main: ModelRef {
-            provider: "mock".into(),
-            model_id: "test-model".into(),
-        },
+        main: model_config("mock", "test-model"),
         fallbacks: vec![],
         max_tokens: Some(4096),
         temperature: None,
@@ -765,15 +773,15 @@ pub fn test_model_group() -> ModelGroup {
             max_backoff_ms: 10,
         },
         inference: Default::default(),
+        providers: Default::default(),
     }
 }
 
 pub fn test_model_group_with_fallback(fallback_provider: &str, fallback_model: &str) -> ModelGroup {
     let mut group = test_model_group();
-    group.fallbacks.push(ModelRef {
-        provider: fallback_provider.into(),
-        model_id: fallback_model.into(),
-    });
+    group
+        .fallbacks
+        .push(model_config(fallback_provider, fallback_model));
     group
 }
 
@@ -831,6 +839,18 @@ pub fn test_registry_with_group(
     let mut model_groups = HashMap::new();
     model_groups.insert(group_name.to_string(), group);
     ModelProviderRegistry::for_testing(providers, model_groups)
+}
+
+/// `test_model_group()` with a single named provider wired into
+/// `ModelGroup.providers`, so direct `ModelGroup` dispatch (bypassing
+/// `ModelProviderRegistry`) can actually reach the mock provider.
+pub fn test_model_group_with_provider(
+    provider_name: &str,
+    provider: Arc<dyn ModelProvider>,
+) -> ModelGroup {
+    let mut group = test_model_group();
+    group.providers = Arc::new([(provider_name.to_string(), provider)].into());
+    group
 }
 
 pub fn init_metrics() {
@@ -959,10 +979,11 @@ pub async fn test_chat_service_with_db() -> (
         test_policy_service(&db),
         user_service.clone(),
     );
-    let provider_registry = frona::inference::registry::ModelProviderRegistry::for_testing(
-        HashMap::new(),
-        HashMap::new(),
-    );
+    let provider_registry =
+        frona::inference::provider::registry::ModelProviderRegistry::for_testing(
+            HashMap::new(),
+            HashMap::new(),
+        );
 
     let usage_service = test_usage_service(&db);
 
@@ -1051,13 +1072,23 @@ pub fn test_harness(
         ),
     );
     let storage = frona::storage::StorageService::new(config);
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(config);
     let mut state = AppState::new(
         db.clone(),
-        config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
 
     // ChatService wired to the mock provider so all harness inference hits it.

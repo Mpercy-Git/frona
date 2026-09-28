@@ -102,7 +102,7 @@ pub struct PkmService {
 pub(crate) fn resolve_model_group<'a>(
     registry: &'a ModelProviderRegistry,
     configured: &str,
-) -> Option<&'a crate::inference::config::ModelGroup> {
+) -> Option<&'a crate::inference::ModelGroup> {
     registry
         .get_model_group(configured)
         .or_else(|_| registry.get_model_group("primary"))

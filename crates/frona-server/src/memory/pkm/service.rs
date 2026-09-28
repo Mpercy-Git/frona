@@ -325,7 +325,7 @@ impl PkmService {
 
     /// The background model group (`memory.model_group` → `primary`). Resolved lazily
     /// so a missing group degrades here rather than blocking startup.
-    fn consolidation_model_group(&self) -> Result<crate::inference::config::ModelGroup, AppError> {
+    fn consolidation_model_group(&self) -> Result<crate::inference::ModelGroup, AppError> {
         resolve_model_group(&self.registry, &self.memory_config.model_group)
             .ok_or_else(|| {
                 AppError::Internal(format!(
@@ -340,7 +340,7 @@ impl PkmService {
         &self,
         scope: ConsolidationScope,
         harness: Arc<crate::agent::harness::Harness>,
-        model_group: crate::inference::config::ModelGroup,
+        model_group: crate::inference::ModelGroup,
         record: KnowledgeConsolidationRecord,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Arc<ConsolidationContext> {

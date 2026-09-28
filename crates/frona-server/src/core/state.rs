@@ -32,7 +32,6 @@ use crate::credential::keypair::service::KeyPairService;
 use crate::credential::presign::PresignService;
 use crate::credential::vault::service::VaultService;
 use crate::db::repo::push_subscriptions::SurrealPushSubscriptionRepo;
-use crate::inference::ModelProviderRegistry;
 use crate::inference::config::ModelRegistryConfig;
 use crate::mail::MailService;
 use crate::memory::basic::BasicMemoryService;
@@ -53,7 +52,7 @@ use crate::tool::web_search::{SearchProvider, create_search_provider};
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
-use super::config::Config;
+use super::config::{Config, ConfigService};
 use crate::auth::UserService;
 use crate::db::repo::basic_memory::{SurrealMemoryEntryRepo, SurrealMemoryRepo};
 use crate::db::repo::chats::SurrealChatRepo;
@@ -190,6 +189,9 @@ pub struct AppState {
     pub task_executor: Arc<TaskExecutor>,
     pub signal_service: Arc<OnceLock<Arc<SignalService>>>,
     pub config: Arc<Config>,
+    pub config_service: ConfigService,
+    pub catalog_sources: frona_model_catalog::sources::CatalogSources,
+    pub model_provider_service: crate::inference::provider::service::ModelProviderService,
     pub storage_service: StorageService,
     pub prompts: PromptLoader,
     pub vault_service: VaultService,
@@ -219,15 +221,18 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         db: Surreal<Db>,
-        config: &Config,
+        config_service: ConfigService,
         models_config: Option<ModelRegistryConfig>,
         storage: StorageService,
         metrics_handle: PrometheusHandle,
         resource_manager: Arc<SystemResourceManager>,
+        catalog_sources: frona_model_catalog::sources::CatalogSources,
     ) -> Self {
         // Both `aws-lc-rs` and `ring` are active via reqwest + slack-morphism;
         // rustls 0.23 panics on first TLS use without an explicit default.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+        let config = config_service.active();
 
         let http_client = crate::build_http_client();
 
@@ -244,13 +249,64 @@ impl AppState {
         );
 
         let llm_config = load_models_config(models_config);
-        let provider_registry = ModelProviderRegistry::from_config(
-            llm_config,
-            broadcast_service.clone(),
-            &config.inference,
-            &model_catalog.current(),
-        )
-        .expect("Failed to initialize provider registry");
+
+        // `model_provider_service` is the single resolved set of providers -
+        // built once, here, through the managed-credential vault (so a
+        // provider authenticated via a managed OAuth/subscription login is
+        // usable, not just one with a plain config `api_key`). Everything
+        // that used to hold its own separately-built `ModelProviderRegistry`
+        // (chat inference, memory, PKM) now gets a read-only clone of this
+        // same instance's registry below, instead of re-resolving providers
+        // through a second, independent pass that wouldn't see managed
+        // credentials at all.
+        let managed_vault = crate::credential::managed::ManagedVault::new(
+            Arc::new(crate::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+            &config.auth.encryption_secret,
+            crate::credential::managed::GLOBAL_CONNECTION_ID.into(),
+        );
+        let managed_resolver =
+            Arc::new(crate::credential::managed::resolver::ManagedResolver::new(
+                crate::credential::managed::integration::registered(),
+            ));
+        let provider_credentials = crate::inference::credential::store::ProviderCredentials::new(
+            managed_vault.clone(),
+            managed_resolver.clone(),
+        );
+        let provider_validator =
+            crate::inference::provider::validation::ProviderValidationService::new(
+                provider_credentials.clone(),
+                crate::inference::provider::InferenceCounter::new(broadcast_service.clone()),
+            );
+        let provider_runtime = Arc::new(
+            crate::inference::credential::runtime::RuntimeCredentials::new(
+                llm_config.providers.clone(),
+                provider_credentials.clone(),
+                crate::inference::provider::InferenceCounter::new(broadcast_service.clone()),
+            ),
+        );
+        let provider_groups = llm_config
+            .parse_model_groups_with_catalog(
+                &config.inference,
+                &catalog_sources.models.current(),
+                Arc::new(provider_runtime.providers()),
+            )
+            .expect("Failed to build model provider groups");
+        let model_provider_service = crate::inference::provider::service::ModelProviderService::new(
+            crate::inference::directory::models::ModelDirectoryService::new(
+                catalog_sources.clone(),
+            ),
+            config_service.clone(),
+            provider_credentials,
+            provider_validator,
+            provider_runtime.clone(),
+            config.clone(),
+            provider_groups,
+            provider_runtime.providers(),
+        );
+        // A read-only clone of the same resolved providers/model groups, for
+        // the chat/memory/PKM call sites that take a `ModelProviderRegistry`
+        // directly rather than the full admin-facing `ModelProviderService`.
+        let provider_registry = model_provider_service.registry().clone();
 
         let chat_repo = SurrealRepo::new(db.clone());
         let message_repo = SurrealRepo::new(db.clone());
@@ -474,6 +530,7 @@ impl AppState {
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("data"));
+        let login_service = crate::credential::managed::login::ManagedLoginService::registered();
         let vault_service = VaultService::new(
             vault_connection_repo,
             vault_grant_repo,
@@ -485,12 +542,15 @@ impl AppState {
             data_dir,
             storage.clone(),
             user_service.clone(),
+            managed_vault,
+            managed_resolver,
+            login_service,
         );
 
         let oauth_service = if config.sso.enabled {
             let oauth_repo: SurrealRepo<crate::auth::oauth::models::OAuthIdentity> =
                 SurrealRepo::new(db.clone());
-            OAuthService::new(config, Arc::new(oauth_repo)).ok()
+            OAuthService::new(&config, Arc::new(oauth_repo)).ok()
         } else {
             None
         };
@@ -526,6 +586,9 @@ impl AppState {
             user_service.clone(),
         );
 
+        let task_service =
+            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone());
+
         let mut agent_service = AgentService::new(
             SurrealRepo::new(db.clone()),
             &config.cache,
@@ -536,10 +599,7 @@ impl AppState {
         agent_service.set_share_service(agent_share_service.clone());
         // Lets a built-in agent declaring a `cron:` schedule (the cost analyst)
         // have its recurring task seeded when it is first cloned for a user.
-        agent_service.set_task_service(
-            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
-            config.server.timezone.clone(),
-        );
+        agent_service.set_task_service(task_service.clone(), config.server.timezone.clone());
 
         let app_manager = Arc::new(AppManager::new(
             sandbox_manager.clone(),
@@ -628,7 +688,7 @@ impl AppState {
         let channel_repo: Arc<dyn crate::chat::channel::repository::ChannelRepository> = Arc::new(
             SurrealRepo::<crate::chat::channel::Channel>::new(db.clone()),
         );
-        let config_arc = Arc::new(config.clone());
+        let config_arc = config.clone();
         let channel_service = crate::chat::channel::ChannelService::new(
             channel_repo,
             channel_registry.clone(),
@@ -694,7 +754,7 @@ impl AppState {
             agent_service.clone(),
             memory_service.clone(),
             skill_service.clone(),
-            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            task_service.clone(),
             notification_service.clone(),
             vault_service.clone(),
             mcp_service.clone(),
@@ -766,7 +826,7 @@ impl AppState {
             contact_service,
             chat_service,
             chat_share_service: chat_share_service.clone(),
-            task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            task_service,
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions,
@@ -789,6 +849,9 @@ impl AppState {
             task_executor,
             signal_service: Arc::new(OnceLock::new()),
             config: config_arc,
+            config_service,
+            catalog_sources,
+            model_provider_service,
             storage_service: storage,
             prompts: prompt_loader,
             vault_service,

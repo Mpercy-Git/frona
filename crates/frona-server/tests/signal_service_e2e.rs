@@ -22,7 +22,7 @@ use frona::core::repository::Repository;
 use frona::core::state::AppState;
 use frona::db::init as db_init;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::registry::ModelProviderRegistry;
 use frona::storage::StorageService;
 use helpers::{MockModelProvider, MockResponse, init_metrics, test_model_group};
 use surrealdb::Surreal;
@@ -70,13 +70,23 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
 
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
 
     // Replace the default chat_service with one wired to the mock model
@@ -317,7 +327,7 @@ impl ForbidToolsProvider {
 impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
     async fn inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::provider::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
@@ -332,7 +342,7 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
 
     async fn stream_inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::provider::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
@@ -346,7 +356,7 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
 
     async fn structured_inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::provider::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _schema: serde_json::Value,
@@ -375,13 +385,23 @@ async fn build_state_with_dyn(
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
 
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
 
     let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =

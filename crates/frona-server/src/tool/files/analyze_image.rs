@@ -9,8 +9,8 @@ use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
-use crate::inference::config::ModelGroup;
-use crate::inference::registry::ModelProviderRegistry;
+use crate::inference::ModelGroup;
+use crate::inference::ModelProviderRegistry;
 use crate::inference::usage::{InferenceKind, UsageContext, UsageService};
 use crate::storage::service::StorageService;
 use frona_derive::agent_tool;
@@ -135,7 +135,6 @@ impl AnalyzeImageTool {
         );
 
         match crate::inference::text_inference(
-            &self.registry,
             &group,
             SYSTEM_PROMPT,
             vec![request],

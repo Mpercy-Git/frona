@@ -10,7 +10,7 @@ use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder,
 };
-use frona::inference::provider::ModelRef;
+use frona::inference::provider::ModelConfig;
 use frona::inference::tool_call::ToolCall;
 use frona::policy::service::PolicyService;
 use frona::storage::StorageService;
@@ -67,9 +67,12 @@ fn test_builder(db: &Surreal<Db>) -> DefaultConversationBuilder {
 fn test_ctx() -> ConversationContext {
     ConversationContext {
         agent_id: "test-agent".into(),
-        model_ref: ModelRef {
+        model_ref: ModelConfig {
+            catalog_provider: "mock".into(),
+            provider_handle: frona::core::Handle::try_new("mock").unwrap(),
             provider: "mock".into(),
             model_id: "test-model".into(),
+            request_settings: Default::default(),
         },
         user_id: "test-user".into(),
     }

@@ -21,7 +21,7 @@ use frona::api::middleware::metrics::track_http_metrics;
 use frona::api::middleware::setup_redirect::setup_redirect;
 use frona::api::middleware::shutdown::shutdown_gate;
 use frona::api::routes;
-use frona::core::config::Config;
+use frona::core::config::ConfigService;
 use frona::core::metrics::setup_metrics_recorder;
 use frona::core::state::AppState;
 use frona::credential::key_rotation::KeyRotation;
@@ -64,15 +64,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Frona v{}", frona::core::app_version());
 
-    let loaded = Config::load();
-    let mut config = loaded.config;
+    let mut loaded = ConfigService::load(frona::core::config::config_file_path())
+        .unwrap_or_else(|e| panic!("{e}"));
 
     // Resolve the Web Push key pair before anything reads `config.push`:
     // unless the deployment configured its own, the server generates one and
     // keeps it, so push works out of the box instead of waiting on a manual
     // `npx web-push generate-vapid-keys`.
-    frona::notification::vapid::ensure_keys(&mut config.push, &config.storage.data_dir);
-    let config = config;
+    frona::notification::vapid::ensure_keys(
+        &mut loaded.config.push,
+        &loaded.config.storage.data_dir,
+    );
+    let models = loaded.models.take();
+    let config_service = ConfigService::new(loaded).unwrap_or_else(|e| panic!("{e}"));
+    let config = config_service.active();
 
     const DEFAULT_SECRET: &str = "dev-secret-change-in-production";
     if config.auth.encryption_secret == DEFAULT_SECRET {
@@ -108,13 +113,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     resource_manager.start_polling();
 
+    let catalog_sources = frona_model_catalog::sources::CatalogSources::load(std::path::Path::new(
+        &config.storage.cache_dir,
+    ));
+
     let state = AppState::new(
         surreal.clone(),
-        &config,
-        loaded.models,
+        config_service,
+        models,
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
     state.agent_service.sync_agent_limits().await?;
     state.vault_service.sync_config_connections().await?;
@@ -336,6 +346,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::voice::router())
         .merge(routes::system::router())
         .merge(routes::config::router())
+        .merge(routes::providers::router())
         .merge(routes::provider_models::router());
     // Register the PKM sync API only when PKM is the active backend - a Basic install
     // never exposes `/api/memory/pkm/*`, so no request-time is-PKM probe is needed.

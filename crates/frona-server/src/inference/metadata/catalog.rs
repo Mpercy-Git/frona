@@ -22,7 +22,7 @@ use chrono::Utc;
 use rig_core::completion::request::Usage;
 
 use crate::core::config::OpenAiApi;
-use crate::inference::provider::ModelRef;
+use crate::inference::provider::ModelConfig;
 
 const PER_MILLION_TO_PER_TOKEN: f64 = 1.0 / 1_000_000.0;
 
@@ -116,7 +116,7 @@ pub trait CatalogLookup {
     ///
     /// Applies the byteplus→volcengine alias; the crate's own
     /// `lookup_for_provider` doesn't know about it.
-    fn lookup_exact(&self, m: &ModelRef) -> Option<&ModelEntry>;
+    fn lookup_exact(&self, m: &ModelConfig) -> Option<&ModelEntry>;
 
     /// Like `lookup_exact` but falls back to a longest-prefix walk so
     /// dated-suffix ids returned by provider APIs (e.g.
@@ -136,7 +136,7 @@ pub trait CatalogLookup {
 }
 
 impl CatalogLookup for ModelCatalogSnapshot {
-    fn lookup_exact(&self, m: &ModelRef) -> Option<&ModelEntry> {
+    fn lookup_exact(&self, m: &ModelConfig) -> Option<&ModelEntry> {
         self.lookup_for_provider(catalog_provider(m.provider_name()), &m.model_id)
     }
 
@@ -384,11 +384,11 @@ pub trait StorePricing {
     /// (`openrouter` + `anthropic/claude-sonnet-4.5`) and direct providers add
     /// dated suffixes, neither of which is a literal catalog key — an exact
     /// lookup misses both and silently records `cost_usd: None`.
-    fn price(&self, m: &ModelRef, u: &Usage) -> (Option<f64>, String);
+    fn price(&self, m: &ModelConfig, u: &Usage) -> (Option<f64>, String);
 }
 
 impl StorePricing for ModelCatalogStore {
-    fn price(&self, m: &ModelRef, u: &Usage) -> (Option<f64>, String) {
+    fn price(&self, m: &ModelConfig, u: &Usage) -> (Option<f64>, String) {
         let p = self.current();
         let normalized = normalize_usage(m.provider_name(), u);
         (
@@ -403,6 +403,16 @@ impl StorePricing for ModelCatalogStore {
 mod tests {
     use super::*;
     use crate::core::config::ProviderModel;
+
+    fn model_ref(provider: &str, model_id: &str) -> ModelConfig {
+        ModelConfig {
+            catalog_provider: provider.to_string(),
+            provider_handle: crate::core::Handle::try_new(provider).unwrap(),
+            model_id: model_id.to_string(),
+            provider: ProviderModel::from_name(provider),
+            request_settings: Default::default(),
+        }
+    }
 
     fn priced_snapshot() -> ModelCatalogSnapshot {
         let mut entries = HashMap::new();
@@ -474,10 +484,7 @@ mod tests {
         }
 
         let store = ModelCatalogStore::new(snapshot);
-        let model = ModelRef {
-            model_id: "doubao-seed-1-8-251228".to_string(),
-            provider: ProviderModel::from_name("byteplus"),
-        };
+        let model = model_ref("byteplus", "doubao-seed-1-8-251228");
         let usage = Usage {
             input_tokens: 1_000_000,
             output_tokens: 0,
@@ -493,10 +500,7 @@ mod tests {
     #[test]
     fn price_prices_a_vendor_prefixed_aggregator_model_id() {
         let store = ModelCatalogStore::new(priced_snapshot());
-        let model = ModelRef {
-            model_id: "anthropic/claude-sonnet-4-6".to_string(),
-            provider: ProviderModel::from_name("openrouter"),
-        };
+        let model = model_ref("openrouter", "anthropic/claude-sonnet-4-6");
         let usage = Usage {
             input_tokens: 1_000_000,
             output_tokens: 0,
@@ -513,10 +517,7 @@ mod tests {
     #[test]
     fn price_splits_openai_shaped_prompt_tokens_across_the_three_rates() {
         let store = ModelCatalogStore::new(priced_snapshot());
-        let model = ModelRef {
-            model_id: "anthropic/claude-sonnet-4-6".to_string(),
-            provider: ProviderModel::from_name("openrouter"),
-        };
+        let model = model_ref("openrouter", "anthropic/claude-sonnet-4-6");
         let usage = Usage {
             input_tokens: 1_000_000,
             cached_input_tokens: 600_000,
@@ -539,10 +540,7 @@ mod tests {
     #[test]
     fn price_leaves_anthropic_native_input_tokens_alone() {
         let store = ModelCatalogStore::new(priced_snapshot());
-        let model = ModelRef {
-            model_id: "claude-sonnet-4-6".to_string(),
-            provider: ProviderModel::from_name("anthropic"),
-        };
+        let model = model_ref("anthropic", "claude-sonnet-4-6");
         let usage = Usage {
             input_tokens: 1_000_000,
             cached_input_tokens: 600_000,
