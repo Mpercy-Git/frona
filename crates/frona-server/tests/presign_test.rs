@@ -77,6 +77,7 @@ fn make_message_response(attachments: Vec<Attachment>) -> MessageResponse {
         attachments,
         contact_id: None,
         status: None,
+        error: None,
         reasoning: None,
         from_address: None,
         delivery: None,

@@ -70,6 +70,15 @@ impl ConfigService {
         self.active.clone()
     }
 
+    /// Revision hash of the config document this process booted with. Lets a
+    /// route compare a freshly re-read document's revision against what's
+    /// actually running, without re-reading the file a second time through
+    /// [`Self::persisted`] (which parses the raw document and so can't apply
+    /// `FRONA_*` env overrides the way [`super::ConfigService::load`] does).
+    pub fn active_revision(&self) -> &str {
+        &self.active_revision
+    }
+
     pub fn persisted(&self) -> Result<SaveResult, AppError> {
         let bytes = read_file(&self.path)?;
         let persisted_revision = revision(&bytes);

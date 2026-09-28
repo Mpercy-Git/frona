@@ -90,43 +90,33 @@ anywhere yet:
 
 ### Group A — small, independent, low-risk
 
-Six of nine landed this session; see "Ported this session" above. Two
-(`22210fe9`, `98cc7742`) were already covered. What's left:
+Eight of nine landed. Two (`22210fe9`, `98cc7742`) were already covered; six
+more landed in an earlier session (see "Ported this session" above); the
+final two landed 2026-09-28, corrected from this section's earlier
+"reclassify as its own effort" call:
 
 | Commit | Date | What |
 |---|---|---|
-| `d4186276` | 09-14 | Persist structured message processing errors (chat) |
-| `c5e95988` | 09-14 | Display structured failures in chat replies (web) |
+| ~~`d4186276`~~ | 09-14 | Persist structured message processing errors (chat) — fork commit `16cd9c2` |
+| ~~`c5e95988`~~ | 09-14 | Display structured failures in chat replies (web) — fork commit `2c8f892` |
 
-**Not actually small — reclassify as its own effort.** Upstream's
-`chat/message/error.rs` builds a persistable `MessageError` by pattern-matching
-on `AppError::Inference(InferenceError)` (typed) and a new
-`AppError::ToolExecution { tool_name, source: Box<AppError> }` variant. Neither
-exists in this fork: `AppError::Inference` is a bare `String` here (only 4
-call sites construct it), and no tool-execution error carries the tool's name
-anywhere in the tool-call path. Upstream's own unit test for this commit also
-assumes the post-Group-C `ModelConfig { catalog_provider, provider_handle:
-Handle, .. }` shape, which doesn't exist in this fork's provider layer either.
-
-Porting this requires, in order:
-1. Change `AppError::Inference(String)` → `AppError::Inference(InferenceError)`
-   and rewire the 4 call sites (`api/error.rs`, `inference/tool_loop.rs`,
-   `inference/error.rs`, `inference/retry.rs`).
-2. Add `AppError::ToolExecution { tool_name, source: Box<AppError> }` and wire
-   the tool-call path (`tool/registry.rs`, `agent/task/executor.rs`) to
-   construct it instead of flattening tool errors to `AppError::Tool(String)`.
-3. Build `chat/message/error.rs`'s `MessageError`/`MessageErrorDetails`
-   against the fork's actual `InferenceError` shape — notably
-   `AllFallbacksFailed(Vec<(String, String)>)` here vs. upstream's
-   `Vec<InferenceError>`, so per-fallback `retry_count`/`http_status` can't be
-   reconstructed the same way without a matching upstream-side redesign of
-   that variant too.
-4. Only then port the persistence wiring (`chat/service.rs`,
-   `chat/message/models.rs`, `chat/broadcast.rs`) and the frontend
-   (`c5e95988`).
-
-Treat this like Group C: a design decision first, then a port — not a
-same-day PR.
+**Correction (2026-09-28):** the blocker this section described — this fork's
+`InferenceError::AllFallbacksFailed(Vec<(String, String)>)` vs. upstream's
+`Vec<InferenceError>` — no longer held by the time this was actually
+attempted. By this date this fork's `InferenceError` already carried
+`AllFallbacksFailed(Vec<InferenceError>)` and `ModelFailed { provider, model,
+retry_count, source }` (apparently picked up as part of Group C's provider
+rework, independent of upstream's own redesign), and `ModelConfig` already had
+the exact `catalog_provider`/`provider_handle: Handle`/`model_id`/`provider`/
+`request_settings` shape upstream's unit test assumed. Re-scoping found the
+port was tractable as-is: `AppError::Inference(String)` → `Inference(InferenceError)`
+was still a real prerequisite step (3 call sites, not 4 — `inference/retry.rs`
+never constructed it), but `chat/message/error.rs` ported essentially verbatim
+once that one variant-type change landed. See `16cd9c2`'s and `2c8f892`'s
+commit messages for the full port detail, including one real gap the upstream
+diff didn't cover: a fork-only test (`tests/api/security.rs`) constructing
+`AppError::Inference` directly, caught by `cargo check --tests` and fixed
+alongside.
 
 ### Group B — build/test/CI infrastructure (do when convenient, low urgency)
 
@@ -140,8 +130,8 @@ haven't:
 |---|---|---|
 | `385e5dd6` | 09-17 | Dockerfile stage builds and runs `frona-model-catalog` — the crate now exists in this fork (Step 2, see above), but the commit itself is a Docker build stage this sandbox has no Podman/build validation for, same gap as the four Group B commits held back below. |
 | `38d4f5a5` | 09-17 | `validate-provider-artifact.mjs` also invokes `frona-model-catalog` — same crate-now-exists-but-unvalidatable-Docker-change situation as `385e5dd6`. |
-| `f104bd85` | 09-18 | `managed_cli_feasibility.rs` imports `inference::credential::store::CredentialMethod` and `inference::provider::platform::ProviderPlatform` — Group C's managed-credential vault types. |
-| `2b9dfe28` | 09-19 | Edits a Bedrock `provider_workflow.rs` test; Bedrock isn't a fork provider yet (Group C Step 3). |
+| ~~`f104bd85`~~ | 09-18 | Was blocked on `inference::credential::store::CredentialMethod`/`inference::provider::platform::ProviderPlatform`, both of which exist now — unblocked and in progress as of 2026-09-28 (see below). |
+| `2b9dfe28` | 09-19 | Still blocked, for a sharper reason than "Bedrock isn't a fork provider yet": Bedrock *is* now a recognized brand in `provider/platform.rs` (recipe, protocols, auth methods, attribute validation all wired), but its actual adapter `build()` deliberately returns `Err(InferenceError::ConfigError("Provider 'bedrock' is not yet available in this build"))` (`platform.rs:772`) — scaffolded, not implemented. This commit's test also assumes a `crates/frona-server/tests/provider_workflow.rs` integration-test file this fork doesn't have at all. Porting it requires first building a real Bedrock adapter (AWS SDK integration, live foundation-model discovery) — a standalone effort, not covered by this plan's existing scope. |
 
 **Held back — real, but I can't validate them in this sandbox:**
 
@@ -246,31 +236,117 @@ detail):
   structure and touch the same settings page the fork's voice/cost-analyst
   settings live in.
 
-This is still materially larger than any prior upstream-port PR in this
-fork's history (PR #112/#113 together were ~5,400 lines across 15 commits;
-Group C alone is ~20 commits with one single commit at +15,858/-3,721) and
-should stay its own multi-PR effort, tracked separately from Groups A and B.
-Steps 2, 3, and 5 are still substantial; what shrank is Step 4 and the
-perceived size of the Step 1 decision itself.
+**Status as of 2026-09-28: Steps 2–4 done.** PR #131 ("Group C:
+managed-credential vault + provider-adapter rewrite (Steps 2-3, unified)")
+landed the full `inference/provider/{mod,registry,group,platform,service,
+validation}.rs` + `provider/adapter/*.rs` structure (Step 2, including the
+six shared-brand adapters and the `ModelProviderConfig` schema merge with
+`billing` preserved), `credential/managed/*` (Step 3, no naming collision
+confirmed), and the five one-line `byteplus`/`zai`/`venice`/`minimax`/
+`llamafile` recipe entries plus the `generic` case dropped in favor of
+`dynamic_recipe()` (Step 4) — all verified present in
+`crates/frona-server/src/inference/provider/platform.rs` and
+`credential/managed/`. This document and `GROUP_C_PROVIDER_SCOPING.md`
+weren't updated when that PR merged; they still read as if only the
+catalog-crate half of Step 2 had landed. Corrected here.
+
+**One caveat found on closer inspection (2026-09-28):** Step 3's "new-capability
+adapters" line names Bedrock alongside ChatGPT-subscription and GitHub Copilot,
+but only the latter two actually got a working adapter
+(`provider/adapter/{chatgpt,copilot}.rs` exist; there is no `bedrock.rs`).
+Bedrock is a recognized brand in `platform.rs` — recipe, protocols
+(`ApiSurface::AmazonBedrockConverse`), auth methods, and attribute validation
+(`aws_profile`/`aws_region`) are all wired — but its adapter `build()` is a
+deliberate stub: `Err(InferenceError::ConfigError("Provider 'bedrock' is not
+yet available in this build"))` (`platform.rs:772`). So "Bedrock ... entirely
+new capability" (this document's Group C intro, below) is still true in
+practice; only the scaffolding landed. See `2b9dfe28`'s corrected entry in the
+Group B table above — that commit, and real Bedrock support generally, needs
+its own effort (AWS SDK integration, live foundation-model discovery), not
+covered by anything currently planned here.
+
+**Step 5 (settings UI) is now done**, all four commits ported:
+
+- `99db1d24` ("manage account logins from vault settings" — the "Managed"
+  vault-provider option in `vault-section.tsx`, wired to
+  `VaultConnectionConfig::Managed{}`) — ported before PR #131 merged (fork
+  commit `f30bac1`).
+- `a908db4c` ("configure named provider connections in settings" — fork
+  commit `fb47936`) — `web/src/lib/provider-admin.ts` and `provider-drafts.ts`
+  are new; `providers-section.tsx` is catalog-driven (add/edit/validate/
+  accept/login flows against `/api/config/providers/{handle}/...`) rather
+  than editing the old flat `providers: Record<string, ModelProviderConfig>`
+  shape directly; `config-types.ts`/`api-client.ts` carry the
+  `persisted_revision`-aware `updateConfig`/`getConfigDocument` the commit
+  depends on. Adapted from upstream where the fork's actual Rust types
+  required it: `GET /api/config` didn't return a `persisted_revision` at all
+  (needed for the provider edit/delete routes' mandatory
+  `expected_persisted_revision`) — added via `ConfigService::active_revision()`
+  plus a small change to `api/routes/config.rs::get_config`, matching the
+  shape `PUT /api/config` already returned; `PUT /api/config` requires the
+  `{patch, expected_persisted_revision}` envelope unconditionally (no
+  bare-patch fallback, unlike upstream's own backend); this fork's
+  `ModelProviderConfig` already has `billing`, `credential_id`, `provider`,
+  `adapter`, `aws_*`, and a flattened `attributes` bag, all preserved and
+  round-tripped through the new UI's `BillingFields`/generic field renderer.
+- `ee6ab0b1` + `7e745ac4` ("configure model groups from live provider
+  directories" + "edit custom request parameters in a separate accordion" —
+  fork commit `68e0cfe`, one commit for both since the second is a direct
+  continuation of the first's new file) — `models-section.tsx`/
+  `model-selector.tsx` rewritten onto the live per-connection directories
+  (`GET`/`POST /api/config/providers/{handle}/models`); new
+  `model-authoring.ts` (schema-lite validation, patch diffing) and
+  `use-model-directories.ts` (per-connection directory cache); new
+  `model-settings.tsx` for the schema-driven typed/extra-params split,
+  including the second commit's "Custom request parameters" accordion.
+  Preserved fork-only features with no upstream equivalent: OpenRouter's
+  `route`/`provider_routing`/`prompt_caching` fields (confirmed via
+  `inference/protocol/parameters.rs` that the backend's live
+  `ModelSettingInfo` directory can't describe these — `OpenRouterParams`
+  wraps its base params via `#[serde(flatten)]`, which the `ParameterMetadata`
+  derive doesn't support — so they'd have silently disappeared without manual
+  preservation, the same class of gap `billing` was in `a908db4c`), and this
+  fork's permissive (not lowercase-only) group-rename validation, since
+  `models: HashMap<String, ModelGroupConfig>` has no `Handle`-style casing
+  constraint server-side.
+
+All three ported commits' verification: `npx tsc --noEmit` clean, `npx eslint`
+clean, full `npx vitest run` passing throughout (503 → 546 tests as each
+commit added its own), `cargo check --workspace` clean. `cargo test` was
+deliberately not run for these — see Group B's disk-allowance note below;
+`cargo check`/`clippy -D warnings`/`fmt --check` is the verification ceiling
+used here for Rust-touching frontend work in this sandbox.
+
+This was materially larger than any prior upstream-port PR in this fork's
+history (PR #112/#113 together were ~5,400 lines across 15 commits; Group C
+alone is ~20 commits with one single commit at +15,858/-3,721), landed across
+several PRs as its own multi-PR effort rather than one, per the original plan.
+With Step 5 done, Group C's full scope (Steps 1–5) is closed.
 
 ## Suggested order
 
-1. ~~Group A (small independent fixes)~~ — done except `d4186276`/`c5e95988`,
-   reclassified above as its own effort.
+1. ~~Group A~~ — done. All nine commits landed, including `d4186276`/`c5e95988`
+   (fork commits `16cd9c2`/`2c8f892`, 2026-09-28), which this document
+   previously reclassified as needing a design decision first — see the
+   correction in Group A's section above. **Group A is complete.**
 2. ~~Group B, the two portable commits~~ — done (`557dd9b6`, `b3052bd2`).
 3. ~~Group C Step 1 (scoping spike)~~ — done, see
    [`GROUP_C_PROVIDER_SCOPING.md`](GROUP_C_PROVIDER_SCOPING.md). Unblocks
    Group C Steps 2–5 below and Group B's four Group-C-dependent commits
    (`385e5dd6`, `38d4f5a5`, `f104bd85`, `2b9dfe28`).
-4. Group C Steps 2–5 — the multi-PR provider/credential rewrite, revised order
-   and detail in the scoping doc. Step 2's catalog-crate half is done (the
-   `frona-model-catalog` crate is vendored in and `inference/metadata`
-   rebuilt on it); its remaining half — the six shared-brand adapter files
-   and the `ModelProviderConfig` schema merge — and Steps 3–5 are still
-   open, per the scoping doc's "Step 2 progress" note.
-5. The `AppError` redesign for `d4186276`/`c5e95988` — independent of Group C,
-   can happen in parallel.
-6. Group B's remaining four Podman/Kache dev-container commits (`341280b7`,
+4. ~~Group C Steps 2–5~~ — done. Steps 2–4 landed in PR #131; Step 5's four
+   commits landed as `f30bac1`, `fb47936`, and `68e0cfe` (see "Status as of
+   2026-09-28" above). **Group C is complete.**
+5. ~~`f104bd85`~~ — done, fork commit `afda223` (2026-09-28): unblocked once
+   Group C landed the `credential::managed`/`ProviderPlatform` types it
+   imports; ported verbatim, all 6 tests pass.
+6. Group B's three remaining Group-C-dependent commits (`385e5dd6`,
+   `38d4f5a5`, `2b9dfe28`) — still blocked. The first two need Podman/Docker
+   build validation this sandbox can't do (no daemon: `docker info` fails to
+   connect). `2b9dfe28` needs a real Bedrock adapter built first — see the
+   caveat in the Group C status note above; Bedrock's `build()` is still a
+   deliberate stub, so this is its own effort, not just an unblock.
+7. Group B's remaining four Podman/Kache dev-container commits (`341280b7`,
    `047c9920`, `2fcf37c5`, `ac847fc9`) — whenever someone has a Podman/`dv`
    environment to actually build-test them in; not blocked by anything else,
    but shouldn't land on read-through confidence alone.

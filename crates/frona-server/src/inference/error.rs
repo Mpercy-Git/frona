@@ -209,6 +209,6 @@ fn format_fallback_errors(errors: &[InferenceError]) -> String {
 
 impl From<InferenceError> for crate::core::error::AppError {
     fn from(err: InferenceError) -> Self {
-        crate::core::error::AppError::Inference(err.to_string())
+        crate::core::error::AppError::Inference(err)
     }
 }

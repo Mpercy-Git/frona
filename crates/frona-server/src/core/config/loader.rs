@@ -21,6 +21,16 @@ pub struct LoadedConfig {
     pub models: Option<crate::inference::config::ModelRegistryConfig>,
 }
 
+impl LoadedConfig {
+    /// Revision hash of the on-disk document this snapshot was built from -
+    /// the same hash `ConfigService::persisted`/`save` compute, so a caller
+    /// outside `core::config` (e.g. the `GET /api/config` route) can report it
+    /// as `persisted_revision` without reaching into a `pub(super)` field.
+    pub fn revision(&self) -> &str {
+        &self.revision
+    }
+}
+
 impl ConfigService {
     /// Read a startup snapshot without a database. A missing file uses defaults
     /// and environment overrides; malformed or unreadable input is an error.

@@ -226,3 +226,16 @@ files (azure, cohere, huggingface, hyperbolic, perplexity, together) and the
 `ModelProviderConfig` schema merge. The catalog port didn't touch either —
 this fork's provider dispatch is still the flat `inference/registry.rs`
 match block, now just resolving through the vendored catalog types.
+
+## Step 2–4 done (2026-09-28 update)
+
+The remaining Step 2 scope (six shared-brand adapter files, `ModelProviderConfig`
+schema merge with `billing` preserved), Step 3 (`credential/managed/*`), and
+Step 4 (byteplus/zai/venice/minimax/llamafile recipes, `generic` case dropped)
+all landed in PR #131 ("Group C: managed-credential vault + provider-adapter
+rewrite (Steps 2-3, unified)"), confirmed by inspecting
+`crates/frona-server/src/inference/provider/{platform,registry}.rs` and
+`credential/managed/`. This section of the doc — and `UPSTREAM_SYNC_PLAN.md`'s
+Group C section — weren't updated at merge time; see
+`UPSTREAM_SYNC_PLAN.md`'s "Status as of 2026-09-28" note for the corrected
+picture and Step 5's (frontend) remaining scope.

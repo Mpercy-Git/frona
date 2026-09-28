@@ -1232,7 +1232,10 @@ async fn handle_voice_turn(
             _ => {
                 let _ = state
                     .chat_service
-                    .fail_agent_message(response, "voice inference unexpected branch".to_string())
+                    .fail_agent_message(
+                        response,
+                        (&AppError::Internal("voice inference unexpected branch".into())).into(),
+                    )
                     .await;
                 return Ok((String::new(), TurnOutcome::Continue));
             }

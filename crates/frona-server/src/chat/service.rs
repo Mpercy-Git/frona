@@ -1056,6 +1056,7 @@ impl ChatService {
         mut msg: Message,
     ) -> Result<MessageResponse, AppError> {
         msg.status = Some(MessageStatus::Completed);
+        msg.error = None;
         let updated = self.message_repo.update(&msg).await?;
         let chat = self.chat_repo.find_by_id(&updated.chat_id).await?;
 
@@ -1153,6 +1154,7 @@ impl ChatService {
         notify: bool,
     ) -> Result<MessageResponse, AppError> {
         msg.status = Some(MessageStatus::Cancelled);
+        msg.error = None;
         let updated = self.message_repo.update(&msg).await?;
         if let Ok(Some(chat)) = self.chat_repo.find_by_id(&updated.chat_id).await {
             self.broadcast.broadcast_entity_updated(
@@ -1179,14 +1181,14 @@ impl ChatService {
         Ok(updated.into())
     }
 
-    /// Mark `msg` as failed. `error` is included in the broadcast event but
-    /// NOT persisted on the message row (preserves existing behaviour).
+    /// Persist the failure so live and reloaded chats show the same error.
     pub async fn fail_agent_message(
         &self,
         mut msg: Message,
-        error: String,
+        error: super::message::error::MessageError,
     ) -> Result<MessageResponse, AppError> {
         msg.status = Some(MessageStatus::Failed);
+        msg.error = Some(error.clone());
         let updated = self.message_repo.update(&msg).await?;
         if let Ok(Some(chat)) = self.chat_repo.find_by_id(&updated.chat_id).await {
             self.broadcast.broadcast_entity_updated(
@@ -1202,7 +1204,10 @@ impl ChatService {
                 chat_id: Some(chat.id.clone()),
                 space_id: chat.space_id.clone(),
                 kind: crate::chat::broadcast::BroadcastEventKind::Inference(
-                    crate::inference::tool_loop::InferenceEventKind::Failed { error },
+                    crate::inference::tool_loop::InferenceEventKind::Failed {
+                        error,
+                        message_id: updated.id.clone(),
+                    },
                 ),
             });
         }
@@ -1219,6 +1224,7 @@ impl ChatService {
     ) -> Result<(), AppError> {
         if !matches!(msg.status, Some(MessageStatus::Paused)) {
             msg.status = Some(MessageStatus::Paused);
+            msg.error = None;
             msg = self.message_repo.update(&msg).await?;
         }
         let chat = match self.chat_repo.find_by_id(&msg.chat_id).await? {
@@ -1255,7 +1261,7 @@ impl ChatService {
     /// sees `false` and must skip the resume spawn.
     pub async fn mark_message_executing(&self, message_id: &str) -> Result<bool, AppError> {
         let query = "UPDATE message
-            SET status = $new_status
+            SET status = $new_status, error = NONE
             WHERE meta::id(id) = $msg_id
               AND status = $old_status
               AND array::len(
@@ -1840,6 +1846,125 @@ fn try_parse_title_json(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal `AppState` for exercising `ChatService` end-to-end (mirrors
+    /// `tests/api/mod.rs::test_app_state`'s recipe, trimmed to what
+    /// `ChatService` itself touches — no MCP override or policy sync).
+    async fn test_app_state() -> crate::core::state::AppState {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .unwrap();
+        crate::db::init::setup_schema(&db).await.unwrap();
+        let resources = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("resources");
+        let tmp = tempfile::tempdir().unwrap();
+        let config = crate::core::config::Config {
+            auth: crate::core::config::AuthConfig {
+                encryption_secret: "test-secret".to_string(),
+                ..Default::default()
+            },
+            storage: crate::core::config::StorageConfig {
+                data_dir: tmp.path().to_string_lossy().into_owned(),
+                shared_config_dir: resources.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let storage = StorageService::new(&config);
+        let resource_manager = std::sync::Arc::new(
+            crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                80.0, 80.0, 90.0, 90.0,
+            ),
+        );
+        let metrics = crate::core::metrics::setup_metrics_recorder();
+        let config_service = {
+            let mut loaded = crate::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            crate::core::config::ConfigService::new(loaded).unwrap()
+        };
+        let catalog_sources = crate::app_state_fixture::catalogs(&config);
+        crate::core::state::AppState::new(
+            db,
+            config_service,
+            Some(crate::inference::config::ModelRegistryConfig::empty()),
+            storage,
+            metrics,
+            resource_manager,
+            catalog_sources,
+        )
+    }
+
+    #[tokio::test]
+    async fn failed_message_persists_and_broadcasts_error_details() {
+        let state = test_app_state().await;
+        let service = &state.chat_service;
+        let now = chrono::Utc::now();
+        let chat = Chat {
+            id: "failed-chat".into(),
+            user_id: "user".into(),
+            space_id: None,
+            task_id: None,
+            agent_id: "agent".into(),
+            title: None,
+            archived_at: None,
+            channel_id: None,
+            channel_external_id: None,
+            metadata: Default::default(),
+            created_at: now,
+            updated_at: now,
+        };
+        service.chat_repo.create(&chat).await.unwrap();
+        let message = Message::builder(&chat.id, MessageRole::Agent, "Partial reply".into())
+            .status(MessageStatus::Executing)
+            .build();
+        let message = service.message_repo.create(&message).await.unwrap();
+        let mut events = service.broadcast.subscribe_raw();
+        let error =
+            "The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.";
+        let failure = crate::chat::message::error::MessageError::from(&AppError::from(
+            crate::inference::error::InferenceError::InferenceFailed(error.into()),
+        ));
+        let response = service
+            .fail_agent_message(message.clone(), failure.clone())
+            .await
+            .unwrap();
+        assert_eq!(response.status, Some(MessageStatus::Failed));
+        assert_eq!(response.error.as_ref(), Some(&failure));
+        let saved = service.get_message("user", &message.id).await.unwrap();
+        assert_eq!(saved.error.as_ref(), Some(&failure));
+        assert!(!saved.metadata.contains_key("error"));
+        assert_eq!(saved.content, "Partial reply");
+        loop {
+            let event = events.try_recv().expect("failure event must be broadcast");
+            if let crate::chat::broadcast::BroadcastEventKind::Inference(
+                crate::inference::tool_loop::InferenceEventKind::Failed {
+                    error: detail,
+                    message_id,
+                },
+            ) = event.kind
+            {
+                assert_eq!(detail, failure);
+                assert_eq!(message_id, message.id);
+                break;
+            }
+        }
+        let completed = service.complete_agent_message(saved).await.unwrap();
+        assert_eq!(completed.status, Some(MessageStatus::Completed));
+        assert_eq!(completed.error, None);
+        assert_eq!(
+            service
+                .get_message("user", &message.id)
+                .await
+                .unwrap()
+                .error,
+            None
+        );
+    }
 
     #[test]
     fn trim_overfetched_drops_oldest_when_loading_latest_page() {

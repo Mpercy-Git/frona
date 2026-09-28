@@ -3,6 +3,7 @@ use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse;
 use frona::api::error::ApiError;
 use frona::core::error::{AppError, AuthErrorCode};
+use frona::inference::error::InferenceError;
 use tower::ServiceExt;
 
 use super::*;
@@ -70,7 +71,17 @@ async fn api_error_maps_all_variants_correctly() {
             AppError::Internal("x".into()),
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
-        (AppError::Inference("x".into()), StatusCode::BAD_GATEWAY),
+        (
+            AppError::Inference(InferenceError::InferenceFailed("x".into())),
+            StatusCode::BAD_GATEWAY,
+        ),
+        (
+            AppError::ToolExecution {
+                tool_name: "web_search".into(),
+                source: Box::new(AppError::Internal("x".into())),
+            },
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
         (AppError::Browser("x".into()), StatusCode::BAD_GATEWAY),
         (
             AppError::Tool("x".into()),

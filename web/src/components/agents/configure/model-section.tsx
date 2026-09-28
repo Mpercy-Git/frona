@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { Field, SectionHeader, SectionPanel, SelectInput } from "@/components/settings/field";
 import { CpuChipIcon } from "@heroicons/react/24/outline";
-import { api } from "@/lib/api-client";
+import { getConfig } from "@/lib/config-types";
 import type { ModelGroupConfig } from "@/lib/config-types";
 import { formatGroupName } from "@/lib/model-groups";
 
@@ -17,7 +17,7 @@ export function ModelSection({ modelGroup, onModelGroupChange }: ModelSectionPro
   const [models, setModels] = useState<Record<string, ModelGroupConfig>>({});
 
   useEffect(() => {
-    api.get<{ models: Record<string, ModelGroupConfig> }>("/api/config")
+    getConfig()
       .then((config) => {
         setModels(config.models);
         setGroupOptions(

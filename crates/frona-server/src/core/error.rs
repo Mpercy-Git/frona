@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::inference::error::InferenceError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthErrorCode {
     InvalidCredentials,
@@ -74,13 +76,20 @@ pub enum AppError {
     Decryption(String),
 
     #[error("Inference error: {0}")]
-    Inference(String),
+    Inference(InferenceError),
 
     #[error("Browser error: {0}")]
     Browser(String),
 
     #[error("Tool error: {0}")]
     Tool(String),
+
+    #[error("Tool '{tool_name}' failed: {source}")]
+    ToolExecution {
+        tool_name: String,
+        #[source]
+        source: Box<AppError>,
+    },
 
     #[error("HTTP error {status}: {message}")]
     Http { status: u16, message: String },
@@ -95,6 +104,8 @@ impl From<serde_json::Error> for AppError {
 impl AppError {
     pub fn is_retryable(&self) -> bool {
         match self {
+            AppError::Inference(error) => error.is_retryable(),
+            AppError::ToolExecution { source, .. } => source.is_retryable(),
             AppError::Http { status, .. } => matches!(status, 429 | 500 | 502 | 503 | 504),
             AppError::Tool(msg) => {
                 let lower = msg.to_lowercase();
