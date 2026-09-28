@@ -90,43 +90,33 @@ anywhere yet:
 
 ### Group A — small, independent, low-risk
 
-Six of nine landed this session; see "Ported this session" above. Two
-(`22210fe9`, `98cc7742`) were already covered. What's left:
+Eight of nine landed. Two (`22210fe9`, `98cc7742`) were already covered; six
+more landed in an earlier session (see "Ported this session" above); the
+final two landed 2026-09-28, corrected from this section's earlier
+"reclassify as its own effort" call:
 
 | Commit | Date | What |
 |---|---|---|
-| `d4186276` | 09-14 | Persist structured message processing errors (chat) |
-| `c5e95988` | 09-14 | Display structured failures in chat replies (web) |
+| ~~`d4186276`~~ | 09-14 | Persist structured message processing errors (chat) — fork commit `16cd9c2` |
+| ~~`c5e95988`~~ | 09-14 | Display structured failures in chat replies (web) — fork commit `2c8f892` |
 
-**Not actually small — reclassify as its own effort.** Upstream's
-`chat/message/error.rs` builds a persistable `MessageError` by pattern-matching
-on `AppError::Inference(InferenceError)` (typed) and a new
-`AppError::ToolExecution { tool_name, source: Box<AppError> }` variant. Neither
-exists in this fork: `AppError::Inference` is a bare `String` here (only 4
-call sites construct it), and no tool-execution error carries the tool's name
-anywhere in the tool-call path. Upstream's own unit test for this commit also
-assumes the post-Group-C `ModelConfig { catalog_provider, provider_handle:
-Handle, .. }` shape, which doesn't exist in this fork's provider layer either.
-
-Porting this requires, in order:
-1. Change `AppError::Inference(String)` → `AppError::Inference(InferenceError)`
-   and rewire the 4 call sites (`api/error.rs`, `inference/tool_loop.rs`,
-   `inference/error.rs`, `inference/retry.rs`).
-2. Add `AppError::ToolExecution { tool_name, source: Box<AppError> }` and wire
-   the tool-call path (`tool/registry.rs`, `agent/task/executor.rs`) to
-   construct it instead of flattening tool errors to `AppError::Tool(String)`.
-3. Build `chat/message/error.rs`'s `MessageError`/`MessageErrorDetails`
-   against the fork's actual `InferenceError` shape — notably
-   `AllFallbacksFailed(Vec<(String, String)>)` here vs. upstream's
-   `Vec<InferenceError>`, so per-fallback `retry_count`/`http_status` can't be
-   reconstructed the same way without a matching upstream-side redesign of
-   that variant too.
-4. Only then port the persistence wiring (`chat/service.rs`,
-   `chat/message/models.rs`, `chat/broadcast.rs`) and the frontend
-   (`c5e95988`).
-
-Treat this like Group C: a design decision first, then a port — not a
-same-day PR.
+**Correction (2026-09-28):** the blocker this section described — this fork's
+`InferenceError::AllFallbacksFailed(Vec<(String, String)>)` vs. upstream's
+`Vec<InferenceError>` — no longer held by the time this was actually
+attempted. By this date this fork's `InferenceError` already carried
+`AllFallbacksFailed(Vec<InferenceError>)` and `ModelFailed { provider, model,
+retry_count, source }` (apparently picked up as part of Group C's provider
+rework, independent of upstream's own redesign), and `ModelConfig` already had
+the exact `catalog_provider`/`provider_handle: Handle`/`model_id`/`provider`/
+`request_settings` shape upstream's unit test assumed. Re-scoping found the
+port was tractable as-is: `AppError::Inference(String)` → `Inference(InferenceError)`
+was still a real prerequisite step (3 call sites, not 4 — `inference/retry.rs`
+never constructed it), but `chat/message/error.rs` ported essentially verbatim
+once that one variant-type change landed. See `16cd9c2`'s and `2c8f892`'s
+commit messages for the full port detail, including one real gap the upstream
+diff didn't cover: a fork-only test (`tests/api/security.rs`) constructing
+`AppError::Inference` directly, caught by `cargo check --tests` and fixed
+alongside.
 
 ### Group B — build/test/CI infrastructure (do when convenient, low urgency)
 
@@ -335,8 +325,10 @@ With Step 5 done, Group C's full scope (Steps 1–5) is closed.
 
 ## Suggested order
 
-1. ~~Group A (small independent fixes)~~ — done except `d4186276`/`c5e95988`,
-   reclassified above as its own effort.
+1. ~~Group A~~ — done. All nine commits landed, including `d4186276`/`c5e95988`
+   (fork commits `16cd9c2`/`2c8f892`, 2026-09-28), which this document
+   previously reclassified as needing a design decision first — see the
+   correction in Group A's section above. **Group A is complete.**
 2. ~~Group B, the two portable commits~~ — done (`557dd9b6`, `b3052bd2`).
 3. ~~Group C Step 1 (scoping spike)~~ — done, see
    [`GROUP_C_PROVIDER_SCOPING.md`](GROUP_C_PROVIDER_SCOPING.md). Unblocks
@@ -345,15 +337,16 @@ With Step 5 done, Group C's full scope (Steps 1–5) is closed.
 4. ~~Group C Steps 2–5~~ — done. Steps 2–4 landed in PR #131; Step 5's four
    commits landed as `f30bac1`, `fb47936`, and `68e0cfe` (see "Status as of
    2026-09-28" above). **Group C is complete.**
-4a. Group B's four commits unblocked by Group C landing (`385e5dd6`,
-   `38d4f5a5`, `f104bd85`, `2b9dfe28`) — no longer blocked on Group C, but
-   three still need Podman/Docker build validation this sandbox can't do
-   (same gap as 4b below); `f104bd85` (the `managed_cli_feasibility.rs` test)
-   may be portable without that constraint now that `credential::managed`
-   exists — worth checking first.
-5. The `AppError` redesign for `d4186276`/`c5e95988` — independent of Group C,
-   can happen in parallel.
-6. Group B's remaining four Podman/Kache dev-container commits (`341280b7`,
+5. ~~`f104bd85`~~ — done, fork commit `afda223` (2026-09-28): unblocked once
+   Group C landed the `credential::managed`/`ProviderPlatform` types it
+   imports; ported verbatim, all 6 tests pass.
+6. Group B's three remaining Group-C-dependent commits (`385e5dd6`,
+   `38d4f5a5`, `2b9dfe28`) — still blocked. The first two need Podman/Docker
+   build validation this sandbox can't do (no daemon: `docker info` fails to
+   connect). `2b9dfe28` needs a real Bedrock adapter built first — see the
+   caveat in the Group C status note above; Bedrock's `build()` is still a
+   deliberate stub, so this is its own effort, not just an unblock.
+7. Group B's remaining four Podman/Kache dev-container commits (`341280b7`,
    `047c9920`, `2fcf37c5`, `ac847fc9`) — whenever someone has a Podman/`dv`
    environment to actually build-test them in; not blocked by anything else,
    but shouldn't land on read-through confidence alone.
