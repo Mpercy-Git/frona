@@ -18,7 +18,7 @@ const IMAGE_MAX_DIM: u32 = 2000;
 const PDF_RENDER_MAX_PAGES: u32 = 5;
 /// Longest side, in pixels, of a rendered PDF page.
 const PDF_RENDER_SCALE_TO: u32 = 1600;
-const PDF_RENDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const PDF_RENDER_TIMEOUT_SECS: u64 = 60;
 
 pub struct ReadTool {
     pub storage: StorageService,
@@ -140,7 +140,7 @@ impl ReadTool {
             && m == "application/pdf"
         {
             if let Some(pages) = render {
-                return Ok(render_pdf(&resolved, path_arg, pages.as_deref()).await);
+                return Ok(render_pdf(sandbox, &resolved, path_arg, pages.as_deref()).await);
             }
             return Ok(read_pdf(&bytes, path_arg, offset, limit));
         }
@@ -233,34 +233,59 @@ fn parse_page_range(spec: Option<&str>) -> Result<(u32, u32), String> {
 
 /// Rasterise PDF pages to images with poppler's `pdftoppm`, for PDFs whose
 /// text layer is missing or unhelpful (scans, charts, layout-heavy pages).
-async fn render_pdf(path: &std::path::Path, path_arg: &str, pages: Option<&str>) -> ToolOutput {
+///
+/// PDF parsers are a classic source of memory-safety bugs and the input is
+/// untrusted, so `pdftoppm` runs inside the agent's sandbox (filesystem and
+/// network restricted, timeout enforced) rather than in the server process.
+async fn render_pdf(
+    sandbox: &crate::tool::sandbox::Sandbox,
+    path: &std::path::Path,
+    path_arg: &str,
+    pages: Option<&str>,
+) -> ToolOutput {
     let (first, last) = match parse_page_range(pages) {
         Ok(r) => r,
         Err(msg) => return ToolOutput::error(msg),
     };
-    let dir = match tempfile::tempdir() {
+    // Output lands in the workspace because that's what the sandbox may write.
+    let dir = match tempfile::Builder::new()
+        .prefix(".pdf-render-")
+        .tempdir_in(sandbox.path())
+    {
         Ok(d) => d,
-        Err(e) => return ToolOutput::error(format!("could not create temp dir: {e}")),
+        Err(e) => return ToolOutput::error(format!("could not create render dir: {e}")),
     };
     let prefix = dir.path().join("page");
+    if !sandbox.is_writable(&prefix) {
+        return ToolOutput::error("the sandbox does not allow writing rendered pages");
+    }
 
-    let run = tokio::process::Command::new("pdftoppm")
-        .args(["-png", "-scale-to", &PDF_RENDER_SCALE_TO.to_string()])
-        .args(["-f", &first.to_string(), "-l", &last.to_string()])
-        .arg(path)
-        .arg(&prefix)
-        .kill_on_drop(true)
-        .output();
-    let output = match tokio::time::timeout(PDF_RENDER_TIMEOUT, run).await {
-        Err(_) => return ToolOutput::error(format!("rendering {path_arg} timed out")),
-        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-            return ToolOutput::error(
-                "PDF rendering is unavailable: `pdftoppm` (poppler-utils) is not installed on the server",
-            );
-        }
-        Ok(Err(e)) => return ToolOutput::error(format!("could not run pdftoppm: {e}")),
-        Ok(Ok(o)) => o,
+    let scale = PDF_RENDER_SCALE_TO.to_string();
+    let (first_s, last_s) = (first.to_string(), last.to_string());
+    let path_s = path.to_string_lossy();
+    let prefix_s = prefix.to_string_lossy();
+    let output = match sandbox
+        .execute(
+            "pdftoppm",
+            &[
+                "-png", "-scale-to", &scale, "-f", &first_s, "-l", &last_s, &path_s, &prefix_s,
+            ],
+            PDF_RENDER_TIMEOUT_SECS,
+            None,
+            None,
+            None,
+        )
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => return ToolOutput::error(format!("could not run pdftoppm: {e}")),
     };
+    if output.timed_out {
+        return ToolOutput::error(format!("rendering {path_arg} timed out"));
+    }
+    if output.resource_killed {
+        return ToolOutput::error(format!("rendering {path_arg} exceeded resource limits"));
+    }
 
     let mut files = match std::fs::read_dir(dir.path()) {
         Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect::<Vec<_>>(),
@@ -268,10 +293,13 @@ async fn render_pdf(path: &std::path::Path, path_arg: &str, pages: Option<&str>)
     };
     files.sort();
     if files.is_empty() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = if output.exit_code == Some(127) || output.stderr.contains("not found") {
+            "pdftoppm (poppler-utils) may not be installed on the server".to_string()
+        } else {
+            output.stderr.trim().to_string()
+        };
         return ToolOutput::error(format!(
-            "no pages rendered from {path_arg} (pages {first}-{last}): {}",
-            stderr.trim()
+            "no pages rendered from {path_arg} (pages {first}-{last}): {detail}"
         ));
     }
 
@@ -410,6 +438,19 @@ mod tests {
         assert!(parse_page_range(Some("x")).is_err());
     }
 
+    /// A sandbox over a temp workspace. The driver is disabled so the test
+    /// doesn't depend on syd/landlock being usable on the machine; it still
+    /// exercises the `Sandbox::execute` path `render_pdf` goes through.
+    fn test_sandbox(workspace: &std::path::Path) -> crate::tool::sandbox::Sandbox {
+        use crate::tool::sandbox::SandboxFactory;
+        use crate::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+        SandboxFactory::new(
+            true,
+            Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
+        )
+        .get_sandbox(workspace.to_path_buf(), "test", false, Vec::new())
+    }
+
     #[tokio::test]
     async fn render_pdf_returns_page_image() {
         if std::process::Command::new("pdftoppm").arg("-v").output().is_err() {
@@ -418,7 +459,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.pdf");
         std::fs::write(&path, MINIMAL_PDF).unwrap();
-        let mut out = render_pdf(&path, "t.pdf", None).await;
+        let mut out = render_pdf(&test_sandbox(dir.path()), &path, "t.pdf", None).await;
         assert!(out.is_success(), "{}", out.text_content());
         assert_eq!(out.take_images().len(), 1);
     }
@@ -431,7 +472,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.pdf");
         std::fs::write(&path, MINIMAL_PDF).unwrap();
-        let out = render_pdf(&path, "t.pdf", Some("9")).await;
+        let out = render_pdf(&test_sandbox(dir.path()), &path, "t.pdf", Some("9")).await;
         assert!(!out.is_success());
     }
 
