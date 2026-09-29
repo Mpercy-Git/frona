@@ -145,8 +145,14 @@ fn check_twilio_ws_signature(state: &AppState, req: &Request) {
         format!("wss://{host_only}{path_and_query}"),
     ];
     if !forwarded_host.is_empty() {
-        let ws_proto = if forwarded_proto == "https" { "wss" } else { "ws" };
-        candidates.push(format!("{forwarded_proto}://{forwarded_host}{path_and_query}"));
+        let ws_proto = if forwarded_proto == "https" {
+            "wss"
+        } else {
+            "ws"
+        };
+        candidates.push(format!(
+            "{forwarded_proto}://{forwarded_host}{path_and_query}"
+        ));
         candidates.push(format!("{ws_proto}://{forwarded_host}{path_and_query}"));
     }
     let mut seen = std::collections::HashSet::new();

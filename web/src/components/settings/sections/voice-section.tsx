@@ -118,7 +118,7 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
 
           <TextInput
             label="Language"
-            description="STT/TTS language (BCP-47, e.g. en-US, en-GB), or \"multi\" to auto-detect the caller's language per turn. \"multi\" requires TTS Provider elevenlabs and a Deepgram Speech Model. Leave empty for en-US."
+            description='STT/TTS language (BCP-47, e.g. en-US, en-GB), or "multi" to auto-detect the caller&apos;s language per turn. "multi" requires TTS Provider elevenlabs and a Deepgram Speech Model. Leave empty for en-US.'
             value={voice.twilio_language}
             onChange={(twilio_language) => onChange({ ...voice, twilio_language })}
             placeholder="en-US"
