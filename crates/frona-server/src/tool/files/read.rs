@@ -211,7 +211,12 @@ fn read_image(bytes: &[u8], mime: &str, path_arg: &str) -> Result<ToolOutput, Ap
 /// Parse a 1-indexed page spec ("3" or "3-5") into an inclusive range, clamped
 /// to `PDF_RENDER_MAX_PAGES` pages. `None` means the first page(s).
 fn parse_page_range(spec: Option<&str>) -> Result<(u32, u32), String> {
-    let bad = || format!("invalid pages '{}': use e.g. \"3\" or \"3-5\"", spec.unwrap_or(""));
+    let bad = || {
+        format!(
+            "invalid pages '{}': use e.g. \"3\" or \"3-5\"",
+            spec.unwrap_or("")
+        )
+    };
     let (first, last) = match spec.map(str::trim).filter(|s| !s.is_empty()) {
         None => (1, PDF_RENDER_MAX_PAGES),
         Some(s) => match s.split_once('-') {
@@ -268,7 +273,15 @@ async fn render_pdf(
         .execute(
             "pdftoppm",
             &[
-                "-png", "-scale-to", &scale, "-f", &first_s, "-l", &last_s, &path_s, &prefix_s,
+                "-png",
+                "-scale-to",
+                &scale,
+                "-f",
+                &first_s,
+                "-l",
+                &last_s,
+                &path_s,
+                &prefix_s,
             ],
             PDF_RENDER_TIMEOUT_SECS,
             None,
@@ -288,7 +301,9 @@ async fn render_pdf(
     }
 
     let mut files = match std::fs::read_dir(dir.path()) {
-        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect::<Vec<_>>(),
+        Ok(rd) => rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect::<Vec<_>>(),
         Err(e) => return ToolOutput::error(format!("could not read rendered pages: {e}")),
     };
     files.sort();
@@ -305,7 +320,9 @@ async fn render_pdf(
 
     let mut images = Vec::new();
     for file in &files {
-        let Ok(bytes) = std::fs::read(file) else { continue };
+        let Ok(bytes) = std::fs::read(file) else {
+            continue;
+        };
         match prepare_image(&bytes, "image/png", path_arg) {
             Ok(img) => images.push(img),
             Err(msg) => return ToolOutput::error(msg),
@@ -453,7 +470,11 @@ mod tests {
 
     #[tokio::test]
     async fn render_pdf_returns_page_image() {
-        if std::process::Command::new("pdftoppm").arg("-v").output().is_err() {
+        if std::process::Command::new("pdftoppm")
+            .arg("-v")
+            .output()
+            .is_err()
+        {
             return; // poppler not installed on this machine
         }
         let dir = tempfile::tempdir().unwrap();
@@ -466,7 +487,11 @@ mod tests {
 
     #[tokio::test]
     async fn render_pdf_page_out_of_range_errors() {
-        if std::process::Command::new("pdftoppm").arg("-v").output().is_err() {
+        if std::process::Command::new("pdftoppm")
+            .arg("-v")
+            .output()
+            .is_err()
+        {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
