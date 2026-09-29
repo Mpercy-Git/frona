@@ -16,7 +16,7 @@ use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::inference::conversation::DefaultConversationBuilder;
 use crate::inference::{InferenceEventKind, InferenceResponse};
-use crate::tool::voice::{VoiceSessionExtensions, find_user_by_phone};
+use crate::tool::voice::{VoiceSessionExtensions, find_user_by_phone, validate_twilio_signature};
 
 use super::models::TokenQuery;
 use super::verify_voice_jwt;
@@ -85,11 +85,101 @@ const DEFAULT_SILENCE_FILL_PHRASES: &[&str] = &[
     "I'm still processing your request.",
 ];
 
+/// Twilio started sending `X-Twilio-Signature` on the ConversationRelay
+/// WebSocket handshake. This is diagnostic-only, never rejecting: the
+/// connection is already authenticated by `q.token`, a short-lived JWT minted
+/// per-call and handed to Twilio only in the TwiML `url` attribute, so an
+/// invalid or absent signature here isn't a real gap — it's most likely a
+/// reverse proxy rewriting the scheme/host before we see it (the same issue
+/// `twilio_inbound_handler` works around with multiple URL candidates). A
+/// mismatch is logged so it can be investigated without ever dropping calls
+/// over a base-URL mismatch we can't fully verify from here.
+fn check_twilio_ws_signature(state: &AppState, req: &Request) {
+    let Some(auth_token) = state.config.voice.twilio_auth_token.as_deref() else {
+        return;
+    };
+    let sig = req
+        .headers()
+        .get("x-twilio-signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if sig.is_empty() {
+        tracing::debug!(
+            "Voice WS: no X-Twilio-Signature header on handshake — relying on JWT auth only"
+        );
+        return;
+    }
+
+    let base_url = state
+        .config
+        .voice
+        .callback_base_url
+        .clone()
+        .or_else(|| state.config.server.base_url.clone())
+        .unwrap_or_else(|| format!("http://localhost:{}", state.config.server.port));
+    let host_only = base_url
+        .strip_prefix("https://")
+        .or_else(|| base_url.strip_prefix("http://"))
+        .or_else(|| base_url.strip_prefix("wss://"))
+        .or_else(|| base_url.strip_prefix("ws://"))
+        .unwrap_or(&base_url);
+    let forwarded_proto = req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("https");
+    let forwarded_host = req
+        .headers()
+        .get("x-forwarded-host")
+        .or_else(|| req.headers().get("host"))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.to_string())
+        .unwrap_or_default();
+
+    let mut candidates = vec![
+        format!("https://{host_only}{path_and_query}"),
+        format!("wss://{host_only}{path_and_query}"),
+    ];
+    if !forwarded_host.is_empty() {
+        let ws_proto = if forwarded_proto == "https" {
+            "wss"
+        } else {
+            "ws"
+        };
+        candidates.push(format!(
+            "{forwarded_proto}://{forwarded_host}{path_and_query}"
+        ));
+        candidates.push(format!("{ws_proto}://{forwarded_host}{path_and_query}"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    candidates.retain(|u| seen.insert(u.clone()));
+
+    let empty_params = std::collections::HashMap::new();
+    let valid = candidates
+        .iter()
+        .any(|url| validate_twilio_signature(auth_token, url, &empty_params, sig));
+
+    if valid {
+        tracing::debug!("Voice WS: X-Twilio-Signature validated");
+    } else {
+        tracing::warn!(
+            tried_urls = ?candidates,
+            "Voice WS: X-Twilio-Signature did not match any candidate URL — continuing on JWT auth alone; check callback_base_url/reverse-proxy headers if this is unexpected"
+        );
+    }
+}
+
 pub(crate) async fn twilio_ws_handler(
     State(state): State<AppState>,
     Query(q): Query<TokenQuery>,
     req: Request,
 ) -> Response {
+    check_twilio_ws_signature(&state, &req);
+
     let claims = match verify_voice_jwt(&state, &q.token).await {
         Ok(c) => c,
         Err(e) => {
