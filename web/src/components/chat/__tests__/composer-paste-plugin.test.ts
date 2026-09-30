@@ -10,7 +10,7 @@ import {
 } from "lexical";
 import { $createDirectiveNode, DirectiveNode } from "@assistant-ui/react-lexical";
 
-import { $insertPastedText } from "../composer-paste-plugin";
+import { $insertPastedText, getBeforeInputPasteText } from "../composer-paste-plugin";
 
 function makeEditor(build: () => void): LexicalEditor {
   const editor = createEditor({
@@ -87,5 +87,24 @@ describe("$insertPastedText", () => {
     editor.update(() => $insertPastedText("tail"), { discrete: true });
 
     expect(textOf(editor)).toBe("draft tail");
+  });
+});
+
+describe("getBeforeInputPasteText", () => {
+  const input = (init: { data?: string | null; inputType?: string; dataTransfer?: unknown }) =>
+    ({ inputType: "insertText", ...init }) as unknown as InputEvent;
+
+  it("treats a multi-line insertText as a paste and normalises it", () => {
+    expect(getBeforeInputPasteText(input({ data: "a\r\nb\u00a0c" }))).toBe("a\nb c");
+  });
+
+  it("reads the text from dataTransfer when data is null", () => {
+    const dataTransfer = { getData: () => "one\ntwo" };
+    expect(getBeforeInputPasteText(input({ data: null, dataTransfer }))).toBe("one\ntwo");
+  });
+
+  it("leaves single-line typing and other input types to Lexical", () => {
+    expect(getBeforeInputPasteText(input({ data: "hello world" }))).toBeNull();
+    expect(getBeforeInputPasteText(input({ data: "a\nb", inputType: "deleteContentBackward" }))).toBeNull();
   });
 });

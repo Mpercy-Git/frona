@@ -14,7 +14,11 @@ import {
 } from "lexical";
 import { useAui } from "@assistant-ui/react";
 
-import { resolvePaste, type ClipboardPayload } from "@/lib/paste-text";
+import {
+  normalizePastedText,
+  resolvePaste,
+  type ClipboardPayload,
+} from "@/lib/paste-text";
 
 /** PASTE_COMMAND carries a ClipboardEvent, an InputEvent or a KeyboardEvent. */
 function getPayload(event: unknown): ClipboardPayload | null {
@@ -47,6 +51,34 @@ export function $insertPastedText(text: string): void {
   // it. Append rather than drop the paste.
   const end = $getRoot().selectEnd();
   end.insertRawText(text);
+}
+
+/** Any line break flavour; `normalizePastedText` maps them all to `\n`. */
+const MULTILINE = /[\r\n\u0085\u2028\u2029]/;
+
+/**
+ * Text carried by a `beforeinput` text insertion that is really a paste.
+ *
+ * Android keyboards (Gboard's clipboard chip and its long-press Paste) often
+ * skip the `paste` event and deliver the whole clipboard as an `insertText`
+ * whose `data` holds every line. Lexical inserts that string into a single
+ * text node, so the line breaks never become paragraphs and the message
+ * arrives mangled. Single-line input (typing, autocorrect, dictation) is left
+ * to Lexical.
+ */
+export function getBeforeInputPasteText(event: InputEvent): string | null {
+  if (event.inputType !== "insertText" && event.inputType !== "insertReplacementText") {
+    return null;
+  }
+  let text = event.data ?? "";
+  if (!text && event.dataTransfer) {
+    try {
+      text = event.dataTransfer.getData("text/plain");
+    } catch {
+      text = "";
+    }
+  }
+  return MULTILINE.test(text) ? normalizePastedText(text) : null;
 }
 
 /**
@@ -100,6 +132,25 @@ export function ComposerPastePlugin() {
       COMMAND_PRIORITY_CRITICAL,
     );
   }, [editor, aui]);
+
+  // Capture phase on the root's parent, so it runs before Lexical's own
+  // `beforeinput` listener on the root itself.
+  useEffect(() => {
+    return editor.registerRootListener((root, previous) => {
+      previous?.parentElement?.removeEventListener("beforeinput", onBeforeInput, true);
+      root?.parentElement?.addEventListener("beforeinput", onBeforeInput, true);
+    });
+
+    function onBeforeInput(event: Event) {
+      const input = event as InputEvent;
+      if (input.isComposing || !input.cancelable) return;
+      const text = getBeforeInputPasteText(input);
+      if (!text) return;
+      input.preventDefault();
+      input.stopImmediatePropagation();
+      editor.update(() => $insertPastedText(text), { tag: PASTE_TAG });
+    }
+  }, [editor]);
 
   return null;
 }
