@@ -66,9 +66,11 @@ pub async fn connect(
             )));
         }
     };
-    let post_url = base
-        .join(&endpoint)
-        .map_err(|e| AppError::Tool(format!("invalid MCP SSE message endpoint '{endpoint}': {e}")))?;
+    let post_url = base.join(&endpoint).map_err(|e| {
+        AppError::Tool(format!(
+            "invalid MCP SSE message endpoint '{endpoint}': {e}"
+        ))
+    })?;
     if post_url.origin() != base.origin() {
         reader.abort();
         return Err(AppError::Tool(format!(
@@ -120,7 +122,11 @@ async fn read_events(
 
             if line.is_empty() {
                 if !data.is_empty() {
-                    let name = if event.is_empty() { "message" } else { event.as_str() };
+                    let name = if event.is_empty() {
+                        "message"
+                    } else {
+                        event.as_str()
+                    };
                     match name {
                         "endpoint" => {
                             if let Some(tx) = endpoint_tx.take() {
