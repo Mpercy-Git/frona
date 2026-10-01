@@ -1,11 +1,11 @@
 use chrono::Utc;
-use frona::db::init as db;
-use frona::db::repo::chats::SurrealChatRepo;
 use frona::chat::models::Chat;
 use frona::chat::repository::ChatRepository;
 use frona::core::repository::Repository;
-use surrealdb::engine::local::{Db, Mem};
+use frona::db::init as db;
+use frona::db::repo::chats::SurrealChatRepo;
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();

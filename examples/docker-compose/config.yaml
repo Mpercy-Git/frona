@@ -68,15 +68,12 @@
 #   history_truncation_pct: 90
 
 # voice:
-#   provider: twilio                        # or: plivo
+#   provider: twilio
 #   twilio_account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 #   twilio_auth_token: "your-auth-token"
 #   twilio_from_number: "+15551234567"
 #   twilio_voice_id: "your-voice-id"
 #   twilio_speech_model: "your-speech-model"
-#   plivo_auth_id: "MAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-#   plivo_auth_token: "your-plivo-auth-token"
-#   plivo_from_number: "+15551234567"
 #   callback_base_url: "https://your-public-url.com"
 
 # vault:
@@ -106,11 +103,31 @@
 # API keys are read from environment variables via ${VAR} expansion.
 # Only configure providers whose API keys you've set in .env.
 
+# Each provider may also declare how it bills you, with an optional `billing`
+# block. This is read only by cost reporting - it never affects routing, and
+# omitting it keeps the pre-existing behaviour (pay-as-you-go for hosted
+# providers, self-hosted for Ollama and llamafile).
+#
+# It matters because the recorded cost of a call means something different
+# under each: metered spend is money that left your account, while a
+# subscription's is the list-price value of usage its fee already covers.
+# Telling the server which is which is what lets the cost analyst say whether a
+# plan earns its keep.
+
 # providers:
 #  anthropic:
 #    api_key: "${ANTHROPIC_API_KEY}"
+#    billing:
+#      kind: subscription        # metered | subscription | self_hosted
+#      monthly_cost: 20
+#      currency: USD             # display only - no conversion is performed
+#      included_spend_usd: 20    # allowance at list price, reset each period
+#      overage_is_metered: true  # usage past the allowance bills per token
+#      renewal_day: 1
 #  openai:
 #    api_key: "${OPENAI_API_KEY}"
+#    billing:
+#      kind: metered
 #  groq:
 #    api_key: "${GROQ_API_KEY}"
 #  openrouter:
@@ -139,12 +156,43 @@
 #    api_key: "${GALADRIEL_API_KEY}"
 #  huggingface:
 #    api_key: "${HUGGINGFACE_API_KEY}"
+#  # Azure OpenAI. base_url is your resource endpoint, and api_version pins the
+#  # data-plane version (Azure versions it in the query string; the version
+#  # gates which request fields are accepted). Model ids are DEPLOYMENT names.
+#  azure:
+#    api_key: "${AZURE_OPENAI_API_KEY}"
+#    base_url: "${AZURE_OPENAI_ENDPOINT}"      # https://<resource>.openai.azure.com
+#    api_version: "2024-10-21"
+#  zai:
+#    api_key: "${ZAI_API_KEY}"
+#  venice:
+#    api_key: "${VENICE_API_KEY}"
+#  minimax:
+#    api_key: "${MINIMAX_API_KEY}"
 #  ollama:
 #    base_url: "${OLLAMA_API_BASE_URL}"
+#  llamafile:
+#    base_url: "${LLAMAFILE_API_BASE_URL}"   # defaults to http://localhost:8080
+#  # BytePlus ModelArk (Seed / Doubao). base_url is optional and selects the
+#  # account: omit it for BytePlus international, or set the mainland Volcengine
+#  # Ark host below — the two are separate accounts with separate keys.
+#  byteplus:
+#    api_key: "${BYTEPLUS_API_KEY}"
+#    # base_url: "https://ark.cn-beijing.volces.com/api/v3"   # Volcengine (mainland)
+#  # Any OpenAI-compatible /chat/completions endpoint: vLLM, LM Studio,
+#  # llama.cpp's server, a LiteLLM proxy, or a hosted service with no dedicated
+#  # entry above. base_url is required; api_key is optional, since local servers
+#  # usually ignore it. Prefer this over pointing `openai` at a custom base_url:
+#  # that path rewrites max_tokens into max_completion_tokens for gpt-5/o-series,
+#  # which many compatible servers reject.
+#  generic:
+#    base_url: "${GENERIC_API_BASE_URL}"
+#    api_key: "${GENERIC_API_KEY}"
 
 # Provider options:
 #   api_key: API key string or ${ENV_VAR} reference
-#   base_url: Custom API endpoint (useful for Ollama, proxies)
+#   base_url: Custom API endpoint (required for Azure and `generic`; useful for Ollama, proxies)
+#   api_version: Azure OpenAI data-plane version. Ignored by other providers
 #   enabled: true/false (default: true)
 
 # Define named model groups. Agents reference these by name.
@@ -168,10 +216,50 @@ models:
 #    provider: anthropic
 #    model: claude-opus-4-6
 #    max_tokens: 100000
+#  azure_gpt4o:
+#    provider: azure
+#    model: my-gpt-4o-deployment   # the DEPLOYMENT name, not "gpt-4o"
+#    max_tokens: 16000
+#  openai_reasoning:
+#    provider: openai
+#    model: gpt-5
+#    api: responses
+#    reasoning_effort: high
+#  byteplus_seed:
+#    provider: byteplus
+#    # Either a foundation-model id or an inference endpoint id from your
+#    # account (`ep-…`); both go in this one field.
+#    model: seed-1-6-250615
+#    max_tokens: 32000
+#  via_openrouter:
+#    provider: openrouter
+#    model: anthropic/claude-sonnet-4-6
+#    max_tokens: 64000
+#    # A cache_control breakpoint on the system prompt. On by default; every
+#    # turn of a tool loop resends the same system prompt and tool definitions,
+#    # and providers that honour explicit breakpoints then bill that prefix at
+#    # the cache-read rate instead of the fresh-input rate. Set false only for
+#    # one-shot workloads, where the cache write is never read back.
+#    prompt_caching: true
+#    provider_routing:
+#      # Ordered preference. Nothing outside `only` is ever eligible; `order`
+#      # is a preference that still allows fallbacks.
+#      order: ["Anthropic", "Google"]
+#      # only: ["Anthropic"]
+#      allow_fallbacks: true
+#      # Rank remaining candidates by price, throughput, or latency.
+#      sort: throughput
+#      # Hard ceiling in USD per million tokens. A request no eligible provider
+#      # can serve under it fails rather than routing somewhere expensive.
+#      max_price:
+#        prompt: 5.0
+#        completion: 25.0
+#      # data_collection: deny
+#      # zdr: true
 
 # Model group options:
-#   provider: provider name (required) — anthropic, openai, ollama, gemini, groq, etc.
-#   model: model id (required) — without provider prefix
+#   provider: provider name (required) - anthropic, openai, ollama, gemini, groq, etc.
+#   model: model id (required) - without provider prefix
 #   fallbacks: list of model configs to try if primary fails
 #   max_tokens: max output tokens
 #   temperature: 0.0-2.0
@@ -179,8 +267,21 @@ models:
 #   Provider-specific params are set at the top level:
 #     Anthropic: thinking ({type, budget_tokens}), top_p, top_k
 #     Ollama: think (bool), num_ctx, num_gpu, top_k, top_p, etc.
-#     OpenAI: reasoning_effort, top_p, frequency_penalty, etc.
+#     OpenAI: api (chat_completions or responses), reasoning_effort, top_p, etc.
+#       api is optional. The models.dev adapter metadata supplies its default.
+#       Missing or unknown metadata uses chat_completions.
 #     Gemini: thinking_config ({thinking_budget}), top_p, top_k
+#     zai / venice / minimax / llamafile / generic: the OpenAI-compatible set
+#       (top_p, seed, stop, frequency_penalty, ...). Unlike `openai`, max_tokens
+#       is sent as-is rather than rewritten to max_completion_tokens.
+#     Azure: the same OpenAI-compatible set, but max_tokens IS rewritten to
+#       max_completion_tokens, since Azure serves the same gpt-5/o-series models.
+#       `model` is the deployment name; the resource endpoint and api_version
+#       live on the provider, not the model group.
+#     OpenRouter: prompt_caching (bool), provider_routing ({order, only, ignore,
+#       allow_fallbacks, require_parameters, sort, max_price, quantizations,
+#       data_collection, zdr}), plus the OpenAI-compatible params above.
+#       route accepts only "fallback" - it is not a provider name.
 #   retry:
 #     max_retries: 10
 #     initial_backoff_ms: 1000

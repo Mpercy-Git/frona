@@ -2,7 +2,7 @@ use std::process::Command;
 
 use crate::core::error::AppError;
 
-use super::{SandboxDriver, SandboxConfig};
+use super::{SandboxConfig, SandboxDriver};
 
 enum ReadRule {
     Subpath(&'static str),
@@ -198,7 +198,12 @@ impl SandboxDriver for MacosDriver {
         cmd.arg(&profile);
         cmd.arg(program);
         cmd.args(args);
-        cmd.current_dir(config.working_dir.as_deref().unwrap_or(&config.workspace_dir));
+        cmd.current_dir(
+            config
+                .working_dir
+                .as_deref()
+                .unwrap_or(&config.workspace_dir),
+        );
 
         Ok(cmd)
     }
@@ -263,18 +268,14 @@ mod tests {
 
     #[test]
     fn test_builder_network_deny() {
-        let profile = SandboxProfileBuilder::new()
-            .network(false, &[])
-            .build();
+        let profile = SandboxProfileBuilder::new().network(false, &[]).build();
         assert!(profile.contains("(deny network*)"));
         assert!(!profile.contains("(allow network*)"));
     }
 
     #[test]
     fn test_builder_network_allow_all() {
-        let profile = SandboxProfileBuilder::new()
-            .network(true, &[])
-            .build();
+        let profile = SandboxProfileBuilder::new().network(true, &[]).build();
         assert!(profile.contains("(allow network*)"));
     }
 

@@ -1,12 +1,12 @@
 use chrono::Utc;
-use frona::db::init as db;
-use frona::db::repo::users::SurrealUserRepo;
+use frona::auth::User;
 use frona::auth::{UserRepository, UserService};
 use frona::core::config::CacheConfig;
 use frona::core::repository::Repository;
-use frona::auth::User;
-use surrealdb::engine::local::{Db, Mem};
+use frona::db::init as db;
+use frona::db::repo::users::SurrealUserRepo;
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -60,7 +60,11 @@ async fn test_find_by_email() {
 
     repo.create(&user).await.unwrap();
 
-    let found = repo.find_by_email("test@example.com").await.unwrap().unwrap();
+    let found = repo
+        .find_by_email("test@example.com")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(found.id, user.id);
     assert_eq!(found.email, user.email);
     assert_eq!(found.created_at, user.created_at);
@@ -74,7 +78,11 @@ async fn test_find_by_handle() {
 
     repo.create(&user).await.unwrap();
 
-    let found = repo.find_by_handle(&frona::handle!("testuser")).await.unwrap().unwrap();
+    let found = repo
+        .find_by_handle(&frona::handle!("testuser"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(found.id, user.id);
     assert_eq!(found.handle, "testuser");
 }
@@ -84,7 +92,10 @@ async fn test_find_by_handle_not_found() {
     let db = test_db().await;
     let repo = SurrealUserRepo::new(db);
 
-    let found = repo.find_by_handle(&frona::handle!("nonexistent")).await.unwrap();
+    let found = repo
+        .find_by_handle(&frona::handle!("nonexistent"))
+        .await
+        .unwrap();
     assert!(found.is_none());
 }
 
@@ -96,10 +107,18 @@ async fn test_find_by_email_case_insensitive() {
 
     repo.create(&user).await.unwrap();
 
-    let upper = repo.find_by_email("TEST@example.com").await.unwrap().unwrap();
+    let upper = repo
+        .find_by_email("TEST@example.com")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(upper.id, user.id);
 
-    let padded = repo.find_by_email("  Test@Example.COM  ").await.unwrap().unwrap();
+    let padded = repo
+        .find_by_email("  Test@Example.COM  ")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(padded.id, user.id);
 }
 
@@ -120,7 +139,6 @@ async fn test_find_by_id_not_found() {
     let found = repo.find_by_id("nonexistent-id").await.unwrap();
     assert!(found.is_none());
 }
-
 
 #[tokio::test]
 async fn user_service_find_by_id_caches() {

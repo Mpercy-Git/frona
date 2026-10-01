@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
-use rand::RngCore;
-use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
 use super::models::PasswordResetToken;
@@ -35,8 +33,10 @@ impl PasswordResetService {
     }
 
     fn generate_secret() -> String {
-        let mut bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut bytes);
+        // rand 0.10 renamed `RngCore` and moved `OsRng`; `random()` is backed by
+        // ThreadRng (ChaCha12, OS-reseeded, `TryCryptoRng`) - the same CSPRNG the
+        // vault uses for AES-GCM nonces, so the token keeps its strength.
+        let bytes: [u8; 32] = rand::random();
         hex::encode(bytes)
     }
 
@@ -61,9 +61,7 @@ impl PasswordResetService {
     /// Validates and burns a reset secret, returning the user it belongs to.
     /// Expired and unknown secrets are reported identically.
     pub async fn consume(&self, secret: &str) -> Result<String, AppError> {
-        let invalid = || {
-            AppError::Validation("This reset link is invalid or has expired.".into())
-        };
+        let invalid = || AppError::Validation("This reset link is invalid or has expired.".into());
 
         let token = self
             .repo

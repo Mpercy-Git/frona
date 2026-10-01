@@ -51,8 +51,10 @@ impl Supervisor for McpSupervisor {
         self.manager.restart_count(id).await
     }
 
-    async fn mark_failed(&self, id: &str, _reason: &str) -> Result<(), AppError> {
-        self.service.mark_status(id, McpServerStatus::Failed).await
+    async fn mark_failed(&self, id: &str, reason: &str) -> Result<(), AppError> {
+        // The reason is the whole value of a background failure: nobody saw it
+        // happen, so the server's page is the only place it can be read.
+        self.service.mark_failed(id, reason).await
     }
 
     async fn record_access(&self, _id: &str) {}

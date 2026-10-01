@@ -1,12 +1,14 @@
 use std::path::Path;
 
+use axum::Json;
 use axum::extract::multipart::MultipartError;
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;
-use axum::Json;
 use tokio::fs;
 
-use crate::storage::{Attachment, VirtualPath, dedup_filename, detect_content_type, validate_relative_path};
+use crate::storage::{
+    Attachment, VirtualPath, dedup_filename, detect_content_type, validate_relative_path,
+};
 
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;
@@ -40,34 +42,20 @@ pub(crate) async fn upload_file(
     let mut file_data: Option<(String, Vec<u8>)> = None;
     let mut relative_path: Option<String> = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(map_multipart_err)?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(map_multipart_err)? {
         match field.name() {
             Some("path") => {
-                relative_path = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(map_multipart_err)?,
-                );
+                relative_path = Some(field.text().await.map_err(map_multipart_err)?);
             }
             Some("file") | Some("upload") => {
-                let filename = field
-                    .file_name()
-                    .unwrap_or("upload")
-                    .to_string();
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(map_multipart_err)?;
+                let filename = field.file_name().unwrap_or("upload").to_string();
+                let bytes = field.bytes().await.map_err(map_multipart_err)?;
 
                 if bytes.len() > MAX_FILE_SIZE {
-                    return Err(ApiError(AppError::Validation(
-                        format!("File too large (max {}MB)", MAX_FILE_SIZE / 1024 / 1024),
-                    )));
+                    return Err(ApiError(AppError::Validation(format!(
+                        "File too large (max {}MB)",
+                        MAX_FILE_SIZE / 1024 / 1024
+                    ))));
                 }
 
                 file_data = Some((filename, bytes.to_vec()));
@@ -76,11 +64,8 @@ pub(crate) async fn upload_file(
         }
     }
 
-    let (original_filename, bytes) = file_data.ok_or_else(|| {
-        ApiError(AppError::Validation(
-            "Missing file field".into(),
-        ))
-    })?;
+    let (original_filename, bytes) =
+        file_data.ok_or_else(|| ApiError(AppError::Validation("Missing file field".into())))?;
 
     let user_ws = state.storage_service.user_workspace(&auth.handle);
     let base = user_ws.base_path().to_path_buf();
@@ -161,13 +146,23 @@ pub(crate) async fn presign_file(
     let vpath = if req.owner.starts_with("user:") {
         VirtualPath::user(&auth.handle, &req.path)
     } else if let Some(agent_id) = req.owner.strip_prefix("agent:") {
-        VirtualPath::agent(agent_id, &req.path)
+        // The owner arrives as an agent id, and an agent workspace lives under its
+        // owning user - so resolve the agent as one this caller owns and use its
+        // handle. Passing the id straight through made it the directory name, which
+        // is what let the namespace pick a tree.
+        let agent = state
+            .agent_service
+            .owned_by(&auth.user_id, agent_id)
+            .await?;
+        VirtualPath::agent(agent.handle.as_ref(), &req.path)
     } else {
         return Err(ApiError(AppError::Validation(
             "Invalid owner prefix".into(),
         )));
     };
-    let _ = state.storage_service.resolve_virtual_path(&vpath)?;
+    let _ = state
+        .storage_service
+        .resolve_virtual_path_for_user(&auth.handle, &vpath)?;
 
     let url = state
         .presign_service

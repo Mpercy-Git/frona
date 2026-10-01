@@ -1,12 +1,12 @@
 use chrono::{Duration, Utc};
 use frona::agent::task::models::{Task, TaskKind, TaskStatus};
 use frona::agent::task::service::TaskService;
+use frona::core::repository::Repository;
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
-use frona::core::repository::Repository;
 use frona::tool::task::next_cron_occurrence;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -15,7 +15,10 @@ async fn test_db() -> Surreal<Db> {
 }
 
 fn make_task_service(db: Surreal<Db>) -> TaskService {
-    TaskService::new(SurrealRepo::new(db), frona::chat::broadcast::BroadcastService::new())
+    TaskService::new(
+        SurrealRepo::new(db),
+        frona::chat::broadcast::BroadcastService::new(),
+    )
 }
 
 #[tokio::test]
@@ -25,7 +28,24 @@ async fn create_cron_template_stores_correctly() {
 
     let next = next_cron_occurrence("0 9 * * *", "UTC").unwrap();
     let task = svc
-        .create_cron_template("user-1", "agent-1", "Daily check", "Check things every day", "0 9 * * *", "UTC".to_string(), next, None, None, None, None, Default::default(), Default::default(), false, None, None)
+        .create_cron_template(
+            "user-1",
+            "agent-1",
+            "Daily check",
+            "Check things every day",
+            "0 9 * * *",
+            "UTC".to_string(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            Default::default(),
+            Default::default(),
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -74,7 +94,10 @@ async fn create_cron_template_with_source_provenance() {
             None,
             Default::default(),
             Default::default(),
-            false, None, None)
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -124,7 +147,10 @@ async fn cron_template_space_id_is_inherited_by_spawned_runs() {
         "create_cron_template must persist space_id so CronRuns inherit it (matches one-time task behavior)",
     );
 
-    let run = svc.spawn_cron_run(&template, chrono::Utc::now(), 1).await.unwrap();
+    let run = svc
+        .spawn_cron_run(&template, chrono::Utc::now(), 1)
+        .await
+        .unwrap();
     assert_eq!(
         run.space_id.as_deref(),
         Some("space-telegram"),
@@ -139,7 +165,24 @@ async fn advance_cron_template_updates_next_run_at() {
 
     let first_next = next_cron_occurrence("0 9 * * *", "UTC").unwrap();
     let template = svc
-        .create_cron_template("user-1", "agent-1", "Daily task", "description", "0 9 * * *", "UTC".to_string(), first_next, None, None, None, None, Default::default(), Default::default(), false, None, None)
+        .create_cron_template(
+            "user-1",
+            "agent-1",
+            "Daily task",
+            "description",
+            "0 9 * * *",
+            "UTC".to_string(),
+            first_next,
+            None,
+            None,
+            None,
+            None,
+            Default::default(),
+            Default::default(),
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -165,18 +208,69 @@ async fn find_due_cron_templates_returns_only_due_pending() {
 
     let past = Utc::now() - Duration::minutes(5);
     let t1 = svc
-        .create_cron_template("user-1", "agent-1", "Due task", "desc", "0 9 * * *", "UTC".to_string(), past, None, None, None, None, Default::default(), Default::default(), false, None, None)
+        .create_cron_template(
+            "user-1",
+            "agent-1",
+            "Due task",
+            "desc",
+            "0 9 * * *",
+            "UTC".to_string(),
+            past,
+            None,
+            None,
+            None,
+            None,
+            Default::default(),
+            Default::default(),
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     let future = Utc::now() + Duration::hours(2);
     let _t2 = svc
-        .create_cron_template("user-1", "agent-1", "Future task", "desc", "0 11 * * *", "UTC".to_string(), future, None, None, None, None, Default::default(), Default::default(), false, None, None)
+        .create_cron_template(
+            "user-1",
+            "agent-1",
+            "Future task",
+            "desc",
+            "0 11 * * *",
+            "UTC".to_string(),
+            future,
+            None,
+            None,
+            None,
+            None,
+            Default::default(),
+            Default::default(),
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     let mut cancelled = svc
-        .create_cron_template("user-1", "agent-1", "Cancelled task", "desc", "0 8 * * *", "UTC".to_string(), past, None, None, None, None, Default::default(), Default::default(), false, None, None)
+        .create_cron_template(
+            "user-1",
+            "agent-1",
+            "Cancelled task",
+            "desc",
+            "0 8 * * *",
+            "UTC".to_string(),
+            past,
+            None,
+            None,
+            None,
+            None,
+            Default::default(),
+            Default::default(),
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
     cancelled.status = TaskStatus::Cancelled;
@@ -203,7 +297,9 @@ async fn find_resumable_excludes_cron_templates() {
         title: "Direct task".to_string(),
         description: "A regular task".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -216,9 +312,26 @@ async fn find_resumable_excludes_cron_templates() {
     repo.create(&direct_task).await.unwrap();
 
     let past = Utc::now() - Duration::minutes(5);
-    svc.create_cron_template("user-1", "agent-1", "Cron template", "desc", "0 9 * * *", "UTC".to_string(), past, None, None, None, None, Default::default(), Default::default(), false, None, None)
-        .await
-        .unwrap();
+    svc.create_cron_template(
+        "user-1",
+        "agent-1",
+        "Cron template",
+        "desc",
+        "0 9 * * *",
+        "UTC".to_string(),
+        past,
+        None,
+        None,
+        None,
+        None,
+        Default::default(),
+        Default::default(),
+        false,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let resumable = svc.find_resumable().await.unwrap();
     assert_eq!(resumable.len(), 1);
@@ -242,7 +355,9 @@ async fn find_resumable_includes_in_progress_tasks() {
         title: "Was running when server crashed".to_string(),
         description: "Interrupted task".to_string(),
         status: TaskStatus::InProgress,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -305,9 +420,13 @@ async fn find_resumable_excludes_terminal_states() {
     let svc = make_task_service(db);
 
     let now = Utc::now();
-    for (i, status) in [TaskStatus::Completed, TaskStatus::Failed, TaskStatus::Cancelled]
-        .iter()
-        .enumerate()
+    for (i, status) in [
+        TaskStatus::Completed,
+        TaskStatus::Failed,
+        TaskStatus::Cancelled,
+    ]
+    .iter()
+    .enumerate()
     {
         let task = Task {
             id: frona::core::repository::new_id(),
@@ -318,7 +437,9 @@ async fn find_resumable_excludes_terminal_states() {
             title: format!("Terminal task {}", i),
             description: "Should not resume".to_string(),
             status: status.clone(),
-            kind: TaskKind::Direct { source_chat_id: None },
+            kind: TaskKind::Direct {
+                source_chat_id: None,
+            },
             run_at: None,
             result_summary: None,
             error_message: None,
@@ -332,7 +453,10 @@ async fn find_resumable_excludes_terminal_states() {
     }
 
     let resumable = svc.find_resumable().await.unwrap();
-    assert!(resumable.is_empty(), "Terminal tasks should not be resumable");
+    assert!(
+        resumable.is_empty(),
+        "Terminal tasks should not be resumable"
+    );
 }
 
 #[tokio::test]
@@ -353,7 +477,9 @@ async fn find_resumable_orders_by_created_at_asc() {
             title: format!("Task {}", i),
             description: "desc".to_string(),
             status: TaskStatus::Pending,
-            kind: TaskKind::Direct { source_chat_id: None },
+            kind: TaskKind::Direct {
+                source_chat_id: None,
+            },
             run_at: None,
             result_summary: None,
             error_message: None,
@@ -392,7 +518,9 @@ async fn find_resumable_mixed_scenario() {
         title: "Pending direct".to_string(),
         description: "d".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -432,9 +560,26 @@ async fn find_resumable_mixed_scenario() {
 
     // Cron template — should NOT resume
     let past = Utc::now() - Duration::minutes(5);
-    svc.create_cron_template("user-1", "agent-1", "Cron tmpl", "d", "0 9 * * *", "UTC".to_string(), past, None, None, None, None, Default::default(), Default::default(), false, None, None)
-        .await
-        .unwrap();
+    svc.create_cron_template(
+        "user-1",
+        "agent-1",
+        "Cron tmpl",
+        "d",
+        "0 9 * * *",
+        "UTC".to_string(),
+        past,
+        None,
+        None,
+        None,
+        None,
+        Default::default(),
+        Default::default(),
+        false,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     // Completed Direct — should NOT resume
     let completed = Task {
@@ -446,7 +591,9 @@ async fn find_resumable_mixed_scenario() {
         title: "Completed".to_string(),
         description: "d".to_string(),
         status: TaskStatus::Completed,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: Some("done".to_string()),
         error_message: None,
@@ -468,7 +615,9 @@ async fn find_resumable_mixed_scenario() {
         title: "Failed".to_string(),
         description: "d".to_string(),
         status: TaskStatus::Failed,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: Some("err".to_string()),
@@ -509,7 +658,9 @@ async fn find_resumable_excludes_future_run_at() {
         title: "Future scheduled task".to_string(),
         description: "Should wait for scheduler".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: Some(now + Duration::hours(1)),
         result_summary: None,
         error_message: None,
@@ -531,7 +682,9 @@ async fn find_resumable_excludes_future_run_at() {
         title: "Past scheduled task".to_string(),
         description: "Should resume".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: Some(now - Duration::minutes(5)),
         result_summary: None,
         error_message: None,
@@ -553,7 +706,9 @@ async fn find_resumable_excludes_future_run_at() {
         title: "Immediate task".to_string(),
         description: "No run_at".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -581,15 +736,30 @@ async fn find_due_cron_templates_unaffected_by_restart() {
 
     let past = Utc::now() - Duration::minutes(10);
     let template = svc
-        .create_cron_template("user-1", "agent-1", "Hourly", "desc", "0 * * * *", "UTC".to_string(), past, None, None, None, None, Default::default(), Default::default(), false, None, None)
+        .create_cron_template(
+            "user-1",
+            "agent-1",
+            "Hourly",
+            "desc",
+            "0 * * * *",
+            "UTC".to_string(),
+            past,
+            None,
+            None,
+            None,
+            None,
+            Default::default(),
+            Default::default(),
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     // Simulate what happens on restart: cron fires, template advanced
     let next = next_cron_occurrence("0 * * * *", "UTC").unwrap();
-    svc.advance_cron_template(&template.id, next)
-        .await
-        .unwrap();
+    svc.advance_cron_template(&template.id, next).await.unwrap();
 
     // After advancing, template should no longer be due
     let due = svc.find_due_cron_templates().await.unwrap();
@@ -612,7 +782,9 @@ async fn mark_in_progress_then_find_resumable() {
         title: "Task to resume".to_string(),
         description: "desc".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -625,7 +797,10 @@ async fn mark_in_progress_then_find_resumable() {
     repo.create(&task).await.unwrap();
 
     // Simulate executor picking up the task
-    let in_progress = svc.mark_in_progress(&task.id, Some("chat-new")).await.unwrap();
+    let in_progress = svc
+        .mark_in_progress(&task.id, Some("chat-new"))
+        .await
+        .unwrap();
     assert_eq!(in_progress.status, TaskStatus::InProgress);
     assert_eq!(in_progress.chat_id.as_deref(), Some("chat-new"));
 
@@ -653,7 +828,9 @@ async fn completed_during_execution_not_resumable() {
         title: "Will complete".to_string(),
         description: "desc".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -666,8 +843,12 @@ async fn completed_during_execution_not_resumable() {
     repo.create(&task).await.unwrap();
 
     // Simulate full lifecycle: pending → in_progress → completed
-    svc.mark_in_progress(&task.id, Some("chat-1")).await.unwrap();
-    svc.mark_completed(&task.id, Some("Done".to_string())).await.unwrap();
+    svc.mark_in_progress(&task.id, Some("chat-1"))
+        .await
+        .unwrap();
+    svc.mark_completed(&task.id, Some("Done".to_string()))
+        .await
+        .unwrap();
 
     // After completion, task should NOT be resumable
     let resumable = svc.find_resumable().await.unwrap();
@@ -694,7 +875,9 @@ async fn failed_during_execution_not_resumable() {
         title: "Will fail".to_string(),
         description: "desc".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -707,7 +890,9 @@ async fn failed_during_execution_not_resumable() {
     repo.create(&task).await.unwrap();
 
     svc.mark_in_progress(&task.id, None).await.unwrap();
-    svc.mark_failed(&task.id, "LLM error".to_string()).await.unwrap();
+    svc.mark_failed(&task.id, "LLM error".to_string())
+        .await
+        .unwrap();
 
     let resumable = svc.find_resumable().await.unwrap();
     assert!(resumable.is_empty());
@@ -733,7 +918,9 @@ async fn cancelled_during_execution_not_resumable() {
         title: "Will cancel".to_string(),
         description: "desc".to_string(),
         status: TaskStatus::InProgress,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -758,7 +945,24 @@ async fn cron_template_lifecycle_simulation() {
 
     let first_run = Utc::now() - Duration::minutes(1);
     let template = svc
-        .create_cron_template("user-1", "agent-1", "Hourly check", "Check everything", "0 * * * *", "UTC".to_string(), first_run, None, None, None, None, Default::default(), Default::default(), false, None, None)
+        .create_cron_template(
+            "user-1",
+            "agent-1",
+            "Hourly check",
+            "Check everything",
+            "0 * * * *",
+            "UTC".to_string(),
+            first_run,
+            None,
+            None,
+            None,
+            None,
+            Default::default(),
+            Default::default(),
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -781,10 +985,17 @@ async fn cron_template_lifecycle_simulation() {
     }
 
     let due_after = svc.find_due_cron_templates().await.unwrap();
-    assert!(due_after.is_empty(), "Template should no longer be due after advancing");
+    assert!(
+        due_after.is_empty(),
+        "Template should no longer be due after advancing"
+    );
 
     let template_check = svc.find_by_id(&template.id).await.unwrap().unwrap();
-    assert_eq!(template_check.status, TaskStatus::Pending, "Template stays Pending");
+    assert_eq!(
+        template_check.status,
+        TaskStatus::Pending,
+        "Template stays Pending"
+    );
 }
 
 #[tokio::test]
@@ -805,7 +1016,9 @@ async fn deferred_task_found_when_due() {
         title: "Past deferred".to_string(),
         description: "Should be found".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: Some(now - Duration::minutes(5)),
         result_summary: None,
         error_message: None,
@@ -827,7 +1040,9 @@ async fn deferred_task_found_when_due() {
         title: "Future deferred".to_string(),
         description: "Should not be found".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: Some(now + Duration::hours(2)),
         result_summary: None,
         error_message: None,
@@ -849,7 +1064,9 @@ async fn deferred_task_found_when_due() {
         title: "Immediate".to_string(),
         description: "No run_at".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -874,12 +1091,32 @@ async fn deferred_task_excludes_cron() {
     let past = Utc::now() - Duration::minutes(5);
 
     // Cron template with past next_run_at — should NOT appear in deferred results
-    svc.create_cron_template("user-1", "agent-1", "Cron", "desc", "0 9 * * *", "UTC".to_string(), past, None, None, None, None, Default::default(), Default::default(), false, None, None)
-        .await
-        .unwrap();
+    svc.create_cron_template(
+        "user-1",
+        "agent-1",
+        "Cron",
+        "desc",
+        "0 9 * * *",
+        "UTC".to_string(),
+        past,
+        None,
+        None,
+        None,
+        None,
+        Default::default(),
+        Default::default(),
+        false,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let deferred = svc.find_deferred_due().await.unwrap();
-    assert!(deferred.is_empty(), "Cron tasks excluded from deferred query");
+    assert!(
+        deferred.is_empty(),
+        "Cron tasks excluded from deferred query"
+    );
 }
 
 #[tokio::test]
@@ -894,7 +1131,9 @@ async fn task_run_at_serialization() {
         title: "Deferred".to_string(),
         description: "desc".to_string(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: Some(now),
         result_summary: None,
         error_message: None,

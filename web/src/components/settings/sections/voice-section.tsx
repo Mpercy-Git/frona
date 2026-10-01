@@ -17,10 +17,7 @@ interface VoiceSectionProps {
   onChange: (voice: VoiceConfig) => void;
 }
 
-const voiceProviders = [
-  { value: "twilio", label: "Twilio" },
-  { value: "plivo", label: "Plivo" },
-];
+const voiceProviders = [{ value: "twilio", label: "Twilio" }];
 
 const interruptSensitivities = [
   { value: "low", label: "Low" },
@@ -31,7 +28,6 @@ const interruptSensitivities = [
 function inferProvider(voice: VoiceConfig): string | null {
   if (voice.provider) return voice.provider;
   if (isSensitiveSet(voice.twilio_account_sid)) return "twilio";
-  if (isSensitiveSet(voice.plivo_auth_id)) return "plivo";
   return null;
 }
 
@@ -103,10 +99,29 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
 
           <TextInput
             label="TTS Provider"
-            description="Text-to-speech provider (e.g. elevenlabs, polly). Leave empty for default (Polly)."
+            description="Text-to-speech provider (e.g. elevenlabs, polly). Twilio now defaults to ElevenLabs when left empty; set to polly to use Amazon Polly instead."
             value={voice.twilio_tts_provider}
             onChange={(twilio_tts_provider) => onChange({ ...voice, twilio_tts_provider })}
             placeholder="elevenlabs"
+          />
+
+          <SelectInput
+            label="ElevenLabs Text Normalization"
+            description="Whether ElevenLabs normalizes text (numbers, dates, etc.) before speaking it. On costs extra latency but reads awkward text more naturally; off is faster. Only applies when TTS Provider is elevenlabs."
+            value={voice.twilio_elevenlabs_text_normalization}
+            onChange={(twilio_elevenlabs_text_normalization) => onChange({ ...voice, twilio_elevenlabs_text_normalization })}
+            options={[
+              { value: "on", label: "On" },
+              { value: "off", label: "Off" },
+            ]}
+          />
+
+          <TextInput
+            label="Language"
+            description='STT/TTS language (BCP-47, e.g. en-US, en-GB), or "multi" to auto-detect the caller&apos;s language per turn. "multi" requires TTS Provider elevenlabs and a Deepgram Speech Model. Leave empty for en-US.'
+            value={voice.twilio_language}
+            onChange={(twilio_language) => onChange({ ...voice, twilio_language })}
+            placeholder="en-US"
           />
 
           <TextInput
@@ -135,13 +150,13 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
             <>
               <TextInput
                 label="Initial Silence Delay (seconds)"
-                description="Seconds of silence before the first filler phrase is sent"
-                value={String(voice.silence_fill_initial_delay_secs ?? 2)}
+                description="Seconds of silence before the first filler phrase is sent, counted from the last thing the caller heard. Too short and the filler lands in the ordinary pause before the agent starts replying."
+                value={String(voice.silence_fill_initial_delay_secs ?? 5)}
                 onChange={(raw) => {
                   const n = parseInt(raw, 10);
-                  onChange({ ...voice, silence_fill_initial_delay_secs: isNaN(n) ? 2 : Math.max(1, n) });
+                  onChange({ ...voice, silence_fill_initial_delay_secs: isNaN(n) ? 5 : Math.max(1, n) });
                 }}
-                placeholder="2"
+                placeholder="5"
               />
               <TextInput
                 label="Filler Interval (seconds)"
@@ -169,41 +184,6 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
         </>
       )}
 
-      {effectiveProvider === "plivo" && (
-        <>
-          <SensitiveInput
-            label="Auth ID"
-            description="Plivo authentication ID"
-            value={voice.plivo_auth_id}
-            onChange={(plivo_auth_id) => onChange({ ...voice, plivo_auth_id })}
-            placeholder="MAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-          />
-
-          <SensitiveInput
-            label="Auth Token"
-            description="Plivo authentication token"
-            value={voice.plivo_auth_token}
-            onChange={(plivo_auth_token) => onChange({ ...voice, plivo_auth_token })}
-            placeholder="Enter auth token"
-          />
-
-          <TextInput
-            label="From Number"
-            description="Plivo phone number to make calls from"
-            value={voice.plivo_from_number}
-            onChange={(plivo_from_number) => onChange({ ...voice, plivo_from_number })}
-            placeholder="+15551234567"
-          />
-
-          <TextInput
-            label="Callback Base URL"
-            description="Public URL Plivo should use for voice webhooks (defaults to server.base_url)"
-            value={voice.callback_base_url}
-            onChange={(callback_base_url) => onChange({ ...voice, callback_base_url })}
-            placeholder="https://your-public-domain.com"
-          />
-        </>
-      )}
       </SectionPanel>
 
       {voice.inbound_enabled && (

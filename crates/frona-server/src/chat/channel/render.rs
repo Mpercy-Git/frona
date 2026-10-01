@@ -20,7 +20,10 @@ use crate::chat::message::models::{Message, MessageEvent};
 const COMPLEX_RENDER_KEY: &str = "summary";
 
 pub fn render_message_body(msg: &Message) -> String {
-    let Some(MessageEvent::TaskCompletion { schema, citations, .. }) = &msg.event else {
+    let Some(MessageEvent::TaskCompletion {
+        schema, citations, ..
+    }) = &msg.event
+    else {
         return msg.content.clone();
     };
     let body = match schema {
@@ -126,10 +129,7 @@ fn value_is_non_scalar(v: &Value) -> bool {
     }
 }
 
-fn render_complex_object(
-    _schema: &Value,
-    obj: &serde_json::Map<String, Value>,
-) -> Option<String> {
+fn render_complex_object(_schema: &Value, obj: &serde_json::Map<String, Value>) -> Option<String> {
     match obj.get(COMPLEX_RENDER_KEY) {
         Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
@@ -161,15 +161,18 @@ fn render_value_md(v: &Value) -> String {
             .map(render_value_md)
             .collect::<Vec<_>>()
             .join(", "),
-        Value::Object(_) => format!("```json\n{}\n```", serde_json::to_string_pretty(v).unwrap_or_default()),
+        Value::Object(_) => format!(
+            "```json\n{}\n```",
+            serde_json::to_string_pretty(v).unwrap_or_default()
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::message::models::{Message, MessageRole};
     use crate::agent::task::models::TaskStatus;
+    use crate::chat::message::models::{Message, MessageRole};
     use serde_json::json;
 
     fn task_completion(content: &str, schema: Option<Value>) -> Message {
@@ -181,7 +184,8 @@ mod tests {
         schema: Option<Value>,
         citations: Vec<Citation>,
     ) -> Message {
-        let mut msg = Message::builder("c1", MessageRole::TaskCompletion, content.to_string()).build();
+        let mut msg =
+            Message::builder("c1", MessageRole::TaskCompletion, content.to_string()).build();
         msg.event = Some(MessageEvent::TaskCompletion {
             task_id: "t1".into(),
             chat_id: None,
@@ -234,8 +238,14 @@ mod tests {
             "raw text",
             None,
             vec![
-                Citation { title: Some("Rust Programming".into()), url: "https://rust-lang.org".into() },
-                Citation { title: None, url: "https://doc.rust-lang.org/book/".into() },
+                Citation {
+                    title: Some("Rust Programming".into()),
+                    url: "https://rust-lang.org".into(),
+                },
+                Citation {
+                    title: None,
+                    url: "https://doc.rust-lang.org/book/".into(),
+                },
             ],
         );
         assert_eq!(
@@ -257,7 +267,10 @@ mod tests {
         let msg = task_completion_with_citations(
             "",
             None,
-            vec![Citation { title: None, url: "https://example.com".into() }],
+            vec![Citation {
+                title: None,
+                url: "https://example.com".into(),
+            }],
         );
         assert_eq!(render_message_body(&msg), "");
     }

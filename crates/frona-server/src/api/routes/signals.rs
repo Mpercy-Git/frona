@@ -52,10 +52,9 @@ async fn evaluate_signal(
     Json(req): Json<EvaluateSignalRequest>,
 ) -> Result<Json<EvaluateSignalResponse>, ApiError> {
     if req.categories.is_empty() {
-        return Err(AppError::Validation(
-            "categories must contain at least one entry".into(),
-        )
-        .into());
+        return Err(
+            AppError::Validation("categories must contain at least one entry".into()).into(),
+        );
     }
     if req.categories.len() > MAX_CATEGORIES {
         return Err(AppError::Validation(format!(
@@ -89,9 +88,9 @@ async fn evaluate_signal(
         content: req.content,
     };
 
-    let signal_service = state.signal_service().ok_or_else(|| {
-        AppError::Internal("Signal service not initialized".into())
-    })?;
+    let signal_service = state
+        .signal_service()
+        .ok_or_else(|| AppError::Internal("Signal service not initialized".into()))?;
     let fired_watches = signal_service.evaluate(&auth.user_id, candidate).await?;
     Ok(Json(EvaluateSignalResponse { fired_watches }))
 }

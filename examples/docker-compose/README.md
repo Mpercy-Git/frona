@@ -53,3 +53,15 @@ All persistent data is stored in `./data/`:
 docker compose pull
 docker compose up -d
 ```
+
+`docker compose pull` only refreshes the images. Changes to `docker-compose.yml`
+itself — service environment variables, the inline SearXNG settings — arrive
+only when you re-copy the file from this directory, so pull it across when you
+upgrade to a new Frona release.
+
+## Startup log lines you can ignore
+
+- `WARNING:searx.botdetection.config: missing config file: /etc/searxng/limiter.toml`
+  — SearXNG looks for the limiter config even though this deployment turns the
+  limiter off (`server.limiter: false`), so nothing enforces it and nothing is
+  missing.

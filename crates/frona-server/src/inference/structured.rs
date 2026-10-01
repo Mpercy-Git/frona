@@ -1,0 +1,846 @@
+//! **Structured inference** - getting a typed `T` out of a model instead of prose.
+//!
+//! Three shapes, in increasing order of how much rope the model gets:
+//!   - [`structured_inference`] - one shot, no tools: schema in, `T` out.
+//!   - [`structured_inference_with_tools`] - an agentic loop: the model may call read
+//!     tools to investigate, then calls `submit` exactly once. The loop is ours.
+//!   - [`StructuredConversation`] - a reusable dialogue that hides exploration and returns
+//!     one typed answer attempt at a time. An external validator can reject a valid
+//!     submission in the same dialogue and ask for another attempt.
+//!
+//! All three are **non-persistent**: nothing reaches the chat/message tables, only usage
+//! metrics. (Not to be confused with [`super::conversation`], which builds the persistent
+//! chat history.) Each terminates on a `submit` tool call carrying `T`'s JSON schema.
+
+use rig_core::completion::request::ToolDefinition as RigToolDefinition;
+use rig_core::completion::{AssistantContent, Message as RigMessage};
+
+use crate::core::error::AppError;
+use crate::tool::registry::AgentToolRegistry;
+
+use super::ModelGroup;
+use super::usage::{UsageContext, UsageService};
+use super::{InferenceContext, InferenceError, provider, tool_loop};
+
+pub async fn structured_inference<T>(
+    model_group: &ModelGroup,
+    system_prompt: &str,
+    history: Vec<RigMessage>,
+    usage_service: &UsageService,
+    usage_ctx: &UsageContext,
+) -> Result<T, InferenceError>
+where
+    T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+{
+    let schema = serde_json::to_value(schemars::schema_for!(T))
+        .map_err(|e| InferenceError::InferenceFailed(format!("schema_for failed: {e}")))?;
+    let value = model_group
+        .structured_inference(
+            crate::inference::ModelRequest {
+                system_prompt,
+                history,
+                tools: vec![],
+                usage_service,
+                usage_context: usage_ctx,
+                overrides: Default::default(),
+            },
+            schema,
+        )
+        .await?;
+    // Same tolerance and the same diagnosis as the conversational path: a wrapper is a
+    // wrapper whether or not the caller drives the loop.
+    deserialize_submission::<T>(value)
+        .map_err(|e| InferenceError::InferenceFailed(format!("submit args: {e}")))
+}
+
+/// Structured completion via an agentic tool loop: the model may call read tools to
+/// investigate, then calls `submit` exactly once to return the typed result `T`.
+/// Loops up to `max_turns` (a `submit` terminates early; text without a submit gives
+/// up). The `InferenceContext` carries the identity + sandbox the tools run under.
+#[allow(clippy::too_many_arguments)]
+pub async fn structured_inference_with_tools<T>(
+    model_group: &ModelGroup,
+    system_prompt: &str,
+    mut chat_history: Vec<RigMessage>,
+    tool_registry: &AgentToolRegistry,
+    ctx: &InferenceContext,
+    usage_service: &UsageService,
+    usage_ctx: &UsageContext,
+    max_turns: usize,
+) -> Result<T, AppError>
+where
+    T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+{
+    let schema = serde_json::to_value(schemars::schema_for!(T))
+        .map_err(|e| AppError::Internal(format!("structured_with_tools schema: {e}")))?;
+    let submit = RigToolDefinition {
+        name: provider::SUBMIT_TOOL_NAME.to_string(),
+        description:
+            "Submit the final structured result. Call this exactly once when you are done."
+                .to_string(),
+        parameters: schema,
+    };
+    let mut tool_defs = tool_loop::to_rig_tool_definitions(
+        tool_registry.definitions(),
+        tool_registry.mcp_bridge_active(),
+    );
+    tool_defs.push(submit);
+
+    for _ in 0..max_turns.max(1) {
+        let crate::inference::ModelResponse {
+            content: contents, ..
+        } = model_group
+            .inference(crate::inference::ModelRequest {
+                system_prompt,
+                history: chat_history.clone(),
+                tools: tool_defs.clone(),
+                usage_service,
+                usage_context: usage_ctx,
+                overrides: Default::default(),
+            })
+            .await
+            .map_err(|e| AppError::Internal(format!("structured_with_tools inference: {e}")))?;
+
+        // A `submit` call terminates the loop - its arguments are the result `T`.
+        for content in &contents {
+            if let AssistantContent::ToolCall(tc) = content
+                && tc.function.name == provider::SUBMIT_TOOL_NAME
+            {
+                return deserialize_submission::<T>(tc.function.arguments.clone())
+                    .map_err(|e| AppError::Internal(format!("structured_with_tools submit: {e}")));
+            }
+        }
+
+        // Otherwise: append the assistant message, then run the (non-submit) tool
+        // calls and feed their results back for the next turn.
+        let has_tool_calls = tool_loop::process_model_response(&contents, &mut chat_history).await;
+        if !has_tool_calls {
+            break; // text without submitting → give up (caller defaults to safe)
+        }
+        for content in &contents {
+            if let AssistantContent::ToolCall(tc) = content {
+                if tc.function.name == provider::SUBMIT_TOOL_NAME {
+                    continue;
+                }
+                let text = match tool_registry
+                    .execute(&tc.function.name, tc.function.arguments.clone(), ctx)
+                    .await
+                {
+                    Ok(out) => out.text_content().to_string(),
+                    Err(e) => format!("tool error: {e}"),
+                };
+                chat_history.push(RigMessage::User {
+                    content: vec![rig_core::completion::message::UserContent::ToolResult(
+                        rig_core::completion::message::ToolResult {
+                            call: tc.id.clone(),
+                            provider: tc.provider.clone(),
+                            name: tc.function.name.clone(),
+                            content: vec![rig_core::completion::message::ToolResultContent::text(
+                                &text,
+                            )],
+                        },
+                    )],
+                });
+            }
+        }
+    }
+    Err(AppError::Internal(
+        "structured_with_tools: model did not submit within max_turns".into(),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn text_inference_with_tools(
+    model_group: &ModelGroup,
+    system_prompt: &str,
+    mut chat_history: Vec<RigMessage>,
+    tool_registry: &AgentToolRegistry,
+    ctx: &InferenceContext,
+    usage_service: &UsageService,
+    usage_ctx: &UsageContext,
+    max_turns: usize,
+) -> Result<String, AppError> {
+    let tool_defs = tool_loop::to_rig_tool_definitions(
+        tool_registry.definitions(),
+        tool_registry.mcp_bridge_active(),
+    );
+    for _ in 0..max_turns.max(1) {
+        let crate::inference::ModelResponse {
+            content: contents, ..
+        } = model_group
+            .inference(crate::inference::ModelRequest {
+                system_prompt,
+                history: chat_history.clone(),
+                tools: tool_defs.clone(),
+                usage_service,
+                usage_context: usage_ctx,
+                overrides: Default::default(),
+            })
+            .await
+            .map_err(|e| AppError::Internal(format!("text_with_tools inference: {e}")))?;
+        let has_tool_calls = contents
+            .iter()
+            .any(|content| matches!(content, AssistantContent::ToolCall(_)));
+        if !has_tool_calls {
+            return provider::extract_text_from_choice(&contents)
+                .map_err(|e| AppError::Internal(format!("text_with_tools response: {e}")));
+        }
+        tool_loop::process_model_response(&contents, &mut chat_history).await;
+        for content in &contents {
+            let AssistantContent::ToolCall(tc) = content else {
+                continue;
+            };
+            let text = match tool_registry
+                .execute(&tc.function.name, tc.function.arguments.clone(), ctx)
+                .await
+            {
+                Ok(out) => out.text_content().to_string(),
+                Err(e) => format!("tool error: {e}"),
+            };
+            chat_history.push(RigMessage::User {
+                content: vec![rig_core::completion::message::UserContent::ToolResult(
+                    rig_core::completion::message::ToolResult {
+                        call: tc.id.clone(),
+                        provider: tc.provider.clone(),
+                        name: tc.function.name.clone(),
+                        content: vec![rig_core::completion::message::ToolResultContent::text(
+                            &text,
+                        )],
+                    },
+                )],
+            });
+        }
+    }
+    Err(AppError::Internal(
+        "text_with_tools: model did not finish within max_turns".into(),
+    ))
+}
+
+/// Turn a `submit` call's arguments into `T`, tolerating one spurious wrapper level, and
+/// on failure describing the payload rather than just naming a field.
+///
+/// **The wrapper.** Models sometimes nest the answer one level down -
+/// `{"result": {"classes": […]}}` - measured at 4 of 43 submits against DeepSeek. The
+/// schema is not consulted to detect it: `T` is already known, so each candidate is simply
+/// handed to serde and the first that deserializes wins. That needs no list of blessed
+/// wrapper names and cannot mis-read a real payload, because the only thing deciding is
+/// `T`'s own impl. Only a **single-key** object is a candidate, so an envelope is
+/// distinguishable from an answer that happens to have one field.
+///
+/// **The message.** `missing field \`classes\`` is true of the value serde was handed and
+/// actively misleading about the value the model *sent*: it did include `classes`, one
+/// level down. Observed consequence - the model answers
+/// *"the error says missing field `classes` but I clearly included `classes`"*, goes looking
+/// for a fault inside `classes`, finds none, and burns the turn budget. Naming the keys
+/// that were actually present is what makes the failure self-diagnosing.
+///
+/// **Advice is earned, not appended.** The same trap has a second mouth: telling a model to
+/// move fields it already placed correctly sends it hunting for a fault that isn't there,
+/// exactly as a bare `missing field` did. So the nesting advice rides only on a missing-field
+/// error, which is the failure it describes. A wrong *value* under a right key gets the field
+/// path instead (`serde_path_to_error`), because plain serde names the expected type but not
+/// the key that carried it - and "expected a sequence" with no field named is not something a
+/// model can act on. Observed: a `submit` whose `distinct_because` was a JSON-encoded string
+/// drew the nesting advice, was resubmitted unchanged, and exhausted the budget.
+///
+/// **The repair.** Better than a good error message is not needing one. When the only fault
+/// is a field the model serialised by hand - valid JSON sitting inside a string where the
+/// schema wants an array or object - the value is decoded in place and the payload retried.
+/// Two guards keep that from accepting something the model didn't mean: `T`'s own schema has
+/// to say that field takes the kind of thing the string decoded to, and the whole repaired
+/// payload still has to deserialize as `T`. A submission recovered here costs nothing; the
+/// same submission explained back costs a round trip, and the correction is not always taken.
+fn deserialize_submission<T>(args: serde_json::Value) -> Result<T, String>
+where
+    T: schemars::JsonSchema + serde::de::DeserializeOwned,
+{
+    let first = match serde_path_to_error::deserialize::<_, T>(args.clone()) {
+        Ok(v) => return Ok(v),
+        Err(e) => e,
+    };
+    if let Some(inner) = args
+        .as_object()
+        .filter(|o| o.len() == 1)
+        .and_then(|o| o.values().next())
+        && let Ok(v) = serde_json::from_value::<T>(inner.clone())
+    {
+        let key = args
+            .as_object()
+            .and_then(|o| o.keys().next())
+            .cloned()
+            .unwrap_or_default();
+        tracing::debug!(wrapper = %key, "unwrapped a submission nested one level down");
+        return Ok(v);
+    }
+    if let Some(repaired) = submission_validator::<T>()
+        .as_ref()
+        .and_then(|validator| repair_json_text_fields(&args, validator))
+        && let Ok(v) = serde_json::from_value::<T>(repaired)
+    {
+        tracing::debug!("decoded JSON text in structured submission fields");
+        return Ok(v);
+    }
+    let path = first.path().to_string();
+    let cause = first.into_inner().to_string();
+    let located = if path.is_empty() || path == "." {
+        cause.clone()
+    } else {
+        format!("`{path}`: {cause}")
+    };
+    Err(format!(
+        "{located}{}",
+        describe_payload(&args, &path, &cause)
+    ))
+}
+
+/// `T`'s own JSON schema, compiled for validation. `None` when the schema cannot be built
+/// or compiled, which only costs the repair attempt - the decode error is reported either way.
+fn submission_validator<T: schemars::JsonSchema>() -> Option<jsonschema::Validator> {
+    let schema = serde_json::to_value(schemars::schema_for!(T)).ok()?;
+    jsonschema::validator_for(&schema).ok()
+}
+
+/// Decode model-authored arrays or objects that arrived as JSON inside a string. A schema
+/// type error selects the field, so a string that merely *looks* like JSON is left alone
+/// wherever the schema wanted a string; the caller still re-checks the whole payload
+/// against `T` before accepting it.
+fn repair_json_text_fields(
+    args: &serde_json::Value,
+    validator: &jsonschema::Validator,
+) -> Option<serde_json::Value> {
+    let repairs = validator
+        .iter_errors(args)
+        .filter_map(|error| {
+            let jsonschema::error::ValidationErrorKind::Type { kind } = error.kind() else {
+                return None;
+            };
+            let serde_json::Value::String(text) = error.instance().as_ref() else {
+                return None;
+            };
+            let parsed = serde_json::from_str::<serde_json::Value>(text).ok()?;
+            let parsed_type = match parsed {
+                serde_json::Value::Array(_) => jsonschema::JsonType::Array,
+                serde_json::Value::Object(_) => jsonschema::JsonType::Object,
+                _ => return None,
+            };
+            let expected_type = match kind {
+                jsonschema::error::TypeKind::Single(expected) => *expected == parsed_type,
+                jsonschema::error::TypeKind::Multiple(expected) => expected.contains(parsed_type),
+            };
+            expected_type.then(|| (error.instance_path().to_string(), parsed))
+        })
+        .collect::<Vec<_>>();
+    if repairs.is_empty() {
+        return None;
+    }
+
+    let mut repaired = args.clone();
+    for (path, value) in repairs {
+        *repaired.pointer_mut(&path)? = value;
+    }
+    Some(repaired)
+}
+
+/// A short, factual description of what the model actually sent, appended to a serde error.
+///
+/// `cause` decides which remedy is warranted: see [`deserialize_submission`] for why an
+/// unconditional "move it to the top level" is its own budget-burning misdiagnosis.
+fn describe_payload(args: &serde_json::Value, path: &str, cause: &str) -> String {
+    match args {
+        serde_json::Value::Object(o) if o.is_empty() => " — you sent an empty object".into(),
+        serde_json::Value::Object(o) => {
+            let keys: Vec<&str> = o.keys().map(String::as_str).collect();
+            let mut described = format!(
+                " — the object you sent has these keys: [{}].",
+                keys.join(", ")
+            );
+            if cause.starts_with("missing field") {
+                described.push_str(
+                    " Put the required fields at the TOP level of the `submit` arguments, \
+                     not nested inside another key.",
+                );
+            } else if is_double_encoded(args, path, cause) {
+                described.push_str(
+                    " That field holds JSON as *text*: send the value itself, not a string \
+                     containing it.",
+                );
+            }
+            described
+        }
+        other => format!(
+            " — you sent a {}, but `submit` takes an object whose keys are the required fields.",
+            match other {
+                serde_json::Value::Null => "null",
+                serde_json::Value::Bool(_) => "boolean",
+                serde_json::Value::Number(_) => "number",
+                serde_json::Value::String(_) => "string",
+                serde_json::Value::Array(_) => "array",
+                serde_json::Value::Object(_) => unreachable!("handled above"),
+            }
+        ),
+    }
+}
+
+/// Whether the value that failed at `path` is a string carrying the JSON it should have
+/// sent structurally - the double-encoding a model falls into when it serialises a nested
+/// field by hand. Confirmed against the payload rather than guessed from the message, so a
+/// genuinely wrong scalar (a string where a number belongs) is not mislabelled.
+fn is_double_encoded(args: &serde_json::Value, path: &str, cause: &str) -> bool {
+    if !cause.starts_with("invalid type: string") {
+        return false;
+    }
+    // `serde_path_to_error` renders a path as `items[1].side` - dots between fields,
+    // brackets for sequence indices - so a segment carries a name, indices, or both.
+    let mut at = args;
+    for segment in path.split('.').filter(|s| !s.is_empty()) {
+        let (name, indices) = segment.split_once('[').unwrap_or((segment, ""));
+        if !name.is_empty() {
+            at = match at.get(name) {
+                Some(v) => v,
+                None => return false,
+            };
+        }
+        for index in indices.split(']').filter(|s| !s.is_empty()) {
+            let Ok(index) = index.trim_start_matches('[').parse::<usize>() else {
+                return false;
+            };
+            at = match at.get(index) {
+                Some(v) => v,
+                None => return false,
+            };
+        }
+    }
+    at.as_str().is_some_and(|text| {
+        matches!(
+            serde_json::from_str::<serde_json::Value>(text),
+            Ok(serde_json::Value::Array(_) | serde_json::Value::Object(_))
+        )
+    })
+}
+
+/// The `submit` tool definition that terminates a caller-driven structured loop,
+/// built from `T`'s JSON schema (see [`StructuredConversation`]).
+fn submit_tool_definition<T: schemars::JsonSchema>() -> RigToolDefinition {
+    let parameters = serde_json::to_value(schemars::schema_for!(T)).unwrap_or_default();
+    RigToolDefinition {
+        name: provider::SUBMIT_TOOL_NAME.to_string(),
+        description: "Submit the final structured result. Call this once you are confident."
+            .to_string(),
+        parameters,
+    }
+}
+
+/// One answer attempt after any internal exploration tool turns have completed.
+#[derive(Debug)]
+pub enum AnswerAttempt<T> {
+    /// The model called `submit` with arguments that decoded as `T`.
+    Submitted(T),
+    /// The model called `submit`, but its arguments did not decode as `T`. The schema
+    /// correction is already present in the conversation history.
+    InvalidSubmission,
+    /// The model answered without exploration tools or `submit`. The instruction to call
+    /// `submit` is already present in the conversation history.
+    MissingSubmission,
+}
+
+/// A **non-persistent, structured tool dialogue** that yields answer attempts for `T`.
+/// [`next_attempt`](Self::next_attempt) hides exploration tool turns. A caller that rejects
+/// a valid submission can use [`reject_submission`](Self::reject_submission) to request a
+/// revision in the same in-memory conversation. Nothing is written to the chat/message
+/// tables; only usage metrics are recorded. Built by `Harness::structured_conversation`.
+pub struct StructuredConversation<'a, T> {
+    usage_service: &'a UsageService,
+    tools: AgentToolRegistry,
+    ctx: InferenceContext,
+    exploration_tool_defs: Vec<RigToolDefinition>,
+    submit_tool_def: RigToolDefinition,
+    history: Vec<RigMessage>,
+    model_group: ModelGroup,
+    system: String,
+    usage_ctx: UsageContext,
+    tool_turns_left: usize,
+    requests_used: usize,
+    last_submit: Option<(
+        rig_core::completion::message::ToolCallId,
+        Option<rig_core::completion::message::ProviderCallId>,
+    )>,
+    _marker: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<'a, T> StructuredConversation<'a, T>
+where
+    T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
+{
+    /// Assemble a conversation seeded with `system` + `initial`. `max_tool_turns` bounds
+    /// exploration only. Answer attempts use a caller-owned limit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        usage_service: &'a UsageService,
+        tools: AgentToolRegistry,
+        ctx: InferenceContext,
+        model_group: ModelGroup,
+        system: String,
+        initial: String,
+        usage_ctx: UsageContext,
+        max_tool_turns: usize,
+    ) -> Self {
+        let exploration_tool_defs =
+            tool_loop::to_rig_tool_definitions(tools.definitions(), tools.mcp_bridge_active());
+        Self {
+            usage_service,
+            tools,
+            ctx,
+            exploration_tool_defs,
+            submit_tool_def: submit_tool_definition::<T>(),
+            history: vec![RigMessage::user(initial)],
+            model_group,
+            system,
+            usage_ctx,
+            tool_turns_left: max_tool_turns,
+            requests_used: 0,
+            last_submit: None,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Return one answer attempt after running any internal exploration tool turns.
+    /// Invalid and missing submissions already have their protocol correction in history
+    /// when they are returned. Exploration stops at `max_tool_turns`; later requests offer
+    /// only `submit`.
+    pub async fn next_attempt(&mut self) -> Result<AnswerAttempt<T>, AppError> {
+        if self.last_submit.is_some() {
+            return Err(AppError::Internal(
+                "conversation: the previous submission must be rejected before another attempt"
+                    .into(),
+            ));
+        }
+
+        loop {
+            let exploration_allowed = self.tool_turns_left > 0;
+            let mut tool_defs = if exploration_allowed {
+                self.exploration_tool_defs.clone()
+            } else {
+                Vec::new()
+            };
+            tool_defs.push(self.submit_tool_def.clone());
+
+            self.requests_used += 1;
+            let crate::inference::ModelResponse {
+                content: contents, ..
+            } = self
+                .model_group
+                .inference(crate::inference::ModelRequest {
+                    system_prompt: &self.system,
+                    history: self.history.clone(),
+                    tools: tool_defs,
+                    usage_service: self.usage_service,
+                    usage_context: &self.usage_ctx,
+                    overrides: Default::default(),
+                })
+                .await
+                .map_err(|e| AppError::Internal(format!("conversation inference: {e}")))?;
+
+            let submit = contents.iter().find_map(|c| match c {
+                AssistantContent::ToolCall(tc)
+                    if tc.function.name == provider::SUBMIT_TOOL_NAME =>
+                {
+                    Some((
+                        tc.id.clone(),
+                        tc.provider.clone(),
+                        tc.function.arguments.clone(),
+                    ))
+                }
+                _ => None,
+            });
+            tool_loop::process_model_response(&contents, &mut self.history).await;
+
+            let has_exploration = contents.iter().any(|content| {
+                matches!(content, AssistantContent::ToolCall(tc)
+                    if tc.function.name != provider::SUBMIT_TOOL_NAME)
+            });
+
+            for content in &contents {
+                if let AssistantContent::ToolCall(tc) = content {
+                    if tc.function.name == provider::SUBMIT_TOOL_NAME {
+                        continue;
+                    }
+                    let text = if exploration_allowed {
+                        match self
+                            .tools
+                            .execute(&tc.function.name, tc.function.arguments.clone(), &self.ctx)
+                            .await
+                        {
+                            Ok(out) => out.text_content().to_string(),
+                            Err(e) => format!("tool error: {e}"),
+                        }
+                    } else {
+                        "tool error: exploration tool limit reached; call `submit` now".into()
+                    };
+                    self.history.push(RigMessage::User {
+                        content: vec![rig_core::completion::message::UserContent::ToolResult(
+                            rig_core::completion::message::ToolResult {
+                                call: tc.id.clone(),
+                                provider: tc.provider.clone(),
+                                name: tc.function.name.clone(),
+                                content: vec![
+                                    rig_core::completion::message::ToolResultContent::text(&text),
+                                ],
+                            },
+                        )],
+                    });
+                }
+            }
+
+            if has_exploration && exploration_allowed {
+                self.tool_turns_left -= 1;
+            }
+
+            if let Some((id, call_id, args)) = submit {
+                self.last_submit = Some((id, call_id));
+                return match deserialize_submission::<T>(args) {
+                    Ok(value) => Ok(AnswerAttempt::Submitted(value)),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "structured conversation: malformed submission, asking for a correction");
+                        self.answer_pending_submission(format!(
+                            "Your `submit` call did not match the required schema and was NOT \
+                             recorded: {e}. Call `submit` again with every required field present."
+                        ))?;
+                        Ok(AnswerAttempt::InvalidSubmission)
+                    }
+                };
+            }
+
+            if has_exploration && exploration_allowed {
+                continue;
+            }
+
+            tracing::warn!("structured conversation: no submission, asking for one explicitly");
+            self.history.push(RigMessage::user(format!(
+                "You replied without a recorded submission. Call the `{}` tool with your answer.",
+                provider::SUBMIT_TOOL_NAME
+            )));
+            return Ok(AnswerAttempt::MissingSubmission);
+        }
+    }
+
+    /// Provider requests made by this dialogue, including exploration and answer attempts.
+    /// This is diagnostic only.
+    pub fn requests_used(&self) -> usize {
+        self.requests_used
+    }
+
+    /// Reject the valid submission returned by the last call to `next_attempt`.
+    pub fn reject_submission(&mut self, reason: impl Into<String>) -> Result<(), AppError> {
+        self.answer_pending_submission(reason.into())
+    }
+
+    fn answer_pending_submission(&mut self, text: String) -> Result<(), AppError> {
+        let Some((id, call_id)) = self.last_submit.take() else {
+            return Err(AppError::Internal(
+                "conversation: no submitted answer is waiting for feedback".into(),
+            ));
+        };
+        self.history.push(RigMessage::User {
+            content: vec![rig_core::completion::message::UserContent::ToolResult(
+                rig_core::completion::message::ToolResult {
+                    call: id,
+                    provider: call_id,
+                    name: provider::SUBMIT_TOOL_NAME.to_string(),
+                    content: vec![rig_core::completion::message::ToolResultContent::text(
+                        &text,
+                    )],
+                },
+            )],
+        });
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod submission_tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+    struct Classification {
+        classes: Vec<String>,
+        #[serde(default)]
+        relations: Vec<String>,
+    }
+
+    /// The measured failure: the answer is one level down under a key the model invented.
+    #[test]
+    fn a_submission_nested_under_a_wrapper_key_is_unwrapped() {
+        for key in [
+            "result",
+            "data",
+            "output",
+            "classification",
+            "anything_at_all",
+        ] {
+            let args = serde_json::json!({ key: { "classes": ["schema:Person"] } });
+            let got: Classification = deserialize_submission(args).expect(key);
+            assert_eq!(
+                got.classes,
+                ["schema:Person"],
+                "wrapper `{key}` not unwrapped"
+            );
+        }
+    }
+
+    /// No allow-list of wrapper names: `T` deciding is the whole mechanism, so a key nobody
+    /// anticipated works exactly as well as `result`.
+    #[test]
+    fn a_correct_submission_is_taken_as_is() {
+        let args = serde_json::json!({ "classes": ["schema:Person"], "relations": ["a"] });
+        let got: Classification = deserialize_submission(args).unwrap();
+        assert_eq!(
+            got,
+            Classification {
+                classes: vec!["schema:Person".into()],
+                relations: vec!["a".into()]
+            }
+        );
+    }
+
+    /// A single-key object that *is* the answer must not be mistaken for an envelope. Here
+    /// the top level deserializes, so unwrapping is never attempted.
+    #[test]
+    fn a_one_field_answer_is_not_mistaken_for_a_wrapper() {
+        let args = serde_json::json!({ "classes": ["schema:Person"] });
+        let got: Classification = deserialize_submission(args).unwrap();
+        assert_eq!(got.classes, ["schema:Person"]);
+        assert!(got.relations.is_empty());
+    }
+
+    /// Unwrapping is one level only, and only when the inner value actually deserializes -
+    /// otherwise a wrong guess would be reported as success.
+    #[test]
+    fn a_wrapper_whose_contents_are_wrong_is_still_an_error() {
+        let args = serde_json::json!({ "result": { "not_classes": [] } });
+        let err = deserialize_submission::<Classification>(args).expect_err("must not succeed");
+        assert!(err.contains("classes"), "{err}");
+    }
+
+    #[test]
+    fn double_wrapping_is_not_unwrapped() {
+        let args = serde_json::json!({ "a": { "b": { "classes": [] } } });
+        assert!(deserialize_submission::<Classification>(args).is_err());
+    }
+
+    /// The diagnosis. `missing field \`classes\`` alone sent the model hunting inside
+    /// `classes`; the keys it actually sent are what let it find the real fault.
+    #[test]
+    fn the_error_names_the_keys_the_model_actually_sent() {
+        let args = serde_json::json!({ "result": { "not_classes": [] } });
+        let err = deserialize_submission::<Classification>(args).unwrap_err();
+        assert!(err.contains("[result]"), "names the offending key: {err}");
+        assert!(err.contains("TOP level"), "says what to do about it: {err}");
+    }
+
+    /// The second mouth of the trap. A wrong *value* under a right key must not draw the
+    /// nesting advice: the model already put the fields at the top level, so being told to
+    /// move them is a fault it cannot find. This is the submission from the observed
+    /// `topics/2026-f1-season` failure, reduced - `distinct_because` sent as text.
+    ///
+    /// It also pins the repair's second guard: the string parses as an array, so the schema
+    /// type matches and a repair is attempted, but the elements are objects where strings
+    /// belong. The repaired payload fails to deserialize, so the repair is discarded and the
+    /// model gets the diagnosis rather than a silently wrong answer.
+    #[test]
+    fn a_wrong_value_type_is_not_blamed_on_nesting() {
+        let args = serde_json::json!({
+            "classes": ["schema:Person"],
+            "relations": "[{\"candidate\": \"sports/formula-1\"}]",
+        });
+        let err = deserialize_submission::<Classification>(args).unwrap_err();
+        assert!(
+            !err.contains("TOP level"),
+            "the keys were already at the top level: {err}"
+        );
+        assert!(
+            err.contains("relations"),
+            "names the offending field: {err}"
+        );
+        assert!(
+            err.contains("not a string containing it"),
+            "names the real defect: {err}"
+        );
+    }
+
+    /// The repair: a field the model serialised by hand is decoded in place rather than
+    /// explained back to it. One round trip saved, and the correction is not always taken.
+    #[test]
+    fn a_json_encoded_field_is_decoded_rather_than_reported() {
+        let args = serde_json::json!({
+            "classes": ["schema:Person"],
+            "relations": "[\"works for\"]",
+        });
+        let got: Classification = deserialize_submission(args).expect("repaired");
+        assert_eq!(got.classes, ["schema:Person"]);
+        assert_eq!(got.relations, ["works for"]);
+    }
+
+    /// The schema is what licenses a repair. A string field whose contents happen to parse
+    /// as JSON is the value the model meant, so it is left exactly as sent.
+    #[test]
+    fn a_string_field_holding_json_text_is_left_alone() {
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        struct Note {
+            body: String,
+        }
+        let args = serde_json::json!({ "body": "[1, 2, 3]" });
+        let got: Note = deserialize_submission(args).expect("no repair needed");
+        assert_eq!(got.body, "[1, 2, 3]", "the string survives untouched");
+    }
+
+    /// A string where a string belongs but the *contents* are wrong is not double-encoding,
+    /// so it must not draw the JSON-as-text advice.
+    #[test]
+    fn a_plain_wrong_scalar_is_not_called_double_encoded() {
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        struct Counted {
+            #[allow(dead_code)]
+            count: u32,
+        }
+        let args = serde_json::json!({ "count": "twelve" });
+        let err = deserialize_submission::<Counted>(args).unwrap_err();
+        assert!(!err.contains("JSON as *text*"), "{err}");
+        assert!(err.contains("count"), "still names the field: {err}");
+    }
+
+    /// The field path is what makes a type error actionable - plain serde names the expected
+    /// type and nothing about which key carried the offending value.
+    #[test]
+    fn a_nested_failure_reports_its_path() {
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        struct Outer {
+            #[allow(dead_code)]
+            items: Vec<Inner>,
+        }
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        struct Inner {
+            #[allow(dead_code)]
+            side: String,
+        }
+        let args = serde_json::json!({ "items": [{ "side": "subject" }, { "side": 7 }] });
+        let err = deserialize_submission::<Outer>(args).unwrap_err();
+        assert!(
+            err.contains("items[1].side"),
+            "points at the bad element: {err}"
+        );
+    }
+
+    #[test]
+    fn the_error_calls_out_a_non_object_payload_by_type() {
+        let err = deserialize_submission::<Classification>(serde_json::json!([1, 2])).unwrap_err();
+        assert!(err.contains("array"), "{err}");
+        let err = deserialize_submission::<Classification>(serde_json::json!("hi")).unwrap_err();
+        assert!(err.contains("string"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_object_is_reported_as_empty() {
+        let err = deserialize_submission::<Classification>(serde_json::json!({})).unwrap_err();
+        assert!(err.contains("empty object"), "{err}");
+    }
+}

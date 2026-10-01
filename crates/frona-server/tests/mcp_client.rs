@@ -1,12 +1,8 @@
 use frona::tool::mcp::client::{McpClient, default_client_info};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{
-    CallToolResult, Content, JsonObject, ServerCapabilities, ServerInfo,
-};
-use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router,
-};
+use rmcp::model::{CallToolResult, ContentBlock, JsonObject, ServerCapabilities, ServerInfo};
+use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use tokio::io::duplex;
 
 #[derive(Clone)]
@@ -24,26 +20,20 @@ impl EchoServer {
     }
 
     #[tool(description = "Echo back the provided text.")]
-    fn echo(
-        &self,
-        Parameters(args): Parameters<JsonObject>,
-    ) -> Result<CallToolResult, McpError> {
+    fn echo(&self, Parameters(args): Parameters<JsonObject>) -> Result<CallToolResult, McpError> {
         let text = args
             .get("text")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(description = "Add two integers and return their sum.")]
-    fn add(
-        &self,
-        Parameters(args): Parameters<JsonObject>,
-    ) -> Result<CallToolResult, McpError> {
+    fn add(&self, Parameters(args): Parameters<JsonObject>) -> Result<CallToolResult, McpError> {
         let a = args.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = args.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             (a + b).to_string(),
         )]))
     }
@@ -81,7 +71,7 @@ async fn spawn_fake_server() -> McpClient {
 async fn connect_seeds_tool_cache() {
     let client = spawn_fake_server().await;
 
-    let cached = client.cached_tools().await;
+    let cached = client.cached_tools();
     let names: Vec<&str> = cached.iter().map(|t| t.name.as_str()).collect();
     assert!(names.contains(&"echo"), "missing echo tool: {names:?}");
     assert!(names.contains(&"add"), "missing add tool: {names:?}");
@@ -141,9 +131,7 @@ async fn call_tool_with_multiple_args() {
 async fn call_unknown_tool_returns_error() {
     let client = spawn_fake_server().await;
 
-    let result = client
-        .call_tool("nonexistent", serde_json::json!({}))
-        .await;
+    let result = client.call_tool("nonexistent", serde_json::json!({})).await;
 
     assert!(result.is_err(), "calling unknown tool should error");
 
@@ -157,7 +145,7 @@ async fn refresh_tools_returns_live_server_state() {
     let refreshed = client.refresh_tools().await.expect("refresh_tools");
     assert_eq!(refreshed.len(), 2);
 
-    let cached = client.cached_tools().await;
+    let cached = client.cached_tools();
     assert_eq!(cached.len(), 2);
 
     client.shutdown().await.unwrap();
@@ -168,7 +156,10 @@ async fn peer_info_populated_after_connect() {
     let client = spawn_fake_server().await;
 
     let info = client.peer_info();
-    assert!(info.is_some(), "peer_info should be populated after initialize");
+    assert!(
+        info.is_some(),
+        "peer_info should be populated after initialize"
+    );
 
     client.shutdown().await.unwrap();
 }

@@ -8,8 +8,13 @@ use crate::tool::ToolDefinition;
 use super::schema::entity_type_name;
 
 const VALID_ACTIONS: &[&str] = &[
-    "invoke_tool", "delegate_task", "send_message",
-    "read", "write", "connect", "bind",
+    "invoke_tool",
+    "delegate_task",
+    "send_message",
+    "read",
+    "write",
+    "connect",
+    "bind",
 ];
 
 pub fn validate_syntax(policy_text: &str) -> Result<(), AppError> {
@@ -46,16 +51,12 @@ pub fn validate_entities(
                 {
                     warnings.push(format!(
                         "ToolGroup '{}' does not exist. Available groups: {}",
-                        uid.id().unescaped(), tool_groups.join(", ")
+                        uid.id().unescaped(),
+                        tool_groups.join(", ")
                     ));
                 }
-                if uid.type_name() == &tool_type
-                    && !tool_ids.contains(&uid.id().unescaped())
-                {
-                    warnings.push(format!(
-                        "Tool '{}' does not exist",
-                        uid.id().unescaped()
-                    ));
+                if uid.type_name() == &tool_type && !tool_ids.contains(&uid.id().unescaped()) {
+                    warnings.push(format!("Tool '{}' does not exist", uid.id().unescaped()));
                 }
                 if uid.type_name() == &path_type {
                     let raw = uid.id().unescaped();
@@ -83,7 +84,8 @@ pub fn validate_entities(
         {
             warnings.push(format!(
                 "Action '{}' is not valid. Valid actions: {}",
-                uid.id().unescaped(), VALID_ACTIONS.join(", ")
+                uid.id().unescaped(),
+                VALID_ACTIONS.join(", ")
             ));
         }
     }
@@ -109,8 +111,7 @@ fn is_valid_network_destination(dest: &str) -> bool {
         let mut parts = cidr_part.splitn(2, '/');
         let ip = parts.next().unwrap_or_default();
         let prefix = parts.next().unwrap_or_default();
-        return ip.parse::<std::net::IpAddr>().is_ok()
-            && prefix.parse::<u8>().is_ok();
+        return ip.parse::<std::net::IpAddr>().is_ok() && prefix.parse::<u8>().is_ok();
     }
 
     // Plain IP
@@ -120,13 +121,18 @@ fn is_valid_network_destination(dest: &str) -> bool {
 
     // Bracketed IPv6: [::1] or [::1]:443
     if dest.starts_with('[') {
-        let inner = dest.trim_start_matches('[').split(']').next().unwrap_or_default();
+        let inner = dest
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or_default();
         return inner.parse::<std::net::Ipv6Addr>().is_ok();
     }
 
     // Hostname or hostname:port
     let host = dest.split(':').next().unwrap_or(dest);
-    host.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    host.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
         && !host.starts_with('-')
         && !host.starts_with('.')
         && !host.is_empty()

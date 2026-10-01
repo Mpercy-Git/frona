@@ -2,12 +2,14 @@
 //! publish-to-chat-as-attachment primitive; these tools are for working
 //! with files inside the agent's workspace (and Cedar-permitted siblings).
 
+pub mod analyze_image;
 pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod read;
 pub mod write;
 
+pub use analyze_image::AnalyzeImageTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
@@ -60,7 +62,10 @@ pub fn resolve_path(
 
 /// Atomically writes `content` to `target` via a tempfile in the same parent.
 /// Returns an `AppError` if mkdir, tempfile creation, write, or rename fails.
-pub async fn atomic_write(target: &std::path::Path, content: &[u8]) -> Result<(), crate::core::error::AppError> {
+pub async fn atomic_write(
+    target: &std::path::Path,
+    content: &[u8],
+) -> Result<(), crate::core::error::AppError> {
     let parent = target.parent().ok_or_else(|| {
         crate::core::error::AppError::Validation(format!(
             "path has no parent directory: {}",
@@ -73,13 +78,11 @@ pub async fn atomic_write(target: &std::path::Path, content: &[u8]) -> Result<()
     let target = target.to_path_buf();
     let content = content.to_vec();
     tokio::task::spawn_blocking(move || -> Result<(), crate::core::error::AppError> {
-        let mut tmp = tempfile::NamedTempFile::new_in(target.parent().unwrap()).map_err(|e| {
-            crate::core::error::AppError::Internal(format!("tempfile: {e}"))
-        })?;
+        let mut tmp = tempfile::NamedTempFile::new_in(target.parent().unwrap())
+            .map_err(|e| crate::core::error::AppError::Internal(format!("tempfile: {e}")))?;
         use std::io::Write;
-        tmp.write_all(&content).map_err(|e| {
-            crate::core::error::AppError::Internal(format!("tempfile write: {e}"))
-        })?;
+        tmp.write_all(&content)
+            .map_err(|e| crate::core::error::AppError::Internal(format!("tempfile write: {e}")))?;
         tmp.persist(&target).map_err(|e| {
             crate::core::error::AppError::Internal(format!(
                 "atomic persist to {}: {e}",
@@ -142,6 +145,8 @@ mod resolve_path_tests {
                 sandbox_limits: None,
                 max_concurrent_tasks: None,
                 avatar: None,
+                voice_id: None,
+                private_memory: false,
                 identity: Default::default(),
                 prompt: None,
                 heartbeat_interval: None,
@@ -264,11 +269,17 @@ mod resolve_path_tests {
         // resolve_path, or an unscoped search in a shared run walks the wrong
         // tree.
         assert_eq!(
-            workspace_root(&test_ctx("alice", "bob", "researcher"), &test_storage("/data")),
+            workspace_root(
+                &test_ctx("alice", "bob", "researcher"),
+                &test_storage("/data")
+            ),
             PathBuf::from("/data/users/alice/agents/researcher")
         );
         assert_eq!(
-            workspace_root(&test_ctx("mina", "mina", "system"), &test_storage("/app/data")),
+            workspace_root(
+                &test_ctx("mina", "mina", "system"),
+                &test_storage("/app/data")
+            ),
             PathBuf::from("/app/data/users/mina/agents/system")
         );
     }

@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use tracing::info;
 
 use crate::core::config::CacheConfig;
@@ -6,13 +6,17 @@ use crate::core::error::AppError;
 use crate::core::repository::Repository;
 use crate::db::repo::users::SurrealUserRepo;
 
-use super::models::{ADMINS_GROUP, User};
 use super::UserRepository;
+use super::models::{ADMINS_GROUP, User};
+use crate::core::user_config::{UserConfig, UserConfigPatch};
 
 #[derive(Clone)]
 pub struct UserService {
     repo: SurrealUserRepo,
     cache: moka::future::Cache<String, User>,
+    /// Separate from the `User` cache: config lives in its own table and is read on
+    /// every memory tool/sync call, so it gets its own cache-through.
+    user_config_cache: moka::future::Cache<String, UserConfig>,
 }
 
 impl UserService {
@@ -21,7 +25,47 @@ impl UserService {
             .max_capacity(cache_config.entity_max_capacity)
             .time_to_live(std::time::Duration::from_secs(cache_config.entity_ttl_secs))
             .build();
-        Self { repo, cache }
+        let user_config_cache = moka::future::Cache::builder()
+            .max_capacity(cache_config.entity_max_capacity)
+            .time_to_live(std::time::Duration::from_secs(cache_config.entity_ttl_secs))
+            .build();
+        Self {
+            repo,
+            cache,
+            user_config_cache,
+        }
+    }
+
+    /// The user's config, defaulted when they've never customized anything (no row
+    /// → `UserConfig::default()`, whose `updated_at` is the epoch sentinel). The
+    /// returned `updated_at` is the compare-and-swap token for `update_user_config`.
+    pub async fn user_config(&self, user_id: &str) -> Result<UserConfig, AppError> {
+        if let Some(config) = self.user_config_cache.get(user_id).await {
+            return Ok(config);
+        }
+        let config = self.repo.user_config(user_id).await?.unwrap_or_default();
+        self.user_config_cache
+            .insert(user_id.to_string(), config.clone())
+            .await;
+        Ok(config)
+    }
+
+    /// Apply a config patch under an `updated_at` compare-and-swap. `expected` is the
+    /// `updated_at` the caller read via [`user_config`]; a concurrent modification
+    /// yields `AppError::Conflict`. Domain validation (e.g. of the memory directory)
+    /// belongs in the calling domain service, not here.
+    pub async fn update_user_config(
+        &self,
+        user_id: &str,
+        expected: DateTime<Utc>,
+        patch: UserConfigPatch,
+    ) -> Result<UserConfig, AppError> {
+        let saved = self
+            .repo
+            .patch_user_config(user_id, expected, patch, Utc::now())
+            .await?;
+        self.user_config_cache.invalidate(user_id).await;
+        Ok(saved)
     }
 
     pub async fn find_by_id(&self, id: &str) -> Result<Option<User>, AppError> {
@@ -46,7 +90,10 @@ impl UserService {
             .map(|u| u.handle)
     }
 
-    pub async fn find_by_handle(&self, handle: &crate::core::Handle) -> Result<Option<User>, AppError> {
+    pub async fn find_by_handle(
+        &self,
+        handle: &crate::core::Handle,
+    ) -> Result<Option<User>, AppError> {
         self.repo.find_by_handle(handle).await
     }
 
@@ -62,6 +109,7 @@ impl UserService {
 
     pub async fn delete(&self, id: &str) -> Result<(), AppError> {
         self.cache.invalidate(id).await;
+        self.user_config_cache.invalidate(id).await;
         self.repo.delete(id).await
     }
 

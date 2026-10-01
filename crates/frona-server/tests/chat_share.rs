@@ -94,7 +94,9 @@ async fn share_by_email_resolves_recipient() {
     let chat = seed_chat(&db, "owner").await;
     let svc = share_service(&db, users);
 
-    svc.share("owner", &chat.id, "friend@example.com").await.unwrap();
+    svc.share("owner", &chat.id, "friend@example.com")
+        .await
+        .unwrap();
     assert!(svc.is_shared_with(&chat.id, "friend").await.unwrap());
 }
 
@@ -135,13 +137,22 @@ async fn get_accessible_honors_owner_share_and_forbids_strangers() {
     shares.share("owner", &chat.id, "friend").await.unwrap();
     chat_service.set_share_service(shares);
 
-    let (_, is_owner) = chat_service.get_accessible("owner", &chat.id).await.unwrap();
+    let (_, is_owner) = chat_service
+        .get_accessible("owner", &chat.id)
+        .await
+        .unwrap();
     assert!(is_owner);
 
-    let (_, is_owner) = chat_service.get_accessible("friend", &chat.id).await.unwrap();
+    let (_, is_owner) = chat_service
+        .get_accessible("friend", &chat.id)
+        .await
+        .unwrap();
     assert!(!is_owner);
 
-    let err = chat_service.get_accessible("stranger", &chat.id).await.unwrap_err();
+    let err = chat_service
+        .get_accessible("stranger", &chat.id)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
 }
 
@@ -156,7 +167,10 @@ async fn shared_chat_responses_marks_is_shared_and_skips_deleted_chats() {
     let shares = share_service(&db, users);
     shares.share("owner", &chat.id, "friend").await.unwrap();
     // A share pointing at a since-deleted chat must be skipped, not error.
-    shares.share("owner", "nonexistent-chat", "friend").await.unwrap();
+    shares
+        .share("owner", "nonexistent-chat", "friend")
+        .await
+        .unwrap();
     chat_service.set_share_service(shares);
 
     let responses = chat_service.shared_chat_responses("friend").await.unwrap();

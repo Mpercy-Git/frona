@@ -8,7 +8,9 @@ use frona::core::repository::Repository;
 use frona::credential::vault::models::{CredentialTarget, GrantDuration};
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::hitl::{Hitl, HitlDelivery, HitlRequest, HitlResponse, VaultGrant};
+use frona::inference::hitl::{
+    Hitl, HitlDelivery, HitlRequest, HitlResponse, SkillCandidate, SkillInstallScope, VaultGrant,
+};
 use frona::inference::tool_call::{TaskEvent, ToolCall, ToolStatus};
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem};
@@ -31,7 +33,7 @@ fn base_tool_call(name: &str) -> ToolCall {
         result: String::new(),
         success: true,
         duration_ms: 0,
-        
+
         hitl: None,
         task_event: None,
         system_prompt: None,
@@ -54,13 +56,16 @@ async fn tool_call_turn_reasoning_round_trips() {
         id: Some("r-1".into()),
         content: "I need to ask the user.".into(),
         signature: Some("sig-abc".into()),
+        raw: None,
     });
 
     let id = te.id.clone();
     repo.create(&te).await.unwrap();
 
     let found = repo.find_by_id(&id).await.unwrap().expect("should find");
-    let r = found.turn_reasoning.expect("turn_reasoning should round-trip");
+    let r = found
+        .turn_reasoning
+        .expect("turn_reasoning should round-trip");
     assert_eq!(r.id.as_deref(), Some("r-1"));
     assert_eq!(r.content, "I need to ask the user.");
     assert_eq!(r.signature.as_deref(), Some("sig-abc"));
@@ -153,7 +158,9 @@ async fn vault_granted_response_round_trips() {
             connection_id: "conn-1".into(),
             vault_item_id: "item-1".into(),
             grant_duration: GrantDuration::Once,
-            target: CredentialTarget::Prefix { env_var_prefix: "DB".into() },
+            target: CredentialTarget::Prefix {
+                env_var_prefix: "DB".into(),
+            },
         })),
         delivery: None,
     });
@@ -184,6 +191,59 @@ async fn vault_granted_response_round_trips() {
 }
 
 #[tokio::test]
+async fn skills_request_round_trips_with_approval() {
+    let db = test_db().await;
+    let repo: SurrealRepo<ToolCall> = SurrealRepo::new(db);
+
+    let mut te = base_tool_call("add_skill");
+    te.hitl = Some(Hitl {
+        prompt: "Install 2 skills for this agent?".into(),
+        url: "https://x/chats/c1".into(),
+        request: HitlRequest::Skills {
+            items: vec![
+                SkillCandidate {
+                    name: "pdf".into(),
+                    repo: "anthropics/skills".into(),
+                    description: "Fill and merge PDF files.".into(),
+                },
+                SkillCandidate {
+                    name: "xlsx".into(),
+                    repo: "anthropics/skills".into(),
+                    description: String::new(),
+                },
+            ],
+            scope: SkillInstallScope::User,
+            reason: "The user asked for a filled-in form.".into(),
+        },
+        status: ToolStatus::Resolved,
+        response: Some(HitlResponse::Approval(true)),
+        delivery: None,
+    });
+
+    let id = te.id.clone();
+    repo.create(&te).await.unwrap();
+    let found = repo.find_by_id(&id).await.unwrap().expect("should find");
+    let h = found.hitl.expect("hitl should round-trip");
+    match h.request {
+        HitlRequest::Skills {
+            items,
+            scope,
+            reason,
+        } => {
+            assert_eq!(scope, SkillInstallScope::User);
+            assert_eq!(reason, "The user asked for a filled-in form.");
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].name, "pdf");
+            assert_eq!(items[0].repo, "anthropics/skills");
+            assert_eq!(items[0].description, "Fill and merge PDF files.");
+            assert_eq!(items[1].description, "");
+        }
+        _ => panic!("expected Skills variant"),
+    }
+    assert!(matches!(h.response, Some(HitlResponse::Approval(true))));
+}
+
+#[tokio::test]
 async fn task_event_completion_round_trips() {
     use frona::agent::task::models::TaskStatus;
 
@@ -203,7 +263,12 @@ async fn task_event_completion_round_trips() {
     repo.create(&te).await.unwrap();
     let found = repo.find_by_id(&id).await.unwrap().expect("should find");
     match found.task_event.expect("task_event should round-trip") {
-        TaskEvent::Completion { task_id, status, summary, .. } => {
+        TaskEvent::Completion {
+            task_id,
+            status,
+            summary,
+            ..
+        } => {
             assert_eq!(task_id, "task-1");
             assert!(matches!(status, TaskStatus::Completed));
             assert_eq!(summary.as_deref(), Some("Done"));
@@ -228,7 +293,11 @@ async fn task_event_deferred_round_trips() {
     repo.create(&te).await.unwrap();
     let found = repo.find_by_id(&id).await.unwrap().expect("should find");
     match found.task_event.expect("task_event should round-trip") {
-        TaskEvent::Deferred { delay_minutes, reason, .. } => {
+        TaskEvent::Deferred {
+            delay_minutes,
+            reason,
+            ..
+        } => {
             assert_eq!(delay_minutes, 30);
             assert_eq!(reason, "Try again later");
         }

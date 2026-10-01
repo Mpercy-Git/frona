@@ -12,10 +12,10 @@ use crate::core::principal::{Principal, PrincipalKind};
 pub const NAMESPACE: &str = "Policy";
 
 pub fn build_schema() -> Arc<Schema> {
-    let (schema, warnings) = Schema::from_cedarschema_str(
-        include_str!("../../../../resources/policy/frona.cedarschema"),
-    )
-        .expect("Failed to parse built-in policy schema");
+    let (schema, warnings) = Schema::from_cedarschema_str(include_str!(
+        "../../../../resources/policy/frona.cedarschema"
+    ))
+    .expect("Failed to parse built-in policy schema");
 
     for warning in warnings {
         tracing::warn!(%warning, "Policy schema warning");
@@ -106,12 +106,22 @@ fn tools_to_set(tools: &[String]) -> RestrictedExpression {
     RestrictedExpression::new_set(elements)
 }
 
-pub fn build_agent_principal_entity(user_handle: &Handle, agent_handle: &Handle, tools: &[String]) -> Entity {
+pub fn build_agent_principal_entity(
+    user_handle: &Handle,
+    agent_handle: &Handle,
+    tools: &[String],
+) -> Entity {
     let attrs = [
         ("enabled".into(), RestrictedExpression::new_bool(true)),
-        ("model_group".into(), RestrictedExpression::new_string("primary".into())),
+        (
+            "model_group".into(),
+            RestrictedExpression::new_string("primary".into()),
+        ),
         ("tools".into(), tools_to_set(tools)),
-        ("handle".into(), RestrictedExpression::new_string(agent_handle.to_string())),
+        (
+            "handle".into(),
+            RestrictedExpression::new_string(agent_handle.to_string()),
+        ),
     ];
     let mut parents = HashSet::new();
     parents.insert(user_entity_uid_from_handle(user_handle));
@@ -134,12 +144,19 @@ pub fn build_agent_principal_entity_for_id(id: &str, tools: &[String]) -> Entity
     };
     let attrs = [
         ("enabled".into(), RestrictedExpression::new_bool(true)),
-        ("model_group".into(), RestrictedExpression::new_string("primary".into())),
+        (
+            "model_group".into(),
+            RestrictedExpression::new_string("primary".into()),
+        ),
         ("tools".into(), tools_to_set(tools)),
         ("handle".into(), RestrictedExpression::new_string(handle)),
     ];
-    Entity::new(entity_uid("Agent", id), attrs.into_iter().collect(), parents)
-        .expect("valid agent principal entity")
+    Entity::new(
+        entity_uid("Agent", id),
+        attrs.into_iter().collect(),
+        parents,
+    )
+    .expect("valid agent principal entity")
 }
 
 pub fn build_mcp_principal_entity(user_handle: &Handle, mcp_handle: &Handle) -> Entity {
@@ -194,17 +211,11 @@ pub fn build_tool_entities(tool_name: &str, tool_group: &str) -> Entities {
     let tool_uid = tool_entity_uid(tool_name);
     let group_uid = tool_group_entity_uid(tool_group);
 
-    let tool_entity = cedar_policy::Entity::new_no_attrs(
-        tool_uid,
-        HashSet::from([group_uid.clone()]),
-    );
-    let group_entity = cedar_policy::Entity::new_no_attrs(
-        group_uid,
-        HashSet::new(),
-    );
+    let tool_entity =
+        cedar_policy::Entity::new_no_attrs(tool_uid, HashSet::from([group_uid.clone()]));
+    let group_entity = cedar_policy::Entity::new_no_attrs(group_uid, HashSet::new());
 
-    Entities::from_entities([tool_entity, group_entity], None)
-        .unwrap_or_else(|_| Entities::empty())
+    Entities::from_entities([tool_entity, group_entity], None).unwrap_or_else(|_| Entities::empty())
 }
 
 /// Both agents always share an owner — cross-user delegation isn't valid.
@@ -215,7 +226,8 @@ pub fn build_agent_entities(
     target_handle: &Handle,
     target_tools: &[String],
 ) -> Entities {
-    let principal_entity = build_agent_principal_entity(user_handle, principal_handle, principal_tools);
+    let principal_entity =
+        build_agent_principal_entity(user_handle, principal_handle, principal_tools);
     let target_entity = build_agent_principal_entity(user_handle, target_handle, target_tools);
     Entities::from_entities([principal_entity, target_entity], None)
         .unwrap_or_else(|_| Entities::empty())
@@ -313,7 +325,6 @@ pub fn build_message_source_entities(
     .unwrap_or_else(|_| Entities::empty())
 }
 
-
 pub fn prepend_annotations(id: &str, description: &str, policy_text: &str) -> String {
     format!("@id(\"{id}\")\n@description(\"{description}\")\n{policy_text}")
 }
@@ -390,9 +401,21 @@ mod tests {
     #[test]
     fn test_references_agent() {
         let text = "permit(principal == Policy::Agent::\"alice/dev\", action, resource);";
-        assert!(references_agent(text, &crate::handle!("alice"), &crate::handle!("dev")));
-        assert!(!references_agent(text, &crate::handle!("alice"), &crate::handle!("other")));
-        assert!(!references_agent(text, &crate::handle!("bob"), &crate::handle!("dev")));
+        assert!(references_agent(
+            text,
+            &crate::handle!("alice"),
+            &crate::handle!("dev")
+        ));
+        assert!(!references_agent(
+            text,
+            &crate::handle!("alice"),
+            &crate::handle!("other")
+        ));
+        assert!(!references_agent(
+            text,
+            &crate::handle!("bob"),
+            &crate::handle!("dev")
+        ));
     }
 
     #[test]

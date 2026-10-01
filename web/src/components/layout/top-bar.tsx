@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { Bars3Icon, XMarkIcon, Cog6ToothIcon, ArrowRightStartOnRectangleIcon, KeyIcon, CpuChipIcon, ChartBarIcon, InformationCircleIcon, PuzzlePieceIcon } from "@heroicons/react/24/outline";
+import { Bars3Icon, XMarkIcon, Cog6ToothIcon, ArrowRightStartOnRectangleIcon, KeyIcon, CpuChipIcon, ChartBarIcon, CircleStackIcon, InformationCircleIcon, PuzzlePieceIcon } from "@heroicons/react/24/outline";
 import { useAuth } from "@/lib/auth";
 import { useSession } from "@/lib/session-context";
 import { useNavigation } from "@/lib/navigation-context";
@@ -14,6 +14,9 @@ import { AgentDropdown } from "./agent-dropdown";
 import { AppDropdown } from "./app-dropdown";
 import { ServerDropdown } from "./server-dropdown";
 import { AboutDialog } from "./about-dialog";
+import { getMemoryStatus } from "@/lib/api-client";
+import { useActivity } from "@/lib/activity-context";
+import { ActivityIndicator } from "./activity-indicator";
 
 const topTabs = [
   { id: "chat", label: "Assistant", href: "/chat" },
@@ -24,13 +27,16 @@ export function TopBar() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, logout } = useAuth();
-  const { inferring, setActiveChat } = useSession();
+  const { setActiveChat } = useSession();
+  const { snapshot: activity } = useActivity();
+  const hasActiveExecutions = activity.executions.length > 0;
   const { mobileNavOpen, setMobileNavOpen, mobileSubNavOpen, setMobileSubNavOpen } = useNavigation();
   const mobile = useMobile();
   const hashNavigate = useHashNavigate();
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [memoryAvailable, setMemoryAvailable] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const isChatRelated = pathname.startsWith("/chat") || pathname.startsWith("/home") || pathname.startsWith("/space");
@@ -46,6 +52,15 @@ export function TopBar() {
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    getMemoryStatus()
+      .then((available) => { if (!cancelled) setMemoryAvailable(available); })
+      .catch(() => { if (!cancelled) setMemoryAvailable(false); });
+    return () => { cancelled = true; };
+  }, [user]);
 
   const handleLogout = () => {
     logout();
@@ -81,7 +96,7 @@ export function TopBar() {
           onClick={() => { setActiveChat(null); router.push("/home"); }}
           className="flex items-center gap-1 cursor-pointer"
         >
-          <Logo size={52} animate={inferring} />
+          <Logo size={52} />
           <span
             className="text-lg font-bold text-text-primary tracking-wide"
             style={{ fontFamily: "var(--font-brand)" }}
@@ -91,6 +106,8 @@ export function TopBar() {
         </button>
 
         <div className="flex-1" />
+
+        {hasActiveExecutions && <ActivityIndicator compact />}
 
         <div className="flex items-center gap-1">
           <AgentDropdown />
@@ -126,6 +143,15 @@ export function TopBar() {
                 </div>
               )}
               <div className="py-2">
+                {memoryAvailable && (
+                  <button
+                    onClick={() => { router.push("/memory"); setMenuOpen(false); }}
+                    className="w-full flex items-center gap-3 px-5 py-3 text-base text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
+                  >
+                    <CircleStackIcon className="h-5 w-5" />
+                    Memory
+                  </button>
+                )}
                 <button
                   onClick={() => { hashNavigate("/settings#skills"); setMenuOpen(false); }}
                   className="w-full flex items-center gap-3 px-5 py-3 text-base text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
@@ -190,13 +216,12 @@ export function TopBar() {
     <>
     <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
     <div className="flex items-stretch h-20 pr-5 bg-surface-nav border-b border-border shrink-0">
-      {/* Left: Logo + brand — matches nav panel width */}
       <div className="flex items-center justify-center shrink-0" style={{ width: 288 }}>
         <button
           onClick={() => { setActiveChat(null); router.push("/home"); }}
           className="flex items-center gap-1 cursor-pointer"
         >
-          <Logo size={68} animate={inferring} />
+          <Logo size={68} />
           <span
             className="text-2xl font-bold text-text-primary tracking-wide"
             style={{ fontFamily: "var(--font-brand)" }}
@@ -224,6 +249,12 @@ export function TopBar() {
 
       <div className="flex-1" />
 
+      {hasActiveExecutions && (
+        <div className="mr-2 flex items-center">
+          <ActivityIndicator />
+        </div>
+      )}
+
       <div className="flex items-center gap-2">
       <AgentDropdown />
       <AppDropdown />
@@ -248,6 +279,15 @@ export function TopBar() {
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border shrink-0">
                   <span className="text-sm font-medium text-text-secondary truncate">{user.email}</span>
                 </div>
+              )}
+              {memoryAvailable && (
+                <button
+                  onClick={() => { router.push("/memory"); setMenuOpen(false); }}
+                  className="w-full flex items-center gap-2 px-4 py-2 text-sm text-text-secondary hover:bg-surface-tertiary hover:text-text-primary transition"
+                >
+                  <CircleStackIcon className="h-4 w-4" />
+                  Memory
+                </button>
               )}
               <button
                 onClick={() => { hashNavigate("/settings#skills"); setMenuOpen(false); }}

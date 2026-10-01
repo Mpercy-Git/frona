@@ -2,7 +2,7 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, RocksDb};
 use tracing::info;
 
-/// Cascade-delete sources keyed by user_id. Order doesn't matter — none of
+/// Cascade-delete sources keyed by user_id. Order doesn't matter - none of
 /// these reference each other, and chat fans out to message/tool_call/binding
 /// through its own cascade events below.
 const USER_OWNED_TABLES: &[(&str, &str)] = &[
@@ -22,12 +22,14 @@ const USER_OWNED_TABLES: &[(&str, &str)] = &[
     ("memory", "user_id"),
     ("keypair", "user_id"),
     ("notification", "user_id"),
+    ("push_subscription", "user_id"),
     ("policy", "user_id"),
     ("oauth_identity", "user_id"),
     ("api_token", "user_id"),
     ("app", "user_id"),
     ("mcp_server", "user_id"),
     ("channel", "user_id"),
+    ("cost_report", "user_id"),
 ];
 
 fn build_cascade_user_delete_events() -> String {
@@ -82,6 +84,9 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_message_chat ON TABLE message COLUMNS chat_id;
         DEFINE INDEX IF NOT EXISTS idx_message_delivery_due ON TABLE message COLUMNS delivery.state, delivery.next_attempt_at;
 
+        DEFINE TABLE IF NOT EXISTS chat_summary SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_chat_summary_chat ON TABLE chat_summary COLUMNS chat_id UNIQUE;
+
         DEFINE TABLE IF NOT EXISTS task SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_task_user ON TABLE task COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_task_agent ON TABLE task COLUMNS agent_id;
@@ -91,12 +96,72 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_credential_user ON TABLE credential COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_credential_user_provider ON TABLE credential COLUMNS user_id, provider;
 
+        DEFINE TABLE IF NOT EXISTS managed_credential SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_managed_connection ON TABLE managed_credential COLUMNS connection_id;
+        DEFINE INDEX IF NOT EXISTS idx_managed_item_id ON TABLE managed_credential COLUMNS item_id UNIQUE;
+
         DEFINE TABLE IF NOT EXISTS memory SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_memory_source ON TABLE memory COLUMNS source_type, source_id;
 
         DEFINE TABLE IF NOT EXISTS memory_entry SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_memory_entry_agent ON TABLE memory_entry COLUMNS agent_id;
         DEFINE INDEX IF NOT EXISTS idx_memory_entry_user ON TABLE memory_entry COLUMNS user_id;
+
+        DEFINE ANALYZER IF NOT EXISTS knowledge_search TOKENIZERS class FILTERS lowercase, ascii;
+        DEFINE TABLE IF NOT EXISTS knowledge_entity SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_user ON TABLE knowledge_entity COLUMNS user_id;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_user_path ON TABLE knowledge_entity COLUMNS user_id, path UNIQUE;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_search ON TABLE knowledge_entity FIELDS search_text FULLTEXT ANALYZER knowledge_search BM25;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_body_search ON TABLE knowledge_entity FIELDS body FULLTEXT ANALYZER knowledge_search BM25;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_names ON TABLE knowledge_entity COLUMNS user_id, search_names.*;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_name_tokens ON TABLE knowledge_entity COLUMNS user_id, search_name_tokens.*;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_search_assertions ON TABLE knowledge_entity COLUMNS user_id, search_assertions.*;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_resolution_kinds ON TABLE knowledge_entity COLUMNS user_id, kinds.*;
+        DEFINE TABLE IF NOT EXISTS knowledge_memory SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_memory_user ON TABLE knowledge_memory COLUMNS user_id;
+        DEFINE TABLE IF NOT EXISTS knowledge_entity_source SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_source_user ON TABLE knowledge_entity_source COLUMNS user_id;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_source_path ON TABLE knowledge_entity_source COLUMNS user_id, entity_path;
+        DEFINE TABLE IF NOT EXISTS knowledge_entity_link SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_link_from ON TABLE knowledge_entity_link COLUMNS user_id, from_entity_path;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_link_origin ON TABLE knowledge_entity_link COLUMNS user_id, origin;
+        DEFINE TABLE IF NOT EXISTS knowledge_short_memory SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_short_memory_user ON TABLE knowledge_short_memory COLUMNS user_id;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_short_memory_chat ON TABLE knowledge_short_memory COLUMNS source_chat_id;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_origin ON TABLE knowledge_entity COLUMNS user_id, origin;
+        DEFINE TABLE IF NOT EXISTS knowledge_ontology SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_ontology_user ON TABLE knowledge_ontology COLUMNS user_id UNIQUE;
+
+        -- The two consolidation tables. Per CHAT: how far the transcript has been mined,
+        -- so a chat is never re-read. Per PASS: where the pipeline got to, so a failure
+        -- resumes rather than starting over.
+        DEFINE TABLE IF NOT EXISTS knowledge_consolidation_watermark SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_watermark_chat ON TABLE knowledge_consolidation_watermark COLUMNS chat_id UNIQUE;
+        -- NOT UNIQUE on user_id: finished passes are kept as a log, and the live pass is
+        -- the newest row (ids are UUIDv7, so time-ordered).
+        DEFINE TABLE IF NOT EXISTS knowledge_consolidation_record SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_record_user ON TABLE knowledge_consolidation_record COLUMNS user_id;
+        -- Durable, run-scoped working pages. These rows form the effective overlay used
+        -- by every consolidation read and are removed only by terminal cleanup.
+        DEFINE TABLE IF NOT EXISTS knowledge_consolidation_entity SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_identity ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, path UNIQUE;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_search_scope ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, searchable, category;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_lifecycle ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, lifecycle;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_search ON TABLE knowledge_consolidation_entity FIELDS search_text FULLTEXT ANALYZER knowledge_search BM25;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_names ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, search_names.*;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_name_tokens ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, search_name_tokens.*;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_search_assertions ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, search_assertions.*;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_resolution_kinds ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, kinds.*;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_target ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, outgoing_links.*.target_path;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_memory ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, source_memory_ids.*;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_attribute_memory ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, attribute_sources.*.source_memory_ids.*;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_consolidation_entity_link_memory ON TABLE knowledge_consolidation_entity COLUMNS consolidation_id, outgoing_links.*.source_memory_ids.*;
+        DEFINE EVENT IF NOT EXISTS cascade_delete_knowledge_consolidation_entities ON TABLE knowledge_consolidation_record
+          WHEN $event = 'DELETE' OR ($event = 'UPDATE' AND $before.consolidation_id != $after.consolidation_id)
+          THEN (DELETE FROM knowledge_consolidation_entity WHERE consolidation_id = $before.consolidation_id);
+
+        DEFINE TABLE IF NOT EXISTS user_config SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_user_config_user ON TABLE user_config COLUMNS user_id UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS keypair SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_keypair_owner ON TABLE keypair COLUMNS owner UNIQUE;
@@ -121,6 +186,13 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE TABLE IF NOT EXISTS notification SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_notification_user ON TABLE notification COLUMNS user_id;
 
+        -- Web Push subscriptions. The endpoint is unique per browser/device,
+        -- but two accounts signed in on the same device share one endpoint, so
+        -- the uniqueness is per (user, endpoint) rather than endpoint alone.
+        DEFINE TABLE IF NOT EXISTS push_subscription SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_push_subscription_user ON TABLE push_subscription COLUMNS user_id;
+        DEFINE INDEX IF NOT EXISTS idx_push_subscription_user_endpoint ON TABLE push_subscription COLUMNS user_id, endpoint UNIQUE;
+
         DEFINE TABLE IF NOT EXISTS policy SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_policy_user ON TABLE policy COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_policy_user_name ON TABLE policy COLUMNS user_id, name UNIQUE;
@@ -136,6 +208,14 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_iu_kind_created ON TABLE inference_usage COLUMNS kind_tag, created_at;
         DEFINE INDEX IF NOT EXISTS idx_iu_model_created ON TABLE inference_usage COLUMNS model_ref, created_at;
         DEFINE INDEX IF NOT EXISTS idx_iu_pricing_version ON TABLE inference_usage COLUMNS pricing_version;
+        DEFINE INDEX IF NOT EXISTS idx_iu_provider_created ON TABLE inference_usage COLUMNS provider, created_at;
+        DEFINE INDEX IF NOT EXISTS idx_iu_group_created ON TABLE inference_usage COLUMNS model_group, created_at;
+
+        -- Cost reports filed by the cost-analyst agent. `user_id` is the admin
+        -- the run belonged to; the report content itself is instance-wide.
+        DEFINE TABLE IF NOT EXISTS cost_report SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_cost_report_user_created ON TABLE cost_report COLUMNS user_id, created_at;
+        DEFINE INDEX IF NOT EXISTS idx_cost_report_created ON TABLE cost_report COLUMNS created_at;
 
         DEFINE TABLE IF NOT EXISTS app SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_app_agent ON TABLE app COLUMNS agent_id;
@@ -196,6 +276,22 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE EVENT IF NOT EXISTS cascade_delete_chat_tool_calls ON TABLE chat
           WHEN $event = 'DELETE'
           THEN (DELETE FROM tool_call WHERE chat_id = meta::id($before.id));
+
+        DEFINE EVENT IF NOT EXISTS cascade_delete_chat_vault_access_logs ON TABLE chat
+          WHEN $event = 'DELETE'
+          THEN (DELETE FROM vault_access_log WHERE chat_id = meta::id($before.id));
+
+        DEFINE EVENT IF NOT EXISTS cascade_delete_chat_calls ON TABLE chat
+          WHEN $event = 'DELETE'
+          THEN (DELETE FROM call WHERE chat = $before.id);
+
+        DEFINE EVENT IF NOT EXISTS cascade_delete_chat_summary ON TABLE chat
+          WHEN $event = 'DELETE'
+          THEN (DELETE FROM chat_summary WHERE chat_id = meta::id($before.id));
+
+        DEFINE EVENT IF NOT EXISTS cascade_delete_knowledge_consolidation_watermark ON TABLE chat
+          WHEN $event = 'DELETE'
+          THEN (DELETE FROM knowledge_consolidation_watermark WHERE chat_id = meta::id($before.id));
 
         DEFINE EVENT IF NOT EXISTS cascade_delete_task_chat ON TABLE task
           WHEN $event = 'DELETE' AND $before.chat_id IS NOT NONE
@@ -268,10 +364,7 @@ pub async fn init(path: &str) -> Result<Surreal<Db>, surrealdb::Error> {
                     tracing::error!("Failed to open database after {elapsed:.0?}: {e}");
                     std::process::exit(1);
                 }
-                tracing::warn!(
-                    "Database locked, retrying ({:.0?} elapsed): {e}",
-                    elapsed
-                );
+                tracing::warn!("Database locked, retrying ({:.0?} elapsed): {e}", elapsed);
                 tokio::time::sleep(interval).await;
             }
         }

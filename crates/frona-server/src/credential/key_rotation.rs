@@ -21,6 +21,7 @@ pub struct RotationReport {
     pub vault_connections: RotationCounts,
     pub credentials: RotationCounts,
     pub keypairs: RotationCounts,
+    pub managed_credentials: RotationCounts,
 }
 
 #[derive(Debug)]
@@ -35,6 +36,7 @@ impl RotationReport {
         self.vault_connections.failed == 0
             && self.credentials.failed == 0
             && self.keypairs.failed == 0
+            && self.managed_credentials.failed == 0
     }
 }
 
@@ -83,17 +85,20 @@ impl KeyRotation {
         let vc = self.rotate_vault_connections().await;
         let cr = self.rotate_credentials().await;
         let kp = self.rotate_keypairs().await;
+        let mp = self.rotate_managed_credentials().await;
 
         let report = RotationReport {
             vault_connections: vc,
             credentials: cr,
             keypairs: kp,
+            managed_credentials: mp,
         };
 
         info!(
             vault_connections = ?report.vault_connections,
             credentials = ?report.credentials,
             keypairs = ?report.keypairs,
+            managed_credentials = ?report.managed_credentials,
             "Key rotation complete"
         );
 
@@ -231,9 +236,7 @@ impl KeyRotation {
                             let mut new_data = data.clone();
                             new_data["data"]["password_encrypted"] =
                                 serde_json::Value::String(new_b64);
-                            if let Err(e) =
-                                self.update_credential_data(rid, &new_data).await
-                            {
+                            if let Err(e) = self.update_credential_data(rid, &new_data).await {
                                 error!(id = rid, error = e, "Failed to update credential");
                                 counts.failed += 1;
                             } else {
@@ -242,7 +245,11 @@ impl KeyRotation {
                         }
                         Err(RotateError::AlreadyRotated) => counts.skipped += 1,
                         Err(RotateError::Failed(e)) => {
-                            error!(id = rid, error = e, "Failed to re-encrypt credential password");
+                            error!(
+                                id = rid,
+                                error = e,
+                                "Failed to re-encrypt credential password"
+                            );
                             counts.failed += 1;
                         }
                     }
@@ -259,11 +266,8 @@ impl KeyRotation {
                     match self.reencrypt_b64(enc_b64) {
                         Ok(new_b64) => {
                             let mut new_data = data.clone();
-                            new_data["data"]["key_encrypted"] =
-                                serde_json::Value::String(new_b64);
-                            if let Err(e) =
-                                self.update_credential_data(rid, &new_data).await
-                            {
+                            new_data["data"]["key_encrypted"] = serde_json::Value::String(new_b64);
+                            if let Err(e) = self.update_credential_data(rid, &new_data).await {
                                 error!(id = rid, error = e, "Failed to update credential");
                                 counts.failed += 1;
                             } else {
@@ -353,6 +357,78 @@ impl KeyRotation {
         counts
     }
 
+    async fn rotate_managed_credentials(&self) -> RotationCounts {
+        let mut total = RotationCounts {
+            success: 0,
+            skipped: 0,
+            failed: 0,
+        };
+        for table in ["managed_credential"] {
+            let query = format!(
+                "SELECT meta::id(id) as rid, ciphertext, nonce FROM {table} WHERE array::len(ciphertext) > 0"
+            );
+            let rows: Vec<serde_json::Value> = match self
+                .db
+                .query(&query)
+                .await
+                .and_then(|mut response| response.take(0))
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    error!(table, error = %error, "Failed to query managed credentials for rotation");
+                    total.failed += 1;
+                    continue;
+                }
+            };
+            for row in rows {
+                let Some(rid) = row.get("rid").and_then(|value| value.as_str()) else {
+                    total.failed += 1;
+                    continue;
+                };
+                let (Some(ciphertext), Some(nonce)) = (
+                    json_to_bytes(row.get("ciphertext")),
+                    json_to_bytes(row.get("nonce")),
+                ) else {
+                    total.skipped += 1;
+                    continue;
+                };
+                match self.reencrypt_blob(&ciphertext, &nonce) {
+                    Ok((ciphertext, nonce)) => {
+                        let update = format!(
+                            "UPDATE type::record('{table}', $rid) SET ciphertext = $ciphertext, nonce = $nonce, updated_at = $now"
+                        );
+                        if let Err(error) = self
+                            .db
+                            .query(&update)
+                            .bind(("rid", rid.to_string()))
+                            .bind(("ciphertext", ciphertext))
+                            .bind(("nonce", nonce))
+                            .bind(("now", Utc::now()))
+                            .await
+                            .and_then(|response| response.check())
+                        {
+                            error!(table, id = rid, error = %error, "Failed to rotate managed credential");
+                            total.failed += 1;
+                        } else {
+                            total.success += 1;
+                        }
+                    }
+                    Err(RotateError::AlreadyRotated) => total.skipped += 1,
+                    Err(RotateError::Failed(error)) => {
+                        error!(
+                            table,
+                            id = rid,
+                            error,
+                            "Failed to re-encrypt managed credential"
+                        );
+                        total.failed += 1;
+                    }
+                }
+            }
+        }
+        total
+    }
+
     fn reencrypt_blob(
         &self,
         ciphertext: &[u8],
@@ -398,9 +474,7 @@ impl KeyRotation {
         data: &serde_json::Value,
     ) -> Result<(), String> {
         self.db
-            .query(
-                "UPDATE type::record('credential', $rid) SET data = $data, updated_at = $now",
-            )
+            .query("UPDATE type::record('credential', $rid) SET data = $data, updated_at = $now")
             .bind(("rid", rid.to_string()))
             .bind(("data", data.clone()))
             .bind(("now", Utc::now()))
@@ -421,9 +495,9 @@ fn decrypt_with_key(
     nonce_bytes: &[u8],
     key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    let cipher =
-        Aes256Gcm::new_from_slice(key).map_err(|e| format!("AES init failed: {e}"))?;
-    let nonce_arr: [u8; 12] = nonce_bytes.try_into()
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| format!("AES init failed: {e}"))?;
+    let nonce_arr: [u8; 12] = nonce_bytes
+        .try_into()
         .map_err(|_| "Invalid nonce length".to_string())?;
     let nonce = Nonce::from(nonce_arr);
     cipher
@@ -431,10 +505,7 @@ fn decrypt_with_key(
         .map_err(|e| format!("Decryption failed: {e}"))
 }
 
-fn encrypt_with_key(
-    plaintext: &[u8],
-    key: &[u8; 32],
-) -> Result<(Vec<u8>, Vec<u8>), RotateError> {
+fn encrypt_with_key(plaintext: &[u8], key: &[u8; 32]) -> Result<(Vec<u8>, Vec<u8>), RotateError> {
     let new_nonce_bytes: [u8; 12] = rand::random();
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| RotateError::Failed(format!("AES init failed: {e}")))?;

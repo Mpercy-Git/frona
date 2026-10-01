@@ -1,3 +1,4 @@
+import { makeMessageError } from "./fixtures/message-error";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SSEEventBus, type ChatSSEEvent, type GlobalSSEEvent } from "../sse-event-bus";
 
@@ -114,6 +115,35 @@ describe("SSEEventBus: chat event routing", () => {
     controller.abort();
   });
 
+  it("lets observers inspect a chat event without consuming it", async () => {
+    const observed: Array<{ chatId: string; event: ChatSSEEvent }> = [];
+    bus.onChatEvent((chatId, event) => observed.push({ chatId, event }));
+    const controller = new AbortController();
+    const iter = bus.subscribe("task-chat", controller.signal)[Symbol.asyncIterator]();
+
+    bus.routeEvent("tool_call", "task-chat", {
+      id: "te-1",
+      provider_call_id: "tc-1",
+      name: "web_search",
+      arguments: { query: "test" },
+      description: "Searching",
+    });
+
+    const delivered = await iter.next();
+    expect(observed).toEqual([{ chatId: "task-chat", event: delivered.value }]);
+
+    controller.abort();
+  });
+
+  it("delivers activity_changed as a payload-free wake event", () => {
+    const received: GlobalSSEEvent[] = [];
+    bus.onGlobal((event) => received.push(event));
+
+    bus.routeEvent("activity_changed", "", {});
+
+    expect(received).toEqual([{ type: "activity_changed" }]);
+  });
+
   it("routes tool_result events correctly", async () => {
     const controller = new AbortController();
     const iter = bus.subscribe("chat-1", controller.signal)[Symbol.asyncIterator]();
@@ -176,10 +206,10 @@ describe("SSEEventBus: chat event routing", () => {
     const controller = new AbortController();
     const iter = bus.subscribe("chat-1", controller.signal)[Symbol.asyncIterator]();
 
-    bus.routeEvent("inference_error", "chat-1", { error: "model error" });
+    bus.routeEvent("inference_error", "chat-1", { error: makeMessageError("model error"), message_id: "message-1" });
 
     const r = await iter.next();
-    expect(r.value).toEqual({ type: "inference_error", error: "model error" });
+    expect(r.value).toEqual({ type: "inference_error", error: makeMessageError("model error"), messageId: "message-1" });
 
     controller.abort();
   });

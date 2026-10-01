@@ -5,25 +5,46 @@ use crate::Entity;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "chat")]
 pub struct Chat {
     pub id: String,
     pub user_id: String,
+    #[serialize_always]
     pub space_id: Option<String>,
+    #[serialize_always]
     #[serde(default)]
     pub task_id: Option<String>,
     pub agent_id: String,
+    #[serialize_always]
     pub title: Option<String>,
+    #[serialize_always]
     #[serde(default)]
     pub archived_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_external_id: Option<String>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Rolling summary of a chat's compacted-away messages. Owned by the chat
+/// domain (replaces the old `Memory{source_type: Chat}` storage). The summary
+/// covers messages with `created_at <= compacted_until`; messages after the
+/// cutoff are loaded verbatim. Compacted messages are retained, not deleted.
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
+#[surreal(crate = "surrealdb::types")]
+#[entity(table = "chat_summary")]
+pub struct ChatSummary {
+    pub id: String,
+    pub user_id: String,
+    pub chat_id: String,
+    pub content: String,
+    pub compacted_until: DateTime<Utc>,
+    pub item_count: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

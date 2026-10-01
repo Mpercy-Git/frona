@@ -19,7 +19,7 @@ import { ToolUIRegistry } from "./tool-uis";
 import { CronRunsTable } from "./cron-runs-table";
 import type { ChatResponse } from "@/lib/types";
 
-function ChatView({
+export function ChatView({
   chatId,
   agentId,
   onChatPromoted,
@@ -86,7 +86,7 @@ function ChatView({
       )}
       <ToolUIRegistry />
       {loaded && currentChatId && <DelegationsPanel chatId={currentChatId} />}
-      {loaded ? <AssistantThread /> : <div className="flex-1" />}
+      {loaded ? <AssistantThread chatId={currentChatId ?? undefined} /> : <div className="flex-1" />}
     </>
   );
 

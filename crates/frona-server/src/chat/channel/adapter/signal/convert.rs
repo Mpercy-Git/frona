@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use presage::Manager;
 use presage::libsignal_service::content::{Content, ContentBody, Metadata};
-use presage::libsignal_service::protocol::{Aci, ServiceId};
 use presage::libsignal_service::proto::DataMessage;
+use presage::libsignal_service::protocol::{Aci, ServiceId};
 use presage::manager::Registered;
 use presage::store::Store;
-use presage::Manager;
 use tokio::sync::mpsc;
 
 use crate::chat::channel::HitlDeliveryService;
@@ -53,7 +53,11 @@ pub async fn handle<S: Store>(
         return;
     };
 
-    let quoted_id: Option<String> = dm.quote.as_ref().and_then(|q| q.id).map(|ts| ts.to_string());
+    let quoted_id: Option<String> = dm
+        .quote
+        .as_ref()
+        .and_then(|q| q.id)
+        .map(|ts| ts.to_string());
     let sender = content.metadata.sender;
     // libsignal-service now exposes `timestamp` as a DateTime<Utc>; Signal read
     // receipts reference the original message's millis-since-epoch id.
@@ -285,7 +289,8 @@ mod tests {
         let event = shape_event(me, &m, &dm).unwrap();
         assert!(
             event.external_chat_id.starts_with("group:"),
-            "got {}", event.external_chat_id
+            "got {}",
+            event.external_chat_id
         );
         assert_eq!(event.content, "group hi");
     }
@@ -340,14 +345,22 @@ mod tests {
             }),
             ..Default::default()
         };
-        let quoted = dm.quote.as_ref().and_then(|q| q.id).map(|ts| ts.to_string());
+        let quoted = dm
+            .quote
+            .as_ref()
+            .and_then(|q| q.id)
+            .map(|ts| ts.to_string());
         assert_eq!(quoted.as_deref(), Some("1700000000123"));
     }
 
     #[test]
     fn quoted_id_is_none_when_no_quote() {
         let dm = dm_text("plain reply");
-        let quoted = dm.quote.as_ref().and_then(|q| q.id).map(|ts| ts.to_string());
+        let quoted = dm
+            .quote
+            .as_ref()
+            .and_then(|q| q.id)
+            .map(|ts| ts.to_string());
         assert_eq!(quoted, None);
     }
 }

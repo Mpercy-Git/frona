@@ -1,31 +1,36 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import type { ModelGroupConfig, RetryConfig } from "@/lib/config-types";
-import { NumberInput, SectionHeader, Toggle, TextInput } from "@/components/settings/field";
-import { CubeIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { getConfigSchema, type ModelGroupConfig, type ModelProviderConfig, type OpenRouterProviderRouting } from "@/lib/config-types";
+import type { ModelDirectory, ModelSettingInfo, ProviderProtocol } from "@/lib/provider-admin";
+import type { ProviderDrafts } from "@/lib/provider-drafts";
+import { modelSettingErrors, object, pointerKey, reconcileModelSettings, removePointer, resolveSchema, unsupportedPaths } from "@/lib/model-authoring";
+import { useModelDirectories } from "@/lib/use-model-directories";
+import { formatGroupName } from "@/lib/model-groups";
+import { NumberInput, SectionHeader, TextInput, Toggle } from "@/components/settings/field";
 import { ComboboxInput } from "@/components/settings/combobox";
-import { ModelSelector } from "@/components/settings/model-selector";
 import { DeleteConfirmDialog } from "@/components/nav/delete-confirm-dialog";
+import { CubeIcon, Cog6ToothIcon, ChevronDownIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { ModelSelector } from "@/components/settings/model-selector";
+import { CustomParameters, ModelSettings, SettingControl } from "@/components/settings/model-settings";
 
+const EMPTY_PROVIDERS: Record<string, ModelProviderConfig> = {};
+const EMPTY_DRAFTS: ProviderDrafts = {};
+const button = "rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-tertiary transition disabled:opacity-50";
 
 interface ModelsSectionProps {
   models: Record<string, ModelGroupConfig>;
   enabledProviders: string[];
-  providerConfigs?: Record<string, import("@/lib/config-types").ModelProviderConfig>;
-  onChange: (models: Record<string, ModelGroupConfig>) => void;
+  providerConfigs?: Record<string, ModelProviderConfig>;
+  savedProviderConfigs?: Record<string, ModelProviderConfig>;
+  providerDrafts?: ProviderDrafts;
+  savedModels?: Record<string, ModelGroupConfig>;
+  onChange: (models: Record<string, ModelGroupConfig>, removedGroups?: string[]) => void;
+  onReadyChange?: (blockReason: string | null) => void;
 }
 
-const PREDEFINED_GROUPS = ["primary", "reasoning", "coding"];
-
-function formatGroupName(name: string): string {
-  const names: Record<string, string> = {
-    primary: "Primary",
-    reasoning: "Reasoning",
-    coding: "Coding",
-  };
-  return names[name] ?? name;
-}
+const PREDEFINED_GROUPS = ["primary", "coding", "reasoning", "memory"];
+const OPTIONAL_GROUPS = ["coding", "reasoning", "memory"];
 
 function sortedGroupNames(names: string[]): string[] {
   const predefined = PREDEFINED_GROUPS.filter((g) => names.includes(g));
@@ -65,7 +70,11 @@ function GroupNameInput({ value, suggestions, onRename }: GroupNameInputProps) {
       }}
       onBlur={() => {
         const resolved = nameToId.get(draft) ?? draft;
-        const sanitized = resolved.trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+        // Keep the capitalisation the user typed — only spaces and characters
+        // that are not valid in a group id are rewritten. Group ids are looked
+        // up verbatim by the server, so "Coding" and "coding" are distinct and
+        // either is fine; silently lower-casing threw away what was entered.
+        const sanitized = resolved.trim().replace(/\s+/g, "_").replace(/[^A-Za-z0-9_]/g, "");
         if (sanitized && sanitized !== value) {
           setDraft(formatGroupName(sanitized));
           onRename(sanitized);
@@ -77,45 +86,13 @@ function GroupNameInput({ value, suggestions, onRename }: GroupNameInputProps) {
   );
 }
 
-const DEFAULT_RETRY: RetryConfig = {
-  max_retries: 10,
-  initial_backoff_ms: 1000,
-  backoff_multiplier: 2.0,
-  max_backoff_ms: 60000,
-};
-
-function newModelGroup(): ModelGroupConfig {
-  return {
-    provider: "",
-    model: "",
-    fallbacks: [],
-    max_tokens: null,
-    temperature: null,
-    context_window: null,
-    retry: { ...DEFAULT_RETRY },
-  };
-}
-
-function newFallback(): ModelGroupConfig {
-  return {
-    provider: "",
-    model: "",
-  };
-}
-
-interface ModelParamsDialogProps {
-  group: ModelGroupConfig;
-  groupName: string;
-  onUpdate: (update: Partial<ModelGroupConfig>) => void;
-  onClose: () => void;
-}
-
 function CollapsibleSection({ title, defaultOpen = false, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="border-b border-border last:border-b-0">
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => setOpen(!open)}
         className="flex w-full items-center justify-between py-3 text-sm font-medium text-text-secondary hover:text-text-primary transition"
       >
@@ -135,652 +112,347 @@ function CollapsibleSection({ title, defaultOpen = false, children }: { title: s
   );
 }
 
-function ModelParamsDialog({ group, groupName, onUpdate, onClose }: ModelParamsDialogProps) {
-  const hasProviderParams = !!group.provider && group.provider !== "generic";
-
+function ParametersDialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
-
-  const retry = group.retry ?? DEFAULT_RETRY;
-
-  function updateRetry(update: Partial<RetryConfig>) {
-    onUpdate({ retry: { ...retry, ...update } });
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative rounded-xl border border-border bg-surface-secondary p-4 max-w-lg w-full mx-4 shadow-xl max-h-[85vh] flex flex-col">
-        <div className="pb-3 border-b border-border flex items-start justify-between gap-3 -mx-4 px-4">
-          <div>
-            <h3 className="text-lg font-semibold text-text-primary">
-              {groupName}
-            </h3>
-            <p className="text-sm text-text-tertiary mt-1">Model parameters</p>
-          </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-text-tertiary hover:bg-surface-tertiary hover:text-text-primary transition shrink-0"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="overflow-y-auto mt-1">
-          <CollapsibleSection title="General" defaultOpen>
-            <div className="grid grid-cols-2 gap-4">
-              <NumberInput
-                label="Max Output Tokens"
-                value={group.max_tokens ?? null}
-                onChange={(v) => onUpdate({ max_tokens: v || null })}
-                min={1}
-                placeholder="Default"
-              />
-              <NumberInput
-                label="Context Window"
-                value={group.context_window ?? null}
-                onChange={(v) => onUpdate({ context_window: v || null })}
-                min={1}
-                placeholder="Default"
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <label className="block text-sm font-medium text-text-secondary">Temperature</label>
-                <span className="text-xs text-text-tertiary tabular-nums">
-                  {group.temperature != null ? group.temperature.toFixed(1) : "Default"}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={2}
-                step={0.1}
-                value={group.temperature ?? 0}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value);
-                  onUpdate({ temperature: v === 0 ? null : v });
-                }}
-                className="w-full accent-accent"
-              />
-            </div>
-          </CollapsibleSection>
-
-          {hasProviderParams && (
-            <CollapsibleSection title={group.provider.charAt(0).toUpperCase() + group.provider.slice(1)}>
-              <ProviderParams group={group} onUpdate={onUpdate} />
-            </CollapsibleSection>
-          )}
-
-          <CollapsibleSection title="Retry">
-            <div className="grid grid-cols-2 gap-4">
-              <NumberInput
-                label="Max Retries"
-                value={retry.max_retries}
-                onChange={(v) => updateRetry({ max_retries: v })}
-                min={0}
-              />
-              <NumberInput
-                label="Initial Backoff (ms)"
-                value={retry.initial_backoff_ms}
-                onChange={(v) => updateRetry({ initial_backoff_ms: v })}
-                min={0}
-              />
-              <NumberInput
-                label="Backoff Multiplier"
-                value={retry.backoff_multiplier}
-                onChange={(v) => updateRetry({ backoff_multiplier: v })}
-                min={1}
-                step={0.1}
-              />
-              <NumberInput
-                label="Max Backoff (ms)"
-                value={retry.max_backoff_ms}
-                onChange={(v) => updateRetry({ max_backoff_ms: v })}
-                min={0}
-              />
-            </div>
-          </CollapsibleSection>
-        </div>
-
-        <div className="pt-3 mt-2 border-t border-border flex justify-center -mx-4 px-4">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 transition"
-          >
-            Close
-          </button>
-        </div>
+  return <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true" aria-label={`${title} parameters`}>
+    <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+    <div className="relative mx-4 flex max-h-[85vh] w-full max-w-lg flex-col rounded-xl border border-border bg-surface-secondary p-4 shadow-xl">
+      <div className="-mx-4 flex items-start justify-between gap-3 border-b border-border px-4 pb-3">
+        <div><h3 className="text-lg font-semibold text-text-primary">{title}</h3><p className="mt-1 text-sm text-text-tertiary">Model parameters</p></div>
+        <button type="button" aria-label="Close parameters" onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-text-tertiary hover:bg-surface-tertiary hover:text-text-primary"><XMarkIcon className="h-4 w-4" /></button>
+      </div>
+      <div className="mt-1 overflow-y-auto">{children}</div>
+      <div className="-mx-4 mt-2 flex justify-center border-t border-border px-4 pt-3">
+        <button type="button" onClick={onClose} className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover">Close</button>
       </div>
     </div>
-  );
+  </div>;
 }
 
-function ProviderParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: (u: Partial<ModelGroupConfig>) => void }) {
-  switch (group.provider) {
-    case "anthropic":
-      return <AnthropicParams group={group} onUpdate={onUpdate} />;
-    case "ollama":
-      return <OllamaParams group={group} onUpdate={onUpdate} />;
-    case "openai":
-    case "groq":
-    case "deepseek":
-    case "xai":
-    case "together":
-    case "hyperbolic":
-      return <OpenAIParams group={group} onUpdate={onUpdate} />;
-    case "openrouter":
-      return <OpenRouterParamsComponent group={group} onUpdate={onUpdate} />;
-    case "gemini":
-      return <GeminiParams group={group} onUpdate={onUpdate} />;
-    default:
-      return <p className="text-sm text-text-tertiary">No provider-specific parameters.</p>;
-  }
-}
+const protocolLabel = (api: string) => ({ completions: "Chat Completions", responses: "Responses", "anthropic-messages": "Anthropic Messages", "gemini-generate-content": "Gemini Generate Content", ollama: "Ollama" })[api] ?? formatGroupName(api.replaceAll("-", "_"));
 
-function AnthropicParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: (u: Partial<ModelGroupConfig>) => void }) {
-  const thinkingEnabled = group.thinking?.type === "enabled";
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4 items-start">
-        <Toggle
-          label="Extended Thinking"
-          value={thinkingEnabled}
-          onChange={(v) => onUpdate({
-            thinking: v ? { type: "enabled", budget_tokens: group.thinking?.budget_tokens ?? 16000 } : { type: "disabled" },
-          })}
-        />
-        {thinkingEnabled && (
-          <NumberInput
-            label="Budget (tokens)"
-            value={group.thinking?.budget_tokens ?? null}
-            onChange={(v) => onUpdate({
-              thinking: { type: "enabled", budget_tokens: v || undefined },
-            })}
-            min={1}
-            placeholder="16000"
-          />
-        )}
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <NumberInput label="Top P" value={group.top_p ?? null} onChange={(v) => onUpdate({ top_p: v || null })} min={0} step={0.05} placeholder="Default" />
-        <NumberInput label="Top K" value={group.top_k ?? null} onChange={(v) => onUpdate({ top_k: v || null })} min={0} placeholder="Default" />
-      </div>
+// OpenRouter's `route`/`prompt_caching`/`provider_routing` fields have no
+// upstream equivalent, and (unlike the rest of `ModelSettings`) are not
+// covered by the backend's live per-setting directory either:
+// `parameter_bindings()` (`inference/protocol/parameters.rs`) maps
+// `ProviderModel::OpenRouter` onto `OpenAICompatParams` only, because
+// `OpenRouterParams` wraps that struct with `#[serde(flatten)]`, which the
+// `ParameterMetadata` derive rejects (see its own doc comment in
+// `core/config/types.rs`). So these three fields never appear as
+// `ModelSettingInfo` entries and the generic, catalog-driven `ModelSettings`
+// component never renders controls for them. They're preserved here as a
+// dedicated, fork-only block, same as `providers-section.tsx` preserves
+// `billing`.
+function OpenRouterRouting({ group, onChange }: { group: ModelGroupConfig; onChange: (group: ModelGroupConfig) => void }) {
+  const routing = group.provider_routing ?? null;
+  const maxPrice = routing?.max_price ?? null;
+  const updateRouting = (patch: OpenRouterProviderRouting) => onChange({ ...group, provider_routing: { ...(routing ?? {}), ...patch } });
+  const list = (value?: string[] | null) => Array.isArray(value) ? value.join(", ") : "";
+  const setList = (raw: string, key: keyof OpenRouterProviderRouting) => {
+    const values = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    updateRouting({ [key]: values.length > 0 ? values : null } as OpenRouterProviderRouting);
+  };
+  return <div className="space-y-4">
+    <div className="space-y-1">
+      <label className="block text-sm font-medium text-text-secondary">Route</label>
+      <select value={group.route ?? ""} onChange={(e) => onChange({ ...group, route: e.target.value || null })}
+        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary">
+        <option value="">Default</option>
+        <option value="fallback">Fallback</option>
+      </select>
+      <p className="text-xs text-text-tertiary">
+        Model-level routing. &quot;Fallback&quot; lets OpenRouter retry this group&apos;s fallback models
+        when the primary is down. This is not a provider name — provider preferences are below.
+      </p>
     </div>
-  );
-}
-
-function OllamaParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: (u: Partial<ModelGroupConfig>) => void }) {
-  return (
-    <div className="space-y-4">
-      <Toggle label="Think" value={group.think ?? false} onChange={(v) => onUpdate({ think: v || null })} />
-      <div className="grid grid-cols-2 gap-4">
-        <NumberInput label="Context Size (num_ctx)" value={group.num_ctx ?? null} onChange={(v) => onUpdate({ num_ctx: v || null })} min={1} placeholder="Default" />
-        <NumberInput label="Max Predict (num_predict)" value={group.num_predict ?? null} onChange={(v) => onUpdate({ num_predict: v || null })} min={1} placeholder="Default" />
-        <NumberInput label="Top K" value={group.top_k ?? null} onChange={(v) => onUpdate({ top_k: v || null })} min={0} placeholder="40" />
-        <NumberInput label="Top P" value={group.top_p ?? null} onChange={(v) => onUpdate({ top_p: v || null })} min={0} step={0.05} placeholder="0.9" />
-        <NumberInput label="Min P" value={group.min_p ?? null} onChange={(v) => onUpdate({ min_p: v || null })} min={0} step={0.05} placeholder="0.0" />
-        <NumberInput label="Repeat Penalty" value={group.repeat_penalty ?? null} onChange={(v) => onUpdate({ repeat_penalty: v || null })} min={0} step={0.05} placeholder="1.1" />
-        <NumberInput label="Repeat Last N" value={group.repeat_last_n ?? null} onChange={(v) => onUpdate({ repeat_last_n: v || null })} min={-1} placeholder="64" />
-        <NumberInput label="Seed" value={group.seed ?? null} onChange={(v) => onUpdate({ seed: v || null })} min={0} placeholder="Random" />
-        <NumberInput label="Mirostat" value={group.mirostat ?? null} onChange={(v) => onUpdate({ mirostat: v || null })} min={0} placeholder="0" />
-        <NumberInput label="Mirostat Eta" value={group.mirostat_eta ?? null} onChange={(v) => onUpdate({ mirostat_eta: v || null })} min={0} step={0.05} placeholder="0.1" />
-        <NumberInput label="Mirostat Tau" value={group.mirostat_tau ?? null} onChange={(v) => onUpdate({ mirostat_tau: v || null })} min={0} step={0.5} placeholder="5.0" />
-        <NumberInput label="Num GPU" value={group.num_gpu ?? null} onChange={(v) => onUpdate({ num_gpu: v || null })} min={0} placeholder="Default" />
-        <NumberInput label="Num Thread" value={group.num_thread ?? null} onChange={(v) => onUpdate({ num_thread: v || null })} min={1} placeholder="Default" />
-        <NumberInput label="Num Batch" value={group.num_batch ?? null} onChange={(v) => onUpdate({ num_batch: v || null })} min={1} placeholder="512" />
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <Toggle label="Use MMap" value={group.use_mmap ?? false} onChange={(v) => onUpdate({ use_mmap: v || null })} />
-        <Toggle label="Use MLock" value={group.use_mlock ?? false} onChange={(v) => onUpdate({ use_mlock: v || null })} />
-      </div>
+    <p className="text-xs text-text-tertiary">
+      Control which backend providers OpenRouter uses. See{" "}
+      <a href="https://openrouter.ai/docs/guides/routing/provider-selection" target="_blank" rel="noreferrer" className="text-accent hover:underline">OpenRouter docs</a>.
+    </p>
+    <TextInput label="Provider Order" description="Comma-separated provider preferences, e.g. 'OpenAI, Anthropic'"
+      value={list(routing?.order)} onChange={(raw) => setList(raw, "order")} placeholder="OpenAI, Anthropic" />
+    <TextInput label="Only These Providers" description="Hard allowlist. Unlike Provider Order, nothing outside this list is ever used — pins cost and latency to endpoints you have measured."
+      value={list(routing?.only)} onChange={(raw) => setList(raw, "only")} placeholder="Anthropic" />
+    <div className="grid grid-cols-2 gap-4">
+      <Toggle label="Allow Fallbacks" description="Fall back to other providers if preferred ones fail" value={routing?.allow_fallbacks ?? true} onChange={(v) => updateRouting({ allow_fallbacks: v })} />
+      <Toggle label="Require Parameters" description="Only use providers that support all request parameters" value={routing?.require_parameters ?? false} onChange={(v) => updateRouting({ require_parameters: v })} />
     </div>
-  );
-}
-
-function OpenAIParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: (u: Partial<ModelGroupConfig>) => void }) {
-  return (
-    <div className="space-y-4">
-      <div className="space-y-1">
-        <label className="block text-sm font-medium text-text-secondary">Reasoning Effort</label>
-        <select
-          value={group.reasoning_effort ?? ""}
-          onChange={(e) => onUpdate({ reasoning_effort: e.target.value || null })}
-          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
-        >
-          <option value="">Default</option>
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-        </select>
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <NumberInput label="Top P" value={group.top_p ?? null} onChange={(v) => onUpdate({ top_p: v || null })} min={0} step={0.05} placeholder="Default" />
-        <NumberInput label="Min P" value={group.min_p ?? null} onChange={(v) => onUpdate({ min_p: v || null })} min={0} step={0.05} placeholder="Default" />
-        <NumberInput label="Frequency Penalty" value={group.frequency_penalty ?? null} onChange={(v) => onUpdate({ frequency_penalty: v || null })} step={0.05} placeholder="0.0" />
-        <NumberInput label="Presence Penalty" value={group.presence_penalty ?? null} onChange={(v) => onUpdate({ presence_penalty: v || null })} step={0.05} placeholder="0.0" />
-        <NumberInput label="Seed" value={group.seed ?? null} onChange={(v) => onUpdate({ seed: v || null })} min={0} placeholder="Random" />
-        <NumberInput label="Max Completion Tokens" value={group.max_completion_tokens ?? null} onChange={(v) => onUpdate({ max_completion_tokens: v || null })} min={1} placeholder="Default" />
-      </div>
-      <Toggle label="Log Probabilities" value={group.logprobs ?? false} onChange={(v) => onUpdate({ logprobs: v || null })} />
+    <div className="grid grid-cols-2 gap-4">
+      <TextInput label="Ignore Providers" description="Comma-separated providers to ignore" value={list(routing?.ignore)} onChange={(raw) => setList(raw, "ignore")} placeholder="Together, DeepSeek" />
+      <TextInput label="Quantizations" description="Comma-separated, e.g. 'fp8, bf16'" value={list(routing?.quantizations)} onChange={(raw) => setList(raw, "quantizations")} placeholder="fp8, bf16" />
     </div>
-  );
-}
-
-function OpenRouterParamsComponent({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: (u: Partial<ModelGroupConfig>) => void }) {
-  const routing = (group.provider_routing ?? null) as { order?: string[]; allow_fallbacks?: boolean; require_parameters?: boolean; ignore?: string[]; quantizations?: string[]; sort?: string } | null;
-
-  return (
-    <div className="space-y-4">
-      {/* Standard OpenAI-compatible params */}
-      <div className="space-y-1">
-        <label className="block text-sm font-medium text-text-secondary">Reasoning Effort</label>
-        <select
-          value={group.reasoning_effort ?? ""}
-          onChange={(e) => onUpdate({ reasoning_effort: e.target.value || null })}
-          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
-        >
-          <option value="">Default</option>
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-        </select>
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <NumberInput label="Top P" value={group.top_p ?? null} onChange={(v) => onUpdate({ top_p: v || null })} min={0} step={0.05} placeholder="Default" />
-        <NumberInput label="Min P" value={group.min_p ?? null} onChange={(v) => onUpdate({ min_p: v || null })} min={0} step={0.05} placeholder="Default" />
-        <NumberInput label="Frequency Penalty" value={group.frequency_penalty ?? null} onChange={(v) => onUpdate({ frequency_penalty: v || null })} step={0.05} placeholder="0.0" />
-        <NumberInput label="Presence Penalty" value={group.presence_penalty ?? null} onChange={(v) => onUpdate({ presence_penalty: v || null })} step={0.05} placeholder="0.0" />
-        <NumberInput label="Seed" value={group.seed ?? null} onChange={(v) => onUpdate({ seed: v || null })} min={0} placeholder="Random" />
-        <NumberInput label="Max Completion Tokens" value={group.max_completion_tokens ?? null} onChange={(v) => onUpdate({ max_completion_tokens: v || null })} min={1} placeholder="Default" />
-      </div>
-      <Toggle label="Log Probabilities" value={group.logprobs ?? false} onChange={(v) => onUpdate({ logprobs: v || null })} />
-
-      {/* OpenRouter-specific routing */}
-      <div className="border-t border-border pt-4 mt-4">
-        <h4 className="text-sm font-medium text-text-secondary mb-3">Provider Routing</h4>
-        <p className="text-xs text-text-tertiary mb-3">
-          Control which backend providers OpenRouter uses. See{" "}
-          <a href="https://openrouter.ai/docs/guides/routing/provider-selection" target="_blank" rel="noreferrer" className="text-accent hover:underline">
-            OpenRouter docs
-          </a>.
-        </p>
-        <div className="space-y-3">
-          <TextInput
-            label="Route"
-            description="Simple provider routing, e.g. 'openai' or 'anthropic'. Mutually exclusive with Provider Routing below."
-            value={(group.route as string | null) ?? null}
-            onChange={(v) => onUpdate({ route: v || null })}
-            placeholder="openai"
-          />
-          <TextInput
-            label="Provider Order"
-            description="Comma-separated provider preferences, e.g. 'OpenAI, Anthropic'"
-            value={Array.isArray(routing?.order) ? routing!.order!.join(", ") : ""}
-            onChange={(raw) => {
-              const order = raw.split(",").map(s => s.trim()).filter(Boolean);
-              const existing = routing ?? {};
-              onUpdate({ provider_routing: order.length > 0 ? { ...existing, order } : { ...existing, order: null } } as any);
-            }}
-            placeholder="OpenAI, Anthropic"
-          />
-          <div className="grid grid-cols-2 gap-4">
-            <Toggle
-              label="Allow Fallbacks"
-              description="Fall back to other providers if preferred ones fail"
-              value={routing?.allow_fallbacks ?? true}
-              onChange={(v) => {
-                const existing = routing ?? {};
-                onUpdate({ provider_routing: { ...existing, allow_fallbacks: v } } as any);
-              }}
-            />
-            <Toggle
-              label="Require Parameters"
-              description="Only use providers that support all request parameters"
-              value={routing?.require_parameters ?? false}
-              onChange={(v) => {
-                const existing = routing ?? {};
-                onUpdate({ provider_routing: { ...existing, require_parameters: v } } as any);
-              }}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <TextInput
-              label="Ignore Providers"
-              description="Comma-separated providers to ignore"
-              value={Array.isArray(routing?.ignore) ? routing!.ignore!.join(", ") : ""}
-              onChange={(raw) => {
-                const ignore = raw.split(",").map(s => s.trim()).filter(Boolean);
-                const existing = routing ?? {};
-                onUpdate({ provider_routing: { ...existing, ignore: ignore.length > 0 ? ignore : null } } as any);
-              }}
-              placeholder="Together, DeepSeek"
-            />
-            <TextInput
-              label="Quantizations"
-              description="Comma-separated, e.g. 'fp8, bf16'"
-              value={Array.isArray(routing?.quantizations) ? routing!.quantizations!.join(", ") : ""}
-              onChange={(raw) => {
-                const quantizations = raw.split(",").map(s => s.trim()).filter(Boolean);
-                const existing = routing ?? {};
-                onUpdate({ provider_routing: { ...existing, quantizations: quantizations.length > 0 ? quantizations : null } } as any);
-              }}
-              placeholder="fp8, bf16"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="block text-sm font-medium text-text-secondary">Sort By</label>
-            <select
-              value={routing?.sort ?? ""}
-              onChange={(e) => {
-                const existing = routing ?? {};
-                onUpdate({ provider_routing: { ...existing, sort: e.target.value || null } } as any);
-              }}
-              className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
-            >
-              <option value="">Default</option>
-              <option value="throughput">Throughput</option>
-              <option value="latency">Latency</option>
-              <option value="price">Price</option>
-            </select>
-          </div>
-        </div>
-      </div>
+    <div className="space-y-1">
+      <label className="block text-sm font-medium text-text-secondary">Sort By</label>
+      <select value={routing?.sort ?? ""} onChange={(e) => updateRouting({ sort: e.target.value || null })}
+        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary">
+        <option value="">Default</option>
+        <option value="throughput">Throughput</option>
+        <option value="latency">Latency</option>
+        <option value="price">Price</option>
+      </select>
     </div>
-  );
-}
-
-function GeminiParams({ group, onUpdate }: { group: ModelGroupConfig; onUpdate: (u: Partial<ModelGroupConfig>) => void }) {
-  const thinkingEnabled = !!group.thinking_config;
-  return (
-    <div className="space-y-4">
-      <Toggle
-        label="Thinking"
-        value={thinkingEnabled}
-        onChange={(v) => onUpdate({
-          thinking_config: v ? { thinking_budget: group.thinking_config?.thinking_budget ?? 8192 } : null,
-        })}
-      />
-      {thinkingEnabled && (
-        <NumberInput
-          label="Thinking Budget (tokens)"
-          value={group.thinking_config?.thinking_budget ?? null}
-          onChange={(v) => onUpdate({
-            thinking_config: v ? { thinking_budget: v } : null,
-          })}
-          min={1}
-          placeholder="8192"
-        />
-      )}
-      <div className="grid grid-cols-2 gap-4">
-        <NumberInput label="Top P" value={group.top_p ?? null} onChange={(v) => onUpdate({ top_p: v || null })} min={0} step={0.05} placeholder="Default" />
-        <NumberInput label="Top K" value={group.top_k ?? null} onChange={(v) => onUpdate({ top_k: v || null })} min={0} placeholder="Default" />
-        <NumberInput label="Candidate Count" value={group.candidate_count ?? null} onChange={(v) => onUpdate({ candidate_count: v || null })} min={1} placeholder="1" />
-      </div>
+    <div className="grid grid-cols-2 gap-4">
+      <NumberInput label="Max Prompt Price ($/M tokens)" value={maxPrice?.prompt ?? null} onChange={(v) => updateRouting({ max_price: { ...(maxPrice ?? {}), prompt: v || null } })} min={0} step={0.1} placeholder="No ceiling" />
+      <NumberInput label="Max Completion Price ($/M tokens)" value={maxPrice?.completion ?? null} onChange={(v) => updateRouting({ max_price: { ...(maxPrice ?? {}), completion: v || null } })} min={0} step={0.1} placeholder="No ceiling" />
     </div>
-  );
+    <p className="text-xs text-text-tertiary -mt-1">A hard ceiling: a request no eligible provider can serve at or under this price fails rather than routing to an expensive endpoint.</p>
+    <div className="grid grid-cols-2 gap-4">
+      <Toggle label="Deny Data Collection" description="Only route to providers that do not store prompts non-transiently" value={routing?.data_collection === "deny"} onChange={(v) => updateRouting({ data_collection: v ? "deny" : null })} />
+      <Toggle label="Zero Data Retention Only" description="Restrict routing to ZDR endpoints" value={routing?.zdr ?? false} onChange={(v) => updateRouting({ zdr: v || null })} />
+    </div>
+    <div className="border-t border-border pt-4">
+      <Toggle label="Cache the System Prompt"
+        description="Marks the system prompt as a cache breakpoint. Providers that honour explicit breakpoints (Anthropic, Gemini) then bill it at the cache-read rate for the rest of a tool loop; providers that cache automatically ignore the marker. Turn off only for one-shot workloads, where the cache write is never read back."
+        value={group.prompt_caching ?? true} onChange={(v) => onChange({ ...group, prompt_caching: v ? null : false })} />
+    </div>
+  </div>;
 }
 
-export function ModelsSection({ models, enabledProviders, providerConfigs, onChange }: ModelsSectionProps) {
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [paramsDialog, setParamsDialog] = useState<{ group: string; fallbackIndex?: number } | null>(null);
-  const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
-
-  // Exclude groups marked for deletion (null value — see removeGroup).
-  const groupNames = sortedGroupNames(
-    Object.keys(models).filter((name) => models[name] != null),
-  );
-
-  function toggleExpanded(name: string) {
-    setExpandedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
+function ModelEditor({ group, enabledProviders, configs, directory, loading, error, onChange, report, requireApi, title, onRemove, retrySettings, schemaError, onRefresh }: {
+  group: ModelGroupConfig; enabledProviders: string[]; configs: Record<string, ModelProviderConfig>;
+  directory?: ModelDirectory; loading?: boolean; error?: string;
+  onChange: (group: ModelGroupConfig) => void; report: (message: string | null) => void;
+  requireApi?: boolean; title: string; onRemove?: () => void;
+  retrySettings: ModelSettingInfo[]; schemaError: string | null; onRefresh: () => void;
+}) {
+  const [paramsOpen, setParamsOpen] = useState(false);
+  const initialNew = useRef(!group.provider || !group.model);
+  const [selectionChanged, setSelectionChanged] = useState(false);
+  const [pendingSelection, setPendingSelection] = useState<{ provider: string; model: string } | null>(null);
+  const isNew = (requireApi ?? initialNew.current) || selectionChanged;
+  const [inputErrors, setInputErrors] = useState<Record<string, string>>({});
+  const [editorEpoch, setEditorEpoch] = useState(0);
+  const row = directory?.models.find(row => row.id === group.model);
+  const protocol = row?.protocols.find(protocol => protocol.api === group.api) ?? (!group.api ? row?.protocols[0] : undefined);
+  const available = row?.protocols.filter(protocol => protocol.available) ?? [];
+  const soleApi = available.length === 1 ? available[0].api : undefined;
+  useEffect(() => {
+    if (isNew && !group.api && soleApi) onChange({ ...group, api: soleApi });
+  }, [isNew, group, soleApi, onChange]);
+  useEffect(() => {
+    if (!pendingSelection || pendingSelection.provider !== group.provider || pendingSelection.model !== group.model || loading || error) return;
+    const selected = row?.protocols.find(protocol => protocol.available && protocol.api === group.api)
+      ?? row?.protocols.find(protocol => protocol.available && protocol.api === row.suggested_protocol)
+      ?? row?.protocols.find(protocol => protocol.available);
+    if (!selected) return;
+    setPendingSelection(null);
+    onChange(reconcileModelSettings({ ...group, api: selected.api }, selected));
+  }, [pendingSelection, group, row, loading, error, onChange]);
+  const unsupported = row ? unsupportedPaths(group, protocol) : [];
+  const retryErrors = modelSettingErrors(group, { api: group.api ?? "completions", available: true, settings: retrySettings, warnings: [] }).filter(error => error.startsWith("/retry/"));
+  const errors = [...modelSettingErrors(group, protocol), ...retryErrors];
+  const block = !group.provider || !group.model ? "Select a connection and model ID"
+    : isNew && !group.api ? "Select an explicit protocol for this new model"
+      : unsupported.length ? `Reconcile unsupported settings: ${unsupported.join(", ")}`
+        : errors[0] ?? Object.values(inputErrors)[0] ?? null;
+  useEffect(() => { report(block); return () => report(null); }, [block, report]);
+  const onError = useCallback((path: string, error: string | null) => {
+    setInputErrors(previous => { const next = { ...previous }; if (error) next[path] = `${path}: ${error}`; else delete next[path]; return next; });
+  }, []);
+  function selectProvider(provider: string) {
+    if (provider === group.provider) return;
+    setSelectionChanged(true);
+    setPendingSelection(null);
+    setInputErrors({});
+    setEditorEpoch(epoch => epoch + 1);
+    onChange({ ...removePointer(group, "/api"), provider, model: "" });
   }
-
-  function updateGroup(name: string, update: Partial<ModelGroupConfig>) {
-    onChange({ ...models, [name]: { ...models[name], ...update } });
-  }
-
-  function renameGroup(oldName: string, newName: string) {
-    if (!newName.trim() || (newName !== oldName && newName in models)) return;
-    const entries = Object.entries(models).map(([k, v]) =>
-      k === oldName ? [newName, v] : [k, v]
-    );
-    onChange(Object.fromEntries(entries));
-    setExpandedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(oldName)) {
-        next.delete(oldName);
-        next.add(newName);
-      }
-      return next;
-    });
-  }
-
-  function removeGroup(name: string) {
-    // Send an explicit `null` so the backend's deep_merge deletes this group.
-    // Omitting the key would leave the on-disk group intact — it would
-    // reappear on reload. Null entries are filtered from `groupNames` below.
-    onChange({ ...models, [name]: null as unknown as ModelGroupConfig });
-    setConfirmingRemove(null);
-  }
-
-  function addGroup() {
-    let name = "";
-    let i = 1;
-    while (name in models) {
-      name = `group_${i++}`;
+  function selectModel(model: string) {
+    const row = directory?.models.find(row => row.id === model);
+    const suggested = row?.protocols.find(protocol => protocol.available && protocol.api === row.suggested_protocol)
+      ?? row?.protocols.find(protocol => protocol.available);
+    const changed = model !== group.model;
+    if (changed) {
+      setSelectionChanged(true);
+      setInputErrors({});
+      setEditorEpoch(epoch => epoch + 1);
     }
-    onChange({ ...models, [name]: newModelGroup() });
-    setExpandedGroups((prev) => new Set(prev).add(name));
+    const needsProtocol = !group.api || !row?.protocols.some(protocol => protocol.available && protocol.api === group.api);
+    const next = { ...group, model, ...((isNew || changed) && needsProtocol && suggested ? { api: suggested.api } : {}) };
+    const selected = row?.protocols.find(protocol => protocol.available && protocol.api === next.api);
+    if (changed) setPendingSelection(selected ? null : { provider: group.provider, model });
+    onChange(changed && selected ? reconcileModelSettings(next, selected) : next);
   }
-
-  function updateFallback(groupName: string, index: number, update: Partial<ModelGroupConfig>) {
-    const fallbacks = [...(models[groupName].fallbacks ?? [])];
-    fallbacks[index] = { ...fallbacks[index], ...update };
-    updateGroup(groupName, { fallbacks });
-  }
-
-  function addFallback(groupName: string) {
-    updateGroup(groupName, { fallbacks: [...(models[groupName].fallbacks ?? []), newFallback()] });
-  }
-
-  function removeFallback(groupName: string, index: number) {
-    const fallbacks = (models[groupName].fallbacks ?? []).filter((_, i) => i !== index);
-    updateGroup(groupName, { fallbacks });
-  }
-
-  return (
-    <div>
-      <SectionHeader title="Model Groups" description="Configure model groups with fallback chains and inference parameters" icon={CubeIcon} />
-      <div className="space-y-3">
-        {groupNames.map((name) => {
-          const group = models[name];
-          const isExpanded = expandedGroups.has(name);
-
-          return (
-            <div
-              key={name}
-              className="rounded-lg border border-border bg-surface-secondary"
-            >
-              <button
-                type="button"
-                onClick={() => toggleExpanded(name)}
-                className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-text-primary hover:bg-surface-tertiary rounded-lg"
-              >
-                <span>{formatGroupName(name)}</span>
-                <svg
-                  className={`h-4 w-4 text-text-tertiary transition-transform ${isExpanded ? "rotate-180" : ""}`}
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-
-              {isExpanded && (
-                <div className="space-y-4 px-4 pb-4">
-                  <GroupNameInput
-                    value={name}
-                    suggestions={PREDEFINED_GROUPS.filter((g) => g === name || !(g in models))}
-                    onRename={(newName) => renameGroup(name, newName)}
-                  />
-
-                  <div className="flex items-end gap-2">
-                    <div className="flex-1">
-                      <ModelSelector
-                        label="Main Model"
-                        provider={group.provider}
-                        model={group.model}
-                        enabledProviders={enabledProviders}
-                        providerConfigs={providerConfigs}
-                        onProviderChange={(v) => updateGroup(name, { provider: v, model: "" })}
-                        onModelChange={(v) => updateGroup(name, { model: v })}
-                        onModelInfo={(info) => {
-                          if (info) {
-                            const update: Partial<ModelGroupConfig> = {};
-                            if (info.max_tokens && info.max_tokens !== group.max_tokens) update.max_tokens = info.max_tokens;
-                            if (info.context_window && info.context_window !== group.context_window) update.context_window = info.context_window;
-                            if (Object.keys(update).length > 0) updateGroup(name, update);
-                          }
-                        }}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setParamsDialog({ group: name })}
-                      disabled={!group.provider || !group.model}
-                      className="shrink-0 h-[38px] rounded-lg border border-border bg-surface px-2.5 text-text-tertiary hover:bg-surface-tertiary hover:text-text-primary transition disabled:opacity-30 disabled:pointer-events-none"
-                      title="Parameters"
-                    >
-                      <Cog6ToothIcon className="h-4 w-4" />
-                    </button>
-                  </div>
-
-                  {(group.fallbacks ?? []).length > 0 && (
-                  <div className="space-y-2">
-                    <label className="block text-sm font-medium text-text-secondary">
-                      Fallbacks
-                    </label>
-                    {(group.fallbacks ?? []).map((fb, i) => (
-                      <div key={i} className="flex items-end gap-2">
-                        <span className="text-xs text-text-tertiary w-5 text-right shrink-0 pb-2.5">
-                          {i + 1}.
-                        </span>
-                        <div className="flex-1">
-                          <ModelSelector
-                            label=""
-                            provider={fb.provider}
-                            model={fb.model}
-                            enabledProviders={enabledProviders}
-                            providerConfigs={providerConfigs}
-                            onProviderChange={(v) => updateFallback(name, i, { provider: v, model: "" })}
-                            onModelChange={(v) => updateFallback(name, i, { model: v })}
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setParamsDialog({ group: name, fallbackIndex: i })}
-                          disabled={!fb.provider || !fb.model}
-                          className="shrink-0 h-[38px] rounded-lg border border-border bg-surface px-2.5 text-text-tertiary hover:bg-surface-tertiary hover:text-text-primary transition disabled:opacity-30 disabled:pointer-events-none"
-                          title="Parameters"
-                        >
-                          <Cog6ToothIcon className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => removeFallback(name, i)}
-                          className="shrink-0 h-[38px] rounded-lg p-1.5 text-text-tertiary hover:bg-surface-tertiary hover:text-text-primary flex items-center"
-                        >
-                          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  )}
-
-                  <div className="flex items-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => addFallback(name)}
-                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-tertiary transition flex items-center gap-1.5"
-                    >
-                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                      </svg>
-                      Fallback
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmingRemove(name)}
-                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-danger hover:bg-surface-tertiary transition ml-auto"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <button
-        type="button"
-        onClick={addGroup}
-        className="mt-4 rounded-lg bg-accent px-4 py-2 text-sm text-white hover:opacity-90"
-      >
-        + Add Model Group
-      </button>
-
-      {paramsDialog && (() => {
-        const { group: groupName, fallbackIndex } = paramsDialog;
-        const groupConfig = models[groupName];
-        if (!groupConfig) return null;
-        const isFallback = fallbackIndex != null;
-        const target = isFallback ? (groupConfig.fallbacks ?? [])[fallbackIndex] : groupConfig;
-        if (!target) return null;
-        const label = isFallback
-          ? `${formatGroupName(groupName)} — Fallback ${fallbackIndex + 1}`
-          : formatGroupName(groupName);
-        return (
-          <ModelParamsDialog
-            group={target}
-            groupName={label}
-            onUpdate={(update) => {
-              if (isFallback) {
-                updateFallback(groupName, fallbackIndex, update);
-              } else {
-                updateGroup(groupName, update);
-              }
-            }}
-            onClose={() => setParamsDialog(null)}
-          />
-        );
-      })()}
-
-      <DeleteConfirmDialog
-        open={!!confirmingRemove}
-        onCancel={() => setConfirmingRemove(null)}
-        onConfirm={() => { if (confirmingRemove) removeGroup(confirmingRemove); }}
-        title={`Remove ${confirmingRemove ? formatGroupName(confirmingRemove) : ""}?`}
-        message="This model group and its configuration will be removed."
-      />
+  const brand = configs[group.provider]?.provider ?? group.provider;
+  return <div className="space-y-2">
+    <div className="flex items-end gap-2">
+      <div className="min-w-0 flex-1"><ModelSelector provider={group.provider} model={group.model} enabledProviders={enabledProviders} providerConfigs={configs}
+        directory={directory} loading={loading} onProviderChange={selectProvider} onModelChange={selectModel} /></div>
+      <button type="button" title="Parameters" aria-label={`${title} parameters`} disabled={!group.provider || !group.model} onClick={() => setParamsOpen(true)}
+        className="h-[38px] shrink-0 rounded-lg border border-border bg-surface px-2.5 text-text-tertiary transition hover:bg-surface-tertiary hover:text-text-primary disabled:pointer-events-none disabled:opacity-30"><Cog6ToothIcon className="h-4 w-4" /></button>
+      {onRemove && <button type="button" aria-label={`Remove ${title}`} onClick={onRemove} className="flex h-[38px] shrink-0 items-center rounded-lg p-1.5 text-text-tertiary hover:bg-surface-tertiary hover:text-text-primary"><XMarkIcon className="h-4 w-4" /></button>}
     </div>
-  );
+    {error && <p role="alert" className="text-xs text-warning">{error}</p>}
+    {!paramsOpen && block && group.provider && group.model && <p className="text-xs text-warning">{block}</p>}
+    {paramsOpen && <ParametersDialog title={title} onClose={() => setParamsOpen(false)}>
+      <CollapsibleSection title="General" defaultOpen>
+        {available.length > 0 && <ComboboxInput label="Protocol" value={group.api ?? ""} allowFreeText={false}
+          items={[{ value: "", label: "Use provider default" }, ...available.map(protocol => ({ value: protocol.api, label: protocolLabel(protocol.api) })),
+            ...(group.api && !available.some(protocol => protocol.api === group.api) ? [{ value: group.api, label: `${protocolLabel(group.api)} (unavailable)` }] : [])]}
+          onChange={api => { if (api) onChange({ ...group, api: api as ProviderProtocol }); else onChange(removePointer(group, "/api")); }} />}
+        {row?.warnings.map(warning => <p className="text-xs text-warning" key={warning}>{warning}</p>)}
+        {protocol?.warnings.map(warning => <p className="text-xs text-warning" key={warning}>{warning}</p>)}
+        {!row && group.model && <p className="text-xs text-text-tertiary">No description is available for this model. Existing settings are preserved.</p>}
+        {unsupported.map(path => <p key={path} className="text-sm text-warning">{path} is unsupported by this protocol. {path !== "/api" &&
+          <button className={button} onClick={() => onChange(removePointer(group, path))}>Clear {path}</button>}</p>)}
+        {protocol && <ModelSettings key={editorEpoch} group={group} protocol={protocol} onChange={onChange} onError={onError} />}
+        <button className={button} disabled={!group.provider || loading} onClick={onRefresh}>Refresh descriptions</button>
+      </CollapsibleSection>
+      {protocol?.settings.some(setting => setting.storage?.config_path === "/extra_params") && <CollapsibleSection title="Custom request parameters">
+        <CustomParameters key={editorEpoch} group={group} protocol={protocol} onChange={onChange} onError={onError} />
+      </CollapsibleSection>}
+      {brand === "openrouter" && <CollapsibleSection title="OpenRouter routing">
+        <OpenRouterRouting group={group} onChange={onChange} />
+      </CollapsibleSection>}
+      <CollapsibleSection title="Retry">
+        {schemaError && <p className="text-sm text-warning">{schemaError}. Existing retry values are preserved.</p>}
+        <div className="grid grid-cols-2 gap-4">{retrySettings.map(setting => <SettingControl key={setting.id} setting={setting} group={group} settings={retrySettings} onChange={onChange} onError={onError} />)}</div>
+      </CollapsibleSection>
+      {Object.keys(inputErrors).length > 0 && <button className={button} onClick={() => { setInputErrors({}); setEditorEpoch(epoch => epoch + 1); }}>Discard uncommitted field edits</button>}
+      {[...new Set(errors.concat(Object.values(inputErrors)))].map(error => <p role="alert" className="text-sm text-error-text" key={error}>{error}</p>)}
+    </ParametersDialog>}
+  </div>;
+}
+
+function Entry({ id, report, ...props }: Omit<Parameters<typeof ModelEditor>[0], "report"> & {
+  id: string; report: (id: string, message: string | null) => void;
+}) {
+  const reportEntry = useCallback((message: string | null) => report(id, message), [id, report]);
+  return <ModelEditor {...props} report={reportEntry} />;
+}
+
+export function ModelsSection({ models, enabledProviders, providerConfigs = EMPTY_PROVIDERS, savedProviderConfigs, savedModels,
+  providerDrafts = EMPTY_DRAFTS, onChange, onReadyChange }: ModelsSectionProps) {
+  const soleProvider = enabledProviders.length === 1 ? enabledProviders[0] : undefined;
+  useEffect(() => {
+    if (!soleProvider) return;
+    function selectProvider(group: ModelGroupConfig): ModelGroupConfig {
+      let next = group.provider ? group : { ...group, provider: soleProvider! };
+      const fallbacks = group.fallbacks?.map(selectProvider);
+      if (fallbacks?.some((fallback, index) => fallback !== group.fallbacks![index])) next = { ...next, fallbacks };
+      return next;
+    }
+    const next = Object.fromEntries(Object.entries(models).map(([name, group]) => [name, selectProvider(group)]));
+    if (!next.primary) next.primary = { provider: soleProvider, model: "" };
+    if (Object.entries(next).some(([name, group]) => group !== models[name])) onChange(next);
+  }, [soleProvider, models, onChange]);
+  const { directories, errors, loading, load } = useModelDirectories(models, providerConfigs, providerDrafts, savedProviderConfigs);
+  const [reports, setReports] = useState<Record<string, string>>({});
+  const [retrySettings, setRetrySettings] = useState<ModelSettingInfo[]>([]);
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["primary"]));
+  const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
+  const report = useCallback((id: string, message: string | null) => {
+    setReports(previous => {
+      if (previous[id] === message || !message && !Object.hasOwn(previous, id)) return previous;
+      const next = { ...previous }; if (message) next[id] = message; else delete next[id]; return next;
+    });
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    getConfigSchema().then(root => {
+      const schema = resolveSchema(root, root.$defs?.RetryConfig ?? root.definitions?.RetryConfig);
+      if (!object(schema.properties)) throw new Error("Retry schema is unavailable");
+      const settings: ModelSettingInfo[] = Object.entries(schema.properties).map(([key, value]) => ({
+        id: `retry.${key}`, label: key.replaceAll("_", " "), description: null, group: "retry", scope: "frona_runtime",
+        storage: { kind: "typed", config_path: `/retry/${pointerKey(key)}` }, request_path: null, catalog_path: null,
+        schema: resolveSchema(root, value), applicability: null, support: "typed", sources: ["Frona config schema"],
+      }));
+      if (alive) setRetrySettings(settings);
+    }).catch(error => { if (alive) setSchemaError(error instanceof Error ? error.message : "Retry schema is unavailable"); });
+    return () => { alive = false; };
+  }, []);
+  const retryBlock = Object.entries(models).flatMap(([name, group]) =>
+    modelSettingErrors(group, { api: group.api ?? "completions", available: true, settings: retrySettings, warnings: [] })
+      .filter(error => error.startsWith("/retry/")).map(error => `${name}${error}`))[0];
+  const block = !models.primary?.provider || !models.primary?.model ? "Configure the Primary model group to continue"
+    : retryBlock ?? Object.values(reports)[0] ?? null;
+  useEffect(() => { onReadyChange?.(block); }, [block, onReadyChange]);
+  function update(name: string, group: ModelGroupConfig) { onChange({ ...models, [name]: group }); }
+  function editor(group: ModelGroupConfig, id: string, change: (group: ModelGroupConfig) => void, onRemove?: () => void) {
+    const [name, , index] = id.split("/");
+    const saved = index === undefined ? savedModels?.[name] : savedModels?.[name]?.fallbacks?.[Number(index)];
+    return <Entry key={id} id={id} group={group} enabledProviders={enabledProviders} configs={providerConfigs}
+      title={index === undefined ? formatGroupName(name) : `${formatGroupName(name)} fallback ${Number(index) + 1}`} onRemove={onRemove}
+      retrySettings={retrySettings} schemaError={schemaError} onRefresh={() => void load(group.provider, [group.model], true).catch(() => {})}
+      requireApi={savedModels ? !saved : undefined}
+      directory={directories[group.provider]} loading={loading[group.provider]} error={errors[group.provider]} onChange={change} report={report} />;
+  }
+  function toggleExpanded(name: string) {
+    setExpandedGroups(previous => { const next = new Set(previous); if (next.has(name)) next.delete(name); else next.add(name); return next; });
+  }
+  function removeGroup(name: string) {
+    const next = { ...models }; delete next[name]; onChange(next, [name]); setConfirmingRemove(null);
+  }
+  function renameGroup(oldName: string, newName: string) {
+    // Not upstream's strict `/^[a-z][a-z0-9_]*$/` - this fork's `models` map
+    // has no server-side `Handle`-style validation on its keys
+    // (`HashMap<String, ModelGroupConfig>`, see `core/config/types.rs`), and
+    // an earlier session deliberately made `GroupNameInput` preserve the
+    // capitalisation the user typed rather than silently lower-casing it
+    // (group ids are looked up verbatim, so "Coding" and "coding" are both
+    // fine). Forcing lowercase here would make that combobox appear to do
+    // nothing whenever a rename included a capital letter.
+    if (!newName || newName === oldName || newName in models) return;
+    onChange(Object.fromEntries(Object.entries(models).map(([name, group]) => [name === oldName ? newName : name, group])), [oldName]);
+    setExpandedGroups(previous => { const next = new Set(previous); if (next.delete(oldName)) next.add(newName); return next; });
+  }
+  function enableGroup(name: string) {
+    update(name, { provider: "", model: "", fallbacks: [] });
+    setExpandedGroups(previous => new Set(previous).add(name));
+  }
+  function addGroup() {
+    let name = "custom_group";
+    for (let index = 1; name in models; index++) name = `custom_group_${index}`;
+    enableGroup(name);
+  }
+  const names = sortedGroupNames([...new Set(["primary", ...Object.keys(models)])]);
+  const availableGroups = OPTIONAL_GROUPS.filter(name => !(name in models));
+  return <div>
+    <SectionHeader title="Model Groups" description="Configure model groups with fallback chains and inference parameters" icon={CubeIcon} />
+    <div className="space-y-3">
+      {names.map(name => {
+        const group = models[name] ?? { provider: "", model: "" };
+        const expanded = expandedGroups.has(name);
+        const primary = name === "primary";
+        return <div key={name} role="group" aria-label={`Model group ${name}`} className="rounded-lg border border-border bg-surface-secondary">
+          <div className="flex items-center px-4 py-3">
+            <button type="button" aria-expanded={expanded} onClick={() => toggleExpanded(name)} className="flex min-w-0 flex-1 items-center justify-between text-sm font-medium text-text-primary">
+              <span className="flex items-center gap-2">{formatGroupName(name)}{primary && <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent">Required</span>}</span>
+              <ChevronDownIcon className={`h-4 w-4 text-text-tertiary transition-transform ${expanded ? "rotate-180" : ""}`} />
+            </button>
+            {!primary && <button type="button" role="switch" aria-checked="true" aria-label={`Disable ${formatGroupName(name)} model group`}
+              onClick={() => { if (PREDEFINED_GROUPS.includes(name)) removeGroup(name); else setConfirmingRemove(name); }}
+              className="relative ml-3 inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent bg-accent transition-colors">
+              <span className="pointer-events-none inline-block h-5 w-5 translate-x-5 rounded-full bg-surface shadow transition-transform" />
+            </button>}
+          </div>
+          <div hidden={!expanded} className="space-y-4 px-4 pb-4">
+            {!PREDEFINED_GROUPS.includes(name) && <GroupNameInput value={name} suggestions={PREDEFINED_GROUPS.filter(id => !(id in models))} onRename={next => renameGroup(name, next)} />}
+            {editor(group, name, next => update(name, next))}
+            {!!group.fallbacks?.length && <div className="space-y-2"><p className="text-sm font-medium text-text-secondary">Fallbacks</p>
+              {group.fallbacks.map((fallback, index) => <div key={index} role="group" aria-label={`Fallback ${index + 1}`} className="flex items-end gap-2">
+                <span className="w-5 shrink-0 pb-2.5 text-right text-xs text-text-tertiary">{index + 1}.</span>
+                <div className="min-w-0 flex-1">{editor(fallback, `${name}/fallbacks/${index}`, next => update(name, { ...group, fallbacks: group.fallbacks!.map((value, i) => i === index ? next : value) }),
+                  () => update(name, { ...group, fallbacks: group.fallbacks!.filter((_, i) => i !== index) }))}</div>
+              </div>)}
+            </div>}
+            <div className="flex items-center gap-2 pt-1"><button type="button" className={`${button} flex items-center gap-1.5`} aria-label="Add fallback"
+              onClick={() => update(name, { ...group, fallbacks: [...group.fallbacks ?? [], { provider: "", model: "" }] })}><PlusIcon className="h-3.5 w-3.5" />Fallback</button></div>
+          </div>
+        </div>;
+      })}
+    </div>
+    {!!availableGroups.length && <div className="mt-4 space-y-2">{availableGroups.map(name => <div key={name} className="flex items-center justify-between rounded-lg border border-border bg-surface-secondary px-4 py-3">
+      <div className="flex items-center gap-2"><span className="text-sm text-text-secondary">{formatGroupName(name)}</span><span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[10px] font-medium text-text-tertiary">Uses Primary</span></div>
+      <button type="button" aria-label={`Enable ${formatGroupName(name)} model group`} onClick={() => enableGroup(name)} className="rounded-lg bg-surface-tertiary px-3 py-1 text-xs font-medium text-text-secondary transition hover:bg-accent hover:text-surface">Enable</button>
+    </div>)}</div>}
+    <button type="button" onClick={addGroup} className="mt-4 rounded-lg bg-accent px-4 py-2 text-sm text-surface hover:bg-accent-hover">+ Add Model Group</button>
+    <DeleteConfirmDialog open={!!confirmingRemove} onCancel={() => setConfirmingRemove(null)} onConfirm={() => { if (confirmingRemove) removeGroup(confirmingRemove); }}
+      title={`Remove ${confirmingRemove ? formatGroupName(confirmingRemove) : ""}?`} message="This model group and its configuration will be removed." />
+  </div>;
 }

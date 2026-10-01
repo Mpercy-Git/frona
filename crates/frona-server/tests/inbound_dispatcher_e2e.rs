@@ -1,4 +1,3 @@
-#[allow(dead_code)]
 mod helpers;
 
 use std::collections::{BTreeMap, HashMap};
@@ -15,13 +14,13 @@ use frona::core::repository::Repository;
 use frona::core::state::AppState;
 use frona::db::init as db_init;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::registry::ModelProviderRegistry;
 use frona::space::models::Space;
 use frona::storage::StorageService;
-use helpers::{init_metrics, test_model_group, MockModelProvider, MockResponse};
+use helpers::{MockModelProvider, MockResponse, init_metrics, test_model_group};
 use serde_json::json;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 use tokio::time::{Duration, sleep};
 
 fn test_config(tmp: &tempfile::TempDir) -> Config {
@@ -45,6 +44,7 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             shared_config_dir: format!("{base}/config"),
             skills_dir: format!("{base}/skills"),
             cache_dir: format!("{base}/cache"),
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -59,11 +59,30 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     let config = test_config(&tmp);
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
 
-    let mut state = AppState::new(db.clone(), &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
+    let mut state = AppState::new(
+        db.clone(),
+        config_service,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics_handle,
+        resource_manager,
+        catalog_sources,
+    );
 
     let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
         HashMap::new();
@@ -89,12 +108,11 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         mock_registry,
         state.storage_service.clone(),
         state.user_service.clone(),
-        state.memory_service.clone(),
         prompts,
         state.broadcast_service.clone(),
-            state.presign_service.clone(),
-            state.notification_service.clone(),
-            state.usage_service.clone(),
+        state.presign_service.clone(),
+        state.notification_service.clone(),
+        state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
     state.harness = Arc::new(frona::agent::harness::Harness::new(
@@ -102,7 +120,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.user_service.clone(),
         state.storage_service.clone(),
         state.agent_service.clone(),
-        state.memory_service.clone(),
+        helpers::test_memory_service(&state, &db),
         state.skill_service.clone(),
         state.task_service.clone(),
         state.notification_service.clone(),
@@ -112,12 +130,15 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.policy_service.clone(),
         state.broadcast_service.clone(),
         state.active_sessions.clone(),
+        state.execution_registry.clone(),
         state.shutdown_token.clone(),
         state.prompts.clone(),
         state.config.clone(),
         state.usage_service.clone(),
     ));
-    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
+        state.harness.clone(),
+    ));
 
     state.init_signal_service();
     state.policy_service.sync_base_policies().await.unwrap();
@@ -156,6 +177,8 @@ async fn seed_user_and_agent(state: &AppState, user_id: &str, agent_id: &str) {
             sandbox_limits: None,
             max_concurrent_tasks: Some(5),
             avatar: None,
+            voice_id: None,
+            private_memory: false,
             identity: Default::default(),
             prompt: Some("You are the channel-inbound agent.".into()),
             heartbeat_interval: None,
@@ -283,8 +306,7 @@ async fn dispatcher_invokes_channel_agent_on_inbound_user_message() {
     )]));
     let (state, _tmp) = build_state(provider.clone()).await;
     seed_user_and_agent(&state, "user-1", "agent-1").await;
-    let (_space, chat) =
-        seed_space_and_chat(&state, "user-1", "agent-1", "dm:9999").await;
+    let (_space, chat) = seed_space_and_chat(&state, "user-1", "agent-1", "dm:9999").await;
 
     frona::chat::channel::spawn_inference_dispatcher(state.clone());
 
@@ -340,12 +362,11 @@ async fn dispatcher_skips_web_submitted_messages_in_channel_chats() {
     let provider = Arc::new(MockModelProvider::new(vec![]));
     let (state, _tmp) = build_state(provider.clone()).await;
     seed_user_and_agent(&state, "user-1", "agent-1").await;
-    let (_space, chat) =
-        seed_space_and_chat(&state, "user-1", "agent-1", "dm:8888").await;
+    let (_space, chat) = seed_space_and_chat(&state, "user-1", "agent-1", "dm:8888").await;
 
     frona::chat::channel::spawn_inference_dispatcher(state.clone());
 
-    // Simulates `/messages/stream` — `from_address` is None for web submissions.
+    // Simulates `/messages/stream` - `from_address` is None for web submissions.
     state
         .chat_service
         .create_stream_user_message("user-1", &chat.id, "hi", vec![], None)
@@ -366,8 +387,7 @@ async fn dispatcher_skips_non_user_messages() {
     let provider = Arc::new(MockModelProvider::new(vec![]));
     let (state, _tmp) = build_state(provider.clone()).await;
     seed_user_and_agent(&state, "user-1", "agent-1").await;
-    let (_space, chat) =
-        seed_space_and_chat(&state, "user-1", "agent-1", "dm:1111").await;
+    let (_space, chat) = seed_space_and_chat(&state, "user-1", "agent-1", "dm:1111").await;
 
     frona::chat::channel::spawn_inference_dispatcher(state.clone());
 

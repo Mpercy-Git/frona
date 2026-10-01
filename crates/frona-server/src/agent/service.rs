@@ -3,16 +3,16 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 
 use crate::core::config::CacheConfig;
-use crate::db::repo::agents::SurrealAgentRepo;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
+use crate::db::repo::agents::SurrealAgentRepo;
 use crate::policy::sandbox::SandboxPolicy;
 use crate::policy::service::PolicyService;
 use crate::tool::sandbox::driver::resource_monitor::SystemResourceManager;
 
 use super::config::parse_frontmatter;
-use super::models::{CreateAgentRequest, UpdateAgentRequest};
 use super::models::Agent;
+use super::models::{CreateAgentRequest, UpdateAgentRequest};
 use super::repository::AgentRepository;
 use crate::auth::UserService;
 use crate::core::Handle;
@@ -39,6 +39,13 @@ pub struct AgentService {
     /// test constructions (and the two services' construction order) stay
     /// simple; when absent, access is owner-only.
     share_service: Option<crate::agent::share::service::AgentShareService>,
+    /// Set once at startup via [`AgentService::set_task_service`]. Only used to
+    /// seed a built-in's `cron:` schedule at clone time; when absent, a
+    /// built-in that declares one is still created, just without its recurring
+    /// task, and the agent can schedule itself later.
+    task_service: Option<crate::agent::task::service::TaskService>,
+    /// Server timezone, for the same cron seeding. Defaults to UTC.
+    server_timezone: String,
 }
 
 impl AgentService {
@@ -60,7 +67,21 @@ impl AgentService {
             policy_service,
             user_service,
             share_service: None,
+            task_service: None,
+            server_timezone: String::new(),
         }
+    }
+
+    /// Attach the task service and server timezone so a built-in declaring a
+    /// `cron:` schedule gets its recurring task seeded on first clone. Call
+    /// once at startup before the service is cloned.
+    pub fn set_task_service(
+        &mut self,
+        task_service: crate::agent::task::service::TaskService,
+        server_timezone: String,
+    ) {
+        self.task_service = Some(task_service);
+        self.server_timezone = server_timezone;
     }
 
     /// Attach the share service so [`AgentService::get_accessible`] can honor
@@ -126,7 +147,11 @@ impl AgentService {
         let agents = self.repo.find_all().await?;
         for agent in agents {
             if let Some(ref limits) = agent.sandbox_limits {
-                self.resource_manager.set_agent_limits(&agent.id, Some(limits.max_cpu_pct), Some(limits.max_memory_pct));
+                self.resource_manager.set_agent_limits(
+                    &agent.id,
+                    Some(limits.max_cpu_pct),
+                    Some(limits.max_memory_pct),
+                );
             }
         }
         Ok(())
@@ -134,15 +159,15 @@ impl AgentService {
 
     fn push_agent_limits(&self, agent_id: &str, agent: &Agent) {
         if let Some(ref limits) = agent.sandbox_limits {
-            self.resource_manager.set_agent_limits(agent_id, Some(limits.max_cpu_pct), Some(limits.max_memory_pct));
+            self.resource_manager.set_agent_limits(
+                agent_id,
+                Some(limits.max_cpu_pct),
+                Some(limits.max_memory_pct),
+            );
         }
     }
 
-    pub async fn create(
-        &self,
-        user_id: &str,
-        req: CreateAgentRequest,
-    ) -> Result<Agent, AppError> {
+    pub async fn create(&self, user_id: &str, req: CreateAgentRequest) -> Result<Agent, AppError> {
         let raw_handle = req
             .handle
             .clone()
@@ -171,6 +196,8 @@ impl AgentService {
             sandbox_limits: req.sandbox_limits,
             max_concurrent_tasks: None,
             avatar: None,
+            voice_id: req.voice_id,
+            private_memory: req.private_memory.unwrap_or(false),
             identity: std::collections::BTreeMap::new(),
             prompt: None,
             heartbeat_interval: None,
@@ -206,11 +233,7 @@ impl AgentService {
         Ok(result)
     }
 
-    pub async fn get(
-        &self,
-        user_id: &str,
-        agent_id: &str,
-    ) -> Result<Agent, AppError> {
+    pub async fn get(&self, user_id: &str, agent_id: &str) -> Result<Agent, AppError> {
         let agent = self
             .repo
             .find_by_id(agent_id)
@@ -225,11 +248,7 @@ impl AgentService {
     }
 
     /// Tries handle lookup first, falls back to UUID for call-sites passing `agent.id`.
-    pub async fn owned_by(
-        &self,
-        user_id: &str,
-        handle_or_id: &str,
-    ) -> Result<Agent, AppError> {
+    pub async fn owned_by(&self, user_id: &str, handle_or_id: &str) -> Result<Agent, AppError> {
         if let Some(agent) = self.find_by_handle(user_id, handle_or_id).await? {
             return Ok(agent);
         }
@@ -248,10 +267,17 @@ impl AgentService {
         self.repo.find_by_handle(user_id, &handle).await
     }
 
-    pub async fn list(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<Agent>, AppError> {
+    /// Resolve the user's `system` builtin agent - the identity for detached /
+    /// background inference that has no originating chat (e.g. the PKM sync
+    /// investigator). Cloned for every user at signup, so absence is an invariant
+    /// violation, not a normal outcome → `NotFound`.
+    pub async fn system_agent(&self, user_id: &str) -> Result<Agent, AppError> {
+        self.find_by_handle(user_id, crate::agent::models::SYSTEM_AGENT_HANDLE)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("system agent not found for user {user_id}")))
+    }
+
+    pub async fn list(&self, user_id: &str) -> Result<Vec<Agent>, AppError> {
         self.repo.find_by_user_id(user_id).await
     }
 
@@ -306,7 +332,21 @@ impl AgentService {
             agent.sandbox_limits = Some(sandbox_limits);
         }
         if let Some(prompt) = req.prompt {
-            agent.prompt = if prompt.is_empty() { None } else { Some(prompt) };
+            agent.prompt = if prompt.is_empty() {
+                None
+            } else {
+                Some(prompt)
+            };
+        }
+        if let Some(voice_id) = req.voice_id {
+            agent.voice_id = if voice_id.trim().is_empty() {
+                None
+            } else {
+                Some(voice_id)
+            };
+        }
+        if let Some(private_memory) = req.private_memory {
+            agent.private_memory = private_memory;
         }
         if let Some(ref identity) = req.identity {
             if let Some(avatar) = identity.get("avatar")
@@ -350,11 +390,7 @@ impl AgentService {
         self.repo.find_by_name(user_id, name).await
     }
 
-    pub async fn delete(
-        &self,
-        user_id: &str,
-        agent_id: &str,
-    ) -> Result<(), AppError> {
+    pub async fn delete(&self, user_id: &str, agent_id: &str) -> Result<(), AppError> {
         let agent = self
             .repo
             .find_by_id(agent_id)
@@ -418,6 +454,12 @@ impl AgentService {
     }
 
     /// Idempotent: returns the existing row if the user already has this handle.
+    ///
+    /// A built-in may restrict itself to a user group with `groups:` in its
+    /// frontmatter; cloning it for a user outside that group is refused, so
+    /// that a privileged built-in doesn't appear in every account as an agent
+    /// that can do nothing. See [`AgentService::clone_all_builtins_for_user`],
+    /// which skips such built-ins silently.
     pub async fn clone_builtin_for_user(
         &self,
         user_id: &str,
@@ -429,24 +471,39 @@ impl AgentService {
         }
 
         let ws = storage.builtin_template_workspace(handle);
-        let (name, description, model_group) = ws
-            .read("AGENT.md")
-            .map(|content| {
-                let entry = parse_frontmatter(&content);
-                let nm = entry
-                    .metadata
+        let template = ws.read("AGENT.md").map(|c| parse_frontmatter(&c));
+        let meta = template.as_ref().map(|t| &t.metadata);
+
+        if let Some(required) = meta.and_then(|m| m.get("groups")) {
+            let groups = parse_required_groups(required);
+            if !groups.is_empty() && !self.user_in_any_group(user_id, &groups).await? {
+                return Err(AppError::Forbidden(format!(
+                    "the '{handle}' built-in agent is restricted to the {} group(s)",
+                    groups.join(", ")
+                )));
+            }
+        }
+
+        let (name, description, model_group) = meta
+            .map(|metadata| {
+                let nm = metadata
                     .get("name")
                     .cloned()
                     .unwrap_or_else(|| title_case(handle.as_str()));
-                let desc = entry.metadata.get("description").cloned().unwrap_or_default();
-                let mg = entry
-                    .metadata
+                let desc = metadata.get("description").cloned().unwrap_or_default();
+                let mg = metadata
                     .get("model_group")
                     .cloned()
                     .unwrap_or_else(|| "primary".to_string());
                 (nm, desc, mg)
             })
-            .unwrap_or_else(|| (title_case(handle.as_str()), String::new(), "primary".to_string()));
+            .unwrap_or_else(|| {
+                (
+                    title_case(handle.as_str()),
+                    String::new(),
+                    "primary".to_string(),
+                )
+            });
 
         let now = chrono::Utc::now();
         let agent = Agent {
@@ -454,13 +511,15 @@ impl AgentService {
             user_id: user_id.to_string(),
             handle: handle.clone(),
             name,
-            description,
+            description: description.clone(),
             model_group,
             enabled: true,
             skills: None,
             sandbox_limits: None,
             max_concurrent_tasks: None,
             avatar: None,
+            voice_id: None,
+            private_memory: false,
             identity: std::collections::BTreeMap::new(),
             prompt: None,
             heartbeat_interval: None,
@@ -479,22 +538,101 @@ impl AgentService {
                 &SandboxPolicy::default(),
             )
             .await?;
+
+        if let Some(expr) = meta.and_then(|m| m.get("cron")) {
+            // Seeding is best-effort: an agent that exists without its
+            // schedule is recoverable (it can call `create_recurring_task`
+            // itself, or the operator can add one), whereas failing the clone
+            // would leave the user without the agent at all.
+            if let Err(e) = self.seed_builtin_cron(&agent, expr, &description).await {
+                tracing::warn!(
+                    user_id,
+                    handle = %agent.handle,
+                    error = %e,
+                    "Built-in agent created but its cron schedule could not be seeded"
+                );
+            }
+        }
+
         Ok(agent)
     }
 
+    /// True when the user belongs to at least one of `groups`.
+    async fn user_in_any_group(&self, user_id: &str, groups: &[String]) -> Result<bool, AppError> {
+        let Some(user) = self.user_service.find_by_id(user_id).await? else {
+            return Ok(false);
+        };
+        Ok(user.groups.iter().any(|g| groups.iter().any(|r| r == g)))
+    }
+
+    /// Create the recurring task a built-in declared with `cron:`. Runs once,
+    /// at clone time — thereafter it is an ordinary task the operator can
+    /// edit, pause or delete from the tasks UI.
+    async fn seed_builtin_cron(
+        &self,
+        agent: &Agent,
+        cron_expression: &str,
+        description: &str,
+    ) -> Result<(), AppError> {
+        let Some(task_service) = &self.task_service else {
+            return Ok(());
+        };
+        let timezone = crate::auth::models::resolve_timezone(None, &self.server_timezone);
+        let next_run_at = crate::tool::task::next_cron_occurrence(cron_expression, &timezone)
+            .map_err(|e| {
+                AppError::Validation(format!(
+                    "built-in '{}' declares an unusable cron expression '{cron_expression}': {e}",
+                    agent.handle
+                ))
+            })?;
+
+        task_service
+            .create_cron_template(
+                &agent.user_id,
+                &agent.id,
+                &format!("{} — scheduled run", agent.name),
+                description,
+                cron_expression,
+                timezone,
+                next_run_at,
+                None,
+                None,
+                None,
+                None,
+                crate::agent::task::models::CronMode::default(),
+                crate::agent::task::models::CronConcurrency::default(),
+                true,
+                None,
+                None,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Clone every built-in the user is eligible for. A built-in restricted to
+    /// a group the user isn't in is skipped without a warning — that is the
+    /// designed outcome, not a failure.
     pub async fn clone_all_builtins_for_user(
         &self,
         user_id: &str,
         storage: &StorageService,
     ) -> Result<(), AppError> {
         for handle in crate::agent::models::BUILTIN_HANDLES {
-            if let Err(e) = self.clone_builtin_for_user(user_id, handle, storage).await {
-                tracing::warn!(
+            match self.clone_builtin_for_user(user_id, handle, storage).await {
+                Ok(_) => {}
+                Err(AppError::Forbidden(_)) => {
+                    tracing::debug!(
+                        user_id,
+                        handle = %handle,
+                        "Skipping group-restricted builtin agent"
+                    );
+                }
+                Err(e) => tracing::warn!(
                     user_id,
                     handle = %handle,
                     error = %e,
                     "Failed to clone builtin agent for user"
-                );
+                ),
             }
         }
         Ok(())
@@ -525,6 +663,20 @@ impl AgentService {
         self.cache.invalidate(agent_id).await;
         Ok(agent)
     }
+}
+
+/// Parse a built-in's `groups:` frontmatter — a comma-separated list of user
+/// group names, or a single name. YAML sequences arrive here as their
+/// serialized form (see `parse_frontmatter`, which stringifies non-scalars),
+/// so the brackets and quotes are stripped rather than re-parsed.
+fn parse_required_groups(raw: &str) -> Vec<String> {
+    raw.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|s| s.trim().trim_matches(['"', '\'', '-']).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn title_case(handle: &str) -> String {

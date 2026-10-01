@@ -1,8 +1,7 @@
 //! `/<agent-handle>` and `@<agent-handle>` invocations re-attribute the
-//! turn's reply to the target agent — verified end-to-end through the
+//! turn's reply to the target agent - verified end-to-end through the
 //! harness with a mock LLM.
 
-#[allow(dead_code)]
 mod helpers;
 
 use std::collections::HashMap;
@@ -23,11 +22,11 @@ use frona::db::init as db_init;
 use frona::db::repo::agents::SurrealAgentRepo;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::DefaultConversationBuilder;
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::registry::ModelProviderRegistry;
 use frona::storage::StorageService;
-use helpers::{test_model_group, MockModelProvider, MockResponse};
-use surrealdb::engine::local::{Db, Mem};
+use helpers::{MockModelProvider, MockResponse, test_model_group};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 fn workspace_resources() -> PathBuf {
     std::env::current_dir()
@@ -60,14 +59,15 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             shared_config_dir: resources.to_string_lossy().into_owned(),
             skills_dir: format!("{base}/skills"),
             cache_dir: format!("{base}/cache"),
+            ..Default::default()
         },
         ..Default::default()
     }
 }
 
-async fn build_state(provider: Arc<dyn frona::inference::provider::ModelProvider>)
-    -> (AppState, tempfile::TempDir)
-{
+async fn build_state(
+    provider: Arc<dyn frona::inference::provider::ModelProvider>,
+) -> (AppState, tempfile::TempDir) {
     let db: Surreal<Db> = Surreal::new::<Mem>(()).await.unwrap();
     db_init::setup_schema(&db).await.unwrap();
 
@@ -81,13 +81,23 @@ async fn build_state(provider: Arc<dyn frona::inference::provider::ModelProvider
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
 
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
 
     let mut providers = HashMap::new();
@@ -104,7 +114,6 @@ async fn build_state(provider: Arc<dyn frona::inference::provider::ModelProvider
         mock_registry,
         state.storage_service.clone(),
         state.user_service.clone(),
-        state.memory_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
         state.presign_service.clone(),
@@ -117,7 +126,7 @@ async fn build_state(provider: Arc<dyn frona::inference::provider::ModelProvider
         state.user_service.clone(),
         state.storage_service.clone(),
         state.agent_service.clone(),
-        state.memory_service.clone(),
+        helpers::test_memory_service(&state, &db),
         state.skill_service.clone(),
         state.task_service.clone(),
         state.notification_service.clone(),
@@ -127,13 +136,15 @@ async fn build_state(provider: Arc<dyn frona::inference::provider::ModelProvider
         state.policy_service.clone(),
         state.broadcast_service.clone(),
         state.active_sessions.clone(),
+        state.execution_registry.clone(),
         state.shutdown_token.clone(),
         state.prompts.clone(),
         state.config.clone(),
         state.usage_service.clone(),
     ));
-    state.task_executor =
-        Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
+        state.harness.clone(),
+    ));
 
     state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await.unwrap();
@@ -172,6 +183,8 @@ async fn seed_user_and_two_agents(state: &AppState) -> (String, String) {
         sandbox_limits: None,
         max_concurrent_tasks: None,
         avatar: None,
+        voice_id: None,
+        private_memory: false,
         identity: Default::default(),
         prompt: Some("You are the default agent.".into()),
         heartbeat_interval: None,
@@ -194,10 +207,9 @@ async fn seed_user_and_two_agents(state: &AppState) -> (String, String) {
 
 #[tokio::test]
 async fn switch_agent_command_reattributes_response() {
-    let provider: Arc<dyn frona::inference::provider::ModelProvider> =
-        Arc::new(MockModelProvider::new(vec![MockResponse::Text(
-            "ack from target".into(),
-        )]));
+    let provider: Arc<dyn frona::inference::provider::ModelProvider> = Arc::new(
+        MockModelProvider::new(vec![MockResponse::Text("ack from target".into())]),
+    );
     let (state, _tmp) = build_state(provider).await;
     let (default_agent_id, target_agent_id) = seed_user_and_two_agents(&state).await;
 

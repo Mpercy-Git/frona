@@ -7,8 +7,8 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use frona::core::error::AppError;
 use frona::core::Principal;
+use frona::core::error::AppError;
 use frona::credential::vault::models::*;
 use frona::credential::vault::service::VaultService;
 use frona::db::init::setup_schema;
@@ -22,7 +22,7 @@ use frona::tool::mcp::models::{
 };
 use frona::tool::mcp::registry::McpRegistryClient;
 use frona::tool::mcp::repository::McpServerRepository;
-use frona::tool::mcp::service::{McpServerService, NoopPackageInstaller};
+use frona::tool::mcp::service::{McpServerService, NoopPackageInstaller, WarmUpOutcome};
 use frona::tool::mcp::{McpManager, PackageInstaller};
 
 struct FakeRegistry {
@@ -63,7 +63,11 @@ fn sample_entry(env_vars: Vec<RegistryEnvVar>) -> RegistryServerEntry {
             identifier: "@example/workspace-mcp".into(),
             version: Some("1.0.0".into()),
             runtime_hint: None,
-            transport: RegistryTransport { kind: "stdio".into(), url: None, headers: vec![] },
+            transport: RegistryTransport {
+                kind: "stdio".into(),
+                url: None,
+                headers: vec![],
+            },
             runtime_arguments: vec![],
             package_arguments: vec![],
             environment_variables: env_vars,
@@ -90,10 +94,60 @@ fn secret_env_var(name: &str) -> RegistryEnvVar {
     }
 }
 
+/// Stands in for a package manager that resolves nothing until it does: the
+/// error carries the shape `SandboxedPackageInstaller` builds from npm's own
+/// output, and `start_working` is the package being published, or the name
+/// being corrected, between one attempt and the next.
+struct FlakyInstaller {
+    works: std::sync::atomic::AtomicBool,
+}
+
+impl FlakyInstaller {
+    fn failing() -> Self {
+        Self {
+            works: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn start_working(&self) {
+        self.works.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl PackageInstaller for FlakyInstaller {
+    async fn install(&self, server: &McpServer) -> Result<WarmUpOutcome, AppError> {
+        if self.works.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(WarmUpOutcome::default());
+        }
+        Err(AppError::Tool(format!(
+            "installing {} failed: the npm registry has no version matching \
+             '{}@{}'. Check the package name on the server's registry entry.",
+            server.package.name, server.package.name, server.package.version
+        )))
+    }
+}
+
 async fn build_test_harness(
     env_vars: Vec<RegistryEnvVar>,
-) -> (surrealdb::Surreal<surrealdb::engine::local::Db>, VaultService, McpServerService, tempfile::TempDir)
-{
+) -> (
+    surrealdb::Surreal<surrealdb::engine::local::Db>,
+    VaultService,
+    McpServerService,
+    tempfile::TempDir,
+) {
+    build_test_harness_with_installer(env_vars, Arc::new(NoopPackageInstaller)).await
+}
+
+async fn build_test_harness_with_installer(
+    env_vars: Vec<RegistryEnvVar>,
+    installer: Arc<dyn PackageInstaller>,
+) -> (
+    surrealdb::Surreal<surrealdb::engine::local::Db>,
+    VaultService,
+    McpServerService,
+    tempfile::TempDir,
+) {
     let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
         .await
         .unwrap();
@@ -113,6 +167,15 @@ async fn build_test_harness(
         SurrealRepo::new(db.clone()),
         &frona::core::config::CacheConfig::default(),
     );
+    let managed_vault = frona::credential::managed::ManagedVault::new(
+        Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+        "test-secret",
+        frona::credential::managed::GLOBAL_CONNECTION_ID.into(),
+    );
+    let managed_resolver = Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+        frona::credential::managed::integration::registered(),
+    ));
+    let login_service = frona::credential::managed::login::ManagedLoginService::registered();
     let vault = VaultService::new(
         Arc::new(SurrealRepo::<VaultConnection>::new(db.clone())),
         Arc::new(SurrealRepo::<VaultGrant>::new(db.clone())),
@@ -124,17 +187,24 @@ async fn build_test_harness(
         tmp.path().to_path_buf(),
         test_storage.clone(),
         test_user_service,
+        managed_vault,
+        managed_resolver,
+        login_service,
     );
     vault.sync_config_connections().await.unwrap();
 
-    let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(true, // sandbox_disabled: we never actually start servers in these tests
-        Arc::new(frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        )),
+    let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(
+        true, // sandbox_disabled: we never actually start servers in these tests
+        Arc::new(
+            frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                80.0, 80.0, 90.0, 90.0,
+            ),
+        ),
     ));
     let policy_schema = frona::policy::schema::build_schema();
-    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
-        Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(db.clone()));
+    let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> = Arc::new(
+        SurrealRepo::<frona::policy::models::Policy>::new(db.clone()),
+    );
     let policy_tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = frona::auth::UserService::new(
@@ -142,14 +212,22 @@ async fn build_test_harness(
         &frona::core::config::CacheConfig::default(),
     );
     let policy_service = frona::policy::service::PolicyService::new(
-        policy_repo, policy_schema, policy_tool_manager, storage.clone(), user_service.clone(),
+        policy_repo,
+        policy_schema,
+        policy_tool_manager,
+        storage.clone(),
+        user_service.clone(),
     );
     let skill_service = frona::agent::skill::service::SkillService::new(
         frona::agent::skill::registry::SkillRegistryClient::new(
             frona::build_http_client(),
             "/tmp/frona-test-lifecycle-cache",
         ),
-        frona::agent::skill::resolver::SkillResolver::new("/tmp/frona-test-lifecycle-shared", storage.clone()),
+        frona::agent::skill::resolver::SkillResolver::new(
+            "/tmp/frona-test-lifecycle-shared",
+            storage.clone(),
+            "/tmp/frona-test-lifecycle-skills",
+        ),
         storage.clone(),
         "/tmp/frona-test-lifecycle-skills",
         &frona::core::config::CacheConfig::default(),
@@ -176,22 +254,26 @@ async fn build_test_harness(
         300,
         "UTC".to_string(),
     ));
-    let manager = Arc::new(McpManager::new(sandbox_manager, test_storage, 4100, 4200, user_service, frona::build_http_client()));
+    let manager = Arc::new(McpManager::new(
+        sandbox_manager,
+        test_storage,
+        4100,
+        4200,
+        user_service,
+        frona::build_http_client(),
+    ));
     let mcp_repo: Arc<dyn McpServerRepository> =
         Arc::new(SurrealRepo::<McpServer>::new(db.clone()));
     let registry: Arc<dyn McpRegistryClient> = Arc::new(FakeRegistry {
         entry: sample_entry(env_vars),
     });
-    let installer: Arc<dyn PackageInstaller> = Arc::new(NoopPackageInstaller);
 
     let keypair_service = frona::credential::keypair::service::KeyPairService::new(
         "test-secret",
         Arc::new(SurrealRepo::new(db.clone())),
     );
-    let user_service = frona::auth::UserService::new(
-        SurrealRepo::new(db.clone()),
-        &Default::default(),
-    );
+    let user_service =
+        frona::auth::UserService::new(SurrealRepo::new(db.clone()), &Default::default());
     let token_service = frona::auth::token::service::TokenService::new(
         Arc::new(SurrealRepo::new(db.clone())),
         frona::auth::jwt::JwtService::new(),
@@ -276,7 +358,10 @@ async fn install_rejects_when_binding_has_no_matching_grant() {
         handle: None,
         ..Default::default()
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Forbidden(_)),
         "expected Forbidden for missing grant, got {err:?}"
@@ -298,7 +383,10 @@ async fn install_allows_missing_binding_for_declared_secret() {
         handle: None,
         ..Default::default()
     };
-    let server = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    let server = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
     assert_eq!(server.status, McpServerStatus::Installed);
 }
 
@@ -320,7 +408,10 @@ async fn install_rejects_extraneous_binding() {
         handle: None,
         ..Default::default()
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Validation(_)),
         "expected Validation for extraneous binding, got {err:?}"
@@ -344,7 +435,10 @@ async fn install_rejects_relative_extra_paths() {
         handle: None,
         ..Default::default()
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Validation(_)));
 }
 
@@ -362,16 +456,21 @@ async fn install_succeeds_with_empty_env_entry() {
         handle: None,
         ..Default::default()
     };
-    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    let persisted = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
     assert_eq!(persisted.user_id, "user1");
     // Derived from registry entry title (which the test harness sets to the
     // package id's tail) via sanitize_to_handle.
     assert_eq!(persisted.handle.as_str(), "workspace-mcp");
     assert_eq!(persisted.command, "npx");
-    assert_eq!(persisted.args, vec!["--yes", "@example/workspace-mcp@1.0.0"]);
+    assert_eq!(
+        persisted.args,
+        vec!["--yes", "@example/workspace-mcp@1.0.0"]
+    );
 
-    let mcp_repo: Arc<dyn McpServerRepository> =
-        Arc::new(SurrealRepo::<McpServer>::new(db));
+    let mcp_repo: Arc<dyn McpServerRepository> = Arc::new(SurrealRepo::<McpServer>::new(db));
     let list = mcp_repo.find_by_user("user1").await.unwrap();
     assert_eq!(list.len(), 1);
 }
@@ -401,14 +500,8 @@ async fn uninstall_sweeps_bindings_and_grants() {
 
     // Post-install, write a grant + binding directly against the server's
     // principal to prove uninstall sweeps them even if they were added later.
-    let cred_id = seed_credential_and_grant(
-        &vault,
-        "user1",
-        principal.clone(),
-        "gh",
-        "ghp_xxx",
-    )
-    .await;
+    let cred_id =
+        seed_credential_and_grant(&vault, "user1", principal.clone(), "gh", "ghp_xxx").await;
     vault
         .create_binding(
             "user1",
@@ -449,7 +542,10 @@ async fn uninstall_sweeps_bindings_and_grants() {
         .list_bindings_for_principal("user1", &principal)
         .await
         .unwrap();
-    assert!(remaining_grants.is_empty(), "grants should be swept on uninstall");
+    assert!(
+        remaining_grants.is_empty(),
+        "grants should be swept on uninstall"
+    );
 }
 
 #[tokio::test]
@@ -484,9 +580,18 @@ async fn update_extra_env_replaces_value() {
         ),
         ..Default::default()
     };
-    let result = service.update("user1", &persisted.id, update).await.unwrap();
-    assert_eq!(result.server.env.get("LOG_LEVEL").map(String::as_str), Some("debug"));
-    assert!(!result.restart_required, "not running, so no restart needed");
+    let result = service
+        .update("user1", &persisted.id, update)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.server.env.get("LOG_LEVEL").map(String::as_str),
+        Some("debug")
+    );
+    assert!(
+        !result.restart_required,
+        "not running, so no restart needed"
+    );
 }
 
 #[tokio::test]
@@ -532,7 +637,10 @@ async fn install_remote_rejects_when_unauthenticated_and_not_opted_in() {
         }),
         ..Default::default()
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Validation(_)),
         "expected Validation for unauthenticated remote install without opt-in, got {err:?}"
@@ -552,7 +660,10 @@ async fn install_remote_allows_unauthenticated_with_explicit_opt_in() {
         allow_unauthenticated_remote: true,
         ..Default::default()
     };
-    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    let persisted = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
     assert_eq!(persisted.status, McpServerStatus::Installed);
     assert_eq!(persisted.package.runtime, McpRuntime::Remote);
     assert!(persisted.command.is_empty());
@@ -573,7 +684,10 @@ async fn install_remote_with_bearer_header_succeeds_without_opt_in() {
     let (_db, _vault, service, _tmp) = build_test_harness(vec![]).await;
 
     let mut headers = std::collections::BTreeMap::new();
-    headers.insert("Authorization".to_string(), "Bearer ${MCP_TOKEN}".to_string());
+    headers.insert(
+        "Authorization".to_string(),
+        "Bearer ${MCP_TOKEN}".to_string(),
+    );
 
     let req = McpServerInstall {
         remote: Some(RemoteMcpInstall {
@@ -586,7 +700,10 @@ async fn install_remote_with_bearer_header_succeeds_without_opt_in() {
             .collect(),
         ..Default::default()
     };
-    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    let persisted = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
     match &persisted.transports[0] {
         TransportConfig::Http { headers, .. } => {
             assert_eq!(headers.get("Authorization").unwrap(), "Bearer ${MCP_TOKEN}");
@@ -600,7 +717,10 @@ async fn install_remote_rejects_extraneous_binding_not_referenced_by_headers() {
     let (_db, _vault, service, _tmp) = build_test_harness(vec![]).await;
 
     let mut headers = std::collections::BTreeMap::new();
-    headers.insert("Authorization".to_string(), "Bearer ${MCP_TOKEN}".to_string());
+    headers.insert(
+        "Authorization".to_string(),
+        "Bearer ${MCP_TOKEN}".to_string(),
+    );
 
     let req = McpServerInstall {
         remote: Some(RemoteMcpInstall {
@@ -611,8 +731,14 @@ async fn install_remote_rejects_extraneous_binding_not_referenced_by_headers() {
         credentials: vec![binding("NOT_REFERENCED", "item")],
         ..Default::default()
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
-    assert!(matches!(err, AppError::Forbidden(_) | AppError::Validation(_)));
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AppError::Forbidden(_) | AppError::Validation(_)
+    ));
 }
 
 #[tokio::test]
@@ -628,7 +754,10 @@ async fn install_remote_rejects_unsupported_transport() {
         allow_unauthenticated_remote: true,
         ..Default::default()
     };
-    let err = service.install("user1", &frona::handle!("user1"), req).await.unwrap_err();
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Validation(_)));
 }
 
@@ -648,7 +777,88 @@ async fn install_remote_does_not_require_npm_registry_network_access() {
         allow_unauthenticated_remote: true,
         ..Default::default()
     };
-    let persisted = service.install("user1", &frona::handle!("user1"), req).await.unwrap();
+    let persisted = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
     assert_eq!(persisted.package.name, "https://example.com/mcp");
     assert_eq!(persisted.command, "");
+}
+
+/// The failure this fix was written for: a package the registry lists but npm
+/// cannot resolve. The row is created before anything is fetched, so the
+/// install leaves a server behind either way - what it must not leave behind is
+/// one that says "installed" and answers a start with npm's transcript.
+#[tokio::test]
+async fn a_failed_warm_up_leaves_the_server_saying_why() {
+    let (_db, _vault, service, _tmp) =
+        build_test_harness_with_installer(vec![], Arc::new(FlakyInstaller::failing())).await;
+
+    let req = McpServerInstall {
+        registry_id: Some("io.example/workspace-mcp".into()),
+        manifest: None,
+        display_name_override: None,
+        credentials: vec![],
+        extra_env: Default::default(),
+        sandbox_policy: None,
+        handle: None,
+        ..Default::default()
+    };
+    let err = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("no version matching"),
+        "the caller is told the cause, not just that something failed: {err}"
+    );
+
+    let servers = service.list_for_user("user1").await.unwrap();
+    assert_eq!(
+        servers.len(),
+        1,
+        "the row outlives the failure, to retry from"
+    );
+    assert_eq!(servers[0].status, McpServerStatus::Failed);
+    assert!(
+        servers[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("no version matching")),
+        "the reason is kept with the server: {:?}",
+        servers[0].last_error
+    );
+}
+
+/// A reinstall that works is the end of the story the failure started: the
+/// reason describes a fetch that has now succeeded.
+#[tokio::test]
+async fn a_reinstall_that_works_clears_the_recorded_failure() {
+    let installer = Arc::new(FlakyInstaller::failing());
+    let (_db, _vault, service, _tmp) =
+        build_test_harness_with_installer(vec![], installer.clone()).await;
+
+    let req = McpServerInstall {
+        registry_id: Some("io.example/workspace-mcp".into()),
+        manifest: None,
+        display_name_override: None,
+        credentials: vec![],
+        extra_env: Default::default(),
+        sandbox_policy: None,
+        handle: None,
+        ..Default::default()
+    };
+    service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap_err();
+    let failed = service.list_for_user("user1").await.unwrap().remove(0);
+    assert_eq!(failed.status, McpServerStatus::Failed);
+
+    installer.start_working();
+    service.reinstall("user1", &failed.id).await.unwrap();
+
+    let repaired = service.list_for_user("user1").await.unwrap().remove(0);
+    assert_eq!(repaired.status, McpServerStatus::Installed);
+    assert_eq!(repaired.last_error, None);
 }

@@ -38,17 +38,21 @@ impl Supervisor for AppSupervisor {
 
     async fn start(&self, id: &str) -> Result<(), AppError> {
         if self.state.app_service.manager().has_process(id).await {
-            if let Some(agent_id) = self.state.app_service.manager().agent_id_for(id).await {
-                match self.state.app_service.manager().restart_app(id, &agent_id).await? {
-                    Some((port, pid)) => {
-                        let _ = self
-                            .state
-                            .app_service
-                            .update_status(id, AppStatus::Running, Some(port), Some(pid))
-                            .await;
-                    }
-                    None => return Err(AppError::Tool("restart returned None".into())),
+            match self
+                .state
+                .app_service
+                .manager()
+                .try_restart_crashed(id, self.state.app_service.max_restart_attempts())
+                .await?
+            {
+                Some((port, pid)) => {
+                    let _ = self
+                        .state
+                        .app_service
+                        .update_status(id, AppStatus::Running, Some(port), Some(pid))
+                        .await;
                 }
+                None => return Err(AppError::Tool("restart returned None".into())),
             }
             return Ok(());
         }
@@ -62,14 +66,20 @@ impl Supervisor for AppSupervisor {
         let Some(ref command) = app.command else {
             return Ok(());
         };
-        let manifest: super::models::AppManifest =
-            serde_json::from_value(app.manifest.clone())
-                .map_err(|e| AppError::Tool(format!("bad manifest: {e}")))?;
+        let manifest: super::models::AppManifest = serde_json::from_value(app.manifest.clone())
+            .map_err(|e| AppError::Tool(format!("bad manifest: {e}")))?;
         let (port, pid) = self
             .state
             .app_service
             .manager()
-            .start_app(id, &app.agent_id, &app.user_id, command, &manifest, Vec::new())
+            .start_app(
+                id,
+                &app.agent_id,
+                &app.user_id,
+                command,
+                &manifest,
+                Vec::new(),
+            )
             .await?;
         let _ = self
             .state
@@ -208,6 +218,15 @@ impl Supervisor for AppSupervisor {
         let user_id = app.user_id.clone();
         let chat_id = app.chat_id.clone();
         let agent_id = app.agent_id.clone();
+        let agent_name = self
+            .state
+            .agent_service
+            .find_by_id(&agent_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|agent| agent.name);
+        let app_name = app.name.clone();
         tokio::spawn(async move {
             let message_id = match state
                 .chat_service
@@ -234,7 +253,23 @@ impl Supervisor for AppSupervisor {
                     return;
                 }
             };
-            if let Err(e) = state.harness.resume(&user_id, &chat_id, &message_id).await {
+            let execution = crate::core::execution::NewExecution {
+                title: format!("Fixing {app_name}"),
+                agent_name,
+                kind: crate::core::execution::ExecutionKind::App,
+                action: Some("Repairing crashed app".to_string()),
+                source: Some(crate::core::execution::ExecutionSource {
+                    kind: crate::core::execution::ExecutionSourceKind::Chat,
+                    id: Some(chat_id.clone()),
+                }),
+                related_chat_ids: vec![chat_id.clone()],
+                can_cancel: true,
+            };
+            if let Err(e) = state
+                .harness
+                .resume_with_execution(&user_id, &chat_id, &message_id, execution)
+                .await
+            {
                 tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume app chat for crash fix");
             }
         });

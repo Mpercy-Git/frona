@@ -58,8 +58,7 @@ mod tests {
 
     #[test]
     fn case_insensitive_key_side() {
-        let result =
-            render_template("Hello {{agent_name}}!", &[("Agent_Name", "Bot")]).unwrap();
+        let result = render_template("Hello {{agent_name}}!", &[("Agent_Name", "Bot")]).unwrap();
         assert_eq!(result, "Hello Bot!");
     }
 
@@ -94,8 +93,7 @@ mod tests {
 
     #[test]
     fn same_variable_used_twice() {
-        let result =
-            render_template("{{x}} and {{x}}", &[("x", "hello")]).unwrap();
+        let result = render_template("{{x}} and {{x}}", &[("x", "hello")]).unwrap();
         assert_eq!(result, "hello and hello");
     }
 }

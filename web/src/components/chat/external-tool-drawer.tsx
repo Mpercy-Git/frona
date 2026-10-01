@@ -5,6 +5,7 @@ import {
   QuestionMarkCircleIcon,
   KeyIcon,
   ServerIcon,
+  SparklesIcon,
   WrenchScrewdriverIcon,
   ForwardIcon,
   ChevronLeftIcon,
@@ -22,6 +23,7 @@ import { ToolContentDispatch } from "./tool-uis/tool-content";
 function skipResponse(te: ToolCall): HitlResponse {
   switch (te.hitl?.request.type) {
     case "App":
+    case "Skills":
       return { type: "Approval", data: false };
     case "Credential":
     case "Credentials":
@@ -42,6 +44,8 @@ function toolIcon(te: ToolCall) {
       return <KeyIcon className="h-5 w-5 text-warning" />;
     case "App":
       return <ServerIcon className="h-5 w-5 text-success" />;
+    case "Skills":
+      return <SparklesIcon className="h-5 w-5 text-accent" />;
     default:
       return <WrenchScrewdriverIcon className="h-5 w-5 text-text-secondary" />;
   }
@@ -57,6 +61,8 @@ function toolTitle(te: ToolCall): string {
       return "Credential Request";
     case "App":
       return "App Deployment";
+    case "Skills":
+      return "Add Skill";
     case "Takeover":
       return "Manual Action Required";
     default:
@@ -238,7 +244,13 @@ export function ExternalToolDrawer({ wizard }: { wizard: ToolWizardState }) {
   );
 }
 
-export function CollapsedToolTab({ wizard }: { wizard: ToolWizardState }) {
+export function CollapsedToolTab({
+  wizard,
+  onExpand,
+}: {
+  wizard: ToolWizardState;
+  onExpand?: () => void;
+}) {
   const { collapsed, setCollapsed, currentIndex, submitted } = wizard;
   const pendingTools = usePendingTools();
 
@@ -250,7 +262,10 @@ export function CollapsedToolTab({ wizard }: { wizard: ToolWizardState }) {
 
   return (
     <button
-      onClick={() => setCollapsed(false)}
+      onClick={() => {
+        onExpand?.();
+        setCollapsed(false);
+      }}
       className="mb-[-1px] flex items-center gap-2 rounded-t-xl border border-b-0 border-border bg-surface-secondary px-4 py-1.5 hover:bg-surface-tertiary transition"
     >
       {toolIcon(currentTool)}

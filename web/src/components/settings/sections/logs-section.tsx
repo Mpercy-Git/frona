@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { CommandLineIcon, PauseIcon, PlayIcon, TrashIcon } from "@heroicons/react/24/outline";
-import { API_URL, getAccessToken } from "@/lib/api-client";
+import { API_URL, ensureAccessToken } from "@/lib/api-client";
 import { SectionHeader } from "../field";
 
 interface LogLine {
@@ -50,9 +50,12 @@ export function LogsSection() {
     const controller = new AbortController();
 
     (async () => {
-      const token = getAccessToken();
+      // `ensureAccessToken` rather than the cached token: after an expiry the
+      // cached one is dead, and a log pane that silently stays empty is a
+      // worse symptom than the request that renews it.
+      const tokenResult = await ensureAccessToken();
       const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
+      if (tokenResult.ok) headers["Authorization"] = `Bearer ${tokenResult.token}`;
 
       let res: Response;
       try {

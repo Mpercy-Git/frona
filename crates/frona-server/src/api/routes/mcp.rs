@@ -35,13 +35,19 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/mcp/bridge/servers", get(bridge_list_servers))
         .route("/api/mcp/bridge/servers/{slug}", get(bridge_server_tools))
-        .route("/api/mcp/bridge/{slug}/call/{tool_name}", post(bridge_call_tool))
+        .route(
+            "/api/mcp/bridge/{slug}/call/{tool_name}",
+            post(bridge_call_tool),
+        )
         .route("/api/mcp/servers", get(list_servers).post(install_server))
         .route(
             "/api/mcp/servers/{id}",
-            get(get_server).delete(uninstall_server).patch(update_server),
+            get(get_server)
+                .delete(uninstall_server)
+                .patch(update_server),
         )
         .route("/api/mcp/servers/{id}/start", post(start_server))
+        .route("/api/mcp/servers/{id}/update", post(update_package))
         .route("/api/mcp/servers/{id}/stop", post(stop_server))
         .route("/api/mcp/servers/{id}/logs", get(get_logs))
         .route("/api/mcp/servers/{id}/logs/stream", get(stream_logs))
@@ -58,8 +64,18 @@ struct McpServerResponse {
     repository_url: Option<String>,
     registry_id: Option<String>,
     status: String,
+    /// Why the last install or start gave up. The status alone says a server is
+    /// unusable; this says what to do about it, and outlives the request that
+    /// produced it - the reason has to still be there when the page is opened
+    /// a week later.
+    last_error: Option<String>,
     command: String,
     args: Vec<String>,
+    /// What the install resolved to. `server_version` is what the running
+    /// server calls itself; the two answer different questions and a server
+    /// can report a version its package never states.
+    resolved_ref: Option<String>,
+    server_version: Option<String>,
     tool_count: usize,
     active_transport: String,
     transports: Vec<crate::tool::mcp::TransportConfig>,
@@ -81,8 +97,11 @@ impl From<crate::tool::mcp::McpServer> for McpServerResponse {
             repository_url: s.repository_url,
             registry_id: s.registry_id,
             status: s.status.to_string(),
+            last_error: s.last_error,
             command: s.command,
             args: s.args,
+            resolved_ref: s.resolved_ref,
+            server_version: s.server_info.map(|i| i.version),
             tool_count: s.tool_cache.len(),
             active_transport: s.active_transport,
             transports: s.transports,
@@ -101,7 +120,7 @@ async fn list_servers(
     let servers = state.mcp_service.list_for_user(&auth.user_id).await?;
     let mut responses: Vec<McpServerResponse> = Vec::with_capacity(servers.len());
     for s in servers {
-        responses.push(to_response(&state, &auth.user_id, &auth.handle,s).await?);
+        responses.push(to_response(&state, &auth.user_id, &auth.handle, s).await?);
     }
     Ok(Json(responses))
 }
@@ -115,11 +134,7 @@ async fn to_response(
     let evaluated = state
         .policy_service
         .evaluate_sandbox_policy(
-            crate::policy::service::SandboxPrincipalRef::mcp(
-                user_id,
-                user_handle,
-                &server.handle,
-            ),
+            crate::policy::service::SandboxPrincipalRef::mcp(user_id, user_handle, &server.handle),
             false,
         )
         .await
@@ -137,11 +152,12 @@ async fn get_server(
     Path(id): Path<String>,
 ) -> Result<Json<McpServerResponse>, ApiError> {
     let servers = state.mcp_service.list_for_user(&auth.user_id).await?;
-    let server = servers
-        .into_iter()
-        .find(|s| s.id == id)
-        .ok_or_else(|| ApiError::from(crate::core::error::AppError::NotFound(format!("mcp server {id}"))))?;
-    let resp = to_response(&state, &auth.user_id, &auth.handle,server).await?;
+    let server = servers.into_iter().find(|s| s.id == id).ok_or_else(|| {
+        ApiError::from(crate::core::error::AppError::NotFound(format!(
+            "mcp server {id}"
+        )))
+    })?;
+    let resp = to_response(&state, &auth.user_id, &auth.handle, server).await?;
     Ok(Json(resp))
 }
 
@@ -151,8 +167,11 @@ async fn install_server(
     Json(req): Json<McpServerInstall>,
 ) -> Result<Json<McpServerResponse>, ApiError> {
     validate_request_sandbox_paths(&state, &auth, req.sandbox_policy.as_ref()).await?;
-    let server = state.mcp_service.install(&auth.user_id, &auth.handle, req).await?;
-    let resp = to_response(&state, &auth.user_id, &auth.handle,server).await?;
+    let server = state
+        .mcp_service
+        .install(&auth.user_id, &auth.handle, req)
+        .await?;
+    let resp = to_response(&state, &auth.user_id, &auth.handle, server).await?;
     Ok(Json(resp))
 }
 
@@ -164,7 +183,7 @@ async fn update_server(
 ) -> Result<Json<UpdateResponse>, ApiError> {
     validate_request_sandbox_paths(&state, &auth, req.sandbox_policy.as_ref()).await?;
     let result = state.mcp_service.update(&auth.user_id, &id, req).await?;
-    let server = to_response(&state, &auth.user_id, &auth.handle,result.server).await?;
+    let server = to_response(&state, &auth.user_id, &auth.handle, result.server).await?;
     Ok(Json(UpdateResponse {
         server,
         restart_required: result.restart_required,
@@ -205,6 +224,29 @@ async fn start_server(
     }))
 }
 
+async fn update_package(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<UpdatePackageResponse>, ApiError> {
+    let result = state.mcp_service.reinstall(&auth.user_id, &id).await?;
+    let server = to_response(&state, &auth.user_id, &auth.handle, result.server).await?;
+    Ok(Json(UpdatePackageResponse {
+        server,
+        changed: result.changed,
+        previous_ref: result.previous_ref,
+        restarted: result.restarted,
+    }))
+}
+
+#[derive(Serialize)]
+struct UpdatePackageResponse {
+    server: McpServerResponse,
+    changed: bool,
+    previous_ref: Option<String>,
+    restarted: bool,
+}
+
 #[derive(Serialize)]
 struct StartResponse {
     tool_count: usize,
@@ -242,7 +284,10 @@ async fn resolve_log_path(
     user_id: &str,
     server_id: &str,
 ) -> Result<std::path::PathBuf, ApiError> {
-    let server = state.mcp_service.find_by_id(server_id).await
+    let server = state
+        .mcp_service
+        .find_by_id(server_id)
+        .await
         .map_err(ApiError::from)?;
     if server.user_id != user_id {
         return Err(ApiError(crate::core::error::AppError::Forbidden(
@@ -280,7 +325,9 @@ async fn stream_logs(
             match tokio::fs::File::open(&log_path).await {
                 Ok(f) => break f,
                 Err(_) => {
-                    if tx.is_closed() { return; }
+                    if tx.is_closed() {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
@@ -303,14 +350,14 @@ async fn stream_logs(
             line.clear();
             match reader.read_line(&mut line).await {
                 Ok(0) => {
-                    if tx.is_closed() { return; }
+                    if tx.is_closed() {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
                 Ok(_) => {
                     let trimmed = line.trim_end();
-                    if !trimmed.is_empty()
-                        && tx.send(Ok(Event::default().data(trimmed))).is_err()
-                    {
+                    if !trimmed.is_empty() && tx.send(Ok(Event::default().data(trimmed))).is_err() {
                         return;
                     }
                 }
@@ -346,13 +393,18 @@ async fn search_registry(
     Ok(Json(results))
 }
 
-fn allowed_mcp_tools(defs: &[crate::tool::ToolDefinition]) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
-    let mut map: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+fn allowed_mcp_tools(
+    defs: &[crate::tool::ToolDefinition],
+) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+    let mut map: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
     for def in defs {
         if let Some(rest) = def.id.strip_prefix("mcp__")
             && let Some((slug, tool)) = rest.split_once("__")
         {
-            map.entry(slug.to_string()).or_default().insert(tool.to_string());
+            map.entry(slug.to_string())
+                .or_default()
+                .insert(tool.to_string());
         }
     }
     map
@@ -370,7 +422,10 @@ async fn bridge_list_servers(
 
     let slug_filter = if let Some(agent_id) = auth.agent_id() {
         let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
-        let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service, None).await;
+        let registry = state
+            .tool_manager
+            .build_agent_registry(&auth.user_id, &agent, &state.policy_service, None)
+            .await;
         Some(allowed_mcp_tools(registry.definitions()))
     } else {
         None
@@ -379,7 +434,9 @@ async fn bridge_list_servers(
     let result = running
         .into_iter()
         .filter(|s| {
-            slug_filter.as_ref().is_none_or(|f| f.contains_key(s.handle.as_str()))
+            slug_filter
+                .as_ref()
+                .is_none_or(|f| f.contains_key(s.handle.as_str()))
         })
         .map(|s| {
             let tool_count = s.tool_cache.len();
@@ -412,7 +469,10 @@ async fn bridge_server_tools(
 
     let allowed_tools = if let Some(agent_id) = auth.agent_id() {
         let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
-        let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service, None).await;
+        let registry = state
+            .tool_manager
+            .build_agent_registry(&auth.user_id, &agent, &state.policy_service, None)
+            .await;
         let map = allowed_mcp_tools(registry.definitions());
         map.get(&handle).cloned()
     } else {
@@ -450,7 +510,10 @@ async fn bridge_call_tool(
 ) -> Result<Json<frona_api_types::mcp::BridgeCallResponse>, ApiError> {
     if let Some(agent_id) = auth.agent_id() {
         let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
-        let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service, None).await;
+        let registry = state
+            .tool_manager
+            .build_agent_registry(&auth.user_id, &agent, &state.policy_service, None)
+            .await;
         let expected = format!("mcp__{handle}__{tool_name}");
         if !registry.definitions().iter().any(|d| d.id == expected) {
             return Err(ApiError::from(crate::core::error::AppError::Forbidden(
@@ -478,8 +541,8 @@ async fn bridge_call_tool(
     let content = result
         .content
         .iter()
-        .filter_map(|c| match &c.raw {
-            rmcp::model::RawContent::Text(t) => Some(t.text.as_str()),
+        .filter_map(|c| match c {
+            rmcp::model::ContentBlock::Text(t) => Some(t.text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()

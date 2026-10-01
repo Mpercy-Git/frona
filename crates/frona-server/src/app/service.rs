@@ -45,7 +45,10 @@ impl AppService {
         manifest: &AppManifest,
         credential_env_vars: Vec<(String, String)>,
     ) -> Result<AppResponse, AppError> {
-        let existing = self.repo.find_by_user_handle(user_id, &manifest.handle).await?;
+        let existing = self
+            .repo
+            .find_by_user_handle(user_id, &manifest.handle)
+            .await?;
 
         if let Some(ref e) = existing
             && e.agent_id != agent_id
@@ -163,7 +166,10 @@ impl AppService {
                             "{user_handle}/{}",
                             app.handle
                         )),
-                        manifest.sandbox_policy.as_ref().unwrap_or(&crate::policy::sandbox::SandboxPolicy::default()),
+                        manifest
+                            .sandbox_policy
+                            .as_ref()
+                            .unwrap_or(&crate::policy::sandbox::SandboxPolicy::default()),
                     )
                     .await?;
 
@@ -173,7 +179,12 @@ impl AppService {
         }
     }
 
-    pub async fn stop(&self, agent_id: &str, app_id: &str, chat_id: &str) -> Result<AppResponse, AppError> {
+    pub async fn stop(
+        &self,
+        agent_id: &str,
+        app_id: &str,
+        chat_id: &str,
+    ) -> Result<AppResponse, AppError> {
         let mut app = self.get_owned_app(agent_id, app_id).await?;
 
         self.manager.stop_app(app_id).await?;
@@ -288,11 +299,7 @@ impl AppService {
         self.repo.find_by_user_handle(user_id, handle).await
     }
 
-    pub async fn get_by_user(
-        &self,
-        user_id: &str,
-        app_id: &str,
-    ) -> Result<AppResponse, AppError> {
+    pub async fn get_by_user(&self, user_id: &str, app_id: &str) -> Result<AppResponse, AppError> {
         let app = self
             .repo
             .find_by_id(app_id)
@@ -454,7 +461,14 @@ impl AppService {
     ) -> Result<AppResponse, AppError> {
         match self
             .manager
-            .start_app(&app.id, &app.agent_id, &app.user_id, command, manifest, credential_env_vars)
+            .start_app(
+                &app.id,
+                &app.agent_id,
+                &app.user_id,
+                command,
+                manifest,
+                credential_env_vars,
+            )
             .await
         {
             Ok((port, pid)) => {

@@ -4,13 +4,13 @@ mod operations;
 mod range;
 mod upload;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, FromRequestParts, Query};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, post};
-use axum::Router;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
@@ -39,8 +39,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route(
             "/api/files",
-            post(upload::upload_file)
-                .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_SIZE)),
+            post(upload::upload_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_SIZE)),
         )
         .route("/api/files/presign", post(upload::presign_file))
         .route(
@@ -52,7 +51,10 @@ pub fn router() -> Router<AppState> {
             get(browse::download_agent_file),
         )
         .route("/api/files/browse/user", get(browse::list_user_files))
-        .route("/api/files/browse/user/{*dirpath}", get(browse::list_user_files))
+        .route(
+            "/api/files/browse/user/{*dirpath}",
+            get(browse::list_user_files),
+        )
         .route(
             "/api/files/browse/agent/{agent_id}",
             get(browse::list_agent_files_root),
@@ -65,6 +67,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/files/rename", post(operations::rename_user_file))
         .route("/api/files/copy", post(operations::copy_files))
         .route("/api/files/move", post(operations::move_files))
+        .route("/api/files/delete", post(operations::delete_files))
         .route("/api/files/mkdir", post(operations::create_user_folder))
 }
 
@@ -79,14 +82,19 @@ impl FromRequestParts<AppState> for FileAuth {
             return Ok(FileAuth::User(auth));
         }
 
-        let query: Query<PresignQuery> =
-            Query::try_from_uri(&parts.uri)
-                .map_err(|_| ApiError(AppError::Auth { message: "Missing authorization".into(), code: AuthErrorCode::InvalidCredentials }))?;
+        let query: Query<PresignQuery> = Query::try_from_uri(&parts.uri).map_err(|_| {
+            ApiError(AppError::Auth {
+                message: "Missing authorization".into(),
+                code: AuthErrorCode::InvalidCredentials,
+            })
+        })?;
 
-        let token = query
-            .presign
-            .as_deref()
-            .ok_or_else(|| ApiError(AppError::Auth { message: "Missing authorization".into(), code: AuthErrorCode::InvalidCredentials }))?;
+        let token = query.presign.as_deref().ok_or_else(|| {
+            ApiError(AppError::Auth {
+                message: "Missing authorization".into(),
+                code: AuthErrorCode::InvalidCredentials,
+            })
+        })?;
 
         let claims = state.presign_service.verify(token).await?;
 
@@ -99,11 +107,14 @@ impl FromRequestParts<AppState> for FileAuth {
 }
 
 pub(super) async fn serve_file(
+    owner: &crate::core::Handle,
     vpath: &VirtualPath,
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Response, ApiError> {
-    let resolved = state.storage_service.resolve_virtual_path(vpath)?;
+    let resolved = state
+        .storage_service
+        .resolve_virtual_path_for_user(owner, vpath)?;
     serve_path(&resolved, headers).await
 }
 

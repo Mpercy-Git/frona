@@ -88,7 +88,9 @@ impl BrowserConnection {
                     page_count - current_page
                 )
             } else {
-                format!("\n\n---\n\n*Page {current_page} of {page_count}. This is the last page.*\n")
+                format!(
+                    "\n\n---\n\n*Page {current_page} of {page_count}. This is the last page.*\n"
+                )
             };
             content.push_str(&suffix);
         }

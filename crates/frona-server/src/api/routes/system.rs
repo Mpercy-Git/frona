@@ -30,17 +30,24 @@ pub fn router() -> Router<AppState> {
 
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     if state.is_shutting_down() {
-        (StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"status": "draining"})))
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"status": "draining"})),
+        )
     } else {
         (StatusCode::OK, axum::Json(json!({"status": "ok"})))
     }
 }
 
-async fn info_handler(_auth: AuthUser, State(state): State<AppState>) -> axum::Json<serde_json::Value> {
+async fn info_handler(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+) -> axum::Json<serde_json::Value> {
     use sysinfo::System;
     let mut sys = System::new();
     sys.refresh_memory();
-    let total_memory = sys.cgroup_limits()
+    let total_memory = sys
+        .cgroup_limits()
         .map(|cg| cg.total_memory)
         .unwrap_or_else(|| sys.total_memory());
     let cpus = System::physical_core_count().unwrap_or(0);
@@ -130,16 +137,34 @@ async fn logs_stream_handler(
 }
 
 async fn restart_handler(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
-) -> axum::Json<serde_json::Value> {
+) -> Result<axum::Json<serde_json::Value>, ApiError> {
+    // Restarting drains every in-flight request and re-execs the process, so
+    // it is gated on the same operator capability as the log stream above.
+    let caller = state
+        .user_service
+        .find_by_id(&auth.user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("User not found".into()))?;
+    let decision = state
+        .policy_service
+        .authorize_user(&caller, PolicyAction::ListUsers)
+        .await?;
+    if !decision.allowed {
+        return Err(AppError::Forbidden(
+            "Restarting the server requires administrator privileges".into(),
+        )
+        .into());
+    }
+
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         tracing::info!("Restart requested, draining in-flight work...");
         crate::core::shutdown::graceful_drain(&state).await;
         re_exec_self();
     });
-    axum::Json(json!({"status": "restarting"}))
+    Ok(axum::Json(json!({"status": "restarting"})))
 }
 
 fn re_exec_self() -> ! {

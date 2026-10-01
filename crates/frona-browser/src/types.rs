@@ -37,6 +37,11 @@ pub struct Link {
 pub struct Snapshot {
     pub tree: String,
     pub interactive_count: usize,
+    /// Whether `tree` is a diff against the previous snapshot, or the whole tree. An
+    /// `incremental` request still returns the whole tree when there is nothing to diff
+    /// against (the first snapshot of a page, or one rendered the other way), and the
+    /// caller has to describe to the model what it is actually looking at.
+    pub diffed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

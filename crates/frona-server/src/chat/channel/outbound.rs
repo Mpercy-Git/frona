@@ -64,7 +64,10 @@ pub struct OutboundDeliveryService {
 
 impl OutboundDeliveryService {
     pub fn new(message_repo: Arc<dyn MessageRepository>, chat_service: ChatService) -> Self {
-        Self { message_repo, chat_service }
+        Self {
+            message_repo,
+            chat_service,
+        }
     }
 
     pub async fn record_segment_progress(&self, message_id: &str) -> Result<(), AppError> {
@@ -113,7 +116,10 @@ impl OutboundDeliveryService {
             })
             .collect();
         if batch.is_empty() {
-            return Ok(DeliverHitlReport { attempted: 0, delivered: 0 });
+            return Ok(DeliverHitlReport {
+                attempted: 0,
+                delivered: 0,
+            });
         }
 
         let msg = self
@@ -125,11 +131,7 @@ impl OutboundDeliveryService {
         let delivered = deliveries.len();
 
         for (tc, delivery) in batch.iter().zip(deliveries) {
-            if let Err(e) = self
-                .chat_service
-                .set_hitl_delivery(&tc.id, delivery)
-                .await
-            {
+            if let Err(e) = self.chat_service.set_hitl_delivery(&tc.id, delivery).await {
                 tracing::warn!(
                     tool_call_id = %tc.id,
                     error = %e,
@@ -137,7 +139,10 @@ impl OutboundDeliveryService {
                 );
             }
         }
-        Ok(DeliverHitlReport { attempted: batch.len(), delivered })
+        Ok(DeliverHitlReport {
+            attempted: batch.len(),
+            delivered,
+        })
     }
 
     pub async fn ensure_pending_delivery(&self, message_id: &str) -> Result<(), AppError> {
@@ -298,7 +303,10 @@ impl OutboundDeliveryService {
     ) {
         let mut current = msg;
         for _ in 0..MAX_SEGMENTS_PER_DISPATCH {
-            match self.attempt_send(&current, &chat, adapter.as_ref(), &ctx).await {
+            match self
+                .attempt_send(&current, &chat, adapter.as_ref(), &ctx)
+                .await
+            {
                 Ok(SegmentOutcome::Continue) => {
                     match self.message_repo.find_by_id(&current.id).await {
                         Ok(Some(reloaded)) => current = reloaded,
@@ -333,9 +341,7 @@ impl OutboundDeliveryService {
     ) -> Result<SegmentOutcome, AppError> {
         // Funnel for broadcast + retry-poller: catches Signal-fallback replies
         // that the broadcast-side gate misses after crash-recovery reconcile.
-        let effective_mode = msg
-            .dispatch_mode
-            .unwrap_or(ctx.channel.dispatch_mode);
+        let effective_mode = msg.dispatch_mode.unwrap_or(ctx.channel.dispatch_mode);
         if effective_mode != DispatchMode::Message {
             tracing::debug!(
                 channel_id = %ctx.channel.id,
@@ -353,14 +359,14 @@ impl OutboundDeliveryService {
         let Some(delivery) = msg.delivery.as_ref() else {
             return Ok(SegmentOutcome::Done);
         };
-        if matches!(delivery.state, DeliveryState::Sent | DeliveryState::Delivered) {
+        if matches!(
+            delivery.state,
+            DeliveryState::Sent | DeliveryState::Delivered
+        ) {
             return Ok(SegmentOutcome::Done);
         }
 
-        let tool_calls = self
-            .chat_service
-            .get_tool_calls_by_message(&msg.id)
-            .await?;
+        let tool_calls = self.chat_service.get_tool_calls_by_message(&msg.id).await?;
         let final_index = tool_calls.len() as u32;
 
         // HITL prefix handling — delegated to `deliver_pending_hitls`.

@@ -6,5 +6,7 @@ web/out/
 .git/
 .env
 .env.local
+.envrc
+mise.local.toml
 CLAUDE.md
 README.md

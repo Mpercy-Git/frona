@@ -5,7 +5,7 @@ use axum::middleware::Next;
 use axum::response::IntoResponse;
 use metrics::{counter, histogram};
 
-use crate::core::metrics::{HTTP_REQUESTS_TOTAL, HTTP_REQUEST_DURATION_SECONDS};
+use crate::core::metrics::{HTTP_REQUEST_DURATION_SECONDS, HTTP_REQUESTS_TOTAL};
 
 pub async fn track_http_metrics(req: Request, next: Next) -> impl IntoResponse {
     let method = req.method().to_string();
@@ -20,11 +20,7 @@ pub async fn track_http_metrics(req: Request, next: Next) -> impl IntoResponse {
     let duration = start.elapsed();
     let status = response.status().as_u16().to_string();
 
-    let labels = [
-        ("method", method),
-        ("path", path),
-        ("status", status),
-    ];
+    let labels = [("method", method), ("path", path), ("status", status)];
     counter!(HTTP_REQUESTS_TOTAL, &labels).increment(1);
     histogram!(HTTP_REQUEST_DURATION_SECONDS, &labels).record(duration.as_secs_f64());
 

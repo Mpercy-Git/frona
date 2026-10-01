@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { MessagePrimitive, useMessage, useMessagePartText } from "@assistant-ui/react";
+import { MessagePrimitive, useAuiState, useMessagePartText } from "@assistant-ui/react";
 import { useThreadIsRunning } from "@assistant-ui/core/react";
 import { MarkdownText } from "./markdown-text";
 import { useSession } from "@/lib/session-context";
@@ -14,6 +14,7 @@ import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/components/ui/code-block";
 import { agentDisplayName } from "@/lib/types";
 import type { Attachment } from "@/lib/types";
+import { isMessageError } from "@/lib/message-error";
 import { MediaAttachment } from "@/components/preview/media-attachment";
 import { mediaKind } from "@/lib/media-utils";
 import { DefaultToolCallUI } from "./tool-uis/default-tool-call-ui";
@@ -21,7 +22,7 @@ import { ToolTimelineProvider } from "./tool-uis/tool-timeline-context";
 import { SourcesList } from "./sources-list";
 import type { Citation } from "@/lib/types";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
-import { ArrowDownTrayIcon, XMarkIcon, ClipboardDocumentListIcon, SparklesIcon } from "@heroicons/react/24/outline";
+import { ArrowDownTrayIcon, XMarkIcon, ClipboardDocumentListIcon, SparklesIcon, ExclamationCircleIcon } from "@heroicons/react/24/outline";
 import { useRouter } from "next/navigation";
 import * as Tooltip from "@radix-ui/react-tooltip";
 
@@ -63,12 +64,51 @@ function ReasoningPanel({ text }: { text: string }) {
 }
 
 function StreamingIndicator() {
+  const message = useAuiState((state) => state.message);
+  if (message.status?.type !== "running") return null;
   return (
     <span className="inline-flex items-center gap-1 py-1 -order-1">
       <span className="h-1 w-1 rounded-full bg-text-tertiary animate-[wave_1.4s_ease-in-out_infinite]" />
       <span className="h-1 w-1 rounded-full bg-text-tertiary animate-[wave_1.4s_ease-in-out_0.2s_infinite]" />
       <span className="h-1 w-1 rounded-full bg-text-tertiary animate-[wave_1.4s_ease-in-out_0.4s_infinite]" />
     </span>
+  );
+}
+
+export function MessageError() {
+  const status = useAuiState((state) => state.message.status);
+  if (status?.type !== "incomplete" || status.reason !== "error") return null;
+  const failure = isMessageError(status.error) ? status.error : undefined;
+  const error = failure?.message
+    ?? (typeof status.error === "string" && status.error.trim() ? status.error
+    : "Message processing failed.");
+  return (
+    <div role="alert" className="mt-2 flex w-full items-start gap-2 rounded-lg border border-error-text/20 bg-error-bg px-3 py-2 text-sm text-error-text">
+      <ExclamationCircleIcon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+      <div className="min-w-0">
+        <p className="font-medium">Unable to complete this reply</p>
+        <p className="mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{error}</p>
+        {failure && (
+          <details className="mt-2">
+            <summary className="cursor-pointer">Details</summary>
+            <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+              <dt>Time</dt><dd><time dateTime={failure.timestamp}>{new Date(failure.timestamp).toLocaleString()}</time></dd>
+              <dt>Subsystem</dt><dd>{({ inference: "Inference", tool_execution: "Tool execution", message_processing: "Message processing" })[failure.details.subsystem]}</dd>
+              <dt>Category</dt><dd>{({ authentication: "Authentication", permission: "Permission", model_unavailable: "Model unavailable", rate_limit: "Rate limit", timeout: "Timeout", network: "Network", invalid_request: "Invalid request", invalid_response: "Invalid response", configuration: "Configuration", internal: "Internal", unknown: "Unknown" })[failure.details.data.category]}</dd>
+              <dt>Retryable</dt><dd>{failure.details.data.retryable ? "Yes" : "No"}</dd>
+              {failure.details.subsystem === "inference" && <>
+                {failure.details.data.provider && <><dt>Provider</dt><dd>{failure.details.data.provider}</dd></>}
+                {failure.details.data.model && <><dt>Model</dt><dd className="break-all">{failure.details.data.model}</dd></>}
+                {failure.details.data.retry_count !== undefined && <><dt>Retries</dt><dd>{failure.details.data.retry_count}</dd></>}
+                {failure.details.data.fallback_count !== undefined && <><dt>Fallbacks tried</dt><dd>{failure.details.data.fallback_count}</dd></>}
+              </>}
+              {failure.details.subsystem === "tool_execution" && failure.details.data.tool_name && <><dt>Tool</dt><dd>{failure.details.data.tool_name}</dd></>}
+              {failure.details.data.http_status !== undefined && <><dt>HTTP status</dt><dd>{failure.details.data.http_status}</dd></>}
+            </dl>
+          </details>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -278,7 +318,7 @@ function AttachmentItem({ attachment }: { attachment: Attachment }) {
 }
 
 function MessageAttachments() {
-  const message = useMessage();
+  const message = useAuiState((state) => state.message);
   const attachments = (message.metadata as Record<string, any>)?.custom?.attachments as Attachment[] | undefined;
 
   if (!attachments?.length) return null;
@@ -294,7 +334,7 @@ function MessageAttachments() {
 
 export function FronaAssistantMessage() {
   const { agentId: sessionAgentId, activeTaskId } = useSession();
-  const message = useMessage();
+  const message = useAuiState((state) => state.message);
   const messageAgentId = (message.metadata as Record<string, any>)?.custom?.agentId;
   const agentId = messageAgentId ?? sessionAgentId ?? undefined;
   const { agents } = useNavigation();
@@ -385,6 +425,7 @@ export function FronaAssistantMessage() {
             />
           </ToolTimelineProvider>
           <SourcesList citations={citations} />
+          <MessageError />
         </div>
       </div>
     </MessagePrimitive.Root>

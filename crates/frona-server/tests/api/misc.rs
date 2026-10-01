@@ -4,18 +4,13 @@ use tower::ServiceExt;
 
 use super::*;
 
-
 #[tokio::test]
 async fn list_tools_returns_builtin() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "tools-user", "tools@example.com", "password123").await;
+    let (token, _) = register_user(&state, "tools-user", "tools@example.com", "password123").await;
 
     let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get("/api/tools", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(auth_get("/api/tools", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     let providers = json.as_array().unwrap();
@@ -24,21 +19,30 @@ async fn list_tools_returns_builtin() {
     // Browser tools are hardcoded so the browser provider must always carry tools in tests;
     // other providers may be empty because their definitions live in prompt .md files
     // unavailable in the test environment.
-    let provider_ids: Vec<&str> = providers.iter().map(|p| p["id"].as_str().unwrap()).collect();
-    assert!(provider_ids.contains(&"browser"), "browser provider missing; got {:?}", provider_ids);
+    let provider_ids: Vec<&str> = providers
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        provider_ids.contains(&"browser"),
+        "browser provider missing; got {:?}",
+        provider_ids
+    );
 
     let browser = providers.iter().find(|p| p["id"] == "browser").unwrap();
     assert!(browser["display_name"].is_string());
     assert_eq!(browser["kind"]["type"], "builtin");
     assert_eq!(browser["status"]["state"], "available");
     let browser_tools = browser["tools"].as_array().unwrap();
-    assert!(!browser_tools.is_empty(), "browser provider should expose tools");
+    assert!(
+        !browser_tools.is_empty(),
+        "browser provider should expose tools"
+    );
     let first = &browser_tools[0];
     assert!(first["id"].is_string());
     assert!(first["description"].is_string());
     assert!(first["configurable"].is_boolean());
 }
-
 
 #[tokio::test]
 async fn openid_configuration_returns_json() {
@@ -82,7 +86,6 @@ async fn jwks_returns_keys() {
     assert!(json["keys"].is_array());
 }
 
-
 #[tokio::test]
 async fn metrics_returns_text() {
     let (state, _tmp) = test_app_state().await;
@@ -99,10 +102,14 @@ async fn metrics_returns_text() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let content_type = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(content_type.contains("text/plain"));
 }
-
 
 #[tokio::test]
 async fn health_check_returns_ok() {
@@ -144,12 +151,10 @@ async fn healthz_alias_returns_ok() {
     assert_eq!(json["status"], "ok");
 }
 
-
 #[tokio::test]
 async fn system_version_returns_json() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "sys-ver", "sysver@example.com", "password123").await;
+    let (token, _) = register_user(&state, "sys-ver", "sysver@example.com", "password123").await;
 
     let app = build_app(state);
     let resp = app
@@ -158,7 +163,10 @@ async fn system_version_returns_json() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert!(json["version"].is_string(), "Expected 'version' key in response");
+    assert!(
+        json["version"].is_string(),
+        "Expected 'version' key in response"
+    );
 }
 
 #[tokio::test]
@@ -178,7 +186,6 @@ async fn system_version_without_auth_returns_401() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
-
 
 #[tokio::test]
 async fn get_config_schema_returns_json() {
@@ -202,21 +209,57 @@ async fn get_config_schema_returns_json() {
     );
 }
 
+/// `FRONA_CONFIG` is process-global, so the tests that read the config file
+/// take turns rather than racing each other's env.
+static CONFIG_FILE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[tokio::test]
 async fn get_config_returns_redacted() {
+    let _guard = CONFIG_FILE_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "cfg-get", "cfgget@example.com", "password123").await;
+    let (token, _) = register_user(&state, "cfg-get", "cfgget@example.com", "password123").await;
 
     let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get("/api/config", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(auth_get("/api/config", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     // Should have config structure but secrets redacted
     assert!(json.is_object());
+}
+
+/// A config.yaml the loader can't read used to panic inside the handler: the
+/// connection died mid-response and the settings page could only say "Failed
+/// to load configuration". It answers 422 with the loader's own message now,
+/// so the operator sees which file and which field to fix.
+#[tokio::test]
+async fn get_config_reports_an_unreadable_config_file() {
+    let _guard = CONFIG_FILE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "cfg-bad", "cfgbad@example.com", "password123").await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.yaml");
+    // A model group missing its `provider` — the shape an older build could
+    // write, and the one with a hint attached.
+    std::fs::write(&path, "models:\n  primary:\n    model: gpt-5\n").unwrap();
+    let previous = std::env::var("FRONA_CONFIG").ok();
+    unsafe { std::env::set_var("FRONA_CONFIG", &path) };
+
+    let app = build_app(state);
+    let resp = app.oneshot(auth_get("/api/config", &token)).await.unwrap();
+    let status = resp.status();
+    let json = body_json(resp).await;
+
+    match previous {
+        Some(v) => unsafe { std::env::set_var("FRONA_CONFIG", v) },
+        None => unsafe { std::env::remove_var("FRONA_CONFIG") },
+    }
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let error = json["error"].as_str().expect("error message");
+    assert!(error.contains("config.yaml"), "{error}");
+    assert!(error.contains("models.primary.provider"), "{error}");
+    assert!(error.contains("hint:"), "{error}");
 }
 
 #[tokio::test]

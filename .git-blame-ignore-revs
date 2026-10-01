@@ -1,0 +1,11 @@
+# Revisions that changed formatting only, and which `git blame` should skip.
+#
+# GitHub honours this file automatically in its blame view. Locally, opt in once:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Only add commits here that provably changed no behaviour -- a whole-tree
+# formatter run, a bulk rename. Never a commit that also carries a fix.
+
+# style: apply cargo fmt --all across the workspace (92 files, formatting only)
+afb7de12d0210600c00c11ac13fcd73875bfce04

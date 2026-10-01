@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
+use frona::auth::User;
 use frona::auth::ephemeral_token::EphemeralTokenGuard;
 use frona::auth::jwt::JwtService;
 use frona::auth::token::models::CreatePatRequest;
 use frona::auth::token::service::TokenService;
-use frona::auth::User;
-use frona::core::{Principal, PrincipalKind};
 use frona::core::repository::Repository;
+use frona::core::{Principal, PrincipalKind};
 use frona::credential::keypair::service::KeyPairService;
 use frona::db::init::setup_schema;
 use frona::db::repo::generic::SurrealRepo;
@@ -60,10 +60,7 @@ async fn setup() -> (TokenService, KeyPairService, User, tempfile::TempDir) {
 async fn session_access_token_validates_as_user_principal() {
     let (tokens, keypair, user, _tmp) = setup().await;
 
-    let (access, _refresh) = tokens
-        .create_session_pair(&keypair, &user)
-        .await
-        .unwrap();
+    let (access, _refresh) = tokens.create_session_pair(&keypair, &user).await.unwrap();
 
     let claims = tokens.validate(&keypair, &access).await.unwrap();
     assert_eq!(claims.token_type, "access");

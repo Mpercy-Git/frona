@@ -1,5 +1,5 @@
-use crate::storage::Workspace;
 use super::prompt::PromptLoader;
+use crate::storage::Workspace;
 
 pub struct AgentPromptLoader<'a> {
     workspace: &'a Workspace,
@@ -28,8 +28,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::storage::StorageService;
     use crate::core::config::Config;
+    use crate::storage::StorageService;
 
     fn shared_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -55,7 +55,10 @@ mod tests {
         let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
         let content = loader.read("TITLE.md");
-        assert!(content.is_some(), "Should read TITLE.md from agent workspace");
+        assert!(
+            content.is_some(),
+            "Should read TITLE.md from agent workspace"
+        );
         assert!(content.unwrap().contains("title generator"));
     }
 
@@ -64,7 +67,10 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_ws_test_prompt_fallback");
         let _ = std::fs::remove_dir_all(&tmp);
         let svc = test_service(&tmp);
-        let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("nonexistent_agent"));
+        let ws = svc.agent_workspace(
+            &crate::handle!("test-user"),
+            &crate::handle!("nonexistent_agent"),
+        );
 
         let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
@@ -82,7 +88,8 @@ mod tests {
         let svc = test_service(&tmp);
         let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("test_agent"));
 
-        ws.write("prompts/CHAT_COMPACTION.md", "Agent-specific compaction").unwrap();
+        ws.write("prompts/CHAT_COMPACTION.md", "Agent-specific compaction")
+            .unwrap();
 
         let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
@@ -104,7 +111,10 @@ mod tests {
         let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
         let content = loader.read("TOOLS.md");
-        assert!(content.is_some(), "Should read TOOLS.md from agent workspace root");
+        assert!(
+            content.is_some(),
+            "Should read TOOLS.md from agent workspace root"
+        );
         assert_eq!(content.unwrap(), "Root-level prompt");
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -118,7 +128,8 @@ mod tests {
         let ws = svc.agent_workspace(&crate::handle!("test-user"), &crate::handle!("test_agent"));
 
         ws.write("MY_PROMPT.md", "From root").unwrap();
-        ws.write("prompts/MY_PROMPT.md", "From prompts dir").unwrap();
+        ws.write("prompts/MY_PROMPT.md", "From prompts dir")
+            .unwrap();
 
         let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);

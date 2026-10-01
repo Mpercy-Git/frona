@@ -1,16 +1,19 @@
 pub mod config;
 pub mod error;
 pub mod event_bus;
+pub mod execution;
 pub mod handle;
 pub mod log_stream;
 pub mod metadata;
 pub mod metrics;
 pub mod principal;
 pub mod repository;
+pub mod runtime_config;
 pub mod shutdown;
 pub mod state;
 pub mod supervisor;
 pub mod template;
+pub mod user_config;
 
 pub use handle::Handle;
 pub use principal::{Principal, PrincipalKind};
@@ -51,7 +54,11 @@ mod version_tests {
         assert_eq!(app_version(), compiled, "empty -> compile-time version");
 
         unsafe { std::env::set_var("FRONA_VERSION", "dev") };
-        assert_eq!(app_version(), compiled, "dev sentinel -> compile-time version");
+        assert_eq!(
+            app_version(),
+            compiled,
+            "dev sentinel -> compile-time version"
+        );
 
         unsafe { std::env::set_var("FRONA_VERSION", "v2026.9.9") };
         assert_eq!(app_version(), "2026.9.9", "leading v stripped");

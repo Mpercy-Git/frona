@@ -53,7 +53,12 @@ async fn get_navigation(
     // surface them alongside the owner's standalone chats.
     let mut standalone_chats: Vec<ChatResponse> =
         standalone_chats.into_iter().map(Into::into).collect();
-    standalone_chats.extend(state.chat_service.shared_chat_responses(&auth.user_id).await?);
+    standalone_chats.extend(
+        state
+            .chat_service
+            .shared_chat_responses(&auth.user_id)
+            .await?,
+    );
 
     Ok(Json(NavigationResponse {
         spaces: space_with_chats,

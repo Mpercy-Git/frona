@@ -167,7 +167,10 @@ fn parse_opening_fence(line: &str) -> Option<BlockFence> {
     if marker == b'`' && bytes[n..].contains(&b'`') {
         return None;
     }
-    Some(BlockFence { marker, open_len: n })
+    Some(BlockFence {
+        marker,
+        open_len: n,
+    })
 }
 
 fn is_closing_fence(line: &str, bf: BlockFence) -> bool {
@@ -259,7 +262,10 @@ pub(super) struct PlainSplitter {
 
 impl PlainSplitter {
     pub fn new(provider_limit: usize, hard_limit: Option<usize>) -> Self {
-        Self { provider_limit, hard_limit }
+        Self {
+            provider_limit,
+            hard_limit,
+        }
     }
 
     pub async fn split(
@@ -337,7 +343,10 @@ pub(super) struct MarkdownSplitter {
 
 impl MarkdownSplitter {
     pub fn new(provider_limit: usize, hard_limit: Option<usize>) -> Self {
-        Self { provider_limit, hard_limit }
+        Self {
+            provider_limit,
+            hard_limit,
+        }
     }
 
     pub fn split(&self, text: &str) -> Vec<String> {
@@ -423,8 +432,7 @@ fn open_fence_marker(block: Option<BlockFence>) -> String {
     match block {
         None => String::new(),
         Some(bf) => {
-            let marker = std::iter::repeat_n(bf.marker as char, bf.open_len)
-                .collect::<String>();
+            let marker = std::iter::repeat_n(bf.marker as char, bf.open_len).collect::<String>();
             format!("{marker}\n")
         }
     }
@@ -436,8 +444,7 @@ fn close_fence_marker(block: Option<BlockFence>) -> String {
     match block {
         None => String::new(),
         Some(bf) => {
-            let marker = std::iter::repeat_n(bf.marker as char, bf.open_len)
-                .collect::<String>();
+            let marker = std::iter::repeat_n(bf.marker as char, bf.open_len).collect::<String>();
             format!("\n{marker}")
         }
     }
@@ -454,7 +461,10 @@ pub(super) struct TelegramMarkdownV2Splitter {
 
 impl TelegramMarkdownV2Splitter {
     pub fn new(provider_limit: usize, hard_limit: Option<usize>) -> Self {
-        Self { provider_limit, hard_limit }
+        Self {
+            provider_limit,
+            hard_limit,
+        }
     }
 
     pub fn split(&self, text: &str) -> Vec<String> {
@@ -650,7 +660,10 @@ mod tests {
     fn fence_depth_inside_block_fence() {
         let text = "intro\n```\ncode here";
         let state = fence_depth_at(text, text.len());
-        assert!(state.block.is_some(), "should be inside an open block fence");
+        assert!(
+            state.block.is_some(),
+            "should be inside an open block fence"
+        );
         assert_eq!(state.block.unwrap().marker, b'`');
         assert_eq!(state.block.unwrap().open_len, 3);
     }
@@ -722,7 +735,10 @@ mod tests {
         let out = append_overflow(&body, url, 100);
         assert!(out.len() <= 100, "must fit total_limit: {}", out.len());
         assert!(out.ends_with(url), "ends with the overflow URL");
-        assert!(out.contains("\n\nFull reply: "), "carries the suffix prefix");
+        assert!(
+            out.contains("\n\nFull reply: "),
+            "carries the suffix prefix"
+        );
     }
 
     #[test]
@@ -771,12 +787,12 @@ mod tests {
     }
 
     async fn test_share_service() -> ShareService {
-        use std::sync::Arc;
-        use surrealdb::Surreal;
-        use surrealdb::engine::local::Mem;
         use crate::credential::share::models::Share;
         use crate::credential::share::repository::ShareRepository;
         use crate::db::repo::generic::SurrealRepo;
+        use std::sync::Arc;
+        use surrealdb::Surreal;
+        use surrealdb::engine::local::Mem;
 
         let db = Surreal::new::<Mem>(()).await.unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
@@ -811,7 +827,10 @@ mod tests {
     #[test]
     fn markdown_under_limit_returns_one_chunk() {
         let splitter = MarkdownSplitter::new(2000, None);
-        assert_eq!(splitter.split("hello world"), vec!["hello world".to_string()]);
+        assert_eq!(
+            splitter.split("hello world"),
+            vec!["hello world".to_string()]
+        );
     }
 
     #[test]
@@ -820,7 +839,11 @@ mod tests {
         let line = "a".repeat(500);
         let blob = format!("{line}\n{line}\n{line}\n{line}\n{line}");
         let chunks = splitter.split(&blob);
-        assert!(chunks.len() >= 2, "expected ≥2 chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "expected ≥2 chunks, got {}",
+            chunks.len()
+        );
         for c in &chunks {
             assert!(c.len() <= 2000, "chunk exceeds limit: {}", c.len());
         }
@@ -926,7 +949,9 @@ mod tests {
                 assert!(
                     end <= utf16_len,
                     "range past body end: start={} length={} body_len={}",
-                    r.start, r.length, utf16_len
+                    r.start,
+                    r.length,
+                    utf16_len
                 );
             }
         }

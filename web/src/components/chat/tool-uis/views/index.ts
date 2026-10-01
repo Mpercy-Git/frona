@@ -8,6 +8,7 @@ import {
   StoreAgentMemoryView,
   StoreUserMemoryView,
 } from "./memory";
+import { MemorySearchView } from "./memory-search";
 import { NodeView } from "./node";
 import { ProduceFileView } from "./produce-file";
 import { PythonView } from "./python";
@@ -37,6 +38,8 @@ export const TOOL_VIEWS_EXACT: Record<string, ToolView> = {
   delete_task: DeleteTaskView,
   store_agent_memory: StoreAgentMemoryView,
   store_user_memory: StoreUserMemoryView,
+  memory_remember: StoreAgentMemoryView,
+  memory_search: MemorySearchView,
   update_identity: UpdateIdentityView,
   set_heartbeat: HeartbeatView,
 };
@@ -51,6 +54,7 @@ export const TOOL_VIEWS_PATTERN: ToolMatcher[] = [];
 export const TOOL_VIEWS_DEFAULT_EXPANDED: Record<string, (args: unknown) => boolean> = {
   store_agent_memory: memoryDefaultExpanded,
   store_user_memory: memoryDefaultExpanded,
+  memory_remember: memoryDefaultExpanded,
 };
 
 export function pickView(toolName: string): ToolView {

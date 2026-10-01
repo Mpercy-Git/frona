@@ -1,29 +1,30 @@
+pub mod annotate;
 pub mod await_signal;
 pub mod browser;
-pub mod manager;
 pub mod cli;
-pub mod files;
+pub mod cost_analysis;
 pub mod create_agent;
-pub mod manage_policy;
+pub mod files;
 pub mod heartbeat;
 pub mod manage_app;
+pub mod manage_policy;
+pub mod manager;
+pub mod mcp;
 pub mod notify_human;
 pub mod produce_file;
+pub mod provider;
 pub mod registry;
-pub mod memory;
 pub mod report_signal;
 pub mod request_credentials;
-pub mod task;
+pub mod sandbox;
 pub mod send_message;
-pub mod annotate;
+pub mod skills;
+pub mod task;
 pub mod task_control;
 pub mod update_identity;
 pub mod voice;
 pub mod web_fetch;
 pub mod web_search;
-pub mod mcp;
-pub mod provider;
-pub mod sandbox;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -31,24 +32,86 @@ use serde_json::Value;
 
 use crate::core::error::AppError;
 
-pub use crate::inference::request::InferenceContext;
+pub use crate::inference::request::{InferenceContext, active_chat};
 
 use crate::agent::prompt::PromptLoader;
 
+/// Read a string argument out of a tool call: present, a string, and not blank once
+/// trimmed. `None` for anything else - a missing key, a non-string, or whitespace.
+///
+/// The **pull** only, deliberately not the policy. What a tool does about an absent
+/// argument is a real choice, and its callers make opposite ones for good reasons: the
+/// Classify's tools answer with `ToolOutput::text` naming the argument and saying what
+/// belongs in it, because the model is mid-conversation and can just try again, while
+/// `memory_search` raises `AppError::Validation`. Sharing the four combinators leaves that
+/// decision one visible line at each site instead of a chain each site re-derives -
+/// including the trimming and blank-check, which is where they had quietly diverged.
+pub fn str_arg<'a>(arguments: &'a Value, key: &str) -> Option<&'a str> {
+    arguments
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Read a "one or many" argument: the singular key (a string) and the plural key (an
+/// array of strings), collapsed into one list in the order given, blanks dropped and
+/// duplicates collapsed.
+///
+/// A batchable tool takes both spellings, because the two are there for different
+/// reasons. The plural is the point: one call instead of N, which is the difference
+/// between reading five memory pages costing five tool turns and costing one. The
+/// singular stays because it is what the model already knows - every prompt example
+/// spells it, and an MCP client may have it hard-coded - and because a tool that
+/// answers a familiar argument with a validation error buys a retry, not a saving.
+/// Either key may carry either shape for the same reason.
+pub fn str_list_arg(arguments: &Value, singular: &str, plural: &str) -> Vec<String> {
+    fn push(out: &mut Vec<String>, candidate: &str) {
+        let trimmed = candidate.trim();
+        if !trimmed.is_empty() && !out.iter().any(|existing| existing == trimmed) {
+            out.push(trimmed.to_string());
+        }
+    }
+
+    let mut out = Vec::new();
+    for key in [singular, plural] {
+        match arguments.get(key) {
+            Some(Value::String(s)) => push(&mut out, s),
+            Some(Value::Array(arr)) => {
+                for element in arr {
+                    if let Some(s) = element.as_str() {
+                        push(&mut out, s);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Accepts unix timestamp or naive ISO 8601 (interpreted in `tz`). Rejects
-/// offset-bearing strings — the agent must use naive + `timezone` parameter.
-pub fn parse_run_at(value: &Value, tz: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
+/// offset-bearing strings - the agent must use naive + `timezone` parameter.
+pub fn parse_run_at(
+    value: &Value,
+    tz: &str,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
     let dt = match value {
         Value::Number(n) => {
-            let ts = n.as_i64()
+            let ts = n
+                .as_i64()
                 .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?;
-            Some(chrono::DateTime::from_timestamp(ts, 0)
-                .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?)
+            Some(
+                chrono::DateTime::from_timestamp(ts, 0)
+                    .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?,
+            )
         }
         Value::String(s) => {
             if let Ok(ts) = s.parse::<i64>() {
-                Some(chrono::DateTime::from_timestamp(ts, 0)
-                    .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?)
+                Some(
+                    chrono::DateTime::from_timestamp(ts, 0)
+                        .ok_or_else(|| AppError::Validation("Invalid run_at timestamp".into()))?,
+                )
             } else {
                 Some(parse_naive_run_at(s, tz)?)
             }
@@ -66,7 +129,7 @@ pub fn parse_run_at(value: &Value, tz: &str) -> Result<Option<chrono::DateTime<c
 }
 
 fn parse_naive_run_at(s: &str, tz: &str) -> Result<chrono::DateTime<chrono::Utc>, AppError> {
-    // RFC 3339 parse succeeds = offset-bearing. Reject — bypasses per-task TZ.
+    // RFC 3339 parse succeeds = offset-bearing. Reject - bypasses per-task TZ.
     if chrono::DateTime::parse_from_rfc3339(s).is_ok() {
         return Err(AppError::Validation(format!(
             "run_at '{}' includes an explicit UTC offset. Use a naive ISO 8601 form like '2026-05-20T22:00:00' (interpreted in the user's local timezone) and set the optional `timezone` parameter only if the user names a different zone.",
@@ -107,12 +170,19 @@ fn parse_naive_run_at(s: &str, tz: &str) -> Result<chrono::DateTime<chrono::Utc>
 
 /// Resolve a `run_at` datetime from arguments, supporting both `run_at` and `delay_minutes`.
 /// `delay_minutes` takes precedence over `run_at` if both are provided.
-pub fn resolve_run_at(arguments: &Value, tz: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
+pub fn resolve_run_at(
+    arguments: &Value,
+    tz: &str,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
     if let Some(delay) = arguments.get("delay_minutes").and_then(|v| v.as_u64()) {
         if delay == 0 {
-            return Err(AppError::Validation("delay_minutes must be greater than 0".into()));
+            return Err(AppError::Validation(
+                "delay_minutes must be greater than 0".into(),
+            ));
         }
-        return Ok(Some(chrono::Utc::now() + chrono::Duration::minutes(delay as i64)));
+        return Ok(Some(
+            chrono::Utc::now() + chrono::Duration::minutes(delay as i64),
+        ));
     }
 
     match arguments.get("run_at") {
@@ -145,10 +215,10 @@ pub struct ToolOutput {
     text: String,
     images: Vec<ImageData>,
     attachments: Vec<crate::storage::Attachment>,
-    /// Pause marker — when `Some(_)` with `status == Pending`, the tool loop
+    /// Pause marker - when `Some(_)` with `status == Pending`, the tool loop
     /// exits with `ExternalToolPending`. Mutually exclusive with `task_event`.
     hitl: Option<crate::inference::hitl::Hitl>,
-    /// Terminal signal — when `Some(_)`, the tool loop exits as Completed
+    /// Terminal signal - when `Some(_)`, the tool loop exits as Completed
     /// with this as the lifecycle event. Mutually exclusive with `hitl`.
     task_event: Option<crate::inference::tool_call::TaskEvent>,
     system_prompt: Option<String>,
@@ -210,7 +280,7 @@ impl ToolOutput {
     /// `ExternalToolPending`. The agent message stays in `Executing` until
     /// the human resolves and the per-message barrier clears.
     ///
-    /// Mutually exclusive with `with_task_event` — the last builder called
+    /// Mutually exclusive with `with_task_event` - the last builder called
     /// wins, but `debug_assert` catches the contradiction in debug builds.
     pub fn with_hitl(mut self, h: crate::inference::hitl::Hitl) -> Self {
         debug_assert!(
@@ -257,6 +327,10 @@ impl ToolOutput {
         self.hitl.take()
     }
 
+    pub fn take_images(&mut self) -> Vec<ImageData> {
+        std::mem::take(&mut self.images)
+    }
+
     pub fn task_event(&self) -> Option<&crate::inference::tool_call::TaskEvent> {
         self.task_event.as_ref()
     }
@@ -290,12 +364,17 @@ pub trait AgentTool: Send + Sync {
     fn definition_vars(&self) -> Vec<(&str, &str)> {
         vec![]
     }
-    async fn execute(&self, tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError>;
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError>;
     /// Called after a human resolves a HITL prompt this tool emitted from
     /// `execute`. The tool reads its original `request` payload, validates the
     /// `response` shape, performs any side effect (deploy, bind credential,
     /// etc.), and returns the result text that gets persisted as
-    /// `te.result` — what the LLM reads in conversation history on resume.
+    /// `te.result` - what the LLM reads in conversation history on resume.
     ///
     /// Default returns an error. Tools that emit HITLs must override.
     async fn on_resume(
@@ -335,7 +414,10 @@ fn build_parameters_json(yaml: &Value) -> Value {
     let properties: Value = if let Value::Object(map) = &params {
         let mut props = serde_json::Map::new();
         for (key, schema) in map {
-            props.insert(key.clone(), serde_json::to_value(schema).unwrap_or(Value::Null));
+            props.insert(
+                key.clone(),
+                serde_json::to_value(schema).unwrap_or(Value::Null),
+            );
         }
         Value::Object(props)
     } else {
@@ -348,13 +430,16 @@ fn build_parameters_json(yaml: &Value) -> Value {
     });
 
     if let Value::Array(arr) = &required {
-        let req: Vec<Value> = arr.iter().map(|v| {
-            if let Value::String(s) = v {
-                Value::String(s.clone())
-            } else {
-                v.clone()
-            }
-        }).collect();
+        let req: Vec<Value> = arr
+            .iter()
+            .map(|v| {
+                if let Value::String(s) = v {
+                    Value::String(s.clone())
+                } else {
+                    v.clone()
+                }
+            })
+            .collect();
         result["required"] = Value::Array(req);
     }
 
@@ -378,7 +463,11 @@ pub fn load_tool_definition(prompts: &PromptLoader, path: &str) -> Option<ToolDe
     load_tool_definition_with_vars(prompts, path, &[])
 }
 
-pub fn load_tool_definition_with_vars(prompts: &PromptLoader, path: &str, vars: &[(&str, &str)]) -> Option<ToolDefinition> {
+pub fn load_tool_definition_with_vars(
+    prompts: &PromptLoader,
+    path: &str,
+    vars: &[(&str, &str)],
+) -> Option<ToolDefinition> {
     let raw = prompts.read_with_vars(path, vars)?;
     let (yaml, body) = parse_frontmatter(&raw)?;
     let id = yaml.get("id")?.as_str()?.to_string();
@@ -400,6 +489,43 @@ pub fn load_tool_definition_with_vars(prompts: &PromptLoader, path: &str, vars: 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn str_list_arg_takes_singular_plural_or_both() {
+        assert_eq!(
+            str_list_arg(&json!({"path": "a.md"}), "path", "paths"),
+            vec!["a.md"],
+            "the singular spelling every prompt example uses still works"
+        );
+        assert_eq!(
+            str_list_arg(&json!({"paths": ["a.md", "b.md"]}), "path", "paths"),
+            vec!["a.md", "b.md"],
+        );
+        // A model that sends both, or sends a list under the singular key, gets what it
+        // asked for rather than a validation error and a retry.
+        assert_eq!(
+            str_list_arg(
+                &json!({"path": ["a.md"], "paths": ["b.md"]}),
+                "path",
+                "paths"
+            ),
+            vec!["a.md", "b.md"],
+        );
+    }
+
+    #[test]
+    fn str_list_arg_drops_blanks_duplicates_and_non_strings() {
+        assert_eq!(
+            str_list_arg(
+                &json!({"path": " a.md ", "paths": ["a.md", "", "   ", 7, "b.md"]}),
+                "path",
+                "paths"
+            ),
+            vec!["a.md", "b.md"],
+        );
+        assert!(str_list_arg(&json!({}), "path", "paths").is_empty());
+        assert!(str_list_arg(&json!({"path": ""}), "path", "paths").is_empty());
+    }
 
     #[test]
     fn build_parameters_json_passes_through_any_of() {
@@ -457,9 +583,7 @@ required:
 
     #[test]
     fn parse_run_at_unix_timestamp_string() {
-        let dt = parse_run_at(&json!("4000000000"), "UTC")
-            .unwrap()
-            .unwrap();
+        let dt = parse_run_at(&json!("4000000000"), "UTC").unwrap().unwrap();
         assert_eq!(dt.timestamp(), 4_000_000_000);
     }
 
@@ -531,9 +655,12 @@ required:
     fn resolve_run_at_delay_minutes_takes_precedence() {
         let args = json!({"delay_minutes": 5, "run_at": "2030-05-20T22:00:00"});
         let dt = resolve_run_at(&args, "UTC").unwrap().unwrap();
-        // Should be ~5min from now, not 2030 — delay_minutes wins.
+        // Should be ~5min from now, not 2030 - delay_minutes wins.
         let delta = (dt - chrono::Utc::now()).num_minutes();
-        assert!((4..=6).contains(&delta), "expected ~5 min from now, got {delta}");
+        assert!(
+            (4..=6).contains(&delta),
+            "expected ~5 min from now, got {delta}"
+        );
     }
 
     #[test]

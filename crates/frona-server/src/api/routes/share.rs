@@ -1,7 +1,7 @@
+use axum::Router;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
-use axum::Router;
 
 use crate::api::error::anonymous_not_found;
 use crate::core::state::AppState;
@@ -11,10 +11,7 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/s/{id}", get(resolve_share))
 }
 
-async fn resolve_share(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+async fn resolve_share(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     // "Not found" and "expired" return the SAME response so the route is
     // not an oracle for "does this id exist".
     let row = match state.share_service.resolve(&id).await {
@@ -31,7 +28,11 @@ async fn resolve_share(
             // Relative redirect — the user is already on this host via `/s/{id}`.
             Redirect::to(&format!("/chats/{chat_id}")).into_response()
         }
-        ShareKind::File { owner, path, public } => {
+        ShareKind::File {
+            owner,
+            path,
+            public,
+        } => {
             let target = if public {
                 match state
                     .presign_service
@@ -57,7 +58,9 @@ async fn resolve_share(
                     }
                 };
                 let segment = match crate::storage::attachment_url_segment(
-                    &owner, &path, Some(user_handle.as_ref()),
+                    &owner,
+                    &path,
+                    Some(user_handle.as_ref()),
                 ) {
                     Some(s) => s,
                     None => return anonymous_not_found(),
@@ -72,4 +75,3 @@ async fn resolve_share(
         }
     }
 }
-

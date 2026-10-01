@@ -46,6 +46,7 @@ pub struct SpaceResponse {
     pub archived_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub chat_count: usize,
 }
 
 impl From<Space> for SpaceResponse {
@@ -57,6 +58,7 @@ impl From<Space> for SpaceResponse {
             archived_at: space.archived_at,
             created_at: space.created_at,
             updated_at: space.updated_at,
+            chat_count: 0,
         }
     }
 }

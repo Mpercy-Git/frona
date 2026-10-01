@@ -14,8 +14,8 @@ use frona::db::repo::generic::SurrealRepo;
 use frona::tool::parse_run_at;
 use frona::tool::task::next_cron_occurrence;
 use serde_json::json;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 const SERVER_DEFAULT_TZ: &str = "UTC";
 
@@ -26,7 +26,10 @@ async fn test_db() -> Surreal<Db> {
 }
 
 fn make_task_service(db: Surreal<Db>) -> TaskService {
-    TaskService::new(SurrealRepo::new(db), frona::chat::broadcast::BroadcastService::new())
+    TaskService::new(
+        SurrealRepo::new(db),
+        frona::chat::broadcast::BroadcastService::new(),
+    )
 }
 
 /// Mirror of the TZ resolution logic in `TaskTool::resolve_timezone`:
@@ -72,13 +75,25 @@ async fn agent_creates_cron_in_user_local_time_persists_correct_utc_instant() {
             None,
             Default::default(),
             Default::default(),
-            false, None, None)
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
-    let stored = svc.find_by_id(&task.id).await.unwrap().expect("task should exist");
+    let stored = svc
+        .find_by_id(&task.id)
+        .await
+        .unwrap()
+        .expect("task should exist");
     match stored.kind {
-        TaskKind::Cron { timezone: stored_tz, cron_expression, next_run_at: stored_next, .. } => {
+        TaskKind::Cron {
+            timezone: stored_tz,
+            cron_expression,
+            next_run_at: stored_next,
+            ..
+        } => {
             assert_eq!(stored_tz.as_deref(), Some("America/Los_Angeles"));
             assert_eq!(cron_expression, "0 8 * * *");
             let la: chrono_tz::Tz = "America/Los_Angeles".parse().unwrap();
@@ -105,7 +120,8 @@ async fn agent_creates_cron_with_explicit_timezone_override() {
     let timezone = resolve_tz(&args, user_tz);
     assert_eq!(timezone, "Asia/Tokyo", "per-task override beats user TZ");
 
-    let next_run_at = next_cron_occurrence(args["cron_expression"].as_str().unwrap(), &timezone).unwrap();
+    let next_run_at =
+        next_cron_occurrence(args["cron_expression"].as_str().unwrap(), &timezone).unwrap();
     let task = svc
         .create_cron_template(
             "user-1",
@@ -121,13 +137,20 @@ async fn agent_creates_cron_with_explicit_timezone_override() {
             None,
             Default::default(),
             Default::default(),
-            false, None, None)
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     let stored = svc.find_by_id(&task.id).await.unwrap().unwrap();
     match stored.kind {
-        TaskKind::Cron { timezone: stored_tz, next_run_at: stored_next, .. } => {
+        TaskKind::Cron {
+            timezone: stored_tz,
+            next_run_at: stored_next,
+            ..
+        } => {
             assert_eq!(stored_tz.as_deref(), Some("Asia/Tokyo"));
             let tokyo: chrono_tz::Tz = "Asia/Tokyo".parse().unwrap();
             let local = stored_next.unwrap().with_timezone(&tokyo);
@@ -183,7 +206,10 @@ async fn explicit_offset_run_at_rejected_at_tool_layer() {
     let err = parse_run_at(args.get("run_at").unwrap(), "America/Los_Angeles").unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("explicit UTC offset"), "got: {msg}");
-    assert!(msg.contains("`timezone` parameter"), "should mention the timezone param");
+    assert!(
+        msg.contains("`timezone` parameter"),
+        "should mention the timezone param"
+    );
 }
 
 #[tokio::test]
@@ -195,7 +221,8 @@ async fn agent_with_no_user_tz_falls_back_to_server_default() {
     let timezone = resolve_tz(&args, user_tz);
     assert_eq!(timezone, SERVER_DEFAULT_TZ);
 
-    let next_run_at = next_cron_occurrence(args["cron_expression"].as_str().unwrap(), &timezone).unwrap();
+    let next_run_at =
+        next_cron_occurrence(args["cron_expression"].as_str().unwrap(), &timezone).unwrap();
     let task = svc
         .create_cron_template(
             "user-1",
@@ -211,12 +238,18 @@ async fn agent_with_no_user_tz_falls_back_to_server_default() {
             None,
             Default::default(),
             Default::default(),
-            false, None, None)
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     match svc.find_by_id(&task.id).await.unwrap().unwrap().kind {
-        TaskKind::Cron { timezone: stored_tz, .. } => {
+        TaskKind::Cron {
+            timezone: stored_tz,
+            ..
+        } => {
             assert_eq!(stored_tz.as_deref(), Some(SERVER_DEFAULT_TZ));
         }
         _ => panic!("expected Cron kind"),
@@ -243,7 +276,10 @@ async fn cron_advance_uses_snapshotted_timezone_not_server_default() {
             None,
             Default::default(),
             Default::default(),
-            false, None, None)
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
 

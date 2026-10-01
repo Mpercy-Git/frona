@@ -14,7 +14,7 @@ use crate::policy::models::PolicyAction;
 use crate::policy::service::PolicyService;
 use frona_derive::agent_tool;
 
-use super::{InferenceContext, ToolOutput};
+use super::{InferenceContext, ToolOutput, active_chat};
 
 /// XOR: both together is rejected because the schema's own root
 /// `description` already covers the prose case.
@@ -60,8 +60,9 @@ fn parse_result_spec(
 
 pub fn parse_cron(expression: &str) -> Result<cron::Schedule, AppError> {
     let seven_field = format!("0 {} *", expression);
-    cron::Schedule::from_str(&seven_field)
-        .map_err(|e| AppError::Validation(format!("Invalid cron expression '{}': {}", expression, e)))
+    cron::Schedule::from_str(&seven_field).map_err(|e| {
+        AppError::Validation(format!("Invalid cron expression '{}': {}", expression, e))
+    })
 }
 
 pub fn next_cron_occurrence(expression: &str, timezone: &str) -> Result<DateTime<Utc>, AppError> {
@@ -107,7 +108,11 @@ impl TaskTool {
         }
     }
 
-    fn resolve_timezone(&self, arguments: &Value, user: &crate::auth::models::User) -> Result<String, AppError> {
+    fn resolve_timezone(
+        &self,
+        arguments: &Value,
+        user: &crate::auth::models::User,
+    ) -> Result<String, AppError> {
         if let Some(arg) = arguments.get("timezone").and_then(|v| v.as_str()) {
             arg.parse::<chrono_tz::Tz>().map_err(|e| {
                 AppError::Validation(format!(
@@ -185,11 +190,16 @@ impl TaskTool {
         Ok(None)
     }
 
-    async fn handle_create_task(&self, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn handle_create_task(
+        &self,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let user_id = &ctx.user.id;
         let agent_id = &ctx.agent.id;
-        let chat_id = &ctx.chat.id;
-        let space_id = ctx.chat.space_id.clone();
+        let chat_id = &chat.id;
+        let space_id = chat.space_id.clone();
 
         let title = arguments
             .get("title")
@@ -211,7 +221,10 @@ impl TaskTool {
             ));
         }
 
-        let has_delay_minutes = arguments.get("delay_minutes").and_then(|v| v.as_u64()).is_some();
+        let has_delay_minutes = arguments
+            .get("delay_minutes")
+            .and_then(|v| v.as_u64())
+            .is_some();
         let has_run_at = arguments.get("run_at").is_some();
         if has_delay_minutes && has_run_at {
             return Err(AppError::Validation(
@@ -220,11 +233,14 @@ impl TaskTool {
         }
 
         let (target_agent, is_self) = self.resolve_target_agent(ctx, target_agent_name).await?;
-        if let Some(denied) = self.authorize_delegation(ctx, &target_agent, is_self).await? {
+        if let Some(denied) = self
+            .authorize_delegation(ctx, &target_agent, is_self)
+            .await?
+        {
             return Ok(denied);
         }
 
-        if ctx.chat.task_id.is_some() {
+        if chat.task_id.is_some() {
             if has_delay_minutes || has_run_at {
                 return Err(AppError::Validation(
                     "Cannot create a deferred task from inside a running task. Use `defer_task` to retry the current task later instead of scheduling a duplicate.".into(),
@@ -240,17 +256,31 @@ impl TaskTool {
         let timezone = self.resolve_timezone(&arguments, &ctx.user)?;
 
         self.handle_create_oneoff(
-            user_id, agent_id, chat_id, space_id, &target_agent, is_self, process_result, title, instruction,
-            &timezone, &arguments,
+            user_id,
+            agent_id,
+            chat_id,
+            space_id,
+            &target_agent,
+            is_self,
+            process_result,
+            title,
+            instruction,
+            &timezone,
+            &arguments,
         )
         .await
     }
 
-    async fn handle_create_recurring(&self, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn handle_create_recurring(
+        &self,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let user_id = &ctx.user.id;
         let agent_id = &ctx.agent.id;
-        let chat_id = &ctx.chat.id;
-        let space_id = ctx.chat.space_id.clone();
+        let chat_id = &chat.id;
+        let space_id = chat.space_id.clone();
 
         let title = arguments
             .get("title")
@@ -273,13 +303,26 @@ impl TaskTool {
         }
 
         let (target_agent, is_self) = self.resolve_target_agent(ctx, target_agent_name).await?;
-        if let Some(denied) = self.authorize_delegation(ctx, &target_agent, is_self).await? {
+        if let Some(denied) = self
+            .authorize_delegation(ctx, &target_agent, is_self)
+            .await?
+        {
             return Ok(denied);
         }
 
         let timezone = self.resolve_timezone(&arguments, &ctx.user)?;
         self.handle_create_recurring_internal(
-            user_id, agent_id, chat_id, space_id, &target_agent, is_self, title, instruction, cron_expression, &timezone, &arguments,
+            user_id,
+            agent_id,
+            chat_id,
+            space_id,
+            &target_agent,
+            is_self,
+            title,
+            instruction,
+            cron_expression,
+            &timezone,
+            &arguments,
         )
         .await
     }
@@ -322,7 +365,7 @@ impl TaskTool {
                 return Err(AppError::Validation(format!(
                     "Invalid cron_mode '{}'. Use 'singleton' or 'per_instance'.",
                     other
-                )))
+                )));
             }
         };
         let cron_concurrency = match arguments.get("cron_concurrency").and_then(|v| v.as_str()) {
@@ -337,7 +380,7 @@ impl TaskTool {
                 return Err(AppError::Validation(format!(
                     "Invalid cron_concurrency '{}'. Use 'allow', 'forbid', or 'replace'.",
                     other
-                )))
+                )));
             }
         };
         let process_result = arguments
@@ -442,7 +485,9 @@ impl TaskTool {
 
         let tz: chrono_tz::Tz = timezone.parse().expect("timezone was validated earlier");
         let format_local = |at: DateTime<Utc>| {
-            at.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z").to_string()
+            at.with_timezone(&tz)
+                .format("%Y-%m-%d %H:%M %Z")
+                .to_string()
         };
 
         let message = if is_self {
@@ -536,7 +581,11 @@ impl TaskTool {
         ))
     }
 
-    async fn handle_delete(&self, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn handle_delete(
+        &self,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
         let task_id = arguments
             .get("task_id")
             .and_then(|v| v.as_str())
@@ -554,7 +603,10 @@ impl TaskTool {
     }
 }
 
-#[agent_tool(name = "task", files("create_task", "create_recurring_task", "list_tasks", "delete_task"))]
+#[agent_tool(
+    name = "task",
+    files("create_task", "create_recurring_task", "list_tasks", "delete_task")
+)]
 impl TaskTool {
     async fn execute(
         &self,
@@ -567,7 +619,10 @@ impl TaskTool {
             "create_recurring_task" => self.handle_create_recurring(arguments, ctx).await,
             "list_tasks" => self.handle_list(ctx).await,
             "delete_task" => self.handle_delete(arguments, ctx).await,
-            _ => Err(AppError::Validation(format!("Unknown task tool: {}", tool_name))),
+            _ => Err(AppError::Validation(format!(
+                "Unknown task tool: {}",
+                tool_name
+            ))),
         }
     }
 }
@@ -670,7 +725,10 @@ mod tests {
         assert_eq!(next.hour(), 12);
         assert_eq!(next.minute(), 0);
         let weekday = next.weekday().num_days_from_monday();
-        assert!(weekday < 5, "Should be a weekday (Mon=0 .. Fri=4), got {weekday}");
+        assert!(
+            weekday < 5,
+            "Should be a weekday (Mon=0 .. Fri=4), got {weekday}"
+        );
     }
 
     #[test]

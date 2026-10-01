@@ -1,7 +1,7 @@
+use crate::Result;
 use crate::connection::BrowserConnection;
 use crate::error::Error;
 use crate::keymap::build_key_events;
-use crate::Result;
 
 impl BrowserConnection {
     pub async fn press_key(&self, key: &str) -> Result<()> {

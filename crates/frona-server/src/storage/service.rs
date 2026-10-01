@@ -70,6 +70,45 @@ impl StorageService {
         self.user_root(user_handle).join("skills")
     }
 
+    /// Root of the wiki memory projection - `<handle>/pkm` (sibling of `files/`,
+    /// `skills/`). Holds the `<vault-directory>/` tree of markdown pages. Named
+    /// `pkm` (not `memory`) so the on-disk path doesn't read `pkm/Memory` as
+    /// `memory/Memory` - the leaf directory is the user-configured vault name.
+    pub fn user_pkm_path(&self, user_handle: &Handle) -> PathBuf {
+        self.user_root(user_handle).join("pkm")
+    }
+
+    /// True when `candidate` is below this user's PKM storage directory.
+    /// The data root can differ from the active configuration because persisted tool
+    /// calls can outlive a database restore, relocation, or benchmark copy.
+    pub fn is_user_pkm_path(&self, user_handle: &Handle, candidate: &str) -> bool {
+        let expected_root = self.user_pkm_path(user_handle);
+        let Ok(expected_relative) = expected_root.strip_prefix(&self.data_dir) else {
+            return false;
+        };
+        let expected = expected_relative
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(value) => Some(value),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut actual = Vec::new();
+        for component in Path::new(candidate).components() {
+            match component {
+                std::path::Component::Normal(value) => actual.push(value),
+                std::path::Component::ParentDir => return false,
+                _ => {}
+            }
+        }
+        actual
+            .windows(expected.len())
+            .enumerate()
+            .any(|(index, window)| {
+                window == expected.as_slice() && index + expected.len() < actual.len()
+            })
+    }
+
     pub fn user_tokens_path(&self, user_handle: &Handle) -> PathBuf {
         self.user_root(user_handle).join("tokens")
     }
@@ -102,22 +141,67 @@ impl StorageService {
         self.resolve_virtual_path(&parsed)
     }
 
+    /// Resolve a raw virtual path string on behalf of `user_handle`.
+    ///
+    /// Prefer this over [`resolve`](Self::resolve) anywhere the string came from a
+    /// request: it is the only form that can resolve an `agent://` path, and it
+    /// refuses one naming somebody else.
+    pub fn resolve_for_user(&self, user_handle: &Handle, path: &str) -> Result<PathBuf, AppError> {
+        if path.starts_with('/') {
+            return Ok(PathBuf::from(path));
+        }
+        let parsed = VirtualPath::parse(path)?;
+        self.resolve_virtual_path_for_user(user_handle, &parsed)
+    }
+
+    /// Resolve a virtual path whose namespace names its own owner.
+    ///
+    /// Only `user://` paths carry their owner, so an `agent://` path is refused
+    /// here: an agent handle is scoped to a user, and resolving one without
+    /// knowing which user is what let `agent://victim/…` reach into the victim's
+    /// tree. Callers holding an authenticated user want
+    /// [`resolve_virtual_path_for_user`](Self::resolve_virtual_path_for_user).
     pub fn resolve_virtual_path(&self, path: &VirtualPath) -> Result<PathBuf, AppError> {
+        let Namespace::User(name) = &path.namespace else {
+            return Err(AppError::Validation(
+                "agent virtual paths require a user handle".into(),
+            ));
+        };
+        let handle = Handle::try_new(name)?;
+        self.resolve_virtual_path_for_user(&handle, path)
+    }
+
+    /// Resolve `path` inside `user_handle`'s tree, refusing anything outside it.
+    ///
+    /// Both namespaces are bound to the authenticated user: a `user://` path must
+    /// name that user, and an `agent://` path resolves under that user's workspace
+    /// for the named agent. `validate_no_traversal` alone never caught this - it
+    /// stops a path escaping the users root, and one user's tree reaching into
+    /// another's never leaves it.
+    pub fn resolve_virtual_path_for_user(
+        &self,
+        user_handle: &Handle,
+        path: &VirtualPath,
+    ) -> Result<PathBuf, AppError> {
         let users_root = self.users_root();
         let users_root_str = users_root.to_string_lossy().into_owned();
         let resolved = match &path.namespace {
             Namespace::User(name) => {
                 let handle = Handle::try_new(name)?;
+                if &handle != user_handle {
+                    return Err(AppError::Forbidden(
+                        "Cannot access another user's files".into(),
+                    ));
+                }
                 let resolved = self.user_files_path(&handle).join(&path.relative);
                 validate_no_traversal(&resolved, &users_root_str)?;
                 resolved
             }
             Namespace::Agent(name) => {
-                let resolved = if name.contains('/') {
-                    users_root.join(name).join(&path.relative)
-                } else {
-                    users_root.join(name).join("agents").join(name).join(&path.relative)
-                };
+                let agent_handle = Handle::try_new(name)?;
+                let resolved = self
+                    .agent_workspace_path(user_handle, &agent_handle)
+                    .join(&path.relative);
                 validate_no_traversal(&resolved, &users_root_str)?;
                 resolved
             }
@@ -166,11 +250,7 @@ impl StorageService {
 
             entries.push(FileEntry {
                 id,
-                size: if metadata.is_dir() {
-                    0
-                } else {
-                    metadata.len()
-                },
+                size: if metadata.is_dir() { 0 } else { metadata.len() },
                 date: modified.to_rfc3339(),
                 entry_type: if metadata.is_dir() {
                     "folder".into()
@@ -291,22 +371,64 @@ mod tests {
         assert!(result.ends_with("data/users/uid-123/files/report.pdf"));
     }
 
+    /// An agent workspace belongs to a user, so the resolved path is rooted at the
+    /// resolving user - not, as before, at whatever handle the URI happened to name.
     #[test]
     fn resolve_agent_path() {
         let svc = test_service();
         let vp = VirtualPath::agent("dev", "output.csv");
-        let result = svc.resolve_virtual_path(&vp).unwrap();
+        let result = svc
+            .resolve_virtual_path_for_user(&crate::handle!("owner"), &vp)
+            .unwrap();
         assert!(result.is_absolute());
-        assert!(result.ends_with("data/users/dev/agents/dev/output.csv"));
+        assert!(result.ends_with("data/users/owner/agents/dev/output.csv"));
     }
 
     #[test]
     fn resolve_agent_nested_path() {
         let svc = test_service();
         let vp = VirtualPath::agent("dev", "subdir/nested/file.txt");
-        let result = svc.resolve_virtual_path(&vp).unwrap();
+        let result = svc
+            .resolve_virtual_path_for_user(&crate::handle!("owner"), &vp)
+            .unwrap();
         assert!(result.is_absolute());
-        assert!(result.ends_with("data/users/dev/agents/dev/subdir/nested/file.txt"));
+        assert!(result.ends_with("data/users/owner/agents/dev/subdir/nested/file.txt"));
+    }
+
+    /// The whole point of the change: one user's handle in a path never reaches
+    /// another user's tree. `validate_no_traversal` never caught this, because
+    /// crossing between users stays inside the users root.
+    #[test]
+    fn a_user_path_naming_someone_else_is_refused() {
+        let svc = test_service();
+        let vp = VirtualPath::user(&crate::handle!("victim"), "secrets.env");
+        let err = svc
+            .resolve_virtual_path_for_user(&crate::handle!("thief"), &vp)
+            .expect_err("another user's files must not resolve");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+    }
+
+    /// The reachable half of the same bug: an `agent://` URI names only the agent,
+    /// so the handle in it used to pick the tree it landed in.
+    #[test]
+    fn an_agent_path_resolves_under_the_caller_not_the_named_handle() {
+        let svc = test_service();
+        let vp = VirtualPath::parse("agent://victim/secrets.env").unwrap();
+        let result = svc
+            .resolve_virtual_path_for_user(&crate::handle!("thief"), &vp)
+            .unwrap();
+        assert!(
+            result.ends_with("data/users/thief/agents/victim/secrets.env"),
+            "resolved to {result:?}"
+        );
+    }
+
+    /// Nothing may resolve an agent path without saying whose workspace it is.
+    #[test]
+    fn an_agent_path_without_a_user_is_refused() {
+        let svc = test_service();
+        let vp = VirtualPath::agent("dev", "output.csv");
+        assert!(svc.resolve_virtual_path(&vp).is_err());
     }
 
     #[test]

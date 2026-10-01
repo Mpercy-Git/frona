@@ -7,8 +7,7 @@ use super::super::*;
 #[tokio::test]
 async fn message_metadata_round_trip_via_send_and_patch() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "mmd", "mmd@example.com", "password123").await;
+    let (token, _) = register_user(&state, "mmd", "mmd@example.com", "password123").await;
     let agent = create_agent(&state, &token, "MdAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
     let chat = create_chat(&state, &token, agent_id, None).await;
@@ -30,10 +29,7 @@ async fn message_metadata_round_trip_via_send_and_patch() {
 
     let app = build_app(state.clone());
     let list = app
-        .oneshot(auth_get(
-            &format!("/api/chats/{chat_id}/messages"),
-            &token,
-        ))
+        .oneshot(auth_get(&format!("/api/chats/{chat_id}/messages"), &token))
         .await
         .unwrap();
     let json = body_json(list).await;
@@ -62,12 +58,10 @@ async fn message_metadata_round_trip_via_send_and_patch() {
     assert_eq!(patched["metadata"]["extra"], "x");
 }
 
-
 #[tokio::test]
 async fn list_messages_empty_chat() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "msg-list", "msglist@example.com", "password123").await;
+    let (token, _) = register_user(&state, "msg-list", "msglist@example.com", "password123").await;
     let agent = create_agent(&state, &token, "ListAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
     let chat = create_chat(&state, &token, agent_id, Some("ListChat")).await;
@@ -75,10 +69,7 @@ async fn list_messages_empty_chat() {
 
     let app = build_app(state);
     let resp = app
-        .oneshot(auth_get(
-            &format!("/api/chats/{chat_id}/messages"),
-            &token,
-        ))
+        .oneshot(auth_get(&format!("/api/chats/{chat_id}/messages"), &token))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -107,10 +98,8 @@ async fn list_messages_without_auth_returns_401() {
 #[tokio::test]
 async fn list_messages_other_user_returns_error() {
     let (state, _tmp) = test_app_state().await;
-    let (token_a, _) =
-        register_user(&state, "msg-own", "msgown@example.com", "password123").await;
-    let (token_b, _) =
-        register_user(&state, "msg-oth", "msgoth@example.com", "password123").await;
+    let (token_a, _) = register_user(&state, "msg-own", "msgown@example.com", "password123").await;
+    let (token_b, _) = register_user(&state, "msg-oth", "msgoth@example.com", "password123").await;
 
     let agent = create_agent(&state, &token_a, "MsgOwn").await;
     let chat = create_chat(&state, &token_a, agent["id"].as_str().unwrap(), None).await;
@@ -130,7 +119,6 @@ async fn list_messages_other_user_returns_error() {
         resp.status()
     );
 }
-
 
 #[tokio::test]
 async fn cancel_generation_returns_json() {
@@ -153,6 +141,164 @@ async fn cancel_generation_returns_json() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json["cancelled"], false);
+}
+
+/// A task chat's agent works across many turns, and the executor holds no
+/// `active_sessions` entry between them — so Stop used to land on nothing and
+/// the task rolled straight into its next turn. The chat-level cancel now
+/// reaches the task itself: its token fires and the status is persisted, which
+/// also stops a run that hasn't registered a session yet.
+#[tokio::test]
+async fn cancel_generation_cancels_the_task_driving_the_chat() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "cancel-task",
+        "canceltask@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "CancelTaskAgent").await;
+    let agent_id = agent["id"].as_str().unwrap().to_string();
+    let chat = create_chat(&state, &token, &agent_id, None).await;
+    let chat_id = chat["id"].as_str().unwrap().to_string();
+
+    let task = create_task(&state, &token, &agent_id, "Long running").await;
+    let task_id = task["id"].as_str().unwrap().to_string();
+    state
+        .task_service
+        .mark_in_progress(&task_id, Some(&chat_id))
+        .await
+        .unwrap();
+
+    // Stand in for the executor's in-flight run: its token is registered with
+    // the executor but — as between two task turns — not with active_sessions.
+    let token_handle = tokio_util::sync::CancellationToken::new();
+    state
+        .task_executor
+        .register_cancellation(&agent_id, &task_id, token_handle.clone())
+        .await;
+    assert!(!token_handle.is_cancelled());
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            &format!("/api/chats/{chat_id}/cancel"),
+            &token,
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["cancelled"], true);
+    assert_eq!(json["task_cancelled"], true);
+    assert_eq!(json["turn_cancelled"], false);
+
+    assert!(
+        token_handle.is_cancelled(),
+        "chat-level Stop must fire the running task's cancel token"
+    );
+    let stored = state
+        .task_service
+        .find_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task still stored");
+    assert_eq!(
+        stored.status,
+        frona::agent::task::models::TaskStatus::Cancelled
+    );
+}
+
+/// Stop in the chat of a task that already finished must not rewrite its
+/// outcome — a completed task stays completed.
+#[tokio::test]
+async fn cancel_generation_leaves_a_finished_task_alone() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "cancel-done",
+        "canceldone@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "CancelDoneAgent").await;
+    let agent_id = agent["id"].as_str().unwrap().to_string();
+    let chat = create_chat(&state, &token, &agent_id, None).await;
+    let chat_id = chat["id"].as_str().unwrap().to_string();
+
+    let task = create_task(&state, &token, &agent_id, "Already done").await;
+    let task_id = task["id"].as_str().unwrap().to_string();
+    state
+        .task_service
+        .mark_in_progress(&task_id, Some(&chat_id))
+        .await
+        .unwrap();
+    state
+        .task_service
+        .mark_completed(&task_id, Some("done".into()))
+        .await
+        .unwrap();
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            &format!("/api/chats/{chat_id}/cancel"),
+            &token,
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["cancelled"], false);
+    assert_eq!(json["task_cancelled"], false);
+
+    let stored = state
+        .task_service
+        .find_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task still stored");
+    assert_eq!(
+        stored.status,
+        frona::agent::task::models::TaskStatus::Completed
+    );
+}
+
+/// Stop must reach a turn registered for the chat itself (the interactive
+/// send path), reporting it as the turn that was cancelled.
+#[tokio::test]
+async fn cancel_generation_fires_the_registered_turn_token() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "cancel-turn",
+        "cancelturn@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "CancelTurnAgent").await;
+    let chat = create_chat(&state, &token, agent["id"].as_str().unwrap(), None).await;
+    let chat_id = chat["id"].as_str().unwrap().to_string();
+
+    let (_session_id, turn_token) = state.active_sessions.register(&chat_id).await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            &format!("/api/chats/{chat_id}/cancel"),
+            &token,
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["cancelled"], true);
+    assert_eq!(json["turn_cancelled"], true);
+    assert!(turn_token.is_cancelled());
 }
 
 #[tokio::test]
@@ -183,7 +329,6 @@ async fn cancel_generation_other_user_returns_error() {
     );
 }
 
-
 #[tokio::test]
 async fn resolve_tool_call_without_auth_returns_401() {
     let (state, _tmp) = test_app_state().await;
@@ -207,10 +352,20 @@ async fn resolve_tool_call_without_auth_returns_401() {
 #[tokio::test]
 async fn resolve_tool_call_other_user_returns_error() {
     let (state, _tmp) = test_app_state().await;
-    let (token_a, _) =
-        register_user(&state, "resolve-own", "resolveown@example.com", "password123").await;
-    let (token_b, _) =
-        register_user(&state, "resolve-oth", "resolveoth@example.com", "password123").await;
+    let (token_a, _) = register_user(
+        &state,
+        "resolve-own",
+        "resolveown@example.com",
+        "password123",
+    )
+    .await;
+    let (token_b, _) = register_user(
+        &state,
+        "resolve-oth",
+        "resolveoth@example.com",
+        "password123",
+    )
+    .await;
 
     let agent = create_agent(&state, &token_a, "ResolveAgent").await;
     let chat = create_chat(&state, &token_a, agent["id"].as_str().unwrap(), None).await;
@@ -231,7 +386,6 @@ async fn resolve_tool_call_other_user_returns_error() {
         resp.status()
     );
 }
-
 
 /// Reproduces a regression where resolving multiple HITLs in a single
 /// `POST /tool-calls/resolve` request fails to resume the agent loop.
@@ -256,8 +410,7 @@ async fn batched_resolve_resumes_agent_loop() {
     use frona::inference::tool_call::{ToolCall, ToolStatus};
 
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "batched", "batched@example.com", "password123").await;
+    let (token, _) = register_user(&state, "batched", "batched@example.com", "password123").await;
 
     let agent = create_agent(&state, &token, "BatchedAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
@@ -403,4 +556,3 @@ async fn send_message_without_auth_returns_401() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
-

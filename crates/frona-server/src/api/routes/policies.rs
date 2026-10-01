@@ -16,7 +16,10 @@ pub fn router() -> Router<AppState> {
             "/api/policies/{id}",
             get(get_policy).put(update_policy).delete(delete_policy),
         )
-        .route("/api/policies/validate", axum::routing::post(validate_policy))
+        .route(
+            "/api/policies/validate",
+            axum::routing::post(validate_policy),
+        )
 }
 
 async fn list_policies(

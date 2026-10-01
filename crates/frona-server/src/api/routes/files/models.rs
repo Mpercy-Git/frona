@@ -4,7 +4,11 @@ use super::super::super::middleware::auth::AuthUser;
 
 pub(super) enum FileAuth {
     User(AuthUser),
-    Presigned { sub: String, owner: String, path: String },
+    Presigned {
+        sub: String,
+        owner: String,
+        path: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -34,6 +38,11 @@ pub(super) struct RenameRequest {
 pub(super) struct CopyMoveRequest {
     pub(super) sources: Vec<String>,
     pub(super) destination: String,
+}
+
+#[derive(Deserialize)]
+pub(super) struct DeleteRequest {
+    pub(super) paths: Vec<String>,
 }
 
 #[derive(Deserialize)]

@@ -87,6 +87,10 @@ pub struct AuthResponse {
 pub struct UserPermissions {
     pub list_users: bool,
     pub is_admin: bool,
+    /// May read instance-wide usage and cost. Like `list_users` this is the
+    /// Cedar decision, not raw group membership, so a custom policy can grant
+    /// it to a non-admin group.
+    pub view_usage_analytics: bool,
 }
 
 #[derive(Debug, Serialize)]

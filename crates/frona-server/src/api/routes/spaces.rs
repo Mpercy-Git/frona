@@ -21,8 +21,14 @@ pub fn router() -> Router<AppState> {
             "/api/spaces/{id}",
             axum::routing::put(update_space).delete(delete_space),
         )
-        .route("/api/spaces/{id}/archive", axum::routing::post(archive_space))
-        .route("/api/spaces/{id}/unarchive", axum::routing::post(unarchive_space))
+        .route(
+            "/api/spaces/{id}/archive",
+            axum::routing::post(archive_space),
+        )
+        .route(
+            "/api/spaces/{id}/unarchive",
+            axum::routing::post(unarchive_space),
+        )
         .route("/api/spaces/{id}/stream", get(space_stream))
 }
 
@@ -58,6 +64,12 @@ async fn delete_space(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<(), ApiError> {
+    if state.channel_service.find_by_space(&id).await?.is_some() {
+        return Err(crate::core::error::AppError::Validation(
+            "Delete the channel attached to this space first".into(),
+        )
+        .into());
+    }
     state.space_service.delete(&auth.user_id, &id).await?;
     Ok(())
 }

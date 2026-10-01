@@ -113,9 +113,21 @@ pub const BUILTIN_PROVIDERS: &[BuiltinSpec] = &[
         configurable: true,
     },
     BuiltinSpec {
+        id: "skills",
+        display_name: "skills",
+        description: "Search the skill registry for skills that aren't installed and add them, with the user's approval.",
+        configurable: true,
+    },
+    BuiltinSpec {
         id: "app",
         display_name: "app",
         description: "Deploy, start, stop, restart and destroy agent-published web apps.",
+        configurable: true,
+    },
+    BuiltinSpec {
+        id: "cost",
+        display_name: "cost",
+        description: "Read instance-wide inference usage and cost, reprice traffic against other models, and file cost reports. Only available to the cost-analyst agent, and only for an operator holding view_usage_analytics.",
         configurable: true,
     },
     BuiltinSpec {
@@ -160,14 +172,20 @@ mod tests {
         ids.sort();
         let len_before = ids.len();
         ids.dedup();
-        assert_eq!(len_before, ids.len(), "duplicate provider ids in BUILTIN_PROVIDERS");
+        assert_eq!(
+            len_before,
+            ids.len(),
+            "duplicate provider ids in BUILTIN_PROVIDERS"
+        );
     }
 
     #[test]
     fn provider_ids_are_snake_case() {
         for spec in BUILTIN_PROVIDERS {
             assert!(
-                spec.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                spec.id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
                 "provider id `{}` must be snake_case",
                 spec.id
             );

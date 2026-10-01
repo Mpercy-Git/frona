@@ -1,3 +1,4 @@
+import { makeMessageError } from "./fixtures/message-error";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ChatStore, mergeConsecutiveMessages } from "../chat-store";
 import type { ChatSSEEvent } from "../sse-event-bus";
@@ -59,12 +60,46 @@ describe("ChatStore", () => {
   });
 
   describe("subscriber notifications", () => {
-    it("notifies subscribers on state changes", () => {
+    it("notifies subscribers on state changes", async () => {
       const listener = vi.fn();
       store.subscribe(listener);
 
       store.handleEvent({ type: "token", content: "hi" });
+      await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
+    });
+
+    it("batches mixed SSE notifications to one animation frame", () => {
+      const callbacks: FrameRequestCallback[] = [];
+      const animationFrame = vi
+        .spyOn(globalThis, "requestAnimationFrame")
+        .mockImplementation((callback) => {
+          callbacks.push(callback);
+          return callbacks.length;
+        });
+      const listener = vi.fn();
+      store.subscribe(listener);
+
+      for (let i = 0; i < 100; i += 1) {
+        store.handleEvent({ type: "token", content: "x" });
+        store.handleEvent({
+          type: "tool_call",
+          id: `tool-${i}`,
+          provider_call_id: `provider-tool-${i}`,
+          name: `tool_${i}`,
+          arguments: {},
+        });
+        store.handleEvent({
+          type: "tool_result",
+          name: `tool_${i}`,
+          success: true,
+        });
+      }
+
+      expect(listener).not.toHaveBeenCalled();
+      expect(callbacks).toHaveLength(1);
+      callbacks[0](0);
       expect(listener).toHaveBeenCalledTimes(1);
+      animationFrame.mockRestore();
     });
 
     it("unsubscribe stops notifications", () => {
@@ -74,6 +109,23 @@ describe("ChatStore", () => {
 
       store.handleEvent({ type: "token", content: "hi" });
       expect(listener).not.toHaveBeenCalled();
+    });
+
+    it("defers subscribers added during notification until the next change", () => {
+      const replacement = vi.fn();
+      let unsubscribe = () => {};
+      const listener = vi.fn(() => {
+        unsubscribe();
+        store.subscribe(replacement);
+      });
+      unsubscribe = store.subscribe(listener);
+
+      store.markRunning();
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(replacement).not.toHaveBeenCalled();
+
+      store.markLoaded();
+      expect(replacement).toHaveBeenCalledTimes(1);
     });
 
     it("getSnapshot returns a stable reference until state changes", () => {
@@ -154,6 +206,36 @@ describe("ChatStore", () => {
 
       const tc = store.streamingToolCalls.get("te-1")!;
       expect(tc.args.turnText).toBe("I'll search for that.");
+    });
+
+    it("keeps streamed text visible when a tool call starts", () => {
+      store.handleEvent({ type: "token", content: "I'll search for that." });
+      store.handleEvent({
+        type: "tool_call",
+        id: "te-1",
+        provider_call_id: "tc-1",
+        name: "web_search",
+        arguments: "{}",
+      });
+
+      expect(store.getDisplayMessages()[0].content).toBe("I'll search for that.");
+    });
+
+    it("starts post-tool streaming text on its own Markdown line", () => {
+      store.handleEvent({ type: "token", content: "I'll search for that." });
+      store.handleEvent({
+        type: "tool_call",
+        id: "te-1",
+        provider_call_id: "tc-1",
+        name: "web_search",
+        arguments: "{}",
+      });
+      store.handleEvent({ type: "tool_result", name: "web_search", success: true, summary: "Done" });
+      store.handleEvent({ type: "token", content: "Here are the results." });
+
+      expect(store.getDisplayMessages()[0].content).toBe(
+        "I'll search for that.\n\nHere are the results.",
+      );
     });
 
     it("shows tool executions in the synthetic message", () => {
@@ -373,6 +455,29 @@ describe("ChatStore", () => {
   });
 
   describe("chat_message event", () => {
+    it("keeps persisted task messages chronological when SSE events arrive out of order", () => {
+      const completion = makeAgentMessage({
+        id: "msg-completion",
+        agent_id: "researcher",
+        content: "Marked the task as completed.",
+        created_at: "2026-09-04T01:44:01Z",
+      });
+      const prompt = makeAgentMessage({
+        id: "msg-prompt",
+        agent_id: "dark-matter",
+        content: "Research the latest official US Apple MacBook prices.",
+        created_at: "2026-09-04T01:44:00Z",
+      });
+
+      store.handleEvent({ type: "inference_done", message: completion });
+      store.handleEvent({ type: "chat_message", message: prompt });
+
+      expect(store.getDisplayMessages().map((message) => message.id)).toEqual([
+        "msg-prompt",
+        "msg-completion",
+      ]);
+    });
+
     it("replaces optimistic user message", () => {
       store.addUserMessage("Hello");
       expect(store.messages[0].id).toMatch(/^__user_/);
@@ -481,10 +586,44 @@ describe("ChatStore", () => {
 
     it("clears streaming state on error", () => {
       store.handleEvent({ type: "token", content: "partial" });
-      store.handleEvent({ type: "inference_error", error: "model error" });
+      store.handleEvent({ type: "inference_error", error: makeMessageError("model error") });
 
       expect(store.isRunning).toBe(false);
       expect(store.streamingText).toBe("");
+    });
+
+    it("keeps the failed reply and its error visible after streaming stops", () => {
+      store.handleEvent({ type: "token", content: "Partial reply" });
+      store.handleEvent({ type: "inference_error", error: makeMessageError("The model is not supported for this account.") });
+
+      expect(store.getSnapshot().messages).toEqual([
+        expect.objectContaining({
+          role: "agent",
+          status: "failed",
+          content: "Partial reply",
+          error: makeMessageError("The model is not supported for this account."),
+        }),
+      ]);
+    });
+
+    it("attaches failures to the server message without duplicating the reply", () => {
+      store.messages = [makeAgentMessage({ status: "executing", content: "Saved text. " })];
+      store.handleEvent({ type: "token", content: "Partial reply" });
+      store.handleEvent({ type: "inference_error", error: makeMessageError("Processing failed"), messageId: "msg-1" });
+      store.handleEvent({ type: "inference_error", error: makeMessageError("Processing failed"), messageId: "msg-1" });
+      expect(store.getSnapshot().messages).toHaveLength(1);
+      expect(store.getSnapshot().messages[0]).toMatchObject({
+        id: "msg-1", status: "failed", content: "Saved text. Partial reply", error: makeMessageError("Processing failed"),
+      });
+    });
+
+    it("shows request failures before inference starts", () => {
+      store.addUserMessage("Hello");
+      store.failMessage(makeMessageError("Unable to process this message"));
+      expect(store.getSnapshot().isRunning).toBe(false);
+      expect(store.getSnapshot().messages[1]).toMatchObject({
+        status: "failed", error: makeMessageError("Unable to process this message"),
+      });
     });
   });
 
@@ -515,6 +654,22 @@ describe("ChatStore", () => {
       expect(store.streamingToolCalls.size).toBe(0);
       expect(store.streamingToolResults.size).toBe(0);
       expect(store.retryInfo).toBeNull();
+    });
+
+    // Callers outside handleEvent (a send that failed, a Stop the server had
+    // nothing to cancel) rely on this to repaint: without the notify, the
+    // snapshot kept reporting isRunning and the composer sat there with a
+    // spinner and a Stop button for a turn that no longer existed.
+    it("notifies subscribers so the thread stops showing as running", () => {
+      const listener = vi.fn();
+      store.addUserMessage("Hello");
+      expect(store.getSnapshot().isRunning).toBe(true);
+
+      store.subscribe(listener);
+      store.clearStreaming();
+
+      expect(listener).toHaveBeenCalled();
+      expect(store.getSnapshot().isRunning).toBe(false);
     });
   });
 
@@ -557,6 +712,28 @@ describe("ChatStore", () => {
       expect(msgs).toHaveLength(1);
       expect(msgs[0].id).toBe("msg-1");
       expect(msgs[0].tool_calls!.length).toBe(2);
+    });
+
+    it("does not duplicate a persisted tool call when SSE replays it", () => {
+      const toolCallId = "01a06ba9-4121-7a16-8562-d4113fc0a944";
+      store.messages.push(
+        makeAgentMessage({
+          id: "msg-1",
+          status: "executing",
+          tool_calls: [makeToolCall({ id: toolCallId })],
+        }),
+      );
+
+      store.handleEvent({
+        type: "tool_call",
+        id: toolCallId,
+        provider_call_id: "tc-replayed",
+        name: "web_search",
+        arguments: "{}",
+      });
+
+      const toolCallIds = store.getDisplayMessages()[0].tool_calls!.map((tool) => tool.id);
+      expect(toolCallIds).toEqual([toolCallId]);
     });
   });
 

@@ -1,8 +1,8 @@
-use async_trait::async_trait;
 use crate::app::models::{App, AppStatus};
 use crate::app::repository::AppRepository;
 use crate::core::Handle;
 use crate::core::error::AppError;
+use async_trait::async_trait;
 
 use super::generic::SurrealRepo;
 
@@ -22,7 +22,9 @@ impl AppRepository for SurrealRepo<App> {
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        result.take(0).map_err(|e| AppError::Database(e.to_string()))
+        result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))
     }
 
     async fn find_by_user_id(&self, user_id: &str) -> Result<Vec<App>, AppError> {
@@ -35,7 +37,9 @@ impl AppRepository for SurrealRepo<App> {
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        result.take(0).map_err(|e| AppError::Database(e.to_string()))
+        result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))
     }
 
     async fn find_by_user_handle(
@@ -53,14 +57,14 @@ impl AppRepository for SurrealRepo<App> {
             .bind(("handle", handle.as_str().to_string()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let rows: Vec<App> = result.take(0).map_err(|e| AppError::Database(e.to_string()))?;
+        let rows: Vec<App> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(rows.into_iter().next())
     }
 
     async fn find_running(&self) -> Result<Vec<App>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM app WHERE status IN $statuses"
-        );
+        let query = format!("{SELECT_CLAUSE} FROM app WHERE status IN $statuses");
         let statuses = vec![
             AppStatus::Running,
             AppStatus::Hibernated,
@@ -73,6 +77,8 @@ impl AppRepository for SurrealRepo<App> {
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        result.take(0).map_err(|e| AppError::Database(e.to_string()))
+        result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))
     }
 }

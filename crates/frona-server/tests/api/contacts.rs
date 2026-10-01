@@ -4,11 +4,7 @@ use tower::ServiceExt;
 
 use super::*;
 
-async fn create_contact(
-    state: &AppState,
-    token: &str,
-    name: &str,
-) -> serde_json::Value {
+async fn create_contact(state: &AppState, token: &str, name: &str) -> serde_json::Value {
     let app = build_app(state.clone());
     let resp = app
         .oneshot(auth_post_json(
@@ -22,15 +18,18 @@ async fn create_contact(
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "create_contact({name}) failed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "create_contact({name}) failed"
+    );
     body_json(resp).await
 }
 
 #[tokio::test]
 async fn create_contact_returns_json() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "ct-user", "ctuser@example.com", "password123").await;
+    let (token, _) = register_user(&state, "ct-user", "ctuser@example.com", "password123").await;
 
     let contact = create_contact(&state, &token, "Alice").await;
     assert!(contact["id"].is_string());
@@ -42,8 +41,7 @@ async fn create_contact_returns_json() {
 #[tokio::test]
 async fn contact_metadata_and_space_id_round_trip() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "ct-md", "ctmd@example.com", "password123").await;
+    let (token, _) = register_user(&state, "ct-md", "ctmd@example.com", "password123").await;
     let space = create_space(&state, &token, "ChannelSpace").await;
     let space_id = space["id"].as_str().unwrap();
 
@@ -93,9 +91,7 @@ async fn create_contact_without_auth_returns_401() {
                 .method("POST")
                 .uri("/api/contacts")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"name": "X"}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({"name": "X"}).to_string()))
                 .unwrap(),
         )
         .await
@@ -106,10 +102,8 @@ async fn create_contact_without_auth_returns_401() {
 #[tokio::test]
 async fn list_contacts_returns_only_own() {
     let (state, _tmp) = test_app_state().await;
-    let (token_a, _) =
-        register_user(&state, "ct-a", "cta@example.com", "password123").await;
-    let (token_b, _) =
-        register_user(&state, "ct-b", "ctb@example.com", "password123").await;
+    let (token_a, _) = register_user(&state, "ct-a", "cta@example.com", "password123").await;
+    let (token_b, _) = register_user(&state, "ct-b", "ctb@example.com", "password123").await;
 
     create_contact(&state, &token_a, "Alice").await;
     create_contact(&state, &token_b, "Bob").await;

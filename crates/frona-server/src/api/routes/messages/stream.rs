@@ -1,5 +1,5 @@
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 
 use crate::chat::broadcast::BroadcastEventKind;
 use crate::chat::message::models::{MessageCommand, MessageResponse, SendMessageRequest};
@@ -25,7 +25,8 @@ pub(crate) async fn stream_message(
         .await
         .map_err(ApiError::from)?;
 
-    let pending_tool = state.chat_service
+    let pending_tool = state
+        .chat_service
         .find_pending_tool_call(&chat_id)
         .await
         .map_err(ApiError::from)?;
@@ -43,7 +44,13 @@ pub(crate) async fn stream_message(
             .await
             .map_err(ApiError::from)?;
 
-        presign_response(&state.presign_service, &mut user_response, &auth.user_id, &auth.handle).await;
+        presign_response(
+            &state.presign_service,
+            &mut user_response,
+            &auth.user_id,
+            &auth.handle,
+        )
+        .await;
 
         let resolve_result = state
             .chat_service
@@ -54,7 +61,8 @@ pub(crate) async fn stream_message(
         let resolved_msg = resolve_result.into_message();
         let agent_msg_id = resolved_msg.id.clone();
 
-        let did_flip = state.chat_service
+        let did_flip = state
+            .chat_service
             .mark_message_executing(&agent_msg_id)
             .await
             .map_err(ApiError::from)?;
@@ -65,14 +73,22 @@ pub(crate) async fn stream_message(
             chat.space_id.clone(),
         );
         event_sender.send(InferenceEvent {
-            kind: InferenceEventKind::Resume { message: resolved_msg },
+            kind: InferenceEventKind::Resume {
+                message: resolved_msg,
+            },
         });
 
         if did_flip {
             let harness = state.harness.clone();
             let user_id = auth.user_id.clone();
+            // Register the turn's cancel token here, not inside the spawned
+            // task: the UI starts showing Stop as soon as this response lands,
+            // and a token registered later is unreachable until then.
+            let (session_id, cancel_token) = state.active_sessions.register(&chat_id).await;
             tokio::spawn(async move {
-                let _ = harness.resume(&user_id, &chat_id, &agent_msg_id).await;
+                let _ = harness
+                    .resume_registered(&user_id, &chat_id, &agent_msg_id, session_id, cancel_token)
+                    .await;
             });
         }
 
@@ -100,9 +116,16 @@ pub(crate) async fn stream_message(
             .await
             .map_err(ApiError::from)?;
 
-        presign_response(&state.presign_service, &mut user_response, &auth.user_id, &auth.handle).await;
+        presign_response(
+            &state.presign_service,
+            &mut user_response,
+            &auth.user_id,
+            &auth.handle,
+        )
+        .await;
 
-        let agent_msg = state.chat_service
+        let agent_msg = state
+            .chat_service
             .create_executing_agent_message(&chat_id, &agent_id)
             .await
             .map_err(ApiError::from)?;
@@ -142,7 +165,16 @@ pub(crate) async fn stream_message(
         let active_sessions = state.active_sessions.clone();
         tokio::spawn(async move {
             harness
-                .run_turn(&user_id, &chat_id_clone, &agent_msg_id, cancel_token, builder, &[], None, Some(session_id))
+                .run_turn(
+                    &user_id,
+                    &chat_id_clone,
+                    &agent_msg_id,
+                    cancel_token,
+                    builder,
+                    &[],
+                    None,
+                    Some(session_id),
+                )
                 .await;
             active_sessions.remove(&chat_id_clone, session_id).await;
         });
@@ -168,9 +200,7 @@ async fn resolve_slash_invocation(
         .find_by_id(chat_agent_id)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| {
-            ApiError::from(AppError::NotFound(format!("agent {chat_agent_id}")))
-        })?;
+        .ok_or_else(|| ApiError::from(AppError::NotFound(format!("agent {chat_agent_id}"))))?;
     let user_handle = match state
         .user_service
         .find_by_id(user_id)
@@ -178,7 +208,11 @@ async fn resolve_slash_invocation(
         .map_err(ApiError::from)?
     {
         Some(u) => u.handle,
-        None => return Err(ApiError::from(AppError::NotFound(format!("user {user_id}")))),
+        None => {
+            return Err(ApiError::from(AppError::NotFound(format!(
+                "user {user_id}"
+            ))));
+        }
     };
     let skills = state
         .skill_service

@@ -47,6 +47,9 @@ function getNotificationLink(notification: Notification): {
   if (notification.data.type === "Agent") {
     return { href: `/chat?id=${notification.data.chat_id}`, external: false };
   }
+  if (notification.data.type === "CostReport") {
+    return { href: "/admin/settings#costs", external: false };
+  }
   if (notification.data.type === "App") {
     const { action } = notification.data;
     if (action === "stop" || notification.level === "error") return null;

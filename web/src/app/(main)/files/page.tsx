@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import {
@@ -19,7 +20,7 @@ import {
   copyFiles,
   moveFiles,
   createFolder,
-  deleteFile,
+  deleteFiles,
   uploadFile,
   searchFiles,
   presignFile,
@@ -38,6 +39,8 @@ import {
   userSubpath,
   agentSubpath,
   resolveAgentId as resolveAgentIdUtil,
+  fileOperationPath,
+  fileBrowserAncestors,
   getFileOwnerPath as getFileOwnerPathUtil,
 } from "@/lib/file-manager-utils";
 import { FilePreviewDialog, type PreviewTarget } from "@/components/preview/file-preview-dialog";
@@ -45,6 +48,8 @@ import { FilePreviewDialog, type PreviewTarget } from "@/components/preview/file
 export default function FilesPage() {
   const { user } = useAuth();
   const { resolved } = useTheme();
+  const router = useRouter();
+  const pathname = usePathname();
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [data, setData] = useState<IEntity[]>([]);
@@ -56,18 +61,25 @@ export default function FilesPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const fmApiRef = useRef<IApi | null>(null);
+  const restoringHistoryRef = useRef(false);
 
   const [showMenu, setShowMenu] = useState(false);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
 
-  function getCurrentUploadPath(): { currentPath: string; parentSub: string } {
+  function getCurrentUploadPath(): { currentPath: string; parentSub: string } | null {
     const state = fmApiRef.current?.getState();
     const panels = state?.panels;
     const activePanel = state?.activePanel ?? 0;
-    let currentPath = panels?.[activePanel]?.path ?? MYFILES_ROOT;
-    if (!isMyFilesPath(currentPath)) currentPath = MYFILES_ROOT;
+    const currentPath = panels?.[activePanel]?.path ?? MYFILES_ROOT;
+    if (!isMyFilesPath(currentPath)) return null;
     return { currentPath, parentSub: userSubpath(currentPath) };
+  }
+
+  function parentPath(path: string): string {
+    const separator = path.lastIndexOf("/");
+    return separator > 0 ? path.slice(0, separator) : path;
   }
 
   async function uploadWithPath(file: File, relativePath: string, createdFolders: Set<string>) {
@@ -76,9 +88,7 @@ export default function FilesPage() {
       for (let i = 1; i < parts.length; i++) {
         const folderPath = "/" + parts.slice(0, i).join("/");
         if (!createdFolders.has(folderPath)) {
-          try {
-            await createFolder(folderPath);
-          } catch {}
+          await createFolder(folderPath);
           createdFolders.add(folderPath);
         }
       }
@@ -87,7 +97,9 @@ export default function FilesPage() {
   }
 
   const refreshCurrentFolder = useCallback(async () => {
-    const { currentPath } = getCurrentUploadPath();
+    const uploadPath = getCurrentUploadPath();
+    if (!uploadPath) return;
+    const { currentPath } = uploadPath;
     if (!fmApiRef.current) return;
     fmApiRef.current.exec("provide-data", { id: currentPath, data: [] as IEntity[] });
     const sub = userSubpath(currentPath);
@@ -98,14 +110,23 @@ export default function FilesPage() {
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    const { parentSub } = getCurrentUploadPath();
+    const uploadPath = getCurrentUploadPath();
+    if (!uploadPath) {
+      setOperationError("Upload files to My Files, then copy or move them into an agent workspace");
+      e.target.value = "";
+      return;
+    }
+    const { parentSub } = uploadPath;
+    setOperationError(null);
     const createdFolders = new Set<string>();
     for (const file of Array.from(files)) {
       const filePath = file.webkitRelativePath || file.name;
       const relativePath = parentSub ? `${parentSub}/${filePath}` : filePath;
       try {
         await uploadWithPath(file, relativePath, createdFolders);
-      } catch {}
+      } catch (error) {
+        setOperationError(error instanceof Error ? error.message : "Upload failed");
+      }
     }
     await refreshCurrentFolder();
     e.target.value = "";
@@ -151,7 +172,13 @@ export default function FilesPage() {
       return [];
     }
 
-    const { parentSub } = getCurrentUploadPath();
+    const uploadPath = getCurrentUploadPath();
+    if (!uploadPath) {
+      setOperationError("Upload files to My Files, then copy or move them into an agent workspace");
+      return;
+    }
+    const { parentSub } = uploadPath;
+    setOperationError(null);
     const createdFolders = new Set<string>();
     const allFiles: { file: File; path: string }[] = [];
 
@@ -163,21 +190,33 @@ export default function FilesPage() {
       const relativePath = parentSub ? `${parentSub}/${path}` : path;
       try {
         await uploadWithPath(file, relativePath, createdFolders);
-      } catch {}
+      } catch (error) {
+        setOperationError(error instanceof Error ? error.message : "Upload failed");
+      }
     }
 
     await refreshCurrentFolder();
   }, [refreshCurrentFolder]);
 
   useEffect(() => {
-    apiClient.get<Agent[]>("/api/agents").then(setAgents).catch(() => {});
+    apiClient.get<Agent[]>("/api/agents").then(setAgents).catch((error) => {
+      setOperationError(error instanceof Error ? error.message : "Unable to load agents");
+    });
   }, []);
 
   const buildRootData = useCallback(
     async (agentList: Agent[]) => {
       setLoading(true);
       try {
-        const userFiles = await listUserFiles();
+        const [userFiles, agentRootEntries] = await Promise.all([
+          listUserFiles(),
+          Promise.all(
+            agentList.map(async (agent) => ({
+              agent,
+              entries: await listAgentFiles(agent.id),
+            })),
+          ),
+        ]);
         const rootEntries: IEntity[] = [
           {
             id: MYFILES_ROOT,
@@ -199,12 +238,16 @@ export default function FilesPage() {
             type: "folder" as const,
             size: 0,
             date: new Date(),
-            lazy: true,
+            lazy: false,
             _agentId: a.id,
           })),
+          ...agentRootEntries.flatMap(({ agent, entries }) =>
+            toSvarEntries(entries, `${WORKSPACES_ROOT}/${agent.name}`),
+          ),
         ];
         setData(rootEntries);
-      } catch {
+      } catch (error) {
+        setOperationError(error instanceof Error ? error.message : "Unable to load files");
         setData([]);
       } finally {
         setLoading(false);
@@ -240,11 +283,55 @@ export default function FilesPage() {
     });
   }, [getFileOwnerPath]);
 
+  const restoreBrowserPath = useCallback(async (requestedPath: string) => {
+    const fmApi = fmApiRef.current;
+    if (!fmApi) return false;
+    const ancestors = fileBrowserAncestors(requestedPath);
+    if (ancestors.length === 0) return false;
+
+    for (let index = 0; index < ancestors.length; index++) {
+      const folder = ancestors[index];
+      if (!fmApi.getFile(folder) && index > 0) {
+        await fmApi.exec("request-data", { id: ancestors[index - 1] });
+      }
+      const node = fmApi.getFile(folder);
+      if (!node || node.type !== "folder") return false;
+      if (!node.open) {
+        await fmApi.exec("open-tree-folder", { id: folder, mode: true });
+      }
+    }
+
+    restoringHistoryRef.current = true;
+    try {
+      await fmApi.exec("set-path", { id: requestedPath });
+    } finally {
+      restoringHistoryRef.current = false;
+    }
+    return true;
+  }, []);
+
+  useEffect(() => {
+    if (!fmApiRef.current || data.length === 0) return;
+    const requestedPath = new URLSearchParams(window.location.search).get("path") ?? MYFILES_ROOT;
+    void restoreBrowserPath(requestedPath).then((restored) => {
+      if (!restored && requestedPath !== MYFILES_ROOT) {
+        void restoreBrowserPath(MYFILES_ROOT);
+      }
+    });
+  }, [data, restoreBrowserPath]);
+
+  useEffect(() => {
+    const restoreFromHistory = () => {
+      const requestedPath = new URLSearchParams(window.location.search).get("path") ?? MYFILES_ROOT;
+      void restoreBrowserPath(requestedPath);
+    };
+    window.addEventListener("popstate", restoreFromHistory);
+    return () => window.removeEventListener("popstate", restoreFromHistory);
+  }, [restoreBrowserPath]);
+
   const handleInit = useCallback(
     (fmApi: IApi) => {
       fmApiRef.current = fmApi;
-
-      fmApi.exec("set-path", { id: MYFILES_ROOT });
 
       fmApi.on("filter-files", (ev) => {
         if (!ev.text) return;
@@ -328,77 +415,121 @@ export default function FilesPage() {
             fmApi.exec("open-tree-folder", { id: path, mode: true });
           }
         }
+
+        if (!restoringHistoryRef.current && fileBrowserAncestors(id).length > 0) {
+          const params = new URLSearchParams(window.location.search);
+          if (params.get("path") !== id) {
+            params.set("path", id);
+            router.push(`${pathname}?${params.toString()}`, { scroll: false });
+          }
+        }
       });
 
       fmApi.on("rename-file", async (ev) => {
-        if (!isMyFilesPath(ev.id)) return;
-        const filePath = userSubpath(ev.id);
+        if (!user) return;
+        const filePath = fileOperationPath(ev.id, user.handle, agentsRef.current);
+        if (!filePath) return;
+        setOperationError(null);
         try {
           await renameFile(filePath, ev.name);
-        } catch {}
+        } catch (error) {
+          setOperationError(error instanceof Error ? error.message : "Rename failed");
+        } finally {
+          await fmApi.exec("request-data", { id: parentPath(ev.id) });
+        }
       });
 
       fmApi.on("delete-files", async (ev) => {
         if (!user) return;
-        for (const id of ev.ids) {
-          if (!isMyFilesPath(id)) continue;
-          const filePath = userSubpath(id);
-          try {
-            await deleteFile(user.handle, filePath);
-          } catch {}
+        const paths = ev.ids.map((id: string) =>
+          fileOperationPath(id, user.handle, agentsRef.current));
+        if (paths.some((path) => path === null)) return;
+        setOperationError(null);
+        try {
+          await deleteFiles(paths as string[]);
+        } catch (error) {
+          setOperationError(error instanceof Error ? error.message : "Delete failed");
+        } finally {
+          const parents = new Set(ev.ids.map((id: string) => parentPath(id)));
+          for (const parent of parents) {
+            await fmApi.exec("request-data", { id: parent });
+          }
         }
       });
 
       fmApi.on("copy-files", async (ev) => {
-        if (!user || !isMyFilesPath(ev.target)) return;
-        const sources = ev.ids.map((id: string) => {
-          if (isWorkspacePath(id)) {
-            const agentId = resolveAgentId(id);
-            const sub = agentSubpath(id);
-            return `agent://${agentId}/${sub}`;
-          }
-          return `user://${user.handle}/${userSubpath(id)}`;
-        });
-        const dest = `user://${user.handle}/${userSubpath(ev.target)}`;
+        if (!user) return;
+        const sources = ev.ids.map((id: string) =>
+          fileOperationPath(id, user.handle, agentsRef.current));
+        const dest = fileOperationPath(ev.target, user.handle, agentsRef.current);
+        if (!dest || sources.some((source) => source === null)) return;
+        setOperationError(null);
         try {
-          await copyFiles(sources, dest);
-        } catch {}
+          await copyFiles(sources as string[], dest);
+        } catch (error) {
+          setOperationError(error instanceof Error ? error.message : "Copy failed");
+        } finally {
+          await fmApi.exec("request-data", { id: ev.target });
+        }
       });
 
       fmApi.on("move-files", async (ev) => {
-        if (!user || !isMyFilesPath(ev.target)) return;
-        for (const id of ev.ids) {
-          if (!isMyFilesPath(id)) return;
-        }
-        const sources = ev.ids.map(
-          (id: string) => `user://${user.handle}/${userSubpath(id)}`,
-        );
-        const dest = `user://${user.handle}/${userSubpath(ev.target)}`;
+        if (!user) return;
+        const sources = ev.ids.map((id: string) =>
+          fileOperationPath(id, user.handle, agentsRef.current));
+        const dest = fileOperationPath(ev.target, user.handle, agentsRef.current);
+        if (!dest || sources.some((source) => source === null)) return;
+        setOperationError(null);
         try {
-          await moveFiles(sources, dest);
-        } catch {}
+          await moveFiles(sources as string[], dest);
+        } catch (error) {
+          setOperationError(error instanceof Error ? error.message : "Move failed");
+        } finally {
+          const folders = new Set([ev.target, ...ev.ids.map((id: string) => parentPath(id))]);
+          for (const folder of folders) {
+            await fmApi.exec("request-data", { id: folder });
+          }
+        }
       });
 
       fmApi.on("create-file", async (ev) => {
-        if (!isMyFilesPath(ev.parent)) return;
-        const parentSub = userSubpath(ev.parent);
+        if (!user) return;
         if (ev.file.type === "folder") {
-          const path = parentSub
-            ? `/${parentSub}/${ev.file.name}`
-            : `/${ev.file.name}`;
+          const path = fileOperationPath(
+            `${ev.parent}/${ev.file.name}`,
+            user.handle,
+            agentsRef.current,
+          );
+          if (!path) return;
+          setOperationError(null);
           try {
             await createFolder(path);
-          } catch {}
+          } catch (error) {
+            setOperationError(error instanceof Error ? error.message : "Create folder failed");
+          } finally {
+            await fmApi.exec("request-data", { id: ev.parent });
+          }
         } else {
+          // Upload posts a user-relative path, so it stays a My Files operation.
+          if (!isMyFilesPath(ev.parent)) {
+            setOperationError("Upload files to My Files, then copy or move them into an agent workspace");
+            return;
+          }
+          const parentSub = userSubpath(ev.parent);
           const file = ev.file.file
             ? (ev.file.file as File)
             : new File([], ev.file.name);
           const relativePath = parentSub
             ? `${parentSub}/${ev.file.name}`
             : ev.file.name;
+          setOperationError(null);
           try {
             await uploadFile(file, relativePath);
-          } catch {}
+          } catch (error) {
+            setOperationError(error instanceof Error ? error.message : "Upload failed");
+          } finally {
+            await fmApi.exec("request-data", { id: ev.parent });
+          }
         }
       });
 
@@ -462,7 +593,7 @@ export default function FilesPage() {
         }
       });
     },
-    [user, getFileOwnerPath, openPreview],
+    [user, getFileOwnerPath, openPreview, pathname, router],
   );
 
   const ThemeWrapper = resolved === "dark" ? WillowDark : Willow;
@@ -494,6 +625,14 @@ export default function FilesPage() {
             onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
           >
+            {operationError && (
+              <div
+                role="alert"
+                className="absolute left-4 right-4 top-2 z-20 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300"
+              >
+                {operationError}
+              </div>
+            )}
             <div className="absolute top-2 right-4 z-10">
               {showMenu && (
                 <>
@@ -596,14 +735,20 @@ export default function FilesPage() {
                 }}
                 {...{
                   uploadURL: async (fileInfo: { id: string; file: File; name: string }) => {
-                    const { parentSub } = getCurrentUploadPath();
+                    const uploadPath = getCurrentUploadPath();
+                    if (!uploadPath) {
+                      setOperationError("Upload files to My Files, then copy or move them into an agent workspace");
+                      return { id: fileInfo.id, status: "error" };
+                    }
+                    const { parentSub } = uploadPath;
                     const relativePath = parentSub
                       ? `${parentSub}/${fileInfo.name}`
                       : fileInfo.name;
                     try {
                       const result = await uploadFile(fileInfo.file, relativePath);
                       return { id: fileInfo.id, status: "server", ...result };
-                    } catch {
+                    } catch (error) {
+                      setOperationError(error instanceof Error ? error.message : "Upload failed");
                       return { id: fileInfo.id, status: "error" };
                     }
                   },

@@ -1,15 +1,14 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use tower::ServiceExt;
 use frona::core::supervisor::Supervisor;
+use tower::ServiceExt;
 
 use super::*;
 
 #[tokio::test]
 async fn manifests_endpoint_lists_telegram() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "mfest", "mfest@example.com", "password123").await;
+    let (token, _) = register_user(&state, "mfest", "mfest@example.com", "password123").await;
     let app = build_app(state);
     let resp = app
         .oneshot(auth_get("/api/channels/manifests", &token))
@@ -36,14 +35,17 @@ async fn manifests_endpoint_lists_telegram() {
 async fn telegram_webhook_creates_entities_with_metadata() {
     let tg = super::telegram_mock_api().await;
     let (state, _tmp) = test_app_state().await;
-    let (token, user_id) =
-        register_user(&state, "tgwh", "tgwh@example.com", "password123").await;
+    let (token, user_id) = register_user(&state, "tgwh", "tgwh@example.com", "password123").await;
     let agent = create_agent(&state, &token, "TgAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
     let app = build_app(state.clone());
     let resp = app
-        .oneshot(auth_post_json("/api/spaces", &token, serde_json::json!({"name": "Telegram"})))
+        .oneshot(auth_post_json(
+            "/api/spaces",
+            &token,
+            serde_json::json!({"name": "Telegram"}),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -93,9 +95,15 @@ async fn telegram_webhook_creates_entities_with_metadata() {
     state
         .channel_supervisor
         .clone()
-        .start(&channel.id).await.unwrap();
+        .start(&channel.id)
+        .await
+        .unwrap();
     poll_until("adapter registered", || async {
-        state.channel_supervisor.running_adapter(&channel.id).await.is_some()
+        state
+            .channel_supervisor
+            .running_adapter(&channel.id)
+            .await
+            .is_some()
     })
     .await;
 
@@ -117,10 +125,7 @@ async fn telegram_webhook_creates_entities_with_metadata() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!(
-                    "/api/webhooks/channels/telegram/{}",
-                    channel_id,
-                ))
+                .uri(format!("/api/webhooks/channels/telegram/{}", channel_id,))
                 .header("content-type", "application/json")
                 .body(Body::from(payload.to_string()))
                 .unwrap(),
@@ -131,10 +136,7 @@ async fn telegram_webhook_creates_entities_with_metadata() {
 
     let app = build_app(state.clone());
     let resp = app
-        .oneshot(auth_get(
-            &format!("/api/spaces/{space_id}/chats"),
-            &token,
-        ))
+        .oneshot(auth_get(&format!("/api/spaces/{space_id}/chats"), &token))
         .await
         .unwrap();
     let chats_json = if resp.status() == StatusCode::OK {
@@ -150,15 +152,15 @@ async fn telegram_webhook_creates_entities_with_metadata() {
         .find(|c| c["channel_external_id"] == "dm:12345")
         .expect("chat with channel_external_id present");
     assert_eq!(chat["agent_id"], agent_id);
-    assert!(chat["channel_id"].is_string(), "channel_id should be set on channel-bound chat");
+    assert!(
+        chat["channel_id"].is_string(),
+        "channel_id should be set on channel-bound chat"
+    );
 
     let chat_id = chat["id"].as_str().unwrap();
     let app = build_app(state);
     let resp = app
-        .oneshot(auth_get(
-            &format!("/api/chats/{chat_id}/messages"),
-            &token,
-        ))
+        .oneshot(auth_get(&format!("/api/chats/{chat_id}/messages"), &token))
         .await
         .unwrap();
     let json = body_json(resp).await;
@@ -174,14 +176,17 @@ async fn telegram_webhook_creates_entities_with_metadata() {
 async fn telegram_webhook_persists_when_channel_is_signal_mode() {
     let tg = super::telegram_mock_api().await;
     let (state, _tmp) = test_app_state().await;
-    let (token, user_id) =
-        register_user(&state, "tgto", "tgto@example.com", "password123").await;
+    let (token, user_id) = register_user(&state, "tgto", "tgto@example.com", "password123").await;
     let agent = create_agent(&state, &token, "TgSignalAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
     let app = build_app(state.clone());
     let resp = app
-        .oneshot(auth_post_json("/api/spaces", &token, serde_json::json!({"name": "Telegram"})))
+        .oneshot(auth_post_json(
+            "/api/spaces",
+            &token,
+            serde_json::json!({"name": "Telegram"}),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -224,9 +229,15 @@ async fn telegram_webhook_persists_when_channel_is_signal_mode() {
     state
         .channel_supervisor
         .clone()
-        .start(&channel.id).await.unwrap();
+        .start(&channel.id)
+        .await
+        .unwrap();
     poll_until("adapter registered", || async {
-        state.channel_supervisor.running_adapter(&channel.id).await.is_some()
+        state
+            .channel_supervisor
+            .running_adapter(&channel.id)
+            .await
+            .is_some()
     })
     .await;
 
@@ -248,10 +259,7 @@ async fn telegram_webhook_persists_when_channel_is_signal_mode() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!(
-                    "/api/webhooks/channels/telegram/{}",
-                    channel_id,
-                ))
+                .uri(format!("/api/webhooks/channels/telegram/{}", channel_id,))
                 .header("content-type", "application/json")
                 .body(Body::from(payload.to_string()))
                 .unwrap(),
@@ -289,8 +297,7 @@ async fn telegram_webhook_persists_when_channel_is_signal_mode() {
 async fn telegram_webhook_drops_inbound_when_receive_message_forbidden() {
     let tg = super::telegram_mock_api().await;
     let (state, _tmp) = test_app_state().await;
-    let (token, user_id) =
-        register_user(&state, "tgblk", "tgblk@example.com", "password123").await;
+    let (token, user_id) = register_user(&state, "tgblk", "tgblk@example.com", "password123").await;
     let agent = create_agent(&state, &token, "TgBlockedAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
@@ -316,7 +323,11 @@ async fn telegram_webhook_drops_inbound_when_receive_message_forbidden() {
 
     let app = build_app(state.clone());
     let resp = app
-        .oneshot(auth_post_json("/api/spaces", &token, serde_json::json!({"name": "Telegram"})))
+        .oneshot(auth_post_json(
+            "/api/spaces",
+            &token,
+            serde_json::json!({"name": "Telegram"}),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -359,9 +370,15 @@ async fn telegram_webhook_drops_inbound_when_receive_message_forbidden() {
     state
         .channel_supervisor
         .clone()
-        .start(&channel.id).await.unwrap();
+        .start(&channel.id)
+        .await
+        .unwrap();
     poll_until("adapter registered", || async {
-        state.channel_supervisor.running_adapter(&channel.id).await.is_some()
+        state
+            .channel_supervisor
+            .running_adapter(&channel.id)
+            .await
+            .is_some()
     })
     .await;
 
@@ -383,10 +400,7 @@ async fn telegram_webhook_drops_inbound_when_receive_message_forbidden() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!(
-                    "/api/webhooks/channels/telegram/{}",
-                    channel_id,
-                ))
+                .uri(format!("/api/webhooks/channels/telegram/{}", channel_id,))
                 .header("content-type", "application/json")
                 .body(Body::from(payload.to_string()))
                 .unwrap(),
@@ -407,10 +421,7 @@ async fn telegram_webhook_drops_inbound_when_receive_message_forbidden() {
         let chat_id = chat["id"].as_str().unwrap();
         let app = build_app(state);
         let resp = app
-            .oneshot(auth_get(
-                &format!("/api/chats/{chat_id}/messages"),
-                &token,
-            ))
+            .oneshot(auth_get(&format!("/api/chats/{chat_id}/messages"), &token))
             .await
             .unwrap();
         let json = body_json(resp).await;
@@ -429,16 +440,19 @@ async fn pairing_round_trip_flips_channel_to_connected() {
 
     let tg = super::telegram_mock_api().await;
     let (state, _tmp) = test_app_state().await;
-    let (token, user_id) =
-        register_user(&state, "pair", "pair@example.com", "password123").await;
+    let (token, user_id) = register_user(&state, "pair", "pair@example.com", "password123").await;
     let agent = create_agent(&state, &token, "PairAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
     let app = build_app(state.clone());
     let resp = app
         .oneshot(auth_post_json(
-            "/api/spaces", &token, serde_json::json!({"name": "Pair Space"})))
-        .await.unwrap();
+            "/api/spaces",
+            &token,
+            serde_json::json!({"name": "Pair Space"}),
+        ))
+        .await
+        .unwrap();
     let space_id = body_json(resp).await["id"].as_str().unwrap().to_string();
 
     let now = chrono::Utc::now();
@@ -467,34 +481,57 @@ async fn pairing_round_trip_flips_channel_to_connected() {
         updated_at: now,
         webhook_url: None,
     };
-    frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
-        state.db.clone()).create(&channel).await.unwrap();
+    frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
+        .create(&channel)
+        .await
+        .unwrap();
     state
         .channel_supervisor
         .clone()
-        .start(&channel.id).await.unwrap();
+        .start(&channel.id)
+        .await
+        .unwrap();
     poll_until("adapter registered", || async {
-        state.channel_supervisor.running_adapter(&channel.id).await.is_some()
+        state
+            .channel_supervisor
+            .running_adapter(&channel.id)
+            .await
+            .is_some()
     })
     .await;
 
     let app = build_app(state.clone());
     let resp = app
         .oneshot(auth_post_json(
-            &format!("/api/channels/{channel_id}/pair"), &token, serde_json::json!({})))
-        .await.unwrap();
+            &format!("/api/channels/{channel_id}/pair"),
+            &token,
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     let code = body["code"].as_str().unwrap().to_string();
     assert_eq!(code.len(), 6, "code should be 6 chars: {code}");
 
-    let mid = state.channel_service.find_owned(&user_id, &channel_id).await.unwrap();
+    let mid = state
+        .channel_service
+        .find_owned(&user_id, &channel_id)
+        .await
+        .unwrap();
     // Pairing is an overlay (pending code), not a connection status.
     assert_eq!(
-        mid.user_address.as_ref().and_then(|ua| ua.pairing_code.as_deref()),
+        mid.user_address
+            .as_ref()
+            .and_then(|ua| ua.pairing_code.as_deref()),
         Some(code.as_str()),
     );
-    assert!(mid.user_address.as_ref().and_then(|ua| ua.address.as_deref()).is_none());
+    assert!(
+        mid.user_address
+            .as_ref()
+            .and_then(|ua| ua.address.as_deref())
+            .is_none()
+    );
 
     let payload = serde_json::json!({
         "update_id": 42,
@@ -506,16 +543,17 @@ async fn pairing_round_trip_flips_channel_to_connected() {
         }
     });
     let app = build_app(state.clone());
-    let resp = app.oneshot(
-        Request::builder()
-            .method("POST")
-            .uri(format!(
-                "/api/webhooks/channels/telegram/{}",
-                &channel_id,
-            ))
-            .header("content-type", "application/json")
-            .body(Body::from(payload.to_string())).unwrap(),
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/webhooks/channels/telegram/{}", &channel_id,))
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Pipeline runs async (mpsc → process_inbound). Poll until the
@@ -523,12 +561,24 @@ async fn pairing_round_trip_flips_channel_to_connected() {
     // Redemption clears the pending pairing_code overlay (connection status is
     // unaffected — it stays Connected throughout).
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-    let mut after = state.channel_service.find_owned(&user_id, &channel_id).await.unwrap();
+    let mut after = state
+        .channel_service
+        .find_owned(&user_id, &channel_id)
+        .await
+        .unwrap();
     while tokio::time::Instant::now() < deadline
-        && after.user_address.as_ref().and_then(|ua| ua.pairing_code.as_ref()).is_some()
+        && after
+            .user_address
+            .as_ref()
+            .and_then(|ua| ua.pairing_code.as_ref())
+            .is_some()
     {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        after = state.channel_service.find_owned(&user_id, &channel_id).await.unwrap();
+        after = state
+            .channel_service
+            .find_owned(&user_id, &channel_id)
+            .await
+            .unwrap();
     }
     let ua = after.user_address.as_ref().expect("user_address set");
     assert_eq!(ua.address.as_deref(), Some("@operator"));
@@ -549,8 +599,12 @@ async fn pairing_cancel_reverts_to_disconnected() {
     let app = build_app(state.clone());
     let resp = app
         .oneshot(auth_post_json(
-            "/api/spaces", &token, serde_json::json!({"name": "Cancel Space"})))
-        .await.unwrap();
+            "/api/spaces",
+            &token,
+            serde_json::json!({"name": "Cancel Space"}),
+        ))
+        .await
+        .unwrap();
     let space_id = body_json(resp).await["id"].as_str().unwrap().to_string();
 
     let now = chrono::Utc::now();
@@ -574,13 +628,27 @@ async fn pairing_cancel_reverts_to_disconnected() {
         updated_at: now,
         webhook_url: None,
     };
-    frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
-        state.db.clone()).create(&channel).await.unwrap();
+    frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
+        .create(&channel)
+        .await
+        .unwrap();
 
-    state.channel_service.initiate_pairing(&user_id, &channel_id).await.unwrap();
-    state.channel_service.cancel_pairing(&user_id, &channel_id).await.unwrap();
+    state
+        .channel_service
+        .initiate_pairing(&user_id, &channel_id)
+        .await
+        .unwrap();
+    state
+        .channel_service
+        .cancel_pairing(&user_id, &channel_id)
+        .await
+        .unwrap();
 
-    let after = state.channel_service.find_owned(&user_id, &channel_id).await.unwrap();
+    let after = state
+        .channel_service
+        .find_owned(&user_id, &channel_id)
+        .await
+        .unwrap();
     assert_eq!(format!("{:?}", after.status), "Disconnected");
     assert!(after.user_address.is_none(), "no prior address → cleared");
 }
@@ -614,14 +682,28 @@ async fn restart_clears_orphaned_pairing() {
         updated_at: now,
         webhook_url: None,
     };
-    frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
-        state.db.clone()).create(&channel).await.unwrap();
-    state.channel_service.initiate_pairing(&user_id, &channel_id).await.unwrap();
+    frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
+        .create(&channel)
+        .await
+        .unwrap();
+    state
+        .channel_service
+        .initiate_pairing(&user_id, &channel_id)
+        .await
+        .unwrap();
 
-    let count = state.channel_service.revert_orphaned_pairings().await.unwrap();
+    let count = state
+        .channel_service
+        .revert_orphaned_pairings()
+        .await
+        .unwrap();
     assert_eq!(count, 1);
 
-    let after = state.channel_service.find_owned(&user_id, &channel_id).await.unwrap();
+    let after = state
+        .channel_service
+        .find_owned(&user_id, &channel_id)
+        .await
+        .unwrap();
     assert_eq!(format!("{:?}", after.status), "Disconnected");
     assert!(after.user_address.is_none());
 }
@@ -706,9 +788,11 @@ impl frona::chat::channel::ChannelAdapter for StubAdapter {
         };
         if attempt <= fail_n {
             if terminal {
-                ctx.signals.disconnected_terminal(format!("stub terminal fail (attempt {attempt})"));
+                ctx.signals
+                    .disconnected_terminal(format!("stub terminal fail (attempt {attempt})"));
             } else {
-                ctx.signals.disconnected_transient(format!("stub transient fail (attempt {attempt})"));
+                ctx.signals
+                    .disconnected_transient(format!("stub transient fail (attempt {attempt})"));
             }
         } else {
             ctx.signals.connected();
@@ -919,17 +1003,14 @@ async fn inbound_webhook_persists_message_via_stub_adapter() {
     use frona::core::repository::Repository;
 
     let (state, _tmp) = test_app_state().await;
-    let (token, user_id) =
-        register_user(&state, "e2ein", "e2ein@example.com", "password123").await;
+    let (token, user_id) = register_user(&state, "e2ein", "e2ein@example.com", "password123").await;
     let agent = create_agent(&state, &token, "E2eAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
     let captured = std::sync::Arc::new(StdMutex::new(Vec::<CapturedSend>::new()));
     state
         .channel_registry
-        .register_factory(std::sync::Arc::new(StubFactory::new(
-            captured.clone()
-)));
+        .register_factory(std::sync::Arc::new(StubFactory::new(captured.clone())));
 
     let app = build_app(state.clone());
     let resp = app
@@ -969,9 +1050,15 @@ async fn inbound_webhook_persists_message_via_stub_adapter() {
     state
         .channel_supervisor
         .clone()
-        .start(&channel.id).await.unwrap();
+        .start(&channel.id)
+        .await
+        .unwrap();
     poll_until("adapter registered", || async {
-        state.channel_supervisor.running_adapter(&channel.id).await.is_some()
+        state
+            .channel_supervisor
+            .running_adapter(&channel.id)
+            .await
+            .is_some()
     })
     .await;
 
@@ -980,10 +1067,7 @@ async fn inbound_webhook_persists_message_via_stub_adapter() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!(
-                    "/api/webhooks/channels/test/{}",
-                    &channel.id,
-                ))
+                .uri(format!("/api/webhooks/channels/test/{}", &channel.id,))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from("from=%2B15551234567&text=hello"))
                 .unwrap(),
@@ -1019,8 +1103,7 @@ async fn delete_channel_cancels_spawned_task_and_invokes_on_disconnect() {
     use std::sync::atomic::Ordering;
 
     let (state, _tmp) = test_app_state().await;
-    let (token, user_id) =
-        register_user(&state, "delch", "delch@example.com", "password123").await;
+    let (token, user_id) = register_user(&state, "delch", "delch@example.com", "password123").await;
     let agent = create_agent(&state, &token, "DelChAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
@@ -1067,9 +1150,15 @@ async fn delete_channel_cancels_spawned_task_and_invokes_on_disconnect() {
     state
         .channel_supervisor
         .clone()
-        .start(&channel.id).await.unwrap();
+        .start(&channel.id)
+        .await
+        .unwrap();
     poll_until("adapter registered", || async {
-        state.channel_supervisor.running_adapter(&channel.id).await.is_some()
+        state
+            .channel_supervisor
+            .running_adapter(&channel.id)
+            .await
+            .is_some()
     })
     .await;
 
@@ -1140,9 +1229,7 @@ async fn agent_message_completion_dispatches_to_outbound_adapter() {
     let captured = std::sync::Arc::new(StdMutex::new(Vec::<CapturedSend>::new()));
     state
         .channel_registry
-        .register_factory(std::sync::Arc::new(StubFactory::new(
-            captured.clone()
-)));
+        .register_factory(std::sync::Arc::new(StubFactory::new(captured.clone())));
 
     let app = build_app(state.clone());
     let resp = app
@@ -1182,9 +1269,15 @@ async fn agent_message_completion_dispatches_to_outbound_adapter() {
     state
         .channel_supervisor
         .clone()
-        .start(&channel.id).await.unwrap();
+        .start(&channel.id)
+        .await
+        .unwrap();
     poll_until("adapter registered", || async {
-        state.channel_supervisor.running_adapter(&channel.id).await.is_some()
+        state
+            .channel_supervisor
+            .running_adapter(&channel.id)
+            .await
+            .is_some()
     })
     .await;
 
@@ -1206,9 +1299,17 @@ async fn agent_message_completion_dispatches_to_outbound_adapter() {
         .create_executing_agent_message(&chat.id, &agent_id)
         .await
         .unwrap();
-    let mut msg = state.chat_service.get_message(&user_id, &executing.id).await.unwrap();
+    let mut msg = state
+        .chat_service
+        .get_message(&user_id, &executing.id)
+        .await
+        .unwrap();
     msg.content = "hello back".into();
-    state.chat_service.complete_agent_message(msg).await.unwrap();
+    state
+        .chat_service
+        .complete_agent_message(msg)
+        .await
+        .unwrap();
 
     let captured_for_poll = captured.clone();
     poll_until("on_send invoked", || {
@@ -1244,8 +1345,7 @@ async fn fire_and_forget_agent_message_dispatches_to_outbound_adapter() {
     use frona::core::repository::Repository;
 
     let (state, _tmp) = test_app_state().await;
-    let (token, user_id) =
-        register_user(&state, "e2eff", "e2eff@example.com", "password123").await;
+    let (token, user_id) = register_user(&state, "e2eff", "e2eff@example.com", "password123").await;
     let agent = create_agent(&state, &token, "E2eFfAgent").await;
     let agent_id = agent["id"].as_str().unwrap().to_string();
 
@@ -1292,9 +1392,15 @@ async fn fire_and_forget_agent_message_dispatches_to_outbound_adapter() {
     state
         .channel_supervisor
         .clone()
-        .start(&channel.id).await.unwrap();
+        .start(&channel.id)
+        .await
+        .unwrap();
     poll_until("adapter registered", || async {
-        state.channel_supervisor.running_adapter(&channel.id).await.is_some()
+        state
+            .channel_supervisor
+            .running_adapter(&channel.id)
+            .await
+            .is_some()
     })
     .await;
 
@@ -1339,7 +1445,11 @@ async fn fire_and_forget_agent_message_dispatches_to_outbound_adapter() {
         assert_eq!(calls[0].msg_id, response.id);
     }
 
-    let msg = state.chat_service.get_message(&user_id, &response.id).await.unwrap();
+    let msg = state
+        .chat_service
+        .get_message(&user_id, &response.id)
+        .await
+        .unwrap();
     assert_eq!(
         msg.delivery.as_ref().map(|d| d.state),
         Some(frona::chat::message::models::DeliveryState::Sent),
@@ -1360,9 +1470,7 @@ async fn empty_agent_message_skips_adapter_and_marks_sent() {
     let captured = std::sync::Arc::new(StdMutex::new(Vec::<CapturedSend>::new()));
     state
         .channel_registry
-        .register_factory(std::sync::Arc::new(StubFactory::new(
-            captured.clone()
-)));
+        .register_factory(std::sync::Arc::new(StubFactory::new(captured.clone())));
 
     let app = build_app(state.clone());
     let resp = app
@@ -1402,9 +1510,15 @@ async fn empty_agent_message_skips_adapter_and_marks_sent() {
     state
         .channel_supervisor
         .clone()
-        .start(&channel.id).await.unwrap();
+        .start(&channel.id)
+        .await
+        .unwrap();
     poll_until("adapter registered", || async {
-        state.channel_supervisor.running_adapter(&channel.id).await.is_some()
+        state
+            .channel_supervisor
+            .running_adapter(&channel.id)
+            .await
+            .is_some()
     })
     .await;
 
@@ -1426,8 +1540,16 @@ async fn empty_agent_message_skips_adapter_and_marks_sent() {
         .create_executing_agent_message(&chat.id, &agent_id)
         .await
         .unwrap();
-    let msg = state.chat_service.get_message(&user_id, &executing.id).await.unwrap();
-    state.chat_service.complete_agent_message(msg).await.unwrap();
+    let msg = state
+        .chat_service
+        .get_message(&user_id, &executing.id)
+        .await
+        .unwrap();
+    state
+        .chat_service
+        .complete_agent_message(msg)
+        .await
+        .unwrap();
 
     let svc = state.chat_service.clone();
     let user_for_poll = user_id.clone();
@@ -1524,9 +1646,15 @@ async fn setup_segment_test(prefix: &str) -> SegmentTestSetup {
     state
         .channel_supervisor
         .clone()
-        .start(&channel.id).await.unwrap();
+        .start(&channel.id)
+        .await
+        .unwrap();
     poll_until("adapter registered", || async {
-        state.channel_supervisor.running_adapter(&channel.id).await.is_some()
+        state
+            .channel_supervisor
+            .running_adapter(&channel.id)
+            .await
+            .is_some()
     })
     .await;
 
@@ -1542,7 +1670,12 @@ async fn setup_segment_test(prefix: &str) -> SegmentTestSetup {
         )
         .await
         .unwrap();
-    let chat = state.chat_service.find_chat(&chat.id).await.unwrap().unwrap();
+    let chat = state
+        .chat_service
+        .find_chat(&chat.id)
+        .await
+        .unwrap()
+        .unwrap();
 
     SegmentTestSetup {
         state,
@@ -1620,18 +1753,18 @@ async fn insert_tool_call(
         .unwrap()
 }
 
-async fn complete_msg(
-    state: &frona::core::state::AppState,
-    msg_id: &str,
-    content: &str,
-) {
+async fn complete_msg(state: &frona::core::state::AppState, msg_id: &str, content: &str) {
     // The terminal-write API now takes an owned Message rather than re-fetching by id.
     // Tests don't always have user_id in scope; pull the row directly via the repo.
     use frona::core::repository::Repository;
     let repo = frona::db::repo::messages::SurrealMessageRepo::new(state.db.clone());
     let mut msg = repo.find_by_id(msg_id).await.unwrap().unwrap();
     msg.content = content.to_string();
-    state.chat_service.complete_agent_message(msg).await.unwrap();
+    state
+        .chat_service
+        .complete_agent_message(msg)
+        .await
+        .unwrap();
 }
 
 async fn reload_msg(
@@ -1653,18 +1786,21 @@ async fn poll_delivery_state(
 ) {
     let svc = state.chat_service.clone();
     let id = msg_id.to_string();
-    poll_until(&format!("delivery state == {target:?} for {msg_id}"), || {
-        let svc = svc.clone();
-        let id = id.clone();
-        async move {
-            svc.find_message(&id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|m| m.delivery.map(|d| d.state))
-                == Some(target)
-        }
-    })
+    poll_until(
+        &format!("delivery state == {target:?} for {msg_id}"),
+        || {
+            let svc = svc.clone();
+            let id = id.clone();
+            async move {
+                svc.find_message(&id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|m| m.delivery.map(|d| d.state))
+                    == Some(target)
+            }
+        },
+    )
     .await;
 }
 
@@ -1678,11 +1814,20 @@ async fn segments_happy_path_tools_then_trailing() {
     let tc1 = insert_tool_call(&setup.state, &setup.chat.id, &msg.id, 1, Some("second")).await;
 
     complete_msg(&setup.state, &msg.id, "tail").await;
-    poll_delivery_state(&setup.state, &msg.id, frona::chat::message::models::DeliveryState::Sent).await;
+    poll_delivery_state(
+        &setup.state,
+        &msg.id,
+        frona::chat::message::models::DeliveryState::Sent,
+    )
+    .await;
 
     {
         let tool_calls_seen = setup.tool_calls_recorder.lock().unwrap();
-        assert_eq!(tool_calls_seen.len(), 2, "on_tool fires once per tool segment");
+        assert_eq!(
+            tool_calls_seen.len(),
+            2,
+            "on_tool fires once per tool segment"
+        );
         assert_eq!(tool_calls_seen[0].tool_call_id, tc0.id);
         assert_eq!(tool_calls_seen[0].turn_text.as_deref(), Some("first"));
         assert_eq!(tool_calls_seen[1].tool_call_id, tc1.id);
@@ -1694,7 +1839,11 @@ async fn segments_happy_path_tools_then_trailing() {
     }
 
     let final_msg = reload_msg(&setup.state, &msg.id).await;
-    assert_eq!(final_msg.delivery.unwrap().tool_index, 2, "cursor at final_index after trailing sent");
+    assert_eq!(
+        final_msg.delivery.unwrap().tool_index,
+        2,
+        "cursor at final_index after trailing sent"
+    );
 }
 
 #[tokio::test]
@@ -1708,16 +1857,29 @@ async fn segments_skip_empty_turn_text_at_manager() {
     let tc2 = insert_tool_call(&setup.state, &setup.chat.id, &msg.id, 2, Some("real")).await;
 
     complete_msg(&setup.state, &msg.id, "tail").await;
-    poll_delivery_state(&setup.state, &msg.id, frona::chat::message::models::DeliveryState::Sent).await;
+    poll_delivery_state(
+        &setup.state,
+        &msg.id,
+        frona::chat::message::models::DeliveryState::Sent,
+    )
+    .await;
 
     {
         let seen = setup.tool_calls_recorder.lock().unwrap();
-        assert_eq!(seen.len(), 1, "on_tool only invoked for non-empty turn_text");
+        assert_eq!(
+            seen.len(),
+            1,
+            "on_tool only invoked for non-empty turn_text"
+        );
         assert_eq!(seen[0].tool_call_id, tc2.id);
     }
 
     let final_msg = reload_msg(&setup.state, &msg.id).await;
-    assert_eq!(final_msg.delivery.unwrap().tool_index, 3, "cursor at final_index after walking 3 tools");
+    assert_eq!(
+        final_msg.delivery.unwrap().tool_index,
+        3,
+        "cursor at final_index after walking 3 tools"
+    );
 }
 
 #[tokio::test]
@@ -1729,7 +1891,12 @@ async fn segments_empty_trailing_drains_to_sent() {
     insert_tool_call(&setup.state, &setup.chat.id, &msg.id, 0, Some("only this")).await;
 
     complete_msg(&setup.state, &msg.id, "").await;
-    poll_delivery_state(&setup.state, &msg.id, frona::chat::message::models::DeliveryState::Sent).await;
+    poll_delivery_state(
+        &setup.state,
+        &msg.id,
+        frona::chat::message::models::DeliveryState::Sent,
+    )
+    .await;
 
     assert_eq!(setup.tool_calls_recorder.lock().unwrap().len(), 1);
     assert!(
@@ -1750,7 +1917,12 @@ async fn segments_transient_failure_backs_off_and_resumes() {
     setup.config.lock().unwrap().fail_on_tool = Some((tc1.id.clone(), "transient blip".into()));
 
     complete_msg(&setup.state, &msg.id, "tail").await;
-    poll_delivery_state(&setup.state, &msg.id, frona::chat::message::models::DeliveryState::Failed).await;
+    poll_delivery_state(
+        &setup.state,
+        &msg.id,
+        frona::chat::message::models::DeliveryState::Failed,
+    )
+    .await;
 
     {
         let seen = setup.tool_calls_recorder.lock().unwrap();
@@ -1760,25 +1932,49 @@ async fn segments_transient_failure_backs_off_and_resumes() {
     {
         let mid = reload_msg(&setup.state, &msg.id).await.delivery.unwrap();
         assert_eq!(mid.tool_index, 1, "cursor halted at the failed segment");
-        assert!(mid.next_attempt_at.is_some(), "transient → backoff scheduled");
+        assert!(
+            mid.next_attempt_at.is_some(),
+            "transient → backoff scheduled"
+        );
         assert_eq!(mid.attempts, 1);
     }
 
     {
         use frona::core::repository::Repository;
-        let repo = SurrealRepo::<frona::chat::message::models::Message>::new(setup.state.db.clone());
-        let mut m = setup.state.chat_service.find_message(&msg.id).await.unwrap().unwrap();
+        let repo =
+            SurrealRepo::<frona::chat::message::models::Message>::new(setup.state.db.clone());
+        let mut m = setup
+            .state
+            .chat_service
+            .find_message(&msg.id)
+            .await
+            .unwrap()
+            .unwrap();
         m.delivery.as_mut().unwrap().next_attempt_at = Some(chrono::Utc::now());
         repo.update(&m).await.unwrap();
     }
-    let _ = setup.state.channel_supervisor.retry_due_deliveries().await.unwrap();
-    poll_delivery_state(&setup.state, &msg.id, frona::chat::message::models::DeliveryState::Sent).await;
+    let _ = setup
+        .state
+        .channel_supervisor
+        .retry_due_deliveries()
+        .await
+        .unwrap();
+    poll_delivery_state(
+        &setup.state,
+        &msg.id,
+        frona::chat::message::models::DeliveryState::Sent,
+    )
+    .await;
 
     let seen_after = setup.tool_calls_recorder.lock().unwrap();
     assert_eq!(seen_after.len(), 2, "retry sent segment 1");
     assert_eq!(seen_after[1].tool_call_id, tc1.id);
     drop(seen_after);
-    assert_eq!(setup.captured.lock().unwrap().len(), 1, "trailing sent once");
+    assert_eq!(
+        setup.captured.lock().unwrap().len(),
+        1,
+        "trailing sent once"
+    );
 }
 
 #[tokio::test]
@@ -1794,7 +1990,12 @@ async fn segments_permanent_failure_halts() {
         Some((tc1.id.clone(), "Forbidden: bot was blocked".into()));
 
     complete_msg(&setup.state, &msg.id, "tail").await;
-    poll_delivery_state(&setup.state, &msg.id, frona::chat::message::models::DeliveryState::Failed).await;
+    poll_delivery_state(
+        &setup.state,
+        &msg.id,
+        frona::chat::message::models::DeliveryState::Failed,
+    )
+    .await;
 
     let delivery = reload_msg(&setup.state, &msg.id).await.delivery.unwrap();
     assert_eq!(delivery.tool_index, 1);
@@ -1814,18 +2015,40 @@ async fn segments_resume_after_partial_delivery() {
     let _tc1 = insert_tool_call(&setup.state, &setup.chat.id, &msg.id, 1, Some("b")).await;
     let tc2 = insert_tool_call(&setup.state, &setup.chat.id, &msg.id, 2, Some("c")).await;
 
-    outbound_engine(&setup.state).record_segment_progress(&msg.id).await.unwrap();
-    outbound_engine(&setup.state).record_segment_progress(&msg.id).await.unwrap();
-    assert_eq!(reload_msg(&setup.state, &msg.id).await.delivery.unwrap().tool_index, 2);
+    outbound_engine(&setup.state)
+        .record_segment_progress(&msg.id)
+        .await
+        .unwrap();
+    outbound_engine(&setup.state)
+        .record_segment_progress(&msg.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        reload_msg(&setup.state, &msg.id)
+            .await
+            .delivery
+            .unwrap()
+            .tool_index,
+        2
+    );
 
     complete_msg(&setup.state, &msg.id, "tail").await;
-    poll_delivery_state(&setup.state, &msg.id, frona::chat::message::models::DeliveryState::Sent).await;
+    poll_delivery_state(
+        &setup.state,
+        &msg.id,
+        frona::chat::message::models::DeliveryState::Sent,
+    )
+    .await;
 
     let seen = setup.tool_calls_recorder.lock().unwrap();
     assert_eq!(seen.len(), 1, "only segment 2 was sent on resume");
     assert_eq!(seen[0].tool_call_id, tc2.id);
     drop(seen);
-    assert_eq!(setup.captured.lock().unwrap().len(), 1, "trailing also sent");
+    assert_eq!(
+        setup.captured.lock().unwrap().len(),
+        1,
+        "trailing also sent"
+    );
 }
 
 #[tokio::test]
@@ -1837,7 +2060,12 @@ async fn segments_executing_excluded_from_retry_then_completed_walks_full_list()
     let tc0 = insert_tool_call(&setup.state, &setup.chat.id, &msg.id, 0, Some("a")).await;
     let _tc1 = insert_tool_call(&setup.state, &setup.chat.id, &msg.id, 1, Some("b")).await;
 
-    let retried = setup.state.channel_supervisor.retry_due_deliveries().await.unwrap();
+    let retried = setup
+        .state
+        .channel_supervisor
+        .retry_due_deliveries()
+        .await
+        .unwrap();
     assert_eq!(retried, 0, "Executing must not surface in retry queue");
     assert!(setup.tool_calls_recorder.lock().unwrap().is_empty());
     assert!(setup.captured.lock().unwrap().is_empty());
@@ -1845,10 +2073,19 @@ async fn segments_executing_excluded_from_retry_then_completed_walks_full_list()
     let _tc2 = insert_tool_call(&setup.state, &setup.chat.id, &msg.id, 2, Some("c")).await;
 
     complete_msg(&setup.state, &msg.id, "tail").await;
-    poll_delivery_state(&setup.state, &msg.id, frona::chat::message::models::DeliveryState::Sent).await;
+    poll_delivery_state(
+        &setup.state,
+        &msg.id,
+        frona::chat::message::models::DeliveryState::Sent,
+    )
+    .await;
 
     let seen = setup.tool_calls_recorder.lock().unwrap();
-    assert_eq!(seen.len(), 3, "all 3 tool segments delivered, including the late-appended one");
+    assert_eq!(
+        seen.len(),
+        3,
+        "all 3 tool segments delivered, including the late-appended one"
+    );
     assert_eq!(seen[0].tool_call_id, tc0.id);
     drop(seen);
     assert_eq!(setup.captured.lock().unwrap().len(), 1);
@@ -1884,7 +2121,12 @@ async fn channel_hitl_pause_renders_pending_hitls() {
         response: None,
         delivery: None,
     };
-    setup.state.chat_service.set_hitl(&tc.id, hitl).await.unwrap();
+    setup
+        .state
+        .chat_service
+        .set_hitl(&tc.id, hitl)
+        .await
+        .unwrap();
 
     // 3. Trigger the pause broadcast — same call the agent loop makes when
     //    it returns ExternalToolPending.
@@ -1904,7 +2146,11 @@ async fn channel_hitl_pause_renders_pending_hitls() {
         setup
             .state
             .chat_service
-            .pause_agent_message(placeholder, frona::inference::tool_loop::PauseReason::Hitl, tcs)
+            .pause_agent_message(
+                placeholder,
+                frona::inference::tool_loop::PauseReason::Hitl,
+                tcs,
+            )
             .await
             .unwrap();
     }
@@ -1912,16 +2158,19 @@ async fn channel_hitl_pause_renders_pending_hitls() {
     // 4. Adapter must see the pending HITL.
     let pending_hitls_recorder = setup.pending_hitls_recorder.clone();
     let expected_tool_call_id = tc.id.clone();
-    poll_until("adapter on_pending_hitl called with the pending HITL", || {
-        let rec = pending_hitls_recorder.clone();
-        let expected = expected_tool_call_id.clone();
-        async move {
-            rec.lock()
-                .unwrap()
-                .iter()
-                .any(|b| b.tool_call_ids.iter().any(|id| id == &expected))
-        }
-    })
+    poll_until(
+        "adapter on_pending_hitl called with the pending HITL",
+        || {
+            let rec = pending_hitls_recorder.clone();
+            let expected = expected_tool_call_id.clone();
+            async move {
+                rec.lock()
+                    .unwrap()
+                    .iter()
+                    .any(|b| b.tool_call_ids.iter().any(|id| id == &expected))
+            }
+        },
+    )
     .await;
 
     let captured = setup.pending_hitls_recorder.lock().unwrap().clone();
@@ -1931,7 +2180,13 @@ async fn channel_hitl_pause_renders_pending_hitls() {
 
     // Pause flips the persisted message status from Executing → Paused so the
     // startup-resume sweep can safely skip un-resolved HITLs across restarts.
-    let reloaded = setup.state.chat_service.find_message(&msg.id).await.unwrap().unwrap();
+    let reloaded = setup
+        .state
+        .chat_service
+        .find_message(&msg.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         reloaded.status,
         Some(frona::chat::message::models::MessageStatus::Paused),
@@ -1946,7 +2201,10 @@ async fn channel_hitl_pause_renders_pending_hitls() {
         .find_paused_message_for_chat(&setup.chat.id)
         .await
         .unwrap();
-    assert!(paused_found.is_some(), "find_paused_message_for_chat finds it");
+    assert!(
+        paused_found.is_some(),
+        "find_paused_message_for_chat finds it"
+    );
     let executing_found = setup
         .state
         .chat_service
@@ -1960,7 +2218,11 @@ async fn channel_hitl_pause_renders_pending_hitls() {
 
     // Startup sweep must skip Paused messages — otherwise the loop would
     // resume with empty HITL answers.
-    let sweep = setup.state.chat_service.find_executing_chat_messages().await;
+    let sweep = setup
+        .state
+        .chat_service
+        .find_executing_chat_messages()
+        .await;
     assert!(
         sweep.iter().all(|m| m.id != msg.id),
         "find_executing_chat_messages must skip Paused messages"
@@ -2087,8 +2349,17 @@ async fn channel_button_resolution_resumes_inference() {
     })
     .await;
 
-    let reloaded = setup.state.chat_service.get_tool_call(&tc.id).await.unwrap().unwrap();
-    assert_eq!(reloaded.result, "yes", "tool result carries the user's choice");
+    let reloaded = setup
+        .state
+        .chat_service
+        .get_tool_call(&tc.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reloaded.result, "yes",
+        "tool result carries the user's choice"
+    );
 
     // 4. Resume kicked off — the channel-resolve handler `tokio::spawn`ed
     //    `harness.resume(...)`, which triggered `inference()`, which emits
@@ -2097,10 +2368,13 @@ async fn channel_button_resolution_resumes_inference() {
     //    app has no model providers, but the START signal is enough to prove
     //    the resume kicked off.)
     let counter = setup.inference_start_count.clone();
-    poll_until("adapter on_inference_start fired (resume kicked off)", || {
-        let counter = counter.clone();
-        async move { counter.load(std::sync::atomic::Ordering::SeqCst) > 0 }
-    })
+    poll_until(
+        "adapter on_inference_start fired (resume kicked off)",
+        || {
+            let counter = counter.clone();
+            async move { counter.load(std::sync::atomic::Ordering::SeqCst) > 0 }
+        },
+    )
     .await;
 
     // 5. The Paused → Executing status flip happened before resume — the
@@ -2128,8 +2402,7 @@ async fn channel_button_resolution_resumes_inference() {
 #[tokio::test]
 async fn slack_manifest_is_registered_with_required_secret_tokens() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "slmf", "slmf@example.com", "password123").await;
+    let (token, _) = register_user(&state, "slmf", "slmf@example.com", "password123").await;
     let app = build_app(state);
     let resp = app
         .oneshot(auth_get("/api/channels/manifests", &token))
@@ -2189,12 +2462,10 @@ async fn slack_pairing_binds_slack_user_id_into_user_address() {
         updated_at: now,
         webhook_url: None,
     };
-    frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(
-        state.db.clone(),
-    )
-    .create(&channel)
-    .await
-    .unwrap();
+    frona::db::repo::generic::SurrealRepo::<frona::chat::channel::Channel>::new(state.db.clone())
+        .create(&channel)
+        .await
+        .unwrap();
 
     let code = state
         .channel_service
@@ -2208,7 +2479,10 @@ async fn slack_pairing_binds_slack_user_id_into_user_address() {
         .unwrap();
     // Pairing is an overlay on user_address.pairing_code, not a status.
     assert_eq!(
-        pairing.user_address.as_ref().and_then(|ua| ua.pairing_code.as_deref()),
+        pairing
+            .user_address
+            .as_ref()
+            .and_then(|ua| ua.pairing_code.as_deref()),
         Some(code.as_str()),
     );
 
@@ -2224,7 +2498,9 @@ async fn slack_pairing_binds_slack_user_id_into_user_address() {
         .find_owned(&user_id, &channel_id)
         .await
         .unwrap();
-    let ua = after.user_address.expect("user_address populated by redeem");
+    let ua = after
+        .user_address
+        .expect("user_address populated by redeem");
     assert!(ua.pairing_code.is_none(), "redeem clears the pending code");
     assert_eq!(ua.address.as_deref(), Some("U07AB12C"));
     assert!(ua.paired_at.is_some());
@@ -2258,13 +2534,7 @@ async fn channel_service_start_spawns_adapter_exactly_once() {
     use frona::core::repository::Repository;
 
     let (state, _tmp) = test_app_state().await;
-    let (token, user_id) = register_user(
-        &state,
-        "racr",
-        "racr@example.com",
-        "password123",
-    )
-    .await;
+    let (token, user_id) = register_user(&state, "racr", "racr@example.com", "password123").await;
     let agent = create_agent(&state, &token, "RaceAgent").await;
     let agent_id = agent["id"].as_str().unwrap().to_string();
 
@@ -2311,12 +2581,7 @@ async fn channel_service_start_spawns_adapter_exactly_once() {
         .await
         .unwrap();
 
-    state
-        .channel_supervisor
-        .clone()
-        .boot()
-        .await
-        .unwrap();
+    state.channel_supervisor.clone().boot().await.unwrap();
 
     let before = create_count.load(std::sync::atomic::Ordering::SeqCst);
     assert_eq!(
@@ -2379,17 +2644,18 @@ async fn channel_status(
 }
 
 /// register_user + agent + space; returns (user_id, agent_id, space_id).
-async fn rc_setup(
-    state: &frona::core::state::AppState,
-    slug: &str,
-) -> (String, String, String) {
+async fn rc_setup(state: &frona::core::state::AppState, slug: &str) -> (String, String, String) {
     let (token, user_id) =
         register_user(state, slug, &format!("{slug}@example.com"), "password123").await;
     let agent = create_agent(state, &token, "RcAgent").await;
     let agent_id = agent["id"].as_str().unwrap().to_string();
     let app = build_app(state.clone());
     let resp = app
-        .oneshot(auth_post_json("/api/spaces", &token, serde_json::json!({"name": "RcSpace"})))
+        .oneshot(auth_post_json(
+            "/api/spaces",
+            &token,
+            serde_json::json!({"name": "RcSpace"}),
+        ))
         .await
         .unwrap();
     let space_id = body_json(resp).await["id"].as_str().unwrap().to_string();
@@ -2497,7 +2763,11 @@ async fn supervisor_does_not_retry_terminal_connect_failure() {
         "terminal failure must not retry",
     );
     assert!(
-        state.channel_supervisor.running_adapter(&id).await.is_none(),
+        state
+            .channel_supervisor
+            .running_adapter(&id)
+            .await
+            .is_none(),
         "terminally-failed channel must not stay registered",
     );
 }
@@ -2559,7 +2829,11 @@ async fn reconcile_rearms_supervisorless_channel_but_not_failed() {
     .await;
     // The Failed channel was never started (excluded by find_active).
     assert!(
-        state.channel_supervisor.running_adapter(&failed_id).await.is_none(),
+        state
+            .channel_supervisor
+            .running_adapter(&failed_id)
+            .await
+            .is_none(),
         "Failed channel must not be re-armed by reconcile",
     );
     assert!(

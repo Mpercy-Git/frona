@@ -8,6 +8,10 @@ use crate::core::error::AppError;
 
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 
+/// The shell tool's id, as declared by `resources/prompts/tools/shell.md`. It is
+/// the sandbox command runner, and so the only way to invoke `mcpctl`.
+pub const SHELL_TOOL_ID: &str = "shell";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolFilter {
     /// Lock the agent to a small set of tools. Used by signal-mode and
@@ -59,6 +63,25 @@ impl AgentToolRegistry {
         self.mcp_bridge_mode
     }
 
+    /// Whether MCP calls should actually be routed through the `mcpctl` bridge.
+    ///
+    /// Bridge mode trades every `mcp__*` tool definition for a single `mcpctl`
+    /// command line, and `mcpctl` is a binary in the sandbox - the shell tool is
+    /// the only thing that can run it. An agent whose tool list has no shell -
+    /// restricted by `tools:` frontmatter, denied by Cedar, or filtered down by
+    /// `apply_filter` - cannot reach it, so bridging there would strip the
+    /// `mcp__*` definitions and leave *nothing* able to call the server while
+    /// the prompt still advertises it. Fall back to plain tool definitions
+    /// instead. Read at call time, not at construction, because the filters that
+    /// remove the shell run after `new`.
+    pub fn mcp_bridge_active(&self) -> bool {
+        self.mcp_bridge_mode && self.has_tool(SHELL_TOOL_ID)
+    }
+
+    pub fn has_tool(&self, tool_id: &str) -> bool {
+        self.definitions.iter().any(|d| d.id == tool_id)
+    }
+
     pub fn apply_filter(&mut self, filter: &ToolFilter) {
         match filter {
             ToolFilter::AllowList(allowed) => self.restrict_to(allowed),
@@ -69,29 +92,58 @@ impl AgentToolRegistry {
     /// Restrict beyond Cedar: even if a tool is permitted generally, hide it here.
     pub fn restrict_to(&mut self, allowed: &[&str]) {
         let allow_set: std::collections::HashSet<&str> = allowed.iter().copied().collect();
-        self.definitions.retain(|d| allow_set.contains(d.id.as_str()));
-        let surviving_owners: std::collections::HashSet<String> =
-            self.definitions.iter().filter_map(|d| {
-                self.tool_name_to_owner.get(&d.id).cloned()
-            }).collect();
-        self.tool_name_to_owner.retain(|tool_id, _| allow_set.contains(tool_id.as_str()));
-        self.tools.retain(|owner, _| surviving_owners.contains(owner));
+        self.definitions
+            .retain(|d| allow_set.contains(d.id.as_str()));
+        let surviving_owners: std::collections::HashSet<String> = self
+            .definitions
+            .iter()
+            .filter_map(|d| self.tool_name_to_owner.get(&d.id).cloned())
+            .collect();
+        self.tool_name_to_owner
+            .retain(|tool_id, _| allow_set.contains(tool_id.as_str()));
+        self.tools
+            .retain(|owner, _| surviving_owners.contains(owner));
     }
 
     pub fn deny(&mut self, denied: &[&str]) {
         let deny_set: std::collections::HashSet<&str> = denied.iter().copied().collect();
-        self.definitions.retain(|d| !deny_set.contains(d.id.as_str()));
-        let surviving_owners: std::collections::HashSet<String> =
-            self.definitions.iter().filter_map(|d| {
-                self.tool_name_to_owner.get(&d.id).cloned()
-            }).collect();
-        self.tool_name_to_owner.retain(|tool_id, _| !deny_set.contains(tool_id.as_str()));
-        self.tools.retain(|owner, _| surviving_owners.contains(owner));
+        self.definitions
+            .retain(|d| !deny_set.contains(d.id.as_str()));
+        let surviving_owners: std::collections::HashSet<String> = self
+            .definitions
+            .iter()
+            .filter_map(|d| self.tool_name_to_owner.get(&d.id).cloned())
+            .collect();
+        self.tool_name_to_owner
+            .retain(|tool_id, _| !deny_set.contains(tool_id.as_str()));
+        self.tools
+            .retain(|owner, _| surviving_owners.contains(owner));
     }
 
     pub fn register(&mut self, tool: Arc<dyn AgentTool>) {
+        let definitions = tool.definitions();
+        self.register_with_definitions(tool, definitions);
+    }
+
+    pub fn register_required(&mut self, tool: Arc<dyn AgentTool>) -> Result<(), AppError> {
+        let definitions = tool.definitions();
+        if definitions.is_empty() {
+            return Err(AppError::Internal(format!(
+                "required tool `{}` has no model definitions",
+                tool.name(),
+            )));
+        }
+        self.register_with_definitions(tool, definitions);
+        Ok(())
+    }
+
+    fn register_with_definitions(
+        &mut self,
+        tool: Arc<dyn AgentTool>,
+        definitions: Vec<ToolDefinition>,
+    ) {
         let owner_name = tool.name().to_string();
-        for def in tool.definitions() {
+        for def in definitions {
             self.tool_name_to_owner
                 .insert(def.id.clone(), owner_name.clone());
             self.definitions.push(def);
@@ -99,18 +151,34 @@ impl AgentToolRegistry {
         self.tools.insert(owner_name, tool);
     }
 
-    pub async fn execute(&self, tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
-        let owner = self
-            .tool_name_to_owner
-            .get(tool_name)
-            .ok_or_else(|| AppError::Tool(format!("Unknown tool: {tool_name}")))?;
+    pub async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        let owner =
+            self.tool_name_to_owner
+                .get(tool_name)
+                .ok_or_else(|| AppError::ToolExecution {
+                    tool_name: tool_name.into(),
+                    source: Box::new(AppError::NotFound(format!("Unknown tool: {tool_name}"))),
+                })?;
 
         let tool = self
             .tools
             .get(owner)
-            .ok_or_else(|| AppError::Tool(format!("Tool owner not found: {owner}")))?;
+            .ok_or_else(|| AppError::ToolExecution {
+                tool_name: tool_name.into(),
+                source: Box::new(AppError::NotFound(format!("Tool owner not found: {owner}"))),
+            })?;
 
-        tool.execute(tool_name, arguments, ctx).await
+        tool.execute(tool_name, arguments, ctx)
+            .await
+            .map_err(|source| AppError::ToolExecution {
+                tool_name: tool_name.to_string(),
+                source: Box::new(source),
+            })
     }
 
     pub fn definitions(&self) -> &[ToolDefinition] {
@@ -134,23 +202,52 @@ impl AgentToolRegistry {
     }
 }
 
+/// What `<available_agents>` has to say for one agent: who it may delegate to,
+/// and who it may not.
+///
+/// The denied list is the point of the type. Delegation is permitted only to
+/// agents whose tools are a subset of the caller's (the `delegation` policy in
+/// `resources/policy/frona.cedar`), so narrowing one agent's tools silently
+/// empties its view of every colleague that kept a tool it lost. With only the
+/// delegable list the section vanished entirely, leaving an agent that had been
+/// told to "check `<available_agents>`" to conclude the user has no other
+/// agents - and say so. Carrying the denied names keeps the prompt honest: they
+/// exist, they are simply not reachable from here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentSummaries {
+    /// `(name, description)` for each agent this one may delegate to.
+    pub delegable: Vec<(String, String)>,
+    /// Names of the enabled agents the delegation policy turned down.
+    pub denied: Vec<String>,
+}
+
+impl AgentSummaries {
+    /// True when there is genuinely nothing to say - no colleagues at all,
+    /// reachable or otherwise.
+    pub fn is_empty(&self) -> bool {
+        self.delegable.is_empty() && self.denied.is_empty()
+    }
+}
+
 pub async fn build_agent_summaries(
     harness: &Harness,
     user_id: &str,
     current_agent_id: &str,
-) -> Vec<(String, String)> {
+) -> AgentSummaries {
     let current_agent = match harness.agent_service.find_by_id(current_agent_id).await {
         Ok(Some(agent)) => agent,
-        _ => return Vec::new(),
+        _ => return AgentSummaries::default(),
     };
 
     let agents = match harness.agent_service.list(user_id).await {
         Ok(agents) => agents,
-        Err(_) => return Vec::new(),
+        Err(_) => return AgentSummaries::default(),
     };
 
-    let mut summaries = Vec::new();
+    let mut summaries = AgentSummaries::default();
     for target in &agents {
+        // A disabled agent is off on purpose: it is not a permission the user
+        // has to go and fix, so it stays out of both lists.
         if target.id == current_agent_id || !target.enabled {
             continue;
         }
@@ -166,8 +263,23 @@ pub async fn build_agent_summaries(
             )
             .await;
         if decision.is_ok_and(|d| d.allowed) {
-            summaries.push((target.name.clone(), target.description.clone()));
+            summaries
+                .delegable
+                .push((target.name.clone(), target.description.clone()));
+        } else {
+            summaries.denied.push(target.name.clone());
         }
+    }
+
+    if !summaries.denied.is_empty() {
+        // The operator-facing half of the same fact. Whichever agent is
+        // complaining that it cannot see its colleagues, this line names them
+        // and the principal the policy turned down.
+        tracing::debug!(
+            agent = %current_agent.handle,
+            denied = ?summaries.denied,
+            "delegation policy hid agents from <available_agents>"
+        );
     }
 
     summaries
@@ -179,6 +291,26 @@ mod tests {
     use async_trait::async_trait;
 
     struct MockTool;
+
+    struct EmptyTool;
+
+    #[async_trait]
+    impl AgentTool for EmptyTool {
+        fn name(&self) -> &str {
+            "empty"
+        }
+        fn definitions(&self) -> Vec<ToolDefinition> {
+            Vec::new()
+        }
+        async fn execute(
+            &self,
+            _: &str,
+            _: Value,
+            _: &InferenceContext,
+        ) -> Result<ToolOutput, AppError> {
+            Ok(ToolOutput::text("empty"))
+        }
+    }
 
     #[async_trait]
     impl AgentTool for MockTool {
@@ -195,7 +327,12 @@ mod tests {
             }]
         }
 
-        async fn execute(&self, tool_name: &str, _arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+        async fn execute(
+            &self,
+            tool_name: &str,
+            _arguments: Value,
+            _ctx: &InferenceContext,
+        ) -> Result<ToolOutput, AppError> {
             Ok(ToolOutput::text(format!("executed {tool_name}")))
         }
     }
@@ -229,6 +366,8 @@ mod tests {
                 sandbox_limits: None,
                 max_concurrent_tasks: None,
                 avatar: None,
+                voice_id: None,
+                private_memory: false,
                 identity: Default::default(),
                 prompt: None,
                 heartbeat_interval: None,
@@ -274,11 +413,23 @@ mod tests {
         assert_eq!(output.text_content(), "executed mock_action");
     }
 
+    #[test]
+    fn required_tool_registration_rejects_an_empty_definition_set() {
+        let mut registry = AgentToolRegistry::empty();
+
+        let error = registry.register_required(Arc::new(EmptyTool)).unwrap_err();
+
+        assert!(error.to_string().contains("empty"));
+        assert!(registry.is_empty());
+    }
+
     #[tokio::test]
     async fn test_registry_unknown_tool() {
         let registry = AgentToolRegistry::empty();
         let ctx = mock_context();
-        let result = registry.execute("nonexistent", serde_json::json!({}), &ctx).await;
+        let result = registry
+            .execute("nonexistent", serde_json::json!({}), &ctx)
+            .await;
         assert!(result.is_err());
     }
 
@@ -297,7 +448,12 @@ mod tests {
                 parameters: serde_json::json!({"type":"object","properties":{}}),
             }]
         }
-        async fn execute(&self, _: &str, _: Value, _: &InferenceContext) -> Result<ToolOutput, AppError> {
+        async fn execute(
+            &self,
+            _: &str,
+            _: Value,
+            _: &InferenceContext,
+        ) -> Result<ToolOutput, AppError> {
             Ok(ToolOutput::text("other"))
         }
     }
@@ -315,8 +471,18 @@ mod tests {
         assert_eq!(registry.definitions()[0].id, "mock_action");
 
         let ctx = mock_context();
-        assert!(registry.execute("other_action", serde_json::json!({}), &ctx).await.is_err());
-        assert!(registry.execute("mock_action", serde_json::json!({}), &ctx).await.is_ok());
+        assert!(
+            registry
+                .execute("other_action", serde_json::json!({}), &ctx)
+                .await
+                .is_err()
+        );
+        assert!(
+            registry
+                .execute("mock_action", serde_json::json!({}), &ctx)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -325,5 +491,62 @@ mod tests {
         registry.register(Arc::new(MockTool));
         registry.restrict_to(&[]);
         assert!(registry.is_empty());
+    }
+
+    fn def(id: &str, provider_id: &str) -> ToolDefinition {
+        ToolDefinition {
+            id: id.to_string(),
+            provider_id: provider_id.to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }
+    }
+
+    fn bridged(defs: Vec<ToolDefinition>) -> AgentToolRegistry {
+        AgentToolRegistry::new(HashMap::new(), HashMap::new(), defs, true)
+    }
+
+    #[test]
+    fn bridge_is_active_only_when_the_agent_can_run_mcpctl() {
+        let with_shell = bridged(vec![
+            def(SHELL_TOOL_ID, "shell"),
+            def("mcp__ha__get_state", "mcp:ha"),
+        ]);
+        assert!(with_shell.mcp_bridge_active());
+
+        // The failure this guards: bridge mode hides every `mcp__*` tool in
+        // favour of `mcpctl`, so an agent with no shell is left holding neither.
+        let without_shell = bridged(vec![
+            def("read", "files"),
+            def("memory_search", "memory"),
+            def("mcp__ha__get_state", "mcp:ha"),
+        ]);
+        assert!(!without_shell.mcp_bridge_active());
+        assert!(without_shell.mcp_bridge_mode());
+    }
+
+    #[test]
+    fn bridge_stays_off_when_the_config_flag_is_off() {
+        let registry = AgentToolRegistry::new(
+            HashMap::new(),
+            HashMap::new(),
+            vec![def(SHELL_TOOL_ID, "shell")],
+            false,
+        );
+        assert!(!registry.mcp_bridge_active());
+    }
+
+    #[test]
+    fn losing_the_shell_to_a_filter_deactivates_the_bridge() {
+        let mut registry = bridged(vec![
+            def(SHELL_TOOL_ID, "shell"),
+            def("mcp__ha__get_state", "mcp:ha"),
+        ]);
+        assert!(registry.mcp_bridge_active());
+
+        // Signal-mode and quarantined tasks restrict after construction, which is
+        // why the predicate reads the live definitions rather than a stored bool.
+        registry.apply_filter(&ToolFilter::DenyList(&[SHELL_TOOL_ID]));
+        assert!(!registry.mcp_bridge_active());
     }
 }

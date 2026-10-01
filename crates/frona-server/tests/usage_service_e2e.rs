@@ -13,16 +13,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use frona::chat::broadcast::BroadcastService;
+use frona::core::Handle;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::config::{ModelGroup, RetryConfig};
+use frona::inference::ModelGroup;
+use frona::inference::config::RetryConfig;
 use frona::inference::error::InferenceError;
-use frona::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, ModelEntry};
 use frona::inference::metadata::catalog::Cost;
-use frona::inference::provider::{ModelProvider, ModelRef};
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, ModelEntry};
+use frona::inference::provider::{ModelConfig, ModelProvider};
 use frona::inference::usage::{
-    InferenceKind, InferenceUsage, InferenceUsageRepository, TimeBucket, UsageContext,
-    UsageService,
+    CompactionTarget, InferenceKind, InferenceUsage, InferenceUsageRepository, TimeBucket,
+    UsageContext, UsageService,
 };
 use frona::inference::{structured_inference, text_inference};
 use rig_core::completion::Message as RigMessage;
@@ -30,10 +31,6 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::Mem;
 
 use helpers::{MockModelProvider, MockResponse, init_metrics};
-
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
 
 /// Fresh in-memory DB + bound `UsageService`. Pricing is set for the
 /// "mock/test-model" key so cost rows are non-None and the aggregations have
@@ -60,12 +57,15 @@ async fn fresh_service() -> (Surreal<surrealdb::engine::local::Db>, UsageService
         version: "test".to_string(),
         fetched_at: chrono::Utc::now(),
         entries,
+        providers: std::collections::HashMap::new(),
+        protocol_defaults: std::collections::HashMap::new(),
     };
     let catalog = ModelCatalogStore::new(snapshot);
     let svc = UsageService::new(
         catalog,
         SurrealRepo::<InferenceUsage>::new(db.clone()),
         BroadcastService::new(),
+        std::sync::Arc::new(std::collections::HashMap::new()),
     );
     (db, svc)
 }
@@ -82,15 +82,31 @@ fn chat_usage_ctx(user: &str, agent: &str, chat: &str, message: &str) -> UsageCo
     )
 }
 
-fn fast_retry_model_group(fallbacks: Vec<ModelRef>) -> ModelGroup {
+fn model_config(provider: &str, model_id: &str) -> ModelConfig {
+    ModelConfig {
+        catalog_provider: provider.to_string(),
+        provider_handle: Handle::try_new(provider).unwrap(),
+        provider: provider.into(),
+        model_id: model_id.into(),
+        request_settings: Default::default(),
+    }
+}
+
+fn fast_retry_model_group(
+    providers: Vec<(&str, Arc<dyn ModelProvider>)>,
+    fallbacks: Vec<(&str, &str)>,
+) -> ModelGroup {
+    let providers = providers
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
     ModelGroup {
         name: "primary".into(),
-        main: ModelRef {
-            provider: "mock".into(),
-            model_id: "test-model".into(),
-            additional_params: None,
-        },
-        fallbacks,
+        main: model_config("mock", "test-model"),
+        fallbacks: fallbacks
+            .into_iter()
+            .map(|(provider, model_id)| model_config(provider, model_id))
+            .collect(),
         max_tokens: Some(4096),
         temperature: None,
         context_window: 128_000,
@@ -103,15 +119,8 @@ fn fast_retry_model_group(fallbacks: Vec<ModelRef>) -> ModelGroup {
             max_backoff_ms: 0,
         },
         inference: Default::default(),
+        providers: Arc::new(providers),
     }
-}
-
-fn registry_with(providers: Vec<(&str, Arc<dyn ModelProvider>)>) -> ModelProviderRegistry {
-    let map = providers
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect();
-    ModelProviderRegistry::for_testing(map, HashMap::new())
 }
 
 async fn list_all_rows(db: &Surreal<surrealdb::engine::local::Db>) -> Vec<InferenceUsage> {
@@ -124,25 +133,21 @@ async fn list_all_rows(db: &Surreal<surrealdb::engine::local::Db>) -> Vec<Infere
     result.take(0).expect("take")
 }
 
-// ---------------------------------------------------------------------------
-// 1. Single successful call → exactly one row, no retry/fallback metadata.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn single_success_records_one_row_with_zero_retry_and_no_fallback() {
     init_metrics();
     let (db, svc) = fresh_service().await;
 
-    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text("ok".into())]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider.clone() as Arc<dyn ModelProvider>,
-    )]);
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "ok".into(),
+    )]));
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &fast_retry_model_group(
+            vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+            vec![],
+        ),
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -170,29 +175,27 @@ async fn single_success_records_one_row_with_zero_retry_and_no_fallback() {
     assert!((row.cost_usd.unwrap() - 0.000_02).abs() < 1e-9);
 }
 
-// ---------------------------------------------------------------------------
-// 2. Retryable error then success → retry_count > 0, retry_overhead_ms recorded.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn retry_then_success_records_retry_count_and_overhead() {
     init_metrics();
     let (db, svc) = fresh_service().await;
 
     let provider = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::RateLimited { retry_after_secs: 0 }),
-        MockResponse::Error(InferenceError::RateLimited { retry_after_secs: 0 }),
+        MockResponse::Error(InferenceError::RateLimited {
+            retry_after_secs: 0,
+        }),
+        MockResponse::Error(InferenceError::RateLimited {
+            retry_after_secs: 0,
+        }),
         MockResponse::Text("recovered".into()),
     ]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider.clone() as Arc<dyn ModelProvider>,
-    )]);
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &fast_retry_model_group(
+            vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+            vec![],
+        ),
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -206,113 +209,79 @@ async fn retry_then_success_records_retry_count_and_overhead() {
     let rows = list_all_rows(&db).await;
     assert_eq!(rows.len(), 1, "still one row — only success is recorded");
     let row = &rows[0];
-    assert_eq!(
-        row.retry_count, 2,
-        "two failed attempts before success"
-    );
+    assert_eq!(row.retry_count, 2, "two failed attempts before success");
     assert_eq!(row.fallback_index, 0, "main model recovered, no fallback");
 }
-
-// ---------------------------------------------------------------------------
-// 3. Main fails all retries → fallback succeeds → fallback_index=1, model_ref
-//    reflects fallback.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn main_fails_fallback_succeeds_records_fallback_index_and_model_ref() {
     init_metrics();
     let (db, svc) = fresh_service().await;
 
-    let main = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::InferenceFailed("main down".into())),
-    ]));
-    let fb = Arc::new(MockModelProvider::new(vec![MockResponse::Text("ok".into())]));
-    let registry = registry_with(vec![
-        ("mock", main as Arc<dyn ModelProvider>),
-        ("fallback", fb as Arc<dyn ModelProvider>),
-    ]);
-    let group = fast_retry_model_group(vec![ModelRef {
-        provider: "fallback".into(),
-        model_id: "fallback-model".into(),
-        additional_params: None,
-    }]);
+    let main = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
+        InferenceError::InferenceFailed("main down".into()),
+    )]));
+    let fb = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "ok".into(),
+    )]));
+    let group = fast_retry_model_group(
+        vec![
+            ("mock", main as Arc<dyn ModelProvider>),
+            ("fallback", fb as Arc<dyn ModelProvider>),
+        ],
+        vec![("fallback", "fallback-model")],
+    );
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
-    let out = text_inference(
-        &registry,
-        &group,
-        "sys",
-        vec![RigMessage::user("hi")],
-        &svc,
-        &ctx,
-    )
-    .await
-    .unwrap();
+    let out = text_inference(&group, "sys", vec![RigMessage::user("hi")], &svc, &ctx)
+        .await
+        .unwrap();
     assert_eq!(out, "ok");
 
     let rows = list_all_rows(&db).await;
-    assert_eq!(rows.len(), 1, "main failures don't produce rows; only the fallback success does");
+    assert_eq!(
+        rows.len(),
+        1,
+        "main failures don't produce rows; only the fallback success does"
+    );
     let row = &rows[0];
     assert_eq!(row.fallback_index, 1, "fallback index #1 ran");
     assert_eq!(row.model_ref, "fallback/fallback-model");
 }
-
-// ---------------------------------------------------------------------------
-// 4. Main fails, fallback 1 fails, fallback 2 succeeds → fallback_index=2.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn second_fallback_records_fallback_index_two() {
     init_metrics();
     let (db, svc) = fresh_service().await;
 
-    let main = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::InferenceFailed("m".into())),
-    ]));
-    let fb1 = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::InferenceFailed("fb1".into())),
-    ]));
-    let fb2 = Arc::new(MockModelProvider::new(vec![MockResponse::Text("ok".into())]));
-    let registry = registry_with(vec![
-        ("mock", main as Arc<dyn ModelProvider>),
-        ("fb1", fb1 as Arc<dyn ModelProvider>),
-        ("fb2", fb2 as Arc<dyn ModelProvider>),
-    ]);
-    let group = fast_retry_model_group(vec![
-        ModelRef {
-            provider: "fb1".into(),
-            model_id: "fallback-1".into(),
-            additional_params: None,
-        },
-        ModelRef {
-            provider: "fb2".into(),
-            model_id: "fallback-2".into(),
-            additional_params: None,
-        },
-    ]);
+    let main = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
+        InferenceError::InferenceFailed("m".into()),
+    )]));
+    let fb1 = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
+        InferenceError::InferenceFailed("fb1".into()),
+    )]));
+    let fb2 = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "ok".into(),
+    )]));
+    let group = fast_retry_model_group(
+        vec![
+            ("mock", main as Arc<dyn ModelProvider>),
+            ("fb1", fb1 as Arc<dyn ModelProvider>),
+            ("fb2", fb2 as Arc<dyn ModelProvider>),
+        ],
+        vec![("fb1", "fallback-1"), ("fb2", "fallback-2")],
+    );
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
-    text_inference(
-        &registry,
-        &group,
-        "sys",
-        vec![RigMessage::user("hi")],
-        &svc,
-        &ctx,
-    )
-    .await
-    .unwrap();
+    text_inference(&group, "sys", vec![RigMessage::user("hi")], &svc, &ctx)
+        .await
+        .unwrap();
 
     let rows = list_all_rows(&db).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].fallback_index, 2);
     assert_eq!(rows[0].model_ref, "fb2/fallback-2");
 }
-
-// ---------------------------------------------------------------------------
-// 5. Structured inference records a row too (covers the structured_inference
-//    path through retry.rs::structured_inference_with_retry_and_fallback).
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn structured_inference_records_row() {
@@ -325,17 +294,13 @@ async fn structured_inference_records_row() {
         x: i32,
     }
 
-    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![(
-        "id".into(),
-        "submit".into(),
-        serde_json::json!({"x": 1}),
-    )])]));
-    let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+        ("id".into(), "submit".into(), serde_json::json!({"x": 1})),
+    ])]));
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let _out: Out = structured_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &fast_retry_model_group(vec![("mock", provider as Arc<dyn ModelProvider>)], vec![]),
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -351,10 +316,6 @@ async fn structured_inference_records_row() {
     assert_eq!(rows[0].output_tokens, 0);
 }
 
-// ---------------------------------------------------------------------------
-// 6. aggregate_by_chat sums token + cost totals across all rows for that chat.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn aggregate_by_chat_sums_rows() {
     init_metrics();
@@ -365,16 +326,14 @@ async fn aggregate_by_chat_sums_rows() {
         MockResponse::Text("b".into()),
         MockResponse::Text("c".into()),
     ]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider.clone() as Arc<dyn ModelProvider>,
-    )]);
 
     // Three calls scoped to the same chat.
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -385,21 +344,15 @@ async fn aggregate_by_chat_sums_rows() {
     }
 
     let repo: SurrealRepo<InferenceUsage> = SurrealRepo::new(db.clone());
-    let rollup = repo
-        .aggregate_by_chat("c1", None, None)
-        .await
-        .unwrap();
+    let rollup = repo.aggregate_by_chat("c1", None, None).await.unwrap();
     assert_eq!(rollup.calls, 3);
     assert_eq!(rollup.input_tokens, 30); // 10 * 3
     assert_eq!(rollup.output_tokens, 15); // 5 * 3
     assert!((rollup.cost_usd - 0.000_06).abs() < 1e-9);
 }
 
-// ---------------------------------------------------------------------------
-// 7. aggregate_by_kind returns a map keyed by kind_tag with per-kind totals.
-//    Covers the SurrealValue-doesn't-honor-serde-aliases bug fix
-//    (`SELECT kind_tag AS key`).
-// ---------------------------------------------------------------------------
+// SurrealValue does not honor serde aliases, so the query must use
+// `SELECT kind_tag AS key`.
 
 #[tokio::test]
 async fn aggregate_by_kind_groups_by_kind_tag() {
@@ -411,10 +364,6 @@ async fn aggregate_by_kind_groups_by_kind_tag() {
         MockResponse::Text("title".into()),
         MockResponse::Text("title2".into()),
     ]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider.clone() as Arc<dyn ModelProvider>,
-    )]);
 
     let chat_ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
     let title_ctx = UsageContext::new(
@@ -428,8 +377,10 @@ async fn aggregate_by_kind_groups_by_kind_tag() {
 
     for ctx in [&chat_ctx, &title_ctx, &title_ctx] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -449,37 +400,31 @@ async fn aggregate_by_kind_groups_by_kind_tag() {
     assert_eq!(by_kind.get("Title").unwrap().calls, 2);
 }
 
-// ---------------------------------------------------------------------------
-// 8. aggregate_by_model groups by full provider/model_id and sums correctly,
-//    including across a fallback.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn aggregate_by_model_groups_by_model_ref() {
     init_metrics();
     let (db, svc) = fresh_service().await;
 
-    // Main fails once, fallback succeeds — produces one row on fallback model.
+    // Main fails once, fallback succeeds - produces one row on fallback model.
     let main = Arc::new(MockModelProvider::new(vec![
         MockResponse::Error(InferenceError::InferenceFailed("down".into())),
         // Second call succeeds (after the failed first call's retry budget).
         MockResponse::Text("main-ok".into()),
     ]));
-    let fb = Arc::new(MockModelProvider::new(vec![MockResponse::Text("fb-ok".into())]));
-    let registry = registry_with(vec![
-        ("mock", main as Arc<dyn ModelProvider>),
-        ("fallback", fb as Arc<dyn ModelProvider>),
-    ]);
-    let group = fast_retry_model_group(vec![ModelRef {
-        provider: "fallback".into(),
-        model_id: "fallback-model".into(),
-        additional_params: None,
-    }]);
+    let fb = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "fb-ok".into(),
+    )]));
+    let group = fast_retry_model_group(
+        vec![
+            ("mock", main as Arc<dyn ModelProvider>),
+            ("fallback", fb as Arc<dyn ModelProvider>),
+        ],
+        vec![("fallback", "fallback-model")],
+    );
 
     // Call 1: main retries-exhausted → fallback succeeds. Row on fallback.
     // Call 2: main recovers → row on main.
     text_inference(
-        &registry,
         &group,
         "sys",
         vec![RigMessage::user("hi")],
@@ -489,7 +434,6 @@ async fn aggregate_by_model_groups_by_model_ref() {
     .await
     .unwrap();
     text_inference(
-        &registry,
         &group,
         "sys",
         vec![RigMessage::user("hi")],
@@ -507,11 +451,6 @@ async fn aggregate_by_model_groups_by_model_ref() {
     assert_eq!(by_model["fallback/fallback-model"].calls, 1);
 }
 
-// ---------------------------------------------------------------------------
-// 9. aggregate_by_user totals across multiple chats for the same user; window
-//    parameter filters by created_at.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn aggregate_by_user_totals_across_chats() {
     init_metrics();
@@ -522,15 +461,13 @@ async fn aggregate_by_user_totals_across_chats() {
         MockResponse::Text("b".into()),
         MockResponse::Text("c".into()),
     ]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider.clone() as Arc<dyn ModelProvider>,
-    )]);
 
     for (chat, msg) in [("c1", "m1"), ("c2", "m2"), ("c3", "m3")] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -555,31 +492,19 @@ async fn aggregate_by_user_totals_across_chats() {
     assert_eq!(empty.input_tokens, 0);
 }
 
-// ---------------------------------------------------------------------------
-// 10. last_chat_input_tokens — page-reload rehydration for the "context
-//     used so far" header pill.
-//
-//     Covers:
-//     - Ignores Title / Router / Compaction rows
-//     - Picks the most recent Chat or ToolTurn by `created_at`
-//     - Returns None when the chat has no main-chat row yet
-//     - Order-by SQL projects `created_at` (regression: SurrealDB rejects
-//       ORDER BY a column that isn't in the SELECT list)
-// ---------------------------------------------------------------------------
+// SurrealDB rejects ORDER BY columns that are not in the SELECT list. This
+// query must project `created_at` while it selects the latest Chat or ToolTurn.
 
 #[tokio::test]
 async fn last_chat_input_tokens_returns_latest_main_chat_row() {
     init_metrics();
     let (db, svc) = fresh_service().await;
-    let registry = registry_with(vec![(
-        "mock",
-        Arc::new(MockModelProvider::new(vec![
-            MockResponse::Text("a".into()),
-            MockResponse::Text("b".into()),
-            MockResponse::Text("c".into()),
-            MockResponse::Text("d".into()),
-        ])) as Arc<dyn ModelProvider>,
-    )]);
+    let provider = Arc::new(MockModelProvider::new(vec![
+        MockResponse::Text("a".into()),
+        MockResponse::Text("b".into()),
+        MockResponse::Text("c".into()),
+        MockResponse::Text("d".into()),
+    ])) as Arc<dyn ModelProvider>;
 
     // Title-kind first (should be ignored), then two Chat-kind, then a
     // Compaction-kind (also ignored). The most recent Chat call's
@@ -598,8 +523,7 @@ async fn last_chat_input_tokens_returns_latest_main_chat_row() {
         &chat_usage_ctx("u1", "a1", "c1", "m2"),
     ] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(vec![("mock", provider.clone())], vec![]),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -621,12 +545,10 @@ async fn last_chat_input_tokens_returns_latest_main_chat_row() {
 async fn last_chat_input_tokens_returns_none_when_no_main_chat_rows() {
     init_metrics();
     let (db, svc) = fresh_service().await;
-    let registry = registry_with(vec![(
-        "mock",
-        Arc::new(MockModelProvider::new(vec![MockResponse::Text("t".into())])) as Arc<dyn ModelProvider>,
-    )]);
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text("t".into())]))
+        as Arc<dyn ModelProvider>;
 
-    // Only a Title row; no Chat/ToolTurn — last_chat_input_tokens must be None.
+    // Only a Title row; no Chat/ToolTurn - last_chat_input_tokens must be None.
     let title_ctx = UsageContext::new(
         InferenceKind::Title {
             agent_id: "a1".into(),
@@ -636,8 +558,7 @@ async fn last_chat_input_tokens_returns_none_when_no_main_chat_rows() {
         "primary",
     );
     text_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &fast_retry_model_group(vec![("mock", provider)], vec![]),
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -649,15 +570,14 @@ async fn last_chat_input_tokens_returns_none_when_no_main_chat_rows() {
     let repo: SurrealRepo<InferenceUsage> = SurrealRepo::new(db.clone());
     assert_eq!(repo.last_chat_input_tokens("c1").await.unwrap(), None);
     // Unknown chat id also returns None.
-    assert_eq!(repo.last_chat_input_tokens("nonexistent").await.unwrap(), None);
+    assert_eq!(
+        repo.last_chat_input_tokens("nonexistent").await.unwrap(),
+        None
+    );
 }
 
-// ---------------------------------------------------------------------------
-// 11. latency_percentiles_by_user — guards against SurrealDB returning
-//     `math::percentile` as an array even when given a scalar percentile.
-//     Probes the raw shape first so a regression here points at the SQL
-//     instead of at deserialization.
-// ---------------------------------------------------------------------------
+// SurrealDB can return `math::percentile` as an array when it receives a scalar
+// percentile. Probe the raw shape so a failure points to the SQL.
 
 #[tokio::test]
 async fn percentile_query_returns_scalars_after_array_unwrap() {
@@ -672,14 +592,12 @@ async fn percentile_query_returns_scalars_after_array_unwrap() {
         MockResponse::Text("d".into()),
         MockResponse::Text("e".into()),
     ]));
-    let registry = registry_with(vec![(
-        "mock",
-        provider as Arc<dyn ModelProvider>,
-    )]);
     for msg_id in ["m1", "m2", "m3", "m4", "m5"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -711,17 +629,11 @@ async fn percentile_query_returns_scalars_after_array_unwrap() {
         "expected duration_ms_p99 to deserialize as Some(f64), got {p:?}"
     );
     // ttft_ms is None on the mock provider (non-streaming path), so the
-    // ttft percentiles should be None — but the query MUST NOT 500 on the
+    // ttft percentiles should be None - but the query MUST NOT 500 on the
     // empty subquery, which is the regression we're guarding against.
     // (Previous bug: passing scalar duration_ms to math::percentile caused
     // per-row evaluation returning an array of nulls.)
 }
-
-// ---------------------------------------------------------------------------
-// 12. latency_by_model — SQL-side per-group percentiles via `array::map` +
-//     `math::percentile` subquery per model. Verifies that the query plan
-//     compiles, runs in a single round-trip, and deserializes cleanly.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn latency_by_model_computes_percentiles_in_sql() {
@@ -732,11 +644,12 @@ async fn latency_by_model_computes_percentiles_in_sql() {
         MockResponse::Text("b".into()),
         MockResponse::Text("c".into()),
     ]));
-    let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -757,7 +670,7 @@ async fn latency_by_model_computes_percentiles_in_sql() {
     assert_eq!(rows.len(), 1, "one entry per distinct model_ref");
     let r = &rows[0];
     assert_eq!(r.model_ref, "mock/test-model");
-    // Durations are recorded — should produce a percentile (even if 0).
+    // Durations are recorded - should produce a percentile (even if 0).
     assert!(
         r.duration_ms_p50.is_some(),
         "expected duration p50 deserialized as Some(f64), got {r:?}"
@@ -770,12 +683,6 @@ async fn latency_by_model_computes_percentiles_in_sql() {
     assert!(r.ttft_ms_p50.is_none(), "got {r:?}");
 }
 
-// ---------------------------------------------------------------------------
-// 13. latency_by_bucket — same SQL pattern but grouped by
-//     `time::floor(created_at, …)`. Asserts buckets come back sorted and
-//     each carries its own percentile set.
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn latency_by_bucket_computes_percentiles_in_sql() {
     init_metrics();
@@ -785,11 +692,12 @@ async fn latency_by_bucket_computes_percentiles_in_sql() {
         MockResponse::Text("b".into()),
         MockResponse::Text("c".into()),
     ]));
-    let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -807,10 +715,68 @@ async fn latency_by_bucket_computes_percentiles_in_sql() {
         .await
         .expect("latency_by_bucket query");
 
-    // All three calls land in the same hour bucket — should be one entry.
+    // All three calls land in the same hour bucket - should be one entry.
     assert_eq!(rows.len(), 1);
     assert!(rows[0].duration_ms_p50.is_some(), "got {:?}", rows[0]);
     assert!(rows[0].duration_ms_p95.is_some(), "got {:?}", rows[0]);
     assert!(rows[0].duration_ms_p99.is_some(), "got {:?}", rows[0]);
 }
 
+// `Compaction::User` / `Compaction::Space` / `Memory` rows carry no chat, so
+// `chat_id` is NONE on the stored row. SurrealDB's `IS NOT NULL` is true for
+// NONE, so those rows used to survive the filter, form a `GROUP BY chat_id`
+// group keyed on NONE, and blow up deserialization into `ChatCostRow.chat_id:
+// String` with a 500 ("Expected string, got none").
+
+#[tokio::test]
+async fn top_chats_by_user_skips_rootless_rows() {
+    init_metrics();
+    let (db, svc) = fresh_service().await;
+    let provider = Arc::new(MockModelProvider::new(vec![
+        MockResponse::Text("a".into()),
+        MockResponse::Text("b".into()),
+        MockResponse::Text("c".into()),
+        MockResponse::Text("d".into()),
+    ]));
+
+    let memory_ctx = UsageContext::new(InferenceKind::Memory, "u1", "primary");
+    let user_compaction_ctx = UsageContext::new(
+        InferenceKind::Compaction {
+            target: CompactionTarget::User,
+        },
+        "u1",
+        "primary",
+    );
+    for ctx in [
+        &chat_usage_ctx("u1", "a1", "c1", "m1"),
+        &chat_usage_ctx("u1", "a1", "c2", "m2"),
+        &memory_ctx,
+        &user_compaction_ctx,
+    ] {
+        text_inference(
+            &fast_retry_model_group(
+                vec![("mock", provider.clone() as Arc<dyn ModelProvider>)],
+                vec![],
+            ),
+            "sys",
+            vec![RigMessage::user("hi")],
+            &svc,
+            ctx,
+        )
+        .await
+        .unwrap();
+    }
+
+    let repo: SurrealRepo<InferenceUsage> = SurrealRepo::new(db.clone());
+    let rows = repo
+        .top_chats_by_user("u1", None, None, 10)
+        .await
+        .expect("top_chats_by_user must not 500 on chat-less rows");
+
+    let mut ids: Vec<&str> = rows.iter().map(|r| r.chat_id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["c1", "c2"], "rootless rows must not form a group");
+    for r in &rows {
+        assert_eq!(r.calls, 1, "got {r:?}");
+    }
+}

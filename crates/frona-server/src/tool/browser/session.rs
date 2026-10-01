@@ -19,6 +19,13 @@ const BROWSERLESS_SESSION_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
 /// Self-evict before Browserless's hard limit so the next request rebuilds
 /// cleanly instead of hitting a forced close mid-op.
 const SELF_EVICT_MARGIN: Duration = Duration::from_secs(60);
+/// The startup sweep runs as soon as the server boots, which under
+/// `docker compose up` is while Browserless is still opening its HTTP
+/// listener. Retry connect errors on the admin API so that race is absorbed
+/// instead of reported as a failure to reach Browserless.
+const SESSION_LIST_CONNECT_RETRIES: u32 = 4;
+const SESSION_LIST_RETRY_MIN_DELAY: Duration = Duration::from_millis(500);
+const SESSION_LIST_RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
 
 #[derive(serde::Deserialize)]
 struct BrowserlessSession {
@@ -73,7 +80,11 @@ impl BrowserSessionManager {
     }
 
     /// Inserts `/` before the query string — browserless v2 returns HTTP 400 without it.
-    fn ws_url_for_profile(config: &BrowserConfig, user_handle: &crate::core::Handle, provider: &str) -> String {
+    fn ws_url_for_profile(
+        config: &BrowserConfig,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) -> String {
         let user_data_dir = config.profile_path(user_handle, provider);
         let base = config.ws_url.trim_end_matches('/');
         format!(
@@ -143,10 +154,10 @@ impl BrowserSessionManager {
         let key = Self::profile_key(user_handle, provider);
 
         // Fast path: no lock needed just to reuse an already-alive connection.
-        if let Some(conn) = self.sessions.read().await.get(&key).cloned() {
-            if conn.is_alive() {
-                return Ok(conn);
-            }
+        if let Some(conn) = self.sessions.read().await.get(&key).cloned()
+            && conn.is_alive()
+        {
+            return Ok(conn);
         }
 
         // Serialize the check-then-create-then-insert sequence per profile so
@@ -194,19 +205,33 @@ impl BrowserSessionManager {
         let client = Self::admin_http_client();
 
         let sessions_url = format!("{http_base}/sessions?token={}", config.api_token());
-        let req = match hyper::Request::get(&sessions_url).body(Body::empty()) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Failed to build sessions list request: {e}");
-                return vec![];
-            }
-        };
+        let mut delay = SESSION_LIST_RETRY_MIN_DELAY;
+        let mut retries_left = SESSION_LIST_CONNECT_RETRIES;
+        let resp = loop {
+            let req = match hyper::Request::get(&sessions_url).body(Body::empty()) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Failed to build sessions list request: {e}");
+                    return vec![];
+                }
+            };
 
-        let resp = match client.request(req).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Failed to list browserless sessions: {e}");
-                return vec![];
+            match client.request(req).await {
+                Ok(r) => break r,
+                Err(e) if e.is_connect() && retries_left > 0 => {
+                    tracing::debug!(
+                        error = %e,
+                        delay = ?delay,
+                        "Browserless not listening yet, retrying session list"
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(SESSION_LIST_RETRY_MAX_DELAY);
+                    retries_left -= 1;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to list browserless sessions: {e}");
+                    return vec![];
+                }
             }
         };
 
@@ -253,7 +278,11 @@ impl BrowserSessionManager {
         tracing::info!(count = browser_ids.len(), "Killed browserless sessions");
     }
 
-    async fn kill_browserless_sessions_for_profile(&self, user_handle: &crate::core::Handle, provider: &str) {
+    async fn kill_browserless_sessions_for_profile(
+        &self,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) {
         let Some(config) = self.config.as_ref() else {
             return;
         };
@@ -290,7 +319,11 @@ impl BrowserSessionManager {
         self.kill_browserless_session_ids(&ids).await;
     }
 
-    pub async fn close_session(&self, user_handle: &crate::core::Handle, provider: &str) -> Result<(), AppError> {
+    pub async fn close_session(
+        &self,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) -> Result<(), AppError> {
         let key = Self::profile_key(user_handle, provider);
         let mut sessions = self.sessions.write().await;
         if let Some(conn) = sessions.remove(&key) {
@@ -341,7 +374,11 @@ mod tests {
 
     #[test]
     fn ws_url_inserts_root_path_before_query_string() {
-        let url = BrowserSessionManager::ws_url_for_profile(&cfg("ws://browserless:3333"), &crate::handle!("alice"), "openai");
+        let url = BrowserSessionManager::ws_url_for_profile(
+            &cfg("ws://browserless:3333"),
+            &crate::handle!("alice"),
+            "openai",
+        );
         assert_eq!(
             url,
             "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"
@@ -350,7 +387,11 @@ mod tests {
 
     #[test]
     fn ws_url_normalises_trailing_slash_on_base() {
-        let url = BrowserSessionManager::ws_url_for_profile(&cfg("ws://browserless:3333/"), &crate::handle!("alice"), "openai");
+        let url = BrowserSessionManager::ws_url_for_profile(
+            &cfg("ws://browserless:3333/"),
+            &crate::handle!("alice"),
+            "openai",
+        );
         assert_eq!(
             url,
             "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"

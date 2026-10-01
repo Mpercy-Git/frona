@@ -51,9 +51,8 @@ impl McpServerRepository for SurrealRepo<McpServer> {
     }
 
     async fn find_running(&self) -> Result<Vec<McpServer>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM mcp_server WHERE status IN [$running, $starting]"
-        );
+        let query =
+            format!("{SELECT_CLAUSE} FROM mcp_server WHERE status IN [$running, $starting]");
         let mut result = self
             .db()
             .query(&query)

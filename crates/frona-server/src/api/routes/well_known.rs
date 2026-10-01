@@ -2,18 +2,19 @@ use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
 
-use crate::core::state::AppState;
 use super::super::error::ApiError;
+use crate::core::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/.well-known/openid-configuration", get(openid_configuration))
+        .route(
+            "/.well-known/openid-configuration",
+            get(openid_configuration),
+        )
         .route("/.well-known/jwks.json", get(jwks))
 }
 
-async fn openid_configuration(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn openid_configuration(State(state): State<AppState>) -> Json<serde_json::Value> {
     let issuer = &state.config.server.issuer_url;
     Json(serde_json::json!({
         "issuer": issuer,
@@ -27,9 +28,7 @@ async fn openid_configuration(
     }))
 }
 
-async fn jwks(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+async fn jwks(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
     let keys = state.keypair_service.list_jwks().await?;
     Ok(Json(serde_json::json!({ "keys": keys })))
 }

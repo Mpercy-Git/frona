@@ -41,13 +41,11 @@ impl Workspace {
         validate_relative_path(path)?;
         let full = self.layers[0].join(path);
         if let Some(parent) = full.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                AppError::Internal(format!("Failed to create directories: {e}"))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| AppError::Internal(format!("Failed to create directories: {e}")))?;
         }
-        std::fs::write(&full, content).map_err(|e| {
-            AppError::Internal(format!("Failed to write {}: {e}", full.display()))
-        })
+        std::fs::write(&full, content)
+            .map_err(|e| AppError::Internal(format!("Failed to write {}: {e}", full.display())))
     }
 
     pub fn exists(&self, path: &str) -> bool {

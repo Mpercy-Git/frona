@@ -1,6 +1,7 @@
 "use client";
 
 import type { FC } from "react";
+import { strListArg } from "./args";
 import { ToolRow } from "./tool-row";
 import type { ToolView, ToolViewProps } from "./types";
 
@@ -10,6 +11,17 @@ function firstLine(text: string, maxLen: number): string {
   return line.slice(0, maxLen - 1) + "…";
 }
 
+// The remembered text: `memory` for the basic backend, `content` for PKM's
+// `memory_remember` - both surface through the same "Remember" row. Either may arrive
+// as a batch (`memories` / `contents`), one statement per line.
+function memoryText(args: unknown): string {
+  const entries = [
+    ...strListArg(args, "memory", "memories"),
+    ...strListArg(args, "content", "contents"),
+  ];
+  return entries.join("\n");
+}
+
 function makeMemoryView(title: string): ToolView {
   const Component: FC<ToolViewProps> = ({
     args,
@@ -17,8 +29,7 @@ function makeMemoryView(title: string): ToolView {
     isExpanded,
     onToggle,
   }) => {
-    const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
-    const memory = typeof a.memory === "string" ? a.memory.trim() : "";
+    const memory = memoryText(args).trim();
     const subtitle = memory ? firstLine(memory, 80) : "";
     // Only expandable when the body would show more than the subtitle already does.
     const expandable = memory.length > 0 && memory !== subtitle;
@@ -45,12 +56,11 @@ export const StoreAgentMemoryView = makeMemoryView("Remember");
 export const StoreUserMemoryView = makeMemoryView("Remember about user");
 
 /**
- * Auto-expand memory rows whose content doesn't fit in a single-line subtitle —
+ * Auto-expand memory rows whose content doesn't fit in a single-line subtitle -
  * multi-line entries or anything longer than ~100 chars. Short one-liners stay
  * collapsed since the subtitle already shows them in full.
  */
 export function memoryDefaultExpanded(args: unknown): boolean {
-  const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
-  const memory = typeof a.memory === "string" ? a.memory : "";
+  const memory = memoryText(args);
   return memory.includes("\n") || memory.length > 100;
 }

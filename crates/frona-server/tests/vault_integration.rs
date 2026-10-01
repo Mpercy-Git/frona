@@ -1,10 +1,12 @@
 use frona::core::Principal;
+use frona::core::config::VaultConfig;
+use frona::credential::vault::models::*;
+use frona::credential::vault::repository::{
+    VaultAccessLogRepository, VaultConnectionRepository, VaultGrantRepository,
+};
+use frona::credential::vault::service::VaultService;
 use frona::db::init::setup_schema;
 use frona::db::repo::generic::SurrealRepo;
-use frona::credential::vault::models::*;
-use frona::credential::vault::repository::{VaultAccessLogRepository, VaultConnectionRepository, VaultGrantRepository};
-use frona::credential::vault::service::VaultService;
-use frona::core::config::VaultConfig;
 use std::sync::Arc;
 
 async fn setup_db() -> surrealdb::Surreal<surrealdb::engine::local::Db> {
@@ -55,6 +57,15 @@ fn build_service(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> Vault
         SurrealRepo::new(db.clone()),
         &frona::core::config::CacheConfig::default(),
     );
+    let managed_vault = frona::credential::managed::ManagedVault::new(
+        Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+        "test-secret",
+        frona::credential::managed::GLOBAL_CONNECTION_ID.into(),
+    );
+    let managed_resolver = Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+        frona::credential::managed::integration::registered(),
+    ));
+    let login_service = frona::credential::managed::login::ManagedLoginService::registered();
     VaultService::new(
         connection_repo,
         grant_repo,
@@ -66,6 +77,9 @@ fn build_service(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> Vault
         std::path::PathBuf::from("/tmp/test-data"),
         storage,
         user_service,
+        managed_vault,
+        managed_resolver,
+        login_service,
     )
 }
 
@@ -161,7 +175,6 @@ async fn find_matching_grant_by_query() {
     .await
     .unwrap();
 
-
     let found = svc
         .find_matching_grant("user1", &Principal::agent("agent1"), "github")
         .await
@@ -225,7 +238,10 @@ async fn toggle_connection() {
         .unwrap();
     assert!(conn.enabled);
 
-    let toggled = svc.toggle_connection("user1", &conn.id, false).await.unwrap();
+    let toggled = svc
+        .toggle_connection("user1", &conn.id, false)
+        .await
+        .unwrap();
     assert!(!toggled.enabled);
 }
 
@@ -459,7 +475,7 @@ async fn hydrate_returns_empty_when_no_bindings() {
     let svc = build_service(&db);
 
     let env_vars = svc
-        .hydrate_chat_env_vars("user1", "chat1", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("chat1"))
         .await
         .unwrap();
     assert!(env_vars.is_empty());
@@ -483,13 +499,30 @@ async fn hydrate_projects_durable_bindings_into_env_vars() {
         .await
         .unwrap();
 
+    // A durable binding is re-authorized against its backing grant on every
+    // resolve (so revoking the grant revokes access even if the binding row
+    // lingers) - production always creates both together (see
+    // tool/request_credentials.rs's on_resume). Match that pairing here.
+    svc.create_grant(
+        "user1",
+        Principal::agent("agent1"),
+        "local",
+        &credential.id,
+        "github",
+        &GrantDuration::Permanent,
+    )
+    .await
+    .unwrap();
+
     svc.create_binding(
         "user1",
         Principal::agent("agent1"),
         "github",
         "local",
         &credential.id,
-        CredentialTarget::Prefix { env_var_prefix: "GH".into() },
+        CredentialTarget::Prefix {
+            env_var_prefix: "GH".into(),
+        },
         BindingScope::Durable,
         None,
     )
@@ -497,14 +530,17 @@ async fn hydrate_projects_durable_bindings_into_env_vars() {
     .unwrap();
 
     let env: std::collections::HashMap<String, String> = svc
-        .hydrate_chat_env_vars("user1", "any-chat", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("any-chat"))
         .await
         .unwrap()
         .into_iter()
         .collect();
 
     assert_eq!(env.get("GH_USERNAME").map(String::as_str), Some("octocat"));
-    assert_eq!(env.get("GH_PASSWORD").map(String::as_str), Some("ghp_durable"));
+    assert_eq!(
+        env.get("GH_PASSWORD").map(String::as_str),
+        Some("ghp_durable")
+    );
 }
 
 #[tokio::test]
@@ -531,21 +567,25 @@ async fn hydrate_honors_chat_scope_isolation() {
         "x",
         "local",
         &cred.id,
-        CredentialTarget::Prefix { env_var_prefix: "X".into() },
-        BindingScope::Chat { chat_id: "chat1".into() },
+        CredentialTarget::Prefix {
+            env_var_prefix: "X".into(),
+        },
+        BindingScope::Chat {
+            chat_id: "chat1".into(),
+        },
         None,
     )
     .await
     .unwrap();
 
     let in_chat = svc
-        .hydrate_chat_env_vars("user1", "chat1", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("chat1"))
         .await
         .unwrap();
     assert!(!in_chat.is_empty(), "chat1 should see its own binding");
 
     let other_chat = svc
-        .hydrate_chat_env_vars("user1", "chat2", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("chat2"))
         .await
         .unwrap();
     assert!(
@@ -633,8 +673,12 @@ async fn deleting_a_chat_cascades_into_its_chat_scoped_bindings() {
         "github",
         &conn.id,
         "item_chat",
-        CredentialTarget::Prefix { env_var_prefix: "GH".into() },
-        BindingScope::Chat { chat_id: "ch1".into() },
+        CredentialTarget::Prefix {
+            env_var_prefix: "GH".into(),
+        },
+        BindingScope::Chat {
+            chat_id: "ch1".into(),
+        },
         None,
     )
     .await
@@ -645,7 +689,9 @@ async fn deleting_a_chat_cascades_into_its_chat_scoped_bindings() {
         "github-durable",
         &conn.id,
         "item_durable",
-        CredentialTarget::Prefix { env_var_prefix: "GHD".into() },
+        CredentialTarget::Prefix {
+            env_var_prefix: "GHD".into(),
+        },
         BindingScope::Durable,
         None,
     )
@@ -731,28 +777,53 @@ async fn grant_with_prefix_binding_creates_and_revokes_together() {
     svc.sync_config_connections().await.unwrap();
 
     let cred = svc
-        .create_credential("user1", CreateLocalItemRequest::UsernamePassword {
-            name: "GitHub".into(),
-            username: "octocat".into(),
-            password: "ghp_xxx".into(),
-        })
+        .create_credential(
+            "user1",
+            CreateLocalItemRequest::UsernamePassword {
+                name: "GitHub".into(),
+                username: "octocat".into(),
+                password: "ghp_xxx".into(),
+            },
+        )
         .await
         .unwrap();
 
     let principal = Principal::mcp_server("srv1");
     let grant = svc
-        .create_grant("user1", principal.clone(), "local", &cred.id, "GITHUB", &GrantDuration::Permanent)
+        .create_grant(
+            "user1",
+            principal.clone(),
+            "local",
+            &cred.id,
+            "GITHUB",
+            &GrantDuration::Permanent,
+        )
         .await
         .unwrap();
     svc.create_binding(
-        "user1", principal.clone(), "GITHUB", "local", &cred.id,
-        CredentialTarget::Prefix { env_var_prefix: "GITHUB".into() },
-        BindingScope::Durable, None,
-    ).await.unwrap();
+        "user1",
+        principal.clone(),
+        "GITHUB",
+        "local",
+        &cred.id,
+        CredentialTarget::Prefix {
+            env_var_prefix: "GITHUB".into(),
+        },
+        BindingScope::Durable,
+        None,
+    )
+    .await
+    .unwrap();
 
-    let bindings = svc.list_bindings_for_principal("user1", &principal).await.unwrap();
+    let bindings = svc
+        .list_bindings_for_principal("user1", &principal)
+        .await
+        .unwrap();
     assert_eq!(bindings.len(), 1);
-    assert!(matches!(bindings[0].target, CredentialTarget::Prefix { .. }));
+    assert!(matches!(
+        bindings[0].target,
+        CredentialTarget::Prefix { .. }
+    ));
 
     let grants = svc.list_grants("user1").await.unwrap();
     assert_eq!(grants.len(), 1);
@@ -762,8 +833,14 @@ async fn grant_with_prefix_binding_creates_and_revokes_together() {
 
     let grants_after = svc.list_grants("user1").await.unwrap();
     assert!(grants_after.is_empty());
-    let bindings_after = svc.list_bindings_for_principal("user1", &principal).await.unwrap();
-    assert!(bindings_after.is_empty(), "revoking grant must also remove its binding");
+    let bindings_after = svc
+        .list_bindings_for_principal("user1", &principal)
+        .await
+        .unwrap();
+    assert!(
+        bindings_after.is_empty(),
+        "revoking grant must also remove its binding"
+    );
 }
 
 #[tokio::test]
@@ -773,28 +850,54 @@ async fn grant_with_single_field_binding_creates_and_revokes_together() {
     svc.sync_config_connections().await.unwrap();
 
     let cred = svc
-        .create_credential("user1", CreateLocalItemRequest::UsernamePassword {
-            name: "HA Token".into(),
-            username: "admin".into(),
-            password: "secret_token".into(),
-        })
+        .create_credential(
+            "user1",
+            CreateLocalItemRequest::UsernamePassword {
+                name: "HA Token".into(),
+                username: "admin".into(),
+                password: "secret_token".into(),
+            },
+        )
         .await
         .unwrap();
 
     let principal = Principal::mcp_server("ha-mcp");
     let grant = svc
-        .create_grant("user1", principal.clone(), "local", &cred.id, "HA_TOKEN", &GrantDuration::Permanent)
+        .create_grant(
+            "user1",
+            principal.clone(),
+            "local",
+            &cred.id,
+            "HA_TOKEN",
+            &GrantDuration::Permanent,
+        )
         .await
         .unwrap();
     svc.create_binding(
-        "user1", principal.clone(), "HA_TOKEN", "local", &cred.id,
-        CredentialTarget::Single { env_var: "HA_TOKEN".into(), field: VaultField::Password },
-        BindingScope::Durable, None,
-    ).await.unwrap();
+        "user1",
+        principal.clone(),
+        "HA_TOKEN",
+        "local",
+        &cred.id,
+        CredentialTarget::Single {
+            env_var: "HA_TOKEN".into(),
+            field: VaultField::Password,
+        },
+        BindingScope::Durable,
+        None,
+    )
+    .await
+    .unwrap();
 
-    let bindings = svc.list_bindings_for_principal("user1", &principal).await.unwrap();
+    let bindings = svc
+        .list_bindings_for_principal("user1", &principal)
+        .await
+        .unwrap();
     assert_eq!(bindings.len(), 1);
-    assert!(matches!(bindings[0].target, CredentialTarget::Single { .. }));
+    assert!(matches!(
+        bindings[0].target,
+        CredentialTarget::Single { .. }
+    ));
 
     let grants = svc.list_grants("user1").await.unwrap();
     assert_eq!(grants.len(), 1);
@@ -807,7 +910,10 @@ async fn grant_with_single_field_binding_creates_and_revokes_together() {
 
     assert!(svc.list_grants("user1").await.unwrap().is_empty());
     assert!(
-        svc.list_bindings_for_principal("user1", &principal).await.unwrap().is_empty(),
+        svc.list_bindings_for_principal("user1", &principal)
+            .await
+            .unwrap()
+            .is_empty(),
         "revoking grant must also remove single-field binding"
     );
 }
@@ -819,33 +925,63 @@ async fn grant_with_custom_field_binding() {
     svc.sync_config_connections().await.unwrap();
 
     let cred = svc
-        .create_credential("user1", CreateLocalItemRequest::ApiKey {
-            name: "Home Assistant".into(),
-            api_key: "ha_long_lived_token".into(),
-        })
+        .create_credential(
+            "user1",
+            CreateLocalItemRequest::ApiKey {
+                name: "Home Assistant".into(),
+                api_key: "ha_long_lived_token".into(),
+            },
+        )
         .await
         .unwrap();
 
     let principal = Principal::mcp_server("ha-srv");
     let grant = svc
-        .create_grant("user1", principal.clone(), "local", &cred.id, "HA_TOKEN", &GrantDuration::Permanent)
+        .create_grant(
+            "user1",
+            principal.clone(),
+            "local",
+            &cred.id,
+            "HA_TOKEN",
+            &GrantDuration::Permanent,
+        )
         .await
         .unwrap();
     svc.create_binding(
-        "user1", principal.clone(), "HA_TOKEN", "local", &cred.id,
-        CredentialTarget::Single { env_var: "HA_TOKEN".into(), field: VaultField::Custom { name: "API_KEY".into() } },
-        BindingScope::Durable, None,
-    ).await.unwrap();
+        "user1",
+        principal.clone(),
+        "HA_TOKEN",
+        "local",
+        &cred.id,
+        CredentialTarget::Single {
+            env_var: "HA_TOKEN".into(),
+            field: VaultField::Custom {
+                name: "API_KEY".into(),
+            },
+        },
+        BindingScope::Durable,
+        None,
+    )
+    .await
+    .unwrap();
 
     let grants = svc.list_grants("user1").await.unwrap();
     assert_eq!(grants.len(), 1);
     match &grants[0].target {
-        Some(CredentialTarget::Single { field: VaultField::Custom { name }, .. }) => assert_eq!(name, "API_KEY"),
+        Some(CredentialTarget::Single {
+            field: VaultField::Custom { name },
+            ..
+        }) => assert_eq!(name, "API_KEY"),
         other => panic!("expected Single with Custom field, got {other:?}"),
     }
 
     svc.revoke_grant("user1", &grant.id).await.unwrap();
-    assert!(svc.list_bindings_for_principal("user1", &principal).await.unwrap().is_empty());
+    assert!(
+        svc.list_bindings_for_principal("user1", &principal)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -855,32 +991,92 @@ async fn revoke_grant_only_removes_matching_binding() {
     svc.sync_config_connections().await.unwrap();
 
     let cred1 = svc
-        .create_credential("user1", CreateLocalItemRequest::ApiKey { name: "Sonarr".into(), api_key: "sonarr_key".into() })
-        .await.unwrap();
+        .create_credential(
+            "user1",
+            CreateLocalItemRequest::ApiKey {
+                name: "Sonarr".into(),
+                api_key: "sonarr_key".into(),
+            },
+        )
+        .await
+        .unwrap();
     let cred2 = svc
-        .create_credential("user1", CreateLocalItemRequest::ApiKey { name: "Radarr".into(), api_key: "radarr_key".into() })
-        .await.unwrap();
+        .create_credential(
+            "user1",
+            CreateLocalItemRequest::ApiKey {
+                name: "Radarr".into(),
+                api_key: "radarr_key".into(),
+            },
+        )
+        .await
+        .unwrap();
 
     let principal = Principal::mcp_server("arr-srv");
     let grant1 = svc
-        .create_grant("user1", principal.clone(), "local", &cred1.id, "SONARR_API_KEY", &GrantDuration::Permanent)
-        .await.unwrap();
+        .create_grant(
+            "user1",
+            principal.clone(),
+            "local",
+            &cred1.id,
+            "SONARR_API_KEY",
+            &GrantDuration::Permanent,
+        )
+        .await
+        .unwrap();
     svc.create_binding(
-        "user1", principal.clone(), "SONARR_API_KEY", "local", &cred1.id,
-        CredentialTarget::Single { env_var: "SONARR_API_KEY".into(), field: VaultField::Custom { name: "API_KEY".into() } },
-        BindingScope::Durable, None,
-    ).await.unwrap();
+        "user1",
+        principal.clone(),
+        "SONARR_API_KEY",
+        "local",
+        &cred1.id,
+        CredentialTarget::Single {
+            env_var: "SONARR_API_KEY".into(),
+            field: VaultField::Custom {
+                name: "API_KEY".into(),
+            },
+        },
+        BindingScope::Durable,
+        None,
+    )
+    .await
+    .unwrap();
 
     let _grant2 = svc
-        .create_grant("user1", principal.clone(), "local", &cred2.id, "RADARR_API_KEY", &GrantDuration::Permanent)
-        .await.unwrap();
+        .create_grant(
+            "user1",
+            principal.clone(),
+            "local",
+            &cred2.id,
+            "RADARR_API_KEY",
+            &GrantDuration::Permanent,
+        )
+        .await
+        .unwrap();
     svc.create_binding(
-        "user1", principal.clone(), "RADARR_API_KEY", "local", &cred2.id,
-        CredentialTarget::Single { env_var: "RADARR_API_KEY".into(), field: VaultField::Custom { name: "API_KEY".into() } },
-        BindingScope::Durable, None,
-    ).await.unwrap();
+        "user1",
+        principal.clone(),
+        "RADARR_API_KEY",
+        "local",
+        &cred2.id,
+        CredentialTarget::Single {
+            env_var: "RADARR_API_KEY".into(),
+            field: VaultField::Custom {
+                name: "API_KEY".into(),
+            },
+        },
+        BindingScope::Durable,
+        None,
+    )
+    .await
+    .unwrap();
 
-    assert_eq!(svc.list_bindings_for_principal("user1", &principal).await.unwrap().len(), 2);
+    assert_eq!(
+        svc.list_bindings_for_principal("user1", &principal)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 
     svc.revoke_grant("user1", &grant1.id).await.unwrap();
 
@@ -888,7 +1084,14 @@ async fn revoke_grant_only_removes_matching_binding() {
     assert_eq!(remaining_grants.len(), 1);
     assert_eq!(remaining_grants[0].query, "RADARR_API_KEY");
 
-    let remaining_bindings = svc.list_bindings_for_principal("user1", &principal).await.unwrap();
-    assert_eq!(remaining_bindings.len(), 1, "only sonarr binding should be removed");
+    let remaining_bindings = svc
+        .list_bindings_for_principal("user1", &principal)
+        .await
+        .unwrap();
+    assert_eq!(
+        remaining_bindings.len(),
+        1,
+        "only sonarr binding should be removed"
+    );
     assert_eq!(remaining_bindings[0].query, "RADARR_API_KEY");
 }

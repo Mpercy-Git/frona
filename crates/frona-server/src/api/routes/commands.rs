@@ -103,10 +103,8 @@ async fn list_commands(
         .map(|c| CommandManifest::from_command(&c))
         .collect::<Vec<_>>();
 
-    let mut taken: std::collections::HashSet<String> = static_manifests
-        .iter()
-        .map(|m| m.name.clone())
-        .collect();
+    let mut taken: std::collections::HashSet<String> =
+        static_manifests.iter().map(|m| m.name.clone()).collect();
     for s in &skills {
         taken.insert(s.name.clone());
     }

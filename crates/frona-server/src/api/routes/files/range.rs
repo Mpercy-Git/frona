@@ -133,7 +133,10 @@ mod tests {
     fn unsatisfiable_ranges() {
         // Start at or past EOF.
         assert_eq!(parse(Some("bytes=1000-"), 1000), RangeSpec::Unsatisfiable);
-        assert_eq!(parse(Some("bytes=1000-1500"), 1000), RangeSpec::Unsatisfiable);
+        assert_eq!(
+            parse(Some("bytes=1000-1500"), 1000),
+            RangeSpec::Unsatisfiable
+        );
         // Reversed bounds.
         assert_eq!(parse(Some("bytes=500-100"), 1000), RangeSpec::Unsatisfiable);
         // Zero-length suffix.
@@ -164,6 +167,13 @@ mod tests {
     fn range_length_is_inclusive() {
         assert_eq!(ByteRange { start: 0, end: 0 }.len(), 1);
         assert_eq!(ByteRange { start: 0, end: 499 }.len(), 500);
-        assert_eq!(ByteRange { start: 500, end: 999 }.len(), 500);
+        assert_eq!(
+            ByteRange {
+                start: 500,
+                end: 999
+            }
+            .len(),
+            500
+        );
     }
 }

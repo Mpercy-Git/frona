@@ -1,5 +1,5 @@
-import { ensureAccessToken, API_URL } from "./api-client";
-import type { MessageResponse, Notification, PauseReason } from "./types";
+import { ensureAccessToken, refreshStaleToken, API_URL } from "./api-client";
+import type { MessageError, MessageResponse, Notification, PauseReason } from "./types";
 
 
 export type ChatSSEEvent =
@@ -12,7 +12,7 @@ export type ChatSSEEvent =
   | { type: "inference_start" }
   | { type: "inference_done"; message: MessageResponse }
   | { type: "inference_cancelled"; reason: string }
-  | { type: "inference_error"; error: string }
+  | { type: "inference_error"; error: MessageError; messageId?: string }
   | { type: "inference_paused"; reason: PauseReason; message: MessageResponse }
   | { type: "inference_resume"; message: MessageResponse }
   | { type: "usage_recorded"; usage: UsageRecorded };
@@ -43,6 +43,7 @@ export type GlobalSSEEvent =
   | { type: "title"; chatId: string; title: string }
   | { type: "entity_updated"; chatId: string; table: string; recordId: string; action: EntityAction; spaceId: string | null; fields: Record<string, unknown> }
   | { type: "task_update"; taskId: string; status: string; sourceChatId: string | null; title: string; chatId: string | null; resultSummary: string | null }
+  | { type: "activity_changed" }
   | { type: "inference_count"; count: number }
   | { type: "notification"; notification: Notification };
 
@@ -57,11 +58,14 @@ interface ChatSubscriber {
 
 type GlobalListener = (event: GlobalSSEEvent) => void;
 
+type ChatEventListener = (chatId: string, event: ChatSSEEvent) => void;
+
 type ReconnectListener = () => void;
 
 export class SSEEventBus {
   private chatSubscribers = new Map<string, Set<ChatSubscriber>>();
   private chatBuffers = new Map<string, ChatSSEEvent[]>();
+  private chatEventListeners = new Set<ChatEventListener>();
   private globalListeners = new Set<GlobalListener>();
   private reconnectListeners = new Set<ReconnectListener>();
   private activeSignal: AbortSignal | null = null;
@@ -110,12 +114,15 @@ export class SSEEventBus {
             }
           },
           notifyReconnect() {
+            // Drop what the dead stream left buffered — the consumer reloads
+            // the chat's history on reconnect, which is authoritative — but
+            // leave the subscription itself intact. Resolving the pending read
+            // as `done` ends the consumer's `for await` loop, and nothing
+            // re-subscribes for the life of the mount: the chat then goes
+            // permanently silent, so a turn that finishes after the reconnect
+            // never delivers its `inference_done` and the thread keeps showing
+            // the agent as running until the page is reloaded.
             queue.length = 0;
-            if (resolve) {
-              const r = resolve;
-              resolve = null;
-              r({ value: undefined as unknown as ChatSSEEvent, done: true });
-            }
           },
         };
 
@@ -158,8 +165,20 @@ export class SSEEventBus {
     return () => this.globalListeners.delete(callback);
   }
 
+  /** Observe chat events without consuming the chat-specific stream. */
+  onChatEvent(callback: ChatEventListener): () => void {
+    this.chatEventListeners.add(callback);
+    return () => this.chatEventListeners.delete(callback);
+  }
+
   private dispatchChat(chatId: string, event: ChatSSEEvent) {
-    console.log("[sse-bus] dispatchChat", event.type, chatId);
+    for (const listener of this.chatEventListeners) {
+      try {
+        listener(chatId, event);
+      } catch {
+        // An observer must not interrupt delivery to the owning chat.
+      }
+    }
     const subs = this.chatSubscribers.get(chatId);
     if (subs) {
       for (const sub of subs) {
@@ -228,9 +247,23 @@ export class SSEEventBus {
     const headers: Record<string, string> = {};
     if (tokenResult.ok) headers["Authorization"] = `Bearer ${tokenResult.token}`;
 
+    const open = () =>
+      fetch(`${API_URL}/api/stream`, { headers, signal, credentials: "include" });
+
     let res: Response;
     try {
-      res = await fetch(`${API_URL}/api/stream`, { headers, signal, credentials: "include" });
+      res = await open();
+
+      // The stream outlives the access token, so a 401 here is an ordinary
+      // expiry. Without this refresh the reconnect loop replays the dead token
+      // on every backoff tick and the session never recovers.
+      if (res.status === 401 && tokenResult.ok) {
+        const refreshed = await refreshStaleToken(tokenResult.token);
+        if (refreshed.ok) {
+          headers["Authorization"] = `Bearer ${refreshed.token}`;
+          res = await open();
+        }
+      }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       throw err;
@@ -322,7 +355,7 @@ export class SSEEventBus {
         this.dispatchChat(chatId, { type: "inference_cancelled", reason: parsed.reason as string });
         break;
       case "inference_error":
-        this.dispatchChat(chatId, { type: "inference_error", error: parsed.error as string });
+        this.dispatchChat(chatId, { type: "inference_error", error: parsed.error as MessageError, messageId: parsed.message_id as string | undefined });
         break;
       case "inference_paused":
         this.dispatchChat(chatId, {
@@ -369,6 +402,9 @@ export class SSEEventBus {
         break;
       case "inference_count":
         this.dispatchGlobal({ type: "inference_count", count: parsed.count as number });
+        break;
+      case "activity_changed":
+        this.dispatchGlobal({ type: "activity_changed" });
         break;
       case "notification":
         this.dispatchGlobal({ type: "notification", notification: parsed.notification as Notification });

@@ -26,7 +26,8 @@ const CACHE_TTL: Duration = Duration::from_secs(86400);
 
 #[async_trait]
 pub trait McpRegistryClient: Send + Sync {
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<RegistryServerEntry>, AppError>;
+    async fn search(&self, query: &str, limit: usize)
+    -> Result<Vec<RegistryServerEntry>, AppError>;
 
     /// `name` is the reverse-DNS id like `io.github.foo/bar`.
     async fn fetch(&self, name: &str) -> Result<RegistryServerEntry, AppError>;
@@ -87,9 +88,8 @@ impl PrebuiltMcpRegistryClient {
     /// from the local one. No-op when they match. Must be called before any
     /// query method. Busts the in-memory cache when a new dump is written.
     pub async fn ensure_fresh(&self) -> Result<(), AppError> {
-        fs::create_dir_all(&self.cache_dir).map_err(|e| {
-            AppError::Tool(format!("creating MCP registry cache dir failed: {e}"))
-        })?;
+        fs::create_dir_all(&self.cache_dir)
+            .map_err(|e| AppError::Tool(format!("creating MCP registry cache dir failed: {e}")))?;
 
         let servers_path = self.servers_path();
         if let Ok(meta) = fs::metadata(&servers_path)
@@ -130,7 +130,9 @@ impl PrebuiltMcpRegistryClient {
             && local.content_sha256 == remote_meta.content_sha256
             && servers_path.is_file()
         {
-            fs::File::open(&servers_path).and_then(|f| f.set_modified(std::time::SystemTime::now())).ok();
+            fs::File::open(&servers_path)
+                .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+                .ok();
             return Ok(());
         }
 
@@ -295,11 +297,7 @@ mod tests {
                 }]
             }
         ]);
-        fs::write(
-            client.servers_path(),
-            serde_json::to_vec(&payload).unwrap(),
-        )
-        .unwrap();
+        fs::write(client.servers_path(), serde_json::to_vec(&payload).unwrap()).unwrap();
 
         let first = client.entries().await.unwrap();
         let second = client.entries().await.unwrap();

@@ -24,9 +24,7 @@ async fn create_space_without_auth_returns_401() {
                 .method("POST")
                 .uri("/api/spaces")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"name": "X"}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({"name": "X"}).to_string()))
                 .unwrap(),
         )
         .await
@@ -37,10 +35,8 @@ async fn create_space_without_auth_returns_401() {
 #[tokio::test]
 async fn list_spaces_returns_only_own() {
     let (state, _tmp) = test_app_state().await;
-    let (token_a, _) =
-        register_user(&state, "space-a", "spacea@example.com", "password123").await;
-    let (token_b, _) =
-        register_user(&state, "space-b", "spaceb@example.com", "password123").await;
+    let (token_a, _) = register_user(&state, "space-a", "spacea@example.com", "password123").await;
+    let (token_b, _) = register_user(&state, "space-b", "spaceb@example.com", "password123").await;
 
     create_space(&state, &token_a, "SpaceA").await;
     create_space(&state, &token_b, "SpaceB").await;
@@ -59,8 +55,7 @@ async fn list_spaces_returns_only_own() {
 #[tokio::test]
 async fn update_space() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "upspace", "upspace@example.com", "password123").await;
+    let (token, _) = register_user(&state, "upspace", "upspace@example.com", "password123").await;
     let space = create_space(&state, &token, "Before").await;
     let id = space["id"].as_str().unwrap();
 
@@ -81,8 +76,7 @@ async fn update_space() {
 #[tokio::test]
 async fn delete_space() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "delspace", "delspace@example.com", "password123").await;
+    let (token, _) = register_user(&state, "delspace", "delspace@example.com", "password123").await;
     let space = create_space(&state, &token, "GoAway").await;
     let id = space["id"].as_str().unwrap();
 
@@ -94,10 +88,7 @@ async fn delete_space() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get("/api/spaces", &token))
-        .await
-        .unwrap();
+    let resp = app.oneshot(auth_get("/api/spaces", &token)).await.unwrap();
     let json = body_json(resp).await;
     assert_eq!(json.as_array().unwrap().len(), 0);
 }
@@ -105,8 +96,7 @@ async fn delete_space() {
 #[tokio::test]
 async fn create_space_with_metadata_round_trips() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "metauser", "metauser@example.com", "password123").await;
+    let (token, _) = register_user(&state, "metauser", "metauser@example.com", "password123").await;
     let app = build_app(state);
     let resp = app
         .oneshot(auth_post_json(
@@ -131,8 +121,7 @@ async fn create_space_with_metadata_round_trips() {
 #[tokio::test]
 async fn update_space_metadata_partial_set_and_unset() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "patchmd", "patchmd@example.com", "password123").await;
+    let (token, _) = register_user(&state, "patchmd", "patchmd@example.com", "password123").await;
     let app = build_app(state.clone());
     let resp = app
         .oneshot(auth_post_json(
@@ -171,8 +160,7 @@ async fn space_stream_filters_by_space_id() {
     use http_body_util::BodyExt;
 
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "spsse", "spsse@example.com", "password123").await;
+    let (token, _) = register_user(&state, "spsse", "spsse@example.com", "password123").await;
     let space_a = create_space(&state, &token, "A").await;
     let space_b = create_space(&state, &token, "B").await;
     let id_a = space_a["id"].as_str().unwrap();
@@ -184,11 +172,12 @@ async fn space_stream_filters_by_space_id() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(resp
-        .headers()
-        .get("content-type")
-        .map(|v| v.to_str().unwrap().contains("event-stream"))
-        .unwrap_or(false));
+    assert!(
+        resp.headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().contains("event-stream"))
+            .unwrap_or(false)
+    );
 
     let app = build_app(state.clone());
     let _ = app
@@ -218,8 +207,14 @@ async fn space_stream_filters_by_space_id() {
         }
     }
 
-    assert!(text.contains("entity_updated"), "expected entity_updated frame, got:\n{text}");
-    assert!(text.contains(id_a), "expected space A's id in stream, got:\n{text}");
+    assert!(
+        text.contains("entity_updated"),
+        "expected entity_updated frame, got:\n{text}"
+    );
+    assert!(
+        text.contains(id_a),
+        "expected space A's id in stream, got:\n{text}"
+    );
     assert!(
         !text.contains(id_b),
         "Space B's id should not appear in Space A's stream:\n{text}"

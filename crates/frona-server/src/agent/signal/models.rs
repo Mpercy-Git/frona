@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::task::models::{SignalMode, Task, TaskKind};
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct SignalOutput {
     #[serde(default)]
     pub categories: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
 }
 
@@ -112,17 +112,21 @@ pub struct CandidateEvent {
 
 impl CandidateEvent {
     pub fn categories(&self) -> impl Iterator<Item = &str> {
-        self.annotations.iter().filter_map(|a| match (a.key.as_str(), &a.value) {
-            ("category", AnnotationValue::Categorical(s)) => Some(s.as_str()),
-            _ => None,
-        })
+        self.annotations
+            .iter()
+            .filter_map(|a| match (a.key.as_str(), &a.value) {
+                ("category", AnnotationValue::Categorical(s)) => Some(s.as_str()),
+                _ => None,
+            })
     }
 
     pub fn summary(&self) -> Option<&str> {
-        self.annotations.iter().find_map(|a| match (a.key.as_str(), &a.value) {
-            ("summary", AnnotationValue::Text(s)) => Some(s.as_str()),
-            _ => None,
-        })
+        self.annotations
+            .iter()
+            .find_map(|a| match (a.key.as_str(), &a.value) {
+                ("summary", AnnotationValue::Text(s)) => Some(s.as_str()),
+                _ => None,
+            })
     }
 }
 
@@ -233,7 +237,10 @@ mod tests {
         assert_eq!(watch.agent_id, "agent-1");
         assert_eq!(watch.source_chat_id, "chat-A");
         assert!(watch.resume_parent);
-        assert_eq!(watch.expected_categories, vec!["verification_code".to_string()]);
+        assert_eq!(
+            watch.expected_categories,
+            vec!["verification_code".to_string()]
+        );
         assert_eq!(watch.expected_channels, vec!["sms".to_string()]);
         assert_eq!(watch.max_evaluations, 50);
     }
@@ -278,7 +285,10 @@ mod tests {
             summary: None,
         };
         let json = serde_json::to_value(&out).unwrap();
-        assert!(json.get("summary").is_none(), "summary should be omitted, got {json}");
+        assert!(
+            json.get("summary").is_none(),
+            "summary should be omitted, got {json}"
+        );
     }
 
     #[test]
@@ -287,8 +297,14 @@ mod tests {
         let props = schema
             .pointer("/properties")
             .expect("schema has properties");
-        assert!(props.get("categories").is_some(), "schema missing categories: {schema}");
-        assert!(props.get("summary").is_some(), "schema missing summary: {schema}");
+        assert!(
+            props.get("categories").is_some(),
+            "schema missing categories: {schema}"
+        );
+        assert!(
+            props.get("summary").is_some(),
+            "schema missing summary: {schema}"
+        );
     }
 
     #[test]

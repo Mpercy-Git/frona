@@ -5,12 +5,10 @@ use tower::ServiceExt;
 
 use super::super::*;
 
-
 #[tokio::test]
 async fn upload_file_returns_attachment() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "uploader", "uploader@example.com", "password123").await;
+    let (token, _) = register_user(&state, "uploader", "uploader@example.com", "password123").await;
 
     let att = upload_test_file(&state, &token, "hello.txt", b"hello world").await;
     assert_eq!(att["filename"], "hello.txt");
@@ -44,8 +42,7 @@ async fn upload_file_without_auth_returns_401() {
 #[tokio::test]
 async fn upload_file_with_relative_path() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "pathuser", "pathuser@example.com", "password123").await;
+    let (token, _) = register_user(&state, "pathuser", "pathuser@example.com", "password123").await;
 
     let app = build_app(state);
     let req = multipart_upload_with_path(&token, "doc.txt", b"content", "docs/readme/doc.txt");
@@ -59,8 +56,7 @@ async fn upload_file_with_relative_path() {
 #[tokio::test]
 async fn upload_file_missing_file_field_returns_400() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "nofield", "nofield@example.com", "password123").await;
+    let (token, _) = register_user(&state, "nofield", "nofield@example.com", "password123").await;
 
     let app = build_app(state);
     let boundary = "----testboundary";
@@ -84,8 +80,7 @@ async fn upload_file_missing_file_field_returns_400() {
 #[tokio::test]
 async fn upload_deduplicates_filename() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "dedup", "dedup@example.com", "password123").await;
+    let (token, _) = register_user(&state, "dedup", "dedup@example.com", "password123").await;
 
     let first = upload_test_file(&state, &token, "dup.txt", b"first").await;
     assert_eq!(first["filename"], "dup.txt");
@@ -94,16 +89,19 @@ async fn upload_deduplicates_filename() {
     assert_eq!(second["filename"], "dup-1.txt");
 }
 
-
 #[tokio::test]
 async fn upload_with_traversal_path_returns_400() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "trav-upload", "travupload@example.com", "password123").await;
+    let (token, _) = register_user(
+        &state,
+        "trav-upload",
+        "travupload@example.com",
+        "password123",
+    )
+    .await;
 
     let app = build_app(state);
-    let req =
-        multipart_upload_with_path(&token, "evil.txt", b"data", "../../etc/evil.txt");
+    let req = multipart_upload_with_path(&token, "evil.txt", b"data", "../../etc/evil.txt");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
@@ -111,8 +109,7 @@ async fn upload_with_traversal_path_returns_400() {
 #[tokio::test]
 async fn upload_absolute_path_returns_400() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "abs-path", "abspath@example.com", "password123").await;
+    let (token, _) = register_user(&state, "abs-path", "abspath@example.com", "password123").await;
 
     let app = build_app(state);
     let req = multipart_upload_with_path(&token, "file.txt", b"data", "/absolute/path.txt");
@@ -146,7 +143,6 @@ async fn upload_with_unknown_field_only_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-
 #[tokio::test]
 async fn presign_file_returns_url() {
     let (state, tmp) = test_app_state().await;
@@ -155,7 +151,9 @@ async fn presign_file_returns_url() {
 
     let user_dir = tmp.path().join("users").join("presigner").join("files");
     fs::create_dir_all(&user_dir).await.unwrap();
-    fs::write(user_dir.join("doc.pdf"), b"pdf content").await.unwrap();
+    fs::write(user_dir.join("doc.pdf"), b"pdf content")
+        .await
+        .unwrap();
 
     let app = build_app(state);
     let resp = app
@@ -179,8 +177,7 @@ async fn presign_file_returns_url() {
 #[tokio::test]
 async fn presign_other_user_returns_403() {
     let (state, _tmp) = test_app_state().await;
-    let (token_a, _) =
-        register_user(&state, "pre-own", "preown@example.com", "password123").await;
+    let (token_a, _) = register_user(&state, "pre-own", "preown@example.com", "password123").await;
     let (_, user_id_b) =
         register_user(&state, "pre-oth", "preoth@example.com", "password123").await;
 
@@ -202,8 +199,7 @@ async fn presign_other_user_returns_403() {
 #[tokio::test]
 async fn presign_invalid_owner_returns_400() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "pre-bad", "prebad@example.com", "password123").await;
+    let (token, _) = register_user(&state, "pre-bad", "prebad@example.com", "password123").await;
 
     let app = build_app(state);
     let resp = app
@@ -220,7 +216,6 @@ async fn presign_invalid_owner_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-
 #[tokio::test]
 async fn presign_agent_file_returns_url() {
     let (state, tmp) = test_app_state().await;
@@ -229,9 +224,16 @@ async fn presign_agent_file_returns_url() {
     let agent = create_agent(&state, &token, "PreAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
-    let agent_dir = tmp.path().join("users").join(agent_id).join("agents").join(agent_id);
+    let agent_dir = tmp
+        .path()
+        .join("users")
+        .join(agent_id)
+        .join("agents")
+        .join(agent_id);
     fs::create_dir_all(&agent_dir).await.unwrap();
-    fs::write(agent_dir.join("out.csv"), b"csv data").await.unwrap();
+    fs::write(agent_dir.join("out.csv"), b"csv data")
+        .await
+        .unwrap();
 
     let app = build_app(state);
     let resp = app

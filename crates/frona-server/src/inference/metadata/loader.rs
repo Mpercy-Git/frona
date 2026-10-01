@@ -1,11 +1,11 @@
 //! Metadata loader: fetch models.dev catalog JSON, parse, cache to disk.
 //!
-//! Source: `https://models.dev/catalog.json` — community-maintained at
+//! Source: `https://models.dev/catalog.json` - community-maintained at
 //! `github.com/anomalyco/models.dev`. The `catalog` endpoint combines:
-//! - `providers.<provider>.models.<model>` — provider serving details (cost,
-//!   limits, capability flags) — the part we persist into the catalog.
-//! - `models.<provider/model>` — provider-agnostic facts (benchmarks, weights,
-//!   licenses) — unused for now but kept around so we don't need a second
+//! - `providers.<provider>.models.<model>` - provider serving details (cost,
+//!   limits, capability flags) - the part we persist into the catalog.
+//! - `models.<provider/model>` - provider-agnostic facts (benchmarks, weights,
+//!   licenses) - unused for now but kept around so we don't need a second
 //!   fetch when we want to surface those later.
 //!
 //! `ModelEntry` mirrors the upstream shape exactly (cost/limit/modalities are
@@ -90,7 +90,23 @@ struct CatalogJson {
 #[derive(Debug, Deserialize)]
 struct ProviderBlock {
     #[serde(default)]
-    models: HashMap<String, ModelEntry>,
+    npm: Option<String>,
+    #[serde(default)]
+    models: HashMap<String, ProviderModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderModelEntry {
+    #[serde(flatten)]
+    entry: ModelEntry,
+    #[serde(default)]
+    provider: Option<ModelAdapter>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelAdapter {
+    #[serde(default)]
+    npm: Option<String>,
 }
 
 pub fn parse(json: &str) -> Result<ModelCatalogSnapshot, AppError> {
@@ -98,27 +114,42 @@ pub fn parse(json: &str) -> Result<ModelCatalogSnapshot, AppError> {
         .map_err(|e| AppError::Internal(format!("metadata parse: {e}")))?;
 
     let mut entries = HashMap::new();
+    // Raw npm labels, same representation `frona_model_catalog`'s own loader
+    // uses - resolving a label to an `OpenAiApi` is this fork's own OpenAI
+    // adapter's job (`catalog::model_protocol_default`), not catalog policy.
+    let mut protocol_defaults = HashMap::new();
     for (provider_id, block) in catalog.providers {
-        for (model_id, entry) in block.models {
-            // Skip entries with neither input nor output pricing — open-weights
+        let provider_default = block.npm.clone();
+        for (model_id, model) in block.models {
+            let model_default = model
+                .provider
+                .as_ref()
+                .and_then(|adapter| adapter.npm.clone());
+            if let Some(npm) = model_default.or_else(|| provider_default.clone()) {
+                protocol_defaults.insert(format!("{provider_id}/{model_id}"), npm);
+            }
+
+            // Skip entries with neither input nor output pricing - open-weights
             // stubs, sample placeholders, embedding-only modes. We'd rather
             // miss the cost than silently zero it.
-            if !entry.has_pricing() {
+            if !model.entry.has_pricing() {
                 continue;
             }
-            entries.insert(format!("{provider_id}/{model_id}"), entry);
+            entries.insert(format!("{provider_id}/{model_id}"), model.entry);
         }
     }
 
     let mut hasher = Sha256::new();
     hasher.update(json.as_bytes());
     let digest = hasher.finalize();
-    let version = format!("{:x}", digest)[..12].to_string();
+    let version = hex::encode(digest)[..12].to_string();
 
     Ok(ModelCatalogSnapshot {
         version,
         fetched_at: Utc::now(),
         entries,
+        providers: HashMap::new(),
+        protocol_defaults,
     })
 }
 
@@ -130,13 +161,12 @@ fn cache_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join(CACHE_FILE_NAME)
 }
 
-/// Persist a successful fetch to disk. Errors are non-fatal — the catalog is
+/// Persist a successful fetch to disk. Errors are non-fatal - the catalog is
 /// already swapped in memory; failing to persist just means the next restart
 /// won't have a head start.
 pub fn save_cache(cache_dir: &Path, raw_json: &str) -> Result<(), AppError> {
-    std::fs::create_dir_all(cache_dir).map_err(|e| {
-        AppError::Internal(format!("metadata cache mkdir {cache_dir:?}: {e}"))
-    })?;
+    std::fs::create_dir_all(cache_dir)
+        .map_err(|e| AppError::Internal(format!("metadata cache mkdir {cache_dir:?}: {e}")))?;
     let path = cache_path(cache_dir);
     std::fs::write(&path, raw_json)
         .map_err(|e| AppError::Internal(format!("metadata cache write {path:?}: {e}")))
@@ -144,7 +174,7 @@ pub fn save_cache(cache_dir: &Path, raw_json: &str) -> Result<(), AppError> {
 
 /// Age of the on-disk cache file, or `None` if the file is missing or its
 /// mtime can't be read. Used by the scheduler to skip the startup refresh
-/// when the cache is younger than the periodic refresh interval — avoids
+/// when the cache is younger than the periodic refresh interval - avoids
 /// re-fetching ~2.5 MB on every restart.
 pub fn cache_age(cache_dir: &Path) -> Option<Duration> {
     let path = cache_path(cache_dir);
@@ -154,7 +184,7 @@ pub fn cache_age(cache_dir: &Path) -> Option<Duration> {
 
 /// Boot-time loader: prefer the on-disk cache (from a previous successful
 /// refresh) over the hardcoded defaults. Cache miss or parse failure falls
-/// back to `ModelCatalogSnapshot::defaults()`, which carries context windows
+/// back to `super::catalog::defaults()`, which carries context windows
 /// and capability flags for the models frona ships with. The first scheduler
 /// refresh overwrites this with fresh models.dev data.
 pub fn load_cache_or_defaults(cache_dir: &Path) -> ModelCatalogSnapshot {
@@ -176,12 +206,12 @@ pub fn load_cache_or_defaults(cache_dir: &Path) -> ModelCatalogSnapshot {
                     error = %e,
                     "Cached metadata failed to parse; using defaults"
                 );
-                ModelCatalogSnapshot::defaults()
+                super::catalog::defaults()
             }
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tracing::debug!(path = %path.display(), "No cached metadata yet; using defaults");
-            ModelCatalogSnapshot::defaults()
+            super::catalog::defaults()
         }
         Err(e) => {
             tracing::warn!(
@@ -189,7 +219,7 @@ pub fn load_cache_or_defaults(cache_dir: &Path) -> ModelCatalogSnapshot {
                 error = %e,
                 "Cached metadata read failed; using defaults"
             );
-            ModelCatalogSnapshot::defaults()
+            super::catalog::defaults()
         }
     }
 }
@@ -197,6 +227,7 @@ pub fn load_cache_or_defaults(cache_dir: &Path) -> ModelCatalogSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::OpenAiApi;
 
     /// Fixture mirroring the models.dev catalog shape. Asserts that we
     /// deserialize directly into nested `Cost`/`Limit`/`Modalities` blocks,
@@ -207,6 +238,7 @@ mod tests {
         "providers": {
             "anthropic": {
                 "id": "anthropic",
+                "npm": "@ai-sdk/anthropic",
                 "models": {
                     "claude-opus-4-7": {
                         "id": "claude-opus-4-7",
@@ -232,6 +264,7 @@ mod tests {
             },
             "openai": {
                 "id": "openai",
+                "npm": "@ai-sdk/openai-compatible",
                 "models": {
                     "gpt-4o": {
                         "id": "gpt-4o",
@@ -242,7 +275,27 @@ mod tests {
                         "structured_output": true,
                         "modalities": {"input": ["text", "image"], "output": ["text"]},
                         "limit": {"context": 128000, "output": 16384},
-                        "cost": {"input": 2.5, "output": 10}
+                        "cost": {"input": 2.5, "output": 10},
+                        "provider": {"npm": "@ai-sdk/openai"}
+                    },
+                    "gpt-4o-mini": {
+                        "id": "gpt-4o-mini",
+                        "attachment": false,
+                        "reasoning": false,
+                        "tool_call": true,
+                        "open_weights": false,
+                        "modalities": {"input": ["text"], "output": ["text"]},
+                        "limit": {"context": 128000, "output": 16384},
+                        "cost": {"input": 0.15, "output": 0.6}
+                    },
+                    "no-cost-openai": {
+                        "id": "no-cost-openai",
+                        "attachment": false,
+                        "reasoning": false,
+                        "tool_call": false,
+                        "open_weights": false,
+                        "modalities": {"input": ["text"], "output": ["text"]},
+                        "limit": {"context": 8192, "output": 4096}
                     }
                 }
             }
@@ -257,6 +310,7 @@ mod tests {
             cached_input_tokens: cached,
             cache_creation_input_tokens: 0,
             reasoning_tokens: 0,
+            tool_use_prompt_tokens: 0,
         }
     }
 
@@ -268,7 +322,7 @@ mod tests {
             .get("anthropic/claude-opus-4-7")
             .expect("opus entry");
         let cost = opus.cost.as_ref().expect("cost");
-        // Stored as published — USD per 1M tokens, no rescale at this layer.
+        // Stored as published - USD per 1M tokens, no rescale at this layer.
         assert_eq!(cost.input, 5.0);
         assert_eq!(cost.output, 25.0);
         assert_eq!(cost.cache_read, Some(0.5));
@@ -287,44 +341,77 @@ mod tests {
     }
 
     #[test]
+    fn parse_resolves_model_and_provider_protocol_defaults() {
+        use super::super::catalog::CatalogLookup;
+
+        let snapshot = parse(SAMPLE).expect("parse");
+        assert_eq!(
+            snapshot.model_protocol_default("openai", "gpt-4o"),
+            Some(OpenAiApi::Responses)
+        );
+        assert_eq!(
+            snapshot.model_protocol_default("openai", "gpt-4o-mini"),
+            Some(OpenAiApi::ChatCompletions)
+        );
+        assert_eq!(
+            snapshot.model_protocol_default("openai", "no-cost-openai"),
+            Some(OpenAiApi::ChatCompletions)
+        );
+        assert!(!snapshot.entries.contains_key("openai/no-cost-openai"));
+        assert_eq!(
+            super::super::catalog::openai_api_from_npm("unknown-adapter"),
+            None
+        );
+    }
+
+    #[test]
     fn cost_for_rescales_per_million_to_per_token() {
+        use super::super::catalog::CostForUsage;
+
         let snapshot = parse(SAMPLE).expect("parse");
         let opus = snapshot.entries.get("anthropic/claude-opus-4-7").unwrap();
         // Convention: input_tokens is fresh. 1M * $5/M + 0.5M * $25/M = $17.5.
-        let total = opus.cost_for(&usage(1_000_000, 500_000, 0)).expect("cost");
+        let total = opus
+            .full_cost_for(&usage(1_000_000, 500_000, 0))
+            .expect("cost");
         assert!((total - 17.5).abs() < 1e-9);
     }
 
-    fn model_ref(provider: &str, model_id: &str) -> crate::inference::provider::ModelRef {
-        crate::inference::provider::ModelRef {
-            provider: provider.into(),
+    fn model_ref(provider: &str, model_id: &str) -> crate::inference::provider::ModelConfig {
+        crate::inference::provider::ModelConfig {
+            catalog_provider: provider.to_string(),
+            provider_handle: crate::core::Handle::try_new(provider).unwrap(),
             model_id: model_id.into(),
-            additional_params: None,
+            provider: crate::core::config::ProviderModel::from_name(provider),
+            request_settings: Default::default(),
         }
     }
 
     #[test]
     fn catalog_normalizes_openai_convention_inputs_at_compute_boundary() {
-        use crate::inference::metadata::ModelCatalogStore;
+        use crate::inference::metadata::{ModelCatalogStore, StorePricing};
 
         let store = ModelCatalogStore::new(parse(SAMPLE).expect("parse"));
         // openai convention: input_tokens (1M) is total prompt tokens with
         // 400k of those being cache reads. Catalog must subtract cached from
         // input before reaching cost_for. Cost = 600k * $2.5/M (fresh) + 0
         // (no cache_read rate in fixture) + 0 output = $1.5.
-        let (cost, _) = store.compute(&model_ref("openai", "gpt-4o"), &usage(1_000_000, 0, 400_000));
+        let (cost, _) = store.price(
+            &model_ref("openai", "gpt-4o"),
+            &usage(1_000_000, 0, 400_000),
+        );
         let cost = cost.expect("cost");
         assert!((cost - 1.5).abs() < 1e-9, "got {cost}");
     }
 
     #[test]
     fn catalog_leaves_anthropic_inputs_alone() {
-        use crate::inference::metadata::ModelCatalogStore;
+        use crate::inference::metadata::{ModelCatalogStore, StorePricing};
 
         let store = ModelCatalogStore::new(parse(SAMPLE).expect("parse"));
         // Anthropic convention: input_tokens (600k) is ALREADY fresh; cached
         // (400k) is additive. 600k * $5/M + 400k * $0.5/M = $3.2.
-        let (cost, _) = store.compute(
+        let (cost, _) = store.price(
             &model_ref("anthropic", "claude-opus-4-7"),
             &usage(600_000, 0, 400_000),
         );

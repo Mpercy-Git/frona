@@ -1,8 +1,8 @@
+use crate::chat::models::{ChatResponse, CreateChatRequest, UpdateChatRequest};
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use crate::chat::models::{ChatResponse, CreateChatRequest, UpdateChatRequest};
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -56,7 +56,10 @@ async fn list_delegations(
     let tasks = state.task_service.find_by_source_chat_id(&id).await?;
     let mut out = Vec::new();
     for task in tasks {
-        if !matches!(task.kind, crate::agent::task::models::TaskKind::Delegation { .. }) {
+        if !matches!(
+            task.kind,
+            crate::agent::task::models::TaskKind::Delegation { .. }
+        ) {
             continue;
         }
         let agent_name = state
@@ -102,7 +105,10 @@ async fn get_chat(
 ) -> Result<Json<ChatResponse>, ApiError> {
     // Owner or shared-recipient may view; `get_accessible` returns Forbidden
     // otherwise. Editing endpoints stay owner-only (via `get_chat`).
-    let (chat, is_owner) = state.chat_service.get_accessible(&auth.user_id, &id).await?;
+    let (chat, is_owner) = state
+        .chat_service
+        .get_accessible(&auth.user_id, &id)
+        .await?;
     let response: ChatResponse = if is_owner {
         chat.into()
     } else {
@@ -121,7 +127,10 @@ async fn update_chat(
     Path(id): Path<String>,
     Json(req): Json<UpdateChatRequest>,
 ) -> Result<Json<ChatResponse>, ApiError> {
-    let chat = state.chat_service.update_chat(&auth.user_id, &id, req).await?;
+    let chat = state
+        .chat_service
+        .update_chat(&auth.user_id, &id, req)
+        .await?;
     Ok(Json(chat))
 }
 
@@ -150,10 +159,7 @@ async fn archive_chat(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ChatResponse>, ApiError> {
-    let chat = state
-        .chat_service
-        .archive_chat(&auth.user_id, &id)
-        .await?;
+    let chat = state.chat_service.archive_chat(&auth.user_id, &id).await?;
     Ok(Json(chat))
 }
 

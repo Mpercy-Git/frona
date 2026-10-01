@@ -1,12 +1,12 @@
-pub mod macos;
-pub mod noop;
-pub mod resource_monitor;
+#[cfg(target_os = "linux")]
+pub mod landlock;
 /// Platform-agnostic filesystem allow-list constants used by both the Linux
 /// syd/landlock drivers and the in-process `Sandbox::is_readable` checks.
 /// The constants are just `&[&str]` so they're cheap to compile everywhere.
 pub mod linux;
-#[cfg(target_os = "linux")]
-pub mod landlock;
+pub mod macos;
+pub mod noop;
+pub mod resource_monitor;
 #[cfg(target_os = "linux")]
 pub mod syd;
 
@@ -163,13 +163,11 @@ pub fn verify_sandbox(workspace_base: &str, disabled: bool) -> Result<(), String
 
     let rt = tokio::runtime::Handle::try_current();
     let result = match rt {
-        Ok(handle) => {
-            std::thread::scope(|s| {
-                s.spawn(|| {
-                    handle.block_on(run_sandbox_probe(&probe_dir))
-                }).join().unwrap()
-            })
-        }
+        Ok(handle) => std::thread::scope(|s| {
+            s.spawn(|| handle.block_on(run_sandbox_probe(&probe_dir)))
+                .join()
+                .unwrap()
+        }),
         Err(_) => {
             let rt = tokio::runtime::Runtime::new()
                 .map_err(|e| format!("Failed to create runtime: {e}"))?;
@@ -183,8 +181,7 @@ pub fn verify_sandbox(workspace_base: &str, disabled: bool) -> Result<(), String
 
 async fn run_sandbox_probe(probe_dir: &std::path::Path) -> Result<(), String> {
     let sandbox = create_driver(false);
-    let canonical = std::fs::canonicalize(probe_dir)
-        .unwrap_or_else(|_| probe_dir.to_path_buf());
+    let canonical = std::fs::canonicalize(probe_dir).unwrap_or_else(|_| probe_dir.to_path_buf());
 
     let config = SandboxConfig {
         workspace_dir: canonical.to_string_lossy().into_owned(),
@@ -214,10 +211,7 @@ async fn run_sandbox_probe(probe_dir: &std::path::Path) -> Result<(), String> {
         ));
     }
 
-    let forbidden_path = format!(
-        "/root/.sandbox_probe_{}",
-        std::process::id()
-    );
+    let forbidden_path = format!("/root/.sandbox_probe_{}", std::process::id());
     let forbidden_cmd = format!("echo hacked > {forbidden_path}");
     let forbidden_result = execute_sandboxed(
         &*sandbox,
@@ -317,12 +311,8 @@ pub async fn execute_sandboxed(
         });
     }
 
-    let stdout_pipe = child
-        .stdout
-        .take()
-        .expect("stdout pipe was configured");
-    let mut stdout_reader =
-        tokio::io::BufReader::new(stdout_pipe).lines();
+    let stdout_pipe = child.stdout.take().expect("stdout pipe was configured");
+    let mut stdout_reader = tokio::io::BufReader::new(stdout_pipe).lines();
 
     let timeout = std::time::Duration::from_secs(config.timeout_secs);
     let max_bytes = config.max_output_bytes;
@@ -429,7 +419,6 @@ async fn kill_process_group(child: &mut tokio::process::Child) {
     }
 }
 
-
 fn truncate_output(s: String, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         s
@@ -465,9 +454,19 @@ mod tests {
         let sandbox = test_sandbox();
         let config = test_config(10);
 
-        let output = execute_sandboxed(&*sandbox, "echo", &["hello"], &config, None, None, None, None, None)
-            .await
-            .unwrap();
+        let output = execute_sandboxed(
+            &*sandbox,
+            "echo",
+            &["hello"],
+            &config,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(output.exit_code, Some(0));
         assert!(output.stdout.contains("hello"));
@@ -482,8 +481,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
 
         let output = execute_sandboxed(
-            &*sandbox, "bash", &["-c", "echo line1; echo line2; echo line3"],
-            &config, Some(tx), None, None, None, None,
+            &*sandbox,
+            "bash",
+            &["-c", "echo line1; echo line2; echo line3"],
+            &config,
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -516,8 +522,15 @@ mod tests {
         });
 
         let output = execute_sandboxed(
-            &*sandbox, "bash", &["-c", "for i in 1 2 3; do echo $i; sleep 0.1; done"],
-            &config, Some(tx), None, None, None, None,
+            &*sandbox,
+            "bash",
+            &["-c", "for i in 1 2 3; do echo $i; sleep 0.1; done"],
+            &config,
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -526,7 +539,10 @@ mod tests {
         assert_eq!(timestamps.len(), 3);
         assert_eq!(output.exit_code, Some(0));
 
-        let spread = timestamps.last().unwrap().duration_since(*timestamps.first().unwrap());
+        let spread = timestamps
+            .last()
+            .unwrap()
+            .duration_since(*timestamps.first().unwrap());
         assert!(
             spread >= std::time::Duration::from_millis(150),
             "lines should arrive incrementally, spread was {:?}",
@@ -540,7 +556,15 @@ mod tests {
         let config = test_config(1);
 
         let output = execute_sandboxed(
-            &*sandbox, "sleep", &["60"], &config, None, None, None, None, None,
+            &*sandbox,
+            "sleep",
+            &["60"],
+            &config,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -556,8 +580,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
 
         let output = execute_sandboxed(
-            &*sandbox, "bash", &["-c", "echo partial; sleep 60"],
-            &config, Some(tx), None, None, None, None,
+            &*sandbox,
+            "bash",
+            &["-c", "echo partial; sleep 60"],
+            &config,
+            Some(tx),
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -585,7 +616,15 @@ mod tests {
         });
 
         let output = execute_sandboxed(
-            &*sandbox, "sleep", &["60"], &config, None, None, Some(token), None, None,
+            &*sandbox,
+            "sleep",
+            &["60"],
+            &config,
+            None,
+            None,
+            Some(token),
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -607,8 +646,15 @@ mod tests {
         });
 
         let output = execute_sandboxed(
-            &*sandbox, "bash", &["-c", "echo before_cancel; sleep 60"],
-            &config, None, None, Some(token), None, None,
+            &*sandbox,
+            "bash",
+            &["-c", "echo before_cancel; sleep 60"],
+            &config,
+            None,
+            None,
+            Some(token),
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -627,7 +673,15 @@ mod tests {
         drop(tx);
 
         let output = execute_sandboxed(
-            &*sandbox, "cat", &[], &config, None, Some(rx), None, None, None,
+            &*sandbox,
+            "cat",
+            &[],
+            &config,
+            None,
+            Some(rx),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -646,7 +700,15 @@ mod tests {
         drop(tx);
 
         let output = execute_sandboxed(
-            &*sandbox, "head", &["-1"], &config, None, Some(rx), None, None, None,
+            &*sandbox,
+            "head",
+            &["-1"],
+            &config,
+            None,
+            Some(rx),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -662,8 +724,15 @@ mod tests {
         config.max_output_bytes = 50;
 
         let output = execute_sandboxed(
-            &*sandbox, "bash", &["-c", "yes | head -100"],
-            &config, None, None, None, None, None,
+            &*sandbox,
+            "bash",
+            &["-c", "yes | head -100"],
+            &config,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -677,8 +746,15 @@ mod tests {
         let config = test_config(10);
 
         let output = execute_sandboxed(
-            &*sandbox, "bash", &["-c", "exit 42"],
-            &config, None, None, None, None, None,
+            &*sandbox,
+            "bash",
+            &["-c", "exit 42"],
+            &config,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();

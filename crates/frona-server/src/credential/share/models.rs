@@ -27,9 +27,7 @@ pub enum ShareKind {
     },
     /// Issued lazily by SMS overflow so the body stays under one segment
     /// plus a `/s/{id}` link that resolves to `/chats/{chat_id}`.
-    Chat {
-        chat_id: String,
-    },
+    Chat { chat_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]

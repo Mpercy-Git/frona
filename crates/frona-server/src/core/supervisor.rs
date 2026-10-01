@@ -5,10 +5,10 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::chat::broadcast::BroadcastService;
 use crate::core::error::AppError;
 use crate::notification::models::NotificationLevel;
 use crate::notification::service::NotificationService;
-use crate::chat::broadcast::BroadcastService;
 
 #[derive(Debug, Clone)]
 pub struct SupervisorConfig {
@@ -35,8 +35,11 @@ pub trait Supervisor: Send + Sync + 'static {
         false
     }
 
-    async fn notification_data(&self, id: &str, action: &str)
-        -> crate::notification::models::NotificationData;
+    async fn notification_data(
+        &self,
+        id: &str,
+        action: &str,
+    ) -> crate::notification::models::NotificationData;
 
     fn label(&self) -> &'static str;
 }
@@ -50,7 +53,14 @@ pub async fn run<S: Supervisor>(
 ) {
     let label = supervisor.label();
 
-    match restore(&supervisor, &notification_service, &broadcast_service, label).await {
+    match restore(
+        &supervisor,
+        &notification_service,
+        &broadcast_service,
+        label,
+    )
+    .await
+    {
         Ok(count) => info!(label, count, "restoration complete"),
         Err(e) => warn!(label, error = %e, "restoration failed"),
     }
@@ -107,7 +117,10 @@ async fn restore<S: Supervisor>(
                     id,
                     "restore",
                     NotificationLevel::Error,
-                    &format!("{label} '{}' failed to start", supervisor.display_name(id).await),
+                    &format!(
+                        "{label} '{}' failed to start",
+                        supervisor.display_name(id).await
+                    ),
                     &e.to_string(),
                 )
                 .await;
@@ -136,7 +149,10 @@ async fn health_tick<S: Supervisor>(
         let name = supervisor.display_name(id).await;
         let restarts = supervisor.restart_count(id).await;
         if restarts >= config.max_restart_attempts {
-            let reason = format!("exceeded {max} restart attempts", max = config.max_restart_attempts);
+            let reason = format!(
+                "exceeded {max} restart attempts",
+                max = config.max_restart_attempts
+            );
             let _ = supervisor.mark_failed(id, &reason).await;
             warn!(label, name = %name, restarts, "exceeded max restarts");
             send_notification(
@@ -165,11 +181,7 @@ async fn health_tick<S: Supervisor>(
     }
 }
 
-async fn hibernate_tick<S: Supervisor>(
-    supervisor: &Arc<S>,
-    threshold: Duration,
-    label: &str,
-) {
+async fn hibernate_tick<S: Supervisor>(supervisor: &Arc<S>, threshold: Duration, label: &str) {
     let idle = match supervisor.find_idle(threshold).await {
         Ok(i) => i,
         Err(e) => {
@@ -208,8 +220,8 @@ async fn send_notification<S: Supervisor>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::notification::models::NotificationData;
+    use std::collections::HashMap;
     use tokio::sync::Mutex;
 
     struct FakeSupervisor {
@@ -242,7 +254,9 @@ mod tests {
 
     #[async_trait]
     impl Supervisor for FakeSupervisor {
-        fn label(&self) -> &'static str { "fake" }
+        fn label(&self) -> &'static str {
+            "fake"
+        }
 
         async fn find_running(&self) -> Result<Vec<String>, AppError> {
             Ok(self.running.lock().await.clone())
@@ -262,10 +276,18 @@ mod tests {
             Ok(std::mem::take(&mut *self.dead.lock().await))
         }
         async fn restart_count(&self, id: &str) -> u32 {
-            self.restart_counts.lock().await.get(id).copied().unwrap_or(0)
+            self.restart_counts
+                .lock()
+                .await
+                .get(id)
+                .copied()
+                .unwrap_or(0)
         }
         async fn mark_failed(&self, id: &str, reason: &str) -> Result<(), AppError> {
-            self.failed.lock().await.push((id.to_string(), reason.to_string()));
+            self.failed
+                .lock()
+                .await
+                .push((id.to_string(), reason.to_string()));
             Ok(())
         }
         async fn record_access(&self, _id: &str) {}
@@ -283,7 +305,10 @@ mod tests {
             format!("Fake {id}")
         }
         async fn notification_data(&self, id: &str, action: &str) -> NotificationData {
-            NotificationData::App { app_handle: id.to_string(), action: action.to_string() }
+            NotificationData::App {
+                app_handle: id.to_string(),
+                action: action.to_string(),
+            }
         }
     }
 
@@ -293,7 +318,9 @@ mod tests {
     }
 
     async fn mem_db() -> surrealdb::Surreal<surrealdb::engine::local::Db> {
-        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(()).await.unwrap();
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .unwrap();
         db.use_ns("test").use_db("test").await.unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
         db
@@ -341,7 +368,14 @@ mod tests {
             hibernate_after: None,
         };
 
-        health_tick(&fake, &test_notif(&db), &BroadcastService::new(), &config, "test").await;
+        health_tick(
+            &fake,
+            &test_notif(&db),
+            &BroadcastService::new(),
+            &config,
+            "test",
+        )
+        .await;
 
         assert_eq!(*fake.started.lock().await, vec!["srv1"]);
         assert!(fake.failed.lock().await.is_empty());
@@ -359,7 +393,14 @@ mod tests {
             hibernate_after: None,
         };
 
-        health_tick(&fake, &test_notif(&db), &BroadcastService::new(), &config, "test").await;
+        health_tick(
+            &fake,
+            &test_notif(&db),
+            &BroadcastService::new(),
+            &config,
+            "test",
+        )
+        .await;
 
         assert!(fake.started.lock().await.is_empty());
         assert_eq!(fake.failed.lock().await.len(), 1);
@@ -391,7 +432,14 @@ mod tests {
         let shutdown_clone = shutdown.clone();
         let fake_clone = fake.clone();
         let handle = tokio::spawn(async move {
-            run(fake_clone, shutdown_clone, test_notif(&db), BroadcastService::new(), config).await;
+            run(
+                fake_clone,
+                shutdown_clone,
+                test_notif(&db),
+                BroadcastService::new(),
+                config,
+            )
+            .await;
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;

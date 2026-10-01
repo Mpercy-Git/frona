@@ -24,9 +24,15 @@ pub enum EntityAction {
 #[allow(clippy::large_enum_variant)]
 pub enum BroadcastEventKind {
     Inference(InferenceEventKind),
-    Title { title: String },
-    NewNotification { notification: Notification },
-    ChatMessage { message: MessageResponse },
+    Title {
+        title: String,
+    },
+    NewNotification {
+        notification: Notification,
+    },
+    ChatMessage {
+        message: MessageResponse,
+    },
     TaskUpdate {
         task_id: String,
         status: String,
@@ -35,7 +41,10 @@ pub enum BroadcastEventKind {
         source_chat_id: Option<String>,
         result_summary: Option<String>,
     },
-    InferenceCount { count: usize },
+    InferenceCount {
+        count: usize,
+    },
+    ActivityChanged,
     EntityUpdated {
         table: String,
         record_id: String,
@@ -45,8 +54,8 @@ pub enum BroadcastEventKind {
     },
     /// Per-inference-call usage event fired from `UsageService::record`.
     /// Only dispatched when the row has a `chat_id` so we have somewhere to send it
-    /// — rootless rows (`Compaction::User`, `Compaction::Space`) still hit the DB
-    /// and Prometheus, they just don't broadcast.
+    /// - rootless rows (`Compaction::User`, `Compaction::Space`) still hit the DB
+    ///   and Prometheus, they just don't broadcast.
     UsageRecorded(UsageRecorded),
 }
 
@@ -104,6 +113,20 @@ pub struct EventSender {
 }
 
 impl EventSender {
+    /// A sender wired to nothing - for detached (chatless) inference that streams
+    /// no events. The mpsc receiver is dropped and the bus has no subscribers, so
+    /// `send`/`send_kind` are silent no-ops (both already ignore the send result).
+    pub fn noop() -> Self {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        Self {
+            tx,
+            bus: crate::core::event_bus::EventBus::new(),
+            user_id: String::new(),
+            chat_id: String::new(),
+            space_id: None,
+        }
+    }
+
     pub fn send(&self, event: crate::inference::tool_loop::InferenceEvent) {
         let broadcast = BroadcastEvent {
             user_id: self.user_id.clone(),
@@ -174,7 +197,13 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                     "token",
                     serde_json::json!({ "chat_id": chat_id, "content": text }),
                 )),
-                InferenceEventKind::ToolCall { id, provider_call_id, name, arguments, description } => Some(sse_event(
+                InferenceEventKind::ToolCall {
+                    id,
+                    provider_call_id,
+                    name,
+                    arguments,
+                    description,
+                } => Some(sse_event(
                     "tool_call",
                     serde_json::json!({
                         "chat_id": chat_id,
@@ -189,14 +218,22 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                     "reasoning",
                     serde_json::json!({ "chat_id": chat_id, "content": text }),
                 )),
-                InferenceEventKind::ToolResult { name, result, success } => {
+                InferenceEventKind::ToolResult {
+                    name,
+                    result,
+                    success,
+                } => {
                     let summary: String = result.chars().take(200).collect();
                     Some(sse_event(
                         "tool_result",
                         serde_json::json!({ "chat_id": chat_id, "name": name, "success": success, "summary": summary }),
                     ))
                 }
-                InferenceEventKind::EntityUpdated { table, record_id, fields } => Some(sse_event(
+                InferenceEventKind::EntityUpdated {
+                    table,
+                    record_id,
+                    fields,
+                } => Some(sse_event(
                     "entity_updated",
                     serde_json::json!({
                         "chat_id": chat_id,
@@ -205,7 +242,10 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                         "fields": fields,
                     }),
                 )),
-                InferenceEventKind::Retry { retry_after_ms, reason } => Some(sse_event(
+                InferenceEventKind::Retry {
+                    retry_after_ms,
+                    reason,
+                } => Some(sse_event(
                     "retry",
                     serde_json::json!({
                         "chat_id": chat_id,
@@ -225,9 +265,9 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                     "inference_cancelled",
                     serde_json::json!({ "chat_id": chat_id, "reason": reason }),
                 )),
-                InferenceEventKind::Failed { error } => Some(sse_event(
+                InferenceEventKind::Failed { error, message_id } => Some(sse_event(
                     "inference_error",
-                    serde_json::json!({ "chat_id": chat_id, "error": error }),
+                    serde_json::json!({ "chat_id": chat_id, "error": error, "message_id": message_id }),
                 )),
                 InferenceEventKind::Paused { reason, message } => Some(sse_event(
                     "inference_paused",
@@ -279,6 +319,9 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
             "inference_count",
             serde_json::json!({ "count": count }),
         )),
+        BroadcastEventKind::ActivityChanged => {
+            Some(sse_event("activity_changed", serde_json::json!({})))
+        }
         BroadcastEventKind::NewNotification { notification } => Some(sse_event(
             "notification",
             serde_json::json!({ "notification": notification }),
@@ -324,7 +367,12 @@ impl BroadcastService {
         });
 
         let bus = crate::core::event_bus::EventBus::<BroadcastEvent>::new();
-        Self { tx, sessions, pending_events, bus }
+        Self {
+            tx,
+            sessions,
+            pending_events,
+            bus,
+        }
     }
 
     pub fn subscribe_raw(&self) -> mpsc::UnboundedReceiver<BroadcastEvent> {
@@ -365,17 +413,16 @@ impl BroadcastService {
                         }
                     }
                 }
-                // No live senders left — buffer into pending_events cache for reconnect
                 let has_live = {
                     let reg = sessions.read().await;
                     reg.get(&event.user_id).is_some_and(|s| !s.is_empty())
                 };
                 if !has_live {
-                    let buf = pending_events.get_with(event.user_id.clone(), || Arc::new(Mutex::new(Vec::new())));
+                    let buf = pending_events
+                        .get_with(event.user_id.clone(), || Arc::new(Mutex::new(Vec::new())));
                     buf.lock().unwrap().push(event.sse);
                 }
             } else {
-                // User has no session entry — might be pending_eventsing after disconnect
                 if let Some(buf) = pending_events.get(&event.user_id) {
                     buf.lock().unwrap().push(event.sse);
                 }
@@ -411,19 +458,17 @@ impl BroadcastService {
         }
     }
 
-    pub async fn register_session(
-        &self,
-        user_id: &str,
-        sender: SseSender,
-    ) {
-        // Drain any events buffered during the disconnect window.
+    pub async fn register_session(&self, user_id: &str, sender: SseSender) {
         if let Some(buf) = self.pending_events.remove(user_id) {
             for event in buf.lock().unwrap().drain(..) {
                 let _ = sender.send(Ok(event));
             }
         }
         let mut registry = self.sessions.write().await;
-        registry.entry(user_id.to_string()).or_default().push(sender);
+        registry
+            .entry(user_id.to_string())
+            .or_default()
+            .push(sender);
     }
 
     pub fn send(&self, event: BroadcastEvent) {
@@ -446,7 +491,7 @@ impl BroadcastService {
     }
 
     /// Dispatched by `UsageService::record` after persisting a row.
-    /// Always carries a `chat_id` — callers gate on `row.chat_id.is_some()`.
+    /// Always carries a `chat_id` - callers gate on `row.chat_id.is_some()`.
     pub fn broadcast_usage_recorded(&self, usage: UsageRecorded) {
         let user_id = usage.user_id.clone();
         let chat_id = usage.chat_id.clone();
@@ -502,6 +547,15 @@ impl BroadcastService {
         });
     }
 
+    pub fn broadcast_activity_changed(&self, user_id: &str) {
+        self.dispatch(BroadcastEvent {
+            user_id: user_id.to_string(),
+            chat_id: None,
+            space_id: None,
+            kind: BroadcastEventKind::ActivityChanged,
+        });
+    }
+
     pub fn broadcast_entity_updated(
         &self,
         user_id: &str,
@@ -532,9 +586,18 @@ mod tests {
 
     #[test]
     fn entity_action_serializes_lowercase() {
-        assert_eq!(serde_json::to_string(&EntityAction::Created).unwrap(), "\"created\"");
-        assert_eq!(serde_json::to_string(&EntityAction::Updated).unwrap(), "\"updated\"");
-        assert_eq!(serde_json::to_string(&EntityAction::Deleted).unwrap(), "\"deleted\"");
+        assert_eq!(
+            serde_json::to_string(&EntityAction::Created).unwrap(),
+            "\"created\""
+        );
+        assert_eq!(
+            serde_json::to_string(&EntityAction::Updated).unwrap(),
+            "\"updated\""
+        );
+        assert_eq!(
+            serde_json::to_string(&EntityAction::Deleted).unwrap(),
+            "\"deleted\""
+        );
     }
 
     #[test]

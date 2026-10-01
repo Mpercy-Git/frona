@@ -52,10 +52,7 @@ impl AgentShareRepository for SurrealRepo<AgentShare> {
         Ok(rows)
     }
 
-    async fn find_by_recipient(
-        &self,
-        recipient_id: &str,
-    ) -> Result<Vec<AgentShare>, AppError> {
+    async fn find_by_recipient(&self, recipient_id: &str) -> Result<Vec<AgentShare>, AppError> {
         let query = format!(
             "{SELECT_CLAUSE} FROM agent_share WHERE recipient_id = $recipient_id ORDER BY created_at DESC"
         );

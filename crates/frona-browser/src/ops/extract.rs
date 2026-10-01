@@ -1,7 +1,7 @@
+use crate::Result;
 use crate::connection::BrowserConnection;
 use crate::error::Error;
 use crate::types::{ExtractFormat, Link};
-use crate::Result;
 
 impl BrowserConnection {
     pub async fn extract(&self, selector: Option<&str>, format: ExtractFormat) -> Result<String> {
@@ -10,8 +10,16 @@ impl BrowserConnection {
         let content = if let Some(sel) = selector {
             let el = page.find_element(sel).await.map_err(Error::Cdp)?;
             match format {
-                ExtractFormat::Html => el.outer_html().await.map_err(Error::Cdp)?.unwrap_or_default(),
-                ExtractFormat::Text => el.inner_text().await.map_err(Error::Cdp)?.unwrap_or_default(),
+                ExtractFormat::Html => el
+                    .outer_html()
+                    .await
+                    .map_err(Error::Cdp)?
+                    .unwrap_or_default(),
+                ExtractFormat::Text => el
+                    .inner_text()
+                    .await
+                    .map_err(Error::Cdp)?
+                    .unwrap_or_default(),
             }
         } else {
             let js = match format {

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
-use crate::agent::task::executor::{deliver_event_to_source, TaskLifecycleEvent};
+use crate::agent::task::executor::{TaskLifecycleEvent, deliver_event_to_source};
 use crate::agent::task::models::{SignalMode, TaskKind};
 use crate::agent::task::schema::ResultSpec;
 use crate::chat::service::ChatService;
@@ -67,9 +67,11 @@ impl AgentTool for ReportSignalTool {
         })?;
 
         let attempt_index = match &task.kind {
-            TaskKind::Signal { mode: SignalMode::Continuous, evaluation_count, .. } => {
-                *evaluation_count
-            }
+            TaskKind::Signal {
+                mode: SignalMode::Continuous,
+                evaluation_count,
+                ..
+            } => *evaluation_count,
             _ => {
                 return Err(AppError::Validation(
                     "report_signal is only available for continuous signal tasks".into(),

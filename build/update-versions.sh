@@ -153,6 +153,89 @@ update_pip_file() {
 	write_or_print "$file" "$tmpfile"
 }
 
+latest_op_version() {
+	curl -sf -H 'User-Agent: frona-update-versions (https://github.com/fronalabs/frona)' \
+		"https://releases.1password.com/developers/cli/" |
+		python3 -c 'import re, sys; match = re.search(r"Updated to ([0-9]+\.[0-9]+\.[0-9]+) on", sys.stdin.read()); print(match.group(1) if match else ""); raise SystemExit(0 if match else 1)'
+}
+
+latest_bw_version() {
+	curl -sf -H 'User-Agent: frona-update-versions (https://github.com/fronalabs/frona)' \
+		"https://api.github.com/repos/bitwarden/clients/releases?per_page=100" |
+		python3 -c 'import json, sys; releases = json.load(sys.stdin); print(next(item["tag_name"].removeprefix("cli-v") for item in releases if item["tag_name"].startswith("cli-v")))'
+}
+
+latest_syd_binary_version() {
+	local versions version
+	versions=$(curl -sf -H 'User-Agent: frona-update-versions (https://github.com/fronalabs/frona)' \
+		"https://gitlab.exherbo.org/api/v4/projects/sydbox%2Fsydbox/repository/tags?per_page=100" |
+		python3 -c 'import json, re, sys; versions = [item["name"][1:] for item in json.load(sys.stdin) if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", item["name"])]; print("\n".join(sorted(versions, key=lambda value: tuple(map(int, value.split("."))), reverse=True)))')
+
+	while IFS= read -r version; do
+		if curl -sfIL "https://distfiles.exherbo.org/sydbox%2Fsyd-${version}-x86_64-pc-linux-gnu.tar.xz" >/dev/null &&
+			curl -sfIL "https://distfiles.exherbo.org/sydbox%2Fsyd-${version}-aarch64-unknown-linux-gnueabi.tar.xz" >/dev/null; then
+			echo "$version"
+			return 0
+		fi
+	done <<<"$versions"
+
+	return 1
+}
+
+resolve_binary_version() {
+	local package="$1"
+	local version
+
+	case "$package" in
+	op)
+		version=$(latest_op_version)
+		curl -sfIL "https://cache.agilebits.com/dist/1P/op2/pkg/v${version}/op_linux_amd64_v${version}.zip" >/dev/null
+		curl -sfIL "https://cache.agilebits.com/dist/1P/op2/pkg/v${version}/op_linux_arm64_v${version}.zip" >/dev/null
+		;;
+	bw)
+		version=$(latest_bw_version)
+		curl -sfIL "https://github.com/bitwarden/clients/releases/download/cli-v${version}/bw-linux-${version}.zip" >/dev/null
+		curl -sfIL "https://github.com/bitwarden/clients/releases/download/cli-v${version}/bw-linux-arm64-${version}.zip" >/dev/null
+		;;
+	syd) version=$(latest_syd_binary_version) ;;
+	*) return 1 ;;
+	esac
+
+	echo "$version"
+}
+
+update_binary_file() {
+	local file="$1"
+	local label
+	label=$(basename "$file")
+
+	echo "  [$label] Querying release sources..."
+	local tmpfile changed=false
+	tmpfile=$(mktemp)
+	while IFS= read -r line; do
+		if [[ "$line" =~ ^[[:space:]]*(#|$) ]]; then
+			echo "$line" >>"$tmpfile"
+			continue
+		fi
+		local package="${line%%=*}"
+		local old_ver="${line#*=}"
+		local new_ver
+		if ! new_ver=$(resolve_binary_version "$package"); then
+			echo "    WARNING: could not resolve $package, keeping current" >&2
+			echo "$line" >>"$tmpfile"
+			continue
+		fi
+		if [[ "$old_ver" != "$new_ver" ]]; then
+			echo "    $package: $old_ver -> $new_ver"
+			changed=true
+		fi
+		echo "${package}=${new_ver}" >>"$tmpfile"
+	done <"$file"
+
+	[[ "$changed" == false ]] && echo "    (no changes)"
+	write_or_print "$file" "$tmpfile"
+}
+
 write_or_print() {
 	local target="$1"
 	local tmpfile="$2"
@@ -183,6 +266,7 @@ main() {
 	[[ "$DRY_RUN" == true ]] && echo "==> Dry run — files will NOT be written"
 	echo "==> Querying latest versions..."
 
+	update_binary_file "$PKGS_DIR/prod-pkgs.txt"
 	update_apt_file "$PKGS_DIR/builder-rust-apt.txt" "$rust_image"
 	update_apt_file "$PKGS_DIR/builder-python-apt.txt" "$python_image"
 	update_apt_file "$PKGS_DIR/prod-apt.txt" "$python_image" "$nodesource_setup"

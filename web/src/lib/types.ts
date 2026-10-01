@@ -1,6 +1,10 @@
 export interface UserPermissions {
   list_users: boolean;
   is_admin: boolean;
+  /** May read instance-wide usage and cost. Like `list_users` this is the
+   *  Cedar decision rather than raw group membership, so a custom policy can
+   *  grant it to a non-admin group. */
+  view_usage_analytics: boolean;
 }
 
 export interface UserInfo {
@@ -72,7 +76,14 @@ export interface Agent {
   tools: string[];
   skills: string[];
   avatar_url: string | null;
+  /** TTS voice for live phone calls this agent answers or is transferred
+   *  into. `null` falls back to the server's default voice. */
+  voice_id: string | null;
   identity: Record<string, string>;
+  /** Keep what this agent learns to itself: it never writes to memory the user's
+   *  other agents can read (shared user memory, space summaries, the knowledge
+   *  base). It still reads them. */
+  private_memory: boolean;
   sandbox_policy: SandboxPolicy;
   sandbox_limits: SandboxLimits | null;
   prompt: string | null;
@@ -118,6 +129,8 @@ export interface CreateAgentRequest {
   /** Sent on create; materialized into Cedar policies server-side. */
   sandbox_policy?: SandboxPolicy;
   sandbox_limits?: SandboxLimits;
+  /** Omitted → not private. See `Agent.private_memory`. */
+  private_memory?: boolean;
 }
 
 export interface UpdateAgentRequest {
@@ -130,12 +143,15 @@ export interface UpdateAgentRequest {
   /** When set, re-materializes Cedar policies for this agent. */
   sandbox_policy?: SandboxPolicy;
   sandbox_limits?: SandboxLimits;
+  /** Omitted leaves the setting untouched. See `Agent.private_memory`. */
+  private_memory?: boolean;
 }
 
 export interface SpaceResponse {
   id: string;
   name: string;
   archived_at?: string | null;
+  chat_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -234,12 +250,23 @@ export interface CredentialRequestItem {
   label?: string | null;
 }
 
+export interface SkillCandidate {
+  name: string;
+  /** `owner/repo` on GitHub the skill would be installed from. */
+  repo: string;
+  description: string;
+}
+
+/** Where an approved skill lands — this agent only, or all of the user's agents. */
+export type SkillInstallScope = "agent" | "user";
+
 export type HitlRequest =
   | { type: "Question"; data: { options: string[] } }
   | { type: "Takeover"; data: { reason: string; debugger_url: string } }
   | { type: "App"; data: { action: string; manifest: Record<string, unknown>; previous_manifest: Record<string, unknown> | null } }
   | { type: "Credential"; data: { query: string; reason: string } }
-  | { type: "Credentials"; data: { items: CredentialRequestItem[]; reason: string } };
+  | { type: "Credentials"; data: { items: CredentialRequestItem[]; reason: string } }
+  | { type: "Skills"; data: { items: SkillCandidate[]; scope: SkillInstallScope; reason: string } };
 
 export type VaultField =
   | "Password"
@@ -351,6 +378,20 @@ export type MessageCommand =
   | { type: "skill"; name: string; prompt: string }
   | { type: "command"; name: string; args: string };
 
+export type ErrorCategory = "authentication" | "permission" | "model_unavailable" | "rate_limit"
+  | "timeout" | "network" | "invalid_request" | "invalid_response" | "configuration" | "internal" | "unknown";
+
+type FailureDetails = { category: ErrorCategory; retryable: boolean; http_status?: number };
+
+export type MessageError = {
+  message: string;
+  timestamp: string;
+  details:
+    | { subsystem: "inference"; data: FailureDetails & { provider?: string; model?: string; retry_count?: number; fallback_count?: number } }
+    | { subsystem: "tool_execution"; data: FailureDetails & { tool_name?: string } }
+    | { subsystem: "message_processing"; data: FailureDetails };
+};
+
 export interface MessageResponse {
   id: string;
   chat_id: string;
@@ -361,6 +402,7 @@ export interface MessageResponse {
   attachments?: Attachment[];
   contact_id?: string;
   status?: MessageStatus;
+  error?: MessageError;
   reasoning?: string;
   tool_calls?: ToolCall[];
   /** Set when the user typed `/skill ...`, `/command ...`, or `@agent ...`. */
@@ -465,6 +507,38 @@ export interface TaskUpdateEvent {
   result_summary: string | null;
 }
 
+export type ExecutionKind =
+  | "inference"
+  | "task"
+  | "memory"
+  | "app"
+  | "scheduled"
+  | "system";
+
+export type ExecutionStatus = "queued" | "running" | "waiting" | "cancelling";
+
+export interface ExecutionSource {
+  type: "chat" | "task" | "schedule" | "system";
+  id?: string;
+}
+
+export interface Execution {
+  id: string;
+  title: string;
+  agentName?: string;
+  kind: ExecutionKind;
+  status: ExecutionStatus;
+  action?: string;
+  source?: ExecutionSource;
+  relatedChatIds?: string[];
+  startedAt: string;
+  canCancel: boolean;
+}
+
+export interface ActivitySnapshot {
+  executions: Execution[];
+}
+
 const DEFAULT_AGENT_NAMES: Record<string, string> = {
   system: "Assistant",
   researcher: "Researcher",
@@ -503,6 +577,7 @@ export type NotificationData =
   | { type: "App"; app_handle: string; action: string }
   | { type: "Agent"; agent_id: string; chat_id: string }
   | { type: "Task"; task_id: string }
+  | { type: "CostReport"; report_id: string }
   | { type: "System" }
   | { type: "Security" };
 
@@ -521,4 +596,110 @@ export interface Notification {
 export interface NavigationResponse {
   spaces: SpaceWithChats[];
   standalone_chats: ChatResponse[];
+}
+
+// ---- Cost analysis -------------------------------------------------------
+
+export type ProviderBillingKind = "metered" | "subscription" | "self_hosted";
+
+export interface ProviderBilling {
+  kind: ProviderBillingKind;
+  monthly_cost?: number | null;
+  currency?: string | null;
+  included_tokens?: number | null;
+  included_spend_usd?: number | null;
+  overage_is_metered: boolean;
+  renewal_day?: number | null;
+  notes?: string | null;
+}
+
+export interface AllowanceStatus {
+  included_tokens: number | null;
+  tokens_used: number;
+  included_spend_usd: number | null;
+  list_value_used_usd: number;
+  used_pct: number;
+  exceeded: boolean;
+  overage_is_metered: boolean;
+}
+
+export interface ProviderSpend {
+  provider: string;
+  billing: ProviderBilling;
+  recorded_kinds: ProviderBillingKind[];
+  rollup: {
+    input_tokens: number;
+    cached_input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+    calls: number;
+  };
+  prorated_fee_usd: number;
+  allowance: AllowanceStatus | null;
+}
+
+export interface ModelSpendRow {
+  model_ref: string;
+  provider: string;
+  model_group: string;
+  billing_kind: string;
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  calls: number;
+  duration_ms_mean: number | null;
+  uncosted_calls: number;
+}
+
+export interface AdminSpendAnalysis {
+  window_since: string;
+  window_until: string;
+  window_days: number;
+  totals: { input_tokens: number; cached_input_tokens: number; output_tokens: number; cost_usd: number; calls: number };
+  metered_cost_usd: number;
+  subscription_cost_usd: number;
+  subscription_list_value_usd: number;
+  self_hosted_list_value_usd: number;
+  uncosted_calls: number;
+  providers: ProviderSpend[];
+  models: ModelSpendRow[];
+  by_model_group: Record<string, { cost_usd: number; calls: number; input_tokens: number; output_tokens: number; cached_input_tokens: number }>;
+  by_kind: Record<string, { cost_usd: number; calls: number; input_tokens: number; output_tokens: number; cached_input_tokens: number }>;
+  top_users: { user_id: string; cost_usd: number; calls: number; input_tokens: number; output_tokens: number }[];
+  pricing_version: string;
+}
+
+export type RecommendationKind =
+  | "switch_model"
+  | "rebalance_provider"
+  | "enable_caching"
+  | "subscription_underused"
+  | "subscription_overrun"
+  | "pricing_gap";
+
+export interface CostRecommendation {
+  kind: RecommendationKind;
+  model_group?: string | null;
+  from?: string | null;
+  to?: string | null;
+  rationale: string;
+  estimated_monthly_delta_usd?: number | null;
+  confidence: "high" | "medium" | "low";
+}
+
+export interface CostReport {
+  id: string;
+  user_id: string;
+  window_since: string;
+  window_until: string;
+  summary: string;
+  recommendations: CostRecommendation[];
+  totals: { input_tokens: number; cached_input_tokens: number; output_tokens: number; cost_usd: number; calls: number };
+  metered_cost_usd: number;
+  subscription_cost_usd: number;
+  subscription_list_value_usd: number;
+  estimated_monthly_savings_usd: number | null;
+  pricing_version: string;
+  created_at: string;
 }

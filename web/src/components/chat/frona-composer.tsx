@@ -2,13 +2,14 @@
 
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { ComposerPrimitive, ThreadPrimitive, AttachmentPrimitive, useComposerRuntime, unstable_useTriggerPopoverScopeContextOptional } from "@assistant-ui/react";
+import { ComposerPrimitive, ThreadPrimitive, AttachmentPrimitive, useAui, unstable_useTriggerPopoverScopeContextOptional } from "@assistant-ui/react";
 import { useThreadIsRunning } from "@assistant-ui/core/react";
 import { LexicalComposerInput } from "@assistant-ui/react-lexical";
 import type { Unstable_TriggerItem } from "@assistant-ui/core";
 import { PaperAirplaneIcon, StopIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import { ArrowUpTrayIcon, CloudIcon, FolderOpenIcon } from "@heroicons/react/24/outline";
 import { FileBrowserModal } from "@/components/chat/file-browser-modal";
+import { ComposerPastePlugin } from "@/components/chat/composer-paste-plugin";
 import { tryDispatchClientBuiltin } from "@/components/chat/client-commands";
 import {
   useFronaTriggerAdapter,
@@ -81,7 +82,7 @@ export function FronaComposer({
   onSend?: (content: string, attachments?: Attachment[]) => void;
   wizard?: ToolWizardState;
 }) {
-  const composerRuntime = useComposerRuntime();
+  const composerRuntime = useAui().composer;
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
@@ -328,7 +329,9 @@ export function FronaComposer({
               placeholder={activePlaceholder}
               submitMode={submitMode}
               className="aui-frona-composer-input w-full text-sm leading-5 text-text-primary [touch-action:manipulation]"
-            />
+            >
+              <ComposerPastePlugin />
+            </LexicalComposerInput>
           </div>
           <div className="flex items-center justify-between pt-2">
             <div className="relative">

@@ -1,6 +1,6 @@
 import { api } from "./api-client";
 
-// Mirrors Rust Config struct — sensitive fields come as { is_set: boolean } from GET
+// Mirrors Rust Config struct - sensitive fields come as { is_set: boolean } from GET
 export type SensitiveField = string | { is_set: boolean };
 
 export interface ServerConfig {
@@ -85,10 +85,9 @@ export interface VoiceConfig {
   twilio_voice_id: string | null;
   twilio_speech_model: string | null;
   twilio_tts_provider: string | null;
+  twilio_elevenlabs_text_normalization: string | null;
+  twilio_language: string | null;
   twilio_interrupt_sensitivity: string | null;
-  plivo_auth_id: SensitiveField;
-  plivo_auth_token: SensitiveField;
-  plivo_from_number: string | null;
   callback_base_url: string | null;
   inbound_enabled: boolean;
   silence_fill_enabled: boolean;
@@ -128,20 +127,44 @@ export interface GeminiThinkingConfig {
   include_thoughts?: boolean | null;
 }
 
+export interface OpenRouterMaxPrice {
+  prompt?: number | null;
+  completion?: number | null;
+  request?: number | null;
+  image?: number | null;
+}
+
+/** Maps to the `provider` object in the OpenRouter API request. */
+export interface OpenRouterProviderRouting {
+  order?: string[] | null;
+  only?: string[] | null;
+  ignore?: string[] | null;
+  allow_fallbacks?: boolean | null;
+  require_parameters?: boolean | null;
+  quantizations?: string[] | null;
+  sort?: string | null;
+  max_price?: OpenRouterMaxPrice | null;
+  data_collection?: string | null;
+  zdr?: boolean | null;
+}
+
 export interface ModelGroupConfig {
   provider: string;
   model: string;
+  /** Protocol/API surface override. See `crates/frona-server/src/core/config/types.rs::ApiSurface`. */
+  api?: import("./provider-admin").ProviderProtocol;
+  /** Arbitrary request fields with no typed home on `ModelGroupConfig` yet -
+   *  passed through to the provider's request body verbatim. */
+  extra_params?: Record<string, unknown>;
   fallbacks?: ModelGroupConfig[];
   max_tokens?: number | null;
   temperature?: number | null;
   context_window?: number | null;
   retry?: RetryConfig;
-  // Anthropic
   thinking?: AnthropicThinking | null;
   top_p?: number | null;
   top_k?: number | null;
   stop_sequences?: string[] | null;
-  // Ollama
   think?: boolean | null;
   num_ctx?: number | null;
   num_predict?: number | null;
@@ -162,22 +185,58 @@ export interface ModelGroupConfig {
   stop?: string[] | null;
   use_mmap?: boolean | null;
   use_mlock?: boolean | null;
-  // OpenAI-compatible
   max_completion_tokens?: number | null;
   reasoning_effort?: string | null;
   logprobs?: boolean | null;
   top_logprobs?: number | null;
-  // Gemini
   thinking_config?: GeminiThinkingConfig | null;
   candidate_count?: number | null;
-  // Generic catch-all
+  /** OpenRouter: the only value the API accepts is "fallback". */
+  route?: string | null;
+  provider_routing?: OpenRouterProviderRouting | null;
+  /** OpenRouter: place a cache_control breakpoint on the system prompt. Defaults to true. */
+  prompt_caching?: boolean | null;
   [key: string]: unknown;
 }
 
 export interface ModelProviderConfig {
-  api_key: SensitiveField;
+  /** Stable ID of an authorized managed credential (`credential/managed`).
+   *  Set once a connection's credential is accepted; mutually exclusive in
+   *  practice with a literal `api_key`. */
+  credential_id?: string | null;
+  /** Provider brand (e.g. "openai", "byteplus"). Legacy entries infer it from
+   *  the providers-map key instead. */
+  provider?: string | null;
+  /** Compiled logical adapter for dynamic/direct-YAML brands. See
+   *  `crates/frona-server/src/core/config/types.rs::AdapterId`. */
+  adapter?: string | null;
+  api_key: SensitiveField | null;
   base_url: string | null;
+  /** Azure OpenAI only — its data plane is versioned in the query string. */
+  api_version?: string | null;
   enabled: boolean;
+  /** How this provider charges. Affects cost reporting only, never routing.
+   *  Absent means unstated, which the server resolves per provider: local
+   *  runtimes as self-hosted, everything else as pay-as-you-go. */
+  billing?: ProviderBilling | null;
+  /** Other adapter-specific fields (`aws_region`, `aws_profile`,
+   *  `azure_credential`, and the flattened `attributes` bag - e.g. Azure's
+   *  `azure_api_version`) round-trip through here rather than being
+   *  enumerated one by one. */
+  [key: string]: unknown;
+}
+
+export type ProviderBillingKind = "metered" | "subscription" | "self_hosted";
+
+export interface ProviderBilling {
+  kind: ProviderBillingKind;
+  monthly_cost?: number | null;
+  currency?: string | null;
+  included_tokens?: number | null;
+  included_spend_usd?: number | null;
+  overage_is_metered: boolean;
+  renewal_day?: number | null;
+  notes?: string | null;
 }
 
 export interface InferenceConfig {
@@ -192,8 +251,6 @@ export interface InferenceConfig {
 }
 
 export interface SchedulerConfig {
-  space_compaction_secs: number;
-  memory_compaction_secs: number;
   poll_secs: number;
 }
 
@@ -203,6 +260,40 @@ export interface AppConfig {
   health_check_timeout_secs: number;
   max_restart_attempts: number;
   hibernate_after_secs: number;
+}
+
+export type MemoryBackend = "basic" | "pkm";
+
+export interface MemoryConfig {
+  /** `null` = unconfigured; the server resolves it at boot (PKM for a fresh install,
+   *  Basic for an existing one). The UI renders `null` as a concrete selection. */
+  backend: MemoryBackend | null;
+  model_group: string;
+  basic_compaction_token_threshold: number;
+  basic_compaction_secs: number;
+  basic_space_compaction_secs: number;
+  pkm_search_top_k: number;
+  pkm_max_lookups_per_turn: number;
+  pkm_short_memory_half_life_secs: number;
+  pkm_short_memory_demote_threshold: number;
+  pkm_short_memory_top_n: number;
+  pkm_short_memory_token_cap: number;
+  pkm_playbook_index_token_cap: number;
+  pkm_consolidate_secs: number;
+  pkm_consolidate_idle_secs: number;
+  pkm_consolidation_concurrency: number;
+  pkm_consolidation_max_tool_turns: number;
+  pkm_consolidation_max_submissions: number;
+  pkm_playbook_max_tool_turns: number;
+  pkm_playbook_max_submissions: number;
+  pkm_extract_max_tokens: number;
+  pkm_extract_max_messages: number;
+  pkm_extract_agent_evidence_lookback_messages: number;
+  pkm_extract_agent_evidence_result_token_cap: number;
+  pkm_consolidation_max_attempts: number;
+  pkm_adjudication_max_attempts_per_batch: number;
+  pkm_consolidation_checkpoint_failure_cap: number;
+  pkm_consolidation_retry_base_secs: number;
 }
 
 export interface Config {
@@ -218,11 +309,11 @@ export interface Config {
   inference: InferenceConfig;
   scheduler: SchedulerConfig;
   app: AppConfig;
+  memory: MemoryConfig;
   models: Record<string, ModelGroupConfig>;
   providers: Record<string, ModelProviderConfig>;
 }
 
-// JSON Schema types (subset we need for rendering)
 export interface JsonSchemaProperty {
   type?: string;
   description?: string;
@@ -236,11 +327,23 @@ export interface JsonSchemaProperty {
 export interface JsonSchema {
   properties?: Record<string, JsonSchemaProperty>;
   definitions?: Record<string, JsonSchemaProperty>;
+  // schemars 1.x (this fork's version) emits draft 2020-12 `$defs` rather than
+  // the older `definitions` keyword; both are read so a schema built either
+  // way resolves.
+  $defs?: Record<string, JsonSchemaProperty>;
   $ref?: string;
 }
 
+/** The shape `super::config::response()` (`api/routes/config.rs`) produces for
+ *  both `PUT /api/config` and every provider-admin mutation route, and that
+ *  `GET /api/config` now also returns. Unlike upstream, this fork's backend
+ *  has no `authoring_document`/`parameter_overrides` fields — it doesn't
+ *  track per-field parameter-override provenance the way upstream's
+ *  post-Group-C config service does. */
 export interface ConfigUpdateResponse {
   config: Config;
+  persisted_revision: string;
+  active_revision: string;
   restart_required: boolean;
 }
 
@@ -248,44 +351,77 @@ export function getConfigSchema(): Promise<JsonSchema> {
   return api.get<JsonSchema>("/api/config/schema");
 }
 
-export function getConfig(): Promise<Config> {
-  return api.get<Config>("/api/config");
+export function getConfigDocument(): Promise<ConfigUpdateResponse> {
+  return api.get<ConfigUpdateResponse>("/api/config");
 }
 
-function stripRedactedSensitiveFields(obj: unknown): unknown {
+export async function getConfig(): Promise<Config> {
+  const document = await getConfigDocument();
+  return document.config;
+}
+
+/** Provider-field sensitivity plus the handful of other single-field secrets
+ *  redacted by `redact_config_for_api` (`core/config/document.rs::SENSITIVE_PATHS`
+ *  / `SENSITIVE_PROVIDER_FIELDS`). Path-scoped rather than "any `{is_set}`
+ *  object anywhere" so a `models.*.extra_params` value that happens to look
+ *  like `{is_set: true}` (arbitrary passthrough request JSON) isn't mistaken
+ *  for a redaction marker and silently dropped from the patch.
+ */
+const SENSITIVE_FIELD_PATHS: [string, string][] = [
+  ["auth", "encryption_secret"],
+  ["sso", "client_secret"],
+  ["voice", "twilio_account_sid"],
+  ["voice", "twilio_auth_token"],
+  ["vault", "onepassword_service_account_token"],
+  ["vault", "bitwarden_client_secret"],
+  ["vault", "bitwarden_master_password"],
+  ["vault", "hashicorp_token"],
+  ["vault", "keepass_password"],
+  ["mail", "smtp_password"],
+  ["push", "vapid_private_key"],
+];
+
+function stripRedactedSensitiveFields(obj: unknown, path: string[] = []): unknown {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj !== "object") return obj;
-  if (Array.isArray(obj)) return obj.map(stripRedactedSensitiveFields);
+  if (Array.isArray(obj)) {
+    return obj.map((value, index) => stripRedactedSensitiveFields(value, [...path, String(index)]));
+  }
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-    if (typeof value === "object" && value !== null && "is_set" in value) continue;
-    result[key] = stripRedactedSensitiveFields(value);
+    const nextPath = [...path, key];
+    const sensitive =
+      (nextPath.length === 3 && nextPath[0] === "providers" && key === "api_key") ||
+      (nextPath.length === 2 &&
+        SENSITIVE_FIELD_PATHS.some(([section, field]) => nextPath[0] === section && key === field));
+    if (
+      sensitive &&
+      typeof value === "object" &&
+      value !== null &&
+      "is_set" in value &&
+      Object.keys(value).length === 1 &&
+      typeof (value as { is_set: unknown }).is_set === "boolean"
+    ) {
+      continue;
+    }
+    result[key] = stripRedactedSensitiveFields(value, nextPath);
   }
   return result;
 }
 
-export function updateConfig(patch: Record<string, unknown>): Promise<ConfigUpdateResponse> {
-  return api.put<ConfigUpdateResponse>("/api/config", stripRedactedSensitiveFields(patch) as Record<string, unknown>);
-}
-
-export interface ModelInfo {
-  id: string;
-  name?: string;
-  context_window?: number;
-  max_tokens?: number;
-}
-
-export function getProviderModels(
-  providerId: string,
-  opts?: { apiKey?: string; baseUrl?: string }
-): Promise<{ models: ModelInfo[] }> {
-  const params = new URLSearchParams();
-  if (opts?.apiKey) params.set("api_key", opts.apiKey);
-  if (opts?.baseUrl) params.set("base_url", opts.baseUrl);
-  const qs = params.toString();
-  return api.get<{ models: ModelInfo[] }>(
-    `/api/config/providers/${providerId}/models${qs ? `?${qs}` : ""}`
-  );
+export function updateConfig(
+  patch: Record<string, unknown>,
+  metadata?: { expectedPersistedRevision?: string },
+): Promise<ConfigUpdateResponse> {
+  const cleaned = stripRedactedSensitiveFields(patch) as Record<string, unknown>;
+  // `PUT /api/config` (`api/routes/config.rs::update_config`) always expects
+  // `{patch, expected_persisted_revision}` - `expected_persisted_revision` is
+  // optional server-side (skips the optimistic-concurrency check when
+  // absent), but the `patch` wrapper itself is not.
+  return api.put<ConfigUpdateResponse>("/api/config", {
+    patch: cleaned,
+    expected_persisted_revision: metadata?.expectedPersistedRevision,
+  });
 }
 
 export function isSensitiveSet(value: SensitiveField): boolean {

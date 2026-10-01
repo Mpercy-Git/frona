@@ -5,8 +5,7 @@ use super::*;
 #[tokio::test]
 async fn commands_discovery_includes_newly_created_agents() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "cmduser", "cmds@example.com", "password123").await;
+    let (token, _) = register_user(&state, "cmduser", "cmds@example.com", "password123").await;
 
     let agent_a = create_agent(&state, &token, "InitialAgent").await;
     let agent_a_id = agent_a["id"].as_str().unwrap();
@@ -65,8 +64,7 @@ async fn commands_discovery_includes_newly_created_agents() {
 #[tokio::test]
 async fn commands_discovery_filters_handle_collisions() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "collide", "collide@example.com", "password123").await;
+    let (token, _) = register_user(&state, "collide", "collide@example.com", "password123").await;
 
     let host = create_agent(&state, &token, "Host").await;
     let chat = create_chat(&state, &token, host["id"].as_str().unwrap(), None).await;
@@ -75,10 +73,7 @@ async fn commands_discovery_filters_handle_collisions() {
     create_agent(&state, &token, "clear").await;
 
     let resp = build_app(state)
-        .oneshot(auth_get(
-            &format!("/api/chats/{chat_id}/commands"),
-            &token,
-        ))
+        .oneshot(auth_get(&format!("/api/chats/{chat_id}/commands"), &token))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

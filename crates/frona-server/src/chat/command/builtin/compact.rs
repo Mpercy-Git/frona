@@ -23,18 +23,35 @@ impl Command for CompactCommand {
         _args: &str,
         ctx: &mut CommandContext<'_>,
     ) -> Result<CommandOutcome, AppError> {
-        let status = ctx
+        // Same weighing as a normal turn: what the builder replays around each
+        // message is mostly its tool calls, so `/compact` has to see them too or
+        // it reports "already at optimal size" on a chat that is over the window.
+        let tool_calls = ctx
             .harness
-            .memory_service
-            .compact_chat_via_command(
+            .chat_service
+            .get_tool_calls(&ctx.chat.id)
+            .await
+            .unwrap_or_default();
+        let changed = ctx
+            .harness
+            .chat_service
+            .compactor()
+            .compact_chat(
                 &ctx.user.id,
                 &ctx.chat.id,
                 &ctx.chat.agent_id,
                 &ctx.session.system_prompt,
+                &tool_calls,
                 ctx.session.model_group.context_window,
                 DEFAULT_MAX_OUTPUT_TOKENS,
             )
-            .await?;
+            .await?
+            .compacted;
+        let status = if changed {
+            "Compacted older messages into a summary."
+        } else {
+            "Chat is already at optimal size — no compaction needed."
+        };
         Ok(CommandOutcome::Message(status.to_string()))
     }
 }

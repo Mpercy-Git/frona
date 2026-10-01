@@ -81,21 +81,25 @@ import { agentDisplayName } from "@/lib/types";
 import { ProfileSection } from "@/components/agents/configure/profile-section";
 import { InstructionsSection } from "@/components/agents/configure/instructions-section";
 import { ModelSection } from "@/components/agents/configure/model-section";
+import { VoiceSection } from "@/components/agents/configure/voice-section";
 import { ToolsSection } from "@/components/agents/configure/tools-section";
 import { SkillsSection } from "@/components/agents/configure/skills-section";
 import type { SkillBrowserHandle } from "@/components/skills/skill-browser";
 import { SandboxSection } from "@/components/agents/configure/sandbox-section";
 import { CredsSection } from "@/components/agents/configure/creds-section";
 import { ShareSection } from "@/components/agents/configure/share-section";
+import { MemorySection } from "@/components/agents/configure/memory-section";
 import { ConfigSidebar } from "@/components/layout/config-sidebar";
 
 // Superset (includes "share", owner-only) — used for typing + URL validation.
 const SECTIONS = [
   { id: "profile", label: "Profile" },
   { id: "model", label: "Model" },
+  { id: "voice", label: "Voice" },
   { id: "prompt", label: "Prompt" },
   { id: "tools", label: "Tools" },
   { id: "skills", label: "Skills" },
+  { id: "memory", label: "Memory" },
   { id: "sandbox", label: "Sandbox" },
   { id: "creds", label: "Credentials" },
   { id: "share", label: "Share" },
@@ -279,6 +283,12 @@ function AgentSettings() {
                 onModelGroupChange={(v) => update({ model_group: v })}
               />
             )}
+            {activeSection === "voice" && (
+              <VoiceSection
+                voiceId={(merged.voice_id as string | null) ?? ""}
+                onVoiceIdChange={(v) => update({ voice_id: v })}
+              />
+            )}
             {activeSection === "prompt" && (
               <InstructionsSection
                 prompt={((merged.prompt as string) ?? agent.default_prompt)}
@@ -306,6 +316,12 @@ function AgentSettings() {
                 sandbox={(patch.sandbox_form as SandboxFormShape | undefined) ?? fromAgent(merged)}
                 onChange={(v) => update({ sandbox_form: v })}
                 onValidChange={setSandboxValid}
+              />
+            )}
+            {activeSection === "memory" && (
+              <MemorySection
+                privateMemory={(merged.private_memory as boolean) ?? false}
+                onChange={update}
               />
             )}
             {activeSection === "creds" && <CredsSection principalKind="agent" principalId={agentId} />}

@@ -3,21 +3,19 @@ use axum::body::Bytes;
 use axum::http::{HeaderValue, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use sha1::Sha1;
 
-use crate::chat::channel::adapter::markdown;
 use crate::chat::channel::CarrierStatus;
+use crate::chat::channel::adapter::markdown;
 use crate::chat::message::models::Message;
 use crate::chat::models::Chat;
 use crate::core::error::AppError;
 
 use super::super::attachment;
 use super::super::error::{ChannelError, ChannelErrorKind};
-use super::super::models::{
-    ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id,
-};
+use super::super::models::{ChannelAdapter, ChannelCtx, ExternalMessage, external_chat_id};
 #[cfg(test)]
 use super::super::models::{ChannelFactory, ConfigRef};
 
@@ -189,8 +187,12 @@ impl ChannelAdapter for SmsAdapter {
         // SMS is text-only → sequential cadence: render only the first pending
         // HITL. The delivery cursor advances by 1; the next pending HITL
         // renders after this one resolves.
-        let Some(tc) = batch.first() else { return Ok(Vec::new()) };
-        let Some(h) = tc.hitl.as_ref() else { return Ok(Vec::new()) };
+        let Some(tc) = batch.first() else {
+            return Ok(Vec::new());
+        };
+        let Some(h) = tc.hitl.as_ref() else {
+            return Ok(Vec::new());
+        };
 
         let body = crate::chat::channel::hitl::render_text(h);
         let to_number = parse_external_id(external_chat_id(chat)?)?;
@@ -248,23 +250,21 @@ impl ChannelAdapter for SmsAdapter {
 
         let webhook = TwilioWebhook::from_pairs(&raw_params);
         if webhook.is_status_callback() {
-            webhook.apply_carrier_status(ctx, request.uri().query()).await;
+            webhook
+                .apply_carrier_status(ctx, request.uri().query())
+                .await;
             return Ok(ok_twiml());
         }
         if webhook.body.is_empty() && webhook.num_media == "0" {
             return Ok(ok_twiml());
         }
         if webhook.from.is_empty() {
-            return Err(AppError::Validation(
-                "Twilio webhook missing From".into(),
-            )
-            .into());
+            return Err(AppError::Validation("Twilio webhook missing From".into()).into());
         }
         webhook.emit_inbound(ctx).await?;
         Ok(ok_twiml())
     }
 }
-
 
 struct TwilioApi<'a> {
     account_sid: &'a str,
@@ -345,7 +345,9 @@ impl TwilioApi<'_> {
                 .query(&[("PhoneNumber", phone_number)])
                 .send()
                 .await
-                .map_err(|e| AppError::Internal(format!("Twilio list IncomingPhoneNumbers: {e}")))?,
+                .map_err(|e| {
+                    AppError::Internal(format!("Twilio list IncomingPhoneNumbers: {e}"))
+                })?,
             "list IncomingPhoneNumbers",
         )
         .await?;
@@ -365,7 +367,9 @@ impl TwilioApi<'_> {
                 .form(&[("SmsUrl", webhook_url), ("SmsMethod", "POST")])
                 .send()
                 .await
-                .map_err(|e| AppError::Internal(format!("Twilio update IncomingPhoneNumber: {e}")))?,
+                .map_err(|e| {
+                    AppError::Internal(format!("Twilio update IncomingPhoneNumber: {e}"))
+                })?,
             "update IncomingPhoneNumber",
         )
         .await?;
@@ -501,9 +505,9 @@ impl TwilioError {
             Self::MessageTooLong | Self::SegmentLimitExceeded => {
                 ChannelError::terminal(msg, PayloadTooLarge)
             }
-            Self::InvalidToNumber
-            | Self::InvalidFromNumber
-            | Self::ChannelMismatch => ChannelError::terminal(msg, PayloadInvalid),
+            Self::InvalidToNumber | Self::InvalidFromNumber | Self::ChannelMismatch => {
+                ChannelError::terminal(msg, PayloadInvalid)
+            }
         }
     }
 }
@@ -518,7 +522,9 @@ async fn ensure_status(resp: reqwest::Response, op: &str) -> Result<reqwest::Res
     } else {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        Err(AppError::Internal(format!("Twilio {op} HTTP {status}: {body}")))
+        Err(AppError::Internal(format!(
+            "Twilio {op} HTTP {status}: {body}"
+        )))
     }
 }
 
@@ -581,7 +587,12 @@ impl TwilioWebhook {
                 if let Some(id) = our_msg_id.as_deref() {
                     let _ = ctx
                         .outbound
-                        .record_carrier_status(id, CarrierStatus::Failed { error: error.clone() })
+                        .record_carrier_status(
+                            id,
+                            CarrierStatus::Failed {
+                                error: error.clone(),
+                            },
+                        )
                         .await;
                 }
                 tracing::warn!(
@@ -628,7 +639,10 @@ impl TwilioWebhook {
         if self.error_message.is_empty() {
             format!("Twilio {} ({})", self.message_status, self.error_code)
         } else {
-            format!("{} ({} {})", self.error_message, self.message_status, self.error_code)
+            format!(
+                "{} ({} {})",
+                self.error_message, self.message_status, self.error_code
+            )
         }
     }
 }
@@ -810,8 +824,7 @@ mod tests {
         let e = TwilioError::from_http(500, "<html>upstream gateway</html>")
             .to_channel_error("transient".into());
         assert_eq!(e.kind, ChannelErrorKind::Transient);
-        let e = TwilioError::from_http(401, "no body")
-            .to_channel_error("auth".into());
+        let e = TwilioError::from_http(401, "no body").to_channel_error("auth".into());
         assert_eq!(e.kind, ChannelErrorKind::Unauthorized);
     }
 
@@ -878,19 +891,28 @@ mod tests {
     #[test]
     fn factory_create_rejects_missing_account_sid() {
         let cfg = json!({"auth_token": "tok", "from_number": "+1"});
-        assert!(matches!(SmsAdapterFactory.create(cfg), Err(AppError::Validation(_))));
+        assert!(matches!(
+            SmsAdapterFactory.create(cfg),
+            Err(AppError::Validation(_))
+        ));
     }
 
     #[test]
     fn factory_create_rejects_missing_auth_token() {
         let cfg = json!({"account_sid": "AC", "from_number": "+1"});
-        assert!(matches!(SmsAdapterFactory.create(cfg), Err(AppError::Validation(_))));
+        assert!(matches!(
+            SmsAdapterFactory.create(cfg),
+            Err(AppError::Validation(_))
+        ));
     }
 
     #[test]
     fn factory_create_rejects_missing_from_number() {
         let cfg = json!({"account_sid": "AC", "auth_token": "tok"});
-        assert!(matches!(SmsAdapterFactory.create(cfg), Err(AppError::Validation(_))));
+        assert!(matches!(
+            SmsAdapterFactory.create(cfg),
+            Err(AppError::Validation(_))
+        ));
     }
 
     #[test]
@@ -990,10 +1012,7 @@ mod tests {
 
     #[test]
     fn status_callback_url_appends_msg_id_query() {
-        let url = status_callback_url(
-            "https://x.com/api/webhooks/channels/sms/abc",
-            "msg-1",
-        );
+        let url = status_callback_url("https://x.com/api/webhooks/channels/sms/abc", "msg-1");
         assert_eq!(
             url,
             "https://x.com/api/webhooks/channels/sms/abc?msg_id=msg-1",
@@ -1021,12 +1040,7 @@ mod tests {
         assert_eq!(p.format_carrier_error(), "Twilio undelivered (30005)");
     }
 
-    fn fixture_signature() -> (
-        String,
-        String,
-        Vec<(String, String)>,
-        String,
-    ) {
+    fn fixture_signature() -> (String, String, Vec<(String, String)>, String) {
         let token = "12345".to_string();
         let url = "https://mycompany.com/myapp.php?foo=1&bar=2".to_string();
         let params: Vec<(String, String)> = vec![
@@ -1136,7 +1150,10 @@ mod tests {
 
     #[test]
     fn compose_sms_body_returns_only_turn_texts_when_trailing_empty() {
-        let tcs = vec![tool_call_with_turn_text(Some("a")), tool_call_with_turn_text(Some("b"))];
+        let tcs = vec![
+            tool_call_with_turn_text(Some("a")),
+            tool_call_with_turn_text(Some("b")),
+        ];
         let body = compose_sms_body(&tcs, "");
         assert_eq!(body, "a\n\nb");
     }

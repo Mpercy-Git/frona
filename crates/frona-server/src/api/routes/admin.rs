@@ -21,14 +21,8 @@ pub fn router() -> Router<AppState> {
             "/api/admin/users/{id}",
             patch(patch_user).delete(delete_user),
         )
-        .route(
-            "/api/admin/users/{id}/deactivate",
-            post(deactivate_user),
-        )
-        .route(
-            "/api/admin/users/{id}/reactivate",
-            post(reactivate_user),
-        )
+        .route("/api/admin/users/{id}/deactivate", post(deactivate_user))
+        .route("/api/admin/users/{id}/reactivate", post(reactivate_user))
         .route("/api/admin/users/{id}/password", put(set_user_password))
         .route("/api/admin/users/{id}/unlock", post(unlock_user))
         .route("/api/admin/groups", get(list_groups))
@@ -116,11 +110,7 @@ async fn load_caller(state: &AppState, auth: &AuthUser) -> Result<User, AppError
         .ok_or_else(|| AppError::NotFound("User not found".into()))
 }
 
-async fn require(
-    state: &AppState,
-    caller: &User,
-    action: PolicyAction,
-) -> Result<(), AppError> {
+async fn require(state: &AppState, caller: &User, action: PolicyAction) -> Result<(), AppError> {
     let decision = state.policy_service.authorize_user(caller, action).await?;
     if decision.allowed {
         Ok(())
@@ -141,8 +131,13 @@ async fn list_users(
     let caller = load_caller(&state, &auth).await?;
     require(&state, &caller, PolicyAction::ListUsers).await?;
 
-    let users = state.user_service.list_all(query.include_deactivated).await?;
-    Ok(Json(users.into_iter().map(AdminUserListItem::from).collect()))
+    let users = state
+        .user_service
+        .list_all(query.include_deactivated)
+        .await?;
+    Ok(Json(
+        users.into_iter().map(AdminUserListItem::from).collect(),
+    ))
 }
 
 async fn create_user(
@@ -225,6 +220,24 @@ async fn patch_user(
         .await
         .map_err(translate_invariant_violation)?;
     state.user_service.ensure_admin_invariant().await?;
+
+    // A group change can make the user eligible for built-in agents that were
+    // skipped when their account was created (the cost analyst is admin-only).
+    // Idempotent, so re-running it for an unchanged user is a no-op — and
+    // deliberately one-way: a demotion leaves the agent in place rather than
+    // deleting rows the user may have chats against. The tools it can reach
+    // re-check permission at call time, so a demoted user's copy is inert.
+    if let Err(e) = state
+        .agent_service
+        .clone_all_builtins_for_user(&updated.id, &state.storage_service)
+        .await
+    {
+        tracing::warn!(
+            user_id = %updated.id,
+            error = %e,
+            "Group change applied but builtin agent provisioning failed"
+        );
+    }
 
     Ok(Json(AdminUserListItem::from(updated)))
 }
@@ -396,7 +409,10 @@ async fn delete_user(
     }
     if let Ok(channels) = state.channel_service.list_for_user(&target_id).await {
         for channel in channels {
-            let _ = state.channel_service.delete(&state, &target_id, &channel.id).await;
+            let _ = state
+                .channel_service
+                .delete(&state, &target_id, &channel.id)
+                .await;
         }
     }
 
@@ -431,5 +447,7 @@ async fn list_groups(
     require(&state, &caller, PolicyAction::ListUsers).await?;
 
     let groups = state.user_group_service.list_all().await?;
-    Ok(Json(groups.into_iter().map(AdminGroupListItem::from).collect()))
+    Ok(Json(
+        groups.into_iter().map(AdminGroupListItem::from).collect(),
+    ))
 }

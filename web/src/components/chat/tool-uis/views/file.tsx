@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { CodeBlock } from "@/components/ui/code-block";
+import { strListArg, summariseList } from "./args";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -38,7 +39,8 @@ function getSubtitle(toolName: string, args: Record<string, unknown>): string | 
     if (pattern && scope && scope !== ".") return `${pattern} in ${scope}`;
     return pattern;
   }
-  return typeof args.path === "string" ? args.path : null;
+  // `read` takes a batch of paths, so the subtitle names the first and counts the rest.
+  return summariseList(strListArg(args, "path", "paths"));
 }
 
 function globLiteralsToRegex(pattern: string): RegExp | null {
@@ -94,7 +96,7 @@ export const FileView: ToolView = ({
   onToggle,
 }) => {
   const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
-  const path = typeof a.path === "string" ? a.path : null;
+  const paths = strListArg(a, "path", "paths");
   const subtitle = getSubtitle(toolName, a);
 
   return (
@@ -108,7 +110,7 @@ export const FileView: ToolView = ({
         <FileExpanded
           toolName={toolName}
           args={a}
-          path={path}
+          paths={paths}
           result={result}
           subtitle={subtitle}
         />
@@ -120,24 +122,30 @@ export const FileView: ToolView = ({
 function FileExpanded({
   toolName,
   args,
-  path,
+  paths,
   result,
   subtitle,
 }: {
   toolName: string;
   args: Record<string, unknown>;
-  path: string | null;
+  paths: string[];
   result: unknown;
   subtitle: string | null;
 }) {
-  const lang = inferLanguageFromPath(path);
-  const showPath = path && path !== subtitle;
+  const path = paths[0] ?? null;
+  // A batched read returns several files under `===== path =====` headers, so no one
+  // file's extension describes the block: render it as plain text and list the paths.
+  const lang = paths.length > 1 ? "text" : inferLanguageFromPath(path);
+  const pathLine = paths.length > 1 ? paths.join(", ") : path;
+  const showPath = pathLine && pathLine !== subtitle;
 
   if (toolName === "write") {
     const content = typeof args.content === "string" ? args.content : "";
     return (
       <div className="flex flex-col gap-2">
-        {showPath && <p className="font-mono text-xs text-text-tertiary px-3 pt-2">{path}</p>}
+        {showPath && (
+          <p className="font-mono text-xs text-text-tertiary px-3 pt-2">{pathLine}</p>
+        )}
         <CodeBlock code={content} language={lang} lineNumbers />
       </div>
     );
@@ -151,7 +159,9 @@ function FileExpanded({
     const snippet = markerIdx >= 0 ? text.slice(markerIdx + marker.length) : null;
     return (
       <div className="flex flex-col gap-2">
-        {showPath && <p className="font-mono text-xs text-text-tertiary px-3 pt-2">{path}</p>}
+        {showPath && (
+          <p className="font-mono text-xs text-text-tertiary px-3 pt-2">{pathLine}</p>
+        )}
         {summary && (
           <p className="px-3 pt-2 text-xs text-text-tertiary">{summary}</p>
         )}
@@ -170,7 +180,9 @@ function FileExpanded({
     const text = typeof result === "string" ? result : null;
     return (
       <div className="flex flex-col gap-2">
-        {showPath && <p className="font-mono text-xs text-text-tertiary px-3 pt-2">{path}</p>}
+        {showPath && (
+          <p className="font-mono text-xs text-text-tertiary px-3 pt-2">{pathLine}</p>
+        )}
         {text !== null && <CodeBlock code={text} language={lang} lineNumbers />}
       </div>
     );

@@ -104,9 +104,7 @@ impl VaultConnectionRepository for SurrealRepo<VaultConnection> {
     }
 
     async fn find_system_managed(&self) -> Result<Vec<VaultConnection>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM vault_connection WHERE system_managed = true"
-        );
+        let query = format!("{SELECT_CLAUSE} FROM vault_connection WHERE system_managed = true");
         let mut result = self
             .db()
             .query(&query)
@@ -226,24 +224,6 @@ impl VaultGrantRepository for SurrealRepo<VaultGrant> {
         self.db()
             .query("DELETE FROM vault_grant WHERE connection_id = $connection_id")
             .bind(("connection_id", connection_id.to_string()))
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn delete_by_item(
-        &self,
-        user_id: &str,
-        vault_item_id: &str,
-    ) -> Result<(), AppError> {
-        self.db()
-            .query(
-                "DELETE FROM vault_grant \
-                 WHERE user_id = $user_id \
-                 AND vault_item_id = $vault_item_id",
-            )
-            .bind(("user_id", user_id.to_string()))
-            .bind(("vault_item_id", vault_item_id.to_string()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
@@ -481,24 +461,6 @@ impl PrincipalCredentialBindingRepository for SurrealRepo<PrincipalCredentialBin
             .bind(("principal_kind", principal.kind))
             .bind(("principal_id", principal.id.clone()))
             .bind(("connection_id", connection_id.to_string()))
-            .bind(("vault_item_id", vault_item_id.to_string()))
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn delete_by_item(
-        &self,
-        user_id: &str,
-        vault_item_id: &str,
-    ) -> Result<(), AppError> {
-        self.db()
-            .query(
-                "DELETE FROM principal_credential_binding \
-                 WHERE user_id = $user_id \
-                 AND vault_item_id = $vault_item_id",
-            )
-            .bind(("user_id", user_id.to_string()))
             .bind(("vault_item_id", vault_item_id.to_string()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;

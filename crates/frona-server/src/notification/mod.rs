@@ -4,3 +4,4 @@ pub mod push_repository;
 pub mod push_sender;
 pub mod repository;
 pub mod service;
+pub mod vapid;

@@ -42,7 +42,11 @@ struct OpField {
 }
 
 impl OnePasswordVaultProvider {
-    pub fn new(service_account_token: String, default_vault_id: Option<String>, home_dir: PathBuf) -> Self {
+    pub fn new(
+        service_account_token: String,
+        default_vault_id: Option<String>,
+        home_dir: PathBuf,
+    ) -> Self {
         Self {
             service_account_token,
             default_vault_id,
@@ -58,12 +62,18 @@ impl OnePasswordVaultProvider {
             .env("HOME", &self.home_dir)
             .output()
             .await
-            .map_err(|e| AppError::Tool(format!("Failed to run `op` CLI: {e}. Is the 1Password CLI installed?")))?;
+            .map_err(|e| {
+                AppError::Tool(format!(
+                    "Failed to run `op` CLI: {e}. Is the 1Password CLI installed?"
+                ))
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("not found") || stderr.contains("isn't an item") {
-                return Err(AppError::NotFound(format!("1Password item not found: {stderr}")));
+                return Err(AppError::NotFound(format!(
+                    "1Password item not found: {stderr}"
+                )));
             }
             return Err(AppError::Tool(format!("1Password CLI error: {stderr}")));
         }
@@ -102,11 +112,13 @@ impl VaultProvider for OnePasswordVaultProvider {
     }
 
     async fn get_secret(&self, item_id: &str) -> Result<VaultSecret, AppError> {
-        let (vault_id, op_item_id) = item_id
-            .split_once(':')
-            .ok_or_else(|| AppError::Tool("Invalid 1Password item ID format (expected vault_id:item_id)".into()))?;
+        let (vault_id, op_item_id) = item_id.split_once(':').ok_or_else(|| {
+            AppError::Tool("Invalid 1Password item ID format (expected vault_id:item_id)".into())
+        })?;
 
-        let json = self.run_op(&["item", "get", op_item_id, "--vault", vault_id]).await?;
+        let json = self
+            .run_op(&["item", "get", op_item_id, "--vault", vault_id])
+            .await?;
         let detail: OpItemDetail = serde_json::from_str(&json)
             .map_err(|e| AppError::Tool(format!("Failed to parse 1Password item detail: {e}")))?;
 
@@ -150,13 +162,19 @@ impl VaultProvider for OnePasswordVaultProvider {
             .env("HOME", &self.home_dir)
             .output()
             .await
-            .map_err(|e| AppError::Tool(format!("Failed to run `op` CLI: {e}. Is the 1Password CLI installed?")))?;
+            .map_err(|e| {
+                AppError::Tool(format!(
+                    "Failed to run `op` CLI: {e}. Is the 1Password CLI installed?"
+                ))
+            })?;
 
         if output.status.success() {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(AppError::Tool(format!("1Password CLI auth failed: {stderr}")))
+            Err(AppError::Tool(format!(
+                "1Password CLI auth failed: {stderr}"
+            )))
         }
     }
 }

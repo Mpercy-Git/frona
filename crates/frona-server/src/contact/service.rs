@@ -1,11 +1,13 @@
 use chrono::Utc;
 
 use crate::chat::broadcast::{BroadcastService, EntityAction};
-use crate::db::repo::generic::SurrealRepo;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
+use crate::db::repo::generic::SurrealRepo;
 
-use super::models::{Contact, ContactAddress, ContactResponse, CreateContactRequest, UpdateContactRequest};
+use super::models::{
+    Contact, ContactAddress, ContactResponse, CreateContactRequest, UpdateContactRequest,
+};
 use super::repository::ContactRepository;
 
 #[derive(Clone)]
@@ -243,7 +245,10 @@ mod tests {
     async fn find_or_create_by_phone_creates_new_contact() {
         let svc = make_test_service().await;
 
-        let result = svc.find_or_create_by_phone("user-1", "+15555551234", "Alice").await.unwrap();
+        let result = svc
+            .find_or_create_by_phone("user-1", "+15555551234", "Alice")
+            .await
+            .unwrap();
         assert_eq!(result.name, "Alice");
         assert_eq!(result.phone.as_deref(), Some("+15555551234"));
         assert_eq!(result.user_id, "user-1");
@@ -253,8 +258,14 @@ mod tests {
     async fn find_or_create_by_phone_returns_existing() {
         let svc = make_test_service().await;
 
-        let first = svc.find_or_create_by_phone("user-1", "+15555551234", "Alice").await.unwrap();
-        let second = svc.find_or_create_by_phone("user-1", "+15555551234", "Alice2").await.unwrap();
+        let first = svc
+            .find_or_create_by_phone("user-1", "+15555551234", "Alice")
+            .await
+            .unwrap();
+        let second = svc
+            .find_or_create_by_phone("user-1", "+15555551234", "Alice2")
+            .await
+            .unwrap();
         assert_eq!(first.id, second.id);
         assert_eq!(second.name, "Alice");
     }
@@ -279,7 +290,11 @@ mod tests {
             .unwrap();
         assert_eq!(first.id, second.id);
         assert_eq!(second.name, "Bob");
-        assert_eq!(second.addresses.len(), 1, "duplicate (provider,address) must not append");
+        assert_eq!(
+            second.addresses.len(),
+            1,
+            "duplicate (provider,address) must not append"
+        );
 
         let third = svc
             .upsert_by_channel_address("user-1", "space-1", "telegram", "99", Some("ch-1"), "Carol")

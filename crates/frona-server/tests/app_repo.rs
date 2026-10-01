@@ -1,8 +1,8 @@
-use frona::db::init as db;
-use frona::db::repo::generic::SurrealRepo;
 use frona::app::models::{App, AppStatus};
 use frona::app::repository::AppRepository;
 use frona::core::repository::Repository;
+use frona::db::init as db;
+use frona::db::repo::generic::SurrealRepo;
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem};
 

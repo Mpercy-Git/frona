@@ -11,8 +11,8 @@ use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
 use frona::tool::task::next_cron_occurrence;
 use std::time::Duration;
-use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 use tokio::sync::mpsc;
 
 async fn test_db() -> Surreal<Db> {
@@ -79,8 +79,14 @@ async fn mark_in_progress_broadcasts() {
     let task = seed_direct_task(&db, "user-1").await;
     let _ = drain_events(&mut rx).await;
 
-    svc.mark_in_progress(&task.id, Some("chat-1")).await.unwrap();
-    assert_eq!(drain_events(&mut rx).await, 1, "mark_in_progress must broadcast");
+    svc.mark_in_progress(&task.id, Some("chat-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        drain_events(&mut rx).await,
+        1,
+        "mark_in_progress must broadcast"
+    );
 }
 
 #[tokio::test]
@@ -89,8 +95,14 @@ async fn mark_completed_broadcasts() {
     let task = seed_direct_task(&db, "user-1").await;
     let _ = drain_events(&mut rx).await;
 
-    svc.mark_completed(&task.id, Some("done".into())).await.unwrap();
-    assert_eq!(drain_events(&mut rx).await, 1, "mark_completed must broadcast");
+    svc.mark_completed(&task.id, Some("done".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        drain_events(&mut rx).await,
+        1,
+        "mark_completed must broadcast"
+    );
 }
 
 #[tokio::test]
@@ -110,7 +122,11 @@ async fn mark_cancelled_broadcasts() {
     let _ = drain_events(&mut rx).await;
 
     svc.mark_cancelled(&task.id).await.unwrap();
-    assert_eq!(drain_events(&mut rx).await, 1, "mark_cancelled must broadcast");
+    assert_eq!(
+        drain_events(&mut rx).await,
+        1,
+        "mark_cancelled must broadcast"
+    );
 }
 
 #[tokio::test]
@@ -119,10 +135,18 @@ async fn mark_deferred_broadcasts() {
     let task = seed_direct_task(&db, "user-1").await;
     let _ = drain_events(&mut rx).await;
 
-    svc.mark_deferred(&task.id, Utc::now() + chrono::Duration::minutes(5), "retry later")
-        .await
-        .unwrap();
-    assert_eq!(drain_events(&mut rx).await, 1, "mark_deferred must broadcast");
+    svc.mark_deferred(
+        &task.id,
+        Utc::now() + chrono::Duration::minutes(5),
+        "retry later",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        drain_events(&mut rx).await,
+        1,
+        "mark_deferred must broadcast"
+    );
 }
 
 #[tokio::test]
@@ -132,9 +156,23 @@ async fn cancel_cron_template_broadcasts_template_plus_each_active_child() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = svc
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::PerInstance, CronConcurrency::Allow, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::PerInstance,
+            CronConcurrency::Allow,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
     svc.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
@@ -156,13 +194,31 @@ async fn create_cron_template_broadcasts_pending() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
 
     svc.create_cron_template(
-        "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-        next, None, None, None, None,
-        CronMode::Singleton, CronConcurrency::Replace, false, None, None)
+        "user-1",
+        "agent-1",
+        "t",
+        "d",
+        "* * * * *",
+        "UTC".into(),
+        next,
+        None,
+        None,
+        None,
+        None,
+        CronMode::Singleton,
+        CronConcurrency::Replace,
+        false,
+        None,
+        None,
+    )
     .await
     .unwrap();
 
-    assert_eq!(drain_events(&mut rx).await, 1, "create_cron_template must broadcast");
+    assert_eq!(
+        drain_events(&mut rx).await,
+        1,
+        "create_cron_template must broadcast"
+    );
 }
 
 #[tokio::test]
@@ -171,15 +227,33 @@ async fn spawn_cron_run_broadcasts_pending() {
     let next = next_cron_occurrence("* * * * *", "UTC").unwrap();
     let template = svc
         .create_cron_template(
-            "user-1", "agent-1", "t", "d", "* * * * *", "UTC".into(),
-            next, None, None, None, None,
-            CronMode::Singleton, CronConcurrency::Replace, false, None, None)
+            "user-1",
+            "agent-1",
+            "t",
+            "d",
+            "* * * * *",
+            "UTC".into(),
+            next,
+            None,
+            None,
+            None,
+            None,
+            CronMode::Singleton,
+            CronConcurrency::Replace,
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
     let _ = drain_events(&mut rx).await;
 
     svc.spawn_cron_run(&template, Utc::now(), 1).await.unwrap();
-    assert_eq!(drain_events(&mut rx).await, 1, "spawn_cron_run must broadcast");
+    assert_eq!(
+        drain_events(&mut rx).await,
+        1,
+        "spawn_cron_run must broadcast"
+    );
 }
 
 async fn seed_direct_task(db: &Surreal<Db>, user_id: &str) -> Task {
@@ -193,7 +267,9 @@ async fn seed_direct_task(db: &Surreal<Db>, user_id: &str) -> Task {
         title: "T".into(),
         description: "d".into(),
         status: TaskStatus::Pending,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,

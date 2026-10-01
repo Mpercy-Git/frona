@@ -154,11 +154,8 @@ impl PushSender {
 
         for sub in subs {
             let service = Self::endpoint_host(&sub.endpoint);
-            let subscription_info = SubscriptionInfo::new(
-                &sub.endpoint,
-                &sub.p256dh_key,
-                &sub.auth_secret,
-            );
+            let subscription_info =
+                SubscriptionInfo::new(&sub.endpoint, &sub.p256dh_key, &sub.auth_secret);
 
             // Build VAPID signature (needs per-subscription info). The `sub`
             // claim is REQUIRED by FCM (Android/Chrome): without it the push is

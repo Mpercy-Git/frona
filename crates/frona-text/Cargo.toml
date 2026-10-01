@@ -5,6 +5,8 @@ version.workspace = true
 
 [dependencies]
 unicode-normalization-alignments = "0.1"
+unicode-casefold = "0.2"
+unicode_categories = "0.1"
 ignore = "0.4"
 serde = { workspace = true, optional = true }
 
@@ -14,4 +16,3 @@ serde = ["dep:serde"]
 
 [dev-dependencies]
 tempfile = "3"
-unicode_categories = "0.1"

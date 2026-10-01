@@ -60,11 +60,9 @@ use tokio::sync::{Mutex, oneshot};
 
 use crate::chat::channel::attachment;
 use crate::chat::channel::error::ChannelError;
-use crate::chat::channel::models::{
-    ChannelAdapter, ChannelCtx, SetupConfig, external_chat_id,
-};
 #[cfg(test)]
 use crate::chat::channel::models::ChannelFactory;
+use crate::chat::channel::models::{ChannelAdapter, ChannelCtx, SetupConfig, external_chat_id};
 use crate::chat::channel::typing::TypingIndicator;
 use crate::chat::message::models::Message;
 use crate::chat::models::Chat;
@@ -104,9 +102,10 @@ impl From<SignalConfig> for SignalAdapter {
         Self {
             handle: Mutex::new(None),
             typing: TypingIndicator::new(),
-            splitter: super::split::SignalSplitter::new(
-                super::split::MarkdownSplitter::new(SIGNAL_MAX_MESSAGE_LEN, None),
-            ),
+            splitter: super::split::SignalSplitter::new(super::split::MarkdownSplitter::new(
+                SIGNAL_MAX_MESSAGE_LEN,
+                None,
+            )),
         }
     }
 }
@@ -176,7 +175,9 @@ impl ChannelAdapter for SignalAdapter {
         if text.trim().is_empty() {
             return Ok(());
         }
-        self.dispatch_text(chat, text, &msg.id, ctx).await.map(|_| ())
+        self.dispatch_text(chat, text, &msg.id, ctx)
+            .await
+            .map(|_| ())
     }
 
     async fn on_send(
@@ -215,7 +216,9 @@ impl ChannelAdapter for SignalAdapter {
         if combined.trim().is_empty() {
             return Ok(());
         }
-        self.dispatch_text(chat, &combined, &msg.id, ctx).await.map(|_| ())
+        self.dispatch_text(chat, &combined, &msg.id, ctx)
+            .await
+            .map(|_| ())
     }
 
     async fn on_inference_start(&self, chat: &Chat, ctx: &ChannelCtx) -> Result<(), ChannelError> {
@@ -228,18 +231,20 @@ impl ChannelAdapter for SignalAdapter {
         let Ok(cmd_tx) = self.cmd_tx(&ctx.channel.id).await else {
             return Ok(());
         };
-        self.typing.start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
-            let cmd_tx = cmd_tx.clone();
-            let target = target.clone();
-            async move {
-                let _ = cmd_tx
-                    .send(SignalCommand::SendTyping {
-                        target,
-                        action: TypingAction::Started,
-                    })
-                    .await;
-            }
-        }).await;
+        self.typing
+            .start(chat.id.clone(), TYPING_REFRESH_INTERVAL, move || {
+                let cmd_tx = cmd_tx.clone();
+                let target = target.clone();
+                async move {
+                    let _ = cmd_tx
+                        .send(SignalCommand::SendTyping {
+                            target,
+                            action: TypingAction::Started,
+                        })
+                        .await;
+                }
+            })
+            .await;
         Ok(())
     }
 
@@ -258,8 +263,12 @@ impl ChannelAdapter for SignalAdapter {
         // Sequential cadence: render only the first pending HITL. The cursor
         // advances by 1; the next pending HITL renders after this one resolves
         // (via text reply or web URL).
-        let Some(tc) = batch.first() else { return Ok(Vec::new()) };
-        let Some(h) = tc.hitl.as_ref() else { return Ok(Vec::new()) };
+        let Some(tc) = batch.first() else {
+            return Ok(Vec::new());
+        };
+        let Some(h) = tc.hitl.as_ref() else {
+            return Ok(Vec::new());
+        };
 
         let body = crate::chat::channel::hitl::render_text(h);
         let ts = self.dispatch_text(chat, &body, &tc.id, ctx).await?;
@@ -316,9 +325,7 @@ impl SignalAdapter {
                 reply,
             })
             .await
-            .map_err(|_| {
-                ChannelError::transient("Signal worker command channel closed")
-            })?;
+            .map_err(|_| ChannelError::transient("Signal worker command channel closed"))?;
         rx.await
             .map_err(|_| ChannelError::transient("Signal worker dropped reply oneshot"))?
     }
@@ -339,7 +346,10 @@ impl SignalAdapter {
         let Ok(cmd_tx) = self.cmd_tx(&ctx.channel.id).await else {
             return Ok(());
         };
-        if let Err(e) = cmd_tx.send(SignalCommand::SendTyping { target, action }).await {
+        if let Err(e) = cmd_tx
+            .send(SignalCommand::SendTyping { target, action })
+            .await
+        {
             tracing::debug!(
                 channel_id = %ctx.channel.id,
                 error = %e,

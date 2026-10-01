@@ -14,9 +14,8 @@ const SELECT_CLAUSE: &str = "SELECT *, meta::id(id) as id";
 #[async_trait]
 impl ShareRepository for SurrealRepo<Share> {
     async fn find_active_by_id(&self, id: &str) -> Result<Option<Share>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM share WHERE id = $id AND expires_at > $now LIMIT 1"
-        );
+        let query =
+            format!("{SELECT_CLAUSE} FROM share WHERE id = $id AND expires_at > $now LIMIT 1");
         let thing = surrealdb::types::RecordId::new("share", id);
         let mut result = self
             .db()

@@ -27,9 +27,24 @@ use super::models::{
 use super::registry::McpRegistryClient;
 use super::repository::McpServerRepository;
 
+/// What a warm-up learned that the request could not state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WarmUpOutcome {
+    /// The package name a runtime invocation should target. A registry package
+    /// is invoked by the identifier the manifest already carries, so the answer
+    /// is `None`; a direct spec - a git shorthand, a tarball URL, a local path -
+    /// names no package until npm resolves it, and `npx` needs that name to find
+    /// the bin it installed.
+    pub invocation_name: Option<String>,
+    /// What landed on disk, as opposed to what was asked for: a version, or
+    /// `{version}+{commit}` when the package came from git. `package.version`
+    /// records the request, which for an unpinned install is only "latest".
+    pub resolved_ref: Option<String>,
+}
+
 #[async_trait]
 pub trait PackageInstaller: Send + Sync {
-    async fn install(&self, server: &McpServer) -> Result<(), AppError>;
+    async fn install(&self, server: &McpServer) -> Result<WarmUpOutcome, AppError>;
 }
 
 pub struct SandboxedPackageInstaller {
@@ -44,38 +59,61 @@ impl SandboxedPackageInstaller {
 
 #[async_trait]
 impl PackageInstaller for SandboxedPackageInstaller {
-    async fn install(&self, server: &McpServer) -> Result<(), AppError> {
+    async fn install(&self, server: &McpServer) -> Result<WarmUpOutcome, AppError> {
         // No package to warm up, and no sandbox needed: nothing is ever
         // spawned for a remote-only server.
         if server.package.runtime == McpRuntime::Remote {
-            return Ok(());
+            return Ok(WarmUpOutcome::default());
         }
 
         let sandbox = self.manager.build_install_sandbox(server);
         sandbox.setup()?;
 
+        let direct_npm_spec =
+            server.package.runtime == McpRuntime::Npm && is_direct_npm_spec(&server.package.name);
+
         let (warmup_cmd, warmup_args) = match server.package.runtime {
+            // A direct spec carries no registry version, so pinning it with
+            // `@{version}` sends npm after a package that cannot exist:
+            // `github:owner/repo@latest` is parsed as the repo `null/latest`.
+            // Installed *with* a save, because the manifest npm writes is the
+            // only record of the name the spec resolved to.
+            McpRuntime::Npm if direct_npm_spec => {
+                seed_workspace_manifest(&server.workspace_dir)?;
+                (
+                    "npm",
+                    vec!["install".to_string(), server.package.name.clone()],
+                )
+            }
             McpRuntime::Npm => {
                 let pkg = format!("{}@{}", server.package.name, server.package.version);
-                ("npm", vec!["install".to_string(), "--no-save".to_string(), pkg])
+                (
+                    "npm",
+                    vec!["install".to_string(), "--no-save".to_string(), pkg],
+                )
             }
             McpRuntime::Pypi => {
                 let pkg = format!("{}=={}", server.package.name, server.package.version);
                 ("uv", vec!["tool".to_string(), "install".to_string(), pkg])
             }
-            McpRuntime::Binary => return Ok(()),
+            McpRuntime::Binary => return Ok(WarmUpOutcome::default()),
             McpRuntime::Remote => unreachable!("handled above"),
         };
 
         let log_dir = std::path::Path::new(&server.workspace_dir).join("logs");
         std::fs::create_dir_all(&log_dir).ok();
         let log_path = log_dir.join("server.log");
+        // Where this attempt's output starts. The log is appended to across
+        // every install and start a server ever has, so a tail of the whole
+        // file can explain this failure with the last one's reasons.
+        let log_offset = log_len(&log_path);
         let log_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log_path)
             .map_err(|e| AppError::Tool(format!("opening {}: {e}", log_path.display())))?;
-        let log_file_clone = log_file.try_clone()
+        let log_file_clone = log_file
+            .try_clone()
             .map_err(|e| AppError::Tool(format!("cloning log fd: {e}")))?;
 
         let args_refs: Vec<&str> = warmup_args.iter().map(|s| s.as_str()).collect();
@@ -89,27 +127,71 @@ impl PackageInstaller for SandboxedPackageInstaller {
             std::process::Stdio::from(log_file_clone),
         )?;
 
-        let status = child.wait_with_output().await.map_err(|e| {
-            AppError::Tool(format!("MCP package warm-up failed to run: {e}"))
-        })?.status;
+        let status = child
+            .wait_with_output()
+            .await
+            .map_err(|e| AppError::Tool(format!("MCP package warm-up failed to run: {e}")))?
+            .status;
 
         if !status.success() {
-            let log_tail = crate::tool::mcp::manager::read_log_file(&log_path, 4096);
-            return Err(AppError::Tool(format!(
-                "MCP package warm-up for {} exited with {}: {}",
-                server.package.name,
-                status,
-                log_tail.lines().rev().take(10).collect::<Vec<_>>().join("\n"),
-            )));
+            let log = read_log_from(&log_path, log_offset);
+            let detail = super::diagnosis::relevant_tail(&log, 10);
+            // The exit code says a package manager gave up; only its output
+            // says why, and an installer that reads it spares every caller
+            // downstream from parsing npm.
+            return Err(
+                match super::diagnosis::explain_package_failure(
+                    &server.package.runtime,
+                    &server.package.name,
+                    &server.package.version,
+                    &log,
+                ) {
+                    Some(cause) => AppError::Tool(format!(
+                        "installing {} failed: {cause}\n\n{detail}",
+                        server.package.name
+                    )),
+                    None => AppError::Tool(format!(
+                        "installing {} failed ({status}):\n\n{detail}",
+                        server.package.name
+                    )),
+                },
+            );
         }
+
+        let invocation_name = if direct_npm_spec {
+            Some(resolve_installed_package_name(
+                &server.workspace_dir,
+                &server.package.name,
+            )?)
+        } else {
+            None
+        };
+
+        // Only npm writes a lockfile we can read back; a `uv tool install`
+        // leaves nothing equivalent in the workspace, so a PyPI server has no
+        // resolved ref and the UI says so rather than inventing one.
+        let resolved_ref = match server.package.runtime {
+            McpRuntime::Npm => {
+                let name = invocation_name.as_deref().unwrap_or(&server.package.name);
+                read_installed_ref(&server.workspace_dir, name)
+            }
+            _ => None,
+        };
+
+        let outcome = WarmUpOutcome {
+            invocation_name,
+            resolved_ref,
+        };
 
         tracing::info!(
             server_id = %server.id,
             package = %server.package.name,
             runtime = %server.package.runtime,
+            resolved_package = ?outcome.invocation_name,
+            resolved_ref = ?outcome.resolved_ref,
             "package warm-up succeeded"
         );
-        Ok(())
+        Ok(outcome)
     }
 }
 
@@ -117,9 +199,20 @@ pub struct NoopPackageInstaller;
 
 #[async_trait]
 impl PackageInstaller for NoopPackageInstaller {
-    async fn install(&self, _server: &McpServer) -> Result<(), AppError> {
-        Ok(())
+    async fn install(&self, _server: &McpServer) -> Result<WarmUpOutcome, AppError> {
+        Ok(WarmUpOutcome::default())
     }
+}
+
+/// What a reinstall changed. `changed` compares the resolved ref, so it is
+/// false when the source had not moved - the usual outcome of pressing update
+/// on a server that is already current.
+#[derive(Debug, Clone)]
+pub struct ReinstallResult {
+    pub server: McpServer,
+    pub changed: bool,
+    pub previous_ref: Option<String>,
+    pub restarted: bool,
 }
 
 pub struct McpServerService {
@@ -208,10 +301,7 @@ impl McpServerService {
         Ok(())
     }
 
-    pub async fn fetch_registry(
-        &self,
-        name: &str,
-    ) -> Result<RegistryServerEntry, AppError> {
+    pub async fn fetch_registry(&self, name: &str) -> Result<RegistryServerEntry, AppError> {
         self.registry.fetch(name).await
     }
 
@@ -243,7 +333,12 @@ impl McpServerService {
             let Ok(candidate) = crate::core::Handle::try_new(&candidate_raw) else {
                 continue;
             };
-            if self.repo.find_by_handle(user_id, &candidate).await?.is_none() {
+            if self
+                .repo
+                .find_by_handle(user_id, &candidate)
+                .await?
+                .is_none()
+            {
                 return Ok(candidate);
             }
         }
@@ -261,14 +356,25 @@ impl McpServerService {
     ) -> Result<McpServer, AppError> {
         if let Some(remote) = req.remote.clone() {
             return self
-                .install_remote(user_id, user_handle, &req, remote.url, remote.transport, remote.headers, None)
+                .install_remote(
+                    user_id,
+                    user_handle,
+                    &req,
+                    remote.url,
+                    remote.transport,
+                    remote.headers,
+                    None,
+                )
                 .await;
         }
 
         let entry = self.resolve_entry(&req).await?;
         let package = pick_package(&entry).cloned();
         match package {
-            Some(package) => self.install_local(user_id, user_handle, req, entry, package).await,
+            Some(package) => {
+                self.install_local(user_id, user_handle, req, entry, package)
+                    .await
+            }
             None => {
                 let remote_transport = entry.remotes.first().cloned().ok_or_else(|| {
                     AppError::Validation(
@@ -333,7 +439,9 @@ impl McpServerService {
             .to_string_lossy()
             .into_owned();
         std::fs::create_dir_all(&workspace_dir).map_err(|e| {
-            AppError::Tool(format!("creating MCP server workspace {workspace_dir}: {e}"))
+            AppError::Tool(format!(
+                "creating MCP server workspace {workspace_dir}: {e}"
+            ))
         })?;
 
         let (runtime, command, args) = build_invocation(&package)?;
@@ -353,40 +461,57 @@ impl McpServerService {
                 .clone()
                 .or(entry.title.clone())
                 .unwrap_or_else(|| {
-                    entry.name.rsplit('/').next().unwrap_or(&entry.name).to_string()
+                    entry
+                        .name
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&entry.name)
+                        .to_string()
                 }),
-            description: req.description_override.clone().or_else(|| Some(entry.description.clone())),
+            description: req
+                .description_override
+                .clone()
+                .or_else(|| Some(entry.description.clone())),
             repository_url: entry.repository.as_ref().and_then(|r| r.url.clone()),
             registry_id: Some(entry.name.clone()),
             server_info: None,
             package: mcp_package,
+            resolved_ref: None,
             command,
             args,
             env: req.extra_env.clone(),
-            transports: entry.packages.iter().filter_map(|p| {
-                let pkg_args = build_invocation(p).map(|(_, _, a)| a).ok()?;
-                Some(match p.transport.kind.as_str() {
-                    "streamable-http" | "sse" => TransportConfig::Http {
-                        args: pkg_args,
-                        env: BTreeMap::from([
-                            ("MCP_TRANSPORT_TYPE".into(), "http".into()),
-                        ]),
-                        port_env_var: p.environment_variables.iter()
-                            .find(|v| v.name.ends_with("_PORT") || v.name == "PORT")
-                            .map(|v| v.name.clone()),
-                        endpoint_path: p.transport.url.as_ref()
-                            .and_then(|u| u.rfind('/').map(|i| u[i..].to_string())),
-                        url: None,
-                        headers: BTreeMap::new(),
-                    },
-                    _ => TransportConfig::Stdio {
-                        args: pkg_args,
-                        env: Default::default(),
-                    },
+            transports: entry
+                .packages
+                .iter()
+                .filter_map(|p| {
+                    let pkg_args = build_invocation(p).map(|(_, _, a)| a).ok()?;
+                    Some(match p.transport.kind.as_str() {
+                        "streamable-http" | "sse" => TransportConfig::Http {
+                            args: pkg_args,
+                            env: BTreeMap::from([("MCP_TRANSPORT_TYPE".into(), "http".into())]),
+                            port_env_var: p
+                                .environment_variables
+                                .iter()
+                                .find(|v| v.name.ends_with("_PORT") || v.name == "PORT")
+                                .map(|v| v.name.clone()),
+                            endpoint_path: p
+                                .transport
+                                .url
+                                .as_ref()
+                                .and_then(|u| u.rfind('/').map(|i| u[i..].to_string())),
+                            url: None,
+                            headers: BTreeMap::new(),
+                        },
+                        _ => TransportConfig::Stdio {
+                            args: pkg_args,
+                            env: Default::default(),
+                        },
+                    })
                 })
-            }).collect(),
+                .collect(),
             active_transport: package.transport.kind.clone(),
             status: McpServerStatus::Installed,
+            last_error: None,
             tool_cache: Vec::new(),
             workspace_dir,
             installed_at: now,
@@ -394,9 +519,39 @@ impl McpServerService {
             updated_at: now,
         };
 
+        // Everything past this point can fail with the row already written, so
+        // it runs where a failure is recorded on the row rather than left for
+        // whoever presses start next. The server used to be left saying
+        // "installed", which it never was: a start re-ran the same doomed fetch
+        // and answered with npm's transcript. Update reinstalls in place once
+        // the cause is fixed, and Uninstall clears it away.
         let persisted = self.repo.create(&server).await?;
-        self.write_bindings(user_id, &persisted.id, req.credentials).await?;
-        self.installer.install(&persisted).await?;
+        match self
+            .finish_local_install(user_id, persisted.clone(), req)
+            .await
+        {
+            Ok(server) => Ok(server),
+            Err(e) => {
+                self.record_failure(&persisted.id, &e).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// The half of a local install that happens once the server exists:
+    /// bindings, policy, and the warm-up that actually fetches the package.
+    async fn finish_local_install(
+        &self,
+        user_id: &str,
+        persisted: McpServer,
+        req: McpServerInstall,
+    ) -> Result<McpServer, AppError> {
+        self.write_bindings(user_id, &persisted.id, req.credentials)
+            .await?;
+        // Written before the warm-up rather than after it, so a failed install
+        // keeps the policy the caller asked for: the row survives the failure
+        // for them to retry from, and the retry is a reinstall, which never
+        // revisits this request.
         let sandbox_policy = req.sandbox_policy.unwrap_or_default();
         self.policy_service
             .reconcile_sandbox_policy(
@@ -405,7 +560,43 @@ impl McpServerService {
                 &sandbox_policy,
             )
             .await?;
-        Ok(persisted)
+
+        let outcome = self.installer.install(&persisted).await?;
+        self.apply_warm_up_outcome(persisted, outcome).await
+    }
+
+    /// Records what the warm-up learned: the name to invoke, and the version or
+    /// commit that actually landed. Persists once, even when both changed.
+    ///
+    /// The invocation is pointed at the resolved name rather than left as the
+    /// spec because `npx` re-fetches a spec from the network on every start,
+    /// while a package name resolves against the `node_modules` the warm-up
+    /// already populated - so a started server needs no egress to npm or to the
+    /// forge it was installed from.
+    async fn apply_warm_up_outcome(
+        &self,
+        mut server: McpServer,
+        outcome: WarmUpOutcome,
+    ) -> Result<McpServer, AppError> {
+        if outcome == WarmUpOutcome::default() {
+            return Ok(server);
+        }
+        if let Some(name) = outcome.invocation_name.as_deref() {
+            let spec = server.package.name.clone();
+            swap_invocation_target(&mut server.args, &spec, name);
+            for transport in server.transports.iter_mut() {
+                match transport {
+                    TransportConfig::Stdio { args, .. } | TransportConfig::Http { args, .. } => {
+                        swap_invocation_target(args, &spec, name)
+                    }
+                }
+            }
+        }
+        if outcome.resolved_ref.is_some() {
+            server.resolved_ref = outcome.resolved_ref;
+        }
+        server.updated_at = Utc::now();
+        self.repo.update(&server).await
     }
 
     /// Installs a server reachable only over a remote streamable-HTTP/SSE
@@ -463,7 +654,9 @@ impl McpServerService {
             .to_string_lossy()
             .into_owned();
         std::fs::create_dir_all(&workspace_dir).map_err(|e| {
-            AppError::Tool(format!("creating MCP server workspace {workspace_dir}: {e}"))
+            AppError::Tool(format!(
+                "creating MCP server workspace {workspace_dir}: {e}"
+            ))
         })?;
 
         let now = Utc::now();
@@ -489,6 +682,7 @@ impl McpServerService {
                 name: url.clone(),
                 version: "-".into(),
             },
+            resolved_ref: None,
             command: String::new(),
             args: Vec::new(),
             env: req.extra_env.clone(),
@@ -502,6 +696,7 @@ impl McpServerService {
             }],
             active_transport: transport_kind,
             status: McpServerStatus::Installed,
+            last_error: None,
             tool_cache: Vec::new(),
             workspace_dir,
             installed_at: now,
@@ -510,7 +705,8 @@ impl McpServerService {
         };
 
         let persisted = self.repo.create(&server).await?;
-        self.write_bindings(user_id, &persisted.id, req.credentials.clone()).await?;
+        self.write_bindings(user_id, &persisted.id, req.credentials.clone())
+            .await?;
         self.installer.install(&persisted).await?;
         let sandbox_policy = req.sandbox_policy.clone().unwrap_or_default();
         self.policy_service
@@ -604,11 +800,13 @@ impl McpServerService {
                     validate_credential_bindings(&required, &credentials, &server.env)?;
                 }
             }
-            self.verify_grants(user_id, &server.id, &credentials).await?;
+            self.verify_grants(user_id, &server.id, &credentials)
+                .await?;
             self.vault
                 .delete_bindings_for_principal(user_id, &Principal::mcp_server(&server.id))
                 .await?;
-            self.write_bindings(user_id, &server.id, credentials).await?;
+            self.write_bindings(user_id, &server.id, credentials)
+                .await?;
         }
 
         if let Some(description) = req.description {
@@ -643,8 +841,12 @@ impl McpServerService {
         let server = self.load_owned(user_id, server_id).await?;
         let _ = self.manager.stop(server_id).await;
         let principal = Principal::mcp_server(&server.id);
-        self.vault.delete_bindings_for_principal(user_id, &principal).await?;
-        self.vault.delete_grants_for_principal(user_id, &principal).await?;
+        self.vault
+            .delete_bindings_for_principal(user_id, &principal)
+            .await?;
+        self.vault
+            .delete_grants_for_principal(user_id, &principal)
+            .await?;
         self.policy_service
             .reconcile_sandbox_policy(
                 user_id,
@@ -687,6 +889,7 @@ impl McpServerService {
         server.updated_at = Utc::now();
         self.repo.update(&server).await?;
 
+        let log_offset = log_len(&server_log_path(&server));
         let tools = match self
             .manager
             .start_with_token(&server, resolved_env, Some(token_guard))
@@ -694,7 +897,13 @@ impl McpServerService {
         {
             Ok(tools) => tools,
             Err(e) => {
+                // What the handshake can say is that it got nothing back. What
+                // the child wrote on its way out says why - that the package it
+                // was told to run does not exist, most often - and that is the
+                // half the caller cannot reach.
+                let e = explain_from_log(&server, log_offset, e);
                 server.status = McpServerStatus::Failed;
+                server.last_error = Some(e.to_string());
                 server.updated_at = Utc::now();
                 let _ = self.repo.update(&server).await;
                 return Err(e);
@@ -702,8 +911,15 @@ impl McpServerService {
         };
 
         server.status = McpServerStatus::Running;
+        server.last_error = None;
         server.last_started_at = Some(Utc::now());
         server.updated_at = Utc::now();
+        // The only version a server states about itself, and the only one there
+        // is for a remote server, where nothing was installed locally to read a
+        // ref from. Absent when a server declines to name itself at initialize.
+        if let Some(info) = self.manager.peer_server_info(&server.id).await {
+            server.server_info = Some(info);
+        }
         server.tool_cache = tools
             .iter()
             .map(|t| CachedMcpTool {
@@ -714,17 +930,112 @@ impl McpServerService {
             .collect();
         self.repo.update(&server).await?;
 
-        if !tools.is_empty() {
+        // Hand the tool the live cache rather than this snapshot: a gated server
+        // advertises its full set only after something unlocks it, and that
+        // `tools/list_changed` has to reach the agent without a restart.
+        if !tools.is_empty()
+            && let Some(tool_cache) = self.manager.tool_cache_handle(&server.id).await
+        {
             let mcp_tool = Arc::new(super::mcp_tool::McpTool::new(
                 self.manager.clone(),
                 server.handle.as_str(),
-                tools.clone(),
+                tool_cache,
+                server.id.clone(),
+                self.manager.supports_resources(&server.id).await,
             ));
-            self.tool_manager.register_user_tool(user_id, mcp_tool).await;
+            self.tool_manager
+                .register_user_tool(user_id, mcp_tool)
+                .await;
             self.policy_service.invalidate_cache(user_id).await;
         }
 
         Ok(StartResult { tools })
+    }
+
+    /// Re-runs the warm-up so a server picks up whatever its source now points
+    /// at, keeping the row and everything hanging off it - credential bindings,
+    /// sandbox policy, the handle every agent's tool ids are built from.
+    /// Uninstalling and reinstalling would lose all of that.
+    ///
+    /// Nothing here checks whether an update exists: a moving git branch has no
+    /// version to compare, so the honest answer is to reinstall and report what
+    /// changed. A server that was running is restarted, because a stopped
+    /// server is not what the caller had before they asked.
+    pub async fn reinstall(
+        &self,
+        user_id: &str,
+        server_id: &str,
+    ) -> Result<ReinstallResult, AppError> {
+        let server = self.load_owned(user_id, server_id).await?;
+        if server.package.runtime == McpRuntime::Remote {
+            return Err(AppError::Validation(
+                "a remote server installs nothing locally - there is nothing to update".into(),
+            ));
+        }
+
+        let was_running = matches!(server.status, McpServerStatus::Running);
+        if was_running {
+            self.stop(user_id, server_id).await?;
+        }
+
+        let previous_ref = server.resolved_ref.clone();
+        let server = self.load_owned(user_id, server_id).await?;
+
+        // A failed warm-up leaves the row as it was: the workspace may be half
+        // written, but the invocation and resolved ref still describe the last
+        // install that worked, and the caller is told rather than left with a
+        // server silently pointing at nothing.
+        let outcome = match self.installer.install(&server).await {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                if was_running {
+                    let _ = self.start(user_id, server_id).await;
+                }
+                return Err(e);
+            }
+        };
+
+        let mut server = self.apply_warm_up_outcome(server, outcome).await?;
+        let new_ref = server.resolved_ref.clone();
+        // The reason a failed install left behind describes a fetch that has
+        // now succeeded, so it stops being true here rather than at the next
+        // start.
+        if server.last_error.take().is_some() {
+            server.status = McpServerStatus::Installed;
+            server.updated_at = Utc::now();
+            self.repo.update(&server).await?;
+        }
+
+        if was_running {
+            self.start(user_id, server_id).await?;
+        }
+
+        Ok(ReinstallResult {
+            server: self.load_owned(user_id, server_id).await?,
+            changed: previous_ref != new_ref,
+            previous_ref,
+            restarted: was_running,
+        })
+    }
+
+    /// Marks a server failed and keeps the reason with it, so its page can lead
+    /// with a cause rather than a transcript - including when nobody was
+    /// watching, which is how the supervisor gives a server up.
+    pub async fn mark_failed(&self, server_id: &str, reason: &str) -> Result<(), AppError> {
+        let mut server = self.find_by_id(server_id).await?;
+        server.status = McpServerStatus::Failed;
+        server.last_error = Some(reason.to_string());
+        server.updated_at = Utc::now();
+        self.repo.update(&server).await?;
+        Ok(())
+    }
+
+    /// Best effort [`Self::mark_failed`]: an install that has already failed is
+    /// not improved by failing to write down why.
+    async fn record_failure(&self, server_id: &str, reason: &AppError) {
+        if let Err(e) = self.mark_failed(server_id, &reason.to_string()).await {
+            tracing::warn!(server_id, error = %e, "could not record why an MCP server failed");
+        }
     }
 
     pub async fn stop(&self, user_id: &str, server_id: &str) -> Result<(), AppError> {
@@ -735,7 +1046,9 @@ impl McpServerService {
         self.repo.update(&server).await?;
 
         let owner_name = format!("mcp__{}", server.handle);
-        self.tool_manager.deregister_user_tool(user_id, &owner_name).await;
+        self.tool_manager
+            .deregister_user_tool(user_id, &owner_name)
+            .await;
         self.policy_service.invalidate_cache(user_id).await;
 
         Ok(())
@@ -755,10 +1068,7 @@ impl McpServerService {
         Ok(server)
     }
 
-    async fn resolve_entry(
-        &self,
-        req: &McpServerInstall,
-    ) -> Result<RegistryServerEntry, AppError> {
+    async fn resolve_entry(&self, req: &McpServerInstall) -> Result<RegistryServerEntry, AppError> {
         if let Some(manifest) = &req.manifest {
             return serde_json::from_value(manifest.clone())
                 .map_err(|e| AppError::Validation(format!("invalid MCP server manifest: {e}")));
@@ -769,10 +1079,7 @@ impl McpServerService {
         self.registry.fetch(name).await
     }
 
-    async fn resolve_env(
-        &self,
-        server: &McpServer,
-    ) -> Result<BTreeMap<String, String>, AppError> {
+    async fn resolve_env(&self, server: &McpServer) -> Result<BTreeMap<String, String>, AppError> {
         let mut out = server.env.clone();
         let principal = Principal::mcp_server(&server.id);
         let bindings = self
@@ -798,10 +1105,14 @@ impl McpServerService {
 
             let secret = self
                 .vault
-                .get_secret(&server.user_id, &binding.connection_id, &binding.vault_item_id)
+                .get_secret(
+                    &server.user_id,
+                    &binding.connection_id,
+                    &binding.vault_item_id,
+                )
                 .await?;
             for (k, v) in
-                crate::credential::vault::service::project_target(&secret, &binding.target)
+                crate::credential::vault::service::project_target(&secret, &binding.target)?
             {
                 out.insert(k, v);
             }
@@ -815,14 +1126,183 @@ fn pick_package(entry: &RegistryServerEntry) -> Option<&RegistryPackage> {
     const PREFERRED_TRANSPORTS: &[&str] = &["stdio", "streamable-http", "sse"];
     for runtime in PREFERRED_RUNTIMES {
         for transport in PREFERRED_TRANSPORTS {
-            if let Some(p) = entry.packages.iter().find(|p| {
-                p.registry_type == *runtime && p.transport.kind == *transport
-            }) {
+            if let Some(p) = entry
+                .packages
+                .iter()
+                .find(|p| p.registry_type == *runtime && p.transport.kind == *transport)
+            {
                 return Some(p);
             }
         }
     }
     None
+}
+
+/// Whether an npm identifier is something other than a registry name. npm also
+/// takes git shorthands and URLs, tarball URLs, and local paths; none of them
+/// carry a registry version, and none of them say what package they resolve to.
+fn is_direct_npm_spec(identifier: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "github:",
+        "gitlab:",
+        "bitbucket:",
+        "gist:",
+        "git:",
+        "git+",
+        "http://",
+        "https://",
+        "file:",
+        "/",
+        "./",
+        "../",
+    ];
+    if PREFIXES.iter().any(|p| identifier.starts_with(p)) {
+        return true;
+    }
+    // `owner/repo` with no leading `@` is npm's GitHub shorthand - a scoped
+    // registry package is the only other identifier carrying a slash.
+    !identifier.starts_with('@') && identifier.contains('/')
+}
+
+/// `npm install <spec>` records the name a spec resolved to only if there is a
+/// manifest to record it in. Seeds a private, empty one; a manifest already in
+/// the workspace is left alone.
+fn seed_workspace_manifest(workspace_dir: &str) -> Result<(), AppError> {
+    let path = std::path::Path::new(workspace_dir).join("package.json");
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::write(
+        &path,
+        "{\n  \"name\": \"frona-mcp-workspace\",\n  \"version\": \"0.0.0\",\n  \"private\": true\n}\n",
+    )
+    .map_err(|e| AppError::Tool(format!("seeding {}: {e}", path.display())))
+}
+
+/// Reads back the name npm recorded for `spec` in the workspace manifest.
+/// Matching on the recorded value keeps a warm workspace honest; a lone
+/// dependency is taken whatever npm normalised the spec to, since a `file:`
+/// path comes back rewritten relative to the workspace.
+fn resolve_installed_package_name(workspace_dir: &str, spec: &str) -> Result<String, AppError> {
+    let path = std::path::Path::new(workspace_dir).join("package.json");
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| AppError::Tool(format!("reading {}: {e}", path.display())))?;
+    let manifest: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| AppError::Tool(format!("parsing {}: {e}", path.display())))?;
+    let deps = manifest
+        .get("dependencies")
+        .and_then(|d| d.as_object())
+        .ok_or_else(|| {
+            AppError::Tool(format!(
+                "npm recorded no dependency for {spec} in {}",
+                path.display()
+            ))
+        })?;
+
+    if let Some((name, _)) = deps.iter().find(|(_, v)| v.as_str() == Some(spec)) {
+        return Ok(name.clone());
+    }
+    match deps.len() {
+        1 => Ok(deps
+            .keys()
+            .next()
+            .expect("length checked immediately above")
+            .clone()),
+        other => Err(AppError::Tool(format!(
+            "cannot tell which of the workspace's {other} dependencies {spec} installed as"
+        ))),
+    }
+}
+
+/// Reads what npm actually put on disk for `name`. The lockfile npm maintains
+/// under `node_modules` carries the resolved version for every install, and the
+/// commit for one that came from git - the only place a git spec's commit is
+/// recorded, since the spec itself may name a moving branch. Returns
+/// `{version}` or `{version}+{short commit}`; `None` when the package is absent
+/// or the lockfile cannot be read, because a missing ref displays as "unknown"
+/// rather than failing an install that otherwise succeeded.
+fn read_installed_ref(workspace_dir: &str, name: &str) -> Option<String> {
+    let path = std::path::Path::new(workspace_dir)
+        .join("node_modules")
+        .join(".package-lock.json");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let lock: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let entry = lock.get("packages")?.get(format!("node_modules/{name}"))?;
+    let version = entry.get("version")?.as_str()?;
+
+    let commit = entry
+        .get("resolved")
+        .and_then(|r| r.as_str())
+        .and_then(|r| r.rsplit_once('#'))
+        .map(|(_, sha)| sha)
+        .filter(|sha| sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()));
+
+    Some(match commit {
+        Some(sha) => format!("{version}+{}", &sha[..7]),
+        None => version.to_string(),
+    })
+}
+
+fn server_log_path(server: &McpServer) -> PathBuf {
+    PathBuf::from(&server.workspace_dir)
+        .join("logs")
+        .join("server.log")
+}
+
+/// How long a server's log is, read before an attempt so its failure can be
+/// explained from its own output. `0` for a log that does not exist yet.
+fn log_len(log_path: &std::path::Path) -> u64 {
+    std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0)
+}
+
+/// What was appended to a log after `offset`, capped at the last 64 KiB of it -
+/// a server that fails while shouting should not be read into memory whole.
+fn read_log_from(log_path: &std::path::Path, offset: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    const MAX: u64 = 64 * 1024;
+
+    let Ok(mut file) = std::fs::File::open(log_path) else {
+        return String::new();
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return String::new();
+    };
+    // A log that shrank was rotated or replaced under us; what remains of it is
+    // all this attempt can be judged on.
+    let start = offset.min(len).max(len.saturating_sub(MAX));
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buf = String::new();
+    let _ = file.take(MAX).read_to_string(&mut buf);
+    buf
+}
+
+/// Adds what the child said on its way out to an error that only knows the
+/// connection failed. Returns `e` untouched when the log carries nothing we can
+/// speak for, so a start failure never gains a cause the log does not support.
+fn explain_from_log(server: &McpServer, log_offset: u64, e: AppError) -> AppError {
+    let log = read_log_from(&server_log_path(server), log_offset);
+    match super::diagnosis::explain_package_failure(
+        &server.package.runtime,
+        &server.package.name,
+        &server.package.version,
+        &log,
+    ) {
+        // The cause leads and the original follows: the handshake error is
+        // what a bug report needs and nobody reads first.
+        Some(cause) => AppError::Tool(format!("starting {} failed: {cause} ({e})", server.handle)),
+        None => e,
+    }
+}
+
+/// Replaces the install-time target wherever it appears in an argument list.
+fn swap_invocation_target(args: &mut [String], spec: &str, name: &str) {
+    for arg in args.iter_mut() {
+        if arg == spec {
+            *arg = name.to_string();
+        }
+    }
 }
 
 fn build_invocation(
@@ -847,7 +1327,16 @@ fn build_invocation(
 
     match package.registry_type.as_str() {
         "npm" => {
-            let mut args = vec!["--yes".to_string(), pinned];
+            // A direct spec is already a complete instruction to npm; `@{version}`
+            // on top of it is read as a package called `latest`. The target is
+            // swapped for the resolved package name once the warm-up knows it -
+            // see `apply_warm_up_outcome`.
+            let target = if is_direct_npm_spec(&package.identifier) {
+                package.identifier.clone()
+            } else {
+                pinned
+            };
+            let mut args = vec!["--yes".to_string(), target];
             args.extend(runtime_args);
             args.extend(package_args);
             Ok((McpRuntime::Npm, "npx".into(), args))
@@ -908,10 +1397,7 @@ fn validate_absolute_paths(paths: &[String]) -> Result<(), AppError> {
 
 fn strip_namespace(tool_id: &str, slug: &str) -> String {
     let prefix = format!("mcp__{slug}__");
-    tool_id
-        .strip_prefix(&prefix)
-        .unwrap_or(tool_id)
-        .to_string()
+    tool_id.strip_prefix(&prefix).unwrap_or(tool_id).to_string()
 }
 
 #[cfg(test)]
@@ -1001,6 +1487,148 @@ mod tests {
     }
 
     #[test]
+    fn is_direct_npm_spec_spots_everything_npm_takes_besides_a_registry_name() {
+        for spec in [
+            "github:Mpercy-Git/meshcentral-mcp",
+            "Mpercy-Git/meshcentral-mcp",
+            "git+https://example.com/a/b.git",
+            "git://example.com/a/b.git",
+            "https://example.com/pkg.tgz",
+            "file:../local",
+            "/srv/pkg",
+            "./pkg",
+        ] {
+            assert!(is_direct_npm_spec(spec), "{spec} should be a direct spec");
+        }
+        for name in ["meshcentral-mcp", "@example/thing", "thing2"] {
+            assert!(!is_direct_npm_spec(name), "{name} is a registry name");
+        }
+    }
+
+    #[test]
+    fn build_invocation_leaves_a_direct_spec_unpinned() {
+        // The failure this guards: `npx --yes github:owner/repo@1.2.3` asks npm
+        // for a repo called `null/1.2.3`, so a versioned manifest would make an
+        // otherwise valid fork uninstallable.
+        let mut p = pkg("npm", "stdio");
+        p.identifier = "github:Mpercy-Git/meshcentral-mcp".into();
+        let (runtime, cmd, args) = build_invocation(&p).unwrap();
+        assert_eq!(runtime, McpRuntime::Npm);
+        assert_eq!(cmd, "npx");
+        assert_eq!(args, vec!["--yes", "github:Mpercy-Git/meshcentral-mcp"]);
+    }
+
+    fn workspace_with_manifest(body: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), body).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_installed_package_name_prefers_the_recorded_spec() {
+        let dir = workspace_with_manifest(
+            r#"{"dependencies":{"other":"1.0.0","meshcentral-mcp":"github:o/r"}}"#,
+        );
+        let name =
+            resolve_installed_package_name(dir.path().to_str().unwrap(), "github:o/r").unwrap();
+        assert_eq!(name, "meshcentral-mcp");
+    }
+
+    #[test]
+    fn resolve_installed_package_name_accepts_a_lone_normalised_dependency() {
+        // npm rewrites a `file:` spec relative to the workspace, so the value it
+        // records no longer matches what was asked for.
+        let dir = workspace_with_manifest(r#"{"dependencies":{"local-mcp":"file:../local"}}"#);
+        let name = resolve_installed_package_name(dir.path().to_str().unwrap(), "file:/srv/local")
+            .unwrap();
+        assert_eq!(name, "local-mcp");
+    }
+
+    #[test]
+    fn resolve_installed_package_name_refuses_to_guess() {
+        let dir = workspace_with_manifest(r#"{"dependencies":{"a":"1.0.0","b":"2.0.0"}}"#);
+        let err =
+            resolve_installed_package_name(dir.path().to_str().unwrap(), "github:o/r").unwrap_err();
+        assert!(matches!(err, AppError::Tool(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn seed_workspace_manifest_does_not_clobber_a_warm_workspace() {
+        let dir = workspace_with_manifest(r#"{"dependencies":{"kept":"1.0.0"}}"#);
+        seed_workspace_manifest(dir.path().to_str().unwrap()).unwrap();
+        let body = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
+        assert!(body.contains("kept"), "existing manifest was overwritten");
+    }
+
+    #[test]
+    fn seed_workspace_manifest_writes_something_npm_can_save_into() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_workspace_manifest(dir.path().to_str().unwrap()).unwrap();
+        let body = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["private"], serde_json::json!(true));
+    }
+
+    fn workspace_with_lockfile(body: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let modules = dir.path().join("node_modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::fs::write(modules.join(".package-lock.json"), body).unwrap();
+        dir
+    }
+
+    #[test]
+    fn read_installed_ref_reports_a_registry_version() {
+        let dir = workspace_with_lockfile(
+            r#"{"packages":{"node_modules/thing":{"version":"1.2.3","resolved":"https://registry.npmjs.org/thing/-/thing-1.2.3.tgz"}}}"#,
+        );
+        let got = read_installed_ref(dir.path().to_str().unwrap(), "thing");
+        assert_eq!(got.as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
+    fn read_installed_ref_carries_the_commit_for_a_git_install() {
+        // The version alone is useless for a git spec: a branch moves while
+        // package.json keeps saying 1.0.0, so the commit is the only thing that
+        // distinguishes one install from the next.
+        let dir = workspace_with_lockfile(
+            r#"{"packages":{"node_modules/meshcentral-mcp":{"version":"1.0.0","resolved":"git+ssh://git@github.com/o/r.git#b772fb5e92c29bee8e5ad3f31206271029d91b0d"}}}"#,
+        );
+        let got = read_installed_ref(dir.path().to_str().unwrap(), "meshcentral-mcp");
+        assert_eq!(got.as_deref(), Some("1.0.0+b772fb5"));
+    }
+
+    #[test]
+    fn read_installed_ref_ignores_a_fragment_that_is_not_a_commit() {
+        let dir = workspace_with_lockfile(
+            r#"{"packages":{"node_modules/thing":{"version":"2.0.0","resolved":"https://example.com/thing.tgz#notasha"}}}"#,
+        );
+        let got = read_installed_ref(dir.path().to_str().unwrap(), "thing");
+        assert_eq!(got.as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn read_installed_ref_is_none_rather_than_an_error() {
+        // A missing or unreadable lockfile must not fail an install that
+        // otherwise worked - the ref is for display, so absent reads as unknown.
+        let dir = workspace_with_lockfile(r#"{"packages":{}}"#);
+        assert!(read_installed_ref(dir.path().to_str().unwrap(), "absent").is_none());
+        let empty = tempfile::tempdir().unwrap();
+        assert!(read_installed_ref(empty.path().to_str().unwrap(), "thing").is_none());
+    }
+
+    #[test]
+    fn swap_invocation_target_replaces_only_the_spec() {
+        let mut args = vec![
+            "--yes".to_string(),
+            "github:o/r".to_string(),
+            "--flag".to_string(),
+        ];
+        swap_invocation_target(&mut args, "github:o/r", "meshcentral-mcp");
+        assert_eq!(args, vec!["--yes", "meshcentral-mcp", "--flag"]);
+    }
+
+    #[test]
     fn build_invocation_pins_npm_version_and_uses_npx() {
         let mut p = pkg("npm", "stdio");
         p.package_arguments = vec![RegistryArgument {
@@ -1023,7 +1651,10 @@ mod tests {
         let (runtime, cmd, args) = build_invocation(&pkg("pypi", "stdio")).unwrap();
         assert_eq!(runtime, McpRuntime::Pypi);
         assert_eq!(cmd, "uvx");
-        assert_eq!(args, vec!["--from", "@example/thing@1.2.3", "@example/thing"]);
+        assert_eq!(
+            args,
+            vec!["--from", "@example/thing@1.2.3", "@example/thing"]
+        );
     }
 
     #[test]
@@ -1046,7 +1677,14 @@ mod tests {
     fn validate_credential_bindings_accepts_exact_match() {
         let mut p = pkg("npm", "stdio");
         p.environment_variables = vec![secret_env_var("GITHUB_TOKEN")];
-        assert!(validate_credential_bindings(&required_from(&p), &[binding("GITHUB_TOKEN")], &BTreeMap::new()).is_ok());
+        assert!(
+            validate_credential_bindings(
+                &required_from(&p),
+                &[binding("GITHUB_TOKEN")],
+                &BTreeMap::new()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1082,16 +1720,31 @@ mod tests {
                 format: None,
             },
         ];
-        assert!(validate_credential_bindings(&required_from(&p), &[binding("SECRET")], &BTreeMap::new()).is_ok());
+        assert!(
+            validate_credential_bindings(
+                &required_from(&p),
+                &[binding("SECRET")],
+                &BTreeMap::new()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn validate_credential_bindings_accepts_header_derived_requirement() {
         let mut headers = BTreeMap::new();
-        headers.insert("Authorization".to_string(), "Bearer ${MCP_TOKEN}".to_string());
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer ${MCP_TOKEN}".to_string(),
+        );
         let required = extract_env_var_refs(&headers);
-        assert!(validate_credential_bindings(&required, &[binding("MCP_TOKEN")], &BTreeMap::new()).is_ok());
-        assert!(validate_credential_bindings(&required, &[binding("OTHER")], &BTreeMap::new()).is_err());
+        assert!(
+            validate_credential_bindings(&required, &[binding("MCP_TOKEN")], &BTreeMap::new())
+                .is_ok()
+        );
+        assert!(
+            validate_credential_bindings(&required, &[binding("OTHER")], &BTreeMap::new()).is_err()
+        );
     }
 
     #[test]

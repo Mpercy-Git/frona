@@ -27,7 +27,10 @@ async fn list_notifications(
     State(state): State<AppState>,
 ) -> Result<Json<NotificationsResponse>, ApiError> {
     let notifications = state.notification_service.list(&auth.user_id, 50).await?;
-    let unread_count = state.notification_service.unread_count(&auth.user_id).await?;
+    let unread_count = state
+        .notification_service
+        .unread_count(&auth.user_id)
+        .await?;
 
     Ok(Json(NotificationsResponse {
         notifications,
@@ -47,10 +50,7 @@ async fn mark_read(
     Ok(())
 }
 
-async fn mark_all_read(
-    auth: AuthUser,
-    State(state): State<AppState>,
-) -> Result<(), ApiError> {
+async fn mark_all_read(auth: AuthUser, State(state): State<AppState>) -> Result<(), ApiError> {
     state
         .notification_service
         .mark_all_read(&auth.user_id)

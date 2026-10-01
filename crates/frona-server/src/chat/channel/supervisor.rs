@@ -27,12 +27,12 @@ use crate::storage::StorageService;
 
 use super::hitl::HitlDeliveryService;
 use super::inbound::InboundDeliveryService;
-use super::outbound::OutboundDeliveryService;
-use super::registry::ChannelRegistry;
-use super::service::ChannelService;
 use super::models::{
     Channel, ChannelAdapter, ChannelCtx, ChannelStatus, DispatchMode, ExternalMessage,
 };
+use super::outbound::OutboundDeliveryService;
+use super::registry::ChannelRegistry;
+use super::service::ChannelService;
 
 const INBOUND_BUFFER: usize = 64;
 
@@ -60,7 +60,6 @@ fn channel_needs_restart(prior: &Channel, next: &Channel) -> bool {
         || prior.dispatch_mode != next.dispatch_mode
         || prior.config != next.config
 }
-
 
 /// The live adapter + its per-attempt `ChannelCtx`, published by a running
 /// `ChannelManager` once its connect attempt reaches `Connected`, so
@@ -195,13 +194,9 @@ impl ChannelManager {
             self.mark(ChannelStatus::Connecting, None).await;
 
             let attempt_cancel = channel_cancel.child_token();
-            let (sig_tx, mut sig_rx) =
-                mpsc::channel::<ChannelSignal>(super::signal::SIGNAL_BUF);
+            let (sig_tx, mut sig_rx) = mpsc::channel::<ChannelSignal>(super::signal::SIGNAL_BUF);
 
-            let (adapter, ctx) = match self
-                .build_attempt(&channel, &attempt_cancel, sig_tx)
-                .await
-            {
+            let (adapter, ctx) = match self.build_attempt(&channel, &attempt_cancel, sig_tx).await {
                 Ok(v) => v,
                 Err(e) => {
                     attempt_cancel.cancel();
@@ -311,7 +306,9 @@ impl ChannelManager {
                 super::FailureKind::Transient => {
                     self.mark(ChannelStatus::Reconnecting, Some(reason)).await;
                     attempt = attempt.saturating_add(1);
-                    let factor = cfg.backoff_multiplier.powi(attempt.saturating_sub(1) as i32);
+                    let factor = cfg
+                        .backoff_multiplier
+                        .powi(attempt.saturating_sub(1) as i32);
                     let delay = (cfg.initial_backoff_ms as f64 * factor)
                         .min(cfg.max_backoff_ms as f64) as u64;
                     tokio::select! {
@@ -558,7 +555,9 @@ impl ChannelSupervisor {
         let supervisor = self;
         tokio::spawn(async move {
             loop {
-                let Some(event) = events.recv().await else { break };
+                let Some(event) = events.recv().await else {
+                    break;
+                };
                 let BroadcastEventKind::EntityUpdated {
                     table,
                     record_id,
@@ -636,7 +635,6 @@ impl ChannelSupervisor {
         });
     }
 
-
     /// Scheduler entry point: retry all messages whose delivery is due, over each
     /// channel's live adapter.
     pub async fn retry_due_deliveries(&self) -> Result<u64, AppError> {
@@ -656,7 +654,9 @@ impl ChannelSupervisor {
             let Some((adapter, ctx)) = self.running_adapter(channel_id).await else {
                 continue;
             };
-            self.outbound.attempt_all_segments(msg, chat, adapter, ctx).await;
+            self.outbound
+                .attempt_all_segments(msg, chat, adapter, ctx)
+                .await;
         }
         Ok(count)
     }
@@ -750,8 +750,7 @@ impl crate::core::supervisor::Supervisor for ChannelSupervisor {
     }
 
     async fn mark_failed(&self, id: &str, reason: &str) -> Result<(), AppError> {
-        self
-            .channel_service
+        self.channel_service
             .mark_status(id, ChannelStatus::Failed, Some(reason.to_string()))
             .await
             .map(|_| ())
@@ -772,8 +771,7 @@ impl crate::core::supervisor::Supervisor for ChannelSupervisor {
     }
 
     async fn display_name(&self, id: &str) -> String {
-        self
-            .channel_service
+        self.channel_service
             .find_by_id(id)
             .await
             .map(|c| c.provider)
@@ -838,7 +836,10 @@ async fn handle_outbound_event(
             && matches!(action, EntityAction::Created | EntityAction::Updated)
             && ev_space_id.as_deref() == Some(space_id) =>
         {
-            let msg = ctx.chat_service.get_message(&event.user_id, record_id).await?;
+            let msg = ctx
+                .chat_service
+                .get_message(&event.user_id, record_id)
+                .await?;
             if !matches!(msg.role, MessageRole::Agent | MessageRole::TaskCompletion) {
                 return Ok(());
             }
@@ -852,7 +853,10 @@ async fn handle_outbound_event(
                 return Ok(());
             }
             let delivery_state = msg.delivery.as_ref().map(|d| d.state);
-            if matches!(delivery_state, Some(DeliveryState::Sent) | Some(DeliveryState::Failed)) {
+            if matches!(
+                delivery_state,
+                Some(DeliveryState::Sent) | Some(DeliveryState::Failed)
+            ) {
                 tracing::debug!(
                     channel_id = %ctx.channel.id,
                     msg_id = %msg.id,
@@ -862,9 +866,7 @@ async fn handle_outbound_event(
                 return Ok(());
             }
             // Per-message override: Message-mode channel may carry a Signal-mode reply.
-            let effective_mode = msg
-                .dispatch_mode
-                .unwrap_or(ctx.channel.dispatch_mode);
+            let effective_mode = msg.dispatch_mode.unwrap_or(ctx.channel.dispatch_mode);
             if effective_mode != DispatchMode::Message {
                 tracing::debug!(
                     channel_id = %ctx.channel.id,
@@ -875,7 +877,10 @@ async fn handle_outbound_event(
                 );
                 return Ok(());
             }
-            let chat = ctx.chat_service.get_chat(&event.user_id, &msg.chat_id).await?;
+            let chat = ctx
+                .chat_service
+                .get_chat(&event.user_id, &msg.chat_id)
+                .await?;
             if chat.channel_id.is_none() {
                 tracing::debug!(
                     channel_id = %ctx.channel.id,
@@ -886,7 +891,10 @@ async fn handle_outbound_event(
                 return Ok(());
             }
             ctx.outbound.ensure_pending_delivery(&msg.id).await?;
-            let msg = ctx.chat_service.get_message(&event.user_id, &msg.id).await?;
+            let msg = ctx
+                .chat_service
+                .get_message(&event.user_id, &msg.id)
+                .await?;
             tracing::info!(
                 channel_id = %ctx.channel.id,
                 msg_id = %msg.id,
@@ -931,27 +939,53 @@ async fn handle_outbound_event(
             }
             match kind {
                 InferenceEventKind::Start | InferenceEventKind::Resume { .. } => {
-                    log_streaming_err!(adapter.on_inference_start(&chat, ctx).await, "on_inference_start");
+                    log_streaming_err!(
+                        adapter.on_inference_start(&chat, ctx).await,
+                        "on_inference_start"
+                    );
                 }
                 InferenceEventKind::Text(text) => {
                     log_streaming_err!(adapter.on_text(&chat, text, ctx).await, "on_text");
                 }
                 InferenceEventKind::Reasoning(text) => {
-                    log_streaming_err!(adapter.on_reasoning(&chat, text, ctx).await, "on_reasoning");
+                    log_streaming_err!(
+                        adapter.on_reasoning(&chat, text, ctx).await,
+                        "on_reasoning"
+                    );
                 }
-                InferenceEventKind::ToolCall { name, arguments, .. } => {
-                    log_streaming_err!(adapter.on_tool_call(&chat, name, arguments, ctx).await, "on_tool_call");
+                InferenceEventKind::ToolCall {
+                    name, arguments, ..
+                } => {
+                    log_streaming_err!(
+                        adapter.on_tool_call(&chat, name, arguments, ctx).await,
+                        "on_tool_call"
+                    );
                 }
-                InferenceEventKind::ToolResult { name, success, result } => {
-                    log_streaming_err!(adapter.on_tool_result(&chat, name, *success, result, ctx).await, "on_tool_result");
+                InferenceEventKind::ToolResult {
+                    name,
+                    success,
+                    result,
+                } => {
+                    log_streaming_err!(
+                        adapter
+                            .on_tool_result(&chat, name, *success, result, ctx)
+                            .await,
+                        "on_tool_result"
+                    );
                 }
                 InferenceEventKind::Done { .. }
                 | InferenceEventKind::Cancelled { .. }
                 | InferenceEventKind::Failed { .. } => {
-                    log_streaming_err!(adapter.on_inference_done(&chat, ctx).await, "on_inference_done");
+                    log_streaming_err!(
+                        adapter.on_inference_done(&chat, ctx).await,
+                        "on_inference_done"
+                    );
                 }
                 InferenceEventKind::Paused { reason, message } => {
-                    log_streaming_err!(adapter.on_inference_done(&chat, ctx).await, "on_inference_done");
+                    log_streaming_err!(
+                        adapter.on_inference_done(&chat, ctx).await,
+                        "on_inference_done"
+                    );
                     match reason {
                         crate::inference::tool_loop::PauseReason::Hitl => {
                             if let Err(e) = ctx

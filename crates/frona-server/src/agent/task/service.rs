@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 
 use crate::chat::broadcast::BroadcastService;
-use crate::db::repo::tasks::SurrealTaskRepo;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
+use crate::db::repo::tasks::SurrealTaskRepo;
 
 use super::models::{CreateTaskRequest, TaskResponse, UpdateTaskRequest};
 use super::models::{Task, TaskKind, TaskStatus};
@@ -36,7 +36,6 @@ fn status_str(status: &TaskStatus) -> &'static str {
 }
 
 impl TaskService {
-
     fn broadcast(&self, task: &Task, status: &str, summary: Option<&str>) {
         self.broadcast.broadcast_task_update(
             &task.user_id,
@@ -63,7 +62,9 @@ impl TaskService {
                 resume_parent: req.resume_parent.unwrap_or(false),
             },
             (None, source_chat_id) => TaskKind::Direct { source_chat_id },
-            (Some(_), None) => TaskKind::Direct { source_chat_id: None },
+            (Some(_), None) => TaskKind::Direct {
+                source_chat_id: None,
+            },
         };
 
         if let Some(ref schema) = req.result_schema {
@@ -153,25 +154,21 @@ impl TaskService {
     }
 
     pub async fn find_expired_signal_tasks(&self) -> Result<Vec<Task>, AppError> {
-        self.repo.find_expired_signal_tasks(chrono::Utc::now()).await
+        self.repo
+            .find_expired_signal_tasks(chrono::Utc::now())
+            .await
     }
 
     pub async fn save(&self, task: &Task) -> Result<Task, AppError> {
         self.repo.update(task).await
     }
 
-    pub async fn list_active(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<TaskResponse>, AppError> {
+    pub async fn list_active(&self, user_id: &str) -> Result<Vec<TaskResponse>, AppError> {
         let tasks = self.repo.find_active_by_user_id(user_id).await?;
         Ok(tasks.into_iter().map(Into::into).collect())
     }
 
-    pub async fn list_all(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<TaskResponse>, AppError> {
+    pub async fn list_all(&self, user_id: &str) -> Result<Vec<TaskResponse>, AppError> {
         let tasks = self.repo.find_all_by_user_id(user_id).await?;
         Ok(tasks.into_iter().map(Into::into).collect())
     }
@@ -204,7 +201,11 @@ impl TaskService {
         task.updated_at = chrono::Utc::now();
 
         let task = self.repo.update(&task).await?;
-        self.broadcast(&task, status_str(&task.status), task.result_summary.as_deref());
+        self.broadcast(
+            &task,
+            status_str(&task.status),
+            task.result_summary.as_deref(),
+        );
         Ok(task.into())
     }
 
@@ -222,10 +223,7 @@ impl TaskService {
         }
 
         if matches!(task.kind, TaskKind::Cron { .. }) {
-            let runs = self
-                .find_runs_by_cron(task_id)
-                .await
-                .unwrap_or_default();
+            let runs = self.find_runs_by_cron(task_id).await.unwrap_or_default();
             for run in runs {
                 let _ = self.repo.delete(&run.id).await;
             }
@@ -248,11 +246,18 @@ impl TaskService {
         self.repo.find_by_chat_id(chat_id).await
     }
 
-    pub async fn find_by_source_chat_id(&self, source_chat_id: &str) -> Result<Vec<Task>, AppError> {
+    pub async fn find_by_source_chat_id(
+        &self,
+        source_chat_id: &str,
+    ) -> Result<Vec<Task>, AppError> {
         self.repo.find_by_source_chat_id(source_chat_id).await
     }
 
-    pub async fn mark_in_progress(&self, task_id: &str, chat_id: Option<&str>) -> Result<Task, AppError> {
+    pub async fn mark_in_progress(
+        &self,
+        task_id: &str,
+        chat_id: Option<&str>,
+    ) -> Result<Task, AppError> {
         let mut task = self
             .repo
             .find_by_id(task_id)
@@ -270,7 +275,11 @@ impl TaskService {
         Ok(task)
     }
 
-    pub async fn mark_completed(&self, task_id: &str, summary: Option<String>) -> Result<Task, AppError> {
+    pub async fn mark_completed(
+        &self,
+        task_id: &str,
+        summary: Option<String>,
+    ) -> Result<Task, AppError> {
         let mut task = self
             .repo
             .find_by_id(task_id)
@@ -439,7 +448,11 @@ impl TaskService {
             .await?
             .ok_or_else(|| AppError::NotFound("Cron template not found".into()))?;
 
-        if let TaskKind::Cron { next_run_at: ref mut nra, .. } = task.kind {
+        if let TaskKind::Cron {
+            next_run_at: ref mut nra,
+            ..
+        } = task.kind
+        {
             *nra = Some(next_run_at);
         }
 
@@ -471,13 +484,15 @@ impl TaskService {
         sequence_num: u64,
     ) -> Result<Task, AppError> {
         let (source_agent_id, source_chat_id) = match &template.kind {
-            TaskKind::Cron { source_agent_id, source_chat_id, .. } => {
-                (source_agent_id.clone(), source_chat_id.clone())
-            }
+            TaskKind::Cron {
+                source_agent_id,
+                source_chat_id,
+                ..
+            } => (source_agent_id.clone(), source_chat_id.clone()),
             _ => {
                 return Err(AppError::Internal(
                     "spawn_cron_run requires a Cron template task".into(),
-                ))
+                ));
             }
         };
 

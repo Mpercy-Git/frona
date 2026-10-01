@@ -70,7 +70,12 @@ export function NotificationsSection() {
           {serverCanSend === false && permission !== "unsupported" && (
             <p className="text-sm text-error">
               This server has no usable VAPID key pair, so it cannot send push
-              notifications to any device. Set{" "}
+              notifications to any device. It normally generates one on first
+              start and keeps it in{" "}
+              <code className="font-mono text-xs">
+                {"{data_dir}"}/system/vapid.json
+              </code>
+              , so check the server log for why that failed — or set{" "}
               <code className="font-mono text-xs">
                 FRONA_PUSH_VAPID_PUBLIC_KEY
               </code>{" "}
@@ -82,7 +87,7 @@ export function NotificationsSection() {
               <code className="font-mono text-xs">
                 npx web-push generate-vapid-keys
               </code>
-              ), then restart the server.
+              ) and restart the server.
             </p>
           )}
 
@@ -148,7 +153,9 @@ function TestResult({ result }: { result: PushTestResult }) {
   if (!result.configured) {
     return (
       <p className="text-sm text-error">
-        The server has no VAPID key pair configured, so nothing was sent.
+        The server has no usable VAPID key pair, so nothing was sent. Check the
+        server log — it reports why the key pair could not be generated or
+        loaded.
       </p>
     );
   }

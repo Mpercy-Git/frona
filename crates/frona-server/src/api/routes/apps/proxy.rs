@@ -5,9 +5,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use tower::ServiceExt as _;
 use tower_http::services::ServeDir;
 
-use crate::api::cookie::{
-    extract_app_session_from_cookie_header, make_app_session_cookie,
-};
+use crate::api::cookie::{extract_app_session_from_cookie_header, make_app_session_cookie};
 use crate::app::models::AppStatus;
 use crate::core::state::AppState;
 
@@ -18,10 +16,7 @@ pub(crate) async fn auth_gate(
 ) -> Response {
     let redirect_url = uri
         .query()
-        .and_then(|q| {
-            q.split('&')
-                .find_map(|pair| pair.strip_prefix("redirect="))
-        })
+        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("redirect=")))
         .filter(|u| u.starts_with('/') && !u.starts_with("//"))
         .unwrap_or("/");
 
@@ -220,14 +215,16 @@ async fn serve_static(
     request: Request,
 ) -> Response {
     let static_dir = app.static_dir.as_deref().unwrap_or("dist");
-    let Ok(agent) = state
-        .agent_service
-        .get(&app.user_id, &app.agent_id)
-        .await
-    else {
+    let Ok(agent) = state.agent_service.get(&app.user_id, &app.agent_id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Some(user) = state.user_service.find_by_id(&app.user_id).await.ok().flatten() else {
+    let Some(user) = state
+        .user_service
+        .find_by_id(&app.user_id)
+        .await
+        .ok()
+        .flatten()
+    else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let workspace_path = state
@@ -313,7 +310,14 @@ async fn handle_hibernated_app(
     let result = state
         .app_service
         .manager()
-        .start_app(&app.id, &app.agent_id, &app.user_id, &command, &manifest, Vec::new())
+        .start_app(
+            &app.id,
+            &app.agent_id,
+            &app.user_id,
+            &command,
+            &manifest,
+            Vec::new(),
+        )
         .await;
 
     match result {
@@ -326,11 +330,16 @@ async fn handle_hibernated_app(
             let health = manifest
                 .health_check
                 .as_ref()
-                .map(|h| (h.path.clone(), h.effective_initial_delay(), h.effective_timeout()))
+                .map(|h| {
+                    (
+                        h.path.clone(),
+                        h.effective_initial_delay(),
+                        h.effective_timeout(),
+                    )
+                })
                 .unwrap_or_else(|| ("/".to_string(), 5, 2));
 
-            let deadline = tokio::time::Instant::now()
-                + std::time::Duration::from_secs(health.1);
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(health.1);
 
             let hc = crate::app::models::HealthCheck {
                 path: health.0,
@@ -365,7 +374,10 @@ async fn handle_hibernated_app(
 fn rewrite_location(value: &str, app_prefix: &str) -> Option<String> {
     if let Some(path) = value.strip_prefix("http://127.0.0.1") {
         let path = path.find('/').map(|i| &path[i..]).unwrap_or("/");
-        return Some(format!("{app_prefix}{}", path.strip_prefix('/').unwrap_or(path)));
+        return Some(format!(
+            "{app_prefix}{}",
+            path.strip_prefix('/').unwrap_or(path)
+        ));
     }
 
     if value.starts_with('/') {
@@ -433,8 +445,8 @@ async fn forward_to_port(
         Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
     };
 
-    let status = StatusCode::from_u16(upstream_resp.status().as_u16())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let status =
+        StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
 
     let app_prefix = format!("/apps/{app_handle}/");
     let mut builder = Response::builder().status(status);

@@ -23,8 +23,7 @@ async fn get_navigation_empty() {
 #[tokio::test]
 async fn get_navigation_with_standalone_chat() {
     let (state, _tmp) = test_app_state().await;
-    let (token, _) =
-        register_user(&state, "nav-chat", "navchat@example.com", "password123").await;
+    let (token, _) = register_user(&state, "nav-chat", "navchat@example.com", "password123").await;
     let agent = create_agent(&state, &token, "NavAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
 
@@ -67,10 +66,8 @@ async fn get_navigation_with_space() {
 #[tokio::test]
 async fn get_navigation_isolates_users() {
     let (state, _tmp) = test_app_state().await;
-    let (token_a, _) =
-        register_user(&state, "nav-a", "nava@example.com", "password123").await;
-    let (token_b, _) =
-        register_user(&state, "nav-b", "navb@example.com", "password123").await;
+    let (token_a, _) = register_user(&state, "nav-a", "nava@example.com", "password123").await;
+    let (token_b, _) = register_user(&state, "nav-b", "navb@example.com", "password123").await;
 
     create_space(&state, &token_a, "SpaceA").await;
     create_space(&state, &token_b, "SpaceB").await;

@@ -1,5 +1,5 @@
 import type { ChatSSEEvent, UsageRecorded } from "./sse-event-bus";
-import type { MessageResponse, MessageStatus, Attachment, ToolCall } from "./types";
+import type { MessageError, MessageResponse, MessageStatus, Attachment, ToolCall } from "./types";
 import { api } from "./api-client";
 
 export interface RunningTotals {
@@ -38,6 +38,13 @@ function optimisticStatusAfterResolve(
   if (current === "paused") return "executing";
   if (current === "executing") return "completed";
   return current;
+}
+
+/** Client-side id prefix for a user message we show before the server echoes it. */
+const OPTIMISTIC_USER_ID_PREFIX = "__user_";
+
+function isOptimisticUserMessage(msg: MessageResponse): boolean {
+  return msg.id.startsWith(OPTIMISTIC_USER_ID_PREFIX);
 }
 
 interface ToolCallPart {
@@ -107,6 +114,7 @@ export class ChatStore {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<() => void>();
   private _snapshot: StoreSnapshot | null = null;
+  private streamingNotificationScheduled = false;
 
   subscribe(callback: () => void): () => void {
     this.listeners.add(callback);
@@ -182,9 +190,21 @@ export class ChatStore {
     }
   }
 
-  private notify() {
+  private notify(defer = false) {
     this._snapshot = null;
-    for (const fn of this.listeners) fn();
+    if (defer && typeof requestAnimationFrame === "function") {
+      if (this.streamingNotificationScheduled) return;
+      this.streamingNotificationScheduled = true;
+      requestAnimationFrame(() => {
+        this.streamingNotificationScheduled = false;
+        for (const fn of [...this.listeners]) fn();
+      });
+      return;
+    }
+    // React may replace a useSyncExternalStore subscriber synchronously while
+    // handling this callback. Iterate a snapshot so listeners added during a
+    // notification are not visited by the same live Set iterator.
+    for (const fn of [...this.listeners]) fn();
   }
 
   markLoaded() {
@@ -206,7 +226,7 @@ export class ChatStore {
   /** Add a user message optimistically (before backend echo). */
   addUserMessage(content: string, attachments?: Attachment[]) {
     this.messages.push({
-      id: `__user_${Date.now()}`,
+      id: `${OPTIMISTIC_USER_ID_PREFIX}${Date.now()}`,
       chat_id: "",
       role: "user",
       content,
@@ -234,11 +254,56 @@ export class ChatStore {
       } else {
         const existing = new Set(this.messages.map((m) => m.id));
         const historical = messages.filter((m) => !existing.has(m.id));
-        this.messages = [...historical, ...this.messages];
+        // An optimistic placeholder and its persisted row are the same
+        // message under two different ids, so the id filter above cannot
+        // pair them — it keeps both, and the user sees what they sent twice.
+        // This reload runs on every SSE reconnect, which is exactly when the
+        // server has already stored a message we are still showing
+        // optimistically, so pair them on what the user typed.
+        //
+        // Only a row arriving for the first time may claim a placeholder, and
+        // it claims exactly one. Content is not a key: testing every
+        // placeholder against every persisted message deletes what the user
+        // just sent as soon as they repeat themselves, and "ok" twice in one
+        // chat is two messages. A row already in the thread was reconciled
+        // when it first arrived and has no placeholder left to claim.
+        const claimed = new Set<MessageResponse>();
+        const pending = this.messages.filter(isOptimisticUserMessage);
+        for (const row of historical) {
+          if (row.role !== "user") continue;
+          const match = pending.find(
+            (p) => !claimed.has(p) && (p.content ?? "") === (row.content ?? ""),
+          );
+          if (match) claimed.add(match);
+        }
+        this.messages = [...historical, ...this.messages].filter(
+          (m) => !claimed.has(m),
+        );
       }
+      this.sortMessagesChronologically();
       this.hasMore = has_more;
     } catch {
       // leave any optimistic/SSE-delivered messages alone
+    }
+    // A chat can be opened while a turn is in flight — a reload mid-run, or a
+    // task working through its turns. `isRunning` gates the composer's Stop
+    // button, so without seeding it from the loaded row the user lands on a
+    // spinning message with no way to stop it until the next SSE event happens
+    // to arrive, which can be minutes away while one long tool call runs. A
+    // row left `executing` by a crash self-corrects: Stop reports that there
+    // was nothing to cancel and the thread returns to idle.
+    if (this.messages[this.messages.length - 1]?.status === "executing") {
+      this.isRunning = true;
+    } else if (this.isRunning && !this.messages.some(isOptimisticUserMessage)) {
+      // The other direction matters just as much. This reload also runs when
+      // the SSE stream reconnects, and a turn can finish while the stream is
+      // down — its `inference_done` is never delivered. The history we just
+      // fetched says the run is over, so drop the stale streaming state
+      // instead of leaving a spinner and a Stop button for a turn that has
+      // already completed. An optimistic user message with no server echo yet
+      // means we kicked off a turn the history hasn't caught up with, so that
+      // case keeps the spinner.
+      this.clearStreaming();
     }
     this.hydrateExternalTools();
     this.loaded = true;
@@ -259,6 +324,7 @@ export class ChatStore {
       const existing = new Set(this.messages.map((m) => m.id));
       const older = messages.filter((m) => !existing.has(m.id));
       this.messages = [...older, ...this.messages];
+      this.sortMessagesChronologically();
       this.hasMore = has_more;
     } catch {
       // Keep hasMore as-is so a future scroll can retry.
@@ -284,6 +350,16 @@ export class ChatStore {
     switch (event.type) {
       case "token":
         this.isRunning = true;
+        // The first text emitted after a tool call starts a new visible turn.
+        // Use a blank line so Markdown renders it separately from the text
+        // spoken before the tool.
+        if (
+          this.lastTextSnapshot > 0 &&
+          this.streamingText.length === this.lastTextSnapshot &&
+          event.content.length > 0
+        ) {
+          this.streamingText += "\n\n";
+        }
         this.streamingText += event.content;
         break;
 
@@ -353,6 +429,7 @@ export class ChatStore {
         } else {
           this.messages.push(msg);
         }
+        this.sortMessagesChronologically();
         this.clearStreaming();
 
         switch (event.reason.type) {
@@ -383,6 +460,7 @@ export class ChatStore {
             msg.tool_calls = this.messages[idx].tool_calls;
           }
           this.messages[idx] = msg;
+          this.sortMessagesChronologically();
         }
         if (msg.tool_calls?.length) {
           for (const te of msg.tool_calls) {
@@ -412,6 +490,7 @@ export class ChatStore {
         } else {
           this.messages.push(msg);
         }
+        this.sortMessagesChronologically();
         this.clearStreaming();
 
         // The agent loop can pause on a fresh set of HITLs and signal that via
@@ -428,17 +507,39 @@ export class ChatStore {
       }
 
       case "chat_message": {
-        // Replace optimistic user message with the real one from the backend
-        if (event.message.role === "user") {
-          const optIdx = this.messages.findIndex((m) => m.id.startsWith("__user_"));
+        const incoming = event.message;
+        const known = this.messages.some((m) => m.id === incoming.id);
+        // Replace the optimistic user message with the real one from the
+        // backend — but only for a row the thread has not seen before. The
+        // server re-broadcasts a full `chat_message` whenever a row is
+        // updated (`save_updated_message` does this to the user's own request
+        // message on the command path) and a reconnect replays them, so an
+        // echo is not proof of a new message. A repeat echo was reconciled
+        // the first time it arrived; letting it claim a placeholder again
+        // deletes whatever the user has sent since.
+        if (incoming.role === "user" && !known) {
+          // Pair on what the user typed: with two messages in flight the
+          // first placeholder in the list is not necessarily this one, and
+          // taking it swaps one message for a copy of the other. The oldest
+          // placeholder is the fallback, for a row whose text the server
+          // rewrote on its way to storage.
+          const byContent = this.messages.findIndex(
+            (m) => isOptimisticUserMessage(m) && m.content === incoming.content,
+          );
+          const optIdx =
+            byContent >= 0
+              ? byContent
+              : this.messages.findIndex(isOptimisticUserMessage);
           if (optIdx >= 0) {
-            this.messages[optIdx] = event.message;
+            this.messages[optIdx] = incoming;
+            this.sortMessagesChronologically();
             break;
           }
         }
         // Skip if this message ID is already in the array
-        if (!this.messages.some((m) => m.id === event.message.id)) {
-          this.messages.push(event.message);
+        if (!known) {
+          this.messages.push(incoming);
+          this.sortMessagesChronologically();
         }
         break;
       }
@@ -462,8 +563,11 @@ export class ChatStore {
       }
 
       case "inference_cancelled":
-      case "inference_error":
         this.clearStreaming();
+        break;
+
+      case "inference_error":
+        this.failMessage(event.error, event.messageId);
         break;
 
       case "usage_recorded": {
@@ -482,7 +586,13 @@ export class ChatStore {
         break;
       }
     }
-    this.notify();
+    // A chat can accumulate a long SSE backlog while it is not mounted. When
+    // the user opens it, the async iterator replays that queue in one turn.
+    // Publishing every tool/lifecycle event synchronously makes React's
+    // external-store subscriber recursively render once per buffered event.
+    // Apply every event immediately, but expose the combined state at most
+    // once per animation frame (the same cadence used for token streaming).
+    this.notify(true);
   }
 
   /**
@@ -493,9 +603,10 @@ export class ChatStore {
     const merged = mergeConsecutiveMessages(this.messages);
     if (!this.isRunning) return merged;
 
-    const displayText = this.lastTextSnapshot > 0
-      ? this.streamingText.slice(this.lastTextSnapshot)
-      : this.streamingText;
+    // Keep the full token stream visible across tool calls. The previous
+    // snapshot slice moved pre-tool text into the tool timeline, which made
+    // the main assistant text appear to clear whenever a tool started.
+    const displayText = this.streamingText;
 
     const streamingTools = this.buildToolCalls();
 
@@ -511,7 +622,13 @@ export class ChatStore {
         updated.reasoning = [last.reasoning, this.streamingReasoning].filter(Boolean).join("");
       }
       if (streamingTools.length > 0) {
-        updated.tool_calls = [...(last.tool_calls ?? []), ...streamingTools];
+        const toolCallsById = new Map(
+          (last.tool_calls ?? []).map((toolCall) => [toolCall.id, toolCall]),
+        );
+        for (const toolCall of streamingTools) {
+          toolCallsById.set(toolCall.id, toolCall);
+        }
+        updated.tool_calls = [...toolCallsById.values()];
       }
       return [...merged.slice(0, -1), updated];
     }
@@ -556,6 +673,17 @@ export class ChatStore {
       }
     }
     return result;
+  }
+
+  private sortMessagesChronologically() {
+    // A task chat can mount between two broadcasts, so the browser may receive
+    // persisted messages in a different order than the database returns them.
+    this.messages.sort((left, right) => {
+      const leftTime = Date.parse(left.created_at);
+      const rightTime = Date.parse(right.created_at);
+      if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) return 0;
+      return leftTime - rightTime;
+    });
   }
 
   resolveToolCall(toolCallId: string, result: string) {
@@ -619,6 +747,37 @@ export class ChatStore {
     }
   }
 
+  /**
+   * Drop the in-flight turn's state and return the thread to idle.
+   *
+   * This notifies: callers outside `handleEvent` (a send that failed, a Stop
+   * the server had nothing to cancel) were otherwise clearing `isRunning`
+   * without ever waking `useSyncExternalStore`, so the composer kept showing
+   * a spinner and a Stop button for a turn that no longer existed — and Stop
+   * could never clear it, because there was nothing left to stop.
+   */
+  failMessage(error: MessageError, messageId?: string) {
+    const display = this.getDisplayMessages();
+    const last = display[display.length - 1];
+    const existing = messageId ? display.find((message) => message.id === messageId) : undefined;
+    const current = existing ?? (last?.role === "agent" && last.status === "executing" ? last : undefined);
+    const failed: MessageResponse = {
+      ...current,
+      id: messageId ?? (current?.id !== "__streaming__" ? current?.id : undefined) ?? `__error_${crypto.randomUUID()}`,
+      chat_id: current?.chat_id ?? "",
+      role: "agent",
+      content: current?.content ?? "",
+      status: "failed",
+      error,
+      created_at: current?.created_at ?? new Date().toISOString(),
+    };
+    const index = this.messages.findIndex((message) => message.id === failed.id);
+    if (index >= 0) this.messages[index] = failed;
+    else this.messages.push(failed);
+    this.clearStreaming();
+    this.notify(true);
+  }
+
   clearStreaming() {
     this.isRunning = false;
     this.streamingText = "";
@@ -632,6 +791,7 @@ export class ChatStore {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
+    this.notify();
   }
 }
 

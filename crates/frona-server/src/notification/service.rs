@@ -46,9 +46,7 @@ impl NotificationService {
         title: String,
         body: String,
     ) -> Result<Notification, AppError> {
-        let notification = self
-            .create(user_id, data, level, title, body)
-            .await?;
+        let notification = self.create(user_id, data, level, title, body).await?;
         self.broadcast_service
             .send_notification(user_id, notification.clone());
         if let Some(sender) = &self.push_sender {

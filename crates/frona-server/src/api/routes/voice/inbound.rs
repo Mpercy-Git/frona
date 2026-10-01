@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
+use axum::Form;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Form;
 
 use crate::auth::User;
 use crate::auth::token::models::TokenType;
@@ -12,16 +12,11 @@ use crate::call::models::CallDirection;
 use crate::chat::models::CreateChatRequest;
 use crate::core::Principal;
 use crate::core::state::AppState;
-use crate::tool::voice::{VoiceSessionExtensions, find_user_by_phone, validate_twilio_signature};
+use crate::tool::voice::{
+    VoiceSessionExtensions, find_user_by_phone, resolve_agent_by_query, validate_twilio_signature,
+};
 
-use super::build_twiml;
-
-/// Whether `s` could be an agent id (ids are UUIDs — see `core::repository::new_id`).
-/// Handles and display names never parse as one, so this lets the inbound path
-/// skip a guaranteed-miss lookup on the latency-sensitive answer path.
-fn looks_like_agent_id(s: &str) -> bool {
-    uuid::Uuid::parse_str(s).is_ok()
-}
+use super::{TwimlOptions, build_twiml};
 
 // ---------------------------------------------------------------------------
 // TwiML helpers
@@ -91,7 +86,9 @@ pub(super) async fn twilio_inbound_handler(
         .unwrap_or(false);
 
     if skip_sig_check {
-        tracing::warn!("Inbound call: skipping Twilio signature validation (FRONA_VOICE_SKIP_SIG_CHECK=1)");
+        tracing::warn!(
+            "Inbound call: skipping Twilio signature validation (FRONA_VOICE_SKIP_SIG_CHECK=1)"
+        );
     } else if let Some(auth_token) = &state.config.voice.twilio_auth_token {
         let sig = headers
             .get("x-twilio-signature")
@@ -150,7 +147,10 @@ pub(super) async fn twilio_inbound_handler(
             url_candidates.push(proxy_url.replacen("https://", "http://", 1));
         }
         // Also try http:// variant with the configured host (not the proxy host).
-        if let Some(host_only) = base_url.strip_prefix("https://").or_else(|| base_url.strip_prefix("http://")) {
+        if let Some(host_only) = base_url
+            .strip_prefix("https://")
+            .or_else(|| base_url.strip_prefix("http://"))
+        {
             url_candidates.push(format!("http://{host_only}/api/voice/twilio/inbound"));
             url_candidates.push(format!("https://{host_only}/api/voice/twilio/inbound"));
         }
@@ -207,10 +207,7 @@ pub(super) async fn twilio_inbound_handler(
     // ------------------------------------------------------------------
     // 4. Resolve call ownership from allowlists
     // ------------------------------------------------------------------
-    let (user_id, caller_name_from_allowlist) = match state
-        .find_user_for_caller(&from)
-        .await
-    {
+    let (user_id, caller_name_from_allowlist) = match state.find_user_for_caller(&from).await {
         Some((uid, name)) => (uid, name),
         None => {
             tracing::info!(
@@ -229,18 +226,14 @@ pub(super) async fn twilio_inbound_handler(
         Ok(Some(u)) => u,
         Ok(None) => {
             // Not found by ID — try resolving as a handle/username.
-            match crate::core::Handle::try_new(&user_id)
-                .ok()
-            {
-                Some(handle) => {
-                    match state.user_service.find_by_handle(&handle).await {
-                        Ok(Some(u)) => u,
-                        _ => {
-                            tracing::warn!(user_id = %user_id, "Inbound call: user not found by ID or handle — rejecting");
-                            return twiml_reject(None);
-                        }
+            match crate::core::Handle::try_new(&user_id).ok() {
+                Some(handle) => match state.user_service.find_by_handle(&handle).await {
+                    Ok(Some(u)) => u,
+                    _ => {
+                        tracing::warn!(user_id = %user_id, "Inbound call: user not found by ID or handle — rejecting");
+                        return twiml_reject(None);
                     }
-                }
+                },
                 None => {
                     tracing::warn!(user_id = %user_id, "Inbound call: user not found and not a valid handle — rejecting");
                     return twiml_reject(None);
@@ -263,41 +256,13 @@ pub(super) async fn twilio_inbound_handler(
     // ------------------------------------------------------------------
     // 6. Resolve answering agent
     //    The owning user's own choice wins; otherwise their "receptionist".
-    //    Resolved by ID, handle, or name — but the ID lookup is skipped unless
-    //    the value actually looks like one. The common case ("receptionist",
-    //    or any handle the user picked) would otherwise pay a guaranteed-miss
-    //    round-trip on every inbound call, before the caller hears anything.
     // ------------------------------------------------------------------
     let agent_query = state
         .get_inbound_agent(&user_id)
         .await
         .unwrap_or_else(|| "receptionist".to_string());
 
-    let agent = if looks_like_agent_id(&agent_query) {
-        state.agent_service.find_by_id(&agent_query).await.ok().flatten()
-    } else {
-        None
-    };
-
-    // Handle (username) is the common case for a configured inbound agent.
-    let agent = match agent {
-        Some(a) => Some(a),
-        None => match state.agent_service.find_by_handle(&owner_id, &agent_query).await {
-            Ok(Some(a)) => Some(a),
-            _ => None,
-        },
-    };
-
-    // If still not found, try by display name.
-    let agent = match agent {
-        Some(a) => Some(a),
-        None => match state.agent_service.find_by_name(&owner_id, &agent_query).await {
-            Ok(Some(a)) => Some(a),
-            _ => None,
-        },
-    };
-
-    let agent = match agent {
+    let agent = match resolve_agent_by_query(&state.agent_service, &owner_id, &agent_query).await {
         Some(a) => a,
         None => {
             tracing::warn!(agent_query = %agent_query, "Inbound call: agent not found by ID, handle, or name — rejecting");
@@ -406,6 +371,7 @@ pub(super) async fn twilio_inbound_handler(
         // Prefer the resolved display name (allowlist or matched user) over the
         // contact's stored name, which may be "Incoming caller" from a prior call.
         caller_name: Some(caller_display_name.unwrap_or_else(|| contact.name.clone())),
+        transfer_note: None,
     }) {
         Ok(v) => v,
         Err(e) => {
@@ -419,7 +385,7 @@ pub(super) async fn twilio_inbound_handler(
         id: user.id.clone(),
         handle: user.handle.clone(),
         groups: user.groups.clone(),
-        deactivated_at: user.deactivated_at.clone(),
+        deactivated_at: user.deactivated_at,
         email: user.email.clone(),
         name: user.name.clone(),
         password_hash: String::new(),
@@ -476,8 +442,11 @@ pub(super) async fn twilio_inbound_handler(
 
     let twiml = build_twiml(
         &ws_url,
-        greeting.as_deref(),
-        None, // hints — not applicable for inbound
+        TwimlOptions {
+            welcome_greeting: greeting.as_deref(),
+            hints: None, // not applicable for inbound
+            voice_id: agent.voice_id.as_deref(),
+        },
         &state.config.voice,
     );
 
@@ -504,15 +473,15 @@ pub(super) async fn twilio_inbound_handler(
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine as _;
     use crate::tool::voice::validate_twilio_signature;
+    use base64::Engine as _;
     use std::collections::HashMap;
 
     #[test]
     fn signature_valid_known_vector() {
         // Construct a known HMAC-SHA1 signature by hand.
         // url = "https://example.com/inbound", no form params.
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, KeyInit, Mac};
         use sha1::Sha1;
         type HmacSha1 = Hmac<Sha1>;
 
@@ -525,7 +494,12 @@ mod tests {
         let result = mac.finalize().into_bytes();
         let expected_sig = base64::engine::general_purpose::STANDARD.encode(result);
 
-        assert!(validate_twilio_signature(auth_token, url, &params, &expected_sig));
+        assert!(validate_twilio_signature(
+            auth_token,
+            url,
+            &params,
+            &expected_sig
+        ));
     }
 
     #[test]
@@ -541,7 +515,7 @@ mod tests {
 
     #[test]
     fn signature_includes_sorted_params() {
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, KeyInit, Mac};
         use sha1::Sha1;
         type HmacSha1 = Hmac<Sha1>;
 
@@ -558,17 +532,11 @@ mod tests {
         let result = mac.finalize().into_bytes();
         let expected_sig = base64::engine::general_purpose::STANDARD.encode(result);
 
-        assert!(validate_twilio_signature(auth_token, url, &params, &expected_sig));
-    }
-
-    #[test]
-    fn looks_like_agent_id_only_matches_uuids() {
-        // Real ids are UUIDs; handles/names must not trigger the id lookup.
-        assert!(super::looks_like_agent_id(
-            &uuid::Uuid::new_v4().to_string()
+        assert!(validate_twilio_signature(
+            auth_token,
+            url,
+            &params,
+            &expected_sig
         ));
-        assert!(!super::looks_like_agent_id("receptionist"));
-        assert!(!super::looks_like_agent_id("my-agent_2"));
-        assert!(!super::looks_like_agent_id(""));
     }
 }

@@ -15,6 +15,13 @@ jobs:
   backend:
     name: Backend (cargo test)
     runs-on: ubuntu-latest
+    # Observed baseline on main: ~17 min to compile tests + ~25 min to run
+    # them (~43 min total). Without a cap, a genuine hang in a test (a stuck
+    # future, a retry loop, a credential-refresh call reaching out for real)
+    # burns the default 360-minute runner timeout in silence instead of
+    # failing visibly. 60 min gives headroom over the observed baseline
+    # while still turning a hang into an actionable failure quickly.
+    timeout-minutes: 60
     # The repo's .cargo/config.toml pins build.target-dir to a Windows path
     # (C:/temp/...). On Linux the "C:" colon makes cargo assemble an invalid
     # dynamic-library path and fail before compiling anything. Override it.
@@ -35,10 +42,10 @@ jobs:
       # "failed to join paths from $LD_LIBRARY_PATH" breakage that the rust
       # Docker image hits inside container jobs. Pinned to match build/Dockerfile.
       # This action also caches ~/.cargo and target keyed on Cargo.lock.
-      - name: Install Rust 1.95
+      - name: Install Rust 1.97.1
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.97.1"
           # This action defaults RUSTFLAGS to "-D warnings"; the codebase (and
           # the Docker release build) don't treat warnings as errors, so clear
           # it. CI is here to catch compile errors and test failures, not to
@@ -65,6 +72,52 @@ jobs:
         # --no-fail-fast so one failing test crate doesn't hide failures in the
         # others; we see every failure in a single run.
         run: cargo test -p frona-server --locked --no-fail-fast
+
+  # Formatting and lints. These have always been defined in mise.toml
+  # (`fmt:check`, `lint:backend`) but were never enforced anywhere, so `main`
+  # drifted to 92 unformatted files and 9 clippy findings. Gating them here is
+  # what stops that recurring.
+  lint:
+    name: Lint (fmt, clippy)
+    runs-on: ubuntu-latest
+    # Same reason as the backend job: .cargo/config.toml pins build.target-dir
+    # to a Windows path, which is not a valid path on Linux.
+    env:
+      CARGO_TARGET_DIR: target
+    steps:
+      - uses: actions/checkout@v4
+
+      # Clippy type-checks the whole workspace, so it needs the same native
+      # deps the backend job installs (libclang for bindgen-based -sys crates,
+      # protoc for presage's build scripts).
+      - name: Install native build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev protobuf-compiler
+
+      - name: Install Rust 1.97.1
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.97.1"
+          components: rustfmt, clippy
+          # Deliberately empty, for the same reason as the backend job: this
+          # would put -D warnings in RUSTFLAGS for the entire build, including
+          # dependencies, and the project has not adopted a zero-rustc-warning
+          # policy. The clippy step below opts into -D warnings for this
+          # workspace's own lints only, which is exactly what mise's
+          # `lint:backend` task already asks for.
+          rustflags: ""
+
+      # First because it is instant and needs no compilation: a formatting slip
+      # fails in seconds rather than after a full clippy build.
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      # --all-targets is intentionally omitted, matching mise's `lint:backend`.
+      # Test code is therefore not linted; widening that is a follow-up, not a
+      # silent expansion of this gate.
+      - name: Clippy
+        run: cargo clippy --workspace --locked -- -D warnings
 
   web:
     name: Web (typecheck, lint, test)

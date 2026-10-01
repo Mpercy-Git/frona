@@ -1,12 +1,12 @@
 use chrono::{Duration, Utc};
-use frona::db::init as db;
-use frona::db::repo::generic::SurrealRepo;
-use frona::db::repo::memory_entries::SurrealMemoryEntryRepo;
-use frona::memory::models::MemoryEntry;
-use frona::memory::repository::MemoryEntryRepository;
 use frona::core::repository::Repository;
-use surrealdb::engine::local::{Db, Mem};
+use frona::db::init as db;
+use frona::db::repo::basic_memory::SurrealMemoryEntryRepo;
+use frona::db::repo::generic::SurrealRepo;
+use frona::memory::basic::models::MemoryEntry;
+use frona::memory::basic::repository::MemoryEntryRepository;
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -14,7 +14,11 @@ async fn test_db() -> Surreal<Db> {
     db
 }
 
-fn make_entry(agent_id: &str, content: &str, created_at: chrono::DateTime<chrono::Utc>) -> MemoryEntry {
+fn make_entry(
+    agent_id: &str,
+    content: &str,
+    created_at: chrono::DateTime<chrono::Utc>,
+) -> MemoryEntry {
     MemoryEntry {
         id: frona::core::repository::new_id(),
         agent_id: agent_id.to_string(),
@@ -25,7 +29,11 @@ fn make_entry(agent_id: &str, content: &str, created_at: chrono::DateTime<chrono
     }
 }
 
-fn make_user_entry(user_id: &str, content: &str, created_at: chrono::DateTime<chrono::Utc>) -> MemoryEntry {
+fn make_user_entry(
+    user_id: &str,
+    content: &str,
+    created_at: chrono::DateTime<chrono::Utc>,
+) -> MemoryEntry {
     MemoryEntry {
         id: frona::core::repository::new_id(),
         agent_id: String::new(),
@@ -54,7 +62,10 @@ async fn test_find_by_agent_id_after_returns_newer_entries() {
     let all = repo.find_by_agent_id("agent-1").await.unwrap();
     assert_eq!(all.len(), 2, "find_by_agent_id should return all entries");
 
-    let after_cutoff = repo.find_by_agent_id_after("agent-1", cutoff).await.unwrap();
+    let after_cutoff = repo
+        .find_by_agent_id_after("agent-1", cutoff)
+        .await
+        .unwrap();
     assert_eq!(
         after_cutoff.len(),
         1,
@@ -79,7 +90,9 @@ async fn test_delete_by_agent_id_before_removes_older_entries() {
     repo.create(&old).await.unwrap();
     repo.create(&new).await.unwrap();
 
-    repo.delete_by_agent_id_before("agent-1", cutoff).await.unwrap();
+    repo.delete_by_agent_id_before("agent-1", cutoff)
+        .await
+        .unwrap();
 
     let remaining = repo.find_by_agent_id("agent-1").await.unwrap();
     assert_eq!(
@@ -115,15 +128,39 @@ async fn test_find_by_agent_id_after_with_utc_now_boundary() {
     repo.create(&entry).await.unwrap();
 
     let cutoff_before = entry_time - Duration::seconds(1);
-    let results = repo.find_by_agent_id_after("agent-1", cutoff_before).await.unwrap();
-    assert_eq!(results.len(), 1, "Should find entry created after cutoff (1s before), got {}", results.len());
+    let results = repo
+        .find_by_agent_id_after("agent-1", cutoff_before)
+        .await
+        .unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "Should find entry created after cutoff (1s before), got {}",
+        results.len()
+    );
 
-    let results = repo.find_by_agent_id_after("agent-1", entry_time).await.unwrap();
-    assert_eq!(results.len(), 0, "Should NOT find entry with exact same timestamp (strict >), got {}", results.len());
+    let results = repo
+        .find_by_agent_id_after("agent-1", entry_time)
+        .await
+        .unwrap();
+    assert_eq!(
+        results.len(),
+        0,
+        "Should NOT find entry with exact same timestamp (strict >), got {}",
+        results.len()
+    );
 
     let cutoff_after = entry_time + Duration::seconds(1);
-    let results = repo.find_by_agent_id_after("agent-1", cutoff_after).await.unwrap();
-    assert_eq!(results.len(), 0, "Should NOT find entry created before cutoff (1s after), got {}", results.len());
+    let results = repo
+        .find_by_agent_id_after("agent-1", cutoff_after)
+        .await
+        .unwrap();
+    assert_eq!(
+        results.len(),
+        0,
+        "Should NOT find entry created before cutoff (1s after), got {}",
+        results.len()
+    );
 }
 
 #[tokio::test]
@@ -139,7 +176,10 @@ async fn test_stored_as_json_queried_as_datetime() {
     let all = repo.find_by_agent_id("agent-1").await.unwrap();
     assert_eq!(all.len(), 1);
 
-    let after_results = repo.find_by_agent_id_after("agent-1", before_store).await.unwrap();
+    let after_results = repo
+        .find_by_agent_id_after("agent-1", before_store)
+        .await
+        .unwrap();
     assert_eq!(
         after_results.len(),
         1,
@@ -207,7 +247,9 @@ async fn test_delete_by_user_id_before_removes_older_entries() {
     repo.create(&old).await.unwrap();
     repo.create(&new).await.unwrap();
 
-    repo.delete_by_user_id_before("user-1", cutoff).await.unwrap();
+    repo.delete_by_user_id_before("user-1", cutoff)
+        .await
+        .unwrap();
 
     let remaining = repo.find_by_user_id("user-1").await.unwrap();
     assert_eq!(remaining.len(), 1, "Should keep only newer entry");
@@ -220,9 +262,19 @@ async fn test_find_distinct_user_ids() {
     let repo: SurrealMemoryEntryRepo = SurrealRepo::new(db);
 
     let now = Utc::now();
-    repo.create(&make_user_entry("user-a", "memory 1", now)).await.unwrap();
-    repo.create(&make_user_entry("user-b", "memory 2", now)).await.unwrap();
-    repo.create(&make_user_entry("user-a", "memory 3", now + Duration::seconds(1))).await.unwrap();
+    repo.create(&make_user_entry("user-a", "memory 1", now))
+        .await
+        .unwrap();
+    repo.create(&make_user_entry("user-b", "memory 2", now))
+        .await
+        .unwrap();
+    repo.create(&make_user_entry(
+        "user-a",
+        "memory 3",
+        now + Duration::seconds(1),
+    ))
+    .await
+    .unwrap();
 
     let mut user_ids = repo.find_distinct_user_ids().await.unwrap();
     user_ids.sort();
@@ -242,15 +294,27 @@ async fn test_agent_and_user_entries_are_independent() {
     repo.create(&user_entry).await.unwrap();
 
     let agent_results = repo.find_by_agent_id("agent-1").await.unwrap();
-    assert_eq!(agent_results.len(), 1, "Agent query should return only agent entries");
+    assert_eq!(
+        agent_results.len(),
+        1,
+        "Agent query should return only agent entries"
+    );
     assert_eq!(agent_results[0].content, "agent-scoped entry");
 
     let user_results = repo.find_by_user_id("user-1").await.unwrap();
-    assert_eq!(user_results.len(), 1, "User query should return only user entries");
+    assert_eq!(
+        user_results.len(),
+        1,
+        "User query should return only user entries"
+    );
     assert_eq!(user_results[0].content, "user-scoped entry");
 
     let agent_ids = repo.find_distinct_agent_ids().await.unwrap();
-    assert_eq!(agent_ids.len(), 1, "Should only find agent-scoped agent IDs");
+    assert_eq!(
+        agent_ids.len(),
+        1,
+        "Should only find agent-scoped agent IDs"
+    );
 
     let user_ids = repo.find_distinct_user_ids().await.unwrap();
     assert_eq!(user_ids.len(), 1, "Should only find user-scoped user IDs");

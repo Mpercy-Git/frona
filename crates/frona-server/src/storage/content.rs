@@ -88,7 +88,10 @@ mod tests {
         assert_eq!(detect_content_type("code.rs"), "text/x-rust");
         assert_eq!(detect_content_type("data.json"), "application/json");
         assert_eq!(detect_content_type("readme.md"), "text/markdown");
-        assert_eq!(detect_content_type("unknown.xyz"), "application/octet-stream");
+        assert_eq!(
+            detect_content_type("unknown.xyz"),
+            "application/octet-stream"
+        );
     }
 
     #[test]

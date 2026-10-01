@@ -97,6 +97,22 @@ describe("FileView — read", () => {
   });
 });
 
+  it("names the first path and counts the rest for a batched read", () => {
+    render(
+      <FileView
+        {...mkProps({
+          toolName: "read",
+          args: { paths: ["src/foo.ts", "src/bar.ts"] },
+          result: "===== src/foo.ts =====\nconst x = 1\n\n===== src/bar.ts =====\nconst y = 2\n",
+        })}
+      />,
+    );
+    expect(screen.getByText(/— src\/foo\.ts \+1 more/)).toBeInTheDocument();
+    // No single file's extension describes a multi-file block.
+    expect(screen.getByTestId("code-block")).toHaveAttribute("data-lang", "text");
+    expect(screen.getByTestId("code-block")).toHaveTextContent("===== src/bar.ts =====");
+  });
+
 describe("FileView — write", () => {
   it("renders args.content with inferred language", () => {
     render(

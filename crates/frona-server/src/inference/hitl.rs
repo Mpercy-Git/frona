@@ -8,6 +8,7 @@ use surrealdb::types::SurrealValue;
 use crate::credential::vault::models::GrantDuration;
 use crate::inference::tool_call::ToolStatus;
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct Hitl {
@@ -18,21 +19,22 @@ pub struct Hitl {
     pub request: HitlRequest,
     pub status: ToolStatus,
     /// `None` iff `status == Pending`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<HitlResponse>,
     /// Delivery cursor uses this for retry idempotency (skips already-rendered
     /// HITLs).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<HitlDelivery>,
 }
 
 /// Channels project this to `HitlKind` via `chat::channel::hitl::kind_for`
 /// rather than matching directly, so new variants only need a `kind_for` arm.
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[serde(tag = "type", content = "data")]
 #[surreal(crate = "surrealdb::types", tag = "type", content = "data")]
 pub enum HitlRequest {
-    Question { options: Vec<String> },
+    Question {
+        options: Vec<String>,
+    },
     Takeover {
         reason: String,
         debugger_url: String,
@@ -40,7 +42,6 @@ pub enum HitlRequest {
     App {
         action: String,
         manifest: serde_json::Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         previous_manifest: Option<serde_json::Value>,
     },
     Credential {
@@ -55,6 +56,48 @@ pub enum HitlRequest {
         items: Vec<CredentialRequest>,
         reason: String,
     },
+    /// The agent found skills in the registry that aren't installed and wants
+    /// to add them. Nothing is written until the user approves — the install
+    /// happens in `add_skill`'s `on_resume`, mirroring the vault flow where
+    /// the secret is only read after the grant.
+    Skills {
+        items: Vec<SkillCandidate>,
+        scope: SkillInstallScope,
+        reason: String,
+    },
+}
+
+/// One skill in a [`HitlRequest::Skills`] approval. Carries enough for the
+/// user to judge the install without leaving the chat, and enough for
+/// `on_resume` to fetch it without re-searching the registry.
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
+pub struct SkillCandidate {
+    pub name: String,
+    /// `owner/repo` on GitHub the skill is installed from.
+    pub repo: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Where an approved skill lands. `Agent` writes into the agent's own
+/// workspace (only that agent sees it); `User` writes into the user's skill
+/// directory (every agent of theirs can use it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
+#[serde(rename_all = "snake_case")]
+#[surreal(crate = "surrealdb::types")]
+pub enum SkillInstallScope {
+    Agent,
+    User,
+}
+
+impl SkillInstallScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::User => "user",
+        }
+    }
 }
 
 /// One secret in a batched [`HitlRequest::Credentials`]. `label` is an optional
@@ -184,7 +227,9 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let back: HitlRequest = serde_json::from_str(&json).unwrap();
         match back {
-            HitlRequest::App { action, manifest, .. } => {
+            HitlRequest::App {
+                action, manifest, ..
+            } => {
                 assert_eq!(action, "deploy");
                 assert_eq!(manifest["handle"], "notes");
             }
@@ -213,8 +258,14 @@ mod tests {
     fn hitl_request_credentials_round_trip() {
         let req = HitlRequest::Credentials {
             items: vec![
-                CredentialRequest { query: "acme app key".into(), label: Some("App key".into()) },
-                CredentialRequest { query: "acme user key".into(), label: None },
+                CredentialRequest {
+                    query: "acme app key".into(),
+                    label: Some("App key".into()),
+                },
+                CredentialRequest {
+                    query: "acme user key".into(),
+                    label: None,
+                },
             ],
             reason: "Call the Acme API".into(),
         };
@@ -230,6 +281,53 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn hitl_request_skills_round_trip() {
+        let req = HitlRequest::Skills {
+            items: vec![
+                SkillCandidate {
+                    name: "pdf".into(),
+                    repo: "anthropics/skills".into(),
+                    description: "Fill and merge PDF files.".into(),
+                },
+                SkillCandidate {
+                    name: "xlsx".into(),
+                    repo: "anthropics/skills".into(),
+                    description: String::new(),
+                },
+            ],
+            scope: SkillInstallScope::Agent,
+            reason: "The user asked for a filled-in PDF form.".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: HitlRequest = serde_json::from_str(&json).unwrap();
+        match back {
+            HitlRequest::Skills {
+                items,
+                scope,
+                reason,
+            } => {
+                assert_eq!(scope, SkillInstallScope::Agent);
+                assert_eq!(reason, "The user asked for a filled-in PDF form.");
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].name, "pdf");
+                assert_eq!(items[0].repo, "anthropics/skills");
+                assert_eq!(items[0].description, "Fill and merge PDF files.");
+                assert_eq!(items[1].description, "");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn skill_install_scope_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&SkillInstallScope::User).unwrap(),
+            "\"user\""
+        );
+        assert_eq!(SkillInstallScope::Agent.as_str(), "agent");
     }
 
     #[test]
@@ -282,7 +380,9 @@ mod tests {
             connection_id: "conn-1".into(),
             vault_item_id: "item-1".into(),
             grant_duration: GrantDuration::Once,
-            target: CredentialTarget::Prefix { env_var_prefix: "DB".into() },
+            target: CredentialTarget::Prefix {
+                env_var_prefix: "DB".into(),
+            },
         });
         let json = serde_json::to_string(&r).unwrap();
         let back: HitlResponse = serde_json::from_str(&json).unwrap();
@@ -349,5 +449,4 @@ mod tests {
         assert!(back.response.is_some());
         assert!(back.delivery.is_some());
     }
-
 }

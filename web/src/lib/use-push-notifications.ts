@@ -115,7 +115,7 @@ export function usePushNotifications() {
       setServerCanSend(can_send);
       if (!public_key) {
         setError(
-          "This server has no VAPID key pair configured, so it cannot send push notifications. Set FRONA_PUSH_VAPID_PUBLIC_KEY and FRONA_PUSH_VAPID_PRIVATE_KEY.",
+          "This server has no usable VAPID key pair, so it cannot send push notifications. It normally generates one on first start — check the server log, or set FRONA_PUSH_VAPID_PUBLIC_KEY and FRONA_PUSH_VAPID_PRIVATE_KEY.",
         );
         return;
       }

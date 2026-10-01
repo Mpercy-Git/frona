@@ -129,10 +129,7 @@ mod tests {
     #[test]
     fn apply_crlf_on_mixed_input_is_uniform() {
         // Mixed CRLF + LF + lone CR → uniformly CRLF after apply.
-        assert_eq!(
-            LineEnding::Crlf.apply("a\r\nb\nc\rd"),
-            "a\r\nb\r\nc\r\nd"
-        );
+        assert_eq!(LineEnding::Crlf.apply("a\r\nb\nc\rd"), "a\r\nb\r\nc\r\nd");
     }
 
     #[test]

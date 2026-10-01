@@ -1,12 +1,20 @@
+import type { MessageError } from "./types";
+import { isMessageError } from "./message-error";
+
 export const API_URL = process.env.NEXT_PUBLIC_FRONA_SERVER_BACKEND_URL || "";
 
 /// `kind: "unavailable"` (network failure or 5xx) means "don't infer
-/// session validity" — callers should retry / show offline, not log out.
+/// session validity" - callers should retry / show offline, not log out.
+/// `code` is the server's machine-readable auth code (`token_expired`,
+/// `invalid_credentials`, ...) when the body carried one. `messageError` is
+/// the server's structured `MessageError`, when the body carried one.
 class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
     public kind: "http" | "unavailable" = "http",
+    public code?: string,
+    public messageError?: MessageError,
   ) {
     super(message);
   }
@@ -20,6 +28,29 @@ export type RefreshResult =
 
 let accessToken: string | null = null;
 let refreshPromise: Promise<RefreshResult> | null = null;
+
+const sessionExpiredListeners = new Set<() => void>();
+
+/// Fires once the server has confirmed the refresh cookie is dead - i.e. the
+/// session is genuinely over, not just the access token stale. `auth.ts`
+/// subscribes so the app gate can bounce to /login instead of leaving every
+/// in-flight request to render its own auth error.
+export function onSessionExpired(listener: () => void): () => void {
+  sessionExpiredListeners.add(listener);
+  return () => {
+    sessionExpiredListeners.delete(listener);
+  };
+}
+
+function notifySessionExpired() {
+  for (const listener of sessionExpiredListeners) {
+    try {
+      listener();
+    } catch {
+      // A bad listener must not break the request that discovered the expiry.
+    }
+  }
+}
 
 export function setAccessToken(token: string | null) {
   accessToken = token;
@@ -36,6 +67,9 @@ async function refreshAccessToken(): Promise<RefreshResult> {
       credentials: "include",
     });
     if (res.status === 401 || res.status === 403) {
+      // Drop the stale token so later calls don't replay a known-dead one.
+      accessToken = null;
+      notifySessionExpired();
       return { ok: false, reason: "unauthenticated" };
     }
     if (!res.ok) {
@@ -51,13 +85,33 @@ async function refreshAccessToken(): Promise<RefreshResult> {
   }
 }
 
-export async function ensureAccessToken(): Promise<RefreshResult> {
-  if (accessToken) return { ok: true, token: accessToken };
+/// Single-flight refresh. The server rotates the refresh pair and rejects the
+/// replay, so two concurrent refreshes mean one succeeds and the other is told
+/// the session is gone - which is how an ordinary expiry used to surface as an
+/// auth error mid-session. `staleToken` is the token whose 401 prompted this:
+/// if another caller has already replaced it, adopt theirs instead of spending
+/// the cookie again.
+function refreshOnce(staleToken: string | null): Promise<RefreshResult> {
+  if (accessToken && accessToken !== staleToken) {
+    return Promise.resolve({ ok: true, token: accessToken });
+  }
   if (refreshPromise) return refreshPromise;
   refreshPromise = refreshAccessToken().finally(() => {
     refreshPromise = null;
   });
   return refreshPromise;
+}
+
+export async function ensureAccessToken(): Promise<RefreshResult> {
+  if (accessToken) return { ok: true, token: accessToken };
+  return refreshOnce(null);
+}
+
+/// For long-lived connections (SSE, log tails) that hold a token for the life
+/// of a stream and so must handle their own 401 rather than going through
+/// [`apiFetch`]. Shares the single-flight refresh above.
+export function refreshStaleToken(staleToken: string): Promise<RefreshResult> {
+  return refreshOnce(staleToken);
 }
 
 /// Retries once on 401 with a fresh access token to cover the race where the
@@ -79,7 +133,7 @@ export async function apiFetch(
   } else if (tokenResult.reason === "unavailable") {
     throw new ApiError(0, "Server unavailable", "unavailable");
   }
-  // On "unauthenticated" we still try — some endpoints are public, and a 401
+  // On "unauthenticated" we still try - some endpoints are public, and a 401
   // here surfaces a real auth failure the caller can act on.
 
   const doFetch = async (): Promise<Response> => {
@@ -97,7 +151,7 @@ export async function apiFetch(
   let res = await doFetch();
 
   if (res.status === 401 && tokenResult.ok) {
-    const refreshed = await refreshAccessToken();
+    const refreshed = await refreshOnce(tokenResult.token);
     if (refreshed.ok) {
       headers["Authorization"] = `Bearer ${refreshed.token}`;
       res = await doFetch();
@@ -107,6 +161,20 @@ export async function apiFetch(
   }
 
   return res;
+}
+
+/// Auth codes callers surface verbatim in toasts and inline errors, so they get
+/// a sentence a user can act on. An expiry that survived the refresh retry
+/// means the session is over - saying so beats echoing the server's prose.
+function authMessage(code: string | undefined): string | undefined {
+  switch (code) {
+    case "token_expired":
+      return "Your session has expired. Please sign in again.";
+    case "token_invalid":
+      return "Your session is no longer valid. Please sign in again.";
+    default:
+      return undefined;
+  }
 }
 
 async function request<T>(
@@ -121,11 +189,19 @@ async function request<T>(
   const res = await apiFetch(path, { ...options, headers });
 
   if (!res.ok) {
-    if (res.status >= 500) {
-      throw new ApiError(res.status, "Server error", "unavailable");
-    }
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, body.error || "Request failed");
+    const messageError = isMessageError(body.message_error) ? body.message_error : undefined;
+    if (res.status >= 500) {
+      throw new ApiError(res.status, "Server error", "unavailable", undefined, messageError);
+    }
+    const code = typeof body.code === "string" ? body.code : undefined;
+    throw new ApiError(
+      res.status,
+      authMessage(code) ?? body.error ?? "Request failed",
+      "http",
+      code,
+      messageError,
+    );
   }
 
   if (res.status === 204 || res.headers.get("content-length") === "0") {
@@ -141,6 +217,113 @@ async function request<T>(
 }
 
 import type { MessageResponse, Attachment, FileEntry } from "./types";
+import type {
+  MemoryGraphResponse,
+  MemoryPageResponse,
+  MemorySearchResult,
+} from "./memory-types";
+
+export async function getMemoryStatus(): Promise<boolean> {
+  const res = await apiFetch("/api/memory/pkm/status");
+  return res.ok;
+}
+
+export async function getMemoryGraph(): Promise<MemoryGraphResponse> {
+  return request<MemoryGraphResponse>("/api/memory/pkm/graph");
+}
+
+export async function getMemoryPage(path: string): Promise<MemoryPageResponse> {
+  const response = await request<Omit<MemoryPageResponse, "page"> & {
+    entity: MemoryPageResponse["page"];
+  }>(`/api/memory/pkm/entity?path=${encodeURIComponent(path)}`);
+  const { entity, ...rest } = response;
+  return { ...rest, page: entity };
+}
+
+export async function searchMemory(query: string): Promise<MemorySearchResult[]> {
+  const response = await request<{ results: MemorySearchResult[] }>(
+    `/api/memory/pkm/search?q=${encodeURIComponent(query)}`,
+  );
+  return response.results;
+}
+
+export type PkmResetState = "pending" | "running" | "failed";
+
+export interface PkmResetStatus {
+  requestId: string;
+  status: PkmResetState;
+  requestedAt: string;
+  startedAt: string | null;
+  error: string | null;
+}
+
+export interface PkmStatusResponse {
+  available: boolean;
+  reset: PkmResetStatus | null;
+  consolidation: PkmConsolidationStatus | null;
+}
+
+export type PkmConsolidationState = "running" | "retrying" | "completed" | "failed";
+
+export interface PkmConsolidationStatus {
+  id: string;
+  status: PkmConsolidationState;
+  stage: string;
+  stageIndex: number;
+  stageCount: number;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  nextAttemptAt: string | null;
+  attempts: number;
+  restartCount: number;
+  failure: { stage: string; message: string; affectedCount: number } | null;
+  usage: { input_tokens: number; cached_input_tokens: number; output_tokens: number; cost_usd: number; calls: number };
+  usageIsEstimate: boolean;
+  summary: {
+    memoriesAdded: number; entitiesCreated: number; entitiesMinted: number;
+    entitiesMerged: number; entitiesReconciled: number; factsQuarantined: number;
+    factsReinstated: number; pagesBuilt: number; playbooksBuilt: number;
+    groundingCorrections: number; groundingItemsDropped: number; citationRepairs: number;
+    duplicateClaims: number; unsupportedClaims: number; itemsCleaned: number;
+  };
+}
+
+export interface PkmConsolidationRun {
+  id: string;
+  status: PkmConsolidationState;
+  stage: string;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  memoriesAdded: number;
+  entitiesChanged: number;
+  pagesBuilt: number;
+  playbooksBuilt: number;
+}
+
+export interface PkmResetResponse {
+  requestId: string;
+  status: PkmResetState;
+}
+
+export function getPkmStatus(): Promise<PkmStatusResponse> {
+  return request<PkmStatusResponse>("/api/memory/pkm/status");
+}
+
+export function getPkmConsolidations(): Promise<{ runs: PkmConsolidationRun[] }> {
+  return request("/api/memory/pkm/consolidations");
+}
+
+export function getPkmConsolidation(id: string = "latest"): Promise<PkmConsolidationStatus> {
+  return request(`/api/memory/pkm/consolidations/${encodeURIComponent(id)}`);
+}
+
+export function requestPkmReset(): Promise<PkmResetResponse> {
+  return request<PkmResetResponse>("/api/memory/pkm/reset", {
+    method: "POST",
+  });
+}
 
 export async function uploadFile(file: File, relativePath?: string): Promise<Attachment> {
   const formData = new FormData();
@@ -149,7 +332,7 @@ export async function uploadFile(file: File, relativePath?: string): Promise<Att
     formData.append("path", relativePath);
   }
 
-  // No `Content-Type` header — the browser sets multipart/form-data with the
+  // No `Content-Type` header - the browser sets multipart/form-data with the
   // correct boundary automatically.
   const res = await apiFetch("/api/files", {
     method: "POST",
@@ -251,6 +434,13 @@ export async function deleteFile(handle: string, path: string): Promise<void> {
   await request(`/api/files/user/${handle}/${path}`, { method: "DELETE" });
 }
 
+export async function deleteFiles(paths: string[]): Promise<void> {
+  await request("/api/files/delete", {
+    method: "POST",
+    body: JSON.stringify({ paths }),
+  });
+}
+
 export async function presignFile(owner: string, path: string): Promise<string> {
   const data = await request<{ url: string }>("/api/files/presign", {
     method: "POST",
@@ -294,16 +484,17 @@ export async function listCommands(chatId: string): Promise<CommandsResponse> {
   return request<CommandsResponse>(`/api/chats/${chatId}/commands`);
 }
 
-export async function cancelGeneration(chatId: string): Promise<void> {
-  const tokenResult = await ensureAccessToken();
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (tokenResult.ok) {
-    headers["Authorization"] = `Bearer ${tokenResult.token}`;
-  }
-  await fetch(`${API_URL}/api/chats/${chatId}/cancel`, {
-    method: "POST",
-    headers,
-  });
+export interface CancelResult {
+  /** False when the server found nothing running to stop for this chat. */
+  cancelled: boolean;
+  /** The chat's in-flight turn was cancelled. */
+  turn_cancelled?: boolean;
+  /** The task driving this chat was cancelled, so it won't start a new turn. */
+  task_cancelled?: boolean;
+}
+
+export async function cancelGeneration(chatId: string): Promise<CancelResult> {
+  return api.post<CancelResult>(`/api/chats/${chatId}/cancel`, {});
 }
 
 export async function cancelTask(taskId: string): Promise<void> {
@@ -316,6 +507,10 @@ export function deleteTask(taskId: string) {
 
 export function getTask(id: string) {
   return api.get<import("./types").TaskResponse>(`/api/tasks/${id}`);
+}
+
+export function getActivity() {
+  return api.get<import("./types").ActivitySnapshot>("/api/activity");
 }
 
 export function getCronRuns(cronId: string) {
@@ -477,9 +672,10 @@ export async function browseRepo(repo: string): Promise<RepoBrowseResult> {
   return request<RepoBrowseResult>(`/api/skills/browse?repo=${encodeURIComponent(repo)}`);
 }
 
-export type VaultProviderType = "local" | "one_password" | "bitwarden" | "hashicorp" | "kee_pass";
+export type VaultProviderType = "managed" | "local" | "one_password" | "bitwarden" | "hashicorp" | "kee_pass";
 
 export type VaultConnectionConfig =
+  | { type: "Managed" }
   | { type: "OnePassword"; service_account_token: string; default_vault_id: string | null }
   | { type: "Bitwarden"; client_id: string; client_secret: string; master_password: string; server_url: string | null }
   | { type: "Hashicorp"; address: string; token: string; mount_path: string | null }
@@ -522,6 +718,26 @@ export async function testVaultConnection(id: string): Promise<void> {
   return request<void>(`/api/vaults/${encodeURIComponent(id)}/test`, { method: "POST" });
 }
 
+// ---- Cost analysis (admin) ----------------------------------------------
+
+export function getAdminUsage(days: number): Promise<import("./types").AdminSpendAnalysis> {
+  return api.get<import("./types").AdminSpendAnalysis>(`/api/admin/usage?days=${days}`);
+}
+
+export function listCostReports(limit = 50): Promise<import("./types").CostReport[]> {
+  return api.get<import("./types").CostReport[]>(`/api/admin/cost-reports?limit=${limit}`);
+}
+
+export function getCostReport(id: string): Promise<import("./types").CostReport> {
+  return api.get<import("./types").CostReport>(`/api/admin/cost-reports/${encodeURIComponent(id)}`);
+}
+
+/** Queues an analysis; the scheduler picks the task up on its next sweep, so
+ *  this returns immediately rather than waiting on an LLM round-trip. */
+export function runCostAnalysis(): Promise<{ task: import("./types").TaskResponse }> {
+  return api.post<{ task: import("./types").TaskResponse }>("/api/admin/cost-reports/run", {});
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body: unknown) =>
@@ -530,7 +746,11 @@ export const api = {
     request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
   patch: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
-  delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  delete: <T>(path: string, body?: unknown) =>
+    request<T>(path, {
+      method: "DELETE",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
   uploadFile: async <T = { url: string }>(path: string, file: File): Promise<T> => {
     const formData = new FormData();
     formData.append("file", file);

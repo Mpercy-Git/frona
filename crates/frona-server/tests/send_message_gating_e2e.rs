@@ -4,7 +4,6 @@
 //! satisfy a "send a reminder" instruction via `send_message` and then leave
 //! `complete_task.result` empty against a non-nullable schema.
 
-#[allow(dead_code)]
 mod helpers;
 
 use std::collections::HashMap;
@@ -25,11 +24,11 @@ use frona::db::init as db_init;
 use frona::db::repo::agents::SurrealAgentRepo;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::DefaultConversationBuilder;
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::registry::ModelProviderRegistry;
 use frona::storage::StorageService;
-use helpers::{test_model_group, MockModelProvider};
-use surrealdb::engine::local::{Db, Mem};
+use helpers::{MockModelProvider, test_model_group};
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 fn workspace_resources() -> PathBuf {
     // Walk up from the test binary's CWD until we find a sibling `resources/prompts`.
@@ -64,6 +63,7 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
             shared_config_dir: resources.to_string_lossy().into_owned(),
             skills_dir: format!("{base}/skills"),
             cache_dir: format!("{base}/cache"),
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -83,18 +83,28 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
 
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        config_service,
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        catalog_sources,
     );
 
     // Replace the default chat_service with one wired to a mock provider so
-    // model-group resolution succeeds. We don't run inference here — the tests
-    // just inspect the tool registry the session builds — but `session.build`
+    // model-group resolution succeeds. We don't run inference here - the tests
+    // just inspect the tool registry the session builds - but `session.build`
     // resolves the agent's `model_group` against this registry.
     let provider: Arc<dyn frona::inference::provider::ModelProvider> =
         Arc::new(MockModelProvider::new(vec![]));
@@ -112,12 +122,11 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         mock_registry,
         state.storage_service.clone(),
         state.user_service.clone(),
-        state.memory_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
-            state.presign_service.clone(),
-            state.notification_service.clone(),
-            state.usage_service.clone(),
+        state.presign_service.clone(),
+        state.notification_service.clone(),
+        state.usage_service.clone(),
     );
     state.chat_service = chat_service.clone();
     // Rebuild Harness so it sees the new chat_service with the mock registry.
@@ -126,7 +135,7 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.user_service.clone(),
         state.storage_service.clone(),
         state.agent_service.clone(),
-        state.memory_service.clone(),
+        helpers::test_memory_service(&state, &db),
         state.skill_service.clone(),
         state.task_service.clone(),
         state.notification_service.clone(),
@@ -136,12 +145,15 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.policy_service.clone(),
         state.broadcast_service.clone(),
         state.active_sessions.clone(),
+        state.execution_registry.clone(),
         state.shutdown_token.clone(),
         state.prompts.clone(),
         state.config.clone(),
         state.usage_service.clone(),
     ));
-    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(state.harness.clone()));
+    state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
+        state.harness.clone(),
+    ));
 
     state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await.unwrap();
@@ -181,6 +193,8 @@ async fn seed_user_and_agent(state: &AppState) {
             sandbox_limits: None,
             max_concurrent_tasks: None,
             avatar: None,
+            voice_id: None,
+            private_memory: false,
             identity: Default::default(),
             prompt: Some("You are a test agent.".into()),
             heartbeat_interval: None,
@@ -192,10 +206,7 @@ async fn seed_user_and_agent(state: &AppState) {
         .await;
 }
 
-async fn build_session_for_chat(
-    state: &AppState,
-    chat_id: &str,
-) -> ChatSessionContext {
+async fn build_session_for_chat(state: &AppState, chat_id: &str) -> ChatSessionContext {
     let chat = state
         .chat_service
         .find_chat(chat_id)
@@ -207,9 +218,15 @@ async fn build_session_for_chat(
         storage_service: state.storage_service.clone(),
         agent_service: state.agent_service.clone(),
     });
-    ChatSessionContext::build(&state.harness, "user-1", chat, CancellationToken::new(), builder)
-        .await
-        .expect("session builds")
+    ChatSessionContext::build(
+        &state.harness,
+        "user-1",
+        chat,
+        CancellationToken::new(),
+        builder,
+    )
+    .await
+    .expect("session builds")
 }
 
 fn registry_has_tool(session: &ChatSessionContext, tool_id: &str) -> bool {
@@ -221,7 +238,7 @@ fn registry_has_tool(session: &ChatSessionContext, tool_id: &str) -> bool {
 }
 
 /// Heartbeat path: the agent's `heartbeat_chat_id` points at the current chat,
-/// so `send_message` IS registered — this is the one context where the agent
+/// so `send_message` IS registered - this is the one context where the agent
 /// has no other channel to reach the user.
 #[tokio::test]
 async fn send_message_registered_in_heartbeat_chat() {
@@ -276,7 +293,9 @@ async fn send_message_filtered_in_task_chat() {
         title: "Send reminder".into(),
         description: "Send a friendly reminder to drink water.".into(),
         status: TaskStatus::InProgress,
-        kind: TaskKind::Direct { source_chat_id: None },
+        kind: TaskKind::Direct {
+            source_chat_id: None,
+        },
         run_at: None,
         result_summary: None,
         error_message: None,
@@ -340,7 +359,7 @@ async fn send_message_filtered_in_normal_chat() {
     );
 }
 
-/// Sanity check the heartbeat allowance is keyed on identity, not presence —
+/// Sanity check the heartbeat allowance is keyed on identity, not presence -
 /// a second chat owned by the same agent (not its `heartbeat_chat_id`) should
 /// still be filtered. Prevents accidentally widening the rule to "agent has
 /// heartbeat configured anywhere".

@@ -67,7 +67,7 @@ async fn send_test(
             return Ok(Json(TestPushResponse {
                 configured: false,
                 report: PushDeliveryReport::default(),
-            }))
+            }));
         }
     };
 
@@ -110,8 +110,11 @@ async fn subscribe(
     Json(req): Json<SubscribeRequest>,
 ) -> Result<(), ApiError> {
     // Validate endpoint is an https:// URL to prevent SSRF.
-    let parsed = req.endpoint.parse::<axum::http::Uri>()
-        .map_err(|_| ApiError(crate::core::error::AppError::Validation("Invalid endpoint URL".into())))?;
+    let parsed = req.endpoint.parse::<axum::http::Uri>().map_err(|_| {
+        ApiError(crate::core::error::AppError::Validation(
+            "Invalid endpoint URL".into(),
+        ))
+    })?;
     if parsed.scheme_str() != Some("https") {
         return Err(ApiError(crate::core::error::AppError::Validation(
             "Push endpoint must use HTTPS".into(),
@@ -119,7 +122,10 @@ async fn subscribe(
     }
 
     // Enforce per-user subscription cap to prevent fan-out DoS.
-    let existing = state.push_subscription_repo.find_by_user_id(&auth.user_id).await?;
+    let existing = state
+        .push_subscription_repo
+        .find_by_user_id(&auth.user_id)
+        .await?;
     if existing.len() >= MAX_SUBSCRIPTIONS_PER_USER
         && !existing.iter().any(|s| s.endpoint == req.endpoint)
     {

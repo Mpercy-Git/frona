@@ -28,9 +28,7 @@ impl ChannelRepository for SurrealRepo<Channel> {
     }
 
     async fn find_by_space(&self, space_id: &str) -> Result<Option<Channel>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM channel WHERE space_id = $space_id LIMIT 1"
-        );
+        let query = format!("{SELECT_CLAUSE} FROM channel WHERE space_id = $space_id LIMIT 1");
         let mut result = self
             .db()
             .query(&query)
@@ -46,9 +44,8 @@ impl ChannelRepository for SurrealRepo<Channel> {
     async fn find_active(&self) -> Result<Vec<Channel>, AppError> {
         // Intent-keyed: everything the operator enabled that isn't terminally
         // failed. The supervisor rebuilds runtime status from here on boot/reconcile.
-        let query = format!(
-            "{SELECT_CLAUSE} FROM channel WHERE enabled = true AND status != $failed"
-        );
+        let query =
+            format!("{SELECT_CLAUSE} FROM channel WHERE enabled = true AND status != $failed");
         let mut result = self
             .db()
             .query(&query)
@@ -61,9 +58,7 @@ impl ChannelRepository for SurrealRepo<Channel> {
     }
 
     async fn find_pairing_pending(&self) -> Result<Vec<Channel>, AppError> {
-        let query = format!(
-            "{SELECT_CLAUSE} FROM channel WHERE user_address.pairing_code != NONE"
-        );
+        let query = format!("{SELECT_CLAUSE} FROM channel WHERE user_address.pairing_code != NONE");
         let mut result = self
             .db()
             .query(&query)

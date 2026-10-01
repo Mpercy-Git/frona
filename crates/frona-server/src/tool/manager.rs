@@ -31,6 +31,54 @@ pub struct TaskToolContext {
 use super::registry::AgentToolRegistry;
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 
+/// A tool's `input_schema` can carry `oneOf`/`anyOf`/`allOf` at the top level
+/// two different ways: (1) as the *whole* schema — e.g. a discriminated union
+/// from an MCP server's Rust/TS tagged-union input type — or (2) as an
+/// additional constraint alongside an already-complete `type: object` schema,
+/// e.g. `tool/mod.rs`'s `anyOf: [{required: [a]}, {required: [b]}]` XOR
+/// encoding for `create_task`'s `result_description`/`result_schema` pair.
+/// Anthropic's Messages API rejects either shape outright — the keyword's
+/// mere presence at the top level 400s the *entire* request, not just the
+/// offending tool. Case (2) only needs the keyword stripped: `properties`
+/// already exists, so leave it and `required` exactly as authored. Case (1)
+/// has no top-level `properties` to preserve, so synthesize a permissive one
+/// (union of all branches' properties, none required) — Anthropic has no way
+/// to express "exactly one of these branches" here regardless.
+fn flatten_top_level_union(schema: &mut Value) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    let branches = ["oneOf", "anyOf", "allOf"]
+        .into_iter()
+        .find_map(|key| match obj.remove(key) {
+            Some(Value::Array(branches)) => Some(branches),
+            _ => None,
+        });
+    let Some(branches) = branches else {
+        return;
+    };
+
+    if obj.contains_key("properties") {
+        obj.entry("type".to_string())
+            .or_insert_with(|| serde_json::json!("object"));
+        return;
+    }
+
+    let mut properties = serde_json::Map::new();
+    for branch in &branches {
+        if let Some(props) = branch.get("properties").and_then(|p| p.as_object()) {
+            for (name, prop_schema) in props {
+                properties
+                    .entry(name.clone())
+                    .or_insert_with(|| prop_schema.clone());
+            }
+        }
+    }
+    obj.insert("type".to_string(), serde_json::json!("object"));
+    obj.insert("properties".to_string(), Value::Object(properties));
+    obj.remove("required");
+}
+
 struct UserToolRegistry {
     tools: HashMap<String, Arc<dyn AgentTool>>,
 }
@@ -216,6 +264,8 @@ impl ToolManager {
                 continue;
             }
 
+            flatten_top_level_union(&mut def.parameters);
+
             if let Some(props) = def
                 .parameters
                 .as_object_mut()
@@ -252,16 +302,15 @@ impl ToolManager {
             AgentToolRegistry::new(tools, tool_name_to_owner, definitions, self.mcp_bridge_mode);
 
         if let Some(ctx) = task_ctx {
-            let result_schema = ctx
-                .task
-                .effective_result_schema()
-                .and_then(|v| match crate::agent::task::schema::ResultSpec::new(v) {
+            let result_schema = ctx.task.effective_result_schema().and_then(|v| {
+                match crate::agent::task::schema::ResultSpec::new(v) {
                     Ok(spec) => Some(Arc::new(spec)),
                     Err(e) => {
                         tracing::warn!("failed to compile task.result_schema: {e}");
                         None
                     }
-                });
+                }
+            });
 
             registry.register(Arc::new(crate::tool::task_control::TaskControlTool::new(
                 ctx.storage_service.clone(),
@@ -285,13 +334,24 @@ impl ToolManager {
             }
         }
 
+        // A private-memory agent never gets the writes that land in a scope its
+        // sibling agents read. Applied last so nothing registered above can
+        // reintroduce one.
+        if agent.private_memory {
+            registry.deny(crate::memory::PRIVATE_MEMORY_WITHHELD_TOOLS);
+        }
+
         registry
     }
 
     pub async fn definitions(&self, user_id: &str) -> Vec<ToolDefinition> {
         let registries = self.user_registries.read().await;
         if let Some(registry) = registries.get(user_id) {
-            registry.definitions().into_iter().map(|(_, def)| def).collect()
+            registry
+                .definitions()
+                .into_iter()
+                .map(|(_, def)| def)
+                .collect()
         } else {
             let temp = UserToolRegistry::new(self.builtins());
             temp.definitions().into_iter().map(|(_, def)| def).collect()
@@ -300,7 +360,7 @@ impl ToolManager {
 
     /// Find a builtin tool by its sub-tool name (e.g. "ask_user_question",
     /// "manage_app") for the resolve dispatcher. Bypasses per-user and
-    /// per-agent filtering — the agent already had policy permission to emit
+    /// per-agent filtering - the agent already had policy permission to emit
     /// the HITL at execute time, so resolution should always succeed.
     pub fn find_tool_for_resume(&self, tool_name: &str) -> Option<Arc<dyn AgentTool>> {
         for tool in self.builtins() {
@@ -317,10 +377,9 @@ impl ToolManager {
 fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     use super::browser::tool::BrowserTool;
     use super::cli::CliTool;
+    use super::files::{AnalyzeImageTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
     use super::heartbeat::HeartbeatTool;
-    use super::memory::{StoreAgentMemoryTool, StoreUserMemoryTool};
     use super::notify_human::NotifyHumanTool;
-    use super::files::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
     use super::produce_file::ProduceFileTool;
     use super::request_credentials::RequestCredentialsTool;
     use super::task::TaskTool;
@@ -337,61 +396,117 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
             state.config.server.external_or_local_base_url(),
         )),
         Arc::new(super::send_message::SendMessageTool::new(
-            state.chat_service.clone(), state.notification_service.clone(),
+            state.chat_service.clone(),
+            state.notification_service.clone(),
             state.agent_service.clone(),
-            state.task_service.clone(), prompts.clone(),
+            state.task_service.clone(),
+            prompts.clone(),
         )),
         Arc::new(ProduceFileTool::new(
-            state.storage_service.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            prompts.clone(),
         )),
         Arc::new(ReadTool::new(
-            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            prompts.clone(),
+        )),
+        Arc::new(AnalyzeImageTool::new(
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            state.chat_service.provider_registry().clone(),
+            state.usage_service.clone(),
+            prompts.clone(),
         )),
         Arc::new(WriteTool::new(
-            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            prompts.clone(),
         )),
         Arc::new(EditTool::new(
-            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            prompts.clone(),
         )),
         Arc::new(GlobTool::new(
-            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            prompts.clone(),
         )),
         Arc::new(GrepTool::new(
-            state.storage_service.clone(), state.sandbox_manager.clone(), prompts.clone(),
+            state.storage_service.clone(),
+            state.sandbox_manager.clone(),
+            prompts.clone(),
         )),
-        Arc::new(UpdateIdentityTool::new(state.agent_service.clone(), prompts.clone())),
-        Arc::new(StoreAgentMemoryTool::new(
-            state.memory_service.clone(), state.compaction_model_group(), prompts.clone(),
+        Arc::new(UpdateIdentityTool::new(
+            state.agent_service.clone(),
+            prompts.clone(),
         )),
-        Arc::new(StoreUserMemoryTool::new(
-            state.memory_service.clone(), state.compaction_model_group(), prompts.clone(),
+        Arc::new(BrowserTool::new(
+            state.browser_session_manager.clone(),
+            state.vault_service.clone(),
         )),
-        Arc::new(BrowserTool::new(state.browser_session_manager.clone(), state.vault_service.clone())),
-        Arc::new(WebFetchTool::new(state.browser_session_manager.clone(), prompts.clone())),
-        Arc::new(WebSearchTool::new(state.search_provider.clone(), prompts.clone())),
-        Arc::new(HeartbeatTool::new(state.agent_service.clone(), state.storage_service.clone(), prompts.clone(), state.config.server.timezone.clone())),
+        Arc::new(WebFetchTool::new(
+            state.browser_session_manager.clone(),
+            prompts.clone(),
+        )),
+        Arc::new(WebSearchTool::new(
+            state.search_provider.clone(),
+            prompts.clone(),
+        )),
+        Arc::new(HeartbeatTool::new(
+            state.agent_service.clone(),
+            state.storage_service.clone(),
+            prompts.clone(),
+            state.config.server.timezone.clone(),
+        )),
         Arc::new(RequestCredentialsTool::new(
             state.vault_service.clone(),
             prompts.clone(),
             state.config.server.external_or_local_base_url(),
         )),
         Arc::new(super::manage_app::ManageAppTool::new(
-            state.app_service.clone(), prompts.clone(),
+            state.app_service.clone(),
+            prompts.clone(),
             state.notification_service.clone(),
             state.storage_service.clone(),
             state.config.server.external_or_local_base_url(),
         )),
         Arc::new(super::create_agent::CreateAgentTool::new(
-            state.agent_service.clone(), state.storage_service.clone(),
-            state.broadcast_service.clone(), prompts.clone(),
+            state.agent_service.clone(),
+            state.storage_service.clone(),
+            state.broadcast_service.clone(),
+            prompts.clone(),
         )),
-        Arc::new(super::manage_policy::ManagePolicyTool::new(state.policy_service.clone(), prompts.clone())),
+        Arc::new(super::manage_policy::ManagePolicyTool::new(
+            state.policy_service.clone(),
+            prompts.clone(),
+        )),
+        Arc::new(super::cost_analysis::CostAnalysisTool::new(
+            state.cost_service.clone(),
+            state.policy_service.clone(),
+            prompts.clone(),
+        )),
+        Arc::new(super::manage_policy::ManagePolicyTool::new(
+            state.policy_service.clone(),
+            prompts.clone(),
+        )),
+        Arc::new(super::skills::SkillsTool::new(
+            state.skill_service.clone(),
+            prompts.clone(),
+            state.config.server.external_or_local_base_url(),
+        )),
     ];
 
+    // The active memory service contributes its own tools (e.g. store-memory).
+    tools.extend(state.harness.memory_service.tools());
+
     tools.push(Arc::new(TaskTool::new(
-        state.task_service.clone(), state.agent_service.clone(),
+        state.task_service.clone(),
+        state.agent_service.clone(),
         state.task_executor.clone(),
-        state.policy_service.clone(), prompts.clone(),
+        state.policy_service.clone(),
+        prompts.clone(),
         state.config.server.timezone.clone(),
     )));
 
@@ -417,16 +532,112 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
 
     if state.voice_provider.is_some() {
         tools.push(Arc::new(super::voice::VoiceCallTool {
-            provider: state.voice_provider.clone(), prompts: prompts.clone(),
-            contact_service: state.contact_service.clone(), call_service: state.call_service.clone(),
+            provider: state.voice_provider.clone(),
+            prompts: prompts.clone(),
+            contact_service: state.contact_service.clone(),
+            call_service: state.call_service.clone(),
         }));
-        tools.push(Arc::new(super::voice::SendDtmfTool { prompts: prompts.clone() }));
-        tools.push(Arc::new(super::voice::HangupCallTool { prompts: prompts.clone() }));
+        tools.push(Arc::new(super::voice::SendDtmfTool {
+            prompts: prompts.clone(),
+        }));
+        tools.push(Arc::new(super::voice::HangupCallTool {
+            prompts: prompts.clone(),
+        }));
+        tools.push(Arc::new(super::voice::SendDtmfTool {
+            prompts: prompts.clone(),
+        }));
+        tools.push(Arc::new(super::voice::HangupCallTool {
+            prompts: prompts.clone(),
+        }));
+        tools.push(Arc::new(super::voice::TransferCallTool {
+            prompts: prompts.clone(),
+            agent_service: state.agent_service.clone(),
+            call_service: state.call_service.clone(),
+            chat_service: state.chat_service.clone(),
+        }));
     }
 
     for tool_config in state.cli_tools_config.iter() {
-        tools.push(Arc::new(CliTool::new(tool_config.clone(), state.sandbox_manager.clone())));
+        tools.push(Arc::new(CliTool::new(
+            tool_config.clone(),
+            state.sandbox_manager.clone(),
+        )));
     }
 
     tools
+}
+
+#[cfg(test)]
+mod flatten_top_level_union_tests {
+    use super::flatten_top_level_union;
+    use serde_json::json;
+
+    #[test]
+    fn flattens_one_of_into_plain_object() {
+        let mut schema = json!({
+            "oneOf": [
+                {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]},
+                {"type": "object", "properties": {"b": {"type": "number"}}, "required": ["b"]}
+            ]
+        });
+        flatten_top_level_union(&mut schema);
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("oneOf").is_none());
+        assert!(schema.get("required").is_none());
+        assert_eq!(schema["properties"]["a"]["type"], "string");
+        assert_eq!(schema["properties"]["b"]["type"], "number");
+    }
+
+    #[test]
+    fn leaves_plain_object_schema_untouched() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "required": ["a"]
+        });
+        let before = schema.clone();
+        flatten_top_level_union(&mut schema);
+        assert_eq!(schema, before);
+    }
+
+    #[test]
+    fn any_of_and_all_of_are_also_flattened() {
+        for key in ["anyOf", "allOf"] {
+            let mut schema = json!({
+                key: [{"type": "object", "properties": {"x": {"type": "boolean"}}}]
+            });
+            flatten_top_level_union(&mut schema);
+            assert_eq!(schema["type"], "object");
+            assert!(schema.get(key).is_none());
+            assert_eq!(schema["properties"]["x"]["type"], "boolean");
+        }
+    }
+
+    /// The `create_task`/`create_recurring_task` shape (tool/mod.rs's
+    /// `result_description`/`result_schema` XOR encoding): `anyOf` is a
+    /// sibling constraint on an already-complete object schema, not the
+    /// schema itself. Only the offending keyword should be stripped —
+    /// `properties` and the real top-level `required` list must survive.
+    #[test]
+    fn strips_any_of_constraint_without_touching_existing_properties_or_required() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "result_description": {"type": "string"},
+                "result_schema": {"type": "object"}
+            },
+            "required": ["title"],
+            "anyOf": [
+                {"required": ["result_description"]},
+                {"required": ["result_schema"]}
+            ]
+        });
+        flatten_top_level_union(&mut schema);
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("anyOf").is_none());
+        assert_eq!(schema["required"], json!(["title"]));
+        assert_eq!(schema["properties"]["result_description"]["type"], "string");
+        assert_eq!(schema["properties"]["result_schema"]["type"], "object");
+    }
 }

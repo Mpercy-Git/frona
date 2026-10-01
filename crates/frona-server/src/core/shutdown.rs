@@ -16,7 +16,10 @@ pub async fn graceful_drain(state: &AppState) {
                 info!("All in-flight work drained");
                 break;
             }
-            info!(active_sessions = count, "Waiting for in-flight work to complete...");
+            info!(
+                active_sessions = count,
+                "Waiting for in-flight work to complete..."
+            );
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     };

@@ -1,21 +1,21 @@
+use crate::Result;
 use crate::connection::BrowserConnection;
 use crate::error::Error;
 use crate::types::TabInfo;
 use crate::url::normalize_url;
-use crate::Result;
 
 impl BrowserConnection {
     pub async fn new_tab(&self, url: &str) -> Result<TabInfo> {
         let target = normalize_url(url);
-        let page = self
-            .browser()
-            .new_page(&target)
-            .await
-            .map_err(Error::Cdp)?;
+        let page = self.browser().new_page(&target).await.map_err(Error::Cdp)?;
         page.bring_to_front().await.map_err(Error::Cdp)?;
 
         let url = page.url().await.map_err(Error::Cdp)?.unwrap_or_default();
-        let title = page.get_title().await.map_err(Error::Cdp)?.unwrap_or_default();
+        let title = page
+            .get_title()
+            .await
+            .map_err(Error::Cdp)?
+            .unwrap_or_default();
 
         let pages = self.pages().await?;
         let index = pages

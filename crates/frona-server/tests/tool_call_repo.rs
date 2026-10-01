@@ -1,12 +1,12 @@
 use chrono::Utc;
-use frona::inference::tool_call::ToolStatus;
 use frona::core::repository::Repository;
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
 use frona::db::repo::tool_calls::ToolCallRepository;
 use frona::inference::tool_call::ToolCall;
-use surrealdb::engine::local::{Db, Mem};
+use frona::inference::tool_call::ToolStatus;
 use surrealdb::Surreal;
+use surrealdb::engine::local::{Db, Mem};
 
 async fn test_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
@@ -26,7 +26,7 @@ fn test_tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> Too
         result: "tool result".to_string(),
         success: true,
         duration_ms: 42,
-        
+
         hitl: None,
         task_event: None,
         system_prompt: None,
@@ -223,7 +223,7 @@ async fn begin_creates_incomplete_record() {
         result: String::new(),
         success: false,
         duration_ms: 0,
-        
+
         hitl: None,
         task_event: None,
         system_prompt: None,
@@ -289,7 +289,7 @@ async fn begin_without_finish_leaves_incomplete() {
         result: String::new(),
         success: false,
         duration_ms: 0,
-        
+
         hitl: None,
         task_event: None,
         system_prompt: None,

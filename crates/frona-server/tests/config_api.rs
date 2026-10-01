@@ -1,9 +1,21 @@
-use frona::core::config::{deep_merge, redact_config_for_api, redact_config_for_log, config_file_path, Config};
+use frona::core::config::{
+    Config, config_file_path, deep_merge, redact_config_for_api, redact_config_for_log,
+    strip_defaults,
+};
 use serde_json::json;
+
+/// `strip_defaults` then an atomic-enough (for tests) write - the same two
+/// steps `core::config::service::ConfigService::save` performs against the
+/// on-disk document before persisting, exercised here directly against a raw
+/// `Value` rather than through the full `ConfigService` (revision tracking,
+/// patch merging) machinery these round-trip tests don't need.
+fn persist_config(value: &mut serde_json::Value, path: &str) -> std::io::Result<()> {
+    strip_defaults(value);
+    std::fs::write(path, serde_yaml::to_string(value).unwrap())
+}
 
 #[test]
 fn test_config_file_path_default() {
-    // Without env vars set, returns data/config.yaml
     let path = config_file_path();
     assert!(path.ends_with("config.yaml"));
 }
@@ -14,10 +26,7 @@ fn test_redact_config_for_log() {
     let mut value = serde_json::to_value(&config).unwrap();
     redact_config_for_log(&mut value);
 
-    assert_eq!(
-        value["auth"]["encryption_secret"],
-        json!("[redacted]")
-    );
+    assert_eq!(value["auth"]["encryption_secret"], json!("[redacted]"));
 }
 
 #[test]
@@ -26,27 +35,21 @@ fn test_redact_config_for_api() {
     let mut value = serde_json::to_value(&config).unwrap();
     redact_config_for_api(&mut value);
 
-    // encryption_secret is the default placeholder, so is_set should be false
-    assert_eq!(
-        value["auth"]["encryption_secret"],
-        json!({"is_set": false})
-    );
+    assert_eq!(value["auth"]["encryption_secret"], json!({"is_set": false}));
 
-    // sso.client_secret is None by default, so is_set should be false
-    assert_eq!(
-        value["sso"]["client_secret"],
-        json!({"is_set": false})
-    );
+    assert_eq!(value["sso"]["client_secret"], json!({"is_set": false}));
 }
 
 #[test]
 fn test_redact_config_for_api_providers() {
     let mut config = Config::default();
-    config.providers.insert("anthropic".into(), frona::core::config::ModelProviderConfig {
-        api_key: Some("sk-secret".into()),
-        base_url: None,
-        enabled: true,
-    });
+    config.providers.insert(
+        frona::core::Handle::try_new("anthropic").unwrap(),
+        frona::core::config::ModelProviderConfig {
+            api_key: Some("sk-secret".into()),
+            ..Default::default()
+        },
+    );
 
     let mut value = serde_json::to_value(&config).unwrap();
     redact_config_for_api(&mut value);
@@ -55,7 +58,6 @@ fn test_redact_config_for_api_providers() {
         value["providers"]["anthropic"]["api_key"],
         json!({"is_set": true})
     );
-    // enabled should not be redacted
     assert_eq!(value["providers"]["anthropic"]["enabled"], json!(true));
 }
 
@@ -96,17 +98,18 @@ fn test_json_schema_generation() {
     let schema = schemars::schema_for!(Config);
     let value = serde_json::to_value(schema).unwrap();
 
-    // Should have properties for top-level config sections
     let props = value["properties"].as_object().unwrap();
     assert!(props.contains_key("server"));
     assert!(props.contains_key("auth"));
     assert!(props.contains_key("providers"));
     assert!(props.contains_key("models"));
 
-    // Server port should have a description
     let server_ref = &value["properties"]["server"];
-    // Navigate through $ref to find server properties
     assert!(server_ref.is_object());
+
+    let schema_text = serde_json::to_string(&value).unwrap();
+    assert!(schema_text.contains("completions"));
+    assert!(schema_text.contains("responses"));
 }
 
 #[tokio::test]
@@ -120,25 +123,49 @@ async fn test_runtime_config_operations() {
     let config = Config::default();
     let storage = frona::storage::StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
+        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            80.0, 80.0, 90.0, 90.0,
+        ),
     );
-    let state = frona::core::state::AppState::new(db, &config, Some(frona::inference::config::ModelRegistryConfig::empty()), storage, metrics_handle, resource_manager);
+    let config_service = {
+        let mut loaded = frona::core::config::ConfigService::load(
+            tempfile::tempdir().unwrap().path().join("config.yaml"),
+        )
+        .unwrap();
+        loaded.config = config.clone();
+        frona::core::config::ConfigService::new(loaded).unwrap()
+    };
+    let catalog_sources = frona::app_state_fixture::catalogs(&config);
+    let state = frona::core::state::AppState::new(
+        db,
+        config_service,
+        Some(frona::inference::config::ModelRegistryConfig::empty()),
+        storage,
+        metrics_handle,
+        resource_manager,
+        catalog_sources,
+    );
 
-    // Initially not set
     let val = state.get_runtime_config("setup_completed").await.unwrap();
     assert!(val.is_none());
     assert!(!state.get_runtime_config_bool("setup_completed").await);
 
-    // Set the flag
-    state.set_runtime_config("setup_completed", "true").await.unwrap();
+    state
+        .set_runtime_config("setup_completed", "true")
+        .await
+        .unwrap();
     assert!(state.get_runtime_config_bool("setup_completed").await);
 
-    // Overwrite
-    state.set_runtime_config("setup_completed", "false").await.unwrap();
+    state
+        .set_runtime_config("setup_completed", "false")
+        .await
+        .unwrap();
     assert!(!state.get_runtime_config_bool("setup_completed").await);
 
-    // Different key
-    state.set_runtime_config("other_flag", "hello").await.unwrap();
+    state
+        .set_runtime_config("other_flag", "hello")
+        .await
+        .unwrap();
     let val = state.get_runtime_config("other_flag").await.unwrap();
     assert_eq!(val, Some("hello".to_string()));
 }
@@ -146,14 +173,12 @@ async fn test_runtime_config_operations() {
 /// Regression: https://github.com/fronalabs/frona/issues/27
 ///
 /// `persist_config` strips fields equal to `Config::default()` for compactness.
-/// `Config::load()` then has to be able to reconstruct them — partial structs
+/// `Config::load()` then has to be able to reconstruct them - partial structs
 /// on disk must deserialize. Before fixing this, editing a single
 /// `RetryConfig` field through the GUI persisted a partial `retry: {...}` and
 /// crashed the server on next startup.
 #[test]
 fn retry_config_survives_strip_defaults_round_trip() {
-    use frona::core::config::persist_config;
-
     let mut value = json!({
         "auth": { "encryption_secret": "aaaa" },
         "providers": { "openrouter": { "api_key": "sk-or-test" } },
@@ -172,27 +197,31 @@ fn retry_config_survives_strip_defaults_round_trip() {
     });
 
     let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("config.yaml").to_string_lossy().into_owned();
+    let path = tmp
+        .path()
+        .join("config.yaml")
+        .to_string_lossy()
+        .into_owned();
 
     persist_config(&mut value, &path).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
 
-    // strip_defaults removes the three fields that match RetryConfig::default().
     assert!(written.contains("max_retries: 3"));
     assert!(!written.contains("initial_backoff_ms"));
 
     let loaded: Config = ::config::Config::builder()
-        .add_source(::config::File::from_str(&written, ::config::FileFormat::Yaml))
+        .add_source(::config::File::from_str(
+            &written,
+            ::config::FileFormat::Yaml,
+        ))
         .build()
         .unwrap()
         .try_deserialize()
         .expect("load must succeed after persist trims retry fields");
 
     let primary = loaded.models.get("primary").expect("primary model present");
-    let retry = match primary {
-        frona::core::config::ModelGroupConfig::OpenRouter { common, .. } => &common.retry,
-        other => panic!("unexpected variant: {other:?}"),
-    };
+    assert_eq!(primary.provider, "openrouter");
+    let retry = &primary.common.retry;
     assert_eq!(retry.max_retries, 3);
     assert_eq!(retry.initial_backoff_ms, 1000);
     assert_eq!(retry.backoff_multiplier, 2.0);
@@ -201,13 +230,11 @@ fn retry_config_survives_strip_defaults_round_trip() {
 
 /// Guards every persisted config struct against the same round-trip trap as
 /// `retry_config_survives_strip_defaults_round_trip`. The default Config is
-/// the worst case for `strip_defaults` — every field matches the default,
+/// the worst case for `strip_defaults` - every field matches the default,
 /// so strip removes everything except map entries it can't compare. The
 /// stripped output must still load back into an equivalent Config.
 #[test]
 fn default_config_survives_strip_defaults_round_trip() {
-    use frona::core::config::persist_config;
-
     // Set one non-default field per vulnerable struct so the entry survives
     // strip_defaults and we exercise the deserializer with a partial shape
     // (the other sibling fields get stripped).
@@ -227,12 +254,19 @@ fn default_config_survives_strip_defaults_round_trip() {
     });
 
     let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("config.yaml").to_string_lossy().into_owned();
+    let path = tmp
+        .path()
+        .join("config.yaml")
+        .to_string_lossy()
+        .into_owned();
     persist_config(&mut value, &path).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
 
     let loaded: Config = ::config::Config::builder()
-        .add_source(::config::File::from_str(&written, ::config::FileFormat::Yaml))
+        .add_source(::config::File::from_str(
+            &written,
+            ::config::FileFormat::Yaml,
+        ))
         .build()
         .unwrap()
         .try_deserialize()
@@ -242,4 +276,54 @@ fn default_config_survives_strip_defaults_round_trip() {
     assert_eq!(loaded.signal.max_pending_per_user, 99);
     assert!(loaded.providers.contains_key("openrouter"));
     assert!(loaded.models.contains_key("primary"));
+}
+
+/// A model group pointed at an OpenAI-compatible endpoint uses
+/// `provider: generic` — which is also `ProviderModel`'s default variant.
+/// `strip_defaults` used to drop it as "same as default", but `provider` is the
+/// serde tag the group is parsed by, not a value: the trimmed file then failed
+/// to load with `missing configuration field "models.primary.provider"` and
+/// panicked the server on its next startup.
+#[test]
+fn generic_model_group_survives_strip_defaults_round_trip() {
+    let mut value = json!({
+        "providers": {
+            "generic": { "base_url": "http://localhost:8000/v1" }
+        },
+        "models": {
+            "primary": {
+                "provider": "generic",
+                "model": "qwen3-coder",
+                "max_tokens": 32000
+            }
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp
+        .path()
+        .join("config.yaml")
+        .to_string_lossy()
+        .into_owned();
+
+    persist_config(&mut value, &path).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        written.contains("provider: generic"),
+        "provider tag must survive the strip:\n{written}"
+    );
+
+    let loaded: Config = ::config::Config::builder()
+        .add_source(::config::File::from_str(
+            &written,
+            ::config::FileFormat::Yaml,
+        ))
+        .build()
+        .unwrap()
+        .try_deserialize()
+        .unwrap_or_else(|e| panic!("load failed: {e}\n--- written ---\n{written}"));
+
+    let primary = loaded.models.get("primary").expect("primary model present");
+    assert_eq!(primary.provider, "generic");
+    assert_eq!(primary.common.model, "qwen3-coder");
 }

@@ -175,7 +175,11 @@ mod tests {
 
         // Advance well past the interval — first fn must NOT have fired again.
         tokio::time::sleep(Duration::from_secs(20)).await;
-        assert_eq!(first_count.load(Ordering::Relaxed), 1, "previous task should be cancelled");
+        assert_eq!(
+            first_count.load(Ordering::Relaxed),
+            1,
+            "previous task should be cancelled"
+        );
         // Second fn keeps firing.
         assert!(second_count.load(Ordering::Relaxed) >= 4);
 
@@ -216,8 +220,15 @@ mod tests {
         indicator.stop("chat-a").await;
 
         tokio::time::sleep(Duration::from_secs(20)).await;
-        assert_eq!(count_a.load(Ordering::Relaxed), 1, "stopped chat should not refire");
-        assert!(count_b.load(Ordering::Relaxed) >= 4, "unaffected chat should keep firing");
+        assert_eq!(
+            count_a.load(Ordering::Relaxed),
+            1,
+            "stopped chat should not refire"
+        );
+        assert!(
+            count_b.load(Ordering::Relaxed) >= 4,
+            "unaffected chat should keep firing"
+        );
 
         indicator.stop("chat-b").await;
     }

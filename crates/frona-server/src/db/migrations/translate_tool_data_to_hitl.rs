@@ -29,7 +29,9 @@ async fn translate_tool_data_to_hitl(db: &Surreal<Db>) -> Result<(), surrealdb::
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let Some(td) = row.get("tool_data") else { continue };
+        let Some(td) = row.get("tool_data") else {
+            continue;
+        };
         let Some(tag) = td.get("type").and_then(|v| v.as_str()) else {
             continue;
         };
@@ -147,7 +149,10 @@ async fn translate_tool_data_to_hitl(db: &Surreal<Db>) -> Result<(), surrealdb::
                     .and_then(|v| v.as_str())
                     .unwrap_or("deploy")
                     .to_string();
-                let manifest = data.get("manifest").cloned().unwrap_or(serde_json::Value::Null);
+                let manifest = data
+                    .get("manifest")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 let previous_manifest = data.get("previous_manifest").cloned();
                 let handle = manifest
                     .get("handle")
@@ -287,7 +292,9 @@ mod tests {
             .await
             .unwrap();
         let row: serde_json::Value = res.take::<Option<serde_json::Value>>(0).unwrap().unwrap();
-        row.get("id").and_then(|v| v.as_str()).map(str::to_string)
+        row.get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
             .unwrap_or_else(|| {
                 // SurrealDB returns IDs as objects sometimes; extract id field.
                 row.get("id")
@@ -335,10 +342,17 @@ mod tests {
         assert!(row.get("tool_data").is_none_or(|v| v.is_null()));
         let hitl = row.get("hitl").unwrap();
         assert_eq!(hitl.get("status").and_then(|v| v.as_str()), Some("pending"));
-        assert_eq!(hitl.get("prompt").and_then(|v| v.as_str()), Some("Which region?"));
+        assert_eq!(
+            hitl.get("prompt").and_then(|v| v.as_str()),
+            Some("Which region?")
+        );
         let req = hitl.get("request").unwrap();
         assert_eq!(req.get("type").and_then(|v| v.as_str()), Some("Question"));
-        let opts = req.get("data").and_then(|d| d.get("options")).and_then(|v| v.as_array()).unwrap();
+        let opts = req
+            .get("data")
+            .and_then(|d| d.get("options"))
+            .and_then(|v| v.as_array())
+            .unwrap();
         assert_eq!(opts.len(), 2);
     }
 
@@ -367,7 +381,9 @@ mod tests {
         let req = rows[0].get("hitl").unwrap().get("request").unwrap();
         assert_eq!(req.get("type").and_then(|v| v.as_str()), Some("Credential"));
         assert_eq!(
-            req.get("data").and_then(|d| d.get("query")).and_then(|v| v.as_str()),
+            req.get("data")
+                .and_then(|d| d.get("query"))
+                .and_then(|v| v.as_str()),
             Some("postgres-prod"),
         );
     }
@@ -395,7 +411,10 @@ mod tests {
 
         let rows = fetch(&db).await;
         let hitl = rows[0].get("hitl").unwrap();
-        assert_eq!(hitl.get("status").and_then(|v| v.as_str()), Some("resolved"));
+        assert_eq!(
+            hitl.get("status").and_then(|v| v.as_str()),
+            Some("resolved")
+        );
         let resp = hitl.get("response").unwrap();
         assert_eq!(resp.get("type").and_then(|v| v.as_str()), Some("Approval"));
         assert_eq!(resp.get("data").and_then(|v| v.as_bool()), Some(true));
@@ -459,7 +478,10 @@ mod tests {
         let ev = rows[0].get("task_event").unwrap();
         assert_eq!(ev.get("type").and_then(|v| v.as_str()), Some("Completion"));
         let inner = ev.get("data").unwrap();
-        assert_eq!(inner.get("task_id").and_then(|v| v.as_str()), Some("task-1"));
+        assert_eq!(
+            inner.get("task_id").and_then(|v| v.as_str()),
+            Some("task-1")
+        );
         assert_eq!(inner.get("summary").and_then(|v| v.as_str()), Some("Done!"));
     }
 
@@ -486,7 +508,10 @@ mod tests {
         let ev = rows[0].get("task_event").unwrap();
         assert_eq!(ev.get("type").and_then(|v| v.as_str()), Some("Deferred"));
         let inner = ev.get("data").unwrap();
-        assert_eq!(inner.get("delay_minutes").and_then(|v| v.as_u64()), Some(15));
+        assert_eq!(
+            inner.get("delay_minutes").and_then(|v| v.as_u64()),
+            Some(15)
+        );
     }
 
     #[tokio::test]

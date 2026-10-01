@@ -76,6 +76,7 @@ pub struct CachedMcpTool {
     pub input_schema: serde_json::Value,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub enum TransportConfig {
@@ -88,11 +89,8 @@ pub enum TransportConfig {
         args: Vec<String>,
         #[serde(default)]
         env: BTreeMap<String, String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         port_env_var: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         endpoint_path: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
         /// HTTP headers sent with every request when `url` is set (pure
         /// remote connection, no child process). Values may reference
@@ -180,6 +178,13 @@ pub struct McpServer {
     pub server_info: Option<McpServerInfo>,
 
     pub package: McpPackage,
+    /// What the install put on disk, as opposed to what was asked for:
+    /// `{version}`, or `{version}+{short commit}` for a package from git.
+    /// `package.version` records the request, which for an unpinned install is
+    /// only "latest". `None` for a runtime whose installer records nothing
+    /// readable (PyPI) and for a remote server, which installs nothing at all.
+    #[serde(default)]
+    pub resolved_ref: Option<String>,
     pub command: String,
     pub args: Vec<String>,
     #[serde(default)]
@@ -188,6 +193,11 @@ pub struct McpServer {
     pub active_transport: String,
     pub env: BTreeMap<String, String>,
     pub status: McpServerStatus,
+    /// Why the last install or start gave up, in the words the server page
+    /// leads with. Cleared by anything that succeeds: a running server has
+    /// nothing left to explain.
+    #[serde(default)]
+    pub last_error: Option<String>,
     pub tool_cache: Vec<CachedMcpTool>,
     pub workspace_dir: String,
 
@@ -204,23 +214,21 @@ pub struct CredentialBinding {
     pub field: crate::credential::vault::models::VaultField,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpServerInstall {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description_override: Option<String>,
     /// When absent, the install service derives one via `sanitize_to_handle`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handle: Option<Handle>,
     #[serde(default)]
     pub credentials: Vec<CredentialBinding>,
     #[serde(default)]
     pub extra_env: BTreeMap<String, String>,
+    #[serialize_always]
     #[serde(default)]
     pub sandbox_policy: Option<crate::policy::sandbox::SandboxPolicy>,
     /// Install a server that lives entirely behind a remote URL — no
@@ -252,16 +260,14 @@ fn default_remote_transport_kind() -> String {
     "streamable-http".to_string()
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpServerUpdate {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<Vec<CredentialBinding>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_env: Option<BTreeMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_policy: Option<crate::policy::sandbox::SandboxPolicy>,
+    #[serialize_always]
     pub active_transport: Option<String>,
 }
 
@@ -276,7 +282,9 @@ pub fn sanitize_to_handle(input: &str) -> Handle {
     let mut last: Option<char> = None;
     for c in stripped.chars() {
         let mapped = match c.to_ascii_lowercase() {
-            ch if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-' => Some(ch),
+            ch if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-' => {
+                Some(ch)
+            }
             '.' | '/' | ' ' | '\t' => Some('-'),
             _ => Some('-'),
         };
@@ -309,8 +317,9 @@ pub fn sanitize_to_handle(input: &str) -> Handle {
         s = s.trim_end_matches(['-', '_']).to_string();
     }
 
-    Handle::try_new(s)
-        .expect("sanitize_to_handle produced a value that fails Handle validation — bug in the sanitizer")
+    Handle::try_new(s).expect(
+        "sanitize_to_handle produced a value that fails Handle validation — bug in the sanitizer",
+    )
 }
 
 fn strip_io_github_prefix(input: &str) -> &str {
@@ -328,7 +337,10 @@ mod tests {
 
     #[test]
     fn sanitize_to_handle_basic() {
-        assert_eq!(sanitize_to_handle("Google Workspace").as_str(), "google-workspace");
+        assert_eq!(
+            sanitize_to_handle("Google Workspace").as_str(),
+            "google-workspace"
+        );
         assert_eq!(sanitize_to_handle("GitHub").as_str(), "github");
         assert_eq!(sanitize_to_handle("my-tool-2").as_str(), "my-tool-2");
     }
@@ -472,7 +484,10 @@ mod tests {
         let remote = parsed.remote.unwrap();
         assert_eq!(remote.url, "https://example.com/mcp");
         assert_eq!(remote.transport, "streamable-http");
-        assert_eq!(remote.headers.get("Authorization").unwrap(), "Bearer ${TOKEN}");
+        assert_eq!(
+            remote.headers.get("Authorization").unwrap(),
+            "Bearer ${TOKEN}"
+        );
         assert!(!parsed.allow_unauthenticated_remote);
     }
 
@@ -489,7 +504,10 @@ mod tests {
     #[test]
     fn interpolate_env_vars_leaves_unknown_var_untouched() {
         let env = BTreeMap::new();
-        assert_eq!(interpolate_env_vars("Bearer ${MISSING}", &env), "Bearer ${MISSING}");
+        assert_eq!(
+            interpolate_env_vars("Bearer ${MISSING}", &env),
+            "Bearer ${MISSING}"
+        );
     }
 
     #[test]
@@ -503,14 +521,20 @@ mod tests {
     #[test]
     fn interpolate_env_vars_ignores_unterminated_placeholder() {
         let env = BTreeMap::new();
-        assert_eq!(interpolate_env_vars("Bearer ${TOKEN", &env), "Bearer ${TOKEN");
+        assert_eq!(
+            interpolate_env_vars("Bearer ${TOKEN", &env),
+            "Bearer ${TOKEN"
+        );
     }
 
     #[test]
     fn extract_env_var_refs_collects_all_names() {
         let mut headers = BTreeMap::new();
         headers.insert("Authorization".to_string(), "Bearer ${TOKEN}".to_string());
-        headers.insert("X-Client".to_string(), "id-${CLIENT_ID}-${TOKEN}".to_string());
+        headers.insert(
+            "X-Client".to_string(),
+            "id-${CLIENT_ID}-${TOKEN}".to_string(),
+        );
         let refs = extract_env_var_refs(&headers);
         assert_eq!(refs.len(), 2);
         assert!(refs.contains("TOKEN"));

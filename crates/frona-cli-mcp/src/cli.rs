@@ -15,7 +15,10 @@ pub async fn run(client: BridgeClient, args: Vec<String>) -> ExitCode {
     }
 }
 
-async fn run_inner(client: BridgeClient, args: Vec<String>) -> Result<ExitCode, crate::client::Error> {
+async fn run_inner(
+    client: BridgeClient,
+    args: Vec<String>,
+) -> Result<ExitCode, crate::client::Error> {
     let positionals: Vec<&str> = args
         .iter()
         .skip(1)
@@ -23,7 +26,9 @@ async fn run_inner(client: BridgeClient, args: Vec<String>) -> Result<ExitCode, 
         .map(|s| s.as_str())
         .collect();
 
-    let has_help = args.iter().any(|a| a == "--help" || a == "-h" || a == "help");
+    let has_help = args
+        .iter()
+        .any(|a| a == "--help" || a == "-h" || a == "help");
 
     match (positionals.first().copied(), positionals.get(1).copied()) {
         (None, _) | (Some("help"), None) => {
@@ -37,7 +42,10 @@ async fn run_inner(client: BridgeClient, args: Vec<String>) -> Result<ExitCode, 
             } else {
                 for s in &servers {
                     let desc = s.description.as_deref().unwrap_or("");
-                    println!("{:<20} {:<30} ({} tools)  {}", s.handle, s.display_name, s.tool_count, desc);
+                    println!(
+                        "{:<20} {:<30} ({} tools)  {}",
+                        s.handle, s.display_name, s.tool_count, desc
+                    );
                 }
             }
             Ok(ExitCode::SUCCESS)
@@ -61,9 +69,7 @@ async fn run_inner(client: BridgeClient, args: Vec<String>) -> Result<ExitCode, 
         (Some(server), Some(tool)) if has_help => {
             print_tool_help_by_name(&client, server, tool).await
         }
-        (Some(server), Some(tool)) => {
-            call_tool(&client, server, tool, &args).await
-        }
+        (Some(server), Some(tool)) => call_tool(&client, server, tool, &args).await,
         (Some(server), None) => {
             eprintln!("Missing tool name. Run: mcpctl {server} --help");
             Ok(ExitCode::FAILURE)
@@ -106,9 +112,19 @@ async fn print_server_help(
     println!();
     println!("TOOLS:");
 
-    let max_name = detail.tools.iter().map(|t| t.name.len()).max().unwrap_or(10);
+    let max_name = detail
+        .tools
+        .iter()
+        .map(|t| t.name.len())
+        .max()
+        .unwrap_or(10);
     for t in &detail.tools {
-        println!("    {:<width$}  {}", t.name, t.description, width = max_name);
+        println!(
+            "    {:<width$}  {}",
+            t.name,
+            t.description,
+            width = max_name
+        );
     }
 
     println!();
@@ -175,10 +191,7 @@ fn print_tool_help(server: &str, tool: &BridgeToolInfo) {
     }
 
     println!("USAGE:");
-    let example_args: String = required
-        .iter()
-        .map(|r| format!(" --{r} <value>"))
-        .collect();
+    let example_args: String = required.iter().map(|r| format!(" --{r} <value>")).collect();
     println!("    mcpctl {server} {}{}", tool.name, example_args);
 }
 
@@ -235,7 +248,11 @@ fn parse_tool_args(
         .input_schema
         .get("required")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     let mut cmd = Command::new("mcpctl")
@@ -282,12 +299,12 @@ fn parse_tool_args(
         .map(|s| s.as_str())
         .collect();
 
-    let matches = cmd.try_get_matches_from(&flag_args).map_err(|e| {
-        crate::client::Error::Api {
+    let matches = cmd
+        .try_get_matches_from(&flag_args)
+        .map_err(|e| crate::client::Error::Api {
             status: 0,
             body: e.to_string(),
-        }
-    })?;
+        })?;
 
     let mut arguments = serde_json::Map::new();
     for name in &param_names {

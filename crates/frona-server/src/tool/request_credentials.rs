@@ -12,7 +12,7 @@ use crate::inference::tool_call::ToolStatus;
 
 use frona_derive::agent_tool;
 
-use super::{InferenceContext, ToolOutput};
+use super::{InferenceContext, ToolOutput, active_chat};
 
 pub struct RequestCredentialsTool {
     vault_service: VaultService,
@@ -21,13 +21,29 @@ pub struct RequestCredentialsTool {
 }
 
 impl RequestCredentialsTool {
-    pub fn new(vault_service: VaultService, prompts: PromptLoader, public_base_url: String) -> Self {
-        Self { vault_service, prompts, public_base_url }
+    pub fn new(
+        vault_service: VaultService,
+        prompts: PromptLoader,
+        public_base_url: String,
+    ) -> Self {
+        Self {
+            vault_service,
+            prompts,
+            public_base_url,
+        }
     }
 
-    fn scope_for(grant_duration: &GrantDuration, chat_id: &str) -> (BindingScope, Option<chrono::DateTime<chrono::Utc>>) {
+    fn scope_for(
+        grant_duration: &GrantDuration,
+        chat_id: &str,
+    ) -> (BindingScope, Option<chrono::DateTime<chrono::Utc>>) {
         match grant_duration {
-            GrantDuration::Once => (BindingScope::Chat { chat_id: chat_id.to_string() }, None),
+            GrantDuration::Once => (
+                BindingScope::Chat {
+                    chat_id: chat_id.to_string(),
+                },
+                None,
+            ),
             GrantDuration::Hours(h) => (
                 BindingScope::Durable,
                 Some(chrono::Utc::now() + chrono::Duration::hours(*h as i64)),
@@ -56,22 +72,25 @@ impl RequestCredentialsTool {
             if items.iter().any(|i| i.query == query) {
                 return;
             }
-            items.push(CredentialRequest { query: query.to_string(), label });
+            items.push(CredentialRequest {
+                query: query.to_string(),
+                label,
+            });
         };
 
         if let Some(arr) = arguments.get("queries").and_then(|v| v.as_array()) {
             for el in arr {
                 if let Some(s) = el.as_str() {
                     push(s, None);
-                } else if let Some(obj) = el.as_object() {
-                    if let Some(q) = obj.get("query").and_then(|v| v.as_str()) {
-                        let label = obj
-                            .get("label")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty());
-                        push(q, label);
-                    }
+                } else if let Some(obj) = el.as_object()
+                    && let Some(q) = obj.get("query").and_then(|v| v.as_str())
+                {
+                    let label = obj
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    push(q, label);
                 }
             }
         }
@@ -118,6 +137,7 @@ impl RequestCredentialsTool {
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
+        let chat = active_chat(ctx)?;
         let reason = arguments
             .get("reason")
             .and_then(|v| v.as_str())
@@ -146,7 +166,7 @@ impl RequestCredentialsTool {
                 None
             } else {
                 self.vault_service
-                    .find_binding(&ctx.user.id, &principal, &item.query, Some(&ctx.chat.id))
+                    .find_binding(&ctx.user.id, &principal, &item.query, Some(&chat.id))
                     .await?
             };
             if let Some(b) = binding {
@@ -155,9 +175,7 @@ impl RequestCredentialsTool {
             }
             // Shared agent with credential delegation: fall back to the owner's
             // durable binding for the same agent principal.
-            if !force
-                && let Some(owner_id) = ctx.delegated_credential_owner.as_deref()
-            {
+            if !force && let Some(owner_id) = ctx.delegated_credential_owner.as_deref() {
                 let owner_binding = self
                     .vault_service
                     .find_binding(owner_id, &principal, &item.query, None)
@@ -184,7 +202,7 @@ impl RequestCredentialsTool {
                     .log_access(
                         &ctx.user.id,
                         principal.clone(),
-                        &ctx.chat.id,
+                        &chat.id,
                         &binding.connection_id,
                         &binding.vault_item_id,
                         None,
@@ -194,7 +212,7 @@ impl RequestCredentialsTool {
                     .await?;
 
                 let env_vars =
-                    crate::credential::vault::service::project_target(&secret, &binding.target);
+                    crate::credential::vault::service::project_target(&secret, &binding.target)?;
                 var_names.extend(env_vars.iter().map(|(k, _)| k.clone()));
                 let mut vault_vars = ctx.vault_env_vars.write().await;
                 vault_vars.extend(env_vars);
@@ -213,7 +231,7 @@ impl RequestCredentialsTool {
                     .log_access(
                         &owner_id,
                         principal.clone(),
-                        &ctx.chat.id,
+                        &chat.id,
                         &binding.connection_id,
                         &binding.vault_item_id,
                         None,
@@ -223,7 +241,7 @@ impl RequestCredentialsTool {
                     .await?;
 
                 let env_vars =
-                    crate::credential::vault::service::project_target(&secret, &binding.target);
+                    crate::credential::vault::service::project_target(&secret, &binding.target)?;
                 var_names.extend(env_vars.iter().map(|(k, _)| k.clone()));
                 let mut vault_vars = ctx.vault_env_vars.write().await;
                 vault_vars.extend(env_vars);
@@ -241,8 +259,11 @@ impl RequestCredentialsTool {
         let prompt = Self::batch_prompt(&pending, &reason);
         Ok(ToolOutput::text("").with_hitl(Hitl {
             prompt,
-            url: format!("{}/chat?id={}", self.public_base_url, ctx.chat.id),
-            request: HitlRequest::Credentials { items: pending, reason },
+            url: format!("{}/chat?id={}", self.public_base_url, chat.id),
+            request: HitlRequest::Credentials {
+                items: pending,
+                reason,
+            },
             status: ToolStatus::Pending,
             response: None,
             delivery: None,
@@ -256,6 +277,7 @@ impl RequestCredentialsTool {
         response: HitlResponse,
         ctx: &InferenceContext,
     ) -> Result<HitlOutcome, AppError> {
+        let chat = active_chat(ctx)?;
         let reason = match request {
             HitlRequest::Credential { reason, .. } | HitlRequest::Credentials { reason, .. } => {
                 reason.clone()
@@ -291,7 +313,7 @@ impl RequestCredentialsTool {
                             .await?;
                     }
 
-                    let (scope, expires_at) = Self::scope_for(&grant.grant_duration, &ctx.chat.id);
+                    let (scope, expires_at) = Self::scope_for(&grant.grant_duration, &chat.id);
 
                     self.vault_service
                         .create_binding(
@@ -310,7 +332,7 @@ impl RequestCredentialsTool {
                         .log_access(
                             &ctx.user.id,
                             principal.clone(),
-                            &ctx.chat.id,
+                            &chat.id,
                             &grant.connection_id,
                             &grant.vault_item_id,
                             None,
@@ -320,7 +342,7 @@ impl RequestCredentialsTool {
                         .await?;
 
                     let env_vars =
-                        crate::credential::vault::service::project_target(&secret, &grant.target);
+                        crate::credential::vault::service::project_target(&secret, &grant.target)?;
                     var_names.extend(env_vars.iter().map(|(k, _)| k.clone()));
                     let mut vault_vars = ctx.vault_env_vars.write().await;
                     vault_vars.extend(env_vars);
@@ -363,7 +385,7 @@ impl RequestCredentialsTool {
                         .await?;
                 }
 
-                let (scope, expires_at) = Self::scope_for(&grant_duration, &ctx.chat.id);
+                let (scope, expires_at) = Self::scope_for(&grant_duration, &chat.id);
 
                 self.vault_service
                     .create_binding(
@@ -382,7 +404,7 @@ impl RequestCredentialsTool {
                     .log_access(
                         &ctx.user.id,
                         principal,
-                        &ctx.chat.id,
+                        &chat.id,
                         &connection_id,
                         &vault_item_id,
                         None,
@@ -391,10 +413,8 @@ impl RequestCredentialsTool {
                     )
                     .await?;
 
-                let env_vars =
-                    crate::credential::vault::service::project_target(&secret, &target);
-                let var_names: Vec<String> =
-                    env_vars.iter().map(|(k, _)| k.clone()).collect();
+                let env_vars = crate::credential::vault::service::project_target(&secret, &target)?;
+                let var_names: Vec<String> = env_vars.iter().map(|(k, _)| k.clone()).collect();
                 let mut vault_vars = ctx.vault_env_vars.write().await;
                 vault_vars.extend(env_vars);
 

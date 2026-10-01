@@ -1,18 +1,18 @@
-mod models;
-mod websocket;
 pub mod allowlist;
 pub mod inbound;
+mod models;
+mod websocket;
 
+use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
 
+use crate::auth::User;
 use crate::auth::models::Claims;
 use crate::auth::token::models::TokenType;
 use crate::auth::token::service::CreateTokenRequest;
-use crate::auth::User;
 use crate::core::Principal;
 use crate::core::config::VoiceConfig;
 use crate::core::error::AppError;
@@ -21,16 +21,21 @@ use crate::tool::voice::{VoiceCallbackExtensions, VoiceSessionExtensions};
 
 use models::TokenQuery;
 
+/// Per-call knobs for [`build_twiml`] that vary by call site, as opposed to
+/// [`VoiceConfig`]'s server-wide defaults.
+#[derive(Default)]
+pub(super) struct TwimlOptions<'a> {
+    pub welcome_greeting: Option<&'a str>,
+    pub hints: Option<&'a str>,
+    /// Overrides `voice.twilio_voice_id` for this leg — the `voice_id` of the
+    /// agent on the call (the one answering inbound, or the one placing an
+    /// outbound leg), when it has one.
+    pub voice_id: Option<&'a str>,
+}
+
 /// Build the `<ConversationRelay>` TwiML that connects the call to our
-/// WebSocket. Takes the whole `VoiceConfig` rather than one argument per
-/// attribute — every relay knob is config-driven, so this stays a 4-argument
-/// call as more of them are exposed.
-pub(super) fn build_twiml(
-    ws_url: &str,
-    welcome_greeting: Option<&str>,
-    hints: Option<&str>,
-    voice: &VoiceConfig,
-) -> String {
+/// WebSocket.
+pub(super) fn build_twiml(ws_url: &str, opts: TwimlOptions, voice: &VoiceConfig) -> String {
     use xml::writer::{EmitterConfig, XmlEvent};
 
     let mut buf = Vec::new();
@@ -47,17 +52,20 @@ pub(super) fn build_twiml(
         .as_deref()
         .unwrap_or("medium");
 
+    let language = voice.twilio_language.as_deref().unwrap_or("en-US");
+
     let mut relay = XmlEvent::start_element("ConversationRelay")
         .attr("url", ws_url)
-        .attr("language", "en-US")
+        .attr("language", language)
         .attr("interruptible", "any")
         .attr("interruptSensitivity", interrupt_sensitivity)
         .attr("welcomeGreetingInterruptible", "any");
 
-    if let Some(g) = welcome_greeting {
+    if let Some(g) = opts.welcome_greeting {
         relay = relay.attr("welcomeGreeting", g);
     }
-    if let Some(v) = voice.twilio_voice_id.as_deref() {
+    let effective_voice = opts.voice_id.or(voice.twilio_voice_id.as_deref());
+    if let Some(v) = effective_voice {
         relay = relay.attr("voice", v);
     }
     if let Some(m) = voice.twilio_speech_model.as_deref() {
@@ -66,7 +74,10 @@ pub(super) fn build_twiml(
     if let Some(tp) = voice.twilio_tts_provider.as_deref() {
         relay = relay.attr("ttsProvider", tp);
     }
-    if let Some(h) = hints {
+    if let Some(n) = voice.twilio_elevenlabs_text_normalization.as_deref() {
+        relay = relay.attr("elevenlabsTextNormalization", n);
+    }
+    if let Some(h) = opts.hints {
         relay = relay.attr("hints", h);
     }
 
@@ -100,10 +111,7 @@ pub(super) async fn verify_voice_jwt(state: &AppState, token: &str) -> Result<Cl
         .await
 }
 
-async fn twilio_callback(
-    State(state): State<AppState>,
-    Query(q): Query<TokenQuery>,
-) -> Response {
+async fn twilio_callback(State(state): State<AppState>, Query(q): Query<TokenQuery>) -> Response {
     let claims = match verify_voice_jwt(&state, &q.token).await {
         Ok(c) => c,
         Err(e) => {
@@ -132,18 +140,16 @@ async fn twilio_callback(
     let agent_id = claims.principal.id.clone();
 
     let call_id = match state.call_service.find_by_chat_id(&chat_id).await {
-        Ok(Some(call)) => {
-            match state.call_service.mark_active(&call.id).await {
-                Ok(updated) => {
-                    tracing::info!(call_id = %updated.id, chat_id = %chat_id, "Call marked Active");
-                    Some(updated.id)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to mark call active");
-                    Some(call.id)
-                }
+        Ok(Some(call)) => match state.call_service.mark_active(&call.id).await {
+            Ok(updated) => {
+                tracing::info!(call_id = %updated.id, chat_id = %chat_id, "Call marked Active");
+                Some(updated.id)
             }
-        }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to mark call active");
+                Some(call.id)
+            }
+        },
         Ok(None) => None,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to look up call by chat_id");
@@ -153,17 +159,22 @@ async fn twilio_callback(
 
     // The WS handler gates silence-filling on whether the remote party is one
     // of our users. On an outbound call the remote party is the contact we're
-    // dialling, so surface its phone number (caller_name stays None — that
-    // field drives the inbound-greeting logic and must not fire for outbound).
-    let remote_phone = match ext.contact_id.as_deref() {
-        Some(cid) => state
-            .contact_service
-            .get(&user_id, cid)
-            .await
-            .ok()
-            .and_then(|c| c.phone),
+    // dialling, so surface its phone number. `caller_name` stays unset except
+    // for a transfer callback (see `transfer_note` below) — it drives the
+    // inbound-greeting-style prefix, which a plain outbound call handles
+    // through its own `[CALL_CONNECTED: ...]` tool-result mechanism instead.
+    let remote_contact = match ext.contact_id.as_deref() {
+        Some(cid) => state.contact_service.get(&user_id, cid).await.ok(),
         None => None,
     };
+    let remote_phone = remote_contact.as_ref().and_then(|c| c.phone.clone());
+    // Set only when this call is `transfer_call`'s callback leg: the target
+    // agent otherwise has no way to know who it's suddenly calling or why.
+    let caller_name = ext
+        .transfer_note
+        .as_ref()
+        .and(remote_contact.as_ref())
+        .map(|c| c.name.clone());
 
     let ws_ext = match serde_json::to_value(VoiceSessionExtensions {
         chat_id: chat_id.clone(),
@@ -171,7 +182,8 @@ async fn twilio_callback(
         call_id: call_id.clone(),
         direction: None,
         caller_phone: remote_phone,
-        caller_name: None,
+        caller_name,
+        transfer_note: ext.transfer_note.clone(),
     }) {
         Ok(v) => v,
         Err(e) => {
@@ -218,22 +230,47 @@ async fn twilio_callback(
         }
     };
 
-    let base_url = state.config.voice.callback_base_url.clone()
-        .or_else(|| state.config.server.base_url.clone())
+    let base_url = state
+        .config
+        .voice
+        .callback_base_url
+        .clone()
+        .or_else(|| state.config.server.external_base_url())
         .unwrap_or_else(|| format!("http://localhost:{}", state.config.server.port));
     let ws_base = base_url
         .replace("https://", "wss://")
         .replace("http://", "ws://");
     let ws_url = format!("{ws_base}/api/voice/twilio/ws?token={}", created.jwt);
 
+    // Speak as whichever agent placed this call, exactly as the inbound path
+    // does. Without it every outbound leg falls back to the server-level
+    // voice — most visibly on `transfer_call`'s callback, where the caller
+    // would hear the target agent introduce itself in the source agent's
+    // voice. A missing or unreadable agent is not worth failing the call
+    // over: fall back to the server default and answer.
+    let agent_voice_id = match state.agent_service.find_by_id(&agent_id).await {
+        Ok(Some(agent)) => agent.voice_id,
+        Ok(None) => {
+            tracing::warn!(agent_id = %agent_id, chat_id = %chat_id, "Voice callback: agent not found — using the server default voice");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, agent_id = %agent_id, chat_id = %chat_id, "Voice callback: agent lookup failed — using the server default voice");
+            None
+        }
+    };
+
     let twiml = build_twiml(
         &ws_url,
-        ext.welcome_greeting.as_deref(),
-        ext.hints.as_deref(),
+        TwimlOptions {
+            welcome_greeting: ext.welcome_greeting.as_deref(),
+            hints: ext.hints.as_deref(),
+            voice_id: agent_voice_id.as_deref(),
+        },
         &state.config.voice,
     );
 
-    tracing::info!(chat_id = %chat_id, user_id = %user_id, ws_url = %ws_url, "Voice callback: issuing TwiML with ConversationRelay");
+    tracing::info!(chat_id = %chat_id, user_id = %user_id, agent_id = %agent_id, voice_id = ?agent_voice_id, ws_url = %ws_url, "Voice callback: issuing TwiML with ConversationRelay");
 
     let mut response = twiml.into_response();
     response.headers_mut().insert(

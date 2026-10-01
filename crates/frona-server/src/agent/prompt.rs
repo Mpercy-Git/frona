@@ -1,8 +1,13 @@
-use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, RwLock};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
+use crate::agent::skill::resolver::Skill;
+use crate::agent::workspace::AgentPromptLoader;
+use crate::core::Handle;
 use crate::core::template::render_template;
+use crate::storage::StorageService;
+use crate::tool::registry::AgentSummaries;
 
 #[derive(Clone)]
 pub struct PromptLoader {
@@ -74,7 +79,10 @@ impl PromptLoader {
         }
 
         let merged = self.merge_vars(vars);
-        let merged_refs: Vec<(&str, &str)> = merged.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let merged_refs: Vec<(&str, &str)> = merged
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         render_template(&raw, &merged_refs).ok()
     }
 
@@ -108,17 +116,47 @@ impl PromptLoader {
     }
 }
 
+/// The line `<available_agents>` carries when the delegation policy turned
+/// agents down.
+///
+/// An agent that is shown nothing concludes there is nothing - and tells the
+/// user they have no other agents, which is wrong whenever a policy is what hid
+/// them. Naming them costs a line and turns an invisible denial into something
+/// the user can act on. Deterministic in the order the agents were listed, so
+/// the cacheable prefix stays byte-stable between turns.
+fn denied_delegation_note(denied: &[String]) -> Option<String> {
+    if denied.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Not delegable from here: {}. These agents exist, but the delegation policy \
+         refuses them to you - an agent may only delegate to agents whose tools are a \
+         subset of its own. Do not try; do the work yourself. If the user expected one \
+         of them to take it, say plainly that policy blocks the handoff and that the \
+         fix is to line up the two agents' tool permissions.",
+        denied.join(", ")
+    ))
+}
+
+/// Emit `<tag>`: an optional header, the items, an optional footer. Nothing is
+/// written when there is nothing to say - but a footer alone counts as
+/// something, so a section can report that its list is empty *and why*.
 pub fn append_tagged_section(
     result: &mut String,
     tag: &str,
     header: Option<&str>,
     items: &[(String, String)],
+    footer: Option<&str>,
 ) {
-    if items.is_empty() {
+    let footer = footer.map(str::trim).filter(|f| !f.is_empty());
+    if items.is_empty() && footer.is_none() {
         return;
     }
     result.push_str(&format!("\n\n<{tag}>\n"));
-    if let Some(h) = header {
+    // The header introduces the items, so it is dropped when there are none:
+    // "delegate to these agents" above an empty list is an instruction the
+    // model cannot follow, and the footer is what explains the emptiness.
+    if let Some(h) = header.filter(|_| !items.is_empty()) {
         let trimmed = h.trim();
         if !trimmed.is_empty() {
             result.push_str(trimmed);
@@ -128,7 +166,152 @@ pub fn append_tagged_section(
     for (key, value) in items {
         result.push_str(&format!("- {key}: {value}\n"));
     }
+    if let Some(f) = footer {
+        result.push_str(f);
+        result.push('\n');
+    }
     result.push_str(&format!("</{tag}>"));
+}
+
+/// Cap on tool names spelled out for one server in `<mcpservers>`. A server with
+/// more than this is summarised and the tail left to `--help`: the point is to
+/// show what the server is *for*, which the first couple of dozen names do.
+const MCP_TOOLS_LISTED: usize = 24;
+
+/// How one running MCP server introduces itself in `<mcpservers>`.
+///
+/// The tool names are already in hand - the manager caches them when the server
+/// starts - and leaving them out of the prompt was quietly costing calls. A model
+/// weighing `mcpctl homeassistant --help` (a round-trip that answers nothing by
+/// itself) against `memory_search` (a round-trip that might answer everything)
+/// picks memory, and then answers a question about a live system from notes about
+/// that system. Naming the tools puts the capability in front of it for free.
+pub fn mcp_server_line(handle: &str, description: &str, tools: &[String]) -> String {
+    let desc = description
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('.');
+    let mut line = if desc.is_empty() {
+        String::new()
+    } else {
+        format!("{desc}. ")
+    };
+    if tools.is_empty() {
+        line.push_str(&format!("Tools: run `mcpctl {handle} --help`"));
+        return line;
+    }
+    let shown = tools.len().min(MCP_TOOLS_LISTED);
+    line.push_str("Tools: ");
+    line.push_str(&tools[..shown].join(", "));
+    if tools.len() > shown {
+        line.push_str(&format!(
+            " (+{} more: `mcpctl {handle} --help`)",
+            tools.len() - shown
+        ));
+    }
+    line
+}
+
+/// Assemble the agent's full system prompt (identity, agent prompt files,
+/// skills, MCP, available agents, temporal context). The **memory** service
+/// contributes only `memory_section` (its static `MEMORY.md`); the dynamic
+/// memory blocks are appended later by `MemoryService::retrieve`. Ordered
+/// static → almost-static → dynamic to maximise the cacheable prefix.
+#[allow(clippy::too_many_arguments)]
+pub fn build_augmented_system_prompt(
+    base_prompt: &str,
+    identity: &BTreeMap<String, String>,
+    prompts: &PromptLoader,
+    storage: &StorageService,
+    user_handle: &Handle,
+    agent_handle: &Handle,
+    skills: &[Skill],
+    agent_summaries: &AgentSummaries,
+    mcp_servers: &[(String, String)],
+    user_timezone: &str,
+) -> String {
+    let mut result = base_prompt.to_string();
+
+    // IDENTITY.md fallback - only when the agent has no core identity keys.
+    const CORE_IDENTITY_KEYS: &[&str] = &["name", "creature", "vibe"];
+    let has_core_identity = CORE_IDENTITY_KEYS
+        .iter()
+        .all(|core_key| identity.keys().any(|k| k.eq_ignore_ascii_case(core_key)));
+    if !has_core_identity {
+        let ws = storage.agent_workspace(user_handle, agent_handle);
+        if let Some(identity_prompt) = AgentPromptLoader::new(&ws, prompts).read("IDENTITY.md") {
+            result.push_str("\n\n");
+            result.push_str(&identity_prompt);
+        }
+    }
+
+    // Static agent prompt files. The memory backend's usage section is no longer
+    // spliced here - `MemoryService::retrieve` prepends it ahead of its own
+    // dynamic tags (so the constant part stays in the cacheable prefix).
+    for name in ["WORKSPACE.md", "TOOLS.md", "SKILLS.md"] {
+        if let Some(content) = prompts.read(name) {
+            result.push_str("\n\n");
+            result.push_str(&content);
+        }
+    }
+    if let Some(content) = prompts.read("SCHEDULING.md") {
+        result.push_str("\n\n");
+        result.push_str(&content);
+    }
+
+    let skill_items: Vec<(String, String)> = skills
+        .iter()
+        .filter(|s| !s.disable_model_invocation)
+        .map(|s| {
+            (
+                s.name.clone(),
+                format!("{} (file: {}/SKILL.md)", s.description, s.path),
+            )
+        })
+        .collect();
+    append_tagged_section(&mut result, "available_skills", None, &skill_items, None);
+
+    if !mcp_servers.is_empty() {
+        if let Some(mcp_prompt) = prompts.read("MCP.md") {
+            result.push_str("\n\n");
+            result.push_str(&mcp_prompt);
+        }
+        append_tagged_section(&mut result, "mcpservers", None, mcp_servers, None);
+    }
+
+    append_tagged_section(
+        &mut result,
+        "available_agents",
+        prompts.read("AVAILABLE_AGENTS.md").as_deref(),
+        &agent_summaries.delegable,
+        denied_delegation_note(&agent_summaries.denied).as_deref(),
+    );
+
+    let identity_pairs: Vec<(String, String)> = identity
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    append_tagged_section(&mut result, "agent_identity", None, &identity_pairs, None);
+
+    // Date-only keeps this byte-stable within a day so prefix caches stay warm.
+    let tz: chrono_tz::Tz = user_timezone.parse().unwrap_or(chrono_tz::UTC);
+    let now_local = chrono::Utc::now().with_timezone(&tz);
+    let items = vec![
+        (
+            "current_date_local".to_string(),
+            format!(
+                "{} ({})",
+                now_local.format("%Y-%m-%d"),
+                now_local.format("%A")
+            ),
+        ),
+        ("user_timezone".to_string(), user_timezone.to_string()),
+    ];
+    append_tagged_section(&mut result, "temporal_context", None, &items, None);
+
+    result
 }
 
 #[cfg(test)]
@@ -180,7 +363,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("test.md"), "Hello {{name}}!").unwrap();
         let loader = PromptLoader::new(dir.path()).with_var("name", "Default");
-        let content = loader.read_with_vars("test.md", &[("name", "Override")]).unwrap();
+        let content = loader
+            .read_with_vars("test.md", &[("name", "Override")])
+            .unwrap();
         assert_eq!(content, "Hello Override!");
     }
 
@@ -195,7 +380,11 @@ mod tests {
         assert_eq!(loader.read("test.md").unwrap(), "first");
 
         std::fs::write(&path, "second").unwrap();
-        assert_eq!(loader.read("test.md").unwrap(), "first", "served from cache");
+        assert_eq!(
+            loader.read("test.md").unwrap(),
+            "first",
+            "served from cache"
+        );
     }
 
     #[test]
@@ -230,14 +419,200 @@ mod tests {
             "[CALL_CONNECTED: Now speaking with {{caller_name}} ({{phone_number}}). Goal: {{objective}}.]",
         ).unwrap();
         let loader = PromptLoader::new(dir.path());
-        let content = loader.read_with_vars("active_call.md", &[
-            ("caller_name", "Alice"),
-            ("phone_number", "+1234567890"),
-            ("objective", "Schedule meeting"),
-        ]).unwrap();
+        let content = loader
+            .read_with_vars(
+                "active_call.md",
+                &[
+                    ("caller_name", "Alice"),
+                    ("phone_number", "+1234567890"),
+                    ("objective", "Schedule meeting"),
+                ],
+            )
+            .unwrap();
         assert_eq!(
             content,
             "[CALL_CONNECTED: Now speaking with Alice (+1234567890). Goal: Schedule meeting.]"
         );
+    }
+
+    #[test]
+    fn a_server_names_its_tools_so_no_call_is_spent_discovering_them() {
+        let line = mcp_server_line(
+            "homeassistant",
+            "Home Assistant",
+            &["get_state".into(), "call_service".into()],
+        );
+        assert_eq!(line, "Home Assistant. Tools: get_state, call_service");
+    }
+
+    #[test]
+    fn a_server_with_too_many_tools_shows_the_first_and_points_at_help() {
+        let tools: Vec<String> = (0..MCP_TOOLS_LISTED + 5).map(|i| format!("t{i}")).collect();
+        let line = mcp_server_line("github", "GitHub.", &tools);
+        assert!(line.contains("t0, t1"), "{line}");
+        assert!(
+            line.ends_with("(+5 more: `mcpctl github --help`)"),
+            "the tail is reachable, not lost:\n{line}"
+        );
+        assert!(!line.contains(&format!("t{}", MCP_TOOLS_LISTED)), "{line}");
+    }
+
+    /// A server whose cache is empty (just installed, never started) still has to
+    /// say how to reach it - silence reads as "nothing here".
+    #[test]
+    fn a_server_with_no_cached_tools_still_points_at_help() {
+        let line = mcp_server_line("weather", "Forecasts", &[]);
+        assert_eq!(line, "Forecasts. Tools: run `mcpctl weather --help`");
+    }
+
+    #[test]
+    fn assembler_places_base_prompt() {
+        let prompts = PromptLoader::new(shared_prompts_dir());
+        let storage = StorageService::new(&crate::core::config::Config::default());
+        let mut identity = BTreeMap::new();
+        for k in ["name", "creature", "vibe"] {
+            identity.insert(k.to_string(), "x".to_string());
+        }
+        let prompt = build_augmented_system_prompt(
+            "BASE_PROMPT_MARKER",
+            &identity,
+            &prompts,
+            &storage,
+            &crate::handle!("user"),
+            &crate::handle!("agent"),
+            &[],
+            &AgentSummaries::default(),
+            &[],
+            "UTC",
+        );
+        assert!(
+            prompt.starts_with("BASE_PROMPT_MARKER"),
+            "base prompt leads"
+        );
+        assert!(
+            prompt.contains("<temporal_context>"),
+            "dynamic temporal tail present"
+        );
+    }
+
+    /// A section with no items and nothing to explain stays out of the prompt.
+    #[test]
+    fn an_empty_section_with_no_footer_is_not_emitted() {
+        let mut out = String::new();
+        append_tagged_section(&mut out, "available_agents", Some("Delegate!"), &[], None);
+        assert!(out.is_empty(), "{out}");
+    }
+
+    /// The regression this file exists to prevent: every colleague denied, so
+    /// the list is empty - and the agent is told why instead of being shown
+    /// nothing and concluding the user has no other agents.
+    #[test]
+    fn a_section_whose_items_were_all_denied_still_says_so() {
+        let mut out = String::new();
+        append_tagged_section(
+            &mut out,
+            "available_agents",
+            Some("Delegate to these agents, always."),
+            &[],
+            denied_delegation_note(&["Researcher".into(), "Developer".into()]).as_deref(),
+        );
+        assert!(
+            out.contains("<available_agents>"),
+            "section present:\n{out}"
+        );
+        assert!(out.contains("Researcher, Developer"), "names both:\n{out}");
+        assert!(
+            !out.contains("Delegate to these agents, always."),
+            "the header introduces items there aren't any of:\n{out}"
+        );
+        assert!(out.trim_end().ends_with("</available_agents>"), "{out}");
+    }
+
+    /// A partly-denied view keeps both halves: the reachable agents as items,
+    /// the rest as the footer.
+    #[test]
+    fn a_partly_denied_section_lists_the_reachable_and_names_the_rest() {
+        let mut out = String::new();
+        append_tagged_section(
+            &mut out,
+            "available_agents",
+            Some("Delegate to these agents, always."),
+            &[("Developer".into(), "Writes code".into())],
+            denied_delegation_note(&["Receptionist".into()]).as_deref(),
+        );
+        assert!(out.contains("Delegate to these agents, always."), "{out}");
+        assert!(out.contains("- Developer: Writes code"), "{out}");
+        assert!(
+            out.contains("Not delegable from here: Receptionist."),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn nothing_denied_means_no_note() {
+        assert!(denied_delegation_note(&[]).is_none());
+    }
+
+    /// End to end through the assembler: denied-only summaries still reach the
+    /// prompt as a section.
+    #[test]
+    fn the_assembler_emits_available_agents_when_every_agent_was_denied() {
+        let prompts = PromptLoader::new(shared_prompts_dir());
+        let storage = StorageService::new(&crate::core::config::Config::default());
+        let mut identity = BTreeMap::new();
+        for k in ["name", "creature", "vibe"] {
+            identity.insert(k.to_string(), "x".to_string());
+        }
+        let summaries = AgentSummaries {
+            delegable: Vec::new(),
+            denied: vec!["Researcher".to_string()],
+        };
+        let prompt = build_augmented_system_prompt(
+            "BASE",
+            &identity,
+            &prompts,
+            &storage,
+            &crate::handle!("user"),
+            &crate::handle!("agent"),
+            &[],
+            &summaries,
+            &[],
+            "UTC",
+        );
+        // The closing tag, not the opening one: TOOLS.md tells the agent to
+        // "check `<available_agents>`" in prose, so the opener is in every
+        // prompt whether or not the section was emitted.
+        assert!(
+            prompt.contains("</available_agents>"),
+            "denied agents still open the section:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("Not delegable from here: Researcher."),
+            "{prompt}"
+        );
+    }
+
+    /// No colleagues at all - nothing to report, so no section, as before.
+    #[test]
+    fn the_assembler_omits_available_agents_for_a_lone_agent() {
+        let prompts = PromptLoader::new(shared_prompts_dir());
+        let storage = StorageService::new(&crate::core::config::Config::default());
+        let mut identity = BTreeMap::new();
+        for k in ["name", "creature", "vibe"] {
+            identity.insert(k.to_string(), "x".to_string());
+        }
+        let prompt = build_augmented_system_prompt(
+            "BASE",
+            &identity,
+            &prompts,
+            &storage,
+            &crate::handle!("user"),
+            &crate::handle!("agent"),
+            &[],
+            &AgentSummaries::default(),
+            &[],
+            "UTC",
+        );
+        assert!(!prompt.contains("</available_agents>"), "{prompt}");
     }
 }

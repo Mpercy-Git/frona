@@ -28,10 +28,19 @@ pub struct AgentToolStatus {
 
 #[derive(Debug, Clone)]
 pub enum PolicyAction {
-    InvokeTool { tool_name: String, tool_group: String },
+    InvokeTool {
+        tool_name: String,
+        tool_group: String,
+    },
     /// `target_handle` builds the Cedar UID; `target_agent_id` (UUID) is for internal lookups.
-    DelegateTask { target_agent_id: String, target_handle: crate::core::Handle },
-    SendMessage { target_agent_id: String, target_handle: crate::core::Handle },
+    DelegateTask {
+        target_agent_id: String,
+        target_handle: crate::core::Handle,
+    },
+    SendMessage {
+        target_agent_id: String,
+        target_handle: crate::core::Handle,
+    },
     ReceiveSignal {
         connector_id: String,
         channel_handle: crate::core::Handle,
@@ -46,7 +55,14 @@ pub enum PolicyAction {
         paired_addresses: Vec<String>,
     },
     ListUsers,
-    ManageUsers { target_user_id: String },
+    ManageUsers {
+        target_user_id: String,
+    },
+    /// Read instance-wide inference usage and cost — every user's spend, not
+    /// just your own. Separate from `ListUsers` so an operator can grant
+    /// spend visibility without granting account administration, or the
+    /// reverse.
+    ViewUsageAnalytics,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +113,7 @@ impl PolicyAction {
             PolicyAction::ReceiveMessage { .. } => "receive_message",
             PolicyAction::ListUsers => "list_users",
             PolicyAction::ManageUsers { .. } => "manage_users",
+            PolicyAction::ViewUsageAnalytics => "view_usage_analytics",
         }
     }
 }
@@ -176,4 +193,3 @@ impl PolicyResource {
         }
     }
 }
-

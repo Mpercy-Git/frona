@@ -40,16 +40,16 @@ fn cli_provider_id(cli: &crate::tool::cli::CliToolConfig) -> String {
 
 fn synthetic_provider_metadata(id: &str) -> Option<(&'static str, &'static str)> {
     match id {
-        "code" => Some(("code", "Execute arbitrary code the agent writes in a supported language.")),
+        "code" => Some((
+            "code",
+            "Execute arbitrary code the agent writes in a supported language.",
+        )),
         _ => None,
     }
 }
 
 async fn build_catalog(state: &AppState, user_id: &str) -> Vec<ToolProviderWithTools> {
-    let mut all_allowed: Vec<String> = BUILTIN_PROVIDERS
-        .iter()
-        .map(|s| s.id.to_string())
-        .collect();
+    let mut all_allowed: Vec<String> = BUILTIN_PROVIDERS.iter().map(|s| s.id.to_string()).collect();
     for cli in state.cli_tools_config.iter() {
         all_allowed.push(cli_provider_id(cli));
         all_allowed.push(cli.name.clone());
@@ -156,9 +156,15 @@ async fn agent_tools(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ToolInfo>>, ApiError> {
-    let agent = state.agent_service.get(&auth.user_id, &id).await
+    let agent = state
+        .agent_service
+        .get(&auth.user_id, &id)
+        .await
         .map_err(ApiError)?;
-    let registry = state.tool_manager.build_agent_registry(&auth.user_id, &agent, &state.policy_service, None).await;
+    let registry = state
+        .tool_manager
+        .build_agent_registry(&auth.user_id, &agent, &state.policy_service, None)
+        .await;
     let infos: Vec<ToolInfo> = registry
         .definitions()
         .iter()
