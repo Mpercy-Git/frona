@@ -314,10 +314,15 @@ impl McpManager {
             "connecting to remote MCP server: no child process spawned, only sandbox_policy.network_destinations gates this outbound call"
         );
 
-        let config = rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url)
-            .custom_headers(headers);
-        let transport = rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_config(config);
-        let client = McpClient::connect(transport, default_client_info()).await?;
+        let client = if server.active_transport == "sse" {
+            let transport = super::sse_transport::connect(&url, headers).await?;
+            McpClient::connect(transport, default_client_info()).await?
+        } else {
+            let config = rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url)
+                .custom_headers(headers);
+            let transport = rmcp::transport::streamable_http_client::StreamableHttpClientTransport::from_config(config);
+            McpClient::connect(transport, default_client_info()).await?
+        };
         self.register_connection(server, client, None, None, None, None).await
     }
 

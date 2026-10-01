@@ -5,6 +5,7 @@ pub mod metadata;
 pub mod models;
 pub mod registry;
 pub mod service;
+pub mod sse_transport;
 pub mod supervisor;
 pub mod repository;
 
