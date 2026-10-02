@@ -222,16 +222,16 @@ pub fn mcp_server_line(handle: &str, description: &str, tools: &[String]) -> Str
 /// (which documents all possible tools) with the actual tool registry
 /// (which may have had tools denied or restricted).
 pub fn append_unavailable_tools_note(system_prompt: &mut String, registry: &AgentToolRegistry) {
-    let available_tool_ids: BTreeSet<String> = registry
+    let available_tool_ids: BTreeSet<&str> = registry
         .definitions()
         .iter()
-        .map(|d| d.id.clone())
+        .map(|d| d.id.as_str())
         .collect();
 
     // Tools documented in TOOLS.md and SCHEDULING.md that might not be available
     // These are listed as examples/references in the prompt but may be filtered out
     // by tool restrictions or delegation policies.
-    let documented_tools = vec![
+    const DOCUMENTED_TOOLS: &[&str] = &[
         // File operations (TOOLS.md)
         "produce_file",
         "read",
@@ -252,10 +252,10 @@ pub fn append_unavailable_tools_note(system_prompt: &mut String, registry: &Agen
         "send_message",
     ];
 
-    let unavailable: Vec<&str> = documented_tools
+    let unavailable: Vec<&str> = DOCUMENTED_TOOLS
         .iter()
-        .filter(|tool| !available_tool_ids.contains(*tool))
         .copied()
+        .filter(|tool| !available_tool_ids.contains(tool))
         .collect();
 
     if !unavailable.is_empty() {
