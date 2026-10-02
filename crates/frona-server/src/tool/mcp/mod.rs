@@ -7,6 +7,7 @@ pub mod models;
 pub mod registry;
 pub mod repository;
 pub mod service;
+pub mod sse_transport;
 pub mod supervisor;
 
 pub use client::{McpClient, McpClientHandler, default_client_info};
