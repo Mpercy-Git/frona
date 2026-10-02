@@ -7,7 +7,7 @@ use crate::agent::workspace::AgentPromptLoader;
 use crate::core::Handle;
 use crate::core::template::render_template;
 use crate::storage::StorageService;
-use crate::tool::registry::{AgentSummaries, AgentToolRegistry};
+use crate::tool::registry::AgentSummaries;
 
 #[derive(Clone)]
 pub struct PromptLoader {
@@ -212,61 +212,6 @@ pub fn mcp_server_line(handle: &str, description: &str, tools: &[String]) -> Str
         ));
     }
     line
-}
-
-/// Append an `<unavailable_tools>` section to the system prompt explaining
-/// which tools from the static TOOLS.md documentation are not actually
-/// available in this session, so the model doesn't attempt to use them.
-///
-/// This is called after tool filtering to reconcile the system prompt
-/// (which documents all possible tools) with the actual tool registry
-/// (which may have had tools denied or restricted).
-pub fn append_unavailable_tools_note(system_prompt: &mut String, registry: &AgentToolRegistry) {
-    let available_tool_ids: BTreeSet<&str> = registry
-        .definitions()
-        .iter()
-        .map(|d| d.id.as_str())
-        .collect();
-
-    // Tools documented in TOOLS.md and SCHEDULING.md that might not be available
-    // These are listed as examples/references in the prompt but may be filtered out
-    // by tool restrictions or delegation policies.
-    const DOCUMENTED_TOOLS: &[&str] = &[
-        // File operations (TOOLS.md)
-        "produce_file",
-        "read",
-        // Task management (TOOLS.md & SCHEDULING.md)
-        "create_task",
-        "delete_task",
-        "list_tasks",
-        "create_recurring_task",
-        // User interaction (TOOLS.md)
-        "ask_user_question",
-        "request_user_takeover",
-        // Search (TOOLS.md)
-        "web_search",
-        // Memory operations (TOOLS.md)
-        "memory_search",
-        "store_user_memory",
-        // Messaging (chat/session.rs - denied for non-heartbeat chats)
-        "send_message",
-    ];
-
-    let unavailable: Vec<&str> = DOCUMENTED_TOOLS
-        .iter()
-        .copied()
-        .filter(|tool| !available_tool_ids.contains(tool))
-        .collect();
-
-    if !unavailable.is_empty() {
-        system_prompt.push_str("\n\n<unavailable_tools>\n");
-        system_prompt.push_str("The following tools mentioned in the Tool Usage Guide above are **not available** in this session:\n");
-        for tool in unavailable {
-            system_prompt.push_str(&format!("- `{tool}`\n"));
-        }
-        system_prompt.push_str("Do not attempt to call these tools. Use only the tools actually listed in the function definitions provided to you.\n");
-        system_prompt.push_str("</unavailable_tools>");
-    }
 }
 
 /// Assemble the agent's full system prompt (identity, agent prompt files,
