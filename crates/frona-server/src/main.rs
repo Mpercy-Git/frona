@@ -62,7 +62,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    info!("Frona v{}", frona::core::app_version());
+    if let Some(revision) = option_env!("FRONA_BUILD_REVISION")
+        .filter(|revision| !revision.is_empty() && *revision != "unknown")
+    {
+        info!("Frona v{} ({:.12})", frona::core::app_version(), revision);
+    } else {
+        info!("Frona v{}", frona::core::app_version());
+    }
 
     let mut loaded = ConfigService::load(frona::core::config::config_file_path())
         .unwrap_or_else(|e| panic!("{e}"));

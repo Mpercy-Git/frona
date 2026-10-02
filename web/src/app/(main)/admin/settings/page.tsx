@@ -179,7 +179,7 @@ export default function AdminSettingsPage() {
             return next;
           });
         });
-        const result = await updateConfig(acceptedPatch, { expectedPersistedRevision: persistedRevision });
+        const result = await updateConfig(acceptedPatch, { expectedPersistedRevision: persistedRevision, baseline: savedConfig });
         setConfig(result.config);
         setSavedConfig(result.config);
         setPersistedRevision(result.persisted_revision);
@@ -196,7 +196,7 @@ export default function AdminSettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [patch, hasPendingChanges, sectionHandlers, persistedRevision, providerBlock, modelBlock, providerDrafts]);
+  }, [patch, hasPendingChanges, sectionHandlers, persistedRevision, providerBlock, modelBlock, providerDrafts, savedConfig]);
 
   const handleDiscard = useCallback(() => {
     setProviderFormEpoch((epoch) => epoch + 1);

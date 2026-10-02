@@ -7,7 +7,7 @@ RUN npm run build
 
 # Stage 2: shared Rust base — apt packages + cargo tools installed once,
 # cached by Docker layer so both planner and backend-builder reuse it.
-FROM rust:1.97.1-bookworm AS rust-base
+FROM rust:1.98.1-bookworm AS rust-base
 RUN --mount=type=bind,source=build/pkgs/builder-rust-apt.txt,target=/tmp/packages.txt \
   apt-get update && apt-get install -y --no-install-recommends \
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
@@ -43,10 +43,11 @@ RUN --mount=type=cache,target=/app/target,id=frona-target \
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY resources/ resources/
+ARG REVISION=unknown
 RUN --mount=type=cache,target=/app/target,id=frona-target \
     --mount=type=cache,target=/usr/local/cargo/registry,id=frona-cargo-registry \
     --mount=type=cache,target=/usr/local/cargo/git,id=frona-cargo-git \
-    cargo build --release -p frona-server -p frona-cli-mcp \
+    FRONA_BUILD_REVISION="$REVISION" cargo build --release -p frona-server -p frona-cli-mcp \
     && cp target/release/frona /app/frona \
     && cp target/release/mcpctl /app/mcpctl
 
@@ -137,7 +138,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-  | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.97.1 \
+  | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.98.1 \
   && rustup component add clippy rustfmt
 
 COPY --from=python-builder /install /usr/local
