@@ -394,3 +394,28 @@ a PR validated by CI.
 render, Android paste fix) lives in files upstream rarely touches; keep new
 fork features in separate modules where possible, and keep the README fork
 section current so each audit can skip them quickly.
+
+### Status update — 2026-10-02 (port of Group D and part of E)
+
+Landed in `c377789` / `44e08fb`: `60c3582`, `e2c8dc9`, `e52ec79` (partial),
+`8c46631`, `bfab16c`, `ed8c89c`, `f5171cb`, `f9efb19`.
+Verified: `cargo check --workspace --tests`, `cargo fmt`, 125 targeted lib tests
+(core::config, inference::config/directory/protocol, channel render),
+web `tsc`, `eslint`, full `vitest`. Not run: full `cargo test`/clippy on test
+targets (pre-existing clippy findings in tests), Rust 1.98.1 itself (sandbox has
+1.97), Docker builds.
+
+Deviations: `e52ec79`'s `GET/PUT /api/config` env-override response
+(`response_with_env`) not ported; `bfab16c` inline Save/Discard dropped (the
+settings page already has a Save bar) and its tests adapted to the fork's
+batched `GrantedMany` credential grants.
+
+Skipped: `05872c0` (fork already allows `stat /`), `a1c746b` (target test file
+absent in fork).
+
+Still open: `1e06a0d` (dependency refresh; pins surrealdb `=3.2.4`, keepass
+`=0.13.22`, RMCP 3.4.1 — check against the fork's MCP SSE client),
+`cd02522` (staged release scripts; not validatable here), `2b85e84`,
+and the Podman/dev-container commits (`6e51320`, `81ed651`, `0e81b09`,
+`e2abe3f`, plus Group B) deliberately excluded. Version bump to 2026.10.0 after
+those land.
