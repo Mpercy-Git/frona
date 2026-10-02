@@ -7,7 +7,7 @@ use crate::agent::workspace::AgentPromptLoader;
 use crate::core::Handle;
 use crate::core::template::render_template;
 use crate::storage::StorageService;
-use crate::tool::registry::AgentSummaries;
+use crate::tool::registry::{AgentSummaries, AgentToolRegistry};
 
 #[derive(Clone)]
 pub struct PromptLoader {
@@ -212,6 +212,50 @@ pub fn mcp_server_line(handle: &str, description: &str, tools: &[String]) -> Str
         ));
     }
     line
+}
+
+/// Append an `<unavailable_tools>` section to the system prompt explaining
+/// which tools from the static TOOLS.md documentation are not actually
+/// available in this session, so the model doesn't attempt to use them.
+///
+/// This is called after tool filtering to reconcile the system prompt
+/// (which documents all possible tools) with the actual tool registry
+/// (which may have had tools denied or restricted).
+pub fn append_unavailable_tools_note(system_prompt: &mut String, registry: &AgentToolRegistry) {
+    let available_tool_ids: BTreeSet<String> = registry
+        .definitions()
+        .iter()
+        .map(|d| d.id.clone())
+        .collect();
+
+    // Tools documented in TOOLS.md that might not be available
+    let documented_tools = vec![
+        "produce_file",
+        "create_task",
+        "delete_task",
+        "list_tasks",
+        "create_recurring_task",
+        "ask_user_question",
+        "request_user_takeover",
+        "web_search",
+        "send_message",
+    ];
+
+    let unavailable: Vec<&str> = documented_tools
+        .iter()
+        .filter(|tool| !available_tool_ids.contains(*tool))
+        .copied()
+        .collect();
+
+    if !unavailable.is_empty() {
+        system_prompt.push_str("\n\n<unavailable_tools>\n");
+        system_prompt.push_str("The following tools mentioned in the Tool Usage Guide above are **not available** in this session:\n");
+        for tool in unavailable {
+            system_prompt.push_str(&format!("- `{tool}`\n"));
+        }
+        system_prompt.push_str("Do not attempt to call these tools. Use only the tools actually listed in the function definitions provided to you.\n");
+        system_prompt.push_str("</unavailable_tools>");
+    }
 }
 
 /// Assemble the agent's full system prompt (identity, agent prompt files,

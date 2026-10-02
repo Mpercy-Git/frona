@@ -687,6 +687,11 @@ impl Harness {
             tool_registry.apply_filter(filter);
         }
 
+        // Add a note to the system prompt about tools that are mentioned in
+        // TOOLS.md but are not actually available, so the model doesn't
+        // attempt to use them.
+        crate::agent::prompt::append_unavailable_tools_note(&mut system_prompt, &tool_registry);
+
         // Swap only the model's view; the persisted `Message.content` is untouched.
         if let Some(rendered) = prompt_override
             && let Some(last_user) = rig_history
