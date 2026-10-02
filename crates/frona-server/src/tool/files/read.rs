@@ -129,15 +129,15 @@ impl ReadTool {
             .await
             .is_ok_and(|m| m.is_dir())
         {
-            return Ok(ToolOutput::error(directory_message(&resolved, path_arg).await));
+            return Ok(ToolOutput::error(
+                directory_message(&resolved, path_arg).await,
+            ));
         }
 
         let bytes = match tokio::fs::read(&resolved).await {
             Ok(b) => b,
             Err(e) => {
-                return Ok(ToolOutput::error(format!(
-                    "could not read {path_arg}: {e}"
-                )));
+                return Ok(ToolOutput::error(format!("could not read {path_arg}: {e}")));
             }
         };
         let size = bytes.len();
