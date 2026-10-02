@@ -55,8 +55,8 @@ impl ConfigService {
             )
         };
 
-        let defaults = Self::resolve_yaml_with_env(None, env.clone())?;
-        let mut config = Self::resolve_yaml_with_env(yaml_content.as_deref(), env)?;
+        let defaults = Self::resolve_yaml_with_env(None, env.clone(), &config_path)?;
+        let mut config = Self::resolve_yaml_with_env(yaml_content.as_deref(), env, &config_path)?;
         resolve_server_timezone(&mut config.server);
 
         let models = if !config.models.is_empty() || !config.providers.is_empty() {
@@ -92,20 +92,10 @@ impl ConfigService {
         })
     }
 
-    /// Resolve the settings view with the same defaults and environment precedence
-    /// as startup, without adding environment values to the authoring document.
-    pub(crate) fn resolve_document_with_env(
-        document: &serde_json::Value,
-        env: HashMap<String, String>,
-    ) -> Result<Config, AppError> {
-        let yaml = serde_yaml::to_string(document)
-            .map_err(|error| AppError::Validation(error.to_string()))?;
-        Self::resolve_yaml_with_env(Some(&yaml), env)
-    }
-
     fn resolve_yaml_with_env(
         yaml_content: Option<&str>,
         env: HashMap<String, String>,
+        config_path: &Path,
     ) -> Result<Config, AppError> {
         let data_dir = env
             .get("FRONA_SERVER_DATA_DIR")
@@ -152,11 +142,11 @@ impl ConfigService {
         );
 
         let built = builder.build().map_err(|error| {
-            AppError::Validation(config_load_error(&error.to_string(), &config_path))
+            AppError::Validation(config_load_error(&error.to_string(), config_path))
         })?;
 
         let mut config: Config = built.try_deserialize().map_err(|error| {
-            AppError::Validation(config_load_error(&error.to_string(), &config_path))
+            AppError::Validation(config_load_error(&error.to_string(), config_path))
         })?;
 
         // Preserve provider credential source references for runtime precedence.
