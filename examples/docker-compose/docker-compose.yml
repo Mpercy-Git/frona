@@ -18,7 +18,7 @@ services:
     restart: unless-stopped
 
   browserless:
-    image: ghcr.io/browserless/chromium:v2.42.0
+    image: ghcr.io/browserless/chromium:v2.57.0
     environment:
       - CONCURRENT=10
       - PORT=3333

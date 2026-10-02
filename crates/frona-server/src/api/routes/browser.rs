@@ -170,11 +170,15 @@ async fn debugger_proxy(
     let browserless_base = browser_config.http_base_url();
 
     let profile_path = browser_config.profile_path(&handle, &credential.provider);
-    let target_url = format!(
+    let mut target_url = format!(
         "{}/debugger?--user-data-dir={}",
         browserless_base,
         profile_path.display()
     );
+    if let Some(token) = browser_config.api_token.as_deref() {
+        target_url.push_str("&token=");
+        target_url.push_str(token);
+    }
 
     let client = Client::builder(TokioExecutor::new()).build_http();
 
