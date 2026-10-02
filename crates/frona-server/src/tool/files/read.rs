@@ -125,9 +125,21 @@ impl ReadTool {
             return Ok(ToolOutput::error(format!("file not found: {}", path_arg)));
         }
 
-        let bytes = tokio::fs::read(&resolved)
+        if tokio::fs::metadata(&resolved)
             .await
-            .map_err(|e| AppError::Internal(format!("read {}: {e}", resolved.display())))?;
+            .is_ok_and(|m| m.is_dir())
+        {
+            return Ok(ToolOutput::error(
+                directory_message(&resolved, path_arg).await,
+            ));
+        }
+
+        let bytes = match tokio::fs::read(&resolved).await {
+            Ok(b) => b,
+            Err(e) => {
+                return Ok(ToolOutput::error(format!("could not read {path_arg}: {e}")));
+            }
+        };
         let size = bytes.len();
 
         let mime = infer::get(&bytes).map(|t| t.mime_type().to_string());
@@ -155,6 +167,34 @@ impl ReadTool {
             ))),
         }
     }
+}
+
+/// Explain that `path_arg` is a directory and list its entries, so the agent
+/// can pick a file instead of retrying the same path.
+async fn directory_message(resolved: &std::path::Path, path_arg: &str) -> String {
+    const MAX_ENTRIES: usize = 200;
+    let mut names = Vec::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(resolved).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let is_dir = entry.file_type().await.is_ok_and(|t| t.is_dir());
+            let name = entry.file_name().to_string_lossy().into_owned();
+            names.push(if is_dir { format!("{name}/") } else { name });
+        }
+    }
+    names.sort();
+    let total = names.len();
+    names.truncate(MAX_ENTRIES);
+    let mut msg = format!("{path_arg} is a directory, not a file. Read a file inside it");
+    if names.is_empty() {
+        msg.push_str(" (the directory is empty).");
+    } else {
+        msg.push_str(":\n");
+        msg.push_str(&names.join("\n"));
+        if total > MAX_ENTRIES {
+            msg.push_str(&format!("\n... and {} more", total - MAX_ENTRIES));
+        }
+    }
+    msg
 }
 
 pub(crate) fn is_supported_image(mime: &str) -> bool {
