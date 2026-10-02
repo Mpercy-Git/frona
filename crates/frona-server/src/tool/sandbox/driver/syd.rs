@@ -180,6 +180,13 @@ impl SydArgsBuilder {
                 // uv uses base64-encoded temp filenames in its cache
                 "-m".into(),
                 "trace/allow_unsafe_filename:1".into(),
+                // Syd won't follow a symlink whose parent directory is group- or
+                // world-writable, so a sandboxed `chmod -R 777 .` (an agent's
+                // usual answer to a permission error) left the venv's `python3`
+                // unexecutable. The forced umask also applies to chmod(2), so
+                // the process can no longer grant group/world write at all.
+                "-m".into(),
+                "trace/force_umask:022".into(),
             ],
         }
     }
@@ -357,6 +364,18 @@ mod tests {
         assert!(args.contains(&"sandbox/read:on".to_string()));
         assert!(args.contains(&"sandbox/stat:on".to_string()));
         assert!(args.contains(&"sandbox/write:on".to_string()));
+    }
+
+    /// A sandboxed process must not be able to make its own directories
+    /// group/world-writable: syd then refuses the symlinks in them (ELOOP),
+    /// which is how a `chmod -R 777` broke the venv's `python3`.
+    #[test]
+    fn test_builder_forces_umask_on_chmod() {
+        let args = SydArgsBuilder::new().build();
+        assert!(
+            args.contains(&"trace/force_umask:022".to_string()),
+            "{args:?}"
+        );
     }
 
     #[test]

@@ -605,8 +605,73 @@ impl Sandbox {
         if self.init_node {
             self.setup_node_env();
         }
+        self.restrict_symlink_parents();
         Ok(())
     }
+
+    /// Directories in the workspace that hold symlinks the sandboxed process
+    /// has to follow: the workspace itself (anything the agent links there),
+    /// `.venv` (`lib64 -> lib`), `.venv/bin` (`python3 -> /usr/local/bin/...`),
+    /// and the npm prefix's `bin`.
+    fn symlink_parent_dirs(&self) -> [PathBuf; 5] {
+        [
+            self.path.clone(),
+            self.venv_path(),
+            self.venv_path().join("bin"),
+            self.path.join(".node"),
+            self.path.join(".node").join("bin"),
+        ]
+    }
+
+    /// Drop group/world write and the sticky bit from the directories that hold
+    /// the workspace's symlinks.
+    ///
+    /// Syd refuses to follow a symlink whose parent directory is sticky, group-
+    /// or world-writable (`trusted_symlinks`, a la grsecurity's LINK) and the
+    /// process sees `ELOOP`. A data volume made world-writable on the host -
+    /// `chmod -R 777` is the usual answer to a bind mount owned by the wrong
+    /// uid - or a server running under `umask 000` therefore leaves the venv's
+    /// `python3` unexecutable: every Python call dies with "Too many levels of
+    /// symbolic links" before the interpreter starts. Correcting the mode here,
+    /// on every setup, repairs workspaces created that way as well as new ones.
+    #[cfg(unix)]
+    fn restrict_symlink_parents(&self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        const UNSAFE_BITS: u32 = 0o1022; // sticky | group write | world write
+
+        for dir in self.symlink_parent_dirs() {
+            let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+                continue;
+            };
+            if !meta.is_dir() {
+                continue;
+            }
+            let mode = meta.permissions().mode();
+            if mode & UNSAFE_BITS == 0 {
+                continue;
+            }
+            let fixed = mode & 0o7777 & !UNSAFE_BITS;
+            match std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(fixed)) {
+                Ok(()) => tracing::info!(
+                    path = %dir.display(),
+                    from = format!("{:o}", mode & 0o7777),
+                    to = format!("{fixed:o}"),
+                    "Removed group/world write from sandbox directory so syd follows its symlinks"
+                ),
+                Err(e) => tracing::warn!(
+                    path = %dir.display(),
+                    mode = format!("{:o}", mode & 0o7777),
+                    error = %e,
+                    "Sandbox directory is group/world-writable and could not be fixed; \
+                     syd will refuse to follow symlinks in it"
+                ),
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn restrict_symlink_parents(&self) {}
 
     pub fn ensure_dir(&self) -> Result<(), AppError> {
         if !self.path.exists() {
@@ -985,6 +1050,48 @@ mod tests {
         assert!(ws.path.exists());
         assert!(ws.venv_path().exists());
         assert!(ws.venv_path().join("bin").join("python3").exists());
+
+        let _ = std::fs::remove_dir_all(&ws.path);
+    }
+
+    /// A world-writable volume (`chmod -R 777` on the host) made syd refuse the
+    /// venv's `python3` symlink with ELOOP. Setup must strip the sticky and
+    /// group/world write bits from every directory that holds those symlinks,
+    /// and leave the owner's permissions alone.
+    #[cfg(unix)]
+    #[test]
+    fn setup_makes_symlink_parents_trusted_for_syd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut ws = temp_sandbox(&format!("trusted_symlinks_{}", uuid::Uuid::new_v4()));
+        ws.init_venv = false;
+        ws.init_node = false;
+        let _ = std::fs::remove_dir_all(&ws.path);
+        let venv_bin = ws.venv_path().join("bin");
+        let node_bin = ws.path.join(".node").join("bin");
+        std::fs::create_dir_all(&venv_bin).unwrap();
+        std::fs::create_dir_all(&node_bin).unwrap();
+        let mode_of = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        let set = |p: &Path, m: u32| {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap()
+        };
+        set(&ws.path, 0o1777);
+        set(&ws.venv_path(), 0o777);
+        set(&venv_bin, 0o777);
+        set(&ws.path.join(".node"), 0o775);
+        set(&node_bin, 0o700);
+
+        ws.setup().unwrap();
+
+        assert_eq!(mode_of(&ws.path), 0o755);
+        assert_eq!(mode_of(&ws.venv_path()), 0o755);
+        assert_eq!(mode_of(&venv_bin), 0o755);
+        assert_eq!(mode_of(&ws.path.join(".node")), 0o755);
+        assert_eq!(
+            mode_of(&node_bin),
+            0o700,
+            "already-safe modes are untouched"
+        );
 
         let _ = std::fs::remove_dir_all(&ws.path);
     }
