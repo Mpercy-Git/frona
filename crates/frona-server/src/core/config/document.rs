@@ -168,66 +168,40 @@ fn redact(value: &mut serde_json::Value, path: &[&str]) {
 /// Recursively remove fields that match the default `Config` values,
 /// keeping config.yaml minimal with only user-changed values.
 pub fn strip_defaults(value: &mut serde_json::Value) {
-    let defaults = serde_json::to_value(Config::default()).unwrap_or_default();
+    strip_defaults_against(value, &Config::default());
+}
+
+/// Use the defaults resolved without an authoring document so removing a field
+/// cannot change its value when the environment supplies a different default.
+pub(super) fn strip_defaults_against(value: &mut serde_json::Value, defaults: &Config) {
+    let defaults = serde_json::to_value(defaults).unwrap_or_default();
     strip_defaults_recursive(value, &defaults);
 
-    strip_map_entry_defaults::<ModelProviderConfig>(value, "providers");
-    strip_model_group_defaults(value);
+    strip_map_entry_defaults::<ModelProviderConfig>(value, "providers", &[]);
+    // `provider` is the tag identifying which connection a group resolves
+    // against; stripping it when it equals the Rust default ("generic")
+    // produces a config.yaml that fails to load.
+    strip_map_entry_defaults::<ModelGroupConfig>(value, "models", &["provider"]);
 }
 
 fn strip_map_entry_defaults<T: Default + serde::Serialize>(
     value: &mut serde_json::Value,
     key: &str,
+    required_fields: &[&str],
 ) {
     let Some(map) = value.get_mut(key).and_then(|v| v.as_object_mut()) else {
         return;
     };
-    let entry_defaults = serde_json::to_value(T::default()).unwrap_or_default();
-    let keys: Vec<String> = map.keys().cloned().collect();
-    for k in keys {
-        if let Some(entry) = map.get_mut(&k) {
-            strip_defaults_recursive(entry, &entry_defaults);
-            if entry.as_object().is_some_and(|o| o.is_empty()) {
-                map.remove(&k);
-            }
+    let mut entry_defaults = serde_json::to_value(T::default()).unwrap_or_default();
+    if let Some(defaults) = entry_defaults.as_object_mut() {
+        for field in required_fields {
+            defaults.remove(*field);
         }
     }
-    if map.is_empty() {
-        value.as_object_mut().unwrap().remove(key);
-    }
-}
-
-/// Like `strip_map_entry_defaults::<ModelGroupConfig>`, but never removes a
-/// model group's `provider` field, even when it matches
-/// `ModelGroupConfig::default().provider` (`"generic"`). `provider` is the
-/// serde tag identifying which provider connection a group's `model`
-/// resolves against, not just another value that happens to equal the
-/// default — stripping it produces a `config.yaml` that panics on the next
-/// startup with `missing configuration field "models.primary.provider"`.
-fn strip_model_group_defaults(value: &mut serde_json::Value) {
-    let Some(map) = value.get_mut("models").and_then(|v| v.as_object_mut()) else {
-        return;
-    };
-    let entry_defaults = serde_json::to_value(ModelGroupConfig::default()).unwrap_or_default();
-    let keys: Vec<String> = map.keys().cloned().collect();
-    for k in keys {
-        if let Some(entry) = map.get_mut(&k) {
-            let provider = entry.get("provider").cloned();
-            strip_defaults_recursive(entry, &entry_defaults);
-            if let Some(provider) = provider {
-                entry
-                    .as_object_mut()
-                    .expect("model group entry")
-                    .entry("provider".to_string())
-                    .or_insert(provider);
-            }
-            if entry.as_object().is_some_and(|o| o.is_empty()) {
-                map.remove(&k);
-            }
-        }
-    }
-    if map.is_empty() {
-        value.as_object_mut().unwrap().remove("models");
+    for entry in map.values_mut() {
+        // A named connection/group still exists when all its fields use defaults.
+        // Removing the entry would change the configuration on the next load.
+        strip_defaults_recursive(entry, &entry_defaults);
     }
 }
 

@@ -181,6 +181,9 @@ function LocalVaultPanel({ expanded, onToggle }: { expanded: boolean; onToggle: 
   const [contextMenuId, setContextMenuId] = useState<string | null>(null);
   const [addMenu, setAddMenu] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // The settings page calls the registered handler, which can be a render behind.
+  const submittingRef = useRef(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const contextRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
 
@@ -266,27 +269,39 @@ function LocalVaultPanel({ expanded, onToggle }: { expanded: boolean; onToggle: 
   };
 
   const handleSave = useCallback(async () => {
+    if (submittingRef.current) return;
+    setSaveError(null);
+    const changes = items.filter((item) => item.isNew || item.isEdited).map((item) => ({
+      item,
+      body: buildBody(item, item.isNew),
+    }));
+    const incomplete = changes.find((change) => !change.body);
+    if (incomplete) {
+      setSelectedId(incomplete.item.id);
+      setSaveError("Complete the required fields before saving.");
+      return;
+    }
+    submittingRef.current = true;
     setSubmitting(true);
     try {
-      for (const item of items) {
-        if (item.isNew) {
-          const body = buildBody(item, true);
-          if (body) await api.post("/api/vaults/local/items", body);
-        } else if (item.isEdited) {
-          const body = buildBody(item, false);
-          if (body) await api.put(`/api/vaults/local/items/${item.id}`, body);
-        }
+      for (const { item, body } of changes) {
+        const saved = item.isNew
+          ? await api.post<CredentialResponse>("/api/vaults/local/items", body)
+          : await api.put<CredentialResponse>(`/api/vaults/local/items/${item.id}`, body);
+        // Keep successful writes so retrying a later failure cannot create duplicates.
+        setItems((current) => current.map((entry) => entry.id === item.id ? credResponseToItem(saved) : entry));
       }
-      await fetchItems();
       setSelectedId(null);
-    } catch {
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to save credentials");
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
-   
-  }, [items, fetchItems]);
+  }, [items]);
 
   const discard = useCallback(() => {
+    setSaveError(null);
     setSelectedId(null);
     setLoading(true);
     fetchItems();
@@ -339,7 +354,7 @@ function LocalVaultPanel({ expanded, onToggle }: { expanded: boolean; onToggle: 
               </svg>
             </div>
           ) : (
-            <div className="rounded-lg border border-border bg-surface overflow-hidden">
+            <fieldset disabled={submitting} className="rounded-lg border border-border bg-surface overflow-hidden">
               <div className="flex h-80">
                 {/* Left: item list */}
                 <div className="w-44 shrink-0 border-r border-border overflow-y-auto flex flex-col">
@@ -483,8 +498,9 @@ function LocalVaultPanel({ expanded, onToggle }: { expanded: boolean; onToggle: 
                   )}
                 </div>
               </div>
-            </div>
+            </fieldset>
           )}
+          {saveError && <p role="alert" className="mt-3 text-xs text-danger">{saveError}</p>}
         </div>
       )}
     </div>

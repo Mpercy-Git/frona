@@ -146,7 +146,7 @@ mod tests {
     };
     use crate::{
         chat::broadcast::BroadcastService,
-        core::config::{ApiSurface, InferenceConfig, ModelGroupConfig},
+        core::config::{InferenceConfig, ModelGroupConfig},
         inference::credential::store::CredentialMethod,
     };
     use rig_core::completion::{AssistantContent, Message, ToolDefinition};

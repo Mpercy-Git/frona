@@ -61,6 +61,7 @@ pub struct ResolvedConnection {
     pub handle: Handle,
     pub brand: String,
     pub adapter: AdapterId,
+    /// Supported protocols, with the default request surface first.
     pub protocols: &'static [ApiSurface],
     pub auth_methods: &'static [AuthMethodDescriptor],
     pub effective_base_url: Option<String>,
@@ -144,6 +145,7 @@ pub struct ProviderPlatform;
 
 const COMPLETIONS: &[ApiSurface] = &[ApiSurface::Completions];
 const OPENAI_PROTOCOLS: &[ApiSurface] = &[ApiSurface::Completions, ApiSurface::Responses];
+const OPENAI_PREFERRED_PROTOCOLS: &[ApiSurface] = &[ApiSurface::Responses, ApiSurface::Completions];
 const ANTHROPIC_PROTOCOLS: &[ApiSurface] = &[ApiSurface::AnthropicMessages];
 const GEMINI_PROTOCOLS: &[ApiSurface] = &[ApiSurface::GoogleGenerateContent];
 const COHERE_PROTOCOLS: &[ApiSurface] = &[ApiSurface::CohereChat];
@@ -436,7 +438,7 @@ fn recipe(brand: &str) -> Option<Recipe> {
             "openai" => Recipe::new(
                 AdapterId::Openai,
                 FactoryKind::OpenAi,
-                OPENAI_PROTOCOLS,
+                OPENAI_PREFERRED_PROTOCOLS,
                 OPENAI_AUTH,
             )
             .endpoint("https://api.openai.com/v1"),

@@ -282,7 +282,7 @@ function SetupWizard() {
           return next;
         });
       });
-      const result = await updateConfig(acceptedPatch, { expectedPersistedRevision: persistedRevision });
+      const result = await updateConfig(acceptedPatch, { expectedPersistedRevision: persistedRevision, baseline: savedConfig });
       setConfig(result.config);
       setPersistedRevision(result.persisted_revision);
       setProviderDrafts({});
@@ -293,7 +293,7 @@ function SetupWizard() {
     } finally {
       setSaving(false);
     }
-  }, [patch, persistedRevision, providersBlock, modelsBlock, providerDrafts]);
+  }, [patch, persistedRevision, providersBlock, modelsBlock, providerDrafts, savedConfig]);
 
   if (loading) {
     return (

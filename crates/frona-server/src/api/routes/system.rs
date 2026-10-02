@@ -54,6 +54,8 @@ async fn info_handler(
 
     axum::Json(json!({
         "version": crate::core::app_version(),
+        "revision": option_env!("FRONA_BUILD_REVISION")
+            .filter(|revision| !revision.is_empty() && *revision != "unknown"),
         "cpus": cpus,
         "total_memory_bytes": total_memory,
         "sandbox_driver": state.sandbox_factory.driver_id(),
