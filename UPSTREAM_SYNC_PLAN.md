@@ -350,3 +350,47 @@ With Step 5 done, Group C's full scope (Steps 1–5) is closed.
    `047c9920`, `2fcf37c5`, `ac847fc9`) — whenever someone has a Podman/`dv`
    environment to actually build-test them in; not blocked by anything else,
    but shouldn't land on read-through confidence alone.
+
+## Audit update — 2026-10-02
+
+Upstream `fronalabs/frona` `main` @ `53d0062` (v2026.10.0, 2026-10-01). 18 commits
+landed after `ac847fc9` (the previous audit's head). None are present in this
+fork yet (checked by subject/content search). Proposed order, smallest and
+most valuable first:
+
+**Group D — app behavior (port next, low risk)**
+
+| Commit | Date | What | Notes |
+|---|---|---|---|
+| `60c3582` | 09-27 | channels: preserve paragraph breaks in structured results | 1 file, +27/-3. Verbatim port likely. |
+| `e2c8dc9` | 09-23 | inference: default OpenAI requests to the Responses API | 5 files, +151/-32. Touches `provider/adapter`; check against fork's generic/OpenAI-compatible recipes so third-party OpenAI-compatible backends (Z.ai, Venice, llamafile, etc.) are NOT switched to the Responses API. |
+| `e52ec79` | 09-23 | config: save only changed settings and preserve explicit overrides | 10 files, +462/-66. Overlaps the fork's `persisted_revision`/`ConfigService` + settings UI work (PR #131 follow-ups); hand-merge. |
+| `8c46631` | 09-24 | web: save and retry local vault credential edits | 2 files; vault-section.tsx is fork-diverged. |
+| `bfab16c` | 09-25 | web: search connected vaults through a shared credential picker | 5 files, +638/-322; depends on `8c46631`. |
+| `a1c746b` | 09-25 | test: avoid startup timeouts in login revocation checks | Test-only; port with Group D. |
+| `f5171cb` | 09-26 | web: suppress the SSO navigation lint warning | 1 file, +2. |
+| `ed8c89c` | 09-26 | build: show embedded commit revision in server info | 4 files; small, check `build.rs`. |
+
+**Group E — build/toolchain (low urgency, validate with CI)**
+
+`f9efb19` (Rust 1.98.1), `1e06a0d` (dependency refresh with compat pins;
+Cargo.lock will conflict, regenerate with cargo rather than hand-merge and
+keep the fork's git pins for presage/curve25519/rusqlite), `cd02522` (staged
+native-CI releases; touches release workflows the fork has customized for
+`ghcr.io/mpercy-git`), `6e51320`, `81ed651`, `2b85e84`, `05872c0` (Syd sandbox
+build/metadata fix — worth taking with the fork's sandboxed PDF-render work),
+`e2abe3f`, `0e81b09` (Bacon replaces cargo-watch). These join the pending
+Group B Podman/Kache commits (`341280b7`, `047c9920`, `2fcf37c5`, `ac847fc9`);
+land Group B first, since E builds on it. Needs a Podman/Docker environment.
+
+**Release marker:** `53d0062` (v2026.10.0) is a version bump only; fork is at
+`2026.8.5` in `Cargo.toml`. Bump after Groups D/E land, not before.
+
+**Suggested next step:** one PR for Group D's first three commits
+(`60c3582`, `e2c8dc9`, `e52ec79`), then the vault UI pair, then Group B+E in
+a PR validated by CI.
+
+**Divergence control:** fork-only work (inbound voice, MCP SSE client, PDF
+render, Android paste fix) lives in files upstream rarely touches; keep new
+fork features in separate modules where possible, and keep the README fork
+section current so each audit can skip them quickly.
