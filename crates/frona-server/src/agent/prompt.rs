@@ -228,16 +228,27 @@ pub fn append_unavailable_tools_note(system_prompt: &mut String, registry: &Agen
         .map(|d| d.id.clone())
         .collect();
 
-    // Tools documented in TOOLS.md that might not be available
+    // Tools documented in TOOLS.md and SCHEDULING.md that might not be available
+    // These are listed as examples/references in the prompt but may be filtered out
+    // by tool restrictions or delegation policies.
     let documented_tools = vec![
+        // File operations (TOOLS.md)
         "produce_file",
+        "read",
+        // Task management (TOOLS.md & SCHEDULING.md)
         "create_task",
         "delete_task",
         "list_tasks",
         "create_recurring_task",
+        // User interaction (TOOLS.md)
         "ask_user_question",
         "request_user_takeover",
+        // Search (TOOLS.md)
         "web_search",
+        // Memory operations (TOOLS.md)
+        "memory_search",
+        "store_user_memory",
+        // Messaging (chat/session.rs - denied for non-heartbeat chats)
         "send_message",
     ];
 
