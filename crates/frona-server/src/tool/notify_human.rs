@@ -8,6 +8,7 @@ use crate::inference::hitl::{Hitl, HitlOutcome, HitlRequest, HitlResponse};
 use crate::inference::tool_call::ToolStatus;
 use frona_derive::agent_tool;
 
+use super::browser::active_profile_credential;
 use super::{InferenceContext, ToolOutput, active_chat};
 
 pub struct NotifyHumanTool {
@@ -50,12 +51,8 @@ impl NotifyHumanTool {
                     .and_then(|v| v.as_str())
                     .unwrap_or("User intervention needed")
                     .to_string();
-                let debugger_url = self
-                    .vault_service
-                    .list_credentials(&ctx.user.id)
+                let debugger_url = active_profile_credential(&self.vault_service, &ctx.user.id)
                     .await
-                    .ok()
-                    .and_then(|creds| creds.into_iter().next())
                     .map(|c| format!("/api/browser/debugger/{}", c.id))
                     .unwrap_or_default();
 
