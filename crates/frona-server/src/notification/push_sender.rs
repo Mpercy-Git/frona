@@ -26,6 +26,12 @@ pub struct PushDeliveryReport {
     pub delivered: usize,
     /// Subscriptions that were expired and have now been pruned.
     pub removed: usize,
+    /// Endpoints of the pruned subscriptions. Never serialised — an endpoint
+    /// is a capability URL — but the test route compares them with the
+    /// calling device's own endpoint so it can tell that device its local
+    /// subscription is dead and must be replaced.
+    #[serde(skip)]
+    pub removed_endpoints: Vec<String>,
     /// Per-subscription failures, safe to show to the owning user.
     pub failures: Vec<PushFailure>,
 }
@@ -224,6 +230,7 @@ impl PushSender {
                     tracing::info!(endpoint = %sub.endpoint, "Removing expired push subscription");
                     let _ = self.repo.delete_by_endpoint(user_id, &sub.endpoint).await;
                     report.removed += 1;
+                    report.removed_endpoints.push(sub.endpoint.clone());
                     report.failures.push(PushFailure {
                         service,
                         reason: "Subscription expired and was removed — re-enable notifications \
