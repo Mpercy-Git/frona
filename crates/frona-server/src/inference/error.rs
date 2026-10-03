@@ -160,6 +160,62 @@ impl InferenceError {
             _ => "server_error",
         }
     }
+
+    /// The output-token ceiling a provider states when it rejects the requested
+    /// `max_tokens` as too large (e.g. "expected a value <= 393216, but got 943718").
+    /// `None` for any other failure, including rejections that name no usable limit.
+    pub fn output_token_limit(&self) -> Option<u64> {
+        match self {
+            Self::ModelFailed { source, .. } => source.output_token_limit(),
+            Self::CompletionFailed(_) => parse_output_token_limit(&self.to_string()),
+            _ => None,
+        }
+    }
+}
+
+/// Phrasings providers use for an over-large output cap. Error bodies are often
+/// JSON-escaped when relayed, so `<` and `>` may arrive as `\u003c` / `\u003e`.
+fn parse_output_token_limit(message: &str) -> Option<u64> {
+    use std::sync::LazyLock;
+    static PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
+        [
+            // BytePlus / Volcengine: "expected a value <= 393216, but got 943718"
+            r"<=\s*(\d+)",
+            // OpenAI: "This model supports at most 16384 completion tokens"
+            r"\bat most\s+(\d+)",
+            // Anthropic: "max_tokens: 943718 > 64000, which is the maximum allowed"
+            r">\s*(\d+),?\s*which is the maximum",
+            // DeepSeek: "the valid range of max_tokens is [1, 8192]"
+            r"valid range of \w+ is \[\s*\d+\s*,\s*(\d+)\s*\]",
+        ]
+        .into_iter()
+        .map(|pattern| regex::Regex::new(&format!("(?i){pattern}")).expect("valid pattern"))
+        .collect()
+    });
+
+    let text = message
+        .replace("\\u003c", "<")
+        .replace("\\u003C", "<")
+        .replace("\\u003e", ">")
+        .replace("\\u003E", ">");
+    let lower = text.to_ascii_lowercase();
+    if ![
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+        "maxoutputtokens",
+    ]
+    .iter()
+    .any(|name| lower.contains(name))
+    {
+        return None;
+    }
+    PATTERNS.iter().find_map(|pattern| {
+        pattern
+            .captures(&text)
+            .and_then(|captures| captures[1].parse::<u64>().ok())
+            .filter(|limit| *limit > 0)
+    })
 }
 
 #[cfg(test)]
@@ -187,6 +243,64 @@ mod tests {
 
         assert!(error.is_retryable());
         assert_eq!(error.retry_reason(), "invalid_provider_response");
+    }
+
+    fn rejected(body: &str) -> InferenceError {
+        InferenceError::CompletionFailed(CompletionError::ProviderResponse(
+            ProviderResponseError::new(axum::http::StatusCode::BAD_REQUEST, body),
+        ))
+    }
+
+    #[test]
+    fn output_token_limit_reads_the_ceiling_a_provider_states() {
+        let byteplus = rejected(
+            r#"{"error":{"code":"InvalidParameter","message":"The parameter `max_tokens` specified in the request are not valid: integer above maximum value, expected a value <= 393216, but got 943718 instead. Request id: 021791021367814fea0cb63916d8b7cee037e8f30dc27466e1d7e","param":"max_tokens","type":"BadRequest"}}"#,
+        );
+        assert_eq!(byteplus.output_token_limit(), Some(393_216));
+
+        let openai = rejected(
+            "max_tokens is too large: 943718. This model supports at most 16384 completion tokens, whereas you provided 943718.",
+        );
+        assert_eq!(openai.output_token_limit(), Some(16_384));
+
+        let anthropic = rejected(
+            "max_tokens: 943718 > 64000, which is the maximum allowed number of output tokens for claude-x",
+        );
+        assert_eq!(anthropic.output_token_limit(), Some(64_000));
+
+        let deepseek =
+            rejected("Invalid max_tokens value, the valid range of max_tokens is [1, 8192]");
+        assert_eq!(deepseek.output_token_limit(), Some(8_192));
+    }
+
+    #[test]
+    fn output_token_limit_survives_model_wrapping() {
+        let model = crate::inference::provider::ModelConfig {
+            catalog_provider: "byteplus".into(),
+            provider_handle: crate::core::Handle::try_new("byteplus").unwrap(),
+            model_id: "deepseek-v4-pro".into(),
+            provider: crate::core::config::ProviderModel::Custom {
+                name: "test".into(),
+            },
+            request_settings: Default::default(),
+        };
+        let wrapped = rejected("`max_tokens` expected a value <= 393216, but got 943718")
+            .for_model(&model, 0);
+        assert_eq!(wrapped.output_token_limit(), Some(393_216));
+    }
+
+    #[test]
+    fn output_token_limit_ignores_unrelated_rejections() {
+        assert_eq!(
+            rejected("prompt is too long: expected a value <= 128000 input tokens")
+                .output_token_limit(),
+            None
+        );
+        assert_eq!(
+            rejected("max_tokens must be an integer").output_token_limit(),
+            None
+        );
+        assert_eq!(InferenceError::EmptyResponse.output_token_limit(), None);
     }
 
     #[test]

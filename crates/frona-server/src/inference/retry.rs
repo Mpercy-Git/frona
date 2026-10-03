@@ -81,6 +81,41 @@ where
     })
 }
 
+/// Output caps providers have reported for a model (`provider/model`), learned from
+/// rejections that state the ceiling. Later requests are clamped up front so a
+/// misconfigured `max_tokens` costs one rejected request per process, not one per call.
+static LEARNED_OUTPUT_CAPS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn capped_max_tokens(model: &ModelConfig, requested: Option<u64>) -> Option<u64> {
+    let requested = requested?;
+    let cap = LEARNED_OUTPUT_CAPS
+        .lock()
+        .ok()
+        .and_then(|caps| caps.get(&model.as_str()).copied());
+    Some(cap.map_or(requested, |cap| requested.min(cap)))
+}
+
+/// When `error` is the provider rejecting `sent` as too large and naming a lower
+/// ceiling, remember that ceiling for the model and return it so the caller can try
+/// again with it. The cap strictly decreases on each pass, so retry loops terminate.
+fn learn_output_cap(model: &ModelConfig, sent: Option<u64>, error: &InferenceError) -> Option<u64> {
+    let cap = sent
+        .zip(error.output_token_limit())
+        .and_then(|(sent, limit)| (limit < sent).then_some(limit))?;
+    tracing::warn!(
+        model = %model.as_str(),
+        sent = ?sent,
+        provider_limit = cap,
+        "Provider rejected max_tokens as too large; retrying at its limit. \
+         Lower this model's max_tokens setting to avoid the extra request"
+    );
+    if let Ok(mut caps) = LEARNED_OUTPUT_CAPS.lock() {
+        caps.insert(model.as_str(), cap);
+    }
+    Some(cap)
+}
+
 pub(crate) async fn inference_with_retry_and_fallback(
     model_group: &ModelGroup,
     overrides: RequestOverrides,
@@ -111,21 +146,31 @@ pub(crate) async fn inference_with_retry_and_fallback(
 
     let ref_str = model_group.main.as_str();
     let start = Instant::now();
-    match retry_with_backoff(&model_group.retry, &model_group.main, || async {
-        let provider = provider_for(&model_group.providers, &model_group.main)?;
-        provider
-            .inference(
-                &model_group.main,
-                system_prompt,
-                truncated.clone(),
-                tools.clone(),
-                max_tokens,
-                temperature,
-            )
-            .await
-    })
-    .await
-    {
+    let mut max_tokens = capped_max_tokens(&model_group.main, max_tokens);
+    let result = loop {
+        match retry_with_backoff(&model_group.retry, &model_group.main, || async {
+            let provider = provider_for(&model_group.providers, &model_group.main)?;
+            provider
+                .inference(
+                    &model_group.main,
+                    system_prompt,
+                    truncated.clone(),
+                    tools.clone(),
+                    max_tokens,
+                    temperature,
+                )
+                .await
+        })
+        .await
+        {
+            Err(error) => match learn_output_cap(&model_group.main, max_tokens, &error) {
+                Some(cap) => max_tokens = Some(cap),
+                None => break Err(error),
+            },
+            ok => break ok,
+        }
+    };
+    match result {
         Ok(RetryOutcome {
             value:
                 InferenceOutput {
@@ -172,21 +217,31 @@ pub(crate) async fn inference_with_retry_and_fallback(
             truncation_pct,
         );
         let start = Instant::now();
-        match retry_with_backoff(&model_group.retry, fallback, || async {
-            let provider = provider_for(&model_group.providers, fallback)?;
-            provider
-                .inference(
-                    fallback,
-                    system_prompt,
-                    truncated_fb.clone(),
-                    tools.clone(),
-                    max_tokens,
-                    temperature,
-                )
-                .await
-        })
-        .await
-        {
+        let mut max_tokens = capped_max_tokens(fallback, max_tokens);
+        let result = loop {
+            match retry_with_backoff(&model_group.retry, fallback, || async {
+                let provider = provider_for(&model_group.providers, fallback)?;
+                provider
+                    .inference(
+                        fallback,
+                        system_prompt,
+                        truncated_fb.clone(),
+                        tools.clone(),
+                        max_tokens,
+                        temperature,
+                    )
+                    .await
+            })
+            .await
+            {
+                Err(error) => match learn_output_cap(fallback, max_tokens, &error) {
+                    Some(cap) => max_tokens = Some(cap),
+                    None => break Err(error),
+                },
+                ok => break ok,
+            }
+        };
+        match result {
             Ok(RetryOutcome {
                 value:
                     InferenceOutput {
@@ -250,21 +305,31 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
 
     let ref_str = model_group.main.as_str();
     let start = Instant::now();
-    match retry_with_backoff(&model_group.retry, &model_group.main, || async {
-        let provider = provider_for(&model_group.providers, &model_group.main)?;
-        provider
-            .structured_inference(
-                &model_group.main,
-                system_prompt,
-                truncated.clone(),
-                schema.clone(),
-                max_tokens,
-                temperature,
-            )
-            .await
-    })
-    .await
-    {
+    let mut max_tokens = capped_max_tokens(&model_group.main, max_tokens);
+    let result = loop {
+        match retry_with_backoff(&model_group.retry, &model_group.main, || async {
+            let provider = provider_for(&model_group.providers, &model_group.main)?;
+            provider
+                .structured_inference(
+                    &model_group.main,
+                    system_prompt,
+                    truncated.clone(),
+                    schema.clone(),
+                    max_tokens,
+                    temperature,
+                )
+                .await
+        })
+        .await
+        {
+            Err(error) => match learn_output_cap(&model_group.main, max_tokens, &error) {
+                Some(cap) => max_tokens = Some(cap),
+                None => break Err(error),
+            },
+            ok => break ok,
+        }
+    };
+    match result {
         Ok(RetryOutcome {
             value,
             retry_count,
@@ -315,21 +380,31 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
             truncation_pct,
         );
         let start = Instant::now();
-        match retry_with_backoff(&model_group.retry, fallback, || async {
-            let provider = provider_for(&model_group.providers, fallback)?;
-            provider
-                .structured_inference(
-                    fallback,
-                    system_prompt,
-                    truncated_fb.clone(),
-                    schema.clone(),
-                    max_tokens,
-                    temperature,
-                )
-                .await
-        })
-        .await
-        {
+        let mut max_tokens = capped_max_tokens(fallback, max_tokens);
+        let result = loop {
+            match retry_with_backoff(&model_group.retry, fallback, || async {
+                let provider = provider_for(&model_group.providers, fallback)?;
+                provider
+                    .structured_inference(
+                        fallback,
+                        system_prompt,
+                        truncated_fb.clone(),
+                        schema.clone(),
+                        max_tokens,
+                        temperature,
+                    )
+                    .await
+            })
+            .await
+            {
+                Err(error) => match learn_output_cap(fallback, max_tokens, &error) {
+                    Some(cap) => max_tokens = Some(cap),
+                    None => break Err(error),
+                },
+                ok => break ok,
+            }
+        };
+        match result {
             Ok(RetryOutcome {
                 value,
                 retry_count,
@@ -407,27 +482,37 @@ pub(crate) async fn stream_with_retry_and_fallback(
             model_group.inference.history_truncation_pct,
         );
         let emitted = Arc::new(AtomicBool::new(false));
-        match stream_one_model(
-            provider,
-            emitted.clone(),
-            model_group,
-            model,
-            RequestOverrides {
-                max_tokens,
-                temperature,
-            },
-            index as u8,
-            system_prompt,
-            &history,
-            tools,
-            event_tx,
-            cancel_token,
-            accumulated_text,
-            usage_service,
-            usage_ctx,
-        )
-        .await
-        {
+        let mut max_tokens = capped_max_tokens(model, max_tokens);
+        let result = loop {
+            match stream_one_model(
+                provider.clone(),
+                emitted.clone(),
+                model_group,
+                model,
+                RequestOverrides {
+                    max_tokens,
+                    temperature,
+                },
+                index as u8,
+                system_prompt,
+                &history,
+                tools,
+                event_tx,
+                cancel_token,
+                accumulated_text,
+                usage_service,
+                usage_ctx,
+            )
+            .await
+            {
+                Err(error) => match learn_output_cap(model, max_tokens, &error) {
+                    Some(cap) => max_tokens = Some(cap),
+                    None => break Err(error),
+                },
+                ok => break ok,
+            }
+        };
+        match result {
             Ok(result) => return Ok(result),
             Err(error) => {
                 failures.push(error);
@@ -611,4 +696,64 @@ async fn ensure_usable(
         }
     }
     Err(InferenceError::AllFallbacksFailed(reasons))
+}
+
+#[cfg(test)]
+mod output_cap_tests {
+    use rig_core::ProviderResponseError;
+    use rig_core::completion::CompletionError;
+
+    use super::*;
+
+    fn model(id: &str) -> ModelConfig {
+        ModelConfig {
+            catalog_provider: "byteplus".into(),
+            provider_handle: crate::core::Handle::try_new("byteplus").unwrap(),
+            model_id: id.into(),
+            provider: crate::core::config::ProviderModel::Custom {
+                name: "test".into(),
+            },
+            request_settings: Default::default(),
+        }
+    }
+
+    fn too_large(limit: u64, sent: u64) -> InferenceError {
+        InferenceError::CompletionFailed(CompletionError::ProviderResponse(
+            ProviderResponseError::new(
+                axum::http::StatusCode::BAD_REQUEST,
+                format!(
+                    r#"{{"error":{{"message":"The parameter `max_tokens` specified in the request are not valid: integer above maximum value, expected a value <= {limit}, but got {sent} instead."}}}}"#
+                ),
+            ),
+        ))
+    }
+
+    #[test]
+    fn a_stated_provider_ceiling_is_learned_and_clamps_later_requests() {
+        let model = model("output-cap-learned");
+        assert_eq!(capped_max_tokens(&model, Some(943_718)), Some(943_718));
+
+        let error = too_large(393_216, 943_718).for_model(&model, 0);
+        assert_eq!(
+            learn_output_cap(&model, Some(943_718), &error),
+            Some(393_216)
+        );
+
+        assert_eq!(capped_max_tokens(&model, Some(943_718)), Some(393_216));
+        assert_eq!(capped_max_tokens(&model, Some(4_096)), Some(4_096));
+        assert_eq!(capped_max_tokens(&model, None), None);
+    }
+
+    #[test]
+    fn no_retry_when_the_stated_ceiling_would_not_lower_the_request() {
+        let model = model("output-cap-not-lower");
+        let error = too_large(393_216, 393_216);
+        assert_eq!(learn_output_cap(&model, Some(393_216), &error), None);
+        assert_eq!(learn_output_cap(&model, None, &error), None);
+        assert_eq!(
+            learn_output_cap(&model, Some(943_718), &InferenceError::EmptyResponse),
+            None
+        );
+        assert_eq!(capped_max_tokens(&model, Some(943_718)), Some(943_718));
+    }
 }
