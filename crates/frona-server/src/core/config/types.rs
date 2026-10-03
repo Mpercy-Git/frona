@@ -304,10 +304,6 @@ impl BrowserConfig {
         self.api_token.as_deref().unwrap_or("frona")
     }
 
-    pub fn debugger_url_for_credential(&self, credential_id: &str) -> String {
-        format!("/api/browser/debugger/{credential_id}")
-    }
-
     pub fn profile_path(&self, handle: &crate::core::Handle, provider: &str) -> PathBuf {
         PathBuf::from(&self.profiles_path)
             .join(handle.as_ref())

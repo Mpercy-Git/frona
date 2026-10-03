@@ -101,7 +101,7 @@ impl PresignService {
 
     /// Sign a bare presign JWT scoped to an arbitrary `owner`/`path` resource
     /// (not wrapped in a file URL). Used for navigable authenticated endpoints
-    /// like the browser debugger, where a plain browser navigation can't send
+    /// like the browser live view, whose WebSocket (like a plain navigation) can't send
     /// an `Authorization` header. The token is verified with [`verify`].
     pub async fn sign_scoped_token(
         &self,

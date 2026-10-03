@@ -8,6 +8,7 @@ use crate::inference::hitl::{Hitl, HitlOutcome, HitlRequest, HitlResponse};
 use crate::inference::tool_call::ToolStatus;
 use frona_derive::agent_tool;
 
+use super::browser::active_profile;
 use super::{InferenceContext, ToolOutput, active_chat};
 
 pub struct NotifyHumanTool {
@@ -32,6 +33,13 @@ impl NotifyHumanTool {
     fn url_for_chat(&self, chat_id: &str) -> String {
         format!("{}/chat?id={}", self.public_base_url, chat_id)
     }
+
+    fn url_for_live_view(&self, profile: &str) -> String {
+        let query: String = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("profile", profile)
+            .finish();
+        format!("{}/browser?{query}", self.public_base_url)
+    }
 }
 
 #[agent_tool(files("ask_user_question", "request_user_takeover"))]
@@ -50,14 +58,10 @@ impl NotifyHumanTool {
                     .and_then(|v| v.as_str())
                     .unwrap_or("User intervention needed")
                     .to_string();
-                let debugger_url = self
-                    .vault_service
-                    .list_credentials(&ctx.user.id)
-                    .await
-                    .ok()
-                    .and_then(|creds| creds.into_iter().next())
-                    .map(|c| format!("/api/browser/debugger/{}", c.id))
-                    .unwrap_or_default();
+                // The live view of the exact browser profile the agent drives.
+                // Kept in the `debugger_url` field so stored takeovers still parse.
+                let profile = active_profile(&self.vault_service, &ctx.user.id).await;
+                let debugger_url = self.url_for_live_view(&profile);
 
                 Ok(ToolOutput::text("").with_hitl(Hitl {
                     prompt: if debugger_url.is_empty() {

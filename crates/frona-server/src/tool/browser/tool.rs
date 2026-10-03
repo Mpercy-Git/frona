@@ -371,14 +371,7 @@ impl AgentTool for BrowserTool {
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
         let session_key = &ctx.user.handle;
-        let provider = self
-            .vault_service
-            .list_credentials(&ctx.user.id)
-            .await
-            .ok()
-            .and_then(|creds| creds.into_iter().next())
-            .map(|c| c.provider)
-            .unwrap_or_else(|| "default".to_string());
+        let provider = super::active_profile(&self.vault_service, &ctx.user.id).await;
         let mgr = self.session_manager.as_ref();
 
         match tool_name {

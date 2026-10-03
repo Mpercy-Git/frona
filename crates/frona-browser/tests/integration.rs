@@ -543,3 +543,106 @@ async fn op_after_kill_surfaces_disconnect_shaped_error() {
         "post-kill error must classify as disconnect so run_with_reconnect triggers — got: {err}"
     );
 }
+
+/// Pixel position of an element's centre, for driving it with raw input the
+/// way the live view does.
+async fn centre_of(conn: &BrowserConnection, selector: &str) -> (f64, f64) {
+    let v = conn
+        .evaluate(
+            &format!(
+                "(() => {{ const r = document.querySelector({selector:?}).getBoundingClientRect(); \
+                 return [r.left + r.width / 2, r.top + r.height / 2]; }})()"
+            ),
+            false,
+        )
+        .await
+        .expect("measure element");
+    (v[0].as_f64().unwrap(), v[1].as_f64().unwrap())
+}
+
+#[tokio::test]
+#[ignore = "requires FRONA_TEST_BROWSER_WS_URL"]
+async fn live_screencast_streams_frames_of_the_active_tab() {
+    let conn = connect().await;
+    conn.navigate("data:text/html,<h1 style='font-size:80px'>live</h1>", true)
+        .await
+        .expect("navigate");
+
+    let mut cast = conn.start_screencast(None).await.expect("start screencast");
+    let frame = tokio::time::timeout(Duration::from_secs(10), cast.next_frame())
+        .await
+        .expect("a frame within 10s")
+        .expect("stream open");
+    assert!(!frame.data.is_empty());
+    assert!(frame.width > 0.0 && frame.height > 0.0);
+    cast.ack(frame.ack).await.expect("ack");
+    assert_eq!(cast.tab_id(), conn.live_active_tab().await.unwrap());
+    cast.stop().await.expect("stop");
+}
+
+#[tokio::test]
+#[ignore = "requires FRONA_TEST_BROWSER_WS_URL"]
+async fn live_input_clicks_types_and_submits() {
+    use frona_browser::{KeyAction, LiveCommand, MouseAction};
+
+    let conn = connect().await;
+    conn.navigate(
+        "data:text/html,<form onsubmit=\"document.title='sent:'+document.getElementById('f').value;return false\">\
+         <input id=f style='width:300px;height:40px'></form>",
+        true,
+    )
+    .await
+    .expect("navigate");
+    let cast = conn.start_screencast(None).await.expect("start screencast");
+
+    let (x, y) = centre_of(&conn, "#f").await;
+    for action in [MouseAction::Pressed, MouseAction::Released] {
+        cast.apply(LiveCommand::Mouse {
+            action,
+            x,
+            y,
+            button: Some("left".into()),
+            buttons: if action == MouseAction::Pressed { 1 } else { 0 },
+            click_count: 1,
+            modifiers: 0,
+        })
+        .await
+        .expect("click");
+    }
+    for key in ["h", "i"] {
+        for action in [KeyAction::Down, KeyAction::Up] {
+            cast.apply(LiveCommand::Key {
+                action,
+                key: key.into(),
+                code: format!("Key{}", key.to_uppercase()),
+                key_code: 0,
+                modifiers: 0,
+            })
+            .await
+            .expect("key");
+        }
+    }
+    cast.apply(LiveCommand::Text {
+        text: " there".into(),
+    })
+    .await
+    .expect("insert text");
+    for action in [KeyAction::Down, KeyAction::Up] {
+        cast.apply(LiveCommand::Key {
+            action,
+            key: "Enter".into(),
+            code: "Enter".into(),
+            key_code: 13,
+            modifiers: 0,
+        })
+        .await
+        .expect("enter");
+    }
+
+    let title = conn
+        .evaluate("document.title", false)
+        .await
+        .expect("read title");
+    assert_eq!(title, serde_json::json!("sent:hi there"));
+    cast.stop().await.expect("stop");
+}

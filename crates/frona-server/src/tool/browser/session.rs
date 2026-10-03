@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -7,7 +8,7 @@ use backon::{ExponentialBuilder, Retryable};
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 
 use crate::core::config::BrowserConfig;
 use crate::core::error::AppError;
@@ -37,6 +38,9 @@ struct BrowserlessSession {
     user_data_dir: Option<String>,
 }
 
+/// Per profile: the attached live viewer's id and its "you were replaced" signal.
+type LiveViewers = Arc<std::sync::Mutex<HashMap<String, (u64, Arc<Notify>)>>>;
+
 #[derive(Clone)]
 pub struct BrowserSessionManager {
     config: Option<BrowserConfig>,
@@ -48,6 +52,30 @@ pub struct BrowserSessionManager {
     /// with "browser already running" since the winner is a healthy session
     /// that never dies during the retry window.
     connect_locks: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// The live viewer currently attached to each profile. A tab has one
+    /// screencast, so a second viewer takes over from the first instead of the
+    /// two stopping each other's stream.
+    live_viewers: LiveViewers,
+    next_live_viewer: Arc<AtomicU64>,
+}
+
+/// A live viewer's hold on a profile. `replaced` fires when another viewer
+/// opens the same profile; dropping the claim releases it.
+pub struct LiveViewClaim {
+    pub replaced: Arc<Notify>,
+    key: String,
+    id: u64,
+    viewers: LiveViewers,
+}
+
+impl Drop for LiveViewClaim {
+    fn drop(&mut self) {
+        if let Ok(mut viewers) = self.viewers.lock()
+            && viewers.get(&self.key).is_some_and(|(id, _)| *id == self.id)
+        {
+            viewers.remove(&self.key);
+        }
+    }
 }
 
 impl BrowserSessionManager {
@@ -56,6 +84,36 @@ impl BrowserSessionManager {
             config,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             connect_locks: Arc::new(RwLock::new(HashMap::new())),
+            live_viewers: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            next_live_viewer: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Register a live viewer for a profile, telling any viewer already on it
+    /// to stand down.
+    pub fn claim_live_view(
+        &self,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) -> LiveViewClaim {
+        let key = Self::profile_key(user_handle, provider);
+        let id = self.next_live_viewer.fetch_add(1, Ordering::Relaxed);
+        let replaced = Arc::new(Notify::new());
+        let previous = self
+            .live_viewers
+            .lock()
+            .ok()
+            .and_then(|mut viewers| viewers.insert(key.clone(), (id, replaced.clone())));
+        if let Some((_, previous)) = previous {
+            // `notify_one` keeps the permit if the old viewer isn't waiting at
+            // this instant, so it can't miss being replaced.
+            previous.notify_one();
+        }
+        LiveViewClaim {
+            replaced,
+            key,
+            id,
+            viewers: self.live_viewers.clone(),
         }
     }
 
@@ -413,6 +471,45 @@ mod tests {
         assert_eq!(
             url,
             "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000&token=secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_live_viewer_replaces_the_first() {
+        let mgr = BrowserSessionManager::new(None);
+        let alice = crate::handle!("alice");
+        let first = mgr.claim_live_view(&alice, "google");
+        let _second = mgr.claim_live_view(&alice, "google");
+        tokio::time::timeout(Duration::from_secs(1), first.replaced.notified())
+            .await
+            .expect("first viewer should be told it was replaced");
+    }
+
+    #[tokio::test]
+    async fn live_viewers_on_other_profiles_are_left_alone() {
+        let mgr = BrowserSessionManager::new(None);
+        let alice = crate::handle!("alice");
+        let first = mgr.claim_live_view(&alice, "google");
+        let _other = mgr.claim_live_view(&alice, "github");
+        let _bob = mgr.claim_live_view(&crate::handle!("bob"), "google");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), first.replaced.notified())
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_replaced_viewer_dropping_late_keeps_the_new_claim() {
+        let mgr = BrowserSessionManager::new(None);
+        let alice = crate::handle!("alice");
+        let first = mgr.claim_live_view(&alice, "google");
+        let second = mgr.claim_live_view(&alice, "google");
+        drop(first);
+        let viewers = mgr.live_viewers.lock().unwrap();
+        assert_eq!(
+            viewers.get("alice/google").map(|(id, _)| *id),
+            Some(second.id)
         );
     }
 }
