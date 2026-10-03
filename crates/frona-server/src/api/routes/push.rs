@@ -44,8 +44,21 @@ struct TestPushResponse {
     /// False when the server has no usable VAPID key pair — the device is
     /// subscribed but nothing can ever be sent to it.
     configured: bool,
+    /// True when the calling device's own subscription was among those the
+    /// push service reported dead. The browser keeps handing that dead
+    /// subscription back from `getSubscription()` (and re-registers it on
+    /// every page load), so the device has to throw it away and subscribe
+    /// afresh — this tells it to.
+    this_device_removed: bool,
     #[serde(flatten)]
     report: PushDeliveryReport,
+}
+
+#[derive(Deserialize, Default)]
+struct TestPushRequest {
+    /// The calling device's push endpoint, if it has one.
+    #[serde(default)]
+    endpoint: Option<String>,
 }
 
 /// Push a throwaway notification to every device the user has registered and
@@ -60,12 +73,15 @@ struct TestPushResponse {
 async fn send_test(
     auth: AuthUser,
     State(state): State<AppState>,
+    body: Option<Json<TestPushRequest>>,
 ) -> Result<Json<TestPushResponse>, ApiError> {
+    let request = body.map(|Json(b)| b).unwrap_or_default();
     let sender = match &state.push_sender {
         Some(s) => s,
         None => {
             return Ok(Json(TestPushResponse {
                 configured: false,
+                this_device_removed: false,
                 report: PushDeliveryReport::default(),
             }));
         }
@@ -83,8 +99,13 @@ async fn send_test(
     };
 
     let report = sender.deliver_to_user(&auth.user_id, &notification).await;
+    let this_device_removed = request
+        .endpoint
+        .as_deref()
+        .is_some_and(|endpoint| report.removed_endpoints.iter().any(|e| e == endpoint));
     Ok(Json(TestPushResponse {
         configured: true,
+        this_device_removed,
         report,
     }))
 }

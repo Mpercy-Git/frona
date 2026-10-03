@@ -12,6 +12,11 @@ export interface PushTestResult {
   delivered: number;
   removed: number;
   failures: { service: string; reason: string }[];
+  /// The push service reported *this* device's subscription dead.
+  this_device_removed: boolean;
+  /// Set client-side when the hook replaced this device's dead subscription
+  /// and this result is the re-test against the new one.
+  renewed?: boolean;
 }
 
 /// iOS only delivers Web Push to an installed (home-screen) PWA — in a normal
@@ -120,15 +125,8 @@ export function usePushNotifications() {
         return;
       }
 
-      // 3. Subscribe via the service worker.
-      const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(public_key) as BufferSource,
-      });
-
-      // 4. POST subscription to backend.
-      await api.post("/api/push/subscribe", subscription.toJSON());
+      // 3. Subscribe via the service worker and register it with the server.
+      await subscribeFresh(public_key);
       setSubscribed(true);
     } catch (err) {
       console.error("[push] Failed to enable notifications:", err);
@@ -180,8 +178,34 @@ export function usePushNotifications() {
     setError(null);
     setTestResult(null);
     try {
-      const result = await api.post<PushTestResult>("/api/push/test", {});
-      setTestResult(result);
+      const registration = await navigator.serviceWorker.ready;
+      const current = await registration.pushManager.getSubscription();
+      const result = await api.post<PushTestResult>("/api/push/test", {
+        endpoint: current?.endpoint,
+      });
+
+      if (!result.this_device_removed) {
+        setTestResult(result);
+        return;
+      }
+
+      // The push service says this device's subscription is dead, and the
+      // server has pruned it. The browser does not know: `getSubscription()`
+      // keeps returning it, page loads re-register it, and `subscribe()`
+      // hands the same dead endpoint back. Replace it and test again.
+      const { public_key } = await api.get<{ public_key: string | null }>(
+        "/api/push/vapid-public-key",
+      );
+      if (!public_key) {
+        setTestResult(result);
+        return;
+      }
+      await subscribeFresh(public_key);
+      setSubscribed(true);
+      const retest = await api.post<PushTestResult>("/api/push/test", {
+        endpoint: (await registration.pushManager.getSubscription())?.endpoint,
+      });
+      setTestResult({ ...retest, renewed: true });
     } catch (err) {
       console.error("[push] Test notification failed:", err);
       setError(
@@ -207,6 +231,34 @@ export function usePushNotifications() {
     disable,
     sendTest,
   };
+}
+
+/// Replace this device's push subscription with a brand-new one and register
+/// it with the server.
+///
+/// `pushManager.subscribe()` returns the *existing* subscription when one is
+/// already held for the same key, even when the push service has expired it —
+/// FCM then answers every send with 404/410 and the device stays silent while
+/// the UI reports it enabled. Dropping the old subscription first is the only
+/// way to get a fresh endpoint.
+async function subscribeFresh(publicKey: string): Promise<PushSubscription> {
+  const registration = await navigator.serviceWorker.ready;
+  const existing = await registration.pushManager.getSubscription();
+  if (existing) {
+    try {
+      await api.post("/api/push/unsubscribe", { endpoint: existing.endpoint });
+    } catch {
+      // Already gone server-side, most likely; the local drop is what matters.
+    }
+    await existing.unsubscribe().catch(() => false);
+  }
+
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey) as BufferSource,
+  });
+  await api.post("/api/push/subscribe", subscription.toJSON());
+  return subscription;
 }
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {

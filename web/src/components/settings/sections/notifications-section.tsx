@@ -171,6 +171,12 @@ function TestResult({ result }: { result: PushTestResult }) {
 
   return (
     <div className="space-y-1 text-sm">
+      {result.renewed && (
+        <p className="text-text-secondary">
+          This device&apos;s old push subscription had expired, so it was
+          replaced with a new one and the test was sent again:
+        </p>
+      )}
       <p className={result.delivered > 0 ? "text-success" : "text-error"}>
         Accepted by {result.delivered} of {result.attempted} registered{" "}
         {result.attempted === 1 ? "device" : "devices"}.
