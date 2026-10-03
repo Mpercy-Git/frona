@@ -87,12 +87,18 @@ impl BrowserSessionManager {
     ) -> String {
         let user_data_dir = config.profile_path(user_handle, provider);
         let base = config.ws_url.trim_end_matches('/');
-        format!(
+        let mut url = format!(
             "{}/?--user-data-dir={}&timeout={}",
             base,
             user_data_dir.display(),
             BROWSERLESS_SESSION_TIMEOUT.as_millis()
-        )
+        );
+        // Browserless >= 2.57 can enforce a token on every route (STRICT_TOKEN_USE).
+        if let Some(token) = config.api_token.as_deref() {
+            url.push_str("&token=");
+            url.push_str(token);
+        }
+        url
     }
 
     /// Builds the exact WS URL a real session would use (including the
@@ -395,6 +401,18 @@ mod tests {
         assert_eq!(
             url,
             "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"
+        );
+    }
+
+    #[test]
+    fn ws_url_appends_token_when_configured() {
+        let mut config = cfg("ws://browserless:3333");
+        config.api_token = Some("secret".into());
+        let url =
+            BrowserSessionManager::ws_url_for_profile(&config, &crate::handle!("alice"), "openai");
+        assert_eq!(
+            url,
+            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000&token=secret"
         );
     }
 }
