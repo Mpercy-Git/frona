@@ -2,6 +2,7 @@ mod evaluate;
 mod extract;
 mod interact;
 mod keyboard;
+pub mod live;
 mod markdown;
 mod navigation;
 mod screenshot;

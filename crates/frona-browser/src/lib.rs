@@ -9,6 +9,7 @@ mod url;
 
 pub use connection::BrowserConnection;
 pub use error::Error;
+pub use ops::live::{KeyAction, LiveCommand, LiveFrame, LiveTab, MouseAction, Screencast};
 pub use types::{
     ElementTarget, ExtractFormat, Link, MarkdownPage, PageInfo, ScreenshotResult, Snapshot, TabInfo,
 };
