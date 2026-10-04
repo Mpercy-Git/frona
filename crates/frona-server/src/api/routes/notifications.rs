@@ -4,7 +4,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 
 use crate::core::state::AppState;
-use crate::notification::models::Notification;
+use crate::notification::models::{Notification, NotificationPreferences};
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -14,6 +14,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/notifications", get(list_notifications))
         .route("/api/notifications/{id}/read", post(mark_read))
         .route("/api/notifications/read-all", post(mark_all_read))
+        .route(
+            "/api/notifications/preferences",
+            get(get_preferences).put(put_preferences),
+        )
 }
 
 #[derive(Serialize)]
@@ -56,4 +60,23 @@ async fn mark_all_read(auth: AuthUser, State(state): State<AppState>) -> Result<
         .mark_all_read(&auth.user_id)
         .await?;
     Ok(())
+}
+
+async fn get_preferences(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Json<NotificationPreferences> {
+    Json(state.notification_service.preferences(&auth.user_id).await)
+}
+
+async fn put_preferences(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(prefs): Json<NotificationPreferences>,
+) -> Result<Json<NotificationPreferences>, ApiError> {
+    let saved = state
+        .notification_service
+        .set_preferences(&auth.user_id, prefs)
+        .await?;
+    Ok(Json(saved))
 }

@@ -213,7 +213,14 @@ async fn send_notification<S: Supervisor>(
     };
     let data = supervisor.notification_data(id, action).await;
     let _ = notification_service
-        .create_and_notify(&user_id, data, level, title.to_string(), body.to_string())
+        .create_and_notify(
+            &user_id,
+            crate::notification::models::NotificationCategory::Failure,
+            data,
+            level,
+            title.to_string(),
+            body.to_string(),
+        )
         .await;
 }
 

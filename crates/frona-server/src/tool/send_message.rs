@@ -100,6 +100,7 @@ impl SendMessageTool {
             .notification_service
             .create_and_notify(
                 &ctx.user.id,
+                crate::notification::models::NotificationCategory::AgentMessage,
                 NotificationData::Agent {
                     agent_id: ctx.agent.id.clone(),
                     chat_id: resolved_chat.id.clone(),
