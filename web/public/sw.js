@@ -114,37 +114,127 @@ function askClient(client, targetUrl) {
 }
 
 self.addEventListener("notificationclick", (event) => {
+  // Android does not dismiss a notification when it is tapped; only close()
+  // does. Do it before anything that can throw.
   event.notification.close();
 
-  const targetUrl = event.notification.data?.url || "/";
+  const targetUrl = new URL(
+    event.notification.data?.url || "/",
+    self.location.origin,
+  ).href;
 
   event.waitUntil(
     (async () => {
-      const allClients = await clients.matchAll({
-        type: "window",
-        includeUncontrolled: true,
-      });
-
-      // Focus an existing tab if one is open.
-      for (const client of allClients) {
-        if (client.url.includes(self.location.origin)) {
-          if ("focus" in client) {
-            await client.focus();
-            if ("navigate" in client) {
-              await client.navigate(targetUrl);
-            }
-          }
-          return;
-        }
+      await closeNotificationsFor(targetUrl);
+      try {
+        if (await routeExistingWindow(targetUrl)) return;
+      } catch (err) {
+        console.warn("[sw] Could not reuse an open window:", err);
       }
-
-      // No existing tab — open a new one.
+      // No usable window — open one. This is also the fallback for every
+      // failure above, so a tap always lands somewhere.
       if (clients.openWindow) {
         await clients.openWindow(targetUrl);
       }
     })(),
   );
 });
+
+/**
+ * Close every notification that points at `targetUrl`. A busy chat can raise
+ * several (each push has its own tag), and once the user has opened the chat
+ * they are all stale.
+ */
+async function closeNotificationsFor(targetUrl) {
+  try {
+    const open = await self.registration.getNotifications();
+    for (const n of open) {
+      const url = n.data?.url;
+      if (url && new URL(url, self.location.origin).href === targetUrl) {
+        n.close();
+      }
+    }
+  } catch {
+    // Best effort.
+  }
+}
+
+/**
+ * Bring an already-open window to the front and show `targetUrl` in it.
+ * Returns false when there is no window to reuse.
+ *
+ * The previous version focused the first window and then called
+ * `client.navigate()`. On Android that window is frequently one this worker
+ * does not control (`includeUncontrolled` returns those too, e.g. after a
+ * worker update or a Chrome tab beside the installed app), and `navigate()`
+ * throws on an uncontrolled client — so the tap did nothing at all. Now the
+ * page is asked to route client-side, which works whether or not it is
+ * controlled; `navigate()` is only the fallback, and `openWindow()` the
+ * fallback after that.
+ */
+async function routeExistingWindow(targetUrl) {
+  const allClients = await clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  const sameOrigin = allClients.filter(
+    (c) => new URL(c.url).origin === self.location.origin,
+  );
+  if (sameOrigin.length === 0) return false;
+
+  // Prefer a window already showing the target, then a focused one, then any.
+  const client =
+    sameOrigin.find((c) => c.url === targetUrl) ||
+    sameOrigin.find((c) => c.focused) ||
+    sameOrigin[0];
+
+  let focused = client;
+  try {
+    focused = (await client.focus()) || client;
+  } catch (err) {
+    // Chrome refuses focus in some states; opening a window still works.
+    console.warn("[sw] focus() failed:", err);
+    return false;
+  }
+
+  if (focused.url === targetUrl) return true;
+  if (await askToNavigate(focused, targetUrl)) return true;
+
+  if ("navigate" in focused) {
+    try {
+      if (await focused.navigate(targetUrl)) return true;
+    } catch {
+      // Uncontrolled client — fall through.
+    }
+  }
+  return false;
+}
+
+/** How long a focused page gets to acknowledge a navigation request. */
+const NAVIGATE_ACK_TIMEOUT_MS = 1000;
+
+/** Ask a page to route itself to `targetUrl`; resolves true once it confirms. */
+function askToNavigate(client, targetUrl) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => done(false), NAVIGATE_ACK_TIMEOUT_MS);
+    try {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = (event) => done(event.data?.ok === true);
+      client.postMessage({ type: "frona:navigate", url: targetUrl }, [
+        channel.port2,
+      ]);
+    } catch {
+      done(false);
+    }
+  });
+}
 
 // Handle subscription expiration / pushsubscriptionchange.
 self.addEventListener("pushsubscriptionchange", (event) => {

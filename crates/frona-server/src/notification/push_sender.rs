@@ -288,7 +288,7 @@ impl PushSender {
         match data {
             NotificationData::Agent { chat_id, .. } => format!("/chat?id={}", chat_id),
             NotificationData::App { app_handle, .. } => format!("/apps/{}", app_handle),
-            NotificationData::Task { task_id } => format!("/?task={}", task_id),
+            NotificationData::Task { task_id } => format!("/chat?task={}", task_id),
             _ => "/".to_string(),
         }
     }
