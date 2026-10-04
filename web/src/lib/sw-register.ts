@@ -2,6 +2,16 @@
 
 let reloadingForSw = false;
 let foregroundResponderInstalled = false;
+let navigateHandler: ((path: string) => void) | null = null;
+
+/**
+ * Route used when a notification tap asks this window to show a page. Set by
+ * the app shell to the Next router so the switch is client-side; without one
+ * the page does a full load.
+ */
+export function setNotificationNavigator(handler: ((path: string) => void) | null) {
+  navigateHandler = handler;
+}
 
 /**
  * Answer the service worker's "are you looking at this?" checks.
@@ -20,11 +30,35 @@ function installForegroundResponder() {
 
   navigator.serviceWorker.addEventListener("message", (event) => {
     const data = event.data as { type?: string; url?: string } | undefined;
-    if (data?.type !== "frona:foreground-check") return;
     const port = event.ports?.[0];
-    if (!port) return;
-    port.postMessage({ viewing: isViewing(data.url ?? "/") });
+    if (data?.type === "frona:foreground-check") {
+      port?.postMessage({ viewing: isViewing(data.url ?? "/") });
+    } else if (data?.type === "frona:navigate") {
+      port?.postMessage({ ok: navigateTo(data.url ?? "/") });
+    }
   });
+}
+
+/**
+ * Show `targetUrl` in this window in response to a notification tap. The
+ * service worker asks rather than calling `WindowClient.navigate()` itself,
+ * because that throws for a window it does not control — common on Android —
+ * and left taps doing nothing.
+ */
+function navigateTo(targetUrl: string): boolean {
+  try {
+    const target = new URL(targetUrl, window.location.origin);
+    if (target.origin !== window.location.origin) return false;
+    const path = target.pathname + target.search + target.hash;
+    if (navigateHandler) {
+      navigateHandler(path);
+    } else {
+      window.location.assign(path);
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** True when this window is focused, visible, and already on `targetUrl`. */

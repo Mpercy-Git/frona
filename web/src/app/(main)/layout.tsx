@@ -6,7 +6,11 @@ import { NavigationProvider } from "@/lib/navigation-context";
 import { NotificationProvider } from "@/lib/notification-context";
 import { SessionProvider } from "@/lib/session-context";
 import { TopBar } from "@/components/layout/top-bar";
-import { registerServiceWorker } from "@/lib/sw-register";
+import { useRouter } from "next/navigation";
+import {
+  registerServiceWorker,
+  setNotificationNavigator,
+} from "@/lib/sw-register";
 import { ActivityProvider } from "@/lib/activity-context";
 
 export default function MainLayout({
@@ -14,9 +18,16 @@ export default function MainLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const router = useRouter();
+
   useEffect(() => {
     registerServiceWorker();
   }, []);
+
+  useEffect(() => {
+    setNotificationNavigator((path) => router.push(path));
+    return () => setNotificationNavigator(null);
+  }, [router]);
 
   return (
     <NavigationProvider>
