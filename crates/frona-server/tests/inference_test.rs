@@ -1303,6 +1303,7 @@ async fn test_tool_loop_deduplicates_attachments_before_lifecycle_return() {
         owner: "agent:test".to_string(),
         path: "report.md".to_string(),
         url: None,
+        transcript: None,
     };
 
     // The completion event takes the early lifecycle return that used to skip

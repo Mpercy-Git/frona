@@ -1517,6 +1517,18 @@ pub struct VoiceConfig {
         description = "Filler phrases spoken to the caller while the agent is processing. Each interval advances to the next phrase in order (rotating). If empty, uses built-in defaults."
     )]
     pub silence_fill_phrases: Vec<String>,
+    #[schemars(
+        description = "Provider (a key under `providers`) that transcribes voice notes sent in chat or over channels. It must serve the OpenAI-compatible /audio/transcriptions endpoint: openai, groq, or a `generic` entry pointing at a local Whisper server. Unset picks openai, then groq, if either is configured; \"none\" turns transcription off."
+    )]
+    pub transcription_provider: Option<String>,
+    #[schemars(
+        description = "Transcription model. Defaults to gpt-4o-mini-transcribe on OpenAI, whisper-large-v3-turbo on Groq, and whisper-1 elsewhere."
+    )]
+    pub transcription_model: Option<String>,
+    #[schemars(
+        description = "ISO-639-1 language of the voice notes (e.g. en). Unset lets the model detect it per recording."
+    )]
+    pub transcription_language: Option<String>,
 }
 
 fn default_silence_fill_initial_delay_secs() -> u64 {

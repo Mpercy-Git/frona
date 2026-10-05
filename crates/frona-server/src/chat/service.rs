@@ -73,6 +73,9 @@ pub struct ChatService {
     /// simple; when absent, access is owner-only.
     share_service: Option<crate::chat::share::service::ChatShareService>,
     compactor: super::compactor::ChatCompactor,
+    /// Set once at startup via [`ChatService::set_transcription`]. `None` when
+    /// no provider can transcribe, in which case voice notes stay plain files.
+    transcription: Option<crate::inference::transcription::TranscriptionService>,
 }
 
 impl ChatService {
@@ -115,6 +118,7 @@ impl ChatService {
             usage_service,
             share_service: None,
             compactor,
+            transcription: None,
         }
     }
 
@@ -125,6 +129,93 @@ impl ChatService {
         share_service: crate::chat::share::service::ChatShareService,
     ) {
         self.share_service = Some(share_service);
+    }
+
+    /// Transcribe voice notes as they arrive. Call once at startup before the
+    /// service is cloned.
+    pub fn set_transcription(
+        &mut self,
+        transcription: crate::inference::transcription::TranscriptionService,
+    ) {
+        self.transcription = Some(transcription);
+    }
+
+    /// Fill in the transcript of every voice note in `attachments` that lacks
+    /// one. Best effort by design: a failed or skipped transcription leaves the
+    /// attachment as it was, and the message is still saved - the agent then
+    /// sees the recording as a file, exactly as it would with transcription off.
+    async fn transcribe_voice_notes(
+        &self,
+        owner_user_id: &str,
+        attachments: &mut [crate::storage::Attachment],
+    ) {
+        use crate::inference::transcription::{MAX_AUDIO_BYTES, needs_transcript};
+
+        let Some(transcription) = &self.transcription else {
+            return;
+        };
+        for attachment in attachments.iter_mut().filter(|a| needs_transcript(a)) {
+            if attachment.size_bytes > MAX_AUDIO_BYTES {
+                tracing::warn!(
+                    file = %attachment.filename,
+                    size_bytes = attachment.size_bytes,
+                    "voice note too large to transcribe"
+                );
+                continue;
+            }
+            let Some(path) = self.voice_note_path(owner_user_id, attachment).await else {
+                tracing::warn!(
+                    file = %attachment.filename,
+                    owner = %attachment.owner,
+                    "voice note is not in the chat owner's storage; not transcribing it"
+                );
+                continue;
+            };
+            let audio = match tokio::fs::read(&path).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    tracing::warn!(file = %attachment.filename, error = %e, "could not read voice note to transcribe");
+                    continue;
+                }
+            };
+            match transcription
+                .transcribe(audio, &attachment.filename, &attachment.content_type)
+                .await
+            {
+                Ok(text) => attachment.transcript = Some(text),
+                Err(e) => {
+                    tracing::warn!(file = %attachment.filename, error = %e, "voice note transcription failed")
+                }
+            }
+        }
+    }
+
+    /// Where a voice note lives on disk, if it lives in the chat owner's own
+    /// storage. The web client names its attachments, so this is stricter than
+    /// the history builder's resolver: an attachment naming another user, or a
+    /// path that doesn't resolve, gets no path at all rather than the raw
+    /// string - otherwise a crafted attachment could have another user's
+    /// recording, or any file the server can read, uploaded for transcription.
+    /// Web uploads name the owner by id and channel downloads by handle; both
+    /// are accepted, for the owner only.
+    async fn voice_note_path(
+        &self,
+        owner_user_id: &str,
+        attachment: &crate::storage::Attachment,
+    ) -> Option<std::path::PathBuf> {
+        let owner = self.user_service.find_by_id(owner_user_id).await.ok()??;
+        let vpath = if let Some(user) = attachment.owner.strip_prefix("user:") {
+            if user != owner.id && user != owner.handle.as_str() {
+                return None;
+            }
+            crate::storage::VirtualPath::user(&owner.handle, &attachment.path)
+        } else {
+            let agent_id = attachment.owner.strip_prefix("agent:")?;
+            crate::storage::VirtualPath::agent(agent_id, &attachment.path)
+        };
+        self.storage_service
+            .resolve_virtual_path_for_user(&owner.handle, &vpath)
+            .ok()
     }
 
     fn broadcast_chat_entity(&self, chat: &Chat, action: crate::chat::broadcast::EntityAction) {
@@ -158,6 +249,10 @@ impl ChatService {
             chat.space_id.clone(),
             msg.clone().into(),
         );
+    }
+
+    pub fn storage_service(&self) -> &StorageService {
+        &self.storage_service
     }
 
     pub fn provider_registry(&self) -> &ModelProviderRegistry {
@@ -428,8 +523,14 @@ impl ChatService {
     }
 
     pub async fn persist_inbound_message(&self, msg: &Message) -> Result<Message, AppError> {
-        let saved = self.message_repo.create(msg).await?;
-        if let Ok(Some(chat)) = self.chat_repo.find_by_id(&saved.chat_id).await {
+        let chat = self.chat_repo.find_by_id(&msg.chat_id).await.ok().flatten();
+        let mut msg = msg.clone();
+        if let Some(chat) = &chat {
+            self.transcribe_voice_notes(&chat.user_id, &mut msg.attachments)
+                .await;
+        }
+        let saved = self.message_repo.create(&msg).await?;
+        if let Some(chat) = chat {
             self.broadcast_message_persisted(
                 &saved,
                 &chat,
@@ -788,6 +889,9 @@ impl ChatService {
     ) -> Result<MessageResponse, AppError> {
         let chat = self.get_chat(user_id, chat_id).await?;
 
+        let mut attachments = attachments;
+        self.transcribe_voice_notes(&chat.user_id, &mut attachments)
+            .await;
         let mut builder = Message::builder(chat_id, MessageRole::User, content.to_string())
             .attachments(attachments);
         if let Some(c) = command {

@@ -195,6 +195,8 @@ export interface Attachment {
   owner: string;
   path: string;
   url?: string;
+  /** What a voice note says, transcribed by the server when it was sent. */
+  transcript?: string;
 }
 
 export interface FileEntry {

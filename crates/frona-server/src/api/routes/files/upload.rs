@@ -127,6 +127,7 @@ pub(crate) async fn upload_file(
         owner,
         path: relative,
         url,
+        transcript: None,
     }))
 }
 

@@ -534,7 +534,12 @@ pub fn format_files_block_simple(content: &str, attachments: &[Attachment]) -> S
         return content.to_string();
     }
     let paths: Vec<&str> = attachments.iter().map(|a| a.path.as_str()).collect();
-    format!("{content}\n<files>\n{}\n</files>", paths.join("\n"))
+    let mut text = format!("{content}\n<files>\n{}\n</files>", paths.join("\n"));
+    for note in attachments.iter().filter_map(voice_note_block) {
+        text.push('\n');
+        text.push_str(&note);
+    }
+    text
 }
 
 pub fn is_embeddable_image(attachment: &Attachment) -> bool {
@@ -671,6 +676,31 @@ pub async fn format_files_block(
     format!("{content}\n<files>\n{}\n</files>", paths.join("\n"))
 }
 
+/// What a transcribed voice note said, in the form the model reads it. The
+/// recording itself stays listed under `<files>`, so the agent can still reach
+/// the audio if the transcript isn't enough.
+fn voice_note_block(attachment: &Attachment) -> Option<String> {
+    let transcript = attachment.transcript.as_deref()?;
+    let file = attachment.filename.replace('"', "'");
+    Some(format!(
+        "<voice_note file=\"{file}\">\n{transcript}\n</voice_note>"
+    ))
+}
+
+/// `content` followed by what any transcribed voice notes in `attachments` said,
+/// without listing files. For callers that hand an untrusted inbound to a model
+/// as plain text: a voice note is then read the same way a typed message is.
+pub fn with_voice_notes(content: &str, attachments: &[Attachment]) -> String {
+    let mut text = content.to_string();
+    for note in attachments.iter().filter_map(voice_note_block) {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&note);
+    }
+    text
+}
+
 pub async fn build_user_message(
     content: &str,
     attachments: &[Attachment],
@@ -695,7 +725,7 @@ pub async fn build_user_message(
         }
     }
 
-    let text = if non_images.is_empty() {
+    let mut text = if non_images.is_empty() {
         content.to_string()
     } else {
         let mut paths = Vec::with_capacity(non_images.len());
@@ -706,6 +736,10 @@ pub async fn build_user_message(
         }
         format!("{content}\n<files>\n{}\n</files>", paths.join("\n"))
     };
+    for note in non_images.iter().filter_map(|att| voice_note_block(att)) {
+        text.push('\n');
+        text.push_str(&note);
+    }
 
     if images.is_empty() {
         return RigMessage::user(&text);
@@ -898,6 +932,55 @@ mod tests {
     }
 
     #[test]
+    fn transcribed_voice_note_reaches_the_text() {
+        let note = Attachment {
+            filename: "voice \"memo\".webm".to_string(),
+            content_type: "audio/webm".to_string(),
+            size_bytes: 2048,
+            owner: "user:uid".to_string(),
+            path: "voice.webm".to_string(),
+            url: None,
+            transcript: Some("book the dentist for Tuesday".to_string()),
+        };
+        let untranscribed = Attachment {
+            transcript: None,
+            path: "other.ogg".to_string(),
+            ..note.clone()
+        };
+        let text = format_files_block_simple("", &[note, untranscribed]);
+        assert!(
+            text.contains("voice.webm"),
+            "the recording stays listed: {text}"
+        );
+        assert!(text.contains("other.ogg"));
+        assert!(text.contains(
+            "<voice_note file=\"voice 'memo'.webm\">\nbook the dentist for Tuesday\n</voice_note>"
+        ));
+        assert_eq!(text.matches("<voice_note").count(), 1);
+    }
+
+    #[test]
+    fn with_voice_notes_adds_only_the_transcript() {
+        let note = Attachment {
+            filename: "note.ogg".to_string(),
+            content_type: "audio/ogg".to_string(),
+            size_bytes: 10,
+            owner: "user:uid".to_string(),
+            path: "channels/abc/note.ogg".to_string(),
+            url: None,
+            transcript: Some("the code is 4417".to_string()),
+        };
+        assert_eq!(
+            with_voice_notes("", std::slice::from_ref(&note)),
+            "<voice_note file=\"note.ogg\">\nthe code is 4417\n</voice_note>"
+        );
+        let text = with_voice_notes("see below", &[note]);
+        assert!(text.starts_with("see below\n<voice_note"));
+        assert!(!text.contains("channels/abc"));
+        assert_eq!(with_voice_notes("plain", &[]), "plain");
+    }
+
+    #[test]
     fn format_files_block_simple_no_attachments() {
         assert_eq!(format_files_block_simple("hello world", &[]), "hello world");
         assert!(!format_files_block_simple("hello", &[]).contains("<files>"));
@@ -912,6 +995,7 @@ mod tests {
             owner: "user:uid".to_string(),
             path: "report.pdf".to_string(),
             url: None,
+            transcript: None,
         }];
         let result = format_files_block_simple("check this file", &attachments);
         assert!(result.contains("check this file"));
@@ -929,6 +1013,7 @@ mod tests {
             owner: "user:uid".into(),
             path: "logo.png".into(),
             url: None,
+            transcript: None,
         };
         assert!(is_embeddable_image(&att));
     }
@@ -942,6 +1027,7 @@ mod tests {
             owner: "user:uid".into(),
             path: "icon.svg".into(),
             url: None,
+            transcript: None,
         };
         assert!(!is_embeddable_image(&att));
     }
@@ -955,6 +1041,7 @@ mod tests {
             owner: "user:uid".into(),
             path: "doc.pdf".into(),
             url: None,
+            transcript: None,
         };
         assert!(!is_embeddable_image(&att));
     }
@@ -995,6 +1082,7 @@ mod tests {
                 owner: "agent:dev".to_string(),
                 path: "output.csv".to_string(),
                 url: None,
+                transcript: None,
             }],
             ..make_message(MessageRole::TaskCompletion, "Task done")
         };
