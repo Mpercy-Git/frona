@@ -6,7 +6,7 @@ import { ComposerPrimitive, ThreadPrimitive, AttachmentPrimitive, useAui, unstab
 import { useThreadIsRunning } from "@assistant-ui/core/react";
 import { LexicalComposerInput } from "@assistant-ui/react-lexical";
 import type { Unstable_TriggerItem } from "@assistant-ui/core";
-import { PaperAirplaneIcon, StopIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/solid";
+import { PaperAirplaneIcon, StopIcon, PlusIcon, XMarkIcon, MicrophoneIcon } from "@heroicons/react/24/solid";
 import { ArrowUpTrayIcon, CloudIcon, FolderOpenIcon } from "@heroicons/react/24/outline";
 import { FileBrowserModal } from "@/components/chat/file-browser-modal";
 import { ComposerPastePlugin } from "@/components/chat/composer-paste-plugin";
@@ -24,6 +24,8 @@ import { useCommands } from "@/lib/use-commands";
 import { api } from "@/lib/api-client";
 import type { ToolWizardState } from "./external-tool-drawer";
 import type { Attachment } from "@/lib/types";
+import { useToast } from "@/lib/toast";
+import { formatElapsed, useVoiceRecorder, voiceRecordingSupported } from "@/lib/use-voice-recorder";
 
 function ComposerAttachmentBadge() {
   return (
@@ -88,11 +90,20 @@ export function FronaComposer({
   const [browseOpen, setBrowseOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const editorBridgeRef = useRef<HTMLDivElement>(null);
 
   const threadRunning = useThreadIsRunning();
   const pendingTools = usePendingTools();
   const chatCtx = useContext(ChatContext);
   const commands = useCommands(chatCtx?.chatId);
+
+  const toast = useToast();
+  const recorder = useVoiceRecorder(toast.error);
+  // Read after mount: the server render has no `navigator`, and guessing there
+  // would mismatch hydration.
+  const [recordingSupported, setRecordingSupported] = useState(false);
+  useEffect(() => setRecordingSupported(voiceRecordingSupported()), []);
+  const [sendingVoiceNote, setSendingVoiceNote] = useState(false);
 
   const slashAdapter = useFronaTriggerAdapter(commands, "slash");
   const atAdapter = useFronaTriggerAdapter(commands, "at");
@@ -176,6 +187,33 @@ export function FronaComposer({
     chatCtx.interrupt(text, backendAttachments.length ? backendAttachments : undefined);
   }, [chatCtx, composerRuntime]);
 
+  // Stop recording and send the note straight away, like a messaging app. Any
+  // text already typed rides along as the message body.
+  const handleSendVoiceNote = useCallback(async () => {
+    const file = await recorder.stop();
+    if (!file) return;
+    setSendingVoiceNote(true);
+    try {
+      // The attachment adapter uploads and toasts its own failures.
+      await composerRuntime.addAttachment(file);
+    } catch {
+      return;
+    } finally {
+      setSendingVoiceNote(false);
+    }
+    if (threadRunning) {
+      // The agent started a turn while we were recording; sending now would be
+      // refused, so leave the note attached for the user to send.
+      toast.info("Voice note attached. Send it when the agent has finished.");
+      return;
+    }
+    if (onSend) {
+      editorBridgeRef.current?.closest("form")?.requestSubmit();
+    } else {
+      composerRuntime.send();
+    }
+  }, [recorder, composerRuntime, onSend, threadRunning, toast]);
+
   const activePlaceholder = currentPendingTool
     ? "Type your answer or click an option above..."
     : threadRunning && canInterrupt
@@ -234,7 +272,6 @@ export function FronaComposer({
   const submitMode: "enter" | "none" = onSend ? "none" : "enter";
 
   // Restore Enter-submits-form behaviour when submitMode is "none".
-  const editorBridgeRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!onSend) return;
     const el = editorBridgeRef.current;
@@ -382,6 +419,45 @@ export function FronaComposer({
               )}
             </div>
             <div className="flex items-center gap-1">
+              {recordingSupported && !currentPendingTool && (recorder.state === "recording" || !threadRunning) && (
+                recorder.state === "recording" ? (
+                  <>
+                    <span
+                      className="flex items-center gap-1.5 px-1 text-xs tabular-nums text-text-secondary"
+                      aria-live="polite"
+                    >
+                      <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" aria-hidden />
+                      {formatElapsed(recorder.elapsedMs)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={recorder.cancel}
+                      title="Discard recording"
+                      className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
+                    >
+                      <XMarkIcon className="h-5 w-5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleSendVoiceNote()}
+                      title="Send voice note"
+                      className="shrink-0 rounded-lg p-1.5 text-accent hover:opacity-80 transition"
+                    >
+                      <PaperAirplaneIcon className="h-5 w-5" />
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void recorder.start()}
+                    disabled={recorder.state === "starting" || sendingVoiceNote}
+                    title={sendingVoiceNote ? "Sending voice note…" : "Record a voice note"}
+                    className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition disabled:opacity-50"
+                  >
+                    <MicrophoneIcon className="h-5 w-5" />
+                  </button>
+                )
+              )}
               {wizard?.submitted && threadRunning ? (
                 <ComposerPrimitive.Cancel asChild>
                   <button
@@ -415,7 +491,7 @@ export function FronaComposer({
                 </ComposerPrimitive.Cancel>
               </ThreadPrimitive.If>
               <ThreadPrimitive.If running={false}>
-                {onSend || currentPendingTool ? (
+                {recorder.state === "recording" ? null : onSend || currentPendingTool ? (
                   <button
                     type="submit"
                     className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"

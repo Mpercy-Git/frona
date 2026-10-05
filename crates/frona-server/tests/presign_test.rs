@@ -63,6 +63,7 @@ fn make_attachment(owner: &str, path: &str) -> Attachment {
         owner: owner.to_string(),
         path: path.to_string(),
         url: None,
+        transcript: None,
     }
 }
 

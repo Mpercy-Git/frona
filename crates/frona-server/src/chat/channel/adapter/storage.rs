@@ -21,6 +21,7 @@ pub(crate) fn write_attachment_bytes(
         owner: format!("user:{handle}"),
         path: rel_path,
         url: None,
+        transcript: None,
     })
 }
 

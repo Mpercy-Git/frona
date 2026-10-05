@@ -3,7 +3,7 @@
 import type { VoiceConfig } from "@/lib/config-types";
 import { isSensitiveSet } from "@/lib/config-types";
 import { TextInput, SelectInput, SensitiveInput, Toggle, SectionHeader, SectionPanel } from "@/components/settings/field";
-import { PhoneIcon } from "@heroicons/react/24/outline";
+import { MicrophoneIcon, PhoneIcon } from "@heroicons/react/24/outline";
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api-client";
 
@@ -184,6 +184,35 @@ export function VoiceSection({ voice, onChange }: VoiceSectionProps) {
         </>
       )}
 
+      </SectionPanel>
+
+      <SectionPanel
+        title="Voice notes"
+        icon={MicrophoneIcon}
+        helpTip="Voice notes recorded in chat or sent over a channel are transcribed when they arrive, so agents read what was said. Changes take effect after a restart."
+        className="mt-6"
+      >
+        <TextInput
+          label="Transcription Provider"
+          description='A provider from Settings → Providers that serves the OpenAI-compatible transcription API: openai, groq, or a generic entry pointing at a local Whisper server. Leave empty to use OpenAI, then Groq, if configured. Enter "none" to turn transcription off.'
+          value={voice.transcription_provider}
+          onChange={(transcription_provider) => onChange({ ...voice, transcription_provider })}
+          placeholder="openai"
+        />
+        <TextInput
+          label="Transcription Model"
+          description="Leave empty for gpt-4o-mini-transcribe on OpenAI, whisper-large-v3-turbo on Groq, or whisper-1 elsewhere."
+          value={voice.transcription_model}
+          onChange={(transcription_model) => onChange({ ...voice, transcription_model })}
+          placeholder="gpt-4o-mini-transcribe"
+        />
+        <TextInput
+          label="Language"
+          description="ISO-639-1 code of the language you speak in voice notes (e.g. en). Leave empty to detect it per recording."
+          value={voice.transcription_language}
+          onChange={(transcription_language) => onChange({ ...voice, transcription_language })}
+          placeholder="en"
+        />
       </SectionPanel>
 
       {voice.inbound_enabled && (

@@ -744,6 +744,14 @@ impl AppState {
             usage_service.clone(),
         );
         chat_service.set_share_service(chat_share_service.clone());
+        if let Some(transcription) =
+            crate::inference::transcription::TranscriptionService::from_config(
+                &config.voice,
+                &llm_config.providers,
+            )
+        {
+            chat_service.set_transcription(transcription);
+        }
         let shutdown_token = CancellationToken::new();
         let active_sessions = ActiveSessions::default();
         let execution_registry = ExecutionRegistry::new(broadcast_service.clone());

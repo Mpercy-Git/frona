@@ -38,6 +38,16 @@ Upstream Frona can only place **outbound** calls via Twilio. This fork adds full
 - **Streaming agent speech** — the agent's reply reaches the caller as it is generated, instead of the whole loop (tool rounds included) having to finish before a single word is spoken. A retried turn no longer speaks its opening twice
 - Voice settings surfaced in the UI: inbound enable, silence-fill phrases/timing, caller allowlist, phone profile field
 
+### 🎙️ Voice notes (net-new)
+
+Upstream hands an agent a voice note as a file path it has no way to listen to, so a recording sent from WhatsApp or Telegram gets an answer from an agent that never heard it.
+
+- **Record in chat** — a microphone button next to Send records a voice note in the browser and sends it like a messaging app does, with a timer and a discard button while recording. Opus in WebM where the browser supports it, AAC in MP4 on Safari; any text already typed rides along
+- **Transcribed once, on arrival** — voice notes from the web chat and from every channel are transcribed before the message is saved, and the transcript is stored on the attachment. History rebuilds, compaction summaries and signal waits read the stored text instead of paying for the same recording on every turn
+- **The agent reads what was said** — the transcript reaches the model as a `<voice_note>` block beside the message, with the recording still listed under `<files>` in case the audio itself is needed. The chat shows it under the audio player
+- **Any OpenAI-compatible transcription endpoint** — OpenAI (`gpt-4o-mini-transcribe`), Groq (`whisper-large-v3-turbo`), or a `generic` provider pointing at a local Whisper server (faster-whisper-server, whisper.cpp, LocalAI, vLLM). Credentials come from the provider entry `voice.transcription_provider` names, so nothing is configured twice; left unset it uses OpenAI, then Groq, if either is configured, and `none` turns it off
+- **Best effort by design** — a failed, oversized (over 25 MB) or unconfigured transcription leaves the recording as a plain file and the message is still delivered, exactly as before
+
 ### 🔔 Web Push notifications & PWA (net-new)
 
 - **Web Push with VAPID** — a service worker delivers OS-level push notifications for agent replies to subscribed devices, including mobile

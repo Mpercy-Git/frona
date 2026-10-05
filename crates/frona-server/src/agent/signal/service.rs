@@ -306,7 +306,11 @@ impl SignalService {
         let model_group = registry.resolve_model_group(&agent.model_group)?;
 
         let system_prompt = self.compose_signal_prompt(&channel.provider, &chat.id, awaiting);
-        let history = vec![RigMessage::user(&msg.content)];
+        // A voice note's transcript is the message as far as matching goes: an
+        // awaited 2FA code read out loud has to match like a typed one.
+        let content =
+            crate::inference::conversation::with_voice_notes(&msg.content, &msg.attachments);
+        let history = vec![RigMessage::user(&content)];
         let usage_ctx = crate::inference::usage::UsageContext::new(
             crate::inference::usage::InferenceKind::Signal {
                 agent_id: chat.agent_id.clone(),

@@ -83,7 +83,7 @@ tokio-util = "0.7"
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
-reqwest = { version = "0.13", features = ["form", "json", "query", "rustls"], default-features = false }
+reqwest = { version = "0.13", features = ["form", "json", "multipart", "query", "rustls"], default-features = false }
 url = "2"
 backon = { workspace = true }
 bon = { workspace = true }

@@ -14,6 +14,7 @@ pub mod structured;
 pub mod tool_call;
 pub mod tool_loop;
 pub mod trace;
+pub mod transcription;
 pub mod usage;
 pub mod vision;
 

@@ -94,6 +94,9 @@ export interface VoiceConfig {
   silence_fill_initial_delay_secs: number;
   silence_fill_interval_secs: number;
   silence_fill_phrases: string[];
+  transcription_provider: string | null;
+  transcription_model: string | null;
+  transcription_language: string | null;
 }
 
 export interface VaultConfig {

@@ -195,6 +195,7 @@ mod tests {
             owner: owner.into(),
             path: filename.into(),
             url: None,
+            transcript: None,
         }
     }
 

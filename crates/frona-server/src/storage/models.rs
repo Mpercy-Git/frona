@@ -13,6 +13,11 @@ pub struct Attachment {
     pub owner: String,
     pub path: String,
     pub url: Option<String>,
+    /// What a voice note says, filled in once when the message is saved (see
+    /// `inference::transcription`). `None` for anything that isn't audio, and
+    /// for audio sent while no transcription provider was configured.
+    #[serde(default)]
+    pub transcript: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -78,6 +83,7 @@ pub async fn resolve_workspace_attachment(
         owner: format!("agent:{agent_handle}"),
         path: relative_path.to_string(),
         url: None,
+        transcript: None,
     })
 }
 
@@ -156,6 +162,7 @@ mod tests {
             owner: "user:uid".into(),
             path: "f.txt".into(),
             url: Some("http://localhost/presigned".into()),
+            transcript: None,
         };
         let json = serde_json::to_string(&att).unwrap();
         assert!(json.contains("\"url\":"));
@@ -173,6 +180,7 @@ mod tests {
             owner: "user:uid".into(),
             path: "f.txt".into(),
             url: None,
+            transcript: None,
         };
         let json = serde_json::to_string(&att).unwrap();
         assert!(!json.contains("\"url\""));
