@@ -285,6 +285,86 @@ fn extend_unique_attachments(
     }
 }
 
+/// At most this many concurrency-safe tool calls from one turn run at once, so a
+/// model that fans out twenty `web_fetch`es doesn't open twenty connections in
+/// the same instant.
+const MAX_CONCURRENT_TOOL_CALLS: usize = 8;
+
+/// Split a turn's tool calls into batches that run one after another. A run of
+/// consecutive concurrency-safe calls shares a batch and executes concurrently;
+/// every other call is a batch of its own. Unsafe calls therefore keep their
+/// position relative to everything else - a `write` still lands before the
+/// `read` the model emitted after it.
+fn batch_tool_calls(names: &[&str]) -> Vec<std::ops::Range<usize>> {
+    let mut batches: Vec<std::ops::Range<usize>> = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let safe = crate::tool::registry::is_concurrency_safe(name);
+        match batches.last_mut() {
+            Some(last) if safe && crate::tool::registry::is_concurrency_safe(names[last.start]) => {
+                last.end = i + 1;
+            }
+            _ => batches.push(i..i + 1),
+        }
+    }
+    batches
+}
+
+/// What running one tool produced. `execution` is `None` when the tool ignored
+/// cancellation past the grace window and was abandoned.
+struct ToolExecution {
+    execution: Option<Result<crate::tool::ToolOutput, AppError>>,
+    duration: Duration,
+}
+
+async fn run_tool_call(
+    tool_registry: &AgentToolRegistry,
+    ctx: &InferenceContext,
+    tool_name: &str,
+    arguments: serde_json::Value,
+    tool_timeout: Option<Duration>,
+) -> ToolExecution {
+    let start = Instant::now();
+    // Optional hang backstop: a tool that never returns (e.g. an
+    // unresponsive MCP server) would leave the message stuck "executing"
+    // forever. When a tool timeout is configured, bound the call so a hang
+    // surfaces as an error the model can react to instead of a dead UI.
+    // `None` (config 0) keeps the previous unbounded behaviour.
+    let timeout_fut = async {
+        match tool_timeout {
+            Some(limit) => tokio::time::sleep(limit).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(timeout_fut);
+
+    // Run the tool, but stop waiting on it if the turn is cancelled (Stop,
+    // or an interrupting new message) *while it's still running* — not only
+    // between turns. Cancel-aware tools (the sandbox, which kills its
+    // process group) observe the same `ctx.cancel_token` and return partial
+    // output quickly, so on cancellation we give the future a short grace
+    // window to shut down cleanly rather than dropping it outright — a
+    // dropped `tokio::process::Child` is NOT killed, so abandoning it would
+    // orphan the subprocess. Only a tool that ignores cancellation entirely
+    // is force-abandoned once the grace period elapses.
+    let exec = tool_registry.execute(tool_name, arguments, ctx);
+    tokio::pin!(exec);
+    let execution = tokio::select! {
+        biased;
+        res = &mut exec => Some(res),
+        _ = ctx.cancel_token.cancelled() => {
+            tokio::time::timeout(TOOL_CANCEL_GRACE, &mut exec).await.ok()
+        }
+        _ = &mut timeout_fut => Some(Err(AppError::Internal(format!(
+            "Tool '{tool_name}' timed out after {}s",
+            tool_timeout.map_or(0, |d| d.as_secs())
+        )))),
+    };
+    ToolExecution {
+        execution,
+        duration: start.elapsed(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_tool_calls(
     chat_service: &crate::chat::service::ChatService,
@@ -300,247 +380,263 @@ async fn execute_tool_calls(
     turn_reasoning: Option<&Reasoning>,
     tool_timeout: Option<Duration>,
 ) -> Result<ToolCallExecutionResult, AppError> {
+    use futures::StreamExt;
+
     let mut result = ToolCallExecutionResult {
         external_tools: Vec::new(),
         internal_tool_results: Vec::new(),
         accumulated_system_prompts: Vec::new(),
     };
 
+    let tool_calls: Vec<&rig_core::completion::message::ToolCall> = contents
+        .iter()
+        .filter_map(|content| match content {
+            AssistantContent::ToolCall(tool_call) => Some(tool_call),
+            _ => None,
+        })
+        .collect();
+    let names: Vec<&str> = tool_calls
+        .iter()
+        .map(|tc| tc.function.name.as_str())
+        .collect();
+
     let mut turn_metadata_used = false;
 
-    for content in contents {
+    for batch in batch_tool_calls(&names) {
         if ctx.cancel_token.is_cancelled() {
             break;
         }
 
-        let AssistantContent::ToolCall(tool_call) = content else {
-            continue;
-        };
+        // Announce and persist every call in the batch, in the order the model
+        // emitted them, before any of them starts - the UI and the stored
+        // message both list calls in emission order whatever finishes first.
+        let batch_calls = &tool_calls[batch];
+        let mut te_records = Vec::with_capacity(batch_calls.len());
+        let mut batch_arguments = Vec::with_capacity(batch_calls.len());
+        for tool_call in batch_calls {
+            let tool_name = &tool_call.function.name;
+            let mut arguments = tool_call.function.arguments.clone();
+            let description = arguments
+                .as_object_mut()
+                .and_then(|obj| obj.remove("description"))
+                .and_then(|v| v.as_str().map(String::from));
 
-        let tool_name = &tool_call.function.name;
-        let mut arguments = tool_call.function.arguments.clone();
-        let description = arguments
-            .as_object_mut()
-            .and_then(|obj| obj.remove("description"))
-            .and_then(|v| v.as_str().map(String::from));
+            let te_id = crate::core::repository::new_id();
 
-        let te_id = crate::core::repository::new_id();
-
-        event_tx.send(InferenceEvent {
-            kind: InferenceEventKind::ToolCall {
-                id: te_id.clone(),
-                provider_call_id: tool_call.wire_call_id().to_string(),
-                name: tool_name.clone(),
-                arguments: arguments.clone(),
-                description: description.clone(),
-            },
-        });
-
-        tracing::debug!(tool = %tool_name, args = %arguments, "Executing tool");
-
-        // Persist record BEFORE execution (crash resilience).
-        // Stamp turn-level metadata (text + reasoning) on the FIRST tool_call
-        // of the turn - both fields gate on the same `turn_metadata_used`
-        // flag so they stay paired even when turn_text is None.
-        let (current_turn_text, current_turn_reasoning) = if !turn_metadata_used {
-            turn_metadata_used = true;
-            (turn_text.map(|s| s.to_string()), turn_reasoning.cloned())
-        } else {
-            (None, None)
-        };
-        let mut te_record = chat_service
-            .begin_tool_call(
-                &te_id,
-                &active_chat(ctx)?.id,
-                message_id,
-                turn,
-                &tool_call.id,
-                tool_name,
-                &arguments,
-                description.clone(),
-                current_turn_text,
-                current_turn_reasoning,
-            )
-            .await?;
-
-        let start = Instant::now();
-        // Optional hang backstop: a tool that never returns (e.g. an
-        // unresponsive MCP server) would leave the message stuck "executing"
-        // forever. When a tool timeout is configured, bound the call so a hang
-        // surfaces as an error the model can react to instead of a dead UI.
-        // `None` (config 0) keeps the previous unbounded behaviour.
-        let timeout_fut = async {
-            match tool_timeout {
-                Some(limit) => tokio::time::sleep(limit).await,
-                None => std::future::pending::<()>().await,
-            }
-        };
-        tokio::pin!(timeout_fut);
-
-        // Run the tool, but stop waiting on it if the turn is cancelled (Stop,
-        // or an interrupting new message) *while it's still running* — not only
-        // between turns. Cancel-aware tools (the sandbox, which kills its
-        // process group) observe the same `ctx.cancel_token` and return partial
-        // output quickly, so on cancellation we give the future a short grace
-        // window to shut down cleanly rather than dropping it outright — a
-        // dropped `tokio::process::Child` is NOT killed, so abandoning it would
-        // orphan the subprocess. Only a tool that ignores cancellation entirely
-        // is force-abandoned once the grace period elapses.
-        let exec = tool_registry.execute(tool_name, arguments, ctx);
-        tokio::pin!(exec);
-        let execution = tokio::select! {
-            biased;
-            res = &mut exec => Some(res),
-            _ = ctx.cancel_token.cancelled() => {
-                tokio::time::timeout(TOOL_CANCEL_GRACE, &mut exec).await.ok()
-            }
-            _ = &mut timeout_fut => Some(Err(AppError::Internal(format!(
-                "Tool '{tool_name}' timed out after {}s",
-                tool_timeout.map_or(0, |d| d.as_secs())
-            )))),
-        };
-        let (text, tool_output) = match execution {
-            None => {
-                // The tool didn't honour cancellation within the grace window.
-                // Finalize the row so it isn't left dangling as "executing",
-                // then stop the loop; the post-exec cancellation check below
-                // turns this into a Cancelled outcome.
-                tracing::info!(tool = %tool_name, "Tool abandoned after cancellation grace period");
-                let duration_ms = start.elapsed().as_millis() as u64;
-                let _ = chat_service
-                    .finish_tool_call(
-                        &te_record.id,
-                        "Interrupted".to_string(),
-                        false,
-                        duration_ms,
-                        None,
-                    )
-                    .await;
-                break;
-            }
-            Some(Ok(output)) => {
-                let text = output.text_content().to_string();
-                tracing::debug!(tool = %tool_name, result = %text, "Tool executed");
-                let duration = start.elapsed();
-                metrics::record_tool_call(
-                    tool_name,
-                    &ctx.user.id,
-                    &ctx.agent.id,
-                    duration,
-                    "success",
-                );
-                (text, Some(output))
-            }
-            Some(Err(e)) => {
-                tracing::warn!(tool = %tool_name, error = %e, "Tool execution failed");
-                let duration = start.elapsed();
-                metrics::record_tool_call(
-                    tool_name,
-                    &ctx.user.id,
-                    &ctx.agent.id,
-                    duration,
-                    "error",
-                );
-                (format!("Error: {e}"), None)
-            }
-        };
-
-        let hitl_emitted = tool_output.as_ref().and_then(|o| o.hitl().cloned());
-        let task_event_emitted = tool_output.as_ref().and_then(|o| o.task_event().cloned());
-        let sp = tool_output
-            .as_ref()
-            .and_then(|o| o.system_prompt().map(str::to_string));
-
-        if let Some(ref output) = tool_output {
-            extend_unique_attachments(all_attachments, output.attachments());
-        }
-
-        let success = tool_output.as_ref().is_some_and(|o| o.is_success());
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        chat_service
-            .finish_tool_call(
-                &te_record.id,
-                text.clone(),
-                success,
-                duration_ms,
-                sp.clone(),
-            )
-            .await?;
-
-        if let Some(ref h) = hitl_emitted {
-            chat_service.set_hitl(&te_record.id, h.clone()).await?;
-        }
-        if let Some(ref e) = task_event_emitted {
-            chat_service
-                .set_task_event(&te_record.id, e.clone())
-                .await?;
-        }
-        // Update in-memory record with finished fields so the SSE response is complete
-        te_record.result = text.clone();
-        te_record.success = success;
-        te_record.duration_ms = duration_ms;
-        te_record.hitl = hitl_emitted.clone();
-        te_record.task_event = task_event_emitted.clone();
-        te_record.system_prompt = sp.clone();
-
-        let te_response: crate::inference::tool_call::ToolCallResponse = te_record.into();
-
-        let tool_call_result = ToolCallResult {
-            provider_call_id: tool_call.wire_call_id().to_string(),
-            tool_name: tool_name.clone(),
-            arguments: te_response.arguments.clone(),
-            result: text.clone(),
-            success,
-            duration_ms,
-            hitl: hitl_emitted.clone(),
-            task_event: task_event_emitted.clone(),
-            system_prompt: sp.clone(),
-        };
-
-        // A tool pauses the loop when it emits a Pending HITL OR explicitly
-        // sets `as_pending_external` (voice tools, etc., resolve via external
-        // system callback).
-        let is_pending_external = hitl_emitted
-            .as_ref()
-            .is_some_and(|h| h.status == crate::inference::tool_call::ToolStatus::Pending)
-            || tool_output
-                .as_ref()
-                .is_some_and(|o| o.is_pending_external());
-
-        if is_pending_external {
-            result.external_tools.push((te_response, tool_call_result));
-        } else {
             event_tx.send(InferenceEvent {
-                kind: InferenceEventKind::ToolResult {
+                kind: InferenceEventKind::ToolCall {
+                    id: te_id.clone(),
+                    provider_call_id: tool_call.wire_call_id().to_string(),
                     name: tool_name.clone(),
-                    result: text.clone(),
-                    success,
+                    arguments: arguments.clone(),
+                    description: description.clone(),
                 },
             });
-            if let Some(sp_value) = sp {
-                result.accumulated_system_prompts.push(sp_value);
-            }
-            result.internal_tool_results.push(tool_call_result);
-            if let Some(output) = tool_output {
-                let msg = build_tool_result_message(
-                    tool_call.id.clone(),
-                    tool_call.provider.clone(),
-                    tool_name.clone(),
-                    text,
-                    &output,
-                );
-                chat_history.push(msg);
+
+            tracing::debug!(tool = %tool_name, args = %arguments, "Executing tool");
+
+            // Persist record BEFORE execution (crash resilience).
+            // Stamp turn-level metadata (text + reasoning) on the FIRST tool_call
+            // of the turn - both fields gate on the same `turn_metadata_used`
+            // flag so they stay paired even when turn_text is None.
+            let (current_turn_text, current_turn_reasoning) = if !turn_metadata_used {
+                turn_metadata_used = true;
+                (turn_text.map(|s| s.to_string()), turn_reasoning.cloned())
             } else {
-                chat_history.push(RigMessage::User {
-                    content: vec![UserContent::ToolResult(ToolResult {
-                        call: tool_call.id.clone(),
-                        provider: tool_call.provider.clone(),
-                        name: tool_name.clone(),
-                        content: vec![ToolResultContent::text(&text)],
-                    })],
-                });
+                (None, None)
+            };
+            let te_record = chat_service
+                .begin_tool_call(
+                    &te_id,
+                    &active_chat(ctx)?.id,
+                    message_id,
+                    turn,
+                    &tool_call.id,
+                    tool_name,
+                    &arguments,
+                    description,
+                    current_turn_text,
+                    current_turn_reasoning,
+                )
+                .await?;
+            te_records.push(te_record);
+            batch_arguments.push(arguments);
+        }
+
+        // A batch of one is a single call; a larger batch holds only
+        // concurrency-safe tools, which run together. `buffered` yields results
+        // in input order, so tool results reach the history in emission order.
+        // The futures are collected before streaming them: a lazy `map` closure
+        // held across the `.await` defeats the `Send` inference `tokio::spawn`
+        // needs for the whole loop.
+        let pending: Vec<_> = batch_calls
+            .iter()
+            .zip(batch_arguments)
+            .map(|(tool_call, arguments)| {
+                run_tool_call(
+                    tool_registry,
+                    ctx,
+                    &tool_call.function.name,
+                    arguments,
+                    tool_timeout,
+                )
+            })
+            .collect();
+        let executions: Vec<ToolExecution> = futures::stream::iter(pending)
+            .buffered(MAX_CONCURRENT_TOOL_CALLS)
+            .collect()
+            .await;
+
+        let mut abandoned = false;
+        for ((tool_call, mut te_record), run) in batch_calls.iter().zip(te_records).zip(executions)
+        {
+            let tool_name = &tool_call.function.name;
+            let duration_ms = run.duration.as_millis() as u64;
+            let (text, tool_output) = match run.execution {
+                None => {
+                    // The tool didn't honour cancellation within the grace window.
+                    // Finalize the row so it isn't left dangling as "executing",
+                    // then stop the loop once this batch is settled; the
+                    // post-exec cancellation check turns this into a Cancelled
+                    // outcome.
+                    tracing::info!(tool = %tool_name, "Tool abandoned after cancellation grace period");
+                    let _ = chat_service
+                        .finish_tool_call(
+                            &te_record.id,
+                            "Interrupted".to_string(),
+                            false,
+                            duration_ms,
+                            None,
+                        )
+                        .await;
+                    abandoned = true;
+                    continue;
+                }
+                Some(Ok(output)) => {
+                    let text = output.text_content().to_string();
+                    tracing::debug!(tool = %tool_name, result = %text, "Tool executed");
+                    metrics::record_tool_call(
+                        tool_name,
+                        &ctx.user.id,
+                        &ctx.agent.id,
+                        run.duration,
+                        "success",
+                    );
+                    (text, Some(output))
+                }
+                Some(Err(e)) => {
+                    tracing::warn!(tool = %tool_name, error = %e, "Tool execution failed");
+                    metrics::record_tool_call(
+                        tool_name,
+                        &ctx.user.id,
+                        &ctx.agent.id,
+                        run.duration,
+                        "error",
+                    );
+                    (format!("Error: {e}"), None)
+                }
+            };
+
+            let hitl_emitted = tool_output.as_ref().and_then(|o| o.hitl().cloned());
+            let task_event_emitted = tool_output.as_ref().and_then(|o| o.task_event().cloned());
+            let sp = tool_output
+                .as_ref()
+                .and_then(|o| o.system_prompt().map(str::to_string));
+
+            if let Some(ref output) = tool_output {
+                extend_unique_attachments(all_attachments, output.attachments());
             }
+
+            let success = tool_output.as_ref().is_some_and(|o| o.is_success());
+
+            chat_service
+                .finish_tool_call(
+                    &te_record.id,
+                    text.clone(),
+                    success,
+                    duration_ms,
+                    sp.clone(),
+                )
+                .await?;
+
+            if let Some(ref h) = hitl_emitted {
+                chat_service.set_hitl(&te_record.id, h.clone()).await?;
+            }
+            if let Some(ref e) = task_event_emitted {
+                chat_service
+                    .set_task_event(&te_record.id, e.clone())
+                    .await?;
+            }
+            // Update in-memory record with finished fields so the SSE response is complete
+            te_record.result = text.clone();
+            te_record.success = success;
+            te_record.duration_ms = duration_ms;
+            te_record.hitl = hitl_emitted.clone();
+            te_record.task_event = task_event_emitted.clone();
+            te_record.system_prompt = sp.clone();
+
+            let te_response: crate::inference::tool_call::ToolCallResponse = te_record.into();
+
+            let tool_call_result = ToolCallResult {
+                provider_call_id: tool_call.wire_call_id().to_string(),
+                tool_name: tool_name.clone(),
+                arguments: te_response.arguments.clone(),
+                result: text.clone(),
+                success,
+                duration_ms,
+                hitl: hitl_emitted.clone(),
+                task_event: task_event_emitted.clone(),
+                system_prompt: sp.clone(),
+            };
+
+            // A tool pauses the loop when it emits a Pending HITL OR explicitly
+            // sets `as_pending_external` (voice tools, etc., resolve via external
+            // system callback).
+            let is_pending_external = hitl_emitted
+                .as_ref()
+                .is_some_and(|h| h.status == crate::inference::tool_call::ToolStatus::Pending)
+                || tool_output
+                    .as_ref()
+                    .is_some_and(|o| o.is_pending_external());
+
+            if is_pending_external {
+                result.external_tools.push((te_response, tool_call_result));
+            } else {
+                event_tx.send(InferenceEvent {
+                    kind: InferenceEventKind::ToolResult {
+                        name: tool_name.clone(),
+                        result: text.clone(),
+                        success,
+                    },
+                });
+                if let Some(sp_value) = sp {
+                    result.accumulated_system_prompts.push(sp_value);
+                }
+                result.internal_tool_results.push(tool_call_result);
+                if let Some(output) = tool_output {
+                    let msg = build_tool_result_message(
+                        tool_call.id.clone(),
+                        tool_call.provider.clone(),
+                        tool_name.clone(),
+                        text,
+                        &output,
+                    );
+                    chat_history.push(msg);
+                } else {
+                    chat_history.push(RigMessage::User {
+                        content: vec![UserContent::ToolResult(ToolResult {
+                            call: tool_call.id.clone(),
+                            provider: tool_call.provider.clone(),
+                            name: tool_name.clone(),
+                            content: vec![ToolResultContent::text(&text)],
+                        })],
+                    });
+                }
+            }
+        }
+
+        if abandoned {
+            break;
         }
     }
 
@@ -873,5 +969,31 @@ mod tests {
         let replayed: rig_core::completion::message::Reasoning =
             serde_json::from_value(stored.raw.expect("raw reasoning should be stored")).unwrap();
         assert_eq!(replayed, reasoning);
+    }
+
+    #[test]
+    fn batch_tool_calls_groups_consecutive_safe_calls() {
+        let names = [
+            "web_fetch",
+            "read",
+            "write",
+            "grep",
+            "glob",
+            "shell",
+            "web_search",
+        ];
+        assert_eq!(batch_tool_calls(&names), vec![0..2, 2..3, 3..5, 5..6, 6..7]);
+    }
+
+    #[test]
+    fn batch_tool_calls_never_groups_unsafe_calls() {
+        let names = [
+            "write",
+            "edit",
+            "browser_click",
+            "mcp__github__create_issue",
+        ];
+        assert_eq!(batch_tool_calls(&names), vec![0..1, 1..2, 2..3, 3..4]);
+        assert!(batch_tool_calls(&[]).is_empty());
     }
 }

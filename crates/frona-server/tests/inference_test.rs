@@ -1364,3 +1364,126 @@ async fn test_tool_loop_deduplicates_attachments_before_lifecycle_return() {
         other => panic!("Expected Completed, got {other:?}"),
     }
 }
+
+/// Records how many of its calls are in flight at once, sleeping long enough
+/// that calls which run concurrently are guaranteed to overlap.
+struct ConcurrencyProbeTool {
+    tool_name: String,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    peak: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl frona::tool::AgentTool for ConcurrencyProbeTool {
+    fn name(&self) -> &str {
+        &self.tool_name
+    }
+
+    fn definitions(&self) -> Vec<frona::tool::ToolDefinition> {
+        vec![frona::tool::ToolDefinition {
+            id: self.tool_name.clone(),
+            provider_id: self.tool_name.clone(),
+            description: "probe".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }]
+    }
+
+    async fn execute(
+        &self,
+        _tool_name: &str,
+        arguments: serde_json::Value,
+        _ctx: &frona::tool::InferenceContext,
+    ) -> Result<frona::tool::ToolOutput, AppError> {
+        use std::sync::atomic::Ordering;
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        // Later calls finish first, so an ordering bug would show in the history.
+        let delay = arguments["delay_ms"].as_u64().unwrap_or(50);
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        Ok(frona::tool::ToolOutput::text(format!(
+            "{} {}",
+            self.tool_name, arguments["tag"]
+        )))
+    }
+}
+
+async fn run_probe_turn(names: &[&str]) -> (usize, Vec<String>) {
+    init_metrics();
+
+    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls: Vec<(String, String, serde_json::Value)> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            (
+                format!("call-{i}"),
+                name.to_string(),
+                serde_json::json!({"tag": i, "delay_ms": 200 - 40 * i as u64}),
+            )
+        })
+        .collect();
+    let provider = Arc::new(MockModelProvider::new(vec![
+        MockResponse::ToolCalls(calls),
+        MockResponse::Text("done".into()),
+    ]));
+    let registry = test_registry_with_provider("mock", provider.clone());
+    let model_group = test_model_group_with_provider("mock", provider.clone());
+    let mut tool_registry = AgentToolRegistry::empty();
+    let mut unique: Vec<&str> = names.to_vec();
+    unique.sort();
+    unique.dedup();
+    for name in unique {
+        tool_registry.register(Arc::new(ConcurrencyProbeTool {
+            tool_name: name.to_string(),
+            in_flight: in_flight.clone(),
+            peak: peak.clone(),
+        }));
+    }
+    let (event_sender, mut sse_rx, _broadcast) = test_event_sender().await;
+    let ctx = mock_context();
+    let chat_service = test_chat_service().await;
+
+    let outcome = run_tool_loop(
+        &registry,
+        &model_group,
+        "system",
+        vec![RigMessage::user("go")],
+        &tool_registry,
+        event_sender,
+        CancellationToken::new(),
+        &ctx,
+        &test_metrics_ctx(),
+        &chat_service,
+        "test-msg",
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, ToolLoopOutcome::Completed { .. }));
+
+    // Tool results are announced from the same loop, in the same order, that
+    // appends them to the history the model sees next.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let results: Vec<String> = drain_sse_frames(&mut sse_rx)
+        .await
+        .iter()
+        .filter(|f| f.event == "tool_result")
+        .map(|f| f.data["summary"].as_str().unwrap_or_default().to_string())
+        .collect();
+    (peak.load(std::sync::atomic::Ordering::SeqCst), results)
+}
+
+#[tokio::test]
+async fn read_only_tool_calls_in_one_turn_run_concurrently_and_keep_order() {
+    let (peak, results) = run_probe_turn(&["web_fetch", "web_fetch", "read"]).await;
+    assert_eq!(peak, 3, "the three read-only calls should overlap");
+    assert_eq!(results, vec!["web_fetch 0", "web_fetch 1", "read 2"]);
+}
+
+#[tokio::test]
+async fn side_effecting_tool_calls_still_run_one_at_a_time() {
+    let (peak, results) = run_probe_turn(&["write", "read", "edit"]).await;
+    assert_eq!(peak, 1, "a write must not overlap the calls around it");
+    assert_eq!(results, vec!["write 0", "read 1", "edit 2"]);
+}

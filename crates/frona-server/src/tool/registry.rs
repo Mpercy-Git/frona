@@ -12,6 +12,35 @@ use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 /// the sandbox command runner, and so the only way to invoke `mcpctl`.
 pub const SHELL_TOOL_ID: &str = "shell";
 
+/// Tools that only read, so the tool loop may run several of them at once when
+/// the model asks for them in the same turn. Anything that writes, holds a
+/// shared session (the browser), talks to a person, or can pause the loop
+/// (HITL, voice, signals) is deliberately absent and keeps running alone, in
+/// the order the model emitted it. MCP tools are never listed: frona can't tell
+/// what an arbitrary server's tool does.
+const CONCURRENCY_SAFE_TOOLS: &[&str] = &[
+    "read",
+    "glob",
+    "grep",
+    "analyze_image",
+    "web_search",
+    "web_fetch",
+    "search_skills",
+    "list_tasks",
+    "memory_search",
+    "memory_graph_get",
+    "memory_graph_sparql",
+    "analyse_spend",
+    "compare_models",
+    "list_provider_billing",
+];
+
+/// Whether `tool_id` may run concurrently with other concurrency-safe calls
+/// from the same model turn.
+pub fn is_concurrency_safe(tool_id: &str) -> bool {
+    CONCURRENCY_SAFE_TOOLS.contains(&tool_id)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolFilter {
     /// Lock the agent to a small set of tools. Used by signal-mode and
