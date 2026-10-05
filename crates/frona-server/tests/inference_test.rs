@@ -1441,7 +1441,7 @@ async fn run_probe_turn(names: &[&str]) -> (usize, Vec<String>) {
             peak: peak.clone(),
         }));
     }
-    let (event_sender, _sse_rx, _broadcast) = test_event_sender().await;
+    let (event_sender, mut sse_rx, _broadcast) = test_event_sender().await;
     let ctx = mock_context();
     let chat_service = test_chat_service().await;
 
@@ -1462,23 +1462,14 @@ async fn run_probe_turn(names: &[&str]) -> (usize, Vec<String>) {
     .unwrap();
     assert!(matches!(outcome, ToolLoopOutcome::Completed { .. }));
 
-    let results: Vec<String> = provider
-        .last_history()
+    // Tool results are announced from the same loop, in the same order, that
+    // appends them to the history the model sees next.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let results: Vec<String> = drain_sse_frames(&mut sse_rx)
+        .await
         .iter()
-        .filter_map(|m| match m {
-            RigMessage::User { content } => content.iter().find_map(|c| match c {
-                rig_core::completion::message::UserContent::ToolResult(r) => {
-                    r.content.iter().find_map(|part| match part {
-                        rig_core::completion::message::ToolResultContent::Text(t) => {
-                            Some(t.text.clone())
-                        }
-                        _ => None,
-                    })
-                }
-                _ => None,
-            }),
-            _ => None,
-        })
+        .filter(|f| f.event == "tool_result")
+        .map(|f| f.data["summary"].as_str().unwrap_or_default().to_string())
         .collect();
     (peak.load(std::sync::atomic::Ordering::SeqCst), results)
 }
