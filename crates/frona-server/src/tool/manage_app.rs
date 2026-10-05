@@ -339,10 +339,16 @@ impl ManageAppTool {
         level: NotificationLevel,
         title: &str,
     ) {
+        let category = if matches!(level, NotificationLevel::Error) {
+            crate::notification::models::NotificationCategory::Failure
+        } else {
+            crate::notification::models::NotificationCategory::Activity
+        };
         let _ = self
             .notification_service
             .create_and_notify(
                 &ctx.user.id,
+                category,
                 NotificationData::App {
                     app_handle: app_handle.to_string(),
                     action: action.to_string(),

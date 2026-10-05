@@ -1060,6 +1060,7 @@ impl Harness {
                 .notification_service
                 .create_and_notify(
                     user_id,
+                    crate::notification::models::NotificationCategory::Approval,
                     NotificationData::Agent {
                         agent_id: agent_id.unwrap_or_default().to_string(),
                         chat_id: chat_id.to_string(),

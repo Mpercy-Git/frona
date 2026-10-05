@@ -1,11 +1,13 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { BellIcon } from "@heroicons/react/24/outline";
+import { api } from "@/lib/api-client";
 import {
   usePushNotifications,
   type PushTestResult,
 } from "@/lib/use-push-notifications";
-import { SectionHeader, SectionPanel } from "../field";
+import { SectionHeader, SectionPanel, Toggle } from "../field";
 
 export function NotificationsSection() {
   const {
@@ -140,7 +142,108 @@ export function NotificationsSection() {
           {testResult && <TestResult result={testResult} />}
         </div>
       </SectionPanel>
+
+      <PushPreferences />
     </div>
+  );
+}
+
+interface NotificationPreferences {
+  push_approval: boolean;
+  push_agent_message: boolean;
+  push_chat_reply: boolean;
+  push_failure: boolean;
+  push_activity: boolean;
+}
+
+const PREFERENCE_TOGGLES: {
+  key: keyof NotificationPreferences;
+  label: string;
+  description: string;
+}[] = [
+  {
+    key: "push_approval",
+    label: "Approval needed",
+    description: "An agent is paused until you authorise something.",
+  },
+  {
+    key: "push_agent_message",
+    label: "Agent messages",
+    description: "An agent reaches out to you without being asked.",
+  },
+  {
+    key: "push_chat_reply",
+    label: "Chat replies",
+    description:
+      "An agent finishes replying in one of your chats. Not sent while you are looking at that chat.",
+  },
+  {
+    key: "push_failure",
+    label: "Failures",
+    description: "An app, MCP server or channel fails to start or crashes.",
+  },
+  {
+    key: "push_activity",
+    label: "App and report updates",
+    description: "Apps deployed or stopped, and cost reports ready.",
+  },
+];
+
+/// Which kinds of notification are pushed to devices. Everything still shows
+/// in the in-app notification list; replies inside delegated sub-tasks and
+/// scheduled runs are never notified.
+function PushPreferences() {
+  const [prefs, setPrefs] = useState<NotificationPreferences | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .get<NotificationPreferences>("/api/notifications/preferences")
+      .then(setPrefs)
+      .catch(() => setError("Could not load notification preferences."));
+  }, []);
+
+  const update = async (key: keyof NotificationPreferences, value: boolean) => {
+    if (!prefs) return;
+    const previous = prefs;
+    const next = { ...prefs, [key]: value };
+    setPrefs(next);
+    setError(null);
+    try {
+      setPrefs(
+        await api.put<NotificationPreferences>(
+          "/api/notifications/preferences",
+          next,
+        ),
+      );
+    } catch {
+      setPrefs(previous);
+      setError("Could not save notification preferences.");
+    }
+  };
+
+  return (
+    <SectionPanel title="What to push">
+      <div className="space-y-4">
+        <p className="text-sm text-text-secondary">
+          Choose what is sent to your devices. Everything still appears in the
+          notification list in the app. Replies inside delegated sub-tasks and
+          scheduled runs are never notified — you hear about the outcome in
+          the chat that started them.
+        </p>
+        {prefs &&
+          PREFERENCE_TOGGLES.map((t) => (
+            <Toggle
+              key={t.key}
+              label={t.label}
+              description={t.description}
+              value={prefs[t.key]}
+              onChange={(v) => update(t.key, v)}
+            />
+          ))}
+        {error && <p className="text-sm text-error">{error}</p>}
+      </div>
+    </SectionPanel>
   );
 }
 

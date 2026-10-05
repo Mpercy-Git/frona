@@ -316,6 +316,7 @@ impl CostService {
             .notifications
             .create_and_notify(
                 user_id,
+                crate::notification::models::NotificationCategory::Activity,
                 NotificationData::CostReport {
                     report_id: report.id.clone(),
                 },

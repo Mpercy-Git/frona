@@ -847,6 +847,36 @@ impl ChatService {
         .await
     }
 
+    /// True when `chat_id` is the working chat of background work — a
+    /// delegated sub-task, a cron job or run, or a signal watch. Replies there
+    /// are intermediate steps the user did not ask to hear about; the outcome
+    /// reaches them through the parent chat, and approvals notify separately.
+    async fn is_background_chat(&self, chat_id: &str) -> bool {
+        let task_id = match self.chat_repo.find_by_id(chat_id).await {
+            Ok(Some(chat)) => chat.task_id,
+            _ => None,
+        };
+        self.is_background_task(task_id.as_deref()).await
+    }
+
+    async fn is_background_task(&self, task_id: Option<&str>) -> bool {
+        use crate::agent::task::models::TaskKind;
+        let Some(task_id) = task_id else {
+            return false;
+        };
+        let tasks = crate::db::repo::tasks::SurrealTaskRepo::new(self.chat_repo.db().clone());
+        match tasks.find_by_id(task_id).await {
+            Ok(Some(task)) => matches!(
+                task.kind,
+                TaskKind::Delegation { .. }
+                    | TaskKind::Cron { .. }
+                    | TaskKind::CronRun { .. }
+                    | TaskKind::Signal { .. }
+            ),
+            _ => false,
+        }
+    }
+
     /// Skips broadcasting - an empty Executing row would render as a phantom
     /// message in the UI while tokens stream.
     async fn save_message(&self, message: Message) -> Result<MessageResponse, AppError> {
@@ -895,6 +925,7 @@ impl ChatService {
             && !saved.content.is_empty()
             && saved.status.as_ref()
                 != Some(&crate::chat::message::models::MessageStatus::Executing)
+            && !self.is_background_chat(&saved.chat_id).await
         {
             let agent_name = if let Some(ref agent_id) = saved.agent_id {
                 self.agent_service
@@ -924,6 +955,7 @@ impl ChatService {
                 .notification_service
                 .create_and_notify(
                     user_id,
+                    crate::notification::models::NotificationCategory::ChatReply,
                     NotificationData::Agent {
                         agent_id: saved.agent_id.clone().unwrap_or_default(),
                         chat_id: saved.chat_id.clone(),
@@ -1097,6 +1129,7 @@ impl ChatService {
             // Mirrors the hook in save_message_and_broadcast() for the non-streaming path.
             if updated.role == crate::chat::message::models::MessageRole::Agent
                 && !updated.content.is_empty()
+                && !self.is_background_task(chat.task_id.as_deref()).await
             {
                 let agent_name = if let Some(ref agent_id) = updated.agent_id {
                     self.agent_service
@@ -1126,6 +1159,7 @@ impl ChatService {
                     .notification_service
                     .create_and_notify(
                         &chat.user_id,
+                        crate::notification::models::NotificationCategory::ChatReply,
                         NotificationData::Agent {
                             agent_id: updated.agent_id.clone().unwrap_or_default(),
                             chat_id: chat.id.clone(),
