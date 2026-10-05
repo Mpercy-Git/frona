@@ -466,18 +466,23 @@ async fn execute_tool_calls(
         // A batch of one is a single call; a larger batch holds only
         // concurrency-safe tools, which run together. `buffered` yields results
         // in input order, so tool results reach the history in emission order.
-        let executions: Vec<ToolExecution> =
-            futures::stream::iter(batch_calls.iter().zip(batch_arguments).map(
-                |(tool_call, arguments)| {
-                    run_tool_call(
-                        tool_registry,
-                        ctx,
-                        &tool_call.function.name,
-                        arguments,
-                        tool_timeout,
-                    )
-                },
-            ))
+        // The futures are collected before streaming them: a lazy `map` closure
+        // held across the `.await` defeats the `Send` inference `tokio::spawn`
+        // needs for the whole loop.
+        let pending: Vec<_> = batch_calls
+            .iter()
+            .zip(batch_arguments)
+            .map(|(tool_call, arguments)| {
+                run_tool_call(
+                    tool_registry,
+                    ctx,
+                    &tool_call.function.name,
+                    arguments,
+                    tool_timeout,
+                )
+            })
+            .collect();
+        let executions: Vec<ToolExecution> = futures::stream::iter(pending)
             .buffered(MAX_CONCURRENT_TOOL_CALLS)
             .collect()
             .await;
