@@ -34,6 +34,29 @@ self.addEventListener("push", (event) => {
     },
   };
 
+  // A picture the push points at, such as the snapshot a doorbell trigger
+  // arrived with. The server sends a path, because its own base URL is often
+  // one the phone can't reach; resolve it against the origin the app runs on.
+  if (data.image) {
+    options.image = new URL(data.image, self.location.origin).href;
+  }
+
+  // Answer buttons for a question the agent is waiting on. Each carries a
+  // signed token that answers it (see `answerFromNotification`). Keep the
+  // notification up until it is dealt with, so the buttons don't vanish.
+  const actions = Array.isArray(data.actions) ? data.actions : [];
+  if (actions.length > 0) {
+    const maxActions =
+      (self.Notification && self.Notification.maxActions) || 2;
+    options.actions = actions
+      .slice(0, maxActions)
+      .map(({ action, title: label }) => ({ action, title: label }));
+    options.data.actionTokens = Object.fromEntries(
+      actions.map(({ action, token }) => [action, token]),
+    );
+    options.requireInteraction = true;
+  }
+
   event.waitUntil(
     (async () => {
       // Suppress the notification only when a page positively confirms it is
@@ -123,6 +146,16 @@ self.addEventListener("notificationclick", (event) => {
     self.location.origin,
   ).href;
 
+  // A tap on an answer button answers from here, without opening the app.
+  const token =
+    event.action && event.notification.data?.actionTokens?.[event.action];
+  if (token) {
+    event.waitUntil(
+      answerFromNotification(event.notification, event.action, token, targetUrl),
+    );
+    return;
+  }
+
   event.waitUntil(
     (async () => {
       await closeNotificationsFor(targetUrl);
@@ -139,6 +172,46 @@ self.addEventListener("notificationclick", (event) => {
     })(),
   );
 });
+
+/**
+ * Send the answer behind a tapped button. The token is the whole credential:
+ * the service worker has no session to send. If the answer can't be sent from
+ * here (already answered, expired, offline), open the chat instead so the tap
+ * still leads somewhere useful.
+ */
+async function answerFromNotification(notification, action, token, targetUrl) {
+  try {
+    const res = await fetch("/api/push/actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (res.ok) {
+      const label = (notification.actions || []).find(
+        (a) => a.action === action,
+      )?.title;
+      await self.registration.showNotification("Answer sent", {
+        body: label ? `“${label}”` : "",
+        icon: "/icon-192.png",
+        badge: "/badge-72.png",
+        tag: notification.tag || undefined,
+        silent: true,
+        data: { url: notification.data?.url || "/" },
+      });
+      return;
+    }
+  } catch (err) {
+    console.warn("[sw] Could not send the answer:", err);
+  }
+  try {
+    if (await routeExistingWindow(targetUrl)) return;
+  } catch {
+    // Fall through to a new window.
+  }
+  if (clients.openWindow) {
+    await clients.openWindow(targetUrl);
+  }
+}
 
 /**
  * Close every notification that points at `targetUrl`. A busy chat can raise

@@ -286,6 +286,71 @@ async fn test_pat_ownership_check() {
 }
 
 #[tokio::test]
+async fn test_trigger_only_token_is_refused_outside_the_trigger_route() {
+    let db = test_db().await;
+    let user_repo = SurrealRepo::new(db.clone());
+    let (keypair_svc, token_svc) = setup_services(&db);
+
+    let user = test_user();
+    user_repo.create(&user).await.unwrap();
+
+    let pat = token_svc
+        .create_pat(
+            &keypair_svc,
+            &user,
+            CreatePatRequest {
+                name: "Doorbell".to_string(),
+                expires_in_days: Some(365),
+                scopes: Some(vec![
+                    frona::auth::token::models::AGENT_TRIGGER_SCOPE.to_string(),
+                ]),
+                principal: Some(frona::core::Principal::agent("front-door")),
+            },
+        )
+        .await
+        .unwrap();
+
+    // Every ordinary extractor authenticates through `validate`.
+    assert!(token_svc.validate(&keypair_svc, &pat.token).await.is_err());
+
+    let claims = token_svc
+        .validate_agent_trigger(&keypair_svc, &pat.token)
+        .await
+        .unwrap();
+    assert_eq!(claims.sub, user.id);
+    assert_eq!(claims.principal.id, "front-door");
+
+    // Revoking it shuts the trigger route too.
+    token_svc.delete_pat(&user.id, &pat.id).await.unwrap();
+    assert!(
+        token_svc
+            .validate_agent_trigger(&keypair_svc, &pat.token)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn test_ordinary_tokens_still_reach_the_trigger_route() {
+    let db = test_db().await;
+    let user_repo = SurrealRepo::new(db.clone());
+    let (keypair_svc, token_svc) = setup_services(&db);
+
+    let user = test_user();
+    user_repo.create(&user).await.unwrap();
+
+    let (access_jwt, _) = token_svc
+        .create_session_pair(&keypair_svc, &user)
+        .await
+        .unwrap();
+    let claims = token_svc
+        .validate_agent_trigger(&keypair_svc, &access_jwt)
+        .await
+        .unwrap();
+    assert_eq!(claims.sub, user.id);
+}
+
+#[tokio::test]
 async fn test_jwks_listing() {
     let db = test_db().await;
     let (keypair_svc, _) = setup_services(&db);

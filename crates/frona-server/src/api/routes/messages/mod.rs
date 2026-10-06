@@ -178,49 +178,7 @@ async fn resolve_tool_calls(
         // Typed HitlResponse routes through the resolve_hitl dispatcher, which
         // runs the tool's on_resume side-effect and synthesizes the result text.
         if let Some(typed) = resolution.hitl_response.clone() {
-            let outcome = state
-                .harness
-                .resolve_and_resume(&resolution.tool_call_id, typed)
-                .await
-                .map_err(ApiError::from)?;
-            if let crate::inference::hitl::ResolveOutcome::Resolved {
-                should_resume: true,
-                user_id,
-                chat_id,
-                message_id,
-                task_id,
-            } = outcome
-            {
-                let h = state.harness.clone();
-                let exec = state.task_executor.clone();
-                // Same reasoning as the HITL path in `stream.rs`: register the
-                // resumed turn's cancel token before answering the client, so
-                // Stop can reach it immediately. A task resume registers its
-                // own token inside the executor, and the chat-level Stop
-                // reaches it through `cancel_task` instead.
-                let session = if task_id.is_none() {
-                    Some(state.active_sessions.register(&chat_id).await)
-                } else {
-                    None
-                };
-                tokio::spawn(async move {
-                    if let Some(tid) = task_id {
-                        let _ = exec.run_task_by_id(&tid).await;
-                    } else if let Some((session_id, cancel_token)) = session
-                        && let Err(e) = h
-                            .resume_registered(
-                                &user_id,
-                                &chat_id,
-                                &message_id,
-                                session_id,
-                                cancel_token,
-                            )
-                            .await
-                    {
-                        tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume chat after HITL resolve");
-                    }
-                });
-            }
+            resolve_typed_and_resume(&state, &resolution.tool_call_id, typed).await?;
             if let Ok(Some(msg)) = state.chat_service.find_message(&te.message_id).await {
                 last_msg = Some(msg.into());
             }
@@ -271,4 +229,59 @@ async fn event_stream(
 
     let stream = UnboundedReceiverStream::new(rx);
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Answer a pending human-in-the-loop request with a typed response and, when
+/// the tool says the agent should carry on, resume its turn. Shared by the chat
+/// UI's resolve call and the one-tap answers on a push notification. Returns
+/// whether the request was still open.
+pub(crate) async fn resolve_typed_and_resume(
+    state: &AppState,
+    tool_call_id: &str,
+    typed: crate::inference::hitl::HitlResponse,
+) -> Result<bool, ApiError> {
+    use crate::inference::hitl::ResolveOutcome;
+
+    let outcome = state
+        .harness
+        .resolve_and_resume(tool_call_id, typed)
+        .await
+        .map_err(ApiError::from)?;
+    let ResolveOutcome::Resolved {
+        should_resume,
+        user_id,
+        chat_id,
+        message_id,
+        task_id,
+    } = outcome
+    else {
+        return Ok(false);
+    };
+    if !should_resume {
+        return Ok(true);
+    }
+
+    let h = state.harness.clone();
+    let exec = state.task_executor.clone();
+    // Same reasoning as the HITL path in `stream.rs`: register the resumed
+    // turn's cancel token before answering the client, so Stop can reach it
+    // immediately. A task resume registers its own token inside the executor,
+    // and the chat-level Stop reaches it through `cancel_task` instead.
+    let session = if task_id.is_none() {
+        Some(state.active_sessions.register(&chat_id).await)
+    } else {
+        None
+    };
+    tokio::spawn(async move {
+        if let Some(tid) = task_id {
+            let _ = exec.run_task_by_id(&tid).await;
+        } else if let Some((session_id, cancel_token)) = session
+            && let Err(e) = h
+                .resume_registered(&user_id, &chat_id, &message_id, session_id, cancel_token)
+                .await
+        {
+            tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume chat after HITL resolve");
+        }
+    });
+    Ok(true)
 }

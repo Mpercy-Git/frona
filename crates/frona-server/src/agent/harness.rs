@@ -1032,10 +1032,10 @@ impl Harness {
         use crate::inference::tool_call::ToolStatus;
         use crate::notification::models::{NotificationData, NotificationLevel};
 
-        let pending: Vec<&crate::inference::hitl::Hitl> = tool_calls
+        let pending: Vec<(&str, &crate::inference::hitl::Hitl)> = tool_calls
             .iter()
-            .filter_map(|tc| tc.hitl.as_ref())
-            .filter(|h| h.status == ToolStatus::Pending)
+            .filter_map(|tc| tc.hitl.as_ref().map(|h| (tc.id.as_str(), h)))
+            .filter(|(_, h)| h.status == ToolStatus::Pending)
             .collect();
         if pending.is_empty() {
             return;
@@ -1053,12 +1053,26 @@ impl Harness {
             _ => None,
         };
 
-        for h in pending {
+        for (tool_call_id, h) in pending {
             let (title, body) = hitl_notification_text(h);
+            // A question with set answers can be answered from the
+            // notification itself, one button per option.
+            let choices = match &h.request {
+                crate::inference::hitl::HitlRequest::Question { options }
+                    if !options.is_empty() =>
+                {
+                    Some(crate::notification::models::PushChoices {
+                        chat_id: chat_id.to_string(),
+                        tool_call_id: tool_call_id.to_string(),
+                        options: options.clone(),
+                    })
+                }
+                _ => None,
+            };
 
             let _ = self
                 .notification_service
-                .create_and_notify(
+                .create_and_notify_with_choices(
                     user_id,
                     crate::notification::models::NotificationCategory::Approval,
                     NotificationData::Agent {
@@ -1068,6 +1082,7 @@ impl Harness {
                     NotificationLevel::Warning,
                     title,
                     body,
+                    choices,
                 )
                 .await;
 

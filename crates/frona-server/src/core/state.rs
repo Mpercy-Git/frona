@@ -718,7 +718,8 @@ impl AppState {
             SurrealRepo::new(db.clone()),
             broadcast_service.clone(),
             push_sender.clone(),
-        );
+        )
+        .with_push_links(presign_service.clone());
         match &push_sender {
             Some(_) => tracing::info!("Push notifications enabled (VAPID configured)"),
             None => tracing::info!("Push notifications disabled (no usable VAPID key pair)"),

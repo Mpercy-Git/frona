@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::auth::UserService;
 use crate::auth::jwt::JwtService;
 use crate::chat::message::models::MessageResponse;
@@ -15,6 +17,19 @@ pub struct PresignService {
     user_service: UserService,
     issuer_url: String,
     expiry_secs: u64,
+}
+
+const PUSH_ACTION_PURPOSE: &str = "push_action";
+
+/// Claims of a notification action token; see [`PresignService::sign_push_action`].
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PushActionClaims {
+    pub sub: String,
+    pub purpose: String,
+    pub chat_id: String,
+    pub tool_call_id: String,
+    pub choice: String,
+    pub exp: usize,
 }
 
 impl PresignService {
@@ -121,6 +136,53 @@ impl PresignService {
             exp,
         };
         self.jwt_svc.sign(&claims, &encoding_key, &kid)
+    }
+
+    /// Sign the answer behind one button on a push notification: `choice` for
+    /// the pending question `tool_call_id` in `chat_id`. The service worker
+    /// posts it back to `/api/push/actions` without any other credential, so
+    /// the token carries exactly one answer to one question and nothing else.
+    /// Its claims share no shape with a session token or a file presign, so it
+    /// can't be replayed as either.
+    pub async fn sign_push_action(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        tool_call_id: &str,
+        choice: &str,
+        expiry_secs: u64,
+    ) -> Result<String, AppError> {
+        let keypair_owner = format!("user:{user_id}");
+        let (encoding_key, kid) = self.keypair_svc.get_signing_key(&keypair_owner).await?;
+        let claims = PushActionClaims {
+            sub: user_id.to_string(),
+            purpose: PUSH_ACTION_PURPOSE.to_string(),
+            chat_id: chat_id.to_string(),
+            tool_call_id: tool_call_id.to_string(),
+            choice: choice.to_string(),
+            exp: (chrono::Utc::now().timestamp() as u64 + expiry_secs) as usize,
+        };
+        self.jwt_svc.sign(&claims, &encoding_key, &kid)
+    }
+
+    pub async fn verify_push_action(&self, token: &str) -> Result<PushActionClaims, AppError> {
+        let header = self.jwt_svc.decode_unverified_header(token)?;
+        let kid = header.kid.ok_or_else(|| AppError::Auth {
+            message: "Token missing kid".into(),
+            code: AuthErrorCode::TokenInvalid,
+        })?;
+        let decoding_key = self.keypair_svc.get_verifying_key(&kid).await?;
+        let claims = self
+            .jwt_svc
+            .verify::<PushActionClaims>(token, &decoding_key)?;
+        // The key is the user's own, so the signer must be the subject.
+        if claims.purpose != PUSH_ACTION_PURPOSE || kid != format!("user:{}", claims.sub) {
+            return Err(AppError::Auth {
+                message: "Not a notification action token".into(),
+                code: AuthErrorCode::TokenInvalid,
+            });
+        }
+        Ok(claims)
     }
 
     pub async fn verify(&self, token: &str) -> Result<PresignClaims, AppError> {

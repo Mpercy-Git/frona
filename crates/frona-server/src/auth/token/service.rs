@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 
-use super::models::{ApiToken, CreatePatRequest, PatListItem, PatResponse, TokenType};
+use super::models::{
+    AGENT_TRIGGER_SCOPE, ApiToken, CreatePatRequest, PatListItem, PatResponse, TokenType,
+};
 use super::repository::TokenRepository;
 use crate::auth::User;
 use crate::auth::jwt::JwtService;
@@ -277,7 +279,36 @@ impl TokenService {
         })
     }
 
+    /// Verify a token for any route but the agent trigger. A trigger-only
+    /// token (see [`AGENT_TRIGGER_SCOPE`]) is refused here, so every extractor
+    /// and handler that authenticates through this method shuts it out.
     pub async fn validate(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        let claims = self.validate_any(keypair_svc, token_str).await?;
+        if is_trigger_only(&claims) {
+            return Err(AppError::Auth {
+                message: "This token can only trigger an agent".into(),
+                code: AuthErrorCode::TokenInvalid,
+            });
+        }
+        Ok(claims)
+    }
+
+    /// Verify a token presented to `POST /api/agents/{id}/trigger`. Accepts
+    /// the trigger-only tokens [`Self::validate`] refuses, as well as ordinary
+    /// user tokens; the route decides what each may do.
+    pub async fn validate_agent_trigger(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        self.validate_any(keypair_svc, token_str).await
+    }
+
+    async fn validate_any(
         &self,
         keypair_svc: &KeyPairService,
         token_str: &str,
@@ -362,6 +393,13 @@ impl TokenService {
     pub fn repo(&self) -> &dyn TokenRepository {
         &*self.repo
     }
+}
+
+pub fn is_trigger_only(claims: &Claims) -> bool {
+    claims
+        .scopes
+        .as_ref()
+        .is_some_and(|scopes| scopes.iter().any(|s| s == AGENT_TRIGGER_SCOPE))
 }
 
 fn token_prefix(jwt: &str) -> String {

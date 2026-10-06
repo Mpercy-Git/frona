@@ -8,7 +8,7 @@ use web_push::{
 
 use crate::core::config::PushConfig;
 use crate::core::error::AppError;
-use crate::notification::models::NotificationData;
+use crate::notification::models::{NotificationData, PushExtras};
 use crate::notification::push_repository::PushSubscriptionRepository;
 
 /// Outcome of pushing one notification to every device a user has registered.
@@ -100,8 +100,9 @@ impl PushSender {
         &self,
         user_id: &str,
         notification: &crate::notification::models::Notification,
+        extras: &PushExtras,
     ) {
-        let report = self.deliver_to_user(user_id, notification).await;
+        let report = self.deliver_to_user(user_id, notification, extras).await;
         if report.attempted == 0 {
             tracing::debug!(user_id, "No push subscriptions registered; nothing to send");
         } else if report.delivered == 0 {
@@ -126,6 +127,7 @@ impl PushSender {
         &self,
         user_id: &str,
         notification: &crate::notification::models::Notification,
+        extras: &PushExtras,
     ) -> PushDeliveryReport {
         let mut report = PushDeliveryReport::default();
 
@@ -146,14 +148,7 @@ impl PushSender {
         }
         report.attempted = subs.len();
 
-        let payload = serde_json::json!({
-            "id": notification.id,
-            "title": notification.title,
-            "body": notification.body,
-            "level": format!("{:?}", notification.level).to_lowercase(),
-            "data": notification.data,
-            "url": Self::deep_link(&notification.data),
-        });
+        let payload = Self::payload(notification, extras);
 
         let payload_bytes = serde_json::to_vec(&payload).unwrap_or_default();
         let ttl = 86400u32; // 24 hours
@@ -284,6 +279,30 @@ impl PushSender {
     }
 
     /// Map notification data to a deep-link URL for click-through.
+    /// The JSON the service worker reads (`web/public/sw.js`). `image` and
+    /// `actions` appear only when there is something to show, keeping an
+    /// ordinary push the same as before.
+    fn payload(
+        notification: &crate::notification::models::Notification,
+        extras: &PushExtras,
+    ) -> serde_json::Value {
+        let mut payload = serde_json::json!({
+            "id": notification.id,
+            "title": notification.title,
+            "body": notification.body,
+            "level": format!("{:?}", notification.level).to_lowercase(),
+            "data": notification.data,
+            "url": Self::deep_link(&notification.data),
+        });
+        if let Some(image) = &extras.image {
+            payload["image"] = serde_json::json!(image);
+        }
+        if !extras.actions.is_empty() {
+            payload["actions"] = serde_json::json!(extras.actions);
+        }
+        payload
+    }
+
     fn deep_link(data: &NotificationData) -> String {
         match data {
             NotificationData::Agent { chat_id, .. } => format!("/chat?id={}", chat_id),
@@ -309,5 +328,49 @@ mod tests {
             "updates.push.services.mozilla.com"
         );
         assert_eq!(PushSender::endpoint_host("not a url"), "push service");
+    }
+
+    fn notification() -> crate::notification::models::Notification {
+        crate::notification::models::Notification {
+            id: "n1".into(),
+            user_id: "u1".into(),
+            data: NotificationData::Agent {
+                agent_id: "a1".into(),
+                chat_id: "c1".into(),
+            },
+            level: crate::notification::models::NotificationLevel::Warning,
+            title: "Agent needs your input".into(),
+            body: "Courier needs a signature".into(),
+            read: false,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_plain_push_has_no_image_or_actions() {
+        let payload = PushSender::payload(&notification(), &PushExtras::default());
+        assert!(payload.get("image").is_none());
+        assert!(payload.get("actions").is_none());
+        assert_eq!(payload["url"], "/chat?id=c1");
+    }
+
+    #[test]
+    fn extras_ride_along_in_the_payload() {
+        let extras = PushExtras {
+            image: Some("https://frona.example/api/files/x?presign=t".into()),
+            actions: vec![crate::notification::models::PushAction {
+                action: "choice-0".into(),
+                title: "I'm coming".into(),
+                token: "tok".into(),
+            }],
+        };
+        let payload = PushSender::payload(&notification(), &extras);
+        assert_eq!(
+            payload["image"],
+            "https://frona.example/api/files/x?presign=t"
+        );
+        assert_eq!(payload["actions"][0]["action"], "choice-0");
+        assert_eq!(payload["actions"][0]["title"], "I'm coming");
+        assert_eq!(payload["actions"][0]["token"], "tok");
     }
 }
