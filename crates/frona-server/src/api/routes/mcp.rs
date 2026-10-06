@@ -49,7 +49,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/mcp/servers/{id}/start", post(start_server))
         .route("/api/mcp/servers/{id}/update", post(update_package))
         .route("/api/mcp/servers/{id}/stop", post(stop_server))
-        .route("/api/mcp/servers/{id}/logs", get(get_logs))
+        .route(
+            "/api/mcp/servers/{id}/logs",
+            get(get_logs).delete(clear_logs),
+        )
         .route("/api/mcp/servers/{id}/logs/stream", get(stream_logs))
         .route("/api/mcp/registry/search", get(search_registry))
         .route("/api/mcp/registry/{name}", get(fetch_registry_entry))
@@ -279,6 +282,9 @@ fn default_limit() -> usize {
     20
 }
 
+/// How much of a server's log a viewer is handed when it first looks.
+const LOG_TAIL_BYTES: u64 = 64 * 1024;
+
 async fn resolve_log_path(
     state: &AppState,
     user_id: &str,
@@ -305,8 +311,23 @@ async fn get_logs(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let log_path = resolve_log_path(&state, &auth.user_id, &id).await?;
-    let logs = crate::tool::mcp::manager::read_log_file(&log_path, 64 * 1024);
+    let logs = crate::tool::mcp::manager::read_log_file(&log_path, LOG_TAIL_BYTES);
     Ok(Json(serde_json::json!({ "logs": logs })))
+}
+
+async fn clear_logs(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let log_path = resolve_log_path(&state, &auth.user_id, &id).await?;
+    crate::tool::mcp::manager::clear_log_file(&log_path).map_err(|e| {
+        ApiError::from(AppError::Internal(format!(
+            "clearing {}: {e}",
+            log_path.display()
+        )))
+    })?;
+    Ok(Json(serde_json::json!({ "cleared": true })))
 }
 
 async fn stream_logs(
@@ -334,14 +355,25 @@ async fn stream_logs(
         };
 
         let mut reader = BufReader::new(file);
+        // How far into the file the reader is, so a log cleared underneath it
+        // (see `clear_logs`) is noticed and read again from the top rather
+        // than waited on forever past its new end.
+        let mut position: u64 = 0;
 
-        // Send recent context on connect by seeking 8KB from end.
+        // Send recent context on connect: the same tail `get_logs` returns.
         if let Ok(metadata) = tokio::fs::metadata(&log_path).await {
             let len = metadata.len();
-            if len > 8192 {
-                let _ = reader.seek(std::io::SeekFrom::End(-8192)).await;
+            if len > LOG_TAIL_BYTES {
+                if let Ok(pos) = reader
+                    .seek(std::io::SeekFrom::End(-(LOG_TAIL_BYTES as i64)))
+                    .await
+                {
+                    position = pos;
+                }
                 let mut partial = String::new();
-                let _ = reader.read_line(&mut partial).await;
+                if let Ok(n) = reader.read_line(&mut partial).await {
+                    position += n as u64;
+                }
             }
         }
 
@@ -353,9 +385,27 @@ async fn stream_logs(
                     if tx.is_closed() {
                         return;
                     }
+                    let len = tokio::fs::metadata(&log_path)
+                        .await
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    if len < position {
+                        if reader.seek(std::io::SeekFrom::Start(0)).await.is_err() {
+                            return;
+                        }
+                        position = 0;
+                        if tx
+                            .send(Ok(Event::default().event("reset").data("")))
+                            .is_err()
+                        {
+                            return;
+                        }
+                        continue;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
-                Ok(_) => {
+                Ok(n) => {
+                    position += n as u64;
                     let trimmed = line.trim_end();
                     if !trimmed.is_empty() && tx.send(Ok(Event::default().data(trimmed))).is_err() {
                         return;
