@@ -25,8 +25,26 @@ use frona::tool::mcp::repository::McpServerRepository;
 use frona::tool::mcp::service::{McpServerService, NoopPackageInstaller, WarmUpOutcome};
 use frona::tool::mcp::{McpManager, PackageInstaller};
 
+/// The entry sits behind a lock so a test can publish a new version between
+/// an install and an update.
 struct FakeRegistry {
-    entry: RegistryServerEntry,
+    entry: std::sync::Mutex<RegistryServerEntry>,
+}
+
+impl FakeRegistry {
+    fn new(entry: RegistryServerEntry) -> Self {
+        Self {
+            entry: std::sync::Mutex::new(entry),
+        }
+    }
+
+    fn publish_version(&self, version: &str) {
+        let mut entry = self.entry.lock().unwrap();
+        entry.version = version.into();
+        for package in entry.packages.iter_mut() {
+            package.version = Some(version.into());
+        }
+    }
 }
 
 #[async_trait]
@@ -36,17 +54,17 @@ impl McpRegistryClient for FakeRegistry {
         _query: &str,
         _limit: usize,
     ) -> Result<Vec<RegistryServerEntry>, AppError> {
-        Ok(vec![self.entry.clone()])
+        Ok(vec![self.entry.lock().unwrap().clone()])
     }
     async fn fetch(&self, _name: &str) -> Result<RegistryServerEntry, AppError> {
-        Ok(self.entry.clone())
+        Ok(self.entry.lock().unwrap().clone())
     }
     async fn fetch_version(
         &self,
         _name: &str,
         _version: &str,
     ) -> Result<RegistryServerEntry, AppError> {
-        Ok(self.entry.clone())
+        Ok(self.entry.lock().unwrap().clone())
     }
 }
 
@@ -142,6 +160,22 @@ async fn build_test_harness(
 async fn build_test_harness_with_installer(
     env_vars: Vec<RegistryEnvVar>,
     installer: Arc<dyn PackageInstaller>,
+) -> (
+    surrealdb::Surreal<surrealdb::engine::local::Db>,
+    VaultService,
+    McpServerService,
+    tempfile::TempDir,
+) {
+    build_test_harness_with(
+        installer,
+        Arc::new(FakeRegistry::new(sample_entry(env_vars))),
+    )
+    .await
+}
+
+async fn build_test_harness_with(
+    installer: Arc<dyn PackageInstaller>,
+    registry: Arc<dyn McpRegistryClient>,
 ) -> (
     surrealdb::Surreal<surrealdb::engine::local::Db>,
     VaultService,
@@ -264,9 +298,6 @@ async fn build_test_harness_with_installer(
     ));
     let mcp_repo: Arc<dyn McpServerRepository> =
         Arc::new(SurrealRepo::<McpServer>::new(db.clone()));
-    let registry: Arc<dyn McpRegistryClient> = Arc::new(FakeRegistry {
-        entry: sample_entry(env_vars),
-    });
 
     let keypair_service = frona::credential::keypair::service::KeyPairService::new(
         "test-secret",
@@ -861,4 +892,77 @@ async fn a_reinstall_that_works_clears_the_recorded_failure() {
     let repaired = service.list_for_user("user1").await.unwrap().remove(0);
     assert_eq!(repaired.status, McpServerStatus::Installed);
     assert_eq!(repaired.last_error, None);
+}
+
+/// Remembers the version each warm-up was asked for, and reports it back as
+/// the resolved ref the way npm's lockfile would.
+#[derive(Default)]
+struct RecordingInstaller {
+    versions: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl PackageInstaller for RecordingInstaller {
+    async fn install(&self, server: &McpServer) -> Result<WarmUpOutcome, AppError> {
+        self.versions
+            .lock()
+            .unwrap()
+            .push(server.package.version.clone());
+        Ok(WarmUpOutcome {
+            invocation_name: None,
+            resolved_ref: Some(server.package.version.clone()),
+        })
+    }
+}
+
+/// An install is pinned to the version the registry listed at the time, so
+/// an update that reinstalled from the pin would fetch the same version
+/// forever. It has to follow the registry to the version published since.
+#[tokio::test]
+async fn reinstall_moves_a_registry_server_to_the_newly_published_version() {
+    let installer = Arc::new(RecordingInstaller::default());
+    let registry = Arc::new(FakeRegistry::new(sample_entry(vec![])));
+    let (_db, _vault, service, _tmp) =
+        build_test_harness_with(installer.clone(), registry.clone()).await;
+
+    let req = McpServerInstall {
+        registry_id: Some("io.example/workspace-mcp".into()),
+        ..Default::default()
+    };
+    let installed = service
+        .install("user1", &frona::handle!("user1"), req)
+        .await
+        .unwrap();
+    assert_eq!(installed.resolved_ref.as_deref(), Some("1.0.0"));
+    assert!(installed.args.contains(&"@example/workspace-mcp@1.0.0".to_string()));
+
+    registry.publish_version("1.1.0");
+    let result = service.reinstall("user1", &installed.id).await.unwrap();
+
+    assert!(result.changed);
+    assert_eq!(result.previous_ref.as_deref(), Some("1.0.0"));
+    assert_eq!(
+        installer.versions.lock().unwrap().last().map(String::as_str),
+        Some("1.1.0"),
+        "the warm-up fetches the new version, not the pinned one"
+    );
+
+    let updated = service.list_for_user("user1").await.unwrap().remove(0);
+    assert_eq!(updated.package.version, "1.1.0");
+    assert_eq!(updated.resolved_ref.as_deref(), Some("1.1.0"));
+    assert!(
+        updated.args.contains(&"@example/workspace-mcp@1.1.0".to_string()),
+        "the invocation runs the new version: {:?}",
+        updated.args
+    );
+    for transport in &updated.transports {
+        let args = match transport {
+            TransportConfig::Stdio { args, .. } | TransportConfig::Http { args, .. } => args,
+        };
+        assert!(!args.contains(&"@example/workspace-mcp@1.0.0".to_string()));
+    }
+
+    // Nothing new published: an update is a no-op and says so.
+    let again = service.reinstall("user1", &installed.id).await.unwrap();
+    assert!(!again.changed);
 }

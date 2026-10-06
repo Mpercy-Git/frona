@@ -981,8 +981,15 @@ impl McpServerService {
             self.stop(user_id, server_id).await?;
         }
 
-        let previous_ref = server.resolved_ref.clone();
         let server = self.load_owned(user_id, server_id).await?;
+        let previous_version = server.package.version.clone();
+        // A PyPI install leaves no ref to read back, so the pinned version is
+        // the most that can be said about what was there before.
+        let previous_ref = server
+            .resolved_ref
+            .clone()
+            .or_else(|| pinned_version(&server.package).map(str::to_string));
+        let server = self.refresh_registry_pin(server).await;
 
         // A failed warm-up leaves the row as it was: the workspace may be half
         // written, but the invocation and resolved ref still describe the last
@@ -998,8 +1005,24 @@ impl McpServerService {
             }
         };
 
+        let mut server = server;
+        let version_changed = server.package.version != previous_version;
+        if version_changed {
+            server.updated_at = Utc::now();
+            server = self.repo.update(&server).await?;
+        }
         let mut server = self.apply_warm_up_outcome(server, outcome).await?;
-        let new_ref = server.resolved_ref.clone();
+        let new_ref = server
+            .resolved_ref
+            .clone()
+            .or_else(|| pinned_version(&server.package).map(str::to_string));
+        let changed = version_changed || previous_ref != new_ref;
+        // What the last run said about itself describes the old package; left
+        // in place it reads as the version still installed until a restart.
+        if changed && server.server_info.take().is_some() {
+            server.updated_at = Utc::now();
+            server = self.repo.update(&server).await?;
+        }
         // The reason a failed install left behind describes a fetch that has
         // now succeeded, so it stops being true here rather than at the next
         // start.
@@ -1015,10 +1038,53 @@ impl McpServerService {
 
         Ok(ReinstallResult {
             server: self.load_owned(user_id, server_id).await?,
-            changed: previous_ref != new_ref,
+            changed,
             previous_ref,
             restarted: was_running,
         })
+    }
+
+    /// A registry install is pinned to the version the registry listed when it
+    /// was installed - in its warm-up and in the `name@version` it is invoked
+    /// by - so reinstalling as-is fetches that same version again. Asking the
+    /// registry for its current version is what makes an update an update.
+    ///
+    /// Best effort: a server whose entry the registry no longer has (or never
+    /// had, for a manifest install) keeps its pin rather than failing.
+    async fn refresh_registry_pin(&self, mut server: McpServer) -> McpServer {
+        let Some(current) = pinned_version(&server.package).map(str::to_string) else {
+            return server;
+        };
+        let Some(registry_id) = server.registry_id.clone() else {
+            return server;
+        };
+        let entry = match self.registry.fetch(&registry_id).await {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(
+                    server_id = %server.id,
+                    registry_id,
+                    error = %e,
+                    "could not check the registry for a newer version; reinstalling the pinned one"
+                );
+                return server;
+            }
+        };
+        let Some(latest) = entry
+            .packages
+            .iter()
+            .find(|p| {
+                p.identifier == server.package.name
+                    && p.registry_type == server.package.runtime.to_string()
+            })
+            .and_then(|p| p.version.clone())
+        else {
+            return server;
+        };
+        if latest != current {
+            repin_invocation(&mut server, &current, &latest);
+        }
+        server
     }
 
     /// Marks a server failed and keeps the reason with it, so its page can lead
@@ -1300,6 +1366,34 @@ fn explain_from_log(server: &McpServer, log_offset: u64, e: AppError) -> AppErro
 }
 
 /// Replaces the install-time target wherever it appears in an argument list.
+/// The exact version a package is pinned to, or `None` when it floats -
+/// `latest`, or a direct spec that names no registry version at all.
+fn pinned_version(package: &McpPackage) -> Option<&str> {
+    match package.runtime {
+        McpRuntime::Npm if is_direct_npm_spec(&package.name) => None,
+        McpRuntime::Npm | McpRuntime::Pypi if package.version != "latest" => {
+            Some(package.version.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// Move a server from one pinned version to another: the package record the
+/// warm-up installs from, and the `name@version` its invocations name.
+fn repin_invocation(server: &mut McpServer, from: &str, to: &str) {
+    let old = format!("{}@{from}", server.package.name);
+    let new = format!("{}@{to}", server.package.name);
+    swap_invocation_target(&mut server.args, &old, &new);
+    for transport in server.transports.iter_mut() {
+        match transport {
+            TransportConfig::Stdio { args, .. } | TransportConfig::Http { args, .. } => {
+                swap_invocation_target(args, &old, &new)
+            }
+        }
+    }
+    server.package.version = to.to_string();
+}
+
 fn swap_invocation_target(args: &mut [String], spec: &str, name: &str) {
     for arg in args.iter_mut() {
         if arg == spec {
