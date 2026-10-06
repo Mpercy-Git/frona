@@ -934,7 +934,11 @@ async fn reinstall_moves_a_registry_server_to_the_newly_published_version() {
         .await
         .unwrap();
     assert_eq!(installed.resolved_ref.as_deref(), Some("1.0.0"));
-    assert!(installed.args.contains(&"@example/workspace-mcp@1.0.0".to_string()));
+    assert!(
+        installed
+            .args
+            .contains(&"@example/workspace-mcp@1.0.0".to_string())
+    );
 
     registry.publish_version("1.1.0");
     let result = service.reinstall("user1", &installed.id).await.unwrap();
@@ -942,7 +946,12 @@ async fn reinstall_moves_a_registry_server_to_the_newly_published_version() {
     assert!(result.changed);
     assert_eq!(result.previous_ref.as_deref(), Some("1.0.0"));
     assert_eq!(
-        installer.versions.lock().unwrap().last().map(String::as_str),
+        installer
+            .versions
+            .lock()
+            .unwrap()
+            .last()
+            .map(String::as_str),
         Some("1.1.0"),
         "the warm-up fetches the new version, not the pinned one"
     );
@@ -951,7 +960,9 @@ async fn reinstall_moves_a_registry_server_to_the_newly_published_version() {
     assert_eq!(updated.package.version, "1.1.0");
     assert_eq!(updated.resolved_ref.as_deref(), Some("1.1.0"));
     assert!(
-        updated.args.contains(&"@example/workspace-mcp@1.1.0".to_string()),
+        updated
+            .args
+            .contains(&"@example/workspace-mcp@1.1.0".to_string()),
         "the invocation runs the new version: {:?}",
         updated.args
     );
