@@ -786,6 +786,9 @@ impl McpServerService {
             validate_absolute_paths(&policy.read_paths)?;
             validate_absolute_paths(&policy.write_paths)?;
         }
+        if let Some(ref extra_env) = req.extra_env {
+            validate_env_var_names(extra_env)?;
+        }
 
         if let Some(credentials) = req.credentials {
             if let Some(id) = server.registry_id.as_deref() {
@@ -1395,6 +1398,24 @@ fn validate_absolute_paths(paths: &[String]) -> Result<(), AppError> {
     Ok(())
 }
 
+/// An env var name the process will actually see: a shell-style identifier.
+/// Anything else is either silently dropped by the spawner or turns into a
+/// variable no program can read, and the editor should hear about it on save.
+fn validate_env_var_names(env: &BTreeMap<String, String>) -> Result<(), AppError> {
+    for name in env.keys() {
+        let mut chars = name.chars();
+        let valid = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid {
+            return Err(AppError::Validation(format!(
+                "environment variable name '{name}' must start with a letter or underscore \
+                 and contain only letters, digits and underscores"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn strip_namespace(tool_id: &str, slug: &str) -> String {
     let prefix = format!("mcp__{slug}__");
     tool_id.strip_prefix(&prefix).unwrap_or(tool_id).to_string()
@@ -1770,6 +1791,22 @@ mod tests {
             validate_absolute_paths(&["relative/path".into()]).unwrap_err(),
             AppError::Validation(_)
         ));
+    }
+
+    #[test]
+    fn validate_env_var_names_accepts_identifiers_only() {
+        let ok: BTreeMap<String, String> = [("API_KEY", "x"), ("_private", ""), ("v2", "y")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert!(validate_env_var_names(&ok).is_ok());
+        for bad in ["", "2FAST", "WITH-DASH", "HAS SPACE", "A=B"] {
+            let env = BTreeMap::from([(bad.to_string(), "v".to_string())]);
+            assert!(
+                matches!(validate_env_var_names(&env), Err(AppError::Validation(_))),
+                "{bad:?} should be rejected"
+            );
+        }
     }
 
     #[test]

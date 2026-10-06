@@ -650,6 +650,17 @@ pub fn read_log_file(path: &std::path::Path, max_bytes: u64) -> String {
     buf
 }
 
+/// Empty a server's log without removing it. The running child holds the file
+/// open in append mode, so its next write lands at the new end rather than
+/// leaving a hole where the old content was.
+pub fn clear_log_file(path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::OpenOptions::new().write(true).open(path) {
+        Ok(file) => file.set_len(0),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 fn package_manager_env_vars(workspace_dir: &str) -> Vec<(String, String)> {
     let workspace = std::path::Path::new(workspace_dir);
     let mut env = vec![
@@ -721,6 +732,30 @@ mod tests {
             td("mcp__github__create_issue", "mcp:github"),
             td("mcp__github__list_repos", "mcp:github"),
         ]
+    }
+
+    #[test]
+    fn clear_log_file_keeps_appending_writer_at_start() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.log");
+        let mut writer = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writer.write_all(b"old line\n").unwrap();
+
+        clear_log_file(&path).unwrap();
+        writer.write_all(b"new line\n").unwrap();
+
+        assert_eq!(read_log_file(&path, 1024), "new line\n");
+    }
+
+    #[test]
+    fn clear_log_file_tolerates_missing_log() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(clear_log_file(&dir.path().join("absent.log")).is_ok());
     }
 
     #[test]
