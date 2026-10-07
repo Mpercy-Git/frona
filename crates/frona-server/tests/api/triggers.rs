@@ -245,3 +245,81 @@ async fn a_notification_answer_needs_a_valid_token_for_an_open_question() {
         resp.status()
     );
 }
+
+#[tokio::test]
+async fn an_agent_lists_only_its_own_trigger_tokens_and_revoking_one_kills_it() {
+    let (state, _tmp) = test_app_state().await;
+    let (session, _) =
+        register_user(&state, "doorlist", "doorlist@example.com", "password123").await;
+    let (stranger, _) = register_user(
+        &state,
+        "doorliststranger",
+        "doorliststranger@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &session, "Front door").await;
+    let other = create_agent(&state, &session, "Back door").await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let first = body_json(mint_trigger_token(&state, &session, agent_id).await).await;
+    mint_trigger_token(&state, &session, agent_id).await;
+    mint_trigger_token(&state, &session, other["id"].as_str().unwrap()).await;
+
+    let list = |token: String| {
+        let state = state.clone();
+        let uri = format!("/api/agents/{agent_id}/trigger-tokens");
+        async move {
+            build_app(state)
+                .oneshot(auth_get(&uri, &token))
+                .await
+                .unwrap()
+        }
+    };
+
+    let resp = list(session.clone()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let tokens = body_json(resp).await;
+    let tokens = tokens.as_array().unwrap();
+    assert_eq!(tokens.len(), 2, "the other agent's token is not listed");
+    assert!(
+        tokens.iter().all(|t| t.get("token").is_none()),
+        "the secret is never listed"
+    );
+
+    let resp = list(stranger).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // Revoke through the ordinary token route; the token stops working at once.
+    let id = first["id"].as_str().unwrap();
+    let resp = build_app(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/auth/tokens/{id}"))
+                .header("authorization", format!("Bearer {session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        body_json(list(session.clone()).await)
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let resp = build_app(state.clone())
+        .oneshot(auth_post_json(
+            &format!("/api/agents/{agent_id}/trigger"),
+            first["token"].as_str().unwrap(),
+            serde_json::json!({"message": "hello"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}

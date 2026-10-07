@@ -88,10 +88,12 @@ import type { SkillBrowserHandle } from "@/components/skills/skill-browser";
 import { SandboxSection } from "@/components/agents/configure/sandbox-section";
 import { CredsSection } from "@/components/agents/configure/creds-section";
 import { ShareSection } from "@/components/agents/configure/share-section";
+import { TriggersSection } from "@/components/agents/configure/triggers-section";
 import { MemorySection } from "@/components/agents/configure/memory-section";
 import { ConfigSidebar } from "@/components/layout/config-sidebar";
 
-// Superset (includes "share", owner-only) — used for typing + URL validation.
+// Superset (includes the owner-only "share" and "triggers") — used for typing +
+// URL validation.
 const SECTIONS = [
   { id: "profile", label: "Profile" },
   { id: "model", label: "Model" },
@@ -103,7 +105,11 @@ const SECTIONS = [
   { id: "sandbox", label: "Sandbox" },
   { id: "creds", label: "Credentials" },
   { id: "share", label: "Share" },
+  { id: "triggers", label: "Triggers" },
 ] as const;
+
+/** Sections only the agent's owner sees. */
+const OWNER_ONLY: readonly SectionId[] = ["share", "triggers"];
 
 type SectionId = (typeof SECTIONS)[number]["id"];
 
@@ -221,10 +227,11 @@ function AgentSettings() {
     );
   }
 
-  // Agents shared *with* you are use-only: no editing, no re-sharing.
+  // Agents shared *with* you are use-only: no editing, no re-sharing, no
+  // trigger tokens.
   const isShared = agent.is_shared;
   const visibleSections = isShared
-    ? SECTIONS.filter((s) => s.id !== "share")
+    ? SECTIONS.filter((s) => !OWNER_ONLY.includes(s.id))
     : SECTIONS;
 
   return (
@@ -326,11 +333,15 @@ function AgentSettings() {
             )}
             {activeSection === "creds" && <CredsSection principalKind="agent" principalId={agentId} />}
             {activeSection === "share" && <ShareSection agentId={agentId} />}
+            {activeSection === "triggers" && !isShared && <TriggersSection agentId={agentId} />}
           </div>
 
           {/* Save bar — hidden for the self-managing sections and for shared
               (use-only) agents, which can't be edited. */}
-          {activeSection !== "creds" && activeSection !== "share" && !isShared && (
+          {activeSection !== "creds" &&
+            activeSection !== "share" &&
+            activeSection !== "triggers" &&
+            !isShared && (
             <div className="pt-4 pb-2 border-t border-border flex items-center justify-end gap-2">
               <button
                 onClick={handleDiscard}

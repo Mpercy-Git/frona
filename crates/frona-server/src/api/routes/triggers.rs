@@ -27,7 +27,7 @@ use super::super::error::ApiError;
 use super::super::middleware::auth::{AuthUser, extract_token};
 use crate::agent::service::AgentAccess;
 use crate::auth::models::Claims;
-use crate::auth::token::models::{AGENT_TRIGGER_SCOPE, CreatePatRequest, PatResponse};
+use crate::auth::token::models::{AGENT_TRIGGER_SCOPE, CreatePatRequest, PatListItem, PatResponse};
 use crate::auth::token::service::is_trigger_only;
 use crate::chat::models::{CreateChatRequest, PUSH_IMAGE_METADATA_KEY};
 use crate::core::Principal;
@@ -43,7 +43,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/agents/{id}/trigger", post(trigger_agent))
         .route(
             "/api/agents/{id}/trigger-tokens",
-            post(create_trigger_token),
+            post(create_trigger_token).get(list_trigger_tokens),
         )
 }
 
@@ -384,6 +384,30 @@ async fn create_trigger_token(
         )
         .await?;
     Ok((StatusCode::CREATED, Json(pat)))
+}
+
+/// The agent's trigger tokens, for its settings page. Revoking goes through
+/// `DELETE /api/auth/tokens/{id}` like any other PAT.
+async fn list_trigger_tokens(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Vec<PatListItem>>, ApiError> {
+    let (_, access) = state
+        .agent_service
+        .get_accessible(&auth.user_id, &agent_id)
+        .await?;
+    if access != AgentAccess::Owner {
+        return Err(AppError::Forbidden(
+            "Only the agent's owner can see its trigger tokens".into(),
+        )
+        .into());
+    }
+    let tokens = state
+        .token_service
+        .list_agent_trigger_tokens(&auth.user_id, &agent_id)
+        .await?;
+    Ok(Json(tokens))
 }
 
 #[cfg(test)]
