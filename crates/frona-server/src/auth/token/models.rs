@@ -5,6 +5,13 @@ use surrealdb::types::SurrealValue;
 use crate::Entity;
 use crate::core::Principal;
 
+/// Scope of a token that may only wake one agent through
+/// `POST /api/agents/{id}/trigger` (a doorbell, a webhook). Such a token is
+/// refused everywhere else: `TokenService::validate` rejects it, and only
+/// `TokenService::validate_agent_trigger` accepts it. That keeps a token sitting
+/// in a third-party system's config from opening the owner's account.
+pub const AGENT_TRIGGER_SCOPE: &str = "agent:trigger";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, SurrealValue)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb::types", rename_all = "snake_case")]

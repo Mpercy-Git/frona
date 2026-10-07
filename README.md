@@ -57,6 +57,7 @@ Upstream hands an agent a voice note as a file path it has no way to listen to, 
 - **Diagnosable** — a *Send test notification* button reports what each push service actually did with the message, so "nothing arrived" separates into no subscription, no VAPID key, a rejected signature, or an OS-level setting
 - **Installable PWA with an Android app-like feel** — web app manifest, generated app icons (standard + maskable + apple-touch), `viewport-fit=cover`, safe-area insets, dynamic viewport height (`100dvh`), no accidental pull-to-refresh, and virtual-keyboard-aware composer scrolling
 - Push subscriptions re-sync on mobile, iOS gets explicit install guidance, and the composer stays above the on-screen keyboard
+- **Pushes you can act on** — when an agent asks a question with set options, the push shows them as buttons, and a tap answers it without opening the app (each button carries a signed token good for that one answer, for 24 hours). A chat opened by a trigger shows its image on every push, so a doorbell alert carries the snapshot
 
 ### 🧭 OpenRouter routing, caching & cost accounting (net-new)
 
@@ -136,6 +137,9 @@ Every agent shares one memory: user-scoped facts (Basic) or a user-scoped knowle
 
 - **Add skills manually, without a repo** — hand-write a `SKILL.md` or fix one whose upstream frontmatter is wrong, instead of being limited to installing from GitHub
 - **The agent can find and add skills itself** — upstream, an agent only sees the skills already installed, so a task nobody installed a skill for looks like a task no skill exists for. `search_skills` reads the registry (keyword search, or a repo listing with descriptions) and `add_skill` proposes an install that pauses for the user's approval — the same consent shape as the vault: the agent can ask, but nothing is written without a yes. Approved skills land on this agent or on every agent the user owns, and are usable on the very next turn
+- **Wake an agent from outside, with a token that can do nothing else** — `POST /api/agents/{id}/trigger` opens a chat, posts a message (with up to four images the model sees on its first turn) and starts the agent at once. The owner mints a trigger token per agent; Frona's token check refuses it on every other route, so a token in a doorbell bridge's or webhook's config can't open the account. Rate-limited per agent
+- **Tasks created through the API start straight away** — `POST /api/tasks` used to leave a due task for the scheduler sweep, up to a minute away
+- **MCP tools can return images** — a picture an MCP server sends back (a camera snapshot, a chart) reaches a vision model instead of being dropped
 - **Website citations in task completion summaries** — sources from `web_search`/`web_fetch` are preserved structurally rather than surviving only if the model happens to retype them
 
 ### ⚡ Fewer tool calls per task (fork-only)

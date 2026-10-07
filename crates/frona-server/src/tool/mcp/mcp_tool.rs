@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::core::error::AppError;
-use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
+use crate::tool::{AgentTool, ImageData, InferenceContext, ToolDefinition, ToolOutput};
 
 use super::manager::McpManager;
 use super::models::CachedMcpTool;
@@ -215,20 +215,101 @@ impl AgentTool for McpTool {
         let result = self.manager.call(&server_id, bare_name, arguments).await?;
 
         let is_error = result.is_error.unwrap_or(false);
-        let text = result
-            .content
-            .iter()
-            .filter_map(|c| match c {
-                rmcp::model::ContentBlock::Text(t) => Some(t.text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let (text, images) = flatten_call_result(&result.content);
 
         if is_error {
             Ok(ToolOutput::error(text))
-        } else {
+        } else if images.is_empty() {
             Ok(ToolOutput::text(text))
+        } else {
+            Ok(ToolOutput::mixed(text, images))
         }
+    }
+}
+
+/// Split an MCP tool result into the text the model reads and the images it
+/// looks at. Image blocks used to be dropped, so a server that answers with a
+/// picture (a camera snapshot, a rendered chart) reached the agent as an empty
+/// result. An image the model can't take (an unsupported type, bad base64, a
+/// file that won't decode) is named in the text instead, so the agent knows
+/// something arrived.
+fn flatten_call_result(content: &[rmcp::model::ContentBlock]) -> (String, Vec<ImageData>) {
+    use crate::tool::files::read::{is_supported_image, prepare_image};
+    use base64::Engine as _;
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut images = Vec::new();
+    for block in content {
+        match block {
+            rmcp::model::ContentBlock::Text(t) => lines.push(t.text.clone()),
+            rmcp::model::ContentBlock::Image(img) => {
+                let mime = img.mime_type.as_str();
+                if !is_supported_image(mime) {
+                    lines.push(format!("[image of unsupported type {mime} - not shown]"));
+                    continue;
+                }
+                let decoded = base64::engine::general_purpose::STANDARD.decode(img.data.trim());
+                match decoded
+                    .map_err(|_| "invalid base64".to_string())
+                    .and_then(|bytes| prepare_image(&bytes, mime, "the MCP tool result"))
+                {
+                    Ok(image) => images.push(image),
+                    Err(reason) => lines.push(format!("[image ({mime}) not shown: {reason}]")),
+                }
+            }
+            _ => {}
+        }
+    }
+    (lines.join("\n"), images)
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine as _;
+    use rmcp::model::ContentBlock;
+
+    use super::flatten_call_result;
+
+    fn tiny_png_base64() -> String {
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([200, 30, 30]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(buf.into_inner())
+    }
+
+    #[test]
+    fn image_blocks_reach_the_model_beside_the_text() {
+        let content = vec![
+            ContentBlock::text("captured_at: 14:02"),
+            ContentBlock::image(tiny_png_base64(), "image/png"),
+        ];
+        let (text, images) = flatten_call_result(&content);
+        assert_eq!(text, "captured_at: 14:02");
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].media_type, "image/png");
+        assert!(!images[0].bytes.is_empty());
+    }
+
+    #[test]
+    fn text_only_results_are_unchanged() {
+        let content = vec![ContentBlock::text("one"), ContentBlock::text("two")];
+        let (text, images) = flatten_call_result(&content);
+        assert_eq!(text, "one\ntwo");
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn an_unusable_image_is_named_instead_of_dropped() {
+        let content = vec![
+            ContentBlock::image("not base64!", "image/png"),
+            ContentBlock::image(tiny_png_base64(), "image/tiff"),
+        ];
+        let (text, images) = flatten_call_result(&content);
+        assert!(images.is_empty());
+        assert!(
+            text.contains("image (image/png) not shown: invalid base64"),
+            "{text}"
+        );
+        assert!(text.contains("unsupported type image/tiff"), "{text}");
     }
 }

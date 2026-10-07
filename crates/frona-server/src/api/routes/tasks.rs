@@ -41,7 +41,24 @@ async fn create_task(
     State(state): State<AppState>,
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<Json<TaskResponse>, ApiError> {
+    let due_now = req.run_at.is_none_or(|at| at <= chrono::Utc::now());
     let response = state.task_service.create(&auth.user_id, req).await?;
+
+    // Start a task that is due now instead of leaving it for the scheduler's
+    // sweep, which runs only every `scheduler.poll_secs` (60 s by default). A
+    // task created by an outside system (a doorbell ring, a webhook) is
+    // usually one somebody is waiting on. The sweep still re-drives it if a
+    // concurrency cap keeps `run_task` from starting it here.
+    if due_now {
+        let exec = state.task_executor.clone();
+        let task_id = response.id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = exec.run_task_by_id(&task_id).await {
+                tracing::warn!(error = %e, task_id = %task_id, "Failed to start task created through the API");
+            }
+        });
+    }
+
     Ok(Json(response))
 }
 

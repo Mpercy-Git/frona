@@ -19,6 +19,7 @@ mod security;
 mod spaces;
 mod system;
 mod tasks;
+mod triggers;
 mod vaults;
 
 use std::net::SocketAddr;
@@ -190,6 +191,8 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::channels::router())
         .merge(routes::spaces::router())
         .merge(routes::tasks::router())
+        .merge(routes::triggers::router())
+        .merge(routes::push::router())
         .merge(routes::files::router())
         .merge(routes::contacts::router())
         .merge(routes::navigation::router())
@@ -452,9 +455,13 @@ async fn create_task(
         .oneshot(auth_post_json(
             "/api/tasks",
             token,
+            // Deferred far into the future, so the task stays Pending while a
+            // test moves it through states by hand. A task due now is started
+            // the moment it is created and would race the test.
             serde_json::json!({
                 "agent_id": agent_id,
                 "title": title,
+                "run_at": "2999-01-01T00:00:00Z",
             }),
         ))
         .await

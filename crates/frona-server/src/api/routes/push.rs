@@ -17,6 +17,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/push/subscribe", post(subscribe))
         .route("/api/push/unsubscribe", post(unsubscribe))
         .route("/api/push/test", post(send_test))
+        .route("/api/push/actions", post(answer_from_notification))
 }
 
 #[derive(Serialize)]
@@ -98,7 +99,13 @@ async fn send_test(
         created_at: chrono::Utc::now(),
     };
 
-    let report = sender.deliver_to_user(&auth.user_id, &notification).await;
+    let report = sender
+        .deliver_to_user(
+            &auth.user_id,
+            &notification,
+            &crate::notification::models::PushExtras::default(),
+        )
+        .await;
     let this_device_removed = request
         .endpoint
         .as_deref()
@@ -197,4 +204,55 @@ async fn unsubscribe(
         .delete_by_endpoint(&auth.user_id, &req.endpoint)
         .await?;
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct PushActionRequest {
+    token: String,
+}
+
+/// A button tapped on a push notification. The service worker has no session
+/// to send, so the signed token is the whole credential: it names one user,
+/// one pending question and one answer (see `PresignService::sign_push_action`).
+/// Answers the question as if it were picked in the chat and resumes the agent.
+async fn answer_from_notification(
+    State(state): State<AppState>,
+    Json(req): Json<PushActionRequest>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    use crate::core::error::AppError;
+    use crate::inference::hitl::{HitlRequest, HitlResponse};
+
+    let claims = state.presign_service.verify_push_action(&req.token).await?;
+
+    // The chat must still be the recipient's, and the question must be in it.
+    state
+        .chat_service
+        .get_chat(&claims.sub, &claims.chat_id)
+        .await?;
+    let tool_call = state
+        .chat_service
+        .get_tool_call(&claims.tool_call_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("That question no longer exists".into()))?;
+    if tool_call.chat_id != claims.chat_id {
+        return Err(AppError::Forbidden("Question does not belong to this chat".into()).into());
+    }
+    // Only a question with set answers, and only one of those answers.
+    match tool_call.hitl.as_ref().map(|h| &h.request) {
+        Some(HitlRequest::Question { options }) if options.contains(&claims.choice) => {}
+        _ => {
+            return Err(AppError::Validation("Not an answer to this question".into()).into());
+        }
+    }
+
+    let was_open = super::messages::resolve_typed_and_resume(
+        &state,
+        &claims.tool_call_id,
+        HitlResponse::Choice(claims.choice),
+    )
+    .await?;
+    if !was_open {
+        return Err(AppError::Conflict("That question was already answered".into()).into());
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }

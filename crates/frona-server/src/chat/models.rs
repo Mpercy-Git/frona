@@ -5,6 +5,11 @@ use crate::Entity;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
+/// Chat metadata key holding the `{owner, path}` of an image Web Push
+/// notifications from this chat show, such as the snapshot a doorbell trigger
+/// arrived with. Set by `POST /api/agents/{id}/trigger`.
+pub const PUSH_IMAGE_METADATA_KEY: &str = "push_image";
+
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]

@@ -256,3 +256,67 @@ async fn cancel_completed_task_is_idempotent() {
     let json = body_json(resp).await;
     assert_eq!(json["status"], "completed", "terminal status preserved");
 }
+
+async fn wait_for_status_change(state: &AppState, task_id: &str) -> Option<String> {
+    for _ in 0..100 {
+        let task = state
+            .task_service
+            .find_by_id(task_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let status = format!("{:?}", task.status);
+        if status != "Pending" {
+            return Some(status);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    None
+}
+
+#[tokio::test]
+async fn a_due_task_created_through_the_api_starts_without_waiting_for_the_sweep() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "duetask", "duetask@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "DueAgent").await;
+
+    let app = build_app(state.clone());
+    let resp = app
+        .oneshot(auth_post_json(
+            "/api/tasks",
+            &token,
+            serde_json::json!({"agent_id": agent["id"], "title": "Doorbell rang"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let task_id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // No scheduler runs in this test, so only the route can have started it.
+    // (With no model configured the run then fails, which is fine here.)
+    assert!(
+        wait_for_status_change(&state, &task_id).await.is_some(),
+        "a task due now must be started by the create route"
+    );
+}
+
+#[tokio::test]
+async fn a_deferred_task_is_left_for_the_scheduler() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) =
+        register_user(&state, "latertask", "latertask@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "LaterAgent").await;
+    let task = create_task(&state, &token, agent["id"].as_str().unwrap(), "Later").await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let stored = state
+        .task_service
+        .find_by_id(task["id"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.status,
+        frona::agent::task::models::TaskStatus::Pending
+    );
+}

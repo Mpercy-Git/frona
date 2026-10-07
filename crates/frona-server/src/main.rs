@@ -334,6 +334,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::contacts::router())
         .merge(routes::messages::router())
         .merge(routes::tasks::router())
+        .merge(routes::triggers::router())
         .merge(routes::browser::router())
         .merge(routes::navigation::router())
         .merge(routes::notifications::router())

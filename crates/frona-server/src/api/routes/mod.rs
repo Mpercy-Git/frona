@@ -30,6 +30,7 @@ pub mod spaces;
 pub mod system;
 pub mod tasks;
 pub mod tools;
+pub mod triggers;
 pub mod usage;
 pub mod vaults;
 pub mod voice;
