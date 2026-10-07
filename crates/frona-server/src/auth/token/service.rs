@@ -365,6 +365,40 @@ impl TokenService {
             .collect())
     }
 
+    /// The user's trigger tokens for one agent, newest first. Revoked tokens
+    /// are deleted, so everything listed still works until it expires.
+    pub async fn list_agent_trigger_tokens(
+        &self,
+        user_id: &str,
+        agent_id: &str,
+    ) -> Result<Vec<PatListItem>, AppError> {
+        let mut tokens: Vec<ApiToken> = self
+            .repo
+            .find_by_user_id(user_id)
+            .await?
+            .into_iter()
+            .filter(|t| {
+                t.token_type == TokenType::Pat
+                    && t.principal.kind == crate::core::principal::PrincipalKind::Agent
+                    && t.principal.id == agent_id
+                    && t.scopes.iter().any(|s| s == AGENT_TRIGGER_SCOPE)
+            })
+            .collect();
+        tokens.sort_by_key(|t| std::cmp::Reverse(t.created_at));
+        Ok(tokens
+            .into_iter()
+            .map(|t| PatListItem {
+                id: t.id,
+                name: t.name,
+                prefix: t.prefix,
+                scopes: t.scopes,
+                expires_at: t.expires_at,
+                last_used_at: t.last_used_at,
+                created_at: t.created_at,
+            })
+            .collect())
+    }
+
     pub async fn delete_pat(&self, user_id: &str, token_id: &str) -> Result<(), AppError> {
         let token = self
             .repo
