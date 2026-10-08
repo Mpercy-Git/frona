@@ -212,6 +212,7 @@ pub(crate) fn validate_document(value: &Value) -> Result<Config, AppError> {
             }
         }
     }
+    config.server.validate_apps_url().map_err(validation)?;
     Ok(config)
 }
 

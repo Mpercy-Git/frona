@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use web_push::{
-    ContentEncoding, IsahcWebPushClient, SubscriptionInfo, Urgency, VapidSignatureBuilder,
-    WebPushClient, WebPushError, WebPushMessageBuilder,
+    ContentEncoding, SubscriptionInfo, Urgency, VapidSignatureBuilder, WebPushClient, WebPushError,
+    WebPushMessage, WebPushMessageBuilder,
 };
 
 use crate::core::config::PushConfig;
 use crate::core::error::AppError;
+use crate::notification::egress::{PublicOnlyResolver, validate_endpoint};
 use crate::notification::models::{NotificationData, PushExtras};
 use crate::notification::push_repository::PushSubscriptionRepository;
 
@@ -44,8 +45,141 @@ pub struct PushFailure {
     pub reason: String,
 }
 
+/// Most pushes one user can cause per [`DELIVERY_WINDOW`], across all their
+/// devices. Each is an outbound request the server makes on their behalf.
+const MAX_DELIVERIES_PER_WINDOW: usize = 120;
+const DELIVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+/// Cap on the response a push service may send back; matches the web-push crate.
+const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+/// Longest remote-supplied text shown to the user in a delivery report.
+const MAX_REASON_CHARS: usize = 200;
+
+/// Web Push client that cannot be turned on the server's own network.
+///
+/// The stock client follows redirects, never times out and connects wherever
+/// the endpoint's name resolves. This one never follows a redirect, bounds the
+/// request, and resolves names through [`PublicOnlyResolver`], so a
+/// subscription cannot reach loopback, private or link-local addresses even if
+/// its hostname is rebound after it was stored.
+struct GuardedPushClient {
+    http: reqwest::Client,
+}
+
+impl GuardedPushClient {
+    fn new() -> Result<Self, AppError> {
+        let http = reqwest::Client::builder()
+            .dns_resolver(PublicOnlyResolver)
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| AppError::Internal(format!("Failed to create Web Push client: {e}")))?;
+        Ok(Self { http })
+    }
+}
+
+fn transport_error(message: impl Into<String>) -> WebPushError {
+    WebPushError::Io(std::io::Error::other(message.into()))
+}
+
+#[async_trait::async_trait]
+impl WebPushClient for GuardedPushClient {
+    async fn send(&self, message: WebPushMessage) -> Result<(), WebPushError> {
+        // Covers an IP-literal host, which never reaches the resolver, and any
+        // subscription stored before these checks existed.
+        if validate_endpoint(&message.endpoint.to_string()).is_err() {
+            return Err(WebPushError::InvalidUri);
+        }
+
+        // web-push builds an `http` 0.2 request and reqwest speaks `http` 1.x,
+        // so carry it across by hand.
+        let (parts, body) =
+            web_push::request_builder::build_request::<Vec<u8>>(message).into_parts();
+        let mut request = self.http.post(parts.uri.to_string()).body(body);
+        for (name, value) in &parts.headers {
+            request = request.header(name.as_str(), value.as_bytes());
+        }
+        let request = request.build().map_err(|_| WebPushError::InvalidUri)?;
+        let mut response = self
+            .http
+            .execute(request)
+            .await
+            .map_err(|e| transport_error(transport_reason(&e)))?;
+
+        let status = response.status();
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| transport_error(transport_reason(&e)))?
+        {
+            if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                return Err(WebPushError::ResponseTooLarge);
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let status = http02::StatusCode::from_u16(status.as_u16())
+            .map_err(|_| WebPushError::InvalidResponse)?;
+        web_push::request_builder::parse_response(status, body)
+    }
+}
+
+/// Why a request failed, without the URL (an endpoint is a capability URL).
+fn transport_reason(error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        "The push service did not respond in time".into()
+    } else if error.is_connect() {
+        "Could not connect to the push service (the address may be blocked)".into()
+    } else if error.is_redirect() {
+        "The push service redirected the request, which is not followed".into()
+    } else {
+        "The request to the push service failed".into()
+    }
+}
+
+/// Remote-supplied text, bounded and stripped of control characters, before it
+/// reaches a delivery report.
+fn bounded_reason(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_REASON_CHARS)
+        .collect()
+}
+
+/// Sliding-window cap on deliveries per user.
+#[derive(Default)]
+struct DeliveryLimiter {
+    sent: std::sync::Mutex<
+        std::collections::HashMap<String, std::collections::VecDeque<std::time::Instant>>,
+    >,
+}
+
+impl DeliveryLimiter {
+    /// Reserves one delivery for `user_id`; false once the window is full.
+    fn allow(&self, user_id: &str) -> bool {
+        let now = std::time::Instant::now();
+        let mut sent = self.sent.lock().unwrap_or_else(|e| e.into_inner());
+        sent.retain(|_, times| {
+            while times
+                .front()
+                .is_some_and(|t| now.duration_since(*t) > DELIVERY_WINDOW)
+            {
+                times.pop_front();
+            }
+            !times.is_empty()
+        });
+        let times = sent.entry(user_id.to_string()).or_default();
+        if times.len() >= MAX_DELIVERIES_PER_WINDOW {
+            return false;
+        }
+        times.push_back(now);
+        true
+    }
+}
+
 pub struct PushSender {
-    client: IsahcWebPushClient,
+    client: GuardedPushClient,
+    limiter: DeliveryLimiter,
     /// Base64-encoded VAPID private key (no subscription info bound).
     vapid_private_key: String,
     vapid_subject: String,
@@ -83,11 +217,11 @@ impl PushSender {
         let _ = VapidSignatureBuilder::from_base64_no_sub(&private_key)
             .map_err(|e| AppError::Internal(format!("Invalid VAPID private key: {e}")))?;
 
-        let client = IsahcWebPushClient::new()
-            .map_err(|e| AppError::Internal(format!("Failed to create Web Push client: {e}")))?;
+        let client = GuardedPushClient::new()?;
 
         Ok(Some(Self {
             client,
+            limiter: DeliveryLimiter::default(),
             vapid_private_key: private_key,
             vapid_subject: config.subject.clone(),
             repo,
@@ -155,6 +289,14 @@ impl PushSender {
 
         for sub in subs {
             let service = Self::endpoint_host(&sub.endpoint);
+            if !self.limiter.allow(user_id) {
+                report.failures.push(PushFailure {
+                    service,
+                    reason: "Too many push notifications in the last minute; this one was skipped."
+                        .into(),
+                });
+                continue;
+            }
             let subscription_info =
                 SubscriptionInfo::new(&sub.endpoint, &sub.p256dh_key, &sub.auth_secret);
 
@@ -258,7 +400,7 @@ impl PushSender {
                     tracing::warn!(error = %e, endpoint = %sub.endpoint, "Push send failed");
                     report.failures.push(PushFailure {
                         service,
-                        reason: e.to_string(),
+                        reason: bounded_reason(&e.to_string()),
                     });
                 }
             }

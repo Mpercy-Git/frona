@@ -18,6 +18,8 @@
 #   base_url: "https://your-domain.com"      # public URL (optional)
 #   backend_url: "https://api.your-domain.com"  # override API URL (optional)
 #   frontend_url: "https://your-domain.com"  # override frontend URL (optional)
+#   apps_url: "https://apps.your-domain.com" # serve agent-built apps from their own origin (recommended;
+#                                            # route it to this server and keep the Host header; needs base_url)
 #   cors_origins: "https://your-domain.com"
 
 # auth:
@@ -35,7 +37,7 @@
 #   allow_unknown_email_verification: false
 #   client_cache_expiration: 0
 #   only: false                              # if true, SSO is the only login method
-#   signups_match_email: true
+#   signups_match_email: false               # link first SSO sign-in to an existing account by *verified* email (off by default; see docs)
 
 # database:
 #   path: data/db

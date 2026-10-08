@@ -42,10 +42,23 @@ pub fn router() -> Router<AppState> {
         .finish()
         .unwrap();
 
+    // Each forgot-password request can make the server send an email to an
+    // address the caller does not own, so it gets a far smaller budget than
+    // the other auth routes: a burst of 3, then one more every 30 seconds.
+    let forgot_limit = GovernorConfigBuilder::default()
+        .per_second(30)
+        .burst_size(3)
+        .key_extractor(SmartIpKeyExtractor)
+        .finish()
+        .unwrap();
+
+    let rate_limited_forgot = Router::new()
+        .route("/api/auth/forgot-password", post(forgot_password))
+        .layer(GovernorLayer::new(forgot_limit));
+
     let rate_limited_auth = Router::new()
         .route("/api/auth/login", post(login))
         .route("/api/auth/register", post(register))
-        .route("/api/auth/forgot-password", post(forgot_password))
         .route("/api/auth/reset-password", post(reset_password))
         .layer(GovernorLayer::new(auth_limit));
 
@@ -55,6 +68,7 @@ pub fn router() -> Router<AppState> {
 
     Router::new()
         .merge(rate_limited_auth)
+        .merge(rate_limited_forgot)
         .merge(rate_limited_refresh)
         .route("/api/auth/me", get(me))
         .route("/api/auth/logout", post(logout))
@@ -245,8 +259,15 @@ async fn forgot_password(
     let frontend_url = state.config.server.public_frontend_url();
     let expiry_minutes = state.config.auth.password_reset_expiry_minutes;
     let email = req.email;
+    // Bounded: past the cap the request is still acknowledged, so the response
+    // reveals nothing, but no more mail is queued behind a slow server.
+    let Some(slot) = state.password_reset_service.try_reserve_mail_slot() else {
+        tracing::warn!("Password reset email skipped: too many already in flight");
+        return Ok(StatusCode::ACCEPTED);
+    };
     let bg = state.clone();
     tokio::spawn(async move {
+        let _slot = slot;
         let Some(mail) = bg.mail_service.as_ref() else {
             return;
         };
@@ -288,7 +309,7 @@ async fn reset_password(
 
     // Whoever holds the old password — including whoever the user is resetting
     // because of — loses every live session.
-    let _ = state.token_service.repo().delete_by_user_id(&user_id).await;
+    state.token_service.revoke_all_for_user(&user_id).await?;
     state.login_tracker.clear(&user.email).await;
     state.login_tracker.clear(user.handle.as_str()).await;
 
@@ -469,6 +490,19 @@ async fn refresh(
     ),
     ApiError,
 > {
+    // Agent-built apps share this origin unless `server.apps_url` is set, and
+    // the browser attaches the refresh cookie to their requests too. Refuse a
+    // refresh that comes from an app page. A page can strip its own Referer, so
+    // this is a speed bump; only a separate apps origin closes the hole.
+    if headers
+        .get(axum::http::header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|r| url::Url::parse(r).ok())
+        .is_some_and(|r| r.path().starts_with("/apps/"))
+    {
+        return Err(AppError::Forbidden("Not available to apps".into()).into());
+    }
+
     let refresh_token = headers
         .get("cookie")
         .and_then(|v| v.to_str().ok())

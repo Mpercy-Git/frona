@@ -9,78 +9,163 @@ use crate::api::cookie::{extract_app_session_from_cookie_header, make_app_sessio
 use crate::app::models::AppStatus;
 use crate::core::state::AppState;
 
+/// Path prefix every app is served under, on whichever origin serves it.
+pub(crate) const APPS_PREFIX: &str = "/apps/";
+
+/// Where the apps origin hands a signed-in user's code to be exchanged for an
+/// `app_session` cookie.
+pub(crate) const APP_CALLBACK_PATH: &str = "/api/auth/apps/callback";
+
+fn encode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+/// The `redirect` query parameter, if it is a same-origin path. Anything that
+/// could be read as another origin (`//host`, backslashes) or that is not
+/// plain visible ASCII is refused.
+fn requested_redirect(uri: &Uri) -> Option<String> {
+    let value = url::form_urlencoded::parse(uri.query()?.as_bytes())
+        .find(|(key, _)| key == "redirect")?
+        .1
+        .into_owned();
+    let plain = value.bytes().all(|b| (0x21..=0x7e).contains(&b));
+    (value.starts_with('/') && !value.starts_with("//") && !value.contains('\\') && plain)
+        .then_some(value)
+}
+
+fn is_secure(url: Option<&str>) -> bool {
+    url.is_some_and(|u| u.starts_with("https"))
+}
+
+/// Main-origin gate. Turns the user's refresh cookie into an app credential:
+/// directly as an `app_session` cookie when apps share the main origin, or as
+/// a one-minute code handed to the apps origin when `server.apps_url` is set.
 pub(crate) async fn auth_gate(
     State(state): State<AppState>,
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
-    let redirect_url = uri
-        .query()
-        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("redirect=")))
-        .filter(|u| u.starts_with('/') && !u.starts_with("//"))
-        .unwrap_or("/");
+    let redirect_url = requested_redirect(&uri).unwrap_or_else(|| "/".to_string());
+    let apps_url = state.config.server.public_apps_url();
 
     let cookie_header = headers
         .get("cookie")
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
 
-    let refresh_token = crate::api::cookie::extract_refresh_token_from_cookie_header(cookie_header);
-
-    let Some(refresh_token) = refresh_token else {
-        let login_url = build_login_redirect(&state, redirect_url);
-        return Redirect::temporary(&login_url).into_response();
+    let login = || {
+        let login_url = build_login_redirect(&state, &redirect_url);
+        Redirect::temporary(&login_url).into_response()
     };
 
-    let claims = match state
+    let Some(refresh_token) =
+        crate::api::cookie::extract_refresh_token_from_cookie_header(cookie_header)
+    else {
+        return login();
+    };
+
+    let Ok(claims) = state
         .token_service
-        .validate(&state.keypair_service, refresh_token)
+        .validate_refresh(&state.keypair_service, refresh_token)
         .await
-    {
-        Ok(c) if c.token_type == "refresh" => c,
-        _ => {
-            let login_url = build_login_redirect(&state, redirect_url);
-            return Redirect::temporary(&login_url).into_response();
-        }
+    else {
+        return login();
     };
 
     let user = match state.user_service.find_by_id(&claims.sub).await {
-        Ok(Some(u)) => u,
-        _ => {
-            let login_url = build_login_redirect(&state, redirect_url);
-            return Redirect::temporary(&login_url).into_response();
-        }
+        Ok(Some(u)) if u.deactivated_at.is_none() => u,
+        _ => return login(),
     };
 
-    let app_session_jwt = match state
+    if let Some(apps_url) = apps_url {
+        if !redirect_url.starts_with(APPS_PREFIX) {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        let Ok(code) = state
+            .token_service
+            .create_app_gate_code(&state.keypair_service, &user)
+            .await
+        else {
+            return login();
+        };
+        let location = format!(
+            "{apps_url}{APP_CALLBACK_PATH}?code={}&redirect={}",
+            encode(&code),
+            encode(&redirect_url)
+        );
+        return no_store_redirect(&location, None);
+    }
+
+    let Ok(app_session_jwt) = state
         .token_service
-        .create_access_token(&state.keypair_service, &user, "app_session")
+        .create_app_session(&state.keypair_service, &user)
         .await
-    {
-        Ok(jwt) => jwt,
-        Err(_) => {
-            let login_url = build_login_redirect(&state, redirect_url);
-            return Redirect::temporary(&login_url).into_response();
-        }
+    else {
+        return login();
     };
-
-    let secure = state
-        .config
-        .server
-        .base_url
-        .as_ref()
-        .is_some_and(|u| u.starts_with("https"));
 
     let cookie = make_app_session_cookie(
         &app_session_jwt,
         state.config.auth.access_token_expiry_secs,
-        secure,
+        is_secure(state.config.server.base_url.as_deref()),
     );
+    no_store_redirect(&redirect_url, Some(cookie))
+}
 
-    Response::builder()
+/// Apps-origin half of the handoff: exchange the gate's code for an
+/// `app_session` cookie scoped to this origin, then continue to the app.
+pub(crate) async fn auth_gate_callback(State(state): State<AppState>, uri: Uri) -> Response {
+    let Some(apps_url) = state.config.server.public_apps_url() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let query = uri.query().unwrap_or_default();
+    let code = url::form_urlencoded::parse(query.as_bytes())
+        .find(|(key, _)| key == "code")
+        .map(|(_, v)| v.into_owned());
+    let redirect = requested_redirect(&uri).filter(|r| r.starts_with(APPS_PREFIX));
+    let (Some(code), Some(redirect)) = (code, redirect) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+
+    let Ok(claims) = state
+        .token_service
+        .validate_app_gate_code(&state.keypair_service, &code)
+        .await
+    else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let user = match state.user_service.find_by_id(&claims.sub).await {
+        Ok(Some(u)) if u.deactivated_at.is_none() => u,
+        _ => return StatusCode::FORBIDDEN.into_response(),
+    };
+    let Ok(session) = state
+        .token_service
+        .create_app_session(&state.keypair_service, &user)
+        .await
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+
+    let cookie = make_app_session_cookie(
+        &session,
+        state.config.auth.access_token_expiry_secs,
+        is_secure(Some(&apps_url)),
+    );
+    no_store_redirect(&redirect, Some(cookie))
+}
+
+/// 307 that browsers and proxies must not cache and that never leaks the
+/// current URL (it can carry a gate code) as a `Referer`.
+fn no_store_redirect(location: &str, cookie: Option<HeaderValue>) -> Response {
+    let mut builder = Response::builder()
         .status(StatusCode::TEMPORARY_REDIRECT)
-        .header("location", redirect_url)
-        .header("set-cookie", cookie)
+        .header("location", location)
+        .header("cache-control", "no-store")
+        .header("referrer-policy", "no-referrer");
+    if let Some(cookie) = cookie {
+        builder = builder.header("set-cookie", cookie);
+    }
+    builder
         .body(Body::empty())
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
@@ -88,16 +173,12 @@ pub(crate) async fn auth_gate(
 fn build_login_redirect(state: &AppState, app_redirect: &str) -> String {
     let frontend_url = state.config.server.public_frontend_url();
     let base_url = state.config.server.public_base_url();
+    let encoded_redirect = encode(app_redirect);
     if frontend_url.is_empty() {
-        return format!("/login?redirect={app_redirect}");
+        return format!("/login?redirect={encoded_redirect}");
     }
-    let gate_url = if base_url.is_empty() {
-        format!("/api/auth/apps?redirect={app_redirect}")
-    } else {
-        format!("{base_url}/api/auth/apps?redirect={app_redirect}")
-    };
-    let encoded_gate = gate_url.replace('&', "%26");
-    format!("{frontend_url}/login?redirect={encoded_gate}")
+    let gate_url = format!("{base_url}/api/auth/apps?redirect={encoded_redirect}");
+    format!("{frontend_url}/login?redirect={}", encode(&gate_url))
 }
 
 pub(crate) async fn proxy_app_root(
@@ -131,7 +212,17 @@ async fn proxy_app_inner(
         Some(uid) => uid,
         None => {
             let original_uri = request.uri().to_string();
-            let gate_url = format!("/api/auth/apps?redirect={original_uri}");
+            // On the apps origin the gate lives on the main origin, so the link
+            // must be absolute; with shared origins a relative one will do.
+            let gate_base = if state.config.server.public_apps_url().is_some() {
+                state.config.server.public_base_url()
+            } else {
+                String::new()
+            };
+            let gate_url = format!(
+                "{gate_base}/api/auth/apps?redirect={}",
+                encode(&original_uri)
+            );
             return Redirect::temporary(&gate_url).into_response();
         }
     };
@@ -202,7 +293,7 @@ async fn authenticate_proxy_request(state: &AppState, headers: &HeaderMap) -> Op
     let token = extract_app_session_from_cookie_header(cookie_header)?;
     state
         .token_service
-        .validate(&state.keypair_service, token)
+        .validate_app_session(&state.keypair_service, token)
         .await
         .ok()
         .map(|c| c.sub)
@@ -454,6 +545,12 @@ async fn forward_to_port(
         if let Ok(name) = axum::http::header::HeaderName::from_bytes(key.as_ref())
             && let Ok(val) = HeaderValue::from_bytes(value.as_bytes())
         {
+            // An app must not plant cookies on Frona's origin: the proxy
+            // already withholds the browser's cookies from it, so none of its
+            // own could ever come back.
+            if name == "set-cookie" || name == "set-cookie2" {
+                continue;
+            }
             if (name == "location" || name == "content-location")
                 && let Ok(loc_str) = value.to_str()
                 && let Some(rewritten) = rewrite_location(loc_str, &app_prefix)

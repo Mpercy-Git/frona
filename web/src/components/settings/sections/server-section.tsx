@@ -60,6 +60,14 @@ export function ServerSection({ server, onChange }: ServerSectionProps) {
       />
 
       <TextInput
+        label="Apps URL"
+        description="Separate origin that serves agent-built apps. Strongly recommended: without it, app JavaScript runs on the same origin as Frona and can act as the signed-in user. Must differ from the Base URL, point at this server, and keep the Host header. Requires Base URL."
+        value={server.apps_url ?? null}
+        onChange={(apps_url) => onChange({ ...server, apps_url })}
+        placeholder="https://apps.example.com"
+      />
+
+      <TextInput
         label="External URL"
         description="Externally-reachable URL (e.g. ngrok tunnel, public domain) used as the default callback target for inbound webhooks and external service callbacks. Use this when base_url points to an internal address that callers outside your network can't reach."
         value={server.external_url}

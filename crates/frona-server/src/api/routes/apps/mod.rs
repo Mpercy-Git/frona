@@ -1,6 +1,9 @@
 mod proxy;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 
@@ -18,9 +21,73 @@ pub fn router() -> Router<AppState> {
         .route("/api/apps/{handle}/stop", post(stop_app))
         .route("/api/apps/{handle}/restart", post(restart_app))
         .route("/api/auth/apps", get(proxy::auth_gate))
+        .route(proxy::APP_CALLBACK_PATH, get(proxy::auth_gate_callback))
         .route("/apps/{handle}", any(proxy::proxy_app_root))
         .route("/apps/{handle}/", any(proxy::proxy_app_root))
         .route("/apps/{handle}/{*path}", any(proxy::proxy_app_path))
+}
+
+/// Keeps agent-built apps off Frona's own origin when `server.apps_url` is set.
+///
+/// The apps origin serves `/apps/*` and the session handoff and nothing else:
+/// no API, no frontend. Any other host sends `/apps/*` over to the apps
+/// origin and refuses the handoff. The decision rests on the `Host` header,
+/// which a browser will not let a page set, so the reverse proxy in front must
+/// pass it through unchanged.
+pub async fn apps_origin_guard(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let (Some(apps_host), Some(apps_url)) = (
+        state.config.server.apps_host(),
+        state.config.server.public_apps_url(),
+    ) else {
+        return next.run(request).await;
+    };
+
+    let host = request
+        .uri()
+        .authority()
+        .map(|a| a.as_str())
+        .or_else(|| {
+            request
+                .headers()
+                .get(header::HOST)
+                .and_then(|v| v.to_str().ok())
+        })
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let path = request.uri().path();
+    let is_app_path = path.starts_with(proxy::APPS_PREFIX);
+    let is_callback = path == proxy::APP_CALLBACK_PATH;
+
+    if host == apps_host {
+        if is_app_path || is_callback {
+            let mut response = next.run(request).await;
+            // Pages here are untrusted; make sure none can be framed by or
+            // sniffed into anything else on this origin.
+            response.headers_mut().insert(
+                header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            );
+            return response;
+        }
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    if is_callback {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if is_app_path {
+        let target = request
+            .uri()
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or(path);
+        return Redirect::temporary(&format!("{apps_url}{target}")).into_response();
+    }
+    next.run(request).await
 }
 
 /// 400 for malformed handles, 404 for missing or cross-user.

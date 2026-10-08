@@ -234,10 +234,9 @@ impl AuthService {
             .set_password(user_service, user_id, &req.new_password)
             .await?;
 
-        let tokens = token_svc.repo().find_by_user_id(user_id).await?;
-        for token in &tokens {
-            let _ = token_svc.repo().delete(&token.id).await;
-        }
+        // Every other session ends with the old password; if that cannot be
+        // done the caller must not be told the change worked.
+        token_svc.revoke_all_for_user(user_id).await?;
 
         let (access_jwt, refresh_jwt) = token_svc.create_session_pair(keypair_svc, &user).await?;
 

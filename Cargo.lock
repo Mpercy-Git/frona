@@ -3253,6 +3253,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "horned-owl",
+ "http 0.2.12",
  "http 1.5.0",
  "http-body-util",
  "hyper 1.11.0",

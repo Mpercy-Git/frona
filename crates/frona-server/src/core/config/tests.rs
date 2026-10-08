@@ -32,7 +32,7 @@ fn defaults_are_sensible() {
     assert_eq!(config.memory.pkm_playbook_max_tool_turns, 20);
     assert_eq!(config.memory.pkm_playbook_max_submissions, 20);
     assert!(!config.sso.enabled);
-    assert!(config.sso.signups_match_email);
+    assert!(!config.sso.signups_match_email);
     assert!(config.browser.is_none());
     assert!(config.server.cors_origins.is_none());
     assert!(config.server.base_url.is_none());
@@ -527,4 +527,56 @@ fn unset_smtp_password_reports_as_not_set() {
         api_value.pointer("/mail/smtp_password/is_set"),
         Some(&serde_json::Value::Bool(true))
     );
+}
+
+#[test]
+fn apps_url_unset_keeps_apps_on_the_main_origin() {
+    let server = ServerConfig::default();
+    assert!(server.public_apps_url().is_none());
+    assert!(server.apps_host().is_none());
+    assert!(server.validate_apps_url().is_ok());
+}
+
+#[test]
+fn apps_url_is_normalised_to_an_origin() {
+    let server = ServerConfig {
+        base_url: Some("https://frona.example.com".into()),
+        apps_url: Some("https://Apps.Example.com:8443/ignored/path/".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        server.public_apps_url().as_deref(),
+        Some("https://apps.example.com:8443")
+    );
+    assert_eq!(server.apps_host().as_deref(), Some("apps.example.com:8443"));
+    assert!(server.validate_apps_url().is_ok());
+}
+
+#[test]
+fn apps_url_must_be_a_different_origin_and_need_a_base_url() {
+    let same = ServerConfig {
+        base_url: Some("https://frona.example.com".into()),
+        apps_url: Some("https://frona.example.com".into()),
+        ..Default::default()
+    };
+    assert!(same.validate_apps_url().is_err());
+
+    let no_base = ServerConfig {
+        apps_url: Some("https://apps.example.com".into()),
+        ..Default::default()
+    };
+    assert!(no_base.validate_apps_url().is_err());
+
+    let garbage = ServerConfig {
+        base_url: Some("https://frona.example.com".into()),
+        apps_url: Some("not a url".into()),
+        ..Default::default()
+    };
+    assert!(garbage.validate_apps_url().is_err());
+
+    let blank = ServerConfig {
+        apps_url: Some("  ".into()),
+        ..Default::default()
+    };
+    assert!(blank.validate_apps_url().is_ok());
 }

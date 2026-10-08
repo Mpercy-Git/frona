@@ -16,6 +16,9 @@ pub enum AuthErrorCode {
     SsoDisabled,
     ServerError,
     AccountDeactivated,
+    /// A sign-in that would attach to, or duplicate, an account it has no
+    /// proven claim on. Refused rather than guessed at.
+    AccountConflict,
     /// Too many failed logins for this identifier. Carries the remaining
     /// lockout so the response can set `Retry-After`.
     AccountLocked {
@@ -35,6 +38,7 @@ impl AuthErrorCode {
             Self::SsoDisabled => "sso_disabled",
             Self::ServerError => "server_error",
             Self::AccountDeactivated => "account_deactivated",
+            Self::AccountConflict => "account_conflict",
             Self::AccountLocked { .. } => "account_locked",
         }
     }

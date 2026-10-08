@@ -3,7 +3,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 
 use super::models::{
-    AGENT_TRIGGER_SCOPE, ApiToken, CreatePatRequest, PatListItem, PatResponse, TokenType,
+    AGENT_TRIGGER_SCOPE, APP_GATE_SCOPE, APP_SESSION_SCOPE, ApiToken, CreatePatRequest,
+    PatListItem, PatResponse, TokenType,
 };
 use super::repository::TokenRepository;
 use crate::auth::User;
@@ -181,19 +182,63 @@ impl TokenService {
         Ok(created.jwt)
     }
 
+    /// Mint the short-lived code that moves a signed-in user from the main
+    /// origin to the apps origin. Stateless and scoped, so it opens nothing
+    /// but `GET /api/auth/apps/callback`.
+    pub async fn create_app_gate_code(
+        &self,
+        keypair_svc: &KeyPairService,
+        user: &User,
+    ) -> Result<String, AppError> {
+        self.create_token(
+            keypair_svc,
+            user,
+            CreateTokenRequest {
+                token_type: TokenType::Ephemeral,
+                principal: Principal::user(&user.id),
+                ttl_secs: APP_GATE_CODE_TTL_SECS,
+                name: "app_gate".to_string(),
+                scopes: vec![APP_GATE_SCOPE.to_string()],
+                refresh_pair_id: None,
+                extensions: None,
+            },
+        )
+        .await
+        .map(|created| created.jwt)
+    }
+
+    /// Mint the credential the apps proxy keeps in the `app_session` cookie.
+    /// Scoped so it cannot authenticate to any account API.
+    pub async fn create_app_session(
+        &self,
+        keypair_svc: &KeyPairService,
+        user: &User,
+    ) -> Result<String, AppError> {
+        self.create_token(
+            keypair_svc,
+            user,
+            CreateTokenRequest {
+                token_type: TokenType::Access,
+                principal: Principal::user(&user.id),
+                ttl_secs: self.access_expiry_secs,
+                name: "app_session".to_string(),
+                scopes: vec![APP_SESSION_SCOPE.to_string()],
+                refresh_pair_id: None,
+                extensions: None,
+            },
+        )
+        .await
+        .map(|created| created.jwt)
+    }
+
     pub async fn refresh(
         &self,
         keypair_svc: &KeyPairService,
         refresh_token_str: &str,
     ) -> Result<(String, String, Claims), AppError> {
-        let claims = self.validate(keypair_svc, refresh_token_str).await?;
-
-        if claims.token_type != TokenType::Refresh.as_str() {
-            return Err(AppError::Auth {
-                message: "Not a refresh token".into(),
-                code: AuthErrorCode::TokenInvalid,
-            });
-        }
+        let claims = self
+            .validate_refresh(keypair_svc, refresh_token_str)
+            .await?;
 
         // Atomically consume the refresh pair. If delete_by_refresh_pair returns
         // false, a concurrent request already consumed this token — reject to
@@ -294,6 +339,56 @@ impl TokenService {
                 code: AuthErrorCode::TokenInvalid,
             });
         }
+        reject_app_scoped(&claims)?;
+        require_type(&claims, &API_TOKEN_TYPES)?;
+        Ok(claims)
+    }
+
+    /// Verify a refresh token. Only the session refresh and the app gate
+    /// present one; no other entry point may, and this accepts nothing else.
+    pub async fn validate_refresh(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        let claims = self.validate_any(keypair_svc, token_str).await?;
+        require_type(&claims, &[TokenType::Refresh])?;
+        Ok(claims)
+    }
+
+    /// Verify the `app_session` cookie the apps proxy accepts.
+    pub async fn validate_app_session(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        self.validate_scoped(keypair_svc, token_str, APP_SESSION_SCOPE)
+            .await
+    }
+
+    /// Verify the code `GET /api/auth/apps/callback` exchanges for a session.
+    pub async fn validate_app_gate_code(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        self.validate_scoped(keypair_svc, token_str, APP_GATE_SCOPE)
+            .await
+    }
+
+    async fn validate_scoped(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+        scope: &str,
+    ) -> Result<Claims, AppError> {
+        let claims = self.validate_any(keypair_svc, token_str).await?;
+        if !has_scope(&claims, scope) {
+            return Err(AppError::Auth {
+                message: "Token is not valid here".into(),
+                code: AuthErrorCode::TokenInvalid,
+            });
+        }
         Ok(claims)
     }
 
@@ -305,7 +400,10 @@ impl TokenService {
         keypair_svc: &KeyPairService,
         token_str: &str,
     ) -> Result<Claims, AppError> {
-        self.validate_any(keypair_svc, token_str).await
+        let claims = self.validate_any(keypair_svc, token_str).await?;
+        reject_app_scoped(&claims)?;
+        require_type(&claims, &API_TOKEN_TYPES)?;
+        Ok(claims)
     }
 
     async fn validate_any(
@@ -424,9 +522,72 @@ impl TokenService {
         self.refresh_expiry_secs
     }
 
+    /// Ends every session and token the user holds. Retried, because callers
+    /// run it right after a credential change and a session that outlives the
+    /// change defeats the point of it; if it still fails the caller gets the
+    /// error rather than a silent success.
+    pub async fn revoke_all_for_user(&self, user_id: &str) -> Result<(), AppError> {
+        const ATTEMPTS: u32 = 3;
+        let mut attempt = 1;
+        loop {
+            match self.repo.delete_by_user_id(user_id).await {
+                Ok(()) => return Ok(()),
+                Err(e) if attempt < ATTEMPTS => {
+                    tracing::warn!(user_id, attempt, error = %e, "Revoking sessions failed; retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)))
+                        .await;
+                    attempt += 1;
+                }
+                Err(e) => {
+                    tracing::error!(user_id, error = %e, "Could not revoke the user's sessions");
+                    return Err(e);
+                }
+            }
+        }
+    }
+
     pub fn repo(&self) -> &dyn TokenRepository {
         &*self.repo
     }
+}
+
+/// Lifetime of the code that carries a user to the apps origin: long enough
+/// for two redirects, short enough that a leaked URL is worthless.
+const APP_GATE_CODE_TTL_SECS: u64 = 60;
+
+/// Token types that may authenticate an API request. A refresh token only
+/// mints new tokens (see [`TokenService::validate_refresh`]); accepting it here
+/// would make a long-lived, rotation-protected credential an ordinary bearer
+/// token that skips rotation.
+const API_TOKEN_TYPES: [TokenType; 3] = [TokenType::Access, TokenType::Pat, TokenType::Ephemeral];
+
+fn require_type(claims: &Claims, allowed: &[TokenType]) -> Result<(), AppError> {
+    if allowed.iter().any(|t| t.as_str() == claims.token_type) {
+        return Ok(());
+    }
+    Err(AppError::Auth {
+        message: format!("A {} token cannot be used here", claims.token_type),
+        code: AuthErrorCode::TokenInvalid,
+    })
+}
+
+fn has_scope(claims: &Claims, scope: &str) -> bool {
+    claims
+        .scopes
+        .as_ref()
+        .is_some_and(|scopes| scopes.iter().any(|s| s == scope))
+}
+
+/// App credentials ([`APP_GATE_SCOPE`], [`APP_SESSION_SCOPE`]) belong to the
+/// apps origin and open nothing else.
+fn reject_app_scoped(claims: &Claims) -> Result<(), AppError> {
+    if has_scope(claims, APP_GATE_SCOPE) || has_scope(claims, APP_SESSION_SCOPE) {
+        return Err(AppError::Auth {
+            message: "This token can only be used for apps".into(),
+            code: AuthErrorCode::TokenInvalid,
+        });
+    }
+    Ok(())
 }
 
 pub fn is_trigger_only(claims: &Claims) -> bool {
