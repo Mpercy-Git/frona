@@ -967,7 +967,10 @@ async fn download_agent_file_rejects_parent_traversal() {
         let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
             .await
             .unwrap();
-        assert!(!String::from_utf8_lossy(&bytes).contains("PRIVATE"), "{uri}");
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("PRIVATE"),
+            "{uri}"
+        );
     }
 }
 
