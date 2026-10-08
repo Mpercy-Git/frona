@@ -4,7 +4,9 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use tokio::fs;
 
-use crate::storage::{FileEntry, SearchTarget, VirtualPath, validate_relative_path};
+use crate::storage::{
+    FileEntry, SearchTarget, VirtualPath, validate_no_traversal, validate_relative_path,
+};
 
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;
@@ -77,10 +79,15 @@ pub(crate) async fn download_agent_file(
         )));
     }
 
-    let path = state
+    // `Path::join` discards the base for an absolute component, and `..` walks
+    // out of it, so refuse both before joining, then check the result stays
+    // inside the workspace once symlinks are resolved.
+    validate_relative_path(&filepath)?;
+    let workspace = state
         .storage_service
-        .agent_workspace_path(&user_handle, &agent.handle)
-        .join(&filepath);
+        .agent_workspace_path(&user_handle, &agent.handle);
+    let path = workspace.join(&filepath);
+    validate_no_traversal(&path, &workspace.to_string_lossy())?;
 
     super::serve_path(&path, &headers).await
 }

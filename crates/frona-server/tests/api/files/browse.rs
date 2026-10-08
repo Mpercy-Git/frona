@@ -916,3 +916,95 @@ async fn file_endpoints_reject_no_auth() {
         );
     }
 }
+
+#[tokio::test]
+async fn download_agent_file_rejects_absolute_path() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "absdl", "absdl@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "AbsAgent").await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let outside = tmp.path().join("outside-secret.txt");
+    fs::write(&outside, b"OUTSIDE").await.unwrap();
+    let encoded = outside.to_string_lossy().replace('/', "%2F");
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(auth_get(
+            &format!("/api/files/agent/{agent_id}/{encoded}"),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("OUTSIDE"));
+}
+
+#[tokio::test]
+async fn download_agent_file_rejects_parent_traversal() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "trav", "trav@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "TravAgent").await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let user_files = tmp.path().join("users").join("trav").join("files");
+    fs::create_dir_all(&user_files).await.unwrap();
+    fs::write(user_files.join("private.txt"), b"PRIVATE")
+        .await
+        .unwrap();
+
+    for uri in [
+        format!("/api/files/agent/{agent_id}/..%2F..%2Ffiles%2Fprivate.txt"),
+        format!("/api/files/agent/{agent_id}/%2e%2e/%2e%2e/files/private.txt"),
+        format!("/api/files/agent/{agent_id}/../../files/private.txt"),
+    ] {
+        let app = build_app(state.clone());
+        let resp = app.oneshot(auth_get(&uri, &token)).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::OK, "{uri}");
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("PRIVATE"), "{uri}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn download_agent_file_rejects_symlink_escape() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "symdl", "symdl@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "SymAgent").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let agent_handle = agent["handle"].as_str().unwrap();
+
+    let outside = tmp.path().join("outside-dir");
+    fs::create_dir_all(&outside).await.unwrap();
+    fs::write(outside.join("secret.txt"), b"SYMLINKED")
+        .await
+        .unwrap();
+
+    let agent_dir = tmp
+        .path()
+        .join("users")
+        .join("symdl")
+        .join("agents")
+        .join(agent_handle);
+    fs::create_dir_all(&agent_dir).await.unwrap();
+    std::os::unix::fs::symlink(&outside, agent_dir.join("link")).unwrap();
+    std::os::unix::fs::symlink(outside.join("secret.txt"), agent_dir.join("file-link")).unwrap();
+
+    for rel in ["link/secret.txt", "file-link"] {
+        let app = build_app(state.clone());
+        let resp = app
+            .oneshot(auth_get(
+                &format!("/api/files/agent/{agent_id}/{rel}"),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), StatusCode::OK, "{rel}");
+    }
+}
