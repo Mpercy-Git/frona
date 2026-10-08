@@ -141,7 +141,7 @@ impl OAuthService {
         state: &str,
         user_service: &UserService,
         _keypair_svc: &KeyPairService,
-        _token_svc: &TokenService,
+        token_svc: &TokenService,
     ) -> Result<(User, bool), AppError> {
         let (_nonce_secret, nonce, _expiry) = self
             .pending_states
@@ -190,72 +190,44 @@ impl OAuthService {
                 code: AuthErrorCode::TokenInvalid,
             })?;
 
-        let external_sub = claims.subject().to_string();
-        let mut external_email = claims
-            .email()
-            .map(|e| AuthService::normalize_email(e.as_str()));
-        let mut external_name = pick_name(
-            claims.name().and_then(|n| n.get(None)).map(|n| n.as_str()),
-            claims
-                .given_name()
-                .and_then(|n| n.get(None))
-                .map(|n| n.as_str()),
-            claims
-                .family_name()
-                .and_then(|n| n.get(None))
-                .map(|n| n.as_str()),
-            claims.preferred_username().map(|n| n.as_str()),
-        );
+        let login = ExternalLogin {
+            issuer: claims.issuer().as_str().to_string(),
+            subject: claims.subject().to_string(),
+            name: pick_name(
+                claims.name().and_then(|n| n.get(None)).map(|n| n.as_str()),
+                claims
+                    .given_name()
+                    .and_then(|n| n.get(None))
+                    .map(|n| n.as_str()),
+                claims
+                    .family_name()
+                    .and_then(|n| n.get(None))
+                    .map(|n| n.as_str()),
+                claims.preferred_username().map(|n| n.as_str()),
+            ),
+            email: claims.email().map(|e| ProviderEmail {
+                address: AuthService::normalize_email(e.as_str()),
+                verified: claims.email_verified() == Some(true),
+            }),
+        };
 
-        if !self.allow_unknown_email_verification
-            && let Some(verified) = claims.email_verified()
-            && !verified
-        {
-            return Err(AppError::Auth {
-                message: "Email not verified by SSO provider".into(),
-                code: AuthErrorCode::EmailNotVerified,
-            });
+        self.check_email_claim(&login)?;
+
+        if let Some(user) = self.known_user(user_service, &login).await? {
+            return Ok((user, false));
         }
 
-        if let Some(identity) = self.repo.find_identity_by_sub(&external_sub).await? {
-            match user_service.find_by_id(&identity.user_id).await? {
-                Some(user) => {
-                    if user.deactivated_at.is_some() {
-                        return Err(AppError::Auth {
-                            message: "Account deactivated".into(),
-                            code: AuthErrorCode::AccountDeactivated,
-                        });
-                    }
-                    return Ok((user, false));
-                }
-                None => {
-                    tracing::warn!(
-                        identity_id = %identity.id,
-                        user_id = %identity.user_id,
-                        "Dropping orphaned SSO identity whose user no longer exists"
-                    );
-                    self.repo.delete(&identity.id).await?;
-                }
-            }
-        }
-
-        let mut matched_user: Option<User> = None;
-        if self.signups_match_email
-            && let Some(ref email) = external_email
-        {
-            matched_user = user_service.find_by_email(email).await?;
-        }
-
-        // Fall back to the userinfo endpoint when the ID token alone didn't
-        // yield a mergeable email. Some IdPs (e.g. configurations that emit
-        // bare-sub ID tokens) only return email/name from userinfo.
-        if self.signups_match_email && matched_user.is_none() {
-            match fetch_userinfo(&client, &http_client, &token_response, &external_sub).await {
-                Ok(Some(info)) => {
-                    let info_email = info
-                        .email()
-                        .map(|e| AuthService::normalize_email(e.as_str()));
-                    let info_name = pick_name(
+        // The userinfo endpoint is only worth a round trip when it could turn
+        // up a verified address the ID token didn't carry (some IdPs emit
+        // bare-sub ID tokens and only return email/name from userinfo).
+        let userinfo = if self.needs_userinfo(&login) {
+            match fetch_userinfo(&client, &http_client, &token_response, &login.subject).await {
+                Ok(Some(info)) => Some(ExternalUserinfo {
+                    email: info.email().map(|e| ProviderEmail {
+                        address: AuthService::normalize_email(e.as_str()),
+                        verified: info.email_verified() == Some(true),
+                    }),
+                    name: pick_name(
                         info.name().and_then(|n| n.get(None)).map(|n| n.as_str()),
                         info.given_name()
                             .and_then(|n| n.get(None))
@@ -264,52 +236,178 @@ impl OAuthService {
                             .and_then(|n| n.get(None))
                             .map(|n| n.as_str()),
                         info.preferred_username().map(|n| n.as_str()),
-                    );
-                    if external_name.is_none() {
-                        external_name = info_name;
-                    }
-                    if let Some(email) = info_email {
-                        if external_email.as_deref() != Some(email.as_str()) {
-                            matched_user = user_service.find_by_email(&email).await?;
-                        }
-                        if external_email.is_none() {
-                            external_email = Some(email);
-                        }
-                    }
-                }
-                Ok(None) => {}
+                    ),
+                }),
+                Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(error = %e, "UserInfo fetch failed, falling back to ID token claims only");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        self.sign_up(user_service, token_svc, &login, userinfo.as_ref())
+            .await
+    }
+
+    /// Strict mode (`allow_unknown_email_verification = false`) turns away a
+    /// sign-in whose email the provider has not vouched for. Permissive mode
+    /// lets it in, but [`Self::sign_up`] never links such an address to an
+    /// existing account.
+    pub fn check_email_claim(&self, login: &ExternalLogin) -> Result<(), AppError> {
+        match &login.email {
+            Some(email) if !email.verified && !self.allow_unknown_email_verification => {
+                Err(AppError::Auth {
+                    message: "Email not verified by SSO provider".into(),
+                    code: AuthErrorCode::EmailNotVerified,
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The user this provider identity is already linked to, if any. The pair
+    /// (issuer, subject) is the key: a subject from another issuer is a
+    /// different person. A link recorded before issuers were tracked is
+    /// adopted on its next sign-in.
+    pub async fn known_user(
+        &self,
+        user_service: &UserService,
+        login: &ExternalLogin,
+    ) -> Result<Option<User>, AppError> {
+        let Some(mut identity) = self
+            .repo
+            .find_identity(&login.issuer, &login.subject)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(user) = user_service.find_by_id(&identity.user_id).await? else {
+            tracing::warn!(
+                identity_id = %identity.id,
+                user_id = %identity.user_id,
+                "Dropping orphaned SSO identity whose user no longer exists"
+            );
+            self.repo.delete(&identity.id).await?;
+            return Ok(None);
+        };
+        if user.deactivated_at.is_some() {
+            return Err(AppError::Auth {
+                message: "Account deactivated".into(),
+                code: AuthErrorCode::AccountDeactivated,
+            });
+        }
+        if identity.issuer.is_none() {
+            identity.issuer = Some(login.issuer.clone());
+            identity.updated_at = Utc::now();
+            self.repo.update(&identity).await?;
+        }
+        Ok(Some(user))
+    }
+
+    /// Whether [`Self::sign_up`] could use the userinfo endpoint: only when
+    /// email matching is on and the ID token gave no verified address.
+    pub fn needs_userinfo(&self, login: &ExternalLogin) -> bool {
+        self.signups_match_email && !login.email.as_ref().is_some_and(|e| e.verified)
+    }
+
+    /// First sign-in for an identity the provider has not been seen before:
+    /// link it to the existing account its verified email belongs to, or
+    /// create a new account.
+    ///
+    /// An email is only evidence of ownership when the provider says it
+    /// verified it, so only a verified address is matched against existing
+    /// accounts. Anything we will not link to is also never created alongside
+    /// an account holding the same address.
+    pub async fn sign_up(
+        &self,
+        user_service: &UserService,
+        token_svc: &TokenService,
+        login: &ExternalLogin,
+        userinfo: Option<&ExternalUserinfo>,
+    ) -> Result<(User, bool), AppError> {
+        let emails: Vec<&ProviderEmail> = login
+            .email
+            .iter()
+            .chain(userinfo.and_then(|u| u.email.as_ref()))
+            .collect();
+        let external_email = emails.first().map(|e| e.address.clone());
+        let external_name = login
+            .name
+            .clone()
+            .or_else(|| userinfo.and_then(|u| u.name.clone()));
+
+        let mut matched: Option<User> = None;
+        if self.signups_match_email {
+            for email in emails.iter().filter(|e| e.verified) {
+                matched = user_service.find_by_email(&email.address).await?;
+                if matched.is_some() {
+                    break;
                 }
             }
         }
 
-        if let Some(existing_user) = matched_user {
+        if let Some(existing_user) = matched {
             if existing_user.deactivated_at.is_some() {
                 return Err(AppError::Auth {
                     message: "Account deactivated".into(),
                     code: AuthErrorCode::AccountDeactivated,
                 });
             }
+            // One person has one identity at a provider. An account already
+            // bound to a different subject here is not theirs to take over.
+            let already_bound = self
+                .repo
+                .find_identities_by_user(&existing_user.id)
+                .await?
+                .iter()
+                .any(|i| {
+                    i.external_sub != login.subject
+                        && i.issuer.as_deref().is_none_or(|iss| iss == login.issuer)
+                });
+            if already_bound {
+                return Err(conflict(
+                    "This email already belongs to an account linked to a different SSO identity.",
+                ));
+            }
             let now = Utc::now();
             let identity = OAuthIdentity {
                 id: crate::core::repository::new_id(),
                 user_id: existing_user.id.clone(),
-                external_sub,
+                issuer: Some(login.issuer.clone()),
+                external_sub: login.subject.clone(),
                 external_email: external_email.clone(),
                 external_name,
                 created_at: now,
                 updated_at: now,
             };
             self.repo.create(&identity).await?;
+            // Whoever held this account before the link, by password or by an
+            // open session, does not keep it.
+            token_svc
+                .repo()
+                .delete_by_user_id(&existing_user.id)
+                .await?;
             return Ok((existing_user, false));
+        }
+
+        for email in &emails {
+            if user_service.find_by_email(&email.address).await?.is_some() {
+                return Err(conflict(
+                    "An account with this email already exists, and the SSO provider has not verified \
+                     the address (or linking by email is turned off). Sign in with your existing \
+                     method or ask an admin to link it.",
+                ));
+            }
         }
 
         let now = Utc::now();
         let base_handle = if let Some(ref email) = external_email {
             AuthService::derive_handle_from_email(email)
         } else {
-            format!("sso-{external_sub}")
+            format!("sso-{}", login.subject)
         };
         let handle = AuthService::generate_unique_handle(user_service, &base_handle).await?;
 
@@ -318,7 +416,7 @@ impl OAuthService {
             handle,
             email: external_email
                 .clone()
-                .unwrap_or_else(|| format!("sso-{external_sub}@unknown")),
+                .unwrap_or_else(|| format!("sso-{}@unknown", login.subject)),
             name: external_name
                 .clone()
                 .or_else(|| {
@@ -342,7 +440,8 @@ impl OAuthService {
         let identity = OAuthIdentity {
             id: crate::core::repository::new_id(),
             user_id: user.id.clone(),
-            external_sub,
+            issuer: Some(login.issuer.clone()),
+            external_sub: login.subject.clone(),
             external_email,
             external_name,
             created_at: now,
@@ -352,6 +451,38 @@ impl OAuthService {
 
         Ok((user, true))
     }
+}
+
+fn conflict(message: &str) -> AppError {
+    AppError::Auth {
+        message: message.to_string(),
+        code: AuthErrorCode::AccountConflict,
+    }
+}
+
+/// An email address the provider asserted, and whether it vouched for it
+/// (`email_verified == true`). An absent or false claim is not verification.
+#[derive(Debug, Clone)]
+pub struct ProviderEmail {
+    pub address: String,
+    pub verified: bool,
+}
+
+/// What the provider asserted about the person signing in, once the ID token's
+/// signature, nonce and issuer have been checked.
+#[derive(Debug, Clone)]
+pub struct ExternalLogin {
+    pub issuer: String,
+    pub subject: String,
+    pub name: Option<String>,
+    pub email: Option<ProviderEmail>,
+}
+
+/// The same, from the provider's userinfo endpoint.
+#[derive(Debug, Clone)]
+pub struct ExternalUserinfo {
+    pub email: Option<ProviderEmail>,
+    pub name: Option<String>,
 }
 
 fn pick_name(

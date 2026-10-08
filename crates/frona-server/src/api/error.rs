@@ -38,7 +38,9 @@ impl IntoResponse for ApiError {
                         .into_response();
                 }
                 let status = match code {
-                    AuthErrorCode::AccountDeactivated => StatusCode::FORBIDDEN,
+                    AuthErrorCode::AccountDeactivated | AuthErrorCode::AccountConflict => {
+                        StatusCode::FORBIDDEN
+                    }
                     _ => StatusCode::UNAUTHORIZED,
                 };
                 return (

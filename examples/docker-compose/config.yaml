@@ -37,7 +37,7 @@
 #   allow_unknown_email_verification: false
 #   client_cache_expiration: 0
 #   only: false                              # if true, SSO is the only login method
-#   signups_match_email: true
+#   signups_match_email: false               # link first SSO sign-in to an existing account by *verified* email (off by default; see docs)
 
 # database:
 #   path: data/db

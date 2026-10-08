@@ -40,6 +40,8 @@ function LoginContent() {
     if (!ssoErrorCode) return "";
     const messages: Record<string, string> = {
       email_not_verified: "Your email has not been verified by the SSO provider.",
+      account_conflict: "An account with this email already exists. Sign in with your existing method, or ask an admin to link it.",
+      account_deactivated: "This account has been deactivated.",
       csrf_failed: "SSO session expired. Please try again.",
       token_invalid: "SSO authentication failed. Please try again.",
       token_expired: "That sign-in link expired. Please try again.",

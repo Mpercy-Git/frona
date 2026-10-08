@@ -32,7 +32,7 @@ fn defaults_are_sensible() {
     assert_eq!(config.memory.pkm_playbook_max_tool_turns, 20);
     assert_eq!(config.memory.pkm_playbook_max_submissions, 20);
     assert!(!config.sso.enabled);
-    assert!(config.sso.signups_match_email);
+    assert!(!config.sso.signups_match_email);
     assert!(config.browser.is_none());
     assert!(config.server.cors_origins.is_none());
     assert!(config.server.base_url.is_none());

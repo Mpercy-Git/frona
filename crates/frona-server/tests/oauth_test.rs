@@ -23,6 +23,7 @@ async fn test_oauth_identity_create_and_find_by_sub() {
     let identity = OAuthIdentity {
         id: frona::core::repository::new_id(),
         user_id: "user-1".to_string(),
+        issuer: None,
         external_sub: "google-sub-123".to_string(),
         external_email: Some("user@gmail.com".to_string()),
         external_name: Some("Test User".to_string()),
@@ -57,6 +58,7 @@ async fn test_oauth_identity_find_by_user() {
     let identity = OAuthIdentity {
         id: frona::core::repository::new_id(),
         user_id: "user-2".to_string(),
+        issuer: None,
         external_sub: "provider-sub-456".to_string(),
         external_email: None,
         external_name: None,
@@ -83,6 +85,7 @@ async fn test_oauth_identity_unique_sub() {
     let identity1 = OAuthIdentity {
         id: frona::core::repository::new_id(),
         user_id: "user-1".to_string(),
+        issuer: Some("https://idp-a.example".to_string()),
         external_sub: "same-sub".to_string(),
         external_email: None,
         external_name: None,
@@ -97,6 +100,7 @@ async fn test_oauth_identity_unique_sub() {
     let identity2 = OAuthIdentity {
         id: frona::core::repository::new_id(),
         user_id: "user-2".to_string(),
+        issuer: Some("https://idp-a.example".to_string()),
         external_sub: "same-sub".to_string(),
         external_email: None,
         external_name: None,
@@ -104,8 +108,43 @@ async fn test_oauth_identity_unique_sub() {
         updated_at: now,
     };
 
+    // The same subject from a different issuer is a different identity.
+    let other_issuer = OAuthIdentity {
+        id: frona::core::repository::new_id(),
+        user_id: "user-3".to_string(),
+        issuer: Some("https://idp-b.example".to_string()),
+        external_sub: "same-sub".to_string(),
+        external_email: None,
+        external_name: None,
+        created_at: now,
+        updated_at: now,
+    };
+    repo.create(&other_issuer).await.unwrap();
+    assert_eq!(
+        repo.find_identity("https://idp-b.example", "same-sub")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id,
+        "user-3"
+    );
+    assert_eq!(
+        repo.find_identity("https://idp-a.example", "same-sub")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id,
+        "user-1"
+    );
+    assert!(
+        repo.find_identity("https://idp-c.example", "same-sub")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
     let result = repo.create(&identity2).await;
-    // The unique index on external_sub should cause a failure
+    // The unique index on (issuer, external_sub) should cause a failure
     assert!(result.is_err());
 }
 
@@ -151,6 +190,7 @@ async fn test_email_matching_flow() {
     let identity = OAuthIdentity {
         id: frona::core::repository::new_id(),
         user_id: found_user.id.clone(),
+        issuer: None,
         external_sub: "sso-sub-new".to_string(),
         external_email: Some("existing@example.com".to_string()),
         external_name: Some("Existing User".to_string()),

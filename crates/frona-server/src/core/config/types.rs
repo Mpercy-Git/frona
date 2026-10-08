@@ -294,13 +294,17 @@ pub struct SsoConfig {
     pub client_secret: Option<String>,
     #[schemars(description = "OIDC scopes to request.")]
     pub scopes: String,
-    #[schemars(description = "Allow verification of emails not matching known users.")]
+    #[schemars(
+        description = "Allow sign-in when the SSO provider does not say the user's email is verified. When off, such sign-ins are refused. Either way, an unverified email is never used to match an existing account."
+    )]
     pub allow_unknown_email_verification: bool,
     #[schemars(description = "Client cache expiration in seconds.")]
     pub client_cache_expiration: u64,
     #[schemars(description = "Disable local (email/password) authentication when SSO is enabled.")]
     pub disable_local_auth: bool,
-    #[schemars(description = "Match SSO signups to existing users by email.")]
+    #[schemars(
+        description = "Link a first SSO sign-in to an existing account with the same email, if the provider has verified that email. Off by default: local registration does not verify email ownership, so anyone could pre-register an address and keep access when its real owner signs in. Enable only if registration is closed or you trust it."
+    )]
     pub signups_match_email: bool,
 }
 
@@ -315,7 +319,7 @@ impl Default for SsoConfig {
             allow_unknown_email_verification: true,
             client_cache_expiration: 0,
             disable_local_auth: false,
-            signups_match_email: true,
+            signups_match_email: false,
         }
     }
 }

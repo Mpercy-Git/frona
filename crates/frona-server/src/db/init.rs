@@ -181,7 +181,10 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_contact_addresses ON TABLE contact COLUMNS user_id, addresses.provider, addresses.address UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS oauth_identity SCHEMALESS;
-        DEFINE INDEX IF NOT EXISTS idx_oauth_identity_sub ON TABLE oauth_identity COLUMNS external_sub UNIQUE;
+        -- A subject is only unique within its issuer. The old index on
+        -- external_sub alone let one provider's subject collide with another's.
+        REMOVE INDEX IF EXISTS idx_oauth_identity_sub ON TABLE oauth_identity;
+        DEFINE INDEX IF NOT EXISTS idx_oauth_identity_issuer_sub ON TABLE oauth_identity COLUMNS issuer, external_sub UNIQUE;
         DEFINE INDEX IF NOT EXISTS idx_oauth_identity_user ON TABLE oauth_identity COLUMNS user_id;
 
         DEFINE TABLE IF NOT EXISTS notification SCHEMALESS;

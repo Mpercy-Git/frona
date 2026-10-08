@@ -17,6 +17,7 @@ mod navigation;
 mod notifications;
 mod security;
 mod spaces;
+mod sso;
 mod system;
 mod tasks;
 mod triggers;

@@ -76,14 +76,14 @@ export function SsoSection({ sso, onChange, hasBaseUrl }: SsoSectionProps) {
 
           <Toggle
             label="Signups Match Email"
-            description="Link SSO accounts to existing users by email address"
+            description="Link a first SSO sign-in to an existing account with the same email, but only if the provider has verified it. Off by default: local sign-up does not verify email ownership, so anyone could pre-register an address and keep access once its owner links SSO. Enable only if registration is closed or trusted."
             value={sso.signups_match_email}
             onChange={(signups_match_email) => onChange({ ...sso, signups_match_email })}
           />
 
           <Toggle
             label="Allow Unknown Email Verification"
-            description="Trust email verification claims from the SSO provider"
+            description="Let users sign in when the provider does not confirm their email is verified. Turn off to refuse them. An unverified email is never used to match an existing account either way."
             value={sso.allow_unknown_email_verification}
             onChange={(allow_unknown_email_verification) => onChange({ ...sso, allow_unknown_email_verification })}
           />
