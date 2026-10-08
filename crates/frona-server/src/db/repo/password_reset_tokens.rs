@@ -38,13 +38,11 @@ impl PasswordResetRepository for SurrealRepo<PasswordResetToken> {
     ) -> Result<Option<String>, AppError> {
         // RETURN BEFORE hands back what the DELETE removed, so a request that
         // loses a race to redeem the same secret gets nothing back.
-        let query = format!(
-            "DELETE password_reset_token WHERE token_hash = $token_hash AND expires_at > $now \
-             RETURN BEFORE"
-        );
+        let query = "DELETE password_reset_token WHERE token_hash = $token_hash \
+                     AND expires_at > $now RETURN BEFORE";
         let mut result = self
             .db()
-            .query(&query)
+            .query(query)
             .bind(("token_hash", token_hash.to_string()))
             .bind(("now", now))
             .await
