@@ -236,14 +236,9 @@ impl TokenService {
         keypair_svc: &KeyPairService,
         refresh_token_str: &str,
     ) -> Result<(String, String, Claims), AppError> {
-        let claims = self.validate(keypair_svc, refresh_token_str).await?;
-
-        if claims.token_type != TokenType::Refresh.as_str() {
-            return Err(AppError::Auth {
-                message: "Not a refresh token".into(),
-                code: AuthErrorCode::TokenInvalid,
-            });
-        }
+        let claims = self
+            .validate_refresh(keypair_svc, refresh_token_str)
+            .await?;
 
         // Atomically consume the refresh pair. If delete_by_refresh_pair returns
         // false, a concurrent request already consumed this token — reject to
@@ -345,6 +340,19 @@ impl TokenService {
             });
         }
         reject_app_scoped(&claims)?;
+        require_type(&claims, &API_TOKEN_TYPES)?;
+        Ok(claims)
+    }
+
+    /// Verify a refresh token. Only the session refresh and the app gate
+    /// present one; no other entry point may, and this accepts nothing else.
+    pub async fn validate_refresh(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        let claims = self.validate_any(keypair_svc, token_str).await?;
+        require_type(&claims, &[TokenType::Refresh])?;
         Ok(claims)
     }
 
@@ -394,6 +402,7 @@ impl TokenService {
     ) -> Result<Claims, AppError> {
         let claims = self.validate_any(keypair_svc, token_str).await?;
         reject_app_scoped(&claims)?;
+        require_type(&claims, &API_TOKEN_TYPES)?;
         Ok(claims)
     }
 
@@ -521,6 +530,22 @@ impl TokenService {
 /// Lifetime of the code that carries a user to the apps origin: long enough
 /// for two redirects, short enough that a leaked URL is worthless.
 const APP_GATE_CODE_TTL_SECS: u64 = 60;
+
+/// Token types that may authenticate an API request. A refresh token only
+/// mints new tokens (see [`TokenService::validate_refresh`]); accepting it here
+/// would make a long-lived, rotation-protected credential an ordinary bearer
+/// token that skips rotation.
+const API_TOKEN_TYPES: [TokenType; 3] = [TokenType::Access, TokenType::Pat, TokenType::Ephemeral];
+
+fn require_type(claims: &Claims, allowed: &[TokenType]) -> Result<(), AppError> {
+    if allowed.iter().any(|t| t.as_str() == claims.token_type) {
+        return Ok(());
+    }
+    Err(AppError::Auth {
+        message: format!("A {} token cannot be used here", claims.token_type),
+        code: AuthErrorCode::TokenInvalid,
+    })
+}
 
 fn has_scope(claims: &Claims, scope: &str) -> bool {
     claims

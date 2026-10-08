@@ -1512,3 +1512,64 @@ async fn auth_config_reports_password_reset_availability() {
         "no SMTP configured in tests, so the flow must advertise as unavailable"
     );
 }
+
+#[tokio::test]
+async fn a_refresh_token_is_not_an_api_bearer_token() {
+    let (state, _tmp) = test_app_state().await;
+    let (cookie, _user_id) = register_for_refresh_cookie(&state, "bearer").await;
+    let refresh = cookie.trim_start_matches("refresh_token=").to_string();
+
+    for uri in ["/api/auth/me", "/api/apps", "/api/files/browse/user"] {
+        let resp = build_app(state.clone())
+            .oneshot(auth_get(uri, &refresh))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{uri}");
+    }
+
+    // It still does the one job it has.
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/refresh")
+        .header("cookie", &cookie)
+        .body(Body::empty())
+        .unwrap();
+    with_connect_info(&mut req);
+    let resp = build_app(state).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn each_entry_point_accepts_only_its_own_token_types() {
+    let (state, _tmp) = test_app_state().await;
+    let (cookie, _user_id) = register_for_refresh_cookie(&state, "types").await;
+    let refresh = cookie.trim_start_matches("refresh_token=");
+    let (access, _) = {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "identifier": "types", "password": "password123" }).to_string(),
+            ))
+            .unwrap();
+        with_connect_info(&mut req);
+        let resp = build_app(state.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        (json["token"].as_str().unwrap().to_string(), ())
+    };
+
+    let svc = &state.token_service;
+    let keys = &state.keypair_service;
+
+    // General API validation: access yes, refresh no.
+    assert!(svc.validate(keys, &access).await.is_ok());
+    assert!(svc.validate(keys, refresh).await.is_err());
+    // The agent trigger endpoint is an API entry point too.
+    assert!(svc.validate_agent_trigger(keys, &access).await.is_ok());
+    assert!(svc.validate_agent_trigger(keys, refresh).await.is_err());
+    // Refresh validation: refresh yes, nothing else.
+    assert!(svc.validate_refresh(keys, refresh).await.is_ok());
+    assert!(svc.validate_refresh(keys, &access).await.is_err());
+}

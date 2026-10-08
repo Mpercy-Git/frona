@@ -144,7 +144,7 @@ async fn test_session_pair_creation() {
     assert_eq!(access_claims.token_type, "access");
 
     let refresh_claims = token_svc
-        .validate(&keypair_svc, &refresh_jwt)
+        .validate_refresh(&keypair_svc, &refresh_jwt)
         .await
         .unwrap();
     assert_eq!(refresh_claims.sub, user.id);
@@ -176,11 +176,11 @@ async fn test_token_refresh_rotation() {
     let old_result = token_svc.validate(&keypair_svc, &access_jwt).await;
     assert!(old_result.is_err());
 
-    let old_refresh_result = token_svc.validate(&keypair_svc, &refresh_jwt).await;
+    let old_refresh_result = token_svc.validate_refresh(&keypair_svc, &refresh_jwt).await;
     assert!(old_refresh_result.is_err());
 
     let new_refresh_claims = token_svc
-        .validate(&keypair_svc, &new_refresh)
+        .validate_refresh(&keypair_svc, &new_refresh)
         .await
         .unwrap();
     assert_eq!(new_refresh_claims.token_type, "refresh");
@@ -517,7 +517,7 @@ async fn test_refresh_survives_service_restart() {
         .unwrap();
 
     let refresh_claims = token_svc
-        .validate(&keypair_svc, &refresh_jwt)
+        .validate_refresh(&keypair_svc, &refresh_jwt)
         .await
         .unwrap();
 
@@ -553,7 +553,7 @@ async fn test_refresh_survives_service_restart() {
     assert_eq!(access_claims.token_type, "access");
 
     let refresh_claims = token_svc2
-        .validate(&keypair_svc2, &new_refresh)
+        .validate_refresh(&keypair_svc2, &new_refresh)
         .await
         .unwrap();
     assert_eq!(refresh_claims.sub, user.id);
@@ -640,7 +640,7 @@ async fn test_refresh_cookie_round_trip() {
     assert_eq!(access_claims.token_type, "access");
 
     let refresh_claims = token_svc2
-        .validate(&keypair_svc2, &new_refresh)
+        .validate_refresh(&keypair_svc2, &new_refresh)
         .await
         .unwrap();
     assert_eq!(refresh_claims.token_type, "refresh");

@@ -64,13 +64,12 @@ pub(crate) async fn auth_gate(
         return login();
     };
 
-    let claims = match state
+    let Ok(claims) = state
         .token_service
-        .validate(&state.keypair_service, refresh_token)
+        .validate_refresh(&state.keypair_service, refresh_token)
         .await
-    {
-        Ok(c) if c.token_type == "refresh" => c,
-        _ => return login(),
+    else {
+        return login();
     };
 
     let user = match state.user_service.find_by_id(&claims.sub).await {

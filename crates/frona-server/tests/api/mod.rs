@@ -15,6 +15,7 @@ mod messages;
 mod misc;
 mod navigation;
 mod notifications;
+mod push;
 mod security;
 mod spaces;
 mod sso;
@@ -345,6 +346,39 @@ async fn register_user(
     let token = json["token"].as_str().unwrap().to_string();
     let user_id = json["user"]["id"].as_str().unwrap().to_string();
     (token, user_id)
+}
+
+fn set_cookie_value(resp: &axum::http::Response<Body>, name: &str) -> Option<String> {
+    resp.headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|v| v.starts_with(&format!("{name}=")))
+        .map(|v| v.split(';').next().unwrap().to_string())
+}
+
+/// Registers a user and returns `(refresh cookie, user id)`.
+async fn register_for_refresh_cookie(state: &AppState, handle: &str) -> (String, String) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/register")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "handle": handle,
+                "email": format!("{handle}@example.com"),
+                "name": handle,
+                "password": "password123",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    with_connect_info(&mut req);
+    let resp = build_app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let cookie = set_cookie_value(&resp, "refresh_token").expect("refresh cookie");
+    let json = body_json(resp).await;
+    (cookie, json["user"]["id"].as_str().unwrap().to_string())
 }
 
 fn auth_get(uri: &str, token: &str) -> Request<Body> {
