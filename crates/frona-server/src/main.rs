@@ -85,6 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_service = ConfigService::new(loaded).unwrap_or_else(|e| panic!("{e}"));
     let config = config_service.active();
 
+    if let Err(e) = config.server.validate_apps_url() {
+        panic!("Invalid configuration: {e}");
+    }
+
     const DEFAULT_SECRET: &str = "dev-secret-change-in-production";
     if config.auth.encryption_secret == DEFAULT_SECRET {
         tracing::warn!(
@@ -401,6 +405,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             })),
         );
+
+    // Outermost, so it also covers the SPA fallback: the apps origin must never
+    // serve the frontend or the API.
+    let api = api.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        routes::apps::apps_origin_guard,
+    ));
 
     let api: axum::Router = if !has_users {
         api.layer(axum::middleware::from_fn(setup_redirect))

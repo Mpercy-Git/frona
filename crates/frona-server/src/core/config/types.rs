@@ -28,6 +28,10 @@ pub struct ServerConfig {
     #[schemars(description = "Override URL for the frontend (if different from base_url).")]
     pub frontend_url: Option<String>,
     #[schemars(
+        description = "Separate origin that serves agent-built apps (e.g. https://apps.example.com). Must differ from the Frona host and be routed to this server with the Host header preserved. When unset, apps are served under /apps/ on the main origin, so app JavaScript can reach the signed-in user's session. Strongly recommended for any instance that runs untrusted apps."
+    )]
+    pub apps_url: Option<String>,
+    #[schemars(
         description = "Externally-reachable URL of this server (e.g. ngrok tunnel, public domain). Used as the default callback target for inbound webhooks and external service callbacks when no per-feature override is set."
     )]
     pub external_url: Option<String>,
@@ -66,6 +70,71 @@ impl ServerConfig {
             .to_string()
     }
 
+    /// Origin that serves agent-built apps, without a trailing slash. `None`
+    /// when unset or unparseable, which keeps apps on the main origin.
+    pub fn public_apps_url(&self) -> Option<String> {
+        let raw = self.apps_url.as_deref()?.trim().trim_end_matches('/');
+        let parsed = url::Url::parse(raw).ok()?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return None;
+        }
+        Some(format!(
+            "{}://{}",
+            parsed.scheme(),
+            Self::authority(&parsed)?
+        ))
+    }
+
+    /// Rejects an `apps_url` that would not actually separate apps from Frona.
+    /// An unset or blank value is fine: apps then share the main origin.
+    pub fn validate_apps_url(&self) -> Result<(), String> {
+        let Some(raw) = self
+            .apps_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(());
+        };
+        let apps_host = self
+            .apps_host()
+            .ok_or_else(|| format!("server.apps_url '{raw}' is not a valid http(s) URL"))?;
+        if self.public_base_url().is_empty() {
+            return Err("server.base_url must be set when server.apps_url is set".into());
+        }
+        let same = [
+            self.base_url.as_deref(),
+            self.backend_url.as_deref(),
+            self.frontend_url.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|u| url::Url::parse(u).ok())
+        .filter_map(|u| Self::authority(&u))
+        .any(|host| host.eq_ignore_ascii_case(&apps_host));
+        if same {
+            return Err(format!(
+                "server.apps_url must be a different origin from base_url, backend_url and frontend_url (both are {apps_host})"
+            ));
+        }
+        Ok(())
+    }
+
+    /// `host[:port]` of [`Self::public_apps_url`], as it appears in a `Host`
+    /// header.
+    pub fn apps_host(&self) -> Option<String> {
+        let url = self.public_apps_url()?;
+        Self::authority(&url::Url::parse(&url).ok()?)
+    }
+
+    fn authority(url: &url::Url) -> Option<String> {
+        let host = url.host_str()?;
+        Some(match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        })
+    }
+
     pub fn external_base_url(&self) -> Option<String> {
         self.external_url
             .as_deref()
@@ -92,6 +161,7 @@ impl Default for ServerConfig {
             base_url: None,
             backend_url: None,
             frontend_url: None,
+            apps_url: None,
             external_url: None,
             max_body_size_bytes: 104_857_600,
             shutdown_timeout_secs: 60,

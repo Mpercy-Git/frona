@@ -12,6 +12,16 @@ use crate::core::Principal;
 /// in a third-party system's config from opening the owner's account.
 pub const AGENT_TRIGGER_SCOPE: &str = "agent:trigger";
 
+/// Scope of the short-lived code that carries a signed-in user from the main
+/// origin to the apps origin (`GET /api/auth/apps/callback`). Refused by
+/// `TokenService::validate`, so it cannot call any account API.
+pub const APP_GATE_SCOPE: &str = "app:gate";
+
+/// Scope of the `app_session` cookie the apps origin keeps. Like
+/// [`APP_GATE_SCOPE`] it is refused by `TokenService::validate`; only the apps
+/// proxy accepts it, through `TokenService::validate_app_session`.
+pub const APP_SESSION_SCOPE: &str = "app:session";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, SurrealValue)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb::types", rename_all = "snake_case")]

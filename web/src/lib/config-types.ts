@@ -12,6 +12,7 @@ export interface ServerConfig {
   base_url: string | null;
   backend_url: string | null;
   frontend_url: string | null;
+  apps_url?: string | null;
   external_url: string | null;
   max_body_size_bytes: number;
   /** Default IANA timezone for users with no profile timezone set.

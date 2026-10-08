@@ -469,6 +469,19 @@ async fn refresh(
     ),
     ApiError,
 > {
+    // Agent-built apps share this origin unless `server.apps_url` is set, and
+    // the browser attaches the refresh cookie to their requests too. Refuse a
+    // refresh that comes from an app page. A page can strip its own Referer, so
+    // this is a speed bump; only a separate apps origin closes the hole.
+    if headers
+        .get(axum::http::header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|r| url::Url::parse(r).ok())
+        .is_some_and(|r| r.path().starts_with("/apps/"))
+    {
+        return Err(AppError::Forbidden("Not available to apps".into()).into());
+    }
+
     let refresh_token = headers
         .get("cookie")
         .and_then(|v| v.to_str().ok())

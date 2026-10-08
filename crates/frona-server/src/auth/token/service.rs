@@ -3,7 +3,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 
 use super::models::{
-    AGENT_TRIGGER_SCOPE, ApiToken, CreatePatRequest, PatListItem, PatResponse, TokenType,
+    AGENT_TRIGGER_SCOPE, APP_GATE_SCOPE, APP_SESSION_SCOPE, ApiToken, CreatePatRequest,
+    PatListItem, PatResponse, TokenType,
 };
 use super::repository::TokenRepository;
 use crate::auth::User;
@@ -181,6 +182,55 @@ impl TokenService {
         Ok(created.jwt)
     }
 
+    /// Mint the short-lived code that moves a signed-in user from the main
+    /// origin to the apps origin. Stateless and scoped, so it opens nothing
+    /// but `GET /api/auth/apps/callback`.
+    pub async fn create_app_gate_code(
+        &self,
+        keypair_svc: &KeyPairService,
+        user: &User,
+    ) -> Result<String, AppError> {
+        self.create_token(
+            keypair_svc,
+            user,
+            CreateTokenRequest {
+                token_type: TokenType::Ephemeral,
+                principal: Principal::user(&user.id),
+                ttl_secs: APP_GATE_CODE_TTL_SECS,
+                name: "app_gate".to_string(),
+                scopes: vec![APP_GATE_SCOPE.to_string()],
+                refresh_pair_id: None,
+                extensions: None,
+            },
+        )
+        .await
+        .map(|created| created.jwt)
+    }
+
+    /// Mint the credential the apps proxy keeps in the `app_session` cookie.
+    /// Scoped so it cannot authenticate to any account API.
+    pub async fn create_app_session(
+        &self,
+        keypair_svc: &KeyPairService,
+        user: &User,
+    ) -> Result<String, AppError> {
+        self.create_token(
+            keypair_svc,
+            user,
+            CreateTokenRequest {
+                token_type: TokenType::Access,
+                principal: Principal::user(&user.id),
+                ttl_secs: self.access_expiry_secs,
+                name: "app_session".to_string(),
+                scopes: vec![APP_SESSION_SCOPE.to_string()],
+                refresh_pair_id: None,
+                extensions: None,
+            },
+        )
+        .await
+        .map(|created| created.jwt)
+    }
+
     pub async fn refresh(
         &self,
         keypair_svc: &KeyPairService,
@@ -294,6 +344,43 @@ impl TokenService {
                 code: AuthErrorCode::TokenInvalid,
             });
         }
+        reject_app_scoped(&claims)?;
+        Ok(claims)
+    }
+
+    /// Verify the `app_session` cookie the apps proxy accepts.
+    pub async fn validate_app_session(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        self.validate_scoped(keypair_svc, token_str, APP_SESSION_SCOPE)
+            .await
+    }
+
+    /// Verify the code `GET /api/auth/apps/callback` exchanges for a session.
+    pub async fn validate_app_gate_code(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        self.validate_scoped(keypair_svc, token_str, APP_GATE_SCOPE)
+            .await
+    }
+
+    async fn validate_scoped(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+        scope: &str,
+    ) -> Result<Claims, AppError> {
+        let claims = self.validate_any(keypair_svc, token_str).await?;
+        if !has_scope(&claims, scope) {
+            return Err(AppError::Auth {
+                message: "Token is not valid here".into(),
+                code: AuthErrorCode::TokenInvalid,
+            });
+        }
         Ok(claims)
     }
 
@@ -305,7 +392,9 @@ impl TokenService {
         keypair_svc: &KeyPairService,
         token_str: &str,
     ) -> Result<Claims, AppError> {
-        self.validate_any(keypair_svc, token_str).await
+        let claims = self.validate_any(keypair_svc, token_str).await?;
+        reject_app_scoped(&claims)?;
+        Ok(claims)
     }
 
     async fn validate_any(
@@ -427,6 +516,29 @@ impl TokenService {
     pub fn repo(&self) -> &dyn TokenRepository {
         &*self.repo
     }
+}
+
+/// Lifetime of the code that carries a user to the apps origin: long enough
+/// for two redirects, short enough that a leaked URL is worthless.
+const APP_GATE_CODE_TTL_SECS: u64 = 60;
+
+fn has_scope(claims: &Claims, scope: &str) -> bool {
+    claims
+        .scopes
+        .as_ref()
+        .is_some_and(|scopes| scopes.iter().any(|s| s == scope))
+}
+
+/// App credentials ([`APP_GATE_SCOPE`], [`APP_SESSION_SCOPE`]) belong to the
+/// apps origin and open nothing else.
+fn reject_app_scoped(claims: &Claims) -> Result<(), AppError> {
+    if has_scope(claims, APP_GATE_SCOPE) || has_scope(claims, APP_SESSION_SCOPE) {
+        return Err(AppError::Auth {
+            message: "This token can only be used for apps".into(),
+            code: AuthErrorCode::TokenInvalid,
+        });
+    }
+    Ok(())
 }
 
 pub fn is_trigger_only(claims: &Claims) -> bool {
