@@ -137,17 +137,11 @@ async fn subscribe(
     State(state): State<AppState>,
     Json(req): Json<SubscribeRequest>,
 ) -> Result<(), ApiError> {
-    // Validate endpoint is an https:// URL to prevent SSRF.
-    let parsed = req.endpoint.parse::<axum::http::Uri>().map_err(|_| {
-        ApiError(crate::core::error::AppError::Validation(
-            "Invalid endpoint URL".into(),
-        ))
-    })?;
-    if parsed.scheme_str() != Some("https") {
-        return Err(ApiError(crate::core::error::AppError::Validation(
-            "Push endpoint must use HTTPS".into(),
-        )));
-    }
+    // The server will POST to this URL, so it must not be able to aim the
+    // server at its own network. The connection-time check lives in the
+    // push client; this rejects what is wrong on its face.
+    crate::notification::egress::validate_endpoint(&req.endpoint)
+        .map_err(|e| ApiError(crate::core::error::AppError::Validation(e)))?;
 
     // Enforce per-user subscription cap to prevent fan-out DoS.
     let existing = state

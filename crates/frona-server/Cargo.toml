@@ -151,6 +151,8 @@ flate2 = "1"
 frona-ontologies = { git = "https://github.com/Mpercy-Git/frona-ontologies", rev = "0bf0276508bd56a7177776ac97aedc78a7716ae0", default-features = false }
 http = "1"
 web-push = "0.11"
+# web-push builds its requests and parses responses with http 0.2; reqwest uses 1.x.
+http02 = { package = "http", version = "0.2" }
 
 # Personal-WhatsApp adapter. Uses the stable-Rust `wa-rs` fork of
 # `whatsapp-rust` - the upstream requires nightly.
