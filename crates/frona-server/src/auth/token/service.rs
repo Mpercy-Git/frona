@@ -522,6 +522,30 @@ impl TokenService {
         self.refresh_expiry_secs
     }
 
+    /// Ends every session and token the user holds. Retried, because callers
+    /// run it right after a credential change and a session that outlives the
+    /// change defeats the point of it; if it still fails the caller gets the
+    /// error rather than a silent success.
+    pub async fn revoke_all_for_user(&self, user_id: &str) -> Result<(), AppError> {
+        const ATTEMPTS: u32 = 3;
+        let mut attempt = 1;
+        loop {
+            match self.repo.delete_by_user_id(user_id).await {
+                Ok(()) => return Ok(()),
+                Err(e) if attempt < ATTEMPTS => {
+                    tracing::warn!(user_id, attempt, error = %e, "Revoking sessions failed; retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)))
+                        .await;
+                    attempt += 1;
+                }
+                Err(e) => {
+                    tracing::error!(user_id, error = %e, "Could not revoke the user's sessions");
+                    return Err(e);
+                }
+            }
+        }
+    }
+
     pub fn repo(&self) -> &dyn TokenRepository {
         &*self.repo
     }

@@ -262,11 +262,7 @@ async fn deactivate_user(
         .deactivate(&target_id)
         .await
         .map_err(translate_invariant_violation)?;
-    let _ = state
-        .token_service
-        .repo()
-        .delete_by_user_id(&target_id)
-        .await;
+    state.token_service.revoke_all_for_user(&target_id).await?;
     state.user_service.ensure_admin_invariant().await?;
 
     Ok(Json(AdminUserListItem::from(updated)))
@@ -321,11 +317,7 @@ async fn set_user_password(
 
     // A password the user no longer knows must not leave live sessions behind,
     // and a reset is pointless if the account stays locked out.
-    let _ = state
-        .token_service
-        .repo()
-        .delete_by_user_id(&target_id)
-        .await;
+    state.token_service.revoke_all_for_user(&target_id).await?;
     clear_lockout(&state, &target).await;
     state
         .password_reset_service

@@ -1573,3 +1573,115 @@ async fn each_entry_point_accepts_only_its_own_token_types() {
     assert!(svc.validate_refresh(keys, refresh).await.is_ok());
     assert!(svc.validate_refresh(keys, &access).await.is_err());
 }
+
+// ---- password recovery hardening ----
+
+#[tokio::test]
+async fn a_reset_secret_is_redeemed_by_exactly_one_of_many_concurrent_requests() {
+    let (state, _tmp) = test_app_state().await;
+    let (_t, user_id) = register_user(&state, "race", "race@example.com", "password123").await;
+    let secret = state.password_reset_service.issue(&user_id).await.unwrap();
+
+    let attempts: Vec<_> = (0..8)
+        .map(|_| {
+            let service = state.password_reset_service.clone();
+            let secret = secret.clone();
+            tokio::spawn(async move { service.consume(&secret).await })
+        })
+        .collect();
+    let mut redeemed = 0;
+    for attempt in attempts {
+        if let Ok(id) = attempt.await.unwrap() {
+            assert_eq!(id, user_id);
+            redeemed += 1;
+        }
+    }
+    assert_eq!(redeemed, 1, "one secret must only ever be redeemable once");
+}
+
+#[tokio::test]
+async fn an_expired_reset_secret_is_refused() {
+    let (state, _tmp) = test_app_state().await;
+    let (_t, user_id) = register_user(&state, "stale", "stale@example.com", "password123").await;
+    let repo: frona::db::repo::generic::SurrealRepo<
+        frona::auth::password_reset::models::PasswordResetToken,
+    > = frona::db::repo::generic::SurrealRepo::new(state.db.clone());
+    // A service whose tokens expire the moment they are issued.
+    let instant = frona::auth::password_reset::service::PasswordResetService::new(
+        std::sync::Arc::new(repo),
+        0,
+    );
+    let secret = instant.issue(&user_id).await.unwrap();
+    assert!(instant.consume(&secret).await.is_err());
+}
+
+#[tokio::test]
+async fn reset_emails_for_one_account_are_spaced_out() {
+    let (state, _tmp) = test_app_state().await;
+    let (_t, user_id) = register_user(&state, "spam", "spam@example.com", "password123").await;
+
+    let service = state
+        .password_reset_service
+        .clone()
+        .with_cooldown(std::time::Duration::from_secs(60));
+    assert!(service.issue_if_allowed(&user_id).await.unwrap().is_some());
+    assert!(
+        service.issue_if_allowed(&user_id).await.unwrap().is_none(),
+        "a second email inside the cooldown must not be sent"
+    );
+
+    // Another account is unaffected.
+    let (_t2, other_id) = register_user(&state, "spam2", "spam2@example.com", "password123").await;
+    assert!(service.issue_if_allowed(&other_id).await.unwrap().is_some());
+
+    // And with no cooldown the same account can be mailed again.
+    let open = state
+        .password_reset_service
+        .clone()
+        .with_cooldown(std::time::Duration::ZERO);
+    assert!(open.issue_if_allowed(&user_id).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn reset_emails_in_flight_are_bounded() {
+    let (state, _tmp) = test_app_state().await;
+    let service = state.password_reset_service.clone().with_mail_slots(2);
+
+    let first = service.try_reserve_mail_slot().expect("slot 1");
+    let _second = service.try_reserve_mail_slot().expect("slot 2");
+    assert!(service.try_reserve_mail_slot().is_none());
+
+    drop(first);
+    assert!(service.try_reserve_mail_slot().is_some());
+}
+
+#[tokio::test]
+async fn forgot_password_has_its_own_small_per_ip_budget() {
+    let (state, _tmp) = test_app_state().await;
+    let app = build_app(state);
+
+    let mut statuses = Vec::new();
+    for _ in 0..4 {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/forgot-password")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "email": "anyone@example.com" }).to_string(),
+            ))
+            .unwrap();
+        with_connect_info(&mut req);
+        statuses.push(app.clone().oneshot(req).await.unwrap().status());
+    }
+    // Mail is unconfigured in tests, so the handler answers 400 until the
+    // limiter steps in on the fourth request.
+    assert_eq!(
+        statuses,
+        vec![
+            StatusCode::BAD_REQUEST,
+            StatusCode::BAD_REQUEST,
+            StatusCode::BAD_REQUEST,
+            StatusCode::TOO_MANY_REQUESTS,
+        ]
+    );
+}
