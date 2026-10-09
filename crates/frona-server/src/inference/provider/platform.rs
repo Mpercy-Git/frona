@@ -738,6 +738,31 @@ macro_rules! build_listable_key_client {
     }};
 }
 
+const OPENROUTER_DEFAULT_ENDPOINT: &str = "https://openrouter.ai/api/v1";
+
+/// An authenticated `GET <base>/key`. OpenRouter answers 200 for a valid key and
+/// 401 otherwise, unlike its public model list, which accepts any key. The client
+/// follows no redirects, so the key is never forwarded to another host.
+fn openrouter_key_check(
+    key: &str,
+    base_url: &str,
+) -> Result<(reqwest::Client, reqwest::Url), InferenceError> {
+    let url = reqwest::Url::parse(&format!("{}/key", base_url.trim_end_matches('/')))
+        .map_err(|_| InferenceError::ConfigError("Invalid OpenRouter base URL".into()))?;
+    let mut authorization = reqwest::header::HeaderValue::from_str(&format!("Bearer {key}"))
+        .map_err(|_| InferenceError::ConfigError("Invalid OpenRouter API key".into()))?;
+    authorization.set_sensitive(true);
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(reqwest::header::AUTHORIZATION, authorization);
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|_| InferenceError::ConfigError("Cannot build OpenRouter key client".into()))?;
+    Ok((client, url))
+}
+
 fn openrouter_prompt_caching<H>(
     model: rig_core::providers::openrouter::CompletionModel<H>,
     model_ref: &ModelConfig,
@@ -822,6 +847,8 @@ pub(crate) fn build_provider(
             }
             let client = builder.build().map_err(|error| config_error(name, error))?;
             let validation_client = client.clone();
+            let (key_client, key_url) =
+                openrouter_key_check(&key, endpoint.unwrap_or(OPENROUTER_DEFAULT_ENDPOINT))?;
             Ok(Arc::new(
                 RigProvider::new(client, counter.clone())
                     .with_wire_transport()
@@ -832,6 +859,26 @@ pub(crate) fn build_provider(
                                 .list_models()
                                 .await
                                 .map_err(CredentialValidationError::from)
+                        }
+                    })
+                    // The model list is public, so it cannot prove a key is valid.
+                    // Credential validation uses an authenticated endpoint instead.
+                    .with_validation_check(move || {
+                        let client = key_client.clone();
+                        let url = key_url.clone();
+                        async move {
+                            let response = client.get(url).send().await.map_err(|_| {
+                                CredentialValidationError::Failed(
+                                    "OpenRouter key request failed".into(),
+                                )
+                            })?;
+                            match response.status().as_u16() {
+                                200 => Ok(()),
+                                401 | 403 => Err(CredentialValidationError::AuthenticationRejected),
+                                status => Err(CredentialValidationError::Failed(format!(
+                                    "OpenRouter returned HTTP {status}"
+                                ))),
+                            }
                         }
                     })
                     .with_hook(hooks::openrouter)
@@ -1070,5 +1117,76 @@ mod tests {
             resolved.effective_base_url.as_deref(),
             Some("https://api.kimi.com/coding")
         );
+    }
+
+    #[tokio::test]
+    async fn openrouter_key_check_accepts_only_a_key_the_provider_recognises() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{header, method, path},
+        };
+
+        fn provider(endpoint: &str, key: &str) -> Arc<dyn ModelProvider> {
+            let config: ModelProviderConfig = serde_json::from_value(serde_json::json!({
+                "provider": "openrouter", "base_url": endpoint, "api_key": key,
+            }))
+            .unwrap();
+            let resolved = ProviderPlatform::resolve(&handle("account"), &config).unwrap();
+            build_provider(
+                &resolved,
+                &config,
+                &InferenceCounter::new(crate::chat::broadcast::BroadcastService::new()),
+            )
+            .unwrap()
+        }
+
+        // Like OpenRouter: /key is authenticated, the model list is public.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/key"))
+            .and(header("authorization", "Bearer real-key"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"data": {"label": "fixture", "limit": null}}),
+                ),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/key"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(
+                serde_json::json!({"error": {"code": 401, "message": "secret real-key"}}),
+            ))
+            .mount(&server)
+            .await;
+
+        let good = provider(&server.uri(), "real-key")
+            .validate_credentials()
+            .await;
+        assert!(good.is_ok(), "{good:?}");
+        assert!(good.unwrap().models.is_none());
+
+        // The validation service also sends a made-up key and requires it to be
+        // rejected; before this check, OpenRouter's public list accepted it.
+        let bad = provider(&server.uri(), "frona-validation-control-x")
+            .validate_credentials()
+            .await;
+        assert!(
+            matches!(bad, Err(CredentialValidationError::AuthenticationRejected)),
+            "{bad:?}"
+        );
+
+        // A server error is a failure, not a rejection, and never echoes the key.
+        let failing = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("real-key"))
+            .mount(&failing)
+            .await;
+        let error = provider(&failing.uri(), "real-key")
+            .validate_credentials()
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CredentialValidationError::Failed(_)));
+        assert!(!error.to_string().contains("real-key"));
     }
 }
