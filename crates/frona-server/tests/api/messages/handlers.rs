@@ -469,6 +469,7 @@ async fn batched_resolve_resumes_agent_loop() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: chrono::Utc::now(),
         };
         tc_repo.create(&te).await.unwrap();

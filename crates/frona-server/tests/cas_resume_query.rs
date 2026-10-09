@@ -70,6 +70,7 @@ fn make_tool_call(id: &str, msg_id: &str, hitl_status: Option<ToolStatus>) -> To
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc::now(),
     }
 }

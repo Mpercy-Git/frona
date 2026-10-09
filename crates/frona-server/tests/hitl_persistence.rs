@@ -40,6 +40,7 @@ fn base_tool_call(name: &str) -> ToolCall {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc::now(),
     }
 }

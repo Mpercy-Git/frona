@@ -1116,6 +1116,7 @@ mod tests {
             description: None,
             turn_text: text.map(String::from),
             turn_reasoning: None,
+            signature: None,
             created_at: chrono::Utc::now(),
         }
     }

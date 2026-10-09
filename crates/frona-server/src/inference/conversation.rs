@@ -483,11 +483,15 @@ fn convert_agent_with_tool_calls(
             assistant_items.push(AssistantContent::text(text));
         }
         for te in tes {
-            assistant_items.push(AssistantContent::tool_call(
+            let call = rig_core::completion::message::ToolCall::from_wire(
                 &te.provider_call_id,
-                &te.name,
-                te.arguments.clone(),
-            ));
+                rig_core::completion::message::ToolFunction::new(
+                    te.name.clone(),
+                    te.arguments.clone(),
+                ),
+            )
+            .with_signature(te.signature.clone());
+            assistant_items.push(AssistantContent::ToolCall(call));
         }
         if !assistant_items.is_empty() {
             result.push(RigMessage::Assistant {
@@ -1123,6 +1127,41 @@ mod tests {
         } else {
             panic!("Expected Assistant message");
         }
+    }
+
+    #[test]
+    fn replayed_tool_call_keeps_its_thought_signature() {
+        let msg = make_agent_message("done", "agent-1");
+        let te = ToolCall {
+            id: "te-1".to_string(),
+            chat_id: msg.chat_id.clone(),
+            message_id: msg.id.clone(),
+            turn: 0,
+            provider_call_id: String::new(),
+            name: "web_search".to_string(),
+            arguments: serde_json::json!({"q": "x"}),
+            result: "ok".to_string(),
+            success: true,
+            duration_ms: 1,
+            hitl: None,
+            task_event: None,
+            system_prompt: None,
+            description: None,
+            turn_text: None,
+            turn_reasoning: None,
+            signature: Some("gemini-sig".to_string()),
+            created_at: chrono::Utc::now(),
+        };
+        let mut out = Vec::new();
+        convert_agent_with_tool_calls(&msg, &[&te], "agent-1", None, &mut out);
+        let RigMessage::Assistant { content, .. } = &out[0] else {
+            panic!("expected the assistant tool-call turn first");
+        };
+        let signature = content.iter().find_map(|c| match c {
+            AssistantContent::ToolCall(tc) => tc.signature.clone(),
+            _ => None,
+        });
+        assert_eq!(signature.as_deref(), Some("gemini-sig"));
     }
 
     #[test]

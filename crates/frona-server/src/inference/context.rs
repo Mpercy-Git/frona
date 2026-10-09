@@ -95,12 +95,22 @@ pub fn truncate_history(
     }
 
     let original_len = history.len();
+
+    // The rolling summary is the only record of everything compacted away
+    // (typically the conversation's opening request), so it is pinned: dropping
+    // it first, as plain oldest-first trimming would, is exactly how the agent
+    // "forgets" what it was originally asked.
+    let pinned = history.first().filter(|m| is_summary_message(m)).cloned();
+    let pinned_cost = pinned.as_ref().map(estimate_message_tokens).unwrap_or(0);
+    let tail_budget = budget.saturating_sub(pinned_cost);
+    let tail_start = usize::from(pinned.is_some());
+
     let mut result: Vec<RigMessage> = Vec::new();
     let mut used = 0usize;
 
-    for msg in history.into_iter().rev() {
+    for msg in history.into_iter().skip(tail_start).rev() {
         let cost = estimate_message_tokens(&msg);
-        if used + cost > budget {
+        if used + cost > tail_budget {
             break;
         }
         used += cost;
@@ -108,6 +118,20 @@ pub fn truncate_history(
     }
 
     result.reverse();
+    // Cutting mid-conversation can leave the tail opening on a model turn or on
+    // a tool result whose call was dropped. Gemini (and others) reject a
+    // conversation that doesn't start on a user turn, or a function response
+    // with no call before it, so trim to the first plain user message.
+    let leading_invalid = result
+        .iter()
+        .take_while(|m| !is_plain_user_message(m))
+        .count();
+    if leading_invalid < result.len() {
+        result.drain(..leading_invalid);
+    }
+    if let Some(summary) = pinned {
+        result.insert(0, summary);
+    }
     // We only get here when the history is over budget and messages are being
     // dropped oldest-first - a silent context loss the caller can't see. Surface
     // it: for the compaction summarizer (`text_inference`) this means the backlog
@@ -121,6 +145,27 @@ pub fn truncate_history(
         "history over budget: dropped oldest messages to fit (silent context loss)"
     );
     result
+}
+
+const SUMMARY_OPEN_TAG: &str = "<conversation_summary>";
+
+fn is_summary_message(msg: &RigMessage) -> bool {
+    match msg {
+        RigMessage::User { content } => content.iter().any(|c| {
+            matches!(c, rig_core::completion::message::UserContent::Text(t)
+                if t.text.starts_with(SUMMARY_OPEN_TAG))
+        }),
+        _ => false,
+    }
+}
+
+fn is_plain_user_message(msg: &RigMessage) -> bool {
+    match msg {
+        RigMessage::User { content } => !content
+            .iter()
+            .any(|c| matches!(c, rig_core::completion::message::UserContent::ToolResult(_))),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -152,5 +197,36 @@ mod tests {
         let msgs = vec![RigMessage::user(&long), RigMessage::user("keep this")];
         let result = truncate_history(msgs, "system", 200_000, 8192, 90);
         assert!(result.len() <= 2);
+    }
+
+    #[test]
+    fn test_truncate_history_pins_summary() {
+        let summary =
+            RigMessage::user("<conversation_summary>\nopening request\n</conversation_summary>");
+        let big = "x".repeat(4_000);
+        let msgs = vec![
+            summary.clone(),
+            RigMessage::user(&big),
+            RigMessage::user(&big),
+            RigMessage::user("latest"),
+        ];
+        // Budget fits the summary plus roughly one big message.
+        let result = truncate_history(msgs, "", 1_300, 0, 100);
+        assert_eq!(result.first(), Some(&summary));
+        assert_eq!(result.last(), Some(&RigMessage::user("latest")));
+        assert!(result.len() < 4);
+    }
+
+    #[test]
+    fn test_truncate_history_starts_on_user_turn() {
+        let big = "x".repeat(4_000);
+        let msgs = vec![
+            RigMessage::user(&big),
+            RigMessage::assistant(&big),
+            RigMessage::user("next question"),
+            RigMessage::assistant("answer"),
+        ];
+        let result = truncate_history(msgs, "", 1_100, 0, 100);
+        assert!(matches!(result.first(), Some(RigMessage::User { .. })));
     }
 }

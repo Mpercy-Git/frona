@@ -63,6 +63,7 @@ mod tests {
             description: None,
             turn_text: turn_text.map(str::to_string),
             turn_reasoning: None,
+            signature: None,
             created_at: Utc.timestamp_opt(turn as i64, 0).unwrap(),
         }
     }
