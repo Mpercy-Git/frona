@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  # Branches are covered by `pull_request`. Triggering on every branch push as
+  # well ran the whole suite twice per commit, doubling runner load for no extra
+  # signal. `main` still runs on push so merged commits are checked.
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -12,16 +15,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  backend:
-    name: Backend (cargo test)
+  # The server suite is split across parallel shards (cargo-nextest partitions)
+  # instead of one ~35 min serial run. Each shard compiles the tests once
+  # (~7 min, cached) and runs a third of them. A per-test timeout (see
+  # .config/nextest.toml) turns a stalled test into a named failure rather than
+  # a runner that goes silent until it is cancelled.
+  backend-shard:
+    name: Backend shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
-    # Observed baseline on main: ~17 min to compile tests + ~25 min to run
-    # them (~43 min total). Without a cap, a genuine hang in a test (a stuck
-    # future, a retry loop, a credential-refresh call reaching out for real)
-    # burns the default 360-minute runner timeout in silence instead of
-    # failing visibly. 60 min gives headroom over the observed baseline
-    # while still turning a hang into an actionable failure quickly.
-    timeout-minutes: 60
+    # Observed on main: ~7 min to compile + ~12-15 min per shard. 40 min leaves
+    # generous headroom and still fails a genuine hang well before the default
+    # 360-minute runner timeout.
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     # The repo's .cargo/config.toml pins build.target-dir to a Windows path
     # (C:/temp/...). On Linux the "C:" colon makes cargo assemble an invalid
     # dynamic-library path and fail before compiling anything. Override it.
@@ -52,26 +61,46 @@ jobs:
           # enforce a zero-warning policy the project hasn't adopted.
           rustflags: ""
 
-      # Compile every crate's tests. This is the check that cannot run on
-      # Windows — the sandbox code uses Unix-only APIs — so it's the main reason
-      # the workflow exists. Kept separate so a compile break reads distinctly
-      # from a test failure.
-      # Compile every crate's tests — the check that can't run on Windows (the
-      # sandbox's Unix-only APIs). Kept separate so a compile break reads
-      # distinctly from a test failure.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      # Compile every other crate's tests too - the check that can't run on
+      # Windows (the sandbox's Unix-only APIs). Done once, on shard 1: the
+      # frona-server tests are compiled by every shard's nextest run below, and
+      # the other crates' tests are only compiled here (frona-browser's tests
+      # need a real browser; mcp_e2e is #[ignore]d and needs an external binary).
+      # `cargo build --tests` (not `cargo test --no-run`, which rejects
+      # --keep-going) so one failing test crate doesn't mask errors in the
+      # others - we get the full picture in a single run.
       - name: Compile all tests
-        # `cargo build --tests` (not `cargo test --no-run`, which rejects
-        # --keep-going) so one failing test crate doesn't mask errors in the
-        # others — we get the full picture in a single run.
+        if: matrix.shard == 1
         run: cargo build --workspace --tests --keep-going --locked
 
-      # Run the frona-server suite (channels, tasks, inference, policy, …).
-      # The other crates are only compiled above: frona-browser's tests need a
-      # real browser, and mcp_e2e is #[ignore]d (needs an external binary).
+      # Run this shard's third of the frona-server suite (channels, tasks,
+      # inference, policy, ...). `--no-fail-fast` is the ci profile's
+      # `fail-fast = false`, so every failure in the shard shows in one run.
       - name: Run server tests
-        # --no-fail-fast so one failing test crate doesn't hide failures in the
-        # others; we see every failure in a single run.
-        run: cargo test -p frona-server --locked --no-fail-fast
+        timeout-minutes: 35
+        run: >-
+          cargo nextest run -p frona-server --locked --profile ci
+          --partition count:${{ matrix.shard }}/3
+
+  # Single, stable check name for the whole backend suite, so a branch
+  # protection rule requiring "Backend (cargo test)" keeps working no matter how
+  # many shards run behind it.
+  backend:
+    name: Backend (cargo test)
+    runs-on: ubuntu-latest
+    needs: backend-shard
+    if: always()
+    steps:
+      - name: Require every shard to pass
+        run: |
+          result="${{ needs.backend-shard.result }}"
+          echo "backend shards: $result"
+          [ "$result" = "success" ]
 
   # Formatting and lints. These have always been defined in mise.toml
   # (`fmt:check`, `lint:backend`) but were never enforced anywhere, so `main`

@@ -1,0 +1,16 @@
+# cargo-nextest settings, used by the CI backend job (`--profile ci`).
+#
+# nextest runs every test in its own process, which is what lets CI split the
+# frona-server suite across parallel jobs (`--partition`) and put a hard limit on
+# a single test. Without a limit, one test that stalls holds the whole job until
+# the runner gives up, and the log never says which test it was.
+
+[profile.default]
+# Flag a test as slow after 60s, and kill it after 10 minutes. The longest
+# legitimate test finishes in well under a minute; this is only a backstop.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[profile.ci]
+# Report every failing test in one run instead of stopping at the first.
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 10 }
