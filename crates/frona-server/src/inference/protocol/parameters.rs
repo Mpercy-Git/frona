@@ -214,6 +214,19 @@ fn get_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     path.split('.').try_fold(value, |value, key| value.get(key))
 }
 
+/// Settings Frona consumes itself rather than mapping onto a request parameter, so
+/// they have no entry in the binding table. OpenRouter's routing and caching
+/// controls are applied when the request is built (`protocol::hooks::openrouter`
+/// and the completion model's prompt-caching option). Without this allowance
+/// the unsupported-setting check below rejects them, which stops the server
+/// starting and fails every request for a model that sets one.
+fn frona_side_fields(model: &ProviderModel) -> &'static [&'static str] {
+    match model {
+        ProviderModel::OpenRouter { .. } => &["route", "prompt_caching", "provider_routing"],
+        _ => &[],
+    }
+}
+
 fn model_settings(model: &ProviderModel) -> Value {
     let value = match model {
         ProviderModel::OpenAI { params, .. }
@@ -424,10 +437,12 @@ impl WireParameters {
             settings["temperature"] = json!(value);
         }
         let mappings = parameter_bindings(&model.provider);
+        let local_only = frona_side_fields(&model.provider);
         for field in settings.as_object().expect("settings object").keys() {
-            if !mappings
-                .iter()
-                .any(|mapping| mapping.config_path.split('.').next() == Some(field.as_str()))
+            if !local_only.contains(&field.as_str())
+                && !mappings
+                    .iter()
+                    .any(|mapping| mapping.config_path.split('.').next() == Some(field.as_str()))
             {
                 return Err(InferenceError::ConfigError(format!(
                     "{path}.{field}: setting is not supported by this protocol"
