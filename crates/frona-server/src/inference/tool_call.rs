@@ -67,6 +67,10 @@ pub struct ToolCall {
     /// chat-completion requests — without it, resume after a HITL pause errors
     /// with `invalid_request_error`.
     pub turn_reasoning: Option<crate::chat::message::models::Reasoning>,
+    /// Provider thought signature attached to this function call (Gemini
+    /// thinking models). Replayed verbatim on later requests; Gemini rejects
+    /// a rebuilt tool-calling turn whose calls lost it.
+    pub signature: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

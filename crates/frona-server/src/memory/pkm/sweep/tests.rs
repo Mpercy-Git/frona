@@ -282,6 +282,7 @@ fn stored_call(id: &str, chat_id: &str, turn: u32) -> ToolCall {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: at(turn as i64),
     }
 }

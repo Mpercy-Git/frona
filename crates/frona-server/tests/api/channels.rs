@@ -1748,6 +1748,7 @@ async fn insert_tool_call(
             None,
             turn_text.map(String::from),
             None,
+            None,
         )
         .await
         .unwrap()
@@ -2291,6 +2292,7 @@ async fn channel_button_resolution_resumes_inference() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: chrono::Utc::now(),
     };
     use frona::core::repository::Repository;

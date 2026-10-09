@@ -1118,6 +1118,7 @@ mod tests {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: Utc::now(),
         }
     }

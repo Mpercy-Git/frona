@@ -457,6 +457,7 @@ async fn execute_tool_calls(
                     description,
                     current_turn_text,
                     current_turn_reasoning,
+                    tool_call.signature.clone(),
                 )
                 .await?;
             te_records.push(te_record);

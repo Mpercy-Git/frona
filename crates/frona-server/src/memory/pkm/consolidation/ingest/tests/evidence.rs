@@ -50,6 +50,7 @@ fn recall_projection(message_id: &str, result: &str) -> RecallProjection {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     RecallProjection::new(&[call], |_| false)
@@ -240,6 +241,7 @@ fn critical_values_may_be_covered_across_selected_execution_evidence() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: Utc.timestamp_opt(turn as i64, 0).unwrap(),
         }
     };
@@ -340,6 +342,7 @@ fn supplied_tool_evidence_requires_a_matching_agent_assertion_source() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     let evidence = ToolEvidenceProjection::new(
@@ -426,6 +429,7 @@ fn critical_value_rejection_reports_all_missing_values_at_once() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     let evidence = ToolEvidenceProjection::new(
@@ -513,6 +517,7 @@ fn critical_value_rejection_identifies_only_the_unsupported_clause() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     let mut task_evidence = HashMap::new();
@@ -631,6 +636,7 @@ fn corrected_agent_evidence_checks_the_complete_selected_execution() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     let evidence = ToolEvidenceProjection::new(
@@ -687,6 +693,7 @@ fn revised_evidence_validation_does_not_use_array_position_as_identity() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     let evidence = ToolEvidenceProjection::new(
@@ -754,6 +761,7 @@ fn tool_operation_name_is_available_for_critical_value_validation() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     let evidence = ToolEvidenceProjection::new(
@@ -822,6 +830,7 @@ fn local_negative_constraint_does_not_negate_a_positive_procedure() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     let evidence = ToolEvidenceProjection::new(
@@ -901,6 +910,7 @@ fn tool_evidence_resolves_against_its_own_agent_citation() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     let evidence = ToolEvidenceProjection::new(
@@ -977,6 +987,7 @@ fn tool_quote_is_resolved_against_the_sanitized_execution_shown_during_ingest() 
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     let evidence = ToolEvidenceProjection::new(
@@ -1072,6 +1083,7 @@ fn requested_url_is_stored_in_web_page_memory_evidence() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
     let projection = ToolEvidenceProjection::new(

@@ -33,6 +33,7 @@ fn test_tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> Too
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc::now(),
     }
 }
@@ -230,6 +231,7 @@ async fn begin_creates_incomplete_record() {
         description: None,
         turn_text: Some("Searching for info:".into()),
         turn_reasoning: None,
+        signature: None,
         created_at: Utc::now(),
     };
     let id = te.id.clone();
@@ -296,6 +298,7 @@ async fn begin_without_finish_leaves_incomplete() {
         description: None,
         turn_text: None,
         turn_reasoning: None,
+        signature: None,
         created_at: Utc::now(),
     };
     let id = te.id.clone();

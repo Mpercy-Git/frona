@@ -704,6 +704,7 @@ async fn playbook_author_reconstructs_invocation_from_procedural_evidence() {
             description: None,
             turn_text: Some(TOOL_TURN_TEXT.into()),
             turn_reasoning: None,
+            signature: None,
             created_at: agent_at,
         })
         .await
@@ -896,6 +897,7 @@ async fn ingest_omits_agent_answer_grounded_in_prior_recall() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -924,6 +926,7 @@ async fn ingest_omits_agent_answer_grounded_in_prior_recall() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -1041,6 +1044,7 @@ async fn ingest_persists_agent_memory_with_durable_web_evidence() {
             description: None,
             turn_text: Some("Acme released version 4.2.".into()),
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -1182,6 +1186,7 @@ async fn ingest_retains_accepted_tool_evidence_when_a_later_correction_omits_tha
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -1317,6 +1322,7 @@ async fn ingest_repairs_unaccounted_research_by_appending_a_grounded_memory() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at + Duration::seconds(1),
         })
         .await
@@ -1453,6 +1459,7 @@ async fn ingest_rebinds_a_unique_agent_quote_to_its_actual_message() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -1573,6 +1580,7 @@ async fn ingest_can_split_a_mixed_research_claim_without_losing_supported_facts(
                 description: None,
                 turn_text: None,
                 turn_reasoning: None,
+                signature: None,
                 created_at: at + Duration::milliseconds(i64::from(turn)),
             })
             .await
@@ -1701,6 +1709,7 @@ async fn ingest_returns_all_missing_critical_values_in_one_grounding_feedback() 
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -1799,6 +1808,7 @@ async fn ingest_persists_agent_memory_with_successful_curl_web_page_evidence() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -1895,6 +1905,7 @@ async fn ingest_keeps_a_procedure_with_two_citations_from_one_agent_message() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -1984,6 +1995,7 @@ async fn ingest_drops_agent_memory_when_the_only_execution_failed() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -2078,6 +2090,7 @@ async fn ingest_requires_a_scheduled_task_handle_to_copy_its_event_time() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at + Duration::milliseconds(1),
         })
         .await
@@ -2165,6 +2178,7 @@ async fn ingest_resume_commits_tool_evidence_checkpoint_and_watermark_once() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -2368,6 +2382,7 @@ async fn ingest_treats_resolved_hitl_text_as_user_confirmation() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -2484,6 +2499,7 @@ async fn ingest_uses_tool_evidence_from_a_previous_parallel_window() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -2599,6 +2615,7 @@ async fn ingest_revises_a_full_batch_to_cite_structured_tool_evidence() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -2748,6 +2765,7 @@ async fn ingest_corrects_tool_evidence_without_a_matching_agent_source() {
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
@@ -2868,6 +2886,7 @@ async fn ingest_validates_supplied_tool_evidence_when_user_evidence_is_also_pres
             description: None,
             turn_text: None,
             turn_reasoning: None,
+            signature: None,
             created_at: at,
         })
         .await
