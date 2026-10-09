@@ -826,3 +826,54 @@ fn common_metadata_preserves_protocol_paths_and_excludes_local_config() {
         assert_eq!(bindings[1].wire_path.join("."), temperature);
     }
 }
+
+#[tokio::test]
+async fn openrouter_frona_side_settings_are_accepted_and_applied() {
+    async fn body_for(settings: Value) -> Value {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&server)
+            .await;
+        let (provider, model) = setup("openrouter", &server.uri(), settings);
+        let _ = provider
+            .inference(
+                &model,
+                "You are an assistant.",
+                vec![Message::user("hello")],
+                vec![],
+                Some(64),
+                None,
+            )
+            .await;
+        let requests = server.received_requests().await.unwrap();
+        requests
+            .last()
+            .expect("the request must be sent, not rejected as an unsupported setting")
+            .body_json()
+            .unwrap()
+    }
+
+    // Caching is on unless turned off.
+    let default = body_for(json!({})).await;
+    assert!(default.to_string().contains("cache_control"), "{default}");
+
+    // These three are Frona-side controls with no entry in the parameter binding
+    // table; a config using them must load and take effect, not be rejected.
+    // (How `provider_routing` is spelled on the wire is a separate concern.)
+    let configured = body_for(json!({
+        "prompt_caching": false,
+        "route": "fallback",
+        "provider_routing": {"order": ["Anthropic"]},
+    }))
+    .await;
+    assert!(
+        !configured.to_string().contains("cache_control"),
+        "{configured}"
+    );
+    assert_eq!(configured["route"], "fallback", "{configured}");
+    assert_eq!(
+        configured["messages"][1]["content"], "hello",
+        "{configured}"
+    );
+}

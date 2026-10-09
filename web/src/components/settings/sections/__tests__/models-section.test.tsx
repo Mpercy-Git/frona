@@ -391,6 +391,9 @@ it("preserves openrouter's route, provider routing and prompt-caching fields, wh
   fireEvent.click(primary().getByRole("button", { name: "OpenRouter routing" }));
   fireEvent.click(primary().getByRole("switch", { name: "Cache the System Prompt" }));
   expect(draft().primary.prompt_caching).toBe(false);
+  // The panel's own fields must not be reported as unsupported (which blocks saving).
+  expect(primary().queryByText(/Reconcile unsupported settings/)).not.toBeInTheDocument();
+  expect(primary().queryByText(/is unsupported by this protocol/)).not.toBeInTheDocument();
   fireEvent.click(primary().getByRole("switch", { name: "Require Parameters" }));
   expect(draft().primary.provider_routing).toEqual({ require_parameters: true });
   fireEvent.change(primary().getByPlaceholderText("OpenAI, Anthropic"), { target: { value: "OpenAI, Anthropic" } });
