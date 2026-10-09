@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { getConfigSchema, type ModelGroupConfig, type ModelProviderConfig, type OpenRouterProviderRouting } from "@/lib/config-types";
 import type { ModelDirectory, ModelSettingInfo, ProviderProtocol } from "@/lib/provider-admin";
 import type { ProviderDrafts } from "@/lib/provider-drafts";
-import { modelSettingErrors, object, pointerKey, reconcileModelSettings, removePointer, resolveSchema, unsupportedPaths } from "@/lib/model-authoring";
+import { NO_MANAGED_KEYS, OPENROUTER_MANAGED_KEYS, modelSettingErrors, object, pointerKey, reconcileModelSettings, removePointer, resolveSchema, unsupportedPaths } from "@/lib/model-authoring";
 import { useModelDirectories } from "@/lib/use-model-directories";
 import { formatGroupName } from "@/lib/model-groups";
 import { NumberInput, SectionHeader, TextInput, Toggle } from "@/components/settings/field";
@@ -220,6 +220,8 @@ function ModelEditor({ group, enabledProviders, configs, directory, loading, err
   retrySettings: ModelSettingInfo[]; schemaError: string | null; onRefresh: () => void;
 }) {
   const [paramsOpen, setParamsOpen] = useState(false);
+  const brand = configs[group.provider]?.provider ?? group.provider;
+  const managed = brand === "openrouter" ? OPENROUTER_MANAGED_KEYS : NO_MANAGED_KEYS;
   const initialNew = useRef(!group.provider || !group.model);
   const [selectionChanged, setSelectionChanged] = useState(false);
   const [pendingSelection, setPendingSelection] = useState<{ provider: string; model: string } | null>(null);
@@ -240,11 +242,11 @@ function ModelEditor({ group, enabledProviders, configs, directory, loading, err
       ?? row?.protocols.find(protocol => protocol.available);
     if (!selected) return;
     setPendingSelection(null);
-    onChange(reconcileModelSettings({ ...group, api: selected.api }, selected));
-  }, [pendingSelection, group, row, loading, error, onChange]);
-  const unsupported = row ? unsupportedPaths(group, protocol) : [];
+    onChange(reconcileModelSettings({ ...group, api: selected.api }, selected, managed));
+  }, [pendingSelection, group, row, loading, error, onChange, managed]);
+  const unsupported = row ? unsupportedPaths(group, protocol, managed) : [];
   const retryErrors = modelSettingErrors(group, { api: group.api ?? "completions", available: true, settings: retrySettings, warnings: [] }).filter(error => error.startsWith("/retry/"));
-  const errors = [...modelSettingErrors(group, protocol), ...retryErrors];
+  const errors = [...modelSettingErrors(group, protocol, managed), ...retryErrors];
   const block = !group.provider || !group.model ? "Select a connection and model ID"
     : isNew && !group.api ? "Select an explicit protocol for this new model"
       : unsupported.length ? `Reconcile unsupported settings: ${unsupported.join(", ")}`
@@ -275,9 +277,8 @@ function ModelEditor({ group, enabledProviders, configs, directory, loading, err
     const next = { ...group, model, ...((isNew || changed) && needsProtocol && suggested ? { api: suggested.api } : {}) };
     const selected = row?.protocols.find(protocol => protocol.available && protocol.api === next.api);
     if (changed) setPendingSelection(selected ? null : { provider: group.provider, model });
-    onChange(changed && selected ? reconcileModelSettings(next, selected) : next);
+    onChange(changed && selected ? reconcileModelSettings(next, selected, managed) : next);
   }
-  const brand = configs[group.provider]?.provider ?? group.provider;
   return <div className="space-y-2">
     <div className="flex items-end gap-2">
       <div className="min-w-0 flex-1"><ModelSelector provider={group.provider} model={group.model} enabledProviders={enabledProviders} providerConfigs={configs}

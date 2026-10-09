@@ -112,7 +112,16 @@ export function applicable(expression: SettingApplicability | null, group: Model
   return expression.values.some(value => equal(effectiveValue(group, expression.config_path, settings), value));
 }
 
-export function unsupportedPaths(group: ModelGroupConfig, protocol?: ProtocolInfo): string[] {
+/**
+ * Top-level keys the OpenRouter routing panel owns. The live setting directory
+ * never describes them for any connection, so without this allowance the
+ * protocol check below reports each one as "unsupported", blocks saving, and
+ * clears it on a model switch.
+ */
+export const OPENROUTER_MANAGED_KEYS = ["route", "provider_routing", "prompt_caching"] as const;
+export const NO_MANAGED_KEYS: readonly string[] = [];
+
+export function unsupportedPaths(group: ModelGroupConfig, protocol?: ProtocolInfo, managed: readonly string[] = []): string[] {
   if (!protocol) return group.api ? ["/api"] : [];
   const paths = protocol.settings.flatMap(setting => setting.storage?.kind === "typed" ? [setting.storage.config_path] : []);
   const errors: string[] = protocol.settings.length === 0 && group.api ? ["/api"] : [];
@@ -121,13 +130,13 @@ export function unsupportedPaths(group: ModelGroupConfig, protocol?: ProtocolInf
     if (object(value) && Object.keys(value).length) for (const [key, child] of Object.entries(value)) visit(child, `${path}/${pointerKey(key)}`);
     else if (!paths.includes(path)) errors.push(path);
   }
-  for (const [key, value] of Object.entries(group)) if (!["provider", "model", "api", "fallbacks", "retry", "extra_params"].includes(key)) visit(value, `/${pointerKey(key)}`);
+  for (const [key, value] of Object.entries(group)) if (![...["provider", "model", "api", "fallbacks", "retry", "extra_params"], ...managed].includes(key)) visit(value, `/${pointerKey(key)}`);
   return errors;
 }
 
-export function modelSettingErrors(group: ModelGroupConfig, protocol?: ProtocolInfo): string[] {
+export function modelSettingErrors(group: ModelGroupConfig, protocol?: ProtocolInfo, managed: readonly string[] = []): string[] {
   if (!protocol) return [];
-  const errors = unsupportedPaths(group, protocol).map(path => `${path}: unsupported by this protocol`);
+  const errors = unsupportedPaths(group, protocol, managed).map(path => `${path}: unsupported by this protocol`);
   for (const setting of protocol.settings) {
     if (!setting.storage || setting.storage.config_path === "/extra_params") continue;
     const value = readPointer(group, setting.storage.config_path);
@@ -162,11 +171,11 @@ export function modelSettingErrors(group: ModelGroupConfig, protocol?: ProtocolI
 }
 
 /** Reconcile an explicit model selection, never a background metadata refresh. */
-export function reconcileModelSettings(group: ModelGroupConfig, protocol: ProtocolInfo): ModelGroupConfig {
+export function reconcileModelSettings(group: ModelGroupConfig, protocol: ProtocolInfo, managed: readonly string[] = []): ModelGroupConfig {
   if (!protocol.available || !protocol.settings.length) return group;
   let next = group;
   while (true) {
-    const invalid = new Set(unsupportedPaths(next, protocol).filter(path => path !== "/api"));
+    const invalid = new Set(unsupportedPaths(next, protocol, managed).filter(path => path !== "/api"));
     for (const setting of protocol.settings) {
       const paths = new Set<string>();
       if (setting.storage && setting.storage.config_path !== "/extra_params") paths.add(setting.storage.config_path);
