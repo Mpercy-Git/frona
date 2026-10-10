@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { describe, it, expect, vi } from "vitest";
 import { render, act } from "@testing-library/react";
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
@@ -17,9 +18,12 @@ import { ComposerPastePlugin } from "../composer-paste-plugin";
 Range.prototype.getBoundingClientRect = () => new DOMRect();
 Range.prototype.getClientRects = () => ({ length: 0, item: () => null, [Symbol.iterator]: function* () {} }) as unknown as DOMRectList;
 
-let editorRef: LexicalEditor;
+const grabbed: { editor?: LexicalEditor } = {};
 function Grab() {
-  [editorRef] = useLexicalComposerContext();
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    grabbed.editor = editor;
+  }, [editor]);
   return null;
 }
 
@@ -53,6 +57,6 @@ describe("ComposerPastePlugin wiring", () => {
       await new Promise((r) => setTimeout(r, 300));
     });
     expect(ev.defaultPrevented).toBe(true);
-    expect(editorRef.getEditorState().read(() => $getRoot().getTextContent())).toBe("one\ntwo\nthree");
+    expect(grabbed.editor!.getEditorState().read(() => $getRoot().getTextContent())).toBe("one\ntwo\nthree");
   });
 });
