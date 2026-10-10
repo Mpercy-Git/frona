@@ -81,36 +81,6 @@ export function getBeforeInputPasteText(event: InputEvent): string | null {
   return MULTILINE.test(text) ? normalizePastedText(text) : null;
 }
 
-/** `beforeinput` types that mean "the user pasted", whatever the keyboard. */
-const PASTE_INPUT_TYPES = new Set(["insertFromPaste", "insertFromPasteAsQuotation"]);
-
-/** True for a paste-type `beforeinput` that carries no readable clipboard data. */
-export function isEmptyBeforeInputPaste(event: InputEvent): boolean {
-  if (!PASTE_INPUT_TYPES.has(event.inputType)) return false;
-  if (event.data) return false;
-  const data = event.dataTransfer;
-  if (!data) return true;
-  try {
-    return !data.getData("text/plain") && !data.getData("text/html") && !data.files?.length;
-  } catch {
-    return true;
-  }
-}
-
-/**
- * Android Chrome (and so the installed PWA) can deliver a paste with no
- * `clipboardData` / `dataTransfer` at all, e.g. from Gboard's clipboard chip or
- * the long-press Paste bubble. Lexical then finds nothing to insert and the
- * paste does nothing, so read the clipboard directly instead.
- */
-async function readClipboardText(): Promise<string> {
-  try {
-    return normalizePastedText((await navigator.clipboard?.readText?.()) ?? "");
-  } catch {
-    return "";
-  }
-}
-
 /**
  * Paste handling for the Lexical composer.
  *
@@ -133,14 +103,7 @@ export function ComposerPastePlugin() {
       PASTE_COMMAND,
       (event) => {
         const payload = getPayload(event);
-        if (!payload) {
-          event?.preventDefault?.();
-          void readClipboardText().then((text) => {
-            if (!text) return;
-            editor.update(() => $insertPastedText(text), { tag: PASTE_TAG });
-          });
-          return true;
-        }
+        if (!payload) return false;
 
         const canAttach = !!aui.thread.getState().capabilities.attachments;
         const action = resolvePaste(payload, { canAttach });
@@ -178,41 +141,9 @@ export function ComposerPastePlugin() {
       root?.parentElement?.addEventListener("beforeinput", onBeforeInput, true);
     });
 
-    // Samsung Keyboard's clipboard panel commits a paste as a (non-cancelable)
-    // composition update that Lexical can drop on the floor. We can't prevent
-    // it, so check afterwards: if a multi-character insertion never reached the
-    // editor, insert it ourselves.
-    function watchForDroppedInsert(input: InputEvent) {
-      const data = normalizePastedText(input.data ?? "");
-      if (data.length < 2) return;
-      if (
-        input.inputType !== "insertText" &&
-        input.inputType !== "insertCompositionText" &&
-        input.inputType !== "insertReplacementText" &&
-        !PASTE_INPUT_TYPES.has(input.inputType)
-      ) {
-        return;
-      }
-      setTimeout(() => {
-        const current = editor.getEditorState().read(() => $getRoot().getTextContent());
-        if (current.includes(data)) return;
-        editor.update(() => $insertPastedText(data), { tag: PASTE_TAG });
-      }, 150);
-    }
-
     function onBeforeInput(event: Event) {
       const input = event as InputEvent;
-      watchForDroppedInsert(input);
       if (input.isComposing || !input.cancelable) return;
-      if (isEmptyBeforeInputPaste(input)) {
-        input.preventDefault();
-        input.stopImmediatePropagation();
-        void readClipboardText().then((text) => {
-          if (!text) return;
-          editor.update(() => $insertPastedText(text), { tag: PASTE_TAG });
-        });
-        return;
-      }
       const text = getBeforeInputPasteText(input);
       if (!text) return;
       input.preventDefault();
