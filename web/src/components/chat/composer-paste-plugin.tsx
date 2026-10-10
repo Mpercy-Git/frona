@@ -178,8 +178,31 @@ export function ComposerPastePlugin() {
       root?.parentElement?.addEventListener("beforeinput", onBeforeInput, true);
     });
 
+    // Samsung Keyboard's clipboard panel commits a paste as a (non-cancelable)
+    // composition update that Lexical can drop on the floor. We can't prevent
+    // it, so check afterwards: if a multi-character insertion never reached the
+    // editor, insert it ourselves.
+    function watchForDroppedInsert(input: InputEvent) {
+      const data = normalizePastedText(input.data ?? "");
+      if (data.length < 2) return;
+      if (
+        input.inputType !== "insertText" &&
+        input.inputType !== "insertCompositionText" &&
+        input.inputType !== "insertReplacementText" &&
+        !PASTE_INPUT_TYPES.has(input.inputType)
+      ) {
+        return;
+      }
+      setTimeout(() => {
+        const current = editor.getEditorState().read(() => $getRoot().getTextContent());
+        if (current.includes(data)) return;
+        editor.update(() => $insertPastedText(data), { tag: PASTE_TAG });
+      }, 150);
+    }
+
     function onBeforeInput(event: Event) {
       const input = event as InputEvent;
+      watchForDroppedInsert(input);
       if (input.isComposing || !input.cancelable) return;
       if (isEmptyBeforeInputPaste(input)) {
         input.preventDefault();
