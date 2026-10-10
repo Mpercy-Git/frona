@@ -1893,7 +1893,8 @@ impl ChatService {
         if let Some(mut chat) = self.chat_repo.find_by_id(chat_id).await? {
             chat.title = Some(title.to_string());
             chat.updated_at = chrono::Utc::now();
-            self.chat_repo.update(&chat).await?;
+            let saved = self.chat_repo.update(&chat).await?;
+            self.broadcast_chat_entity(&saved, crate::chat::broadcast::EntityAction::Updated);
         }
         Ok(())
     }
