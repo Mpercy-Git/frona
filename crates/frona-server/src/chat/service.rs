@@ -1876,10 +1876,24 @@ impl ChatService {
             // else fall back to primary — same convention as other utilities.
             _ => self.provider_registry.utility_model_group("title")?,
         };
+        // An ad-hoc "provider/model" override (or a `title` group with no
+        // fallbacks) would otherwise fail outright on a bad key or outage, so
+        // borrow the primary group's chain as a safety net.
+        let mut fallbacks = base.fallbacks.clone();
+        if fallbacks.is_empty()
+            && let Ok(primary) = self.provider_registry.get_model_group("primary")
+        {
+            let main_ref = base.main.as_str();
+            for m in std::iter::once(&primary.main).chain(primary.fallbacks.iter()) {
+                if m.as_str() != main_ref {
+                    fallbacks.push(m.clone());
+                }
+            }
+        }
         Ok(crate::inference::ModelGroup {
             name: "title".to_string(),
             main: base.main.clone(),
-            fallbacks: base.fallbacks.clone(),
+            fallbacks,
             max_tokens: Some(TITLE_MAX_TOKENS),
             temperature: base.temperature,
             context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
