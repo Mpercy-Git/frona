@@ -4,3 +4,5 @@ pub mod parameters;
 
 #[cfg(test)]
 mod tests;
+
+mod wire_trace;
