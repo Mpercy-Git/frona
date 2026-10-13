@@ -245,13 +245,30 @@ impl ChatCompactor {
             running += cost;
             keep_from_idx = i;
         }
-        // The newest message is never compactable. Without this floor, a system
-        // prompt (or a single long message) bigger than `target` breaks the loop
-        // on its first step, leaving `keep_from_idx` at `live.len()` - every
-        // message goes into the summary and the model is handed a conversation
-        // with no messages at all, including the question just asked. It then
-        // answers that it received nothing.
-        keep_from_idx = keep_from_idx.min(live.len().saturating_sub(1));
+        // Protect the current request and every following response/tool row.
+        // The web path creates an empty executing assistant placeholder before
+        // loading this history, so keeping only the newest row can summarize
+        // away the actual question (and its image), leaving just a placeholder
+        // that the conversation builder then skips.
+        let request_idx = live
+            .iter()
+            .rposition(|msg| {
+                matches!(
+                    msg.role,
+                    MessageRole::User
+                        | MessageRole::Contact
+                        | MessageRole::LiveCall
+                        | MessageRole::TaskCompletion
+                ) && (!msg.content.trim().is_empty() || !msg.attachments.is_empty())
+            })
+            .unwrap_or(live.len() - 1);
+        // Reload uses a strict timestamp cutoff. Keep all rows sharing the
+        // request's timestamp so a compacted sibling cannot hide it on resume.
+        let protected_from = live
+            .iter()
+            .position(|msg| msg.created_at >= live[request_idx].created_at)
+            .unwrap_or(request_idx);
+        keep_from_idx = keep_from_idx.min(protected_from);
         if keep_from_idx == 0 {
             return Ok(unchanged(existing_summary, live));
         }
@@ -556,6 +573,89 @@ mod tests {
             signature: None,
             created_at: Utc::now(),
         }
+    }
+
+    async fn image_request_with_placeholder(repo: &SurrealMessageRepo, chat: &str) -> Message {
+        let request = Message::builder(
+            chat,
+            MessageRole::User,
+            "Identify the object in this image and tell me its colour.".into(),
+        )
+        .attachments(vec![crate::storage::Attachment {
+            filename: "object.jpg".into(),
+            content_type: "image/jpeg".into(),
+            size_bytes: 100,
+            owner: "user:u".into(),
+            path: "object.jpg".into(),
+            url: None,
+            transcript: None,
+        }])
+        .build();
+        repo.create(&request).await.unwrap();
+        let mut placeholder = Message::builder(chat, MessageRole::Agent, String::new())
+            .agent_id("agent".into())
+            .status(crate::chat::message::models::MessageStatus::Executing)
+            .build();
+        placeholder.created_at = request.created_at + Duration::seconds(1);
+        repo.create(&placeholder).await.unwrap();
+        request
+    }
+
+    #[tokio::test]
+    async fn first_image_request_is_not_compacted_in_favour_of_an_empty_placeholder() {
+        // No old conversation exists to summarize. The failing summarizer
+        // proves we don't try to compact the current request even over budget.
+        let (compactor, messages, summaries) = setup(true).await;
+        let chat = "chat-first-image";
+        let request = image_request_with_placeholder(&messages, chat).await;
+        let out = compactor
+            .compact_chat("u", chat, "agent", &"s".repeat(4000), &[], 1200, 0)
+            .await
+            .unwrap();
+        assert!(!out.compacted);
+        assert_eq!(out.conversation.messages.first(), Some(&request));
+        assert!(summaries.find_by_chat_id(chat).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn image_request_and_placeholder_survive_compaction_and_reload() {
+        let (compactor, messages, summaries) = setup(false).await;
+        let chat = "chat-current-image";
+        seed(&messages, chat, 4, 200).await;
+        let request = image_request_with_placeholder(&messages, chat).await;
+        let out = compactor
+            .compact_chat("u", chat, "agent", &"s".repeat(4000), &[], 1200, 0)
+            .await
+            .unwrap();
+        assert!(out.compacted);
+        assert_eq!(out.conversation.messages.first(), Some(&request));
+        assert_eq!(out.conversation.messages.len(), 2);
+        let summary = summaries.find_by_chat_id(chat).await.unwrap().unwrap();
+        assert!(summary.compacted_until < request.created_at);
+        let loaded = compactor.load_conversation(chat).await.unwrap();
+        assert_eq!(loaded.messages, out.conversation.messages);
+    }
+
+    #[tokio::test]
+    async fn a_timestamp_shared_with_the_request_never_becomes_the_cutoff() {
+        let (compactor, messages, summaries) = setup(false).await;
+        let chat = "chat-shared-timestamp";
+        seed(&messages, chat, 4, 200).await;
+        let request = image_request_with_placeholder(&messages, chat).await;
+        let mut sibling =
+            Message::builder(chat, MessageRole::System, "context note".into()).build();
+        sibling.created_at = request.created_at;
+        messages.create(&sibling).await.unwrap();
+        let out = compactor
+            .compact_chat("u", chat, "agent", &"s".repeat(4000), &[], 1200, 0)
+            .await
+            .unwrap();
+        assert!(out.compacted);
+        let summary = summaries.find_by_chat_id(chat).await.unwrap().unwrap();
+        assert!(summary.compacted_until < request.created_at);
+        let loaded = compactor.load_conversation(chat).await.unwrap();
+        assert!(loaded.messages.contains(&request));
+        assert!(loaded.messages.contains(&sibling));
     }
 
     /// The failure this guards against is the worst one the loop can produce: the
