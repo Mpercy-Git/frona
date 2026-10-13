@@ -59,4 +59,24 @@ describe("ComposerPastePlugin wiring", () => {
     expect(ev.defaultPrevented).toBe(true);
     expect(grabbed.editor!.getEditorState().read(() => $getRoot().getTextContent())).toBe("one\ntwo\nthree");
   });
+
+  it("inserts once when the same paste is reported twice", async () => {
+    const ce = setup();
+    ce.focus();
+    const fire = () =>
+      ce.dispatchEvent(
+        new InputEvent("beforeinput", {
+          inputType: "insertText",
+          data: "one\ntwo",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    await act(async () => {
+      fire();
+      fire();
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    expect(grabbed.editor!.getEditorState().read(() => $getRoot().getTextContent())).toBe("one\ntwo");
+  });
 });

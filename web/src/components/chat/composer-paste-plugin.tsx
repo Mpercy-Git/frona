@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import {
   $generateNodesFromRawText,
@@ -53,6 +53,24 @@ export function $insertPastedText(text: string): void {
   end.insertRawText(text);
 }
 
+/**
+ * Android keyboards can report one paste through more than one route (a
+ * `paste` event and a `beforeinput`), and each route inserts on its own. The
+ * same text arriving twice inside this window is one paste, not two.
+ */
+const DUPLICATE_PASTE_WINDOW_MS = 500;
+
+/** Returns a guard that is true for a repeat of the previous paste. */
+export function createPasteDeduper(now: () => number = () => performance.now()) {
+  let last: { text: string; at: number } | null = null;
+  return (text: string): boolean => {
+    const at = now();
+    const repeat = !!last && last.text === text && at - last.at < DUPLICATE_PASTE_WINDOW_MS;
+    last = { text, at };
+    return repeat;
+  };
+}
+
 /** Any line break flavour; `normalizePastedText` maps them all to `\n`. */
 const MULTILINE = /[\r\n\u0085\u2028\u2029]/;
 
@@ -97,6 +115,7 @@ export function getBeforeInputPasteText(event: InputEvent): string | null {
 export function ComposerPastePlugin() {
   const [editor] = useLexicalComposerContext();
   const aui = useAui();
+  const isDuplicatePaste = useRef(createPasteDeduper()).current;
 
   useEffect(() => {
     return editor.registerCommand(
@@ -119,6 +138,7 @@ export function ComposerPastePlugin() {
           return true;
         }
 
+        if (isDuplicatePaste(action.text)) return true;
         editor.update(
           () => {
             $insertPastedText(action.text);
@@ -131,7 +151,7 @@ export function ComposerPastePlugin() {
       },
       COMMAND_PRIORITY_CRITICAL,
     );
-  }, [editor, aui]);
+  }, [editor, aui, isDuplicatePaste]);
 
   // Capture phase on the root's parent, so it runs before Lexical's own
   // `beforeinput` listener on the root itself.
@@ -148,9 +168,10 @@ export function ComposerPastePlugin() {
       if (!text) return;
       input.preventDefault();
       input.stopImmediatePropagation();
+      if (isDuplicatePaste(text)) return;
       editor.update(() => $insertPastedText(text), { tag: PASTE_TAG });
     }
-  }, [editor]);
+  }, [editor, isDuplicatePaste]);
 
   return null;
 }

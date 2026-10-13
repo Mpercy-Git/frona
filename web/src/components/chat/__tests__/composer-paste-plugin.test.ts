@@ -10,7 +10,7 @@ import {
 } from "lexical";
 import { $createDirectiveNode, DirectiveNode } from "@assistant-ui/react-lexical";
 
-import { $insertPastedText, getBeforeInputPasteText } from "../composer-paste-plugin";
+import { $insertPastedText, createPasteDeduper, getBeforeInputPasteText } from "../composer-paste-plugin";
 
 function makeEditor(build: () => void): LexicalEditor {
   const editor = createEditor({
@@ -106,5 +106,25 @@ describe("getBeforeInputPasteText", () => {
   it("leaves single-line typing and other input types to Lexical", () => {
     expect(getBeforeInputPasteText(input({ data: "hello world" }))).toBeNull();
     expect(getBeforeInputPasteText(input({ data: "a\nb", inputType: "deleteContentBackward" }))).toBeNull();
+  });
+});
+
+describe("createPasteDeduper", () => {
+  it("flags the same text arriving twice in quick succession", () => {
+    let t = 0;
+    const isRepeat = createPasteDeduper(() => t);
+    expect(isRepeat("a\nb")).toBe(false);
+    t = 50;
+    expect(isRepeat("a\nb")).toBe(true);
+  });
+
+  it("lets the same text through once the window has passed, or when it differs", () => {
+    let t = 0;
+    const isRepeat = createPasteDeduper(() => t);
+    expect(isRepeat("a")).toBe(false);
+    t = 100;
+    expect(isRepeat("b")).toBe(false);
+    t = 2000;
+    expect(isRepeat("b")).toBe(false);
   });
 });
