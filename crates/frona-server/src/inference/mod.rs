@@ -159,7 +159,13 @@ pub async fn text_inference(
             tools: vec![],
             usage_service,
             usage_context: usage_ctx,
-            overrides: Default::default(),
+            // Honour the group's own output ceiling (e.g. the short title
+            // group). Without it the main model's much larger `max_tokens`
+            // is used for budgeting and can exhaust the context window.
+            overrides: RequestOverrides {
+                max_tokens: model_group.max_tokens,
+                ..Default::default()
+            },
         })
         .await?;
     provider::extract_text_from_choice(&contents)
