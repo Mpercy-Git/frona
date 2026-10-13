@@ -13,6 +13,117 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
+async fn streaming_preserves_over_budget_history_on_retry_and_fallback() {
+    init_metrics();
+    let primary = Arc::new(MockModelProvider::new(vec![
+        MockResponse::Error(InferenceError::RateLimited {
+            retry_after_secs: 1,
+        }),
+        MockResponse::Error(InferenceError::RateLimited {
+            retry_after_secs: 1,
+        }),
+    ]));
+    let fallback = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "Still following the original request.".into(),
+    )]));
+    let mut providers: std::collections::HashMap<
+        String,
+        Arc<dyn frona::inference::provider::ModelProvider>,
+    > = std::collections::HashMap::new();
+    providers.insert("mock".into(), primary.clone());
+    providers.insert("backup".into(), fallback.clone());
+    let mut group = frona::inference::ModelGroup {
+        providers: Arc::new(providers),
+        ..test_model_group_with_fallback("backup", "backup-model")
+    };
+    group.context_window = 200;
+    group.inference.default_max_tokens = 0;
+    let history = vec![
+        RigMessage::user("Original request: compare options and keep my constraints."),
+        RigMessage::assistant("Working on the comparison."),
+        RigMessage::user("x".repeat(4_000)),
+    ];
+    let (events, _, _) = test_event_sender().await;
+    group
+        .stream_inference(
+            frona::inference::ModelRequest {
+                system_prompt: "system",
+                history: history.clone(),
+                tools: vec![],
+                usage_service: &test_metrics_ctx(),
+                usage_context: &test_usage_ctx(),
+                overrides: Default::default(),
+            },
+            &events,
+            &CancellationToken::new(),
+            &mut String::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(primary.stream_histories(), vec![history.clone(); 2]);
+    assert_eq!(fallback.stream_histories(), vec![history]);
+}
+
+#[tokio::test]
+async fn tool_loop_preserves_request_when_tool_output_exceeds_budget() {
+    init_metrics();
+    let provider = Arc::new(MockModelProvider::new(vec![
+        MockResponse::ToolCalls(vec![(
+            "call-1".into(),
+            "search".into(),
+            serde_json::json!({"query": "options"}),
+        )]),
+        MockResponse::Text("Comparison finished.".into()),
+    ]));
+    let registry = test_registry_with_provider("mock", provider.clone());
+    let mut group = test_model_group_with_provider("mock", provider.clone());
+    group.context_window = 200;
+    group.inference.default_max_tokens = 0;
+    let mut tools = AgentToolRegistry::empty();
+    let output = "x".repeat(4_000);
+    tools.register(Arc::new(MockInternalTool::new(
+        "search",
+        vec![output.clone()],
+    )));
+    let opening = RigMessage::user("Compare options; retain my original constraints.");
+    let (events, _, _) = test_event_sender().await;
+    let outcome = run_tool_loop(
+        &registry,
+        &group,
+        "system",
+        vec![opening.clone()],
+        &tools,
+        events,
+        CancellationToken::new(),
+        &mock_context(),
+        &test_metrics_ctx(),
+        &test_chat_service().await,
+        "test-msg",
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, ToolLoopOutcome::Completed { .. }));
+    let histories = provider.stream_histories();
+    assert_eq!(histories.len(), 2);
+    assert_eq!(histories[0], vec![opening.clone()]);
+    assert_eq!(histories[1].first(), Some(&opening));
+    assert_eq!(histories[1].len(), 3, "keep request, tool call and result");
+    assert!(matches!(
+        &histories[1][2],
+        RigMessage::User { content }
+            if content.iter().any(|item| matches!(
+                item,
+                rig_core::completion::message::UserContent::ToolResult(result)
+                    if result.content.iter().any(|item| matches!(
+                        item,
+                        rig_core::completion::message::ToolResultContent::Text(text)
+                            if text.text == output
+                    ))
+            ))
+    ));
+}
+
+#[tokio::test]
 async fn streaming_failure_reports_retries_and_fallback_context() {
     use frona::chat::message::error::{ErrorCategory, MessageError, MessageErrorDetails};
     let primary = Arc::new(MockModelProvider::new(vec![

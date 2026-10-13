@@ -244,6 +244,7 @@ pub struct MockModelProvider {
     /// (tool results, feedback) rather than returns.
     last_history: Mutex<Vec<RigMessage>>,
     histories: Mutex<Vec<Vec<RigMessage>>>,
+    stream_histories: Mutex<Vec<Vec<RigMessage>>>,
     tool_histories: Mutex<Vec<Vec<RigToolDefinition>>>,
 }
 
@@ -254,6 +255,7 @@ impl MockModelProvider {
             call_count: Mutex::new(0),
             last_history: Mutex::new(Vec::new()),
             histories: Mutex::new(Vec::new()),
+            stream_histories: Mutex::new(Vec::new()),
             tool_histories: Mutex::new(Vec::new()),
         }
     }
@@ -265,6 +267,10 @@ impl MockModelProvider {
 
     pub fn histories(&self) -> Vec<Vec<RigMessage>> {
         self.histories.lock().unwrap().clone()
+    }
+
+    pub fn stream_histories(&self) -> Vec<Vec<RigMessage>> {
+        self.stream_histories.lock().unwrap().clone()
     }
 
     pub fn tool_histories(&self) -> Vec<Vec<RigToolDefinition>> {
@@ -392,12 +398,13 @@ impl ModelProvider for MockModelProvider {
         &self,
         _model: &ModelConfig,
         _system_prompt: &str,
-        _chat_history: Vec<RigMessage>,
+        chat_history: Vec<RigMessage>,
         _tools: Vec<RigToolDefinition>,
         token_tx: mpsc::Sender<frona::inference::provider::StreamToken>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+        self.stream_histories.lock().unwrap().push(chat_history);
         let usage = Usage {
             input_tokens: 10,
             output_tokens: 5,

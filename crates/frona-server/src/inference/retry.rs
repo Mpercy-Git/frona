@@ -474,13 +474,11 @@ pub(crate) async fn stream_with_retry_and_fallback(
         };
         let max_tokens = overrides.max_tokens.or(model.request_settings.max_tokens);
         let temperature = overrides.temperature.or(model.request_settings.temperature);
-        let history = truncate_history(
-            chat_history.to_vec(),
-            system_prompt,
-            model_group.context_window,
-            max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize,
-            model_group.inference.history_truncation_pct,
-        );
+        // Chat history is compacted before the turn starts. Tool results can
+        // grow it during this turn, but dropping the opening request here makes
+        // the agent lose its task before its first reply is finished. Preserve
+        // the complete history for every retry and fallback; an oversized
+        // request must surface the provider's error instead of losing context.
         let emitted = Arc::new(AtomicBool::new(false));
         let mut max_tokens = capped_max_tokens(model, max_tokens);
         let result = loop {
@@ -495,7 +493,7 @@ pub(crate) async fn stream_with_retry_and_fallback(
                 },
                 index as u8,
                 system_prompt,
-                &history,
+                chat_history,
                 tools,
                 event_tx,
                 cancel_token,
