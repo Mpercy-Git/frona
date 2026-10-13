@@ -103,6 +103,20 @@ describe("getBeforeInputPasteText", () => {
     expect(getBeforeInputPasteText(input({ data: null, dataTransfer }))).toBe("one\ntwo");
   });
 
+  it.each(["insertFromPaste", "insertFromPasteAsQuotation"])("reads a single-line %s payload", (inputType) => {
+    expect(getBeforeInputPasteText(input({ inputType, data: "hello\u00a0world" }))).toBe("hello world");
+  });
+
+  it("reads HTML-only paste input through the shared clipboard fallback", () => {
+    const dataTransfer = { getData: (type: string) => type === "text/html" ? "<p>Hello <b>world</b></p>" : "" };
+    expect(getBeforeInputPasteText(input({ inputType: "insertFromPaste", data: null, dataTransfer }))).toBe("Hello world");
+  });
+
+  it("returns null for a paste without accessible text", () => {
+    const dataTransfer = { getData: () => { throw new Error("unavailable"); } };
+    expect(getBeforeInputPasteText(input({ inputType: "insertFromPaste", dataTransfer }))).toBeNull();
+  });
+
   it("leaves single-line typing and other input types to Lexical", () => {
     expect(getBeforeInputPasteText(input({ data: "hello world" }))).toBeNull();
     expect(getBeforeInputPasteText(input({ data: "a\nb", inputType: "deleteContentBackward" }))).toBeNull();
@@ -110,6 +124,24 @@ describe("getBeforeInputPasteText", () => {
 });
 
 describe("createPasteDeduper", () => {
+  it("checks a repeat without remembering ordinary input, and can reset", () => {
+    const isRepeat = createPasteDeduper(() => 0);
+    expect(isRepeat("paste")).toBe(false);
+    expect(isRepeat.matches("typing")).toBe(false);
+    expect(isRepeat.matches("paste")).toBe(true);
+    isRepeat.reset();
+    expect(isRepeat("paste")).toBe(false);
+  });
+
+  it("does not extend the window when duplicate notifications arrive", () => {
+    let t = 0;
+    const isRepeat = createPasteDeduper(() => t);
+    expect(isRepeat("paste")).toBe(false);
+    t = 400;
+    expect(isRepeat("paste")).toBe(true);
+    t = 600;
+    expect(isRepeat("paste")).toBe(false);
+  });
   it("flags the same text arriving twice in quick succession", () => {
     let t = 0;
     const isRepeat = createPasteDeduper(() => t);

@@ -15,6 +15,7 @@ import {
 import { useAui } from "@assistant-ui/react";
 
 import {
+  getClipboardText,
   normalizePastedText,
   resolvePaste,
   type ClipboardPayload,
@@ -63,40 +64,50 @@ const DUPLICATE_PASTE_WINDOW_MS = 500;
 /** Returns a guard that is true for a repeat of the previous paste. */
 export function createPasteDeduper(now: () => number = () => performance.now()) {
   let last: { text: string; at: number } | null = null;
-  return (text: string): boolean => {
+  const matches = (text: string) =>
+    !!last && last.text === text && now() - last.at < DUPLICATE_PASTE_WINDOW_MS;
+  const isDuplicate = (text: string): boolean => {
     const at = now();
     const repeat = !!last && last.text === text && at - last.at < DUPLICATE_PASTE_WINDOW_MS;
-    last = { text, at };
+    // Repeated notifications must not keep extending the suppression window.
+    if (!repeat) last = { text, at };
     return repeat;
   };
+  return Object.assign(isDuplicate, { matches, reset: () => { last = null; } });
 }
 
 /** Any line break flavour; `normalizePastedText` maps them all to `\n`. */
 const MULTILINE = /[\r\n\u0085\u2028\u2029]/;
 
+function getInputText(event: InputEvent): string {
+  return event.data || (event.dataTransfer ? getClipboardText(event.dataTransfer) : "");
+}
+
+function isPasteInput(event: InputEvent): boolean {
+  return event.inputType === "insertFromPaste" || event.inputType === "insertFromPasteAsQuotation";
+}
+
+function isTextInput(event: InputEvent): boolean {
+  return event.inputType === "insertText" || event.inputType === "insertReplacementText";
+}
+
 /**
- * Text carried by a `beforeinput` text insertion that is really a paste.
+ * Text carried by an explicit paste input, or a multiline keyboard insertion.
  *
  * Android keyboards (Gboard's clipboard chip and its long-press Paste) often
  * skip the `paste` event and deliver the whole clipboard as an `insertText`
  * whose `data` holds every line. Lexical inserts that string into a single
  * text node, so the line breaks never become paragraphs and the message
- * arrives mangled. Single-line input (typing, autocorrect, dictation) is left
- * to Lexical.
+ * arrives mangled. Explicit insertFromPaste inputs can carry a single line
+ * directly in `data`, too. Ordinary single-line input (typing, autocorrect,
+ * dictation) is left to Lexical.
  */
 export function getBeforeInputPasteText(event: InputEvent): string | null {
-  if (event.inputType !== "insertText" && event.inputType !== "insertReplacementText") {
+  if (!isPasteInput(event) && !isTextInput(event)) {
     return null;
   }
-  let text = event.data ?? "";
-  if (!text && event.dataTransfer) {
-    try {
-      text = event.dataTransfer.getData("text/plain");
-    } catch {
-      text = "";
-    }
-  }
-  return MULTILINE.test(text) ? normalizePastedText(text) : null;
+  const text = getInputText(event);
+  return text && (isPasteInput(event) || MULTILINE.test(text)) ? normalizePastedText(text) : null;
 }
 
 /**
@@ -122,10 +133,15 @@ export function ComposerPastePlugin() {
       PASTE_COMMAND,
       (event) => {
         const payload = getPayload(event);
-        if (!payload) return false;
-
         const canAttach = !!aui.thread.getState().capabilities.attachments;
-        const action = resolvePaste(payload, { canAttach });
+        let action = payload ? resolvePaste(payload, { canAttach }) : { kind: "default" as const };
+        // Some mobile paste InputEvents carry only `data`, with no clipboard
+        // object. Lexical's plain-text fallback prevents default but inserts
+        // nothing for those events.
+        if (action.kind === "default" && event) {
+          const text = getBeforeInputPasteText(event as InputEvent);
+          if (text) action = { kind: "text", text };
+        }
         if (action.kind === "default") return false;
 
         event?.preventDefault();
@@ -162,10 +178,24 @@ export function ComposerPastePlugin() {
     });
 
     function onBeforeInput(event: Event) {
+      const root = editor.getRootElement();
+      if (!root || !(event.target instanceof Node) || !root.contains(event.target)) return;
       const input = event as InputEvent;
-      if (input.isComposing || !input.cancelable) return;
-      const text = getBeforeInputPasteText(input);
-      if (!text) return;
+      if (input.isComposing || !input.cancelable) {
+        isDuplicatePaste.reset();
+        return;
+      }
+      let text = getBeforeInputPasteText(input);
+      // A single-line insertText is normally typing/autocorrect. Intercept it
+      // only when it repeats text we have just inserted through a paste path.
+      if (!text && isTextInput(input)) {
+        const candidate = normalizePastedText(getInputText(input));
+        if (candidate && isDuplicatePaste.matches(candidate)) text = candidate;
+      }
+      if (!text) {
+        isDuplicatePaste.reset();
+        return;
+      }
       input.preventDefault();
       input.stopImmediatePropagation();
       if (isDuplicatePaste(text)) return;
