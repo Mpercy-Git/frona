@@ -770,6 +770,34 @@ pub async fn build_user_message(
     RigMessage::User { content: contents }
 }
 
+/// Replace images while keeping a text-only request and its attachment context
+/// in one text block. That lets text-only transports emit canonical string
+/// content rather than split the user's instruction from the transcription.
+pub(crate) fn replace_images_with_text(content: &mut Vec<UserContent>, replacement: &str) {
+    content.retain(|item| !matches!(item, UserContent::Image(_)));
+    if content
+        .iter()
+        .all(|item| matches!(item, UserContent::Text(_)))
+    {
+        let mut text = content
+            .iter()
+            .filter_map(|item| match item {
+                UserContent::Text(text) if !text.text.is_empty() => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(replacement);
+        *content = vec![UserContent::text(text)];
+    } else {
+        // Preserve documents, audio and tool results as structured content.
+        content.push(UserContent::text(replacement));
+    }
+}
+
 /// Remove embedded image blocks from user messages, replacing each affected
 /// message's images with a short text marker. Used when the target model has no
 /// vision support: sending images to a text-only model makes providers (e.g.
@@ -789,20 +817,13 @@ pub fn strip_images_from_history(history: &mut [RigMessage]) -> usize {
         if image_count == 0 {
             continue;
         }
-        let mut kept: Vec<UserContent> = content
-            .iter()
-            .filter(|c| !matches!(c, UserContent::Image(_)))
-            .cloned()
-            .collect();
         // A message that was image-only would become empty, which providers
         // reject — the marker also doubles as the "kept" content in that case.
-        kept.push(UserContent::text(
+        replace_images_with_text(
+            content,
             "[Attachment omitted: the selected model does not support image input.]",
-        ));
-        if !kept.is_empty() {
-            *content = kept;
-            stripped += image_count;
-        }
+        );
+        stripped += image_count;
     }
     stripped
 }
@@ -824,6 +845,36 @@ mod tests {
     }
 
     #[test]
+    fn image_transcription_shares_one_text_block_with_all_user_instructions() {
+        let mut content = vec![
+            UserContent::text("Describe the object."),
+            image_block(),
+            UserContent::text("Also report its colour."),
+        ];
+        let transcription = "<image_transcription>\nA blue object.\n</image_transcription>";
+        replace_images_with_text(&mut content, transcription);
+        assert_eq!(content.len(), 1);
+        let UserContent::Text(text) = &content[0] else {
+            panic!("expected text")
+        };
+        assert_eq!(
+            text.text,
+            format!("Describe the object.\n\nAlso report its colour.\n\n{transcription}")
+        );
+    }
+
+    #[test]
+    fn image_only_transcription_has_no_empty_leading_text_block() {
+        let mut content = vec![UserContent::text(""), image_block()];
+        replace_images_with_text(&mut content, "Image description");
+        assert_eq!(content.len(), 1);
+        let UserContent::Text(text) = &content[0] else {
+            panic!("expected text")
+        };
+        assert_eq!(text.text, "Image description");
+    }
+
+    #[test]
     fn strip_images_replaces_image_with_marker() {
         let content = vec![UserContent::text("hello"), image_block()];
         let mut history = vec![RigMessage::User { content }];
@@ -833,8 +884,11 @@ mod tests {
             panic!("expected user msg")
         };
         assert!(content.iter().all(|c| !matches!(c, UserContent::Image(_))));
-        // original text kept + one marker text block
-        assert_eq!(content.iter().count(), 2);
+        assert_eq!(content.len(), 1);
+        let UserContent::Text(text) = &content[0] else {
+            panic!("expected text")
+        };
+        assert!(text.text.starts_with("hello\n\n[Attachment omitted:"));
     }
 
     #[test]

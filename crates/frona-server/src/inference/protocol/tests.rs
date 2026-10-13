@@ -135,6 +135,52 @@ async fn openrouter_preserves_image_request_text_and_previous_turns() {
 }
 
 #[tokio::test]
+async fn openrouter_sends_the_instruction_and_image_transcription_as_one_string() {
+    use rig_core::completion::message::{DocumentSourceKind, Image, ImageMediaType, UserContent};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&server)
+        .await;
+    let (provider, model) = setup("openrouter", &server.uri(), json!({}));
+    let instruction = "Describe this object and its colour.";
+    let transcription = "<image_transcription>\nA blue object.\n</image_transcription>";
+    let mut content = vec![
+        UserContent::text(instruction),
+        UserContent::Image(Image {
+            data: DocumentSourceKind::Base64("YWJjZA==".into()),
+            media_type: Some(ImageMediaType::JPEG),
+            detail: None,
+            additional_params: None,
+        }),
+    ];
+    crate::inference::conversation::replace_images_with_text(&mut content, transcription);
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    assert!(
+        provider
+            .stream_inference(
+                &model,
+                "system",
+                vec![Message::User { content }],
+                vec![],
+                tx,
+                None,
+                None
+            )
+            .await
+            .is_err()
+    );
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests.last().unwrap().body_json().unwrap();
+    assert_eq!(body["messages"][1]["role"], "user");
+    assert_eq!(
+        body["messages"][1]["content"],
+        format!("{instruction}\n\n{transcription}")
+    );
+}
+
+#[tokio::test]
 async fn openai_defaults_to_responses_with_reasoning_and_tools() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

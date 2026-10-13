@@ -279,16 +279,9 @@ pub async fn transcribe_images_in_history(
             }
         };
 
-        // Rebuild the message with images removed and the replacement appended.
-        let kept: Vec<UserContent> = content
-            .iter()
-            .filter(|c| !matches!(c, UserContent::Image(_)))
-            .cloned()
-            .chain(std::iter::once(UserContent::text(&replacement)))
-            .collect();
-        if !kept.is_empty() {
-            *content = kept;
-        }
+        // Keep the user's request and image-derived context in the same text
+        // payload when this message no longer contains non-text content.
+        super::conversation::replace_images_with_text(content, &replacement);
     }
 
     transcribed
