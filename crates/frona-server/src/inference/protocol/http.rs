@@ -55,6 +55,7 @@ fn rewrite(request: Request<Bytes>) -> http_client::Result<Request<Bytes>> {
         ))));
     }
     parameters.apply(&mut body);
+    super::wire_trace::record_wire_request(&body);
     let bytes =
         serde_json::to_vec(&body).map_err(|error| http_client::Error::Instance(Box::new(error)))?;
     parts.headers.remove("content-length");
