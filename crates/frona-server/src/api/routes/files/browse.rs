@@ -4,6 +4,8 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use tokio::fs;
 
+use crate::storage::path::{resolve_filesystem_path, resolve_workspace_path};
+
 use crate::storage::{
     FileEntry, SearchTarget, VirtualPath, validate_no_traversal, validate_relative_path,
 };
@@ -227,7 +229,7 @@ pub(crate) async fn search_files(
             let ws = state
                 .storage_service
                 .agent_workspace(&auth.handle, &agent.handle);
-            let root = ws.base_path().to_path_buf();
+            let root = resolve_filesystem_path(ws.base_path())?;
             let dir = match subpath {
                 Some(sub) => {
                     validate_relative_path(sub)?;
@@ -247,11 +249,11 @@ pub(crate) async fn search_files(
                 validate_relative_path(subpath)?;
             }
             let ws = state.storage_service.user_workspace(&auth.handle);
-            let base = ws.base_path().to_path_buf();
+            let base = resolve_filesystem_path(ws.base_path())?;
             let dir = if subpath.is_empty() {
                 base.clone()
             } else {
-                base.join(subpath)
+                resolve_workspace_path(&base, std::path::Path::new(subpath))?
             };
             targets.push(SearchTarget {
                 dir,
@@ -261,7 +263,7 @@ pub(crate) async fn search_files(
         }
         _ => {
             let user_ws = state.storage_service.user_workspace(&auth.handle);
-            let user_dir = user_ws.base_path().to_path_buf();
+            let user_dir = resolve_filesystem_path(user_ws.base_path())?;
             targets.push(SearchTarget {
                 dir: user_dir.clone(),
                 root: user_dir,
@@ -273,7 +275,7 @@ pub(crate) async fn search_files(
                 let ws = state
                     .storage_service
                     .agent_workspace(&auth.handle, &agent.handle);
-                let agent_dir = ws.base_path().to_path_buf();
+                let agent_dir = resolve_filesystem_path(ws.base_path())?;
                 if agent_dir.is_dir() {
                     targets.push(SearchTarget {
                         dir: agent_dir.clone(),

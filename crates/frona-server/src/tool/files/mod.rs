@@ -207,8 +207,8 @@ mod resolve_path_tests {
     #[tokio::test]
     async fn absolute_path_passes_through() {
         assert_eq!(
-            run("/etc/hostname", "mina", "system", "/app/data").unwrap(),
-            PathBuf::from("/etc/hostname")
+            run(file.path().to_str().unwrap(), "mina", "system", "/app/data").unwrap(),
+            std::fs::canonicalize(file.path()).unwrap()
         );
     }
 
