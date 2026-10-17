@@ -1,5 +1,7 @@
 "use client";
 
+import { downloadFile } from "@/lib/file-transfer";
+
 import { useState, useEffect, useCallback, useRef } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";

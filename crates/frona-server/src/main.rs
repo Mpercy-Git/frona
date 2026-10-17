@@ -297,6 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 HeaderName::from_static("accept-ranges"),
                 HeaderName::from_static("content-range"),
             ])
+            .expose_headers([HeaderName::from_static("content-disposition")])
             .allow_credentials(true)
     });
 
