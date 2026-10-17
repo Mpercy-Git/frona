@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::auth::token::models::ApiToken;
+use crate::auth::token::models::{ApiToken, TokenType};
 use crate::auth::token::repository::TokenRepository;
 use crate::core::error::AppError;
 
@@ -97,6 +97,7 @@ impl TokenRepository for SurrealRepo<ApiToken> {
             .query("DELETE api_token WHERE refresh_pair_id = $pair_id RETURN BEFORE")
             .bind(("pair_id", pair_id.to_string()))
             .await
+            .and_then(|response| response.check())
             .map_err(|e| AppError::Database(e.to_string()))?;
         let deleted: Vec<serde_json::Value> = result.take(0).unwrap_or_default();
         Ok(!deleted.is_empty())
@@ -107,6 +108,7 @@ impl TokenRepository for SurrealRepo<ApiToken> {
             .query("DELETE FROM api_token WHERE user_id = $uid")
             .bind(("uid", user_id.to_string()))
             .await
+            .and_then(|response| response.check())
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }
