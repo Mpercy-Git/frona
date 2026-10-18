@@ -229,4 +229,88 @@ mod tests {
         }
         assert_eq!(tracker.check("user@test.com").await, LockStatus::Open);
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn threshold_starts_a_full_lockout_without_extending_on_late_failures() {
+        let tracker = LoginAttemptTracker::new(2, 15);
+        tracker.record_failure("  Alice@Example.COM  ").await;
+        tokio::time::advance(Duration::from_secs(14 * 60)).await;
+        tracker.record_failure("alice@example.com").await;
+        assert!(tracker.is_locked("ALICE@example.com").await);
+
+        // Past the original failure window, but still inside the threshold's window.
+        tokio::time::advance(Duration::from_secs(14 * 60 + 59)).await;
+        assert!(tracker.is_locked("alice@example.com").await);
+        tracker.record_failure("alice@example.com").await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(!tracker.is_locked("alice@example.com").await);
+        tracker.record_failure("alice@example.com").await;
+        assert!(!tracker.is_locked("alice@example.com").await);
+        tracker.record_failure("alice@example.com").await;
+        assert!(tracker.is_locked("alice@example.com").await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn subthreshold_failures_expire_at_the_original_deadline() {
+        let tracker = LoginAttemptTracker::new(3, 1);
+        tracker.record_failure("alice").await;
+        tokio::time::advance(Duration::from_secs(59)).await;
+        tracker.record_failure("alice").await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tracker.record_failure("alice").await;
+        assert!(!tracker.is_locked("alice").await);
+        tracker.record_failure("alice").await;
+        assert!(!tracker.is_locked("alice").await);
+        tracker.record_failure("alice").await;
+        assert!(tracker.is_locked("alice").await);
+    }
+
+    #[tokio::test]
+    async fn normalization_applies_to_failure_checks_and_clear() {
+        let tracker = LoginAttemptTracker::new(2, 15);
+        for variants in [
+            ["  Alice  ", "ALICE", "alice"],
+            [
+                "  Älice@Example.COM  ",
+                "ÄLICE@example.com",
+                "älice@example.com",
+            ],
+        ] {
+            tracker.record_failure(variants[0]).await;
+            tracker.record_failure(variants[1]).await;
+            assert!(tracker.is_locked(variants[2]).await);
+            tracker.clear(variants[0]).await;
+            assert!(!tracker.is_locked(variants[1]).await);
+            tracker.record_failure(variants[2]).await;
+            assert!(!tracker.is_locked(variants[0]).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_threshold_or_duration_disables_tracking() {
+        for tracker in [
+            LoginAttemptTracker::new(0, 15),
+            LoginAttemptTracker::new(2, 0),
+        ] {
+            for _ in 0..3 {
+                tracker.record_failure("alice").await;
+            }
+            assert!(!tracker.is_locked("alice").await);
+            assert!(tracker.cache.get("alice").await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_failures_share_one_counter() {
+        let tracker = LoginAttemptTracker::new(20, 15);
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..20 {
+            let tracker = tracker.clone();
+            tasks.spawn(async move { tracker.record_failure("alice").await });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        assert!(tracker.is_locked("alice").await);
+    }
 }
