@@ -33,7 +33,8 @@ pub(crate) async fn download_user_file(
         FileAuth::Presigned { sub, owner, path } => {
             // The token's owner must match the URL's {handle} and the sub (issuer).
             let expected_owner = format!("user:{sub}");
-            if owner != expected_owner || path != filename {
+            let user_handle = state.user_service.handle_of(&sub).await?;
+            if owner != expected_owner || handle != user_handle || path != filename {
                 return Err(ApiError(AppError::Forbidden(
                     "Presigned URL does not match requested file".into(),
                 )));

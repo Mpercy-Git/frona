@@ -56,6 +56,7 @@ async fn pending_credential_call(state: &AppState, chat_id: &str, agent_id: &str
 }
 
 async fn credential_approval(state: &AppState) -> HitlResponse {
+    state.vault_service.sync_config_connections().await.unwrap();
     let credential = state
         .model_provider_service
         .store

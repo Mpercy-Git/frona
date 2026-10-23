@@ -355,6 +355,12 @@ impl McpServerService {
         user_handle: &crate::core::Handle,
         req: McpServerInstall,
     ) -> Result<McpServer, AppError> {
+        validate_env_names(req.extra_env.keys().map(String::as_str))?;
+        validate_env_names(
+            req.credentials
+                .iter()
+                .map(|binding| binding.env_var.as_str()),
+        )?;
         if let Some(remote) = req.remote.clone() {
             return self
                 .install_remote(
