@@ -24,6 +24,7 @@ async fn pending_credential_call(state: &AppState, chat_id: &str, agent_id: &str
         message_id: message.id,
         turn: 0,
         provider_call_id: frona::core::repository::new_id(),
+        signature: None,
         name: "request_credentials".into(),
         arguments: json!({"query": "TEST", "reason": "test approval"}),
         result: String::new(),

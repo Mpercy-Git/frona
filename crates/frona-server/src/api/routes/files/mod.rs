@@ -11,7 +11,6 @@ use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, post};
-use serde::Deserialize;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
@@ -35,13 +34,6 @@ const MAX_FILE_SIZE: usize = 50 * 1024 * 1024; // 50MB
 // caught by the handler and reported as a clear "File too large" error rather
 // than a cryptic multipart parse failure (see upload::map_multipart_err).
 const MAX_UPLOAD_BODY_SIZE: usize = MAX_FILE_SIZE + 1024 * 1024; // +1MB overhead
-
-/// Presentation only: both modes require the same file authorization.
-#[derive(Default, Deserialize)]
-pub(super) struct FileResponseQuery {
-    #[serde(default)]
-    pub(super) download: bool,
-}
 
 pub fn router() -> Router<AppState> {
     Router::new()
