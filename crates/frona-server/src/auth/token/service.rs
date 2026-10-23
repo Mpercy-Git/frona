@@ -247,16 +247,7 @@ impl TokenService {
             .repo
             .find_active_by_id(&claims.token_id)
             .await?
-            .and_then(|token| token.refresh_pair_id)
-            .ok_or_else(|| AppError::Auth {
-                message: "Refresh token already consumed or missing its session pair".into(),
-                code: AuthErrorCode::TokenInvalid,
-            })?;
-
-        if !self
-            .repo
-            .consume_refresh_pair(&claims.token_id, &pair_id)
-            .await?
+            .and_then(|t| t.refresh_pair_id)
         {
             None => {
                 return Err(AppError::Auth {

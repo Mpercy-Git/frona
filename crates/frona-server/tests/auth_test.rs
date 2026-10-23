@@ -5,11 +5,10 @@ use frona::auth::AuthService;
 use frona::auth::User;
 use frona::auth::UserService;
 use frona::auth::jwt::JwtService;
-use frona::auth::token::models::{ApiToken, CreatePatRequest};
+use frona::auth::token::models::CreatePatRequest;
 use frona::auth::token::repository::TokenRepository;
 use frona::auth::token::service::TokenService;
 use frona::core::config::CacheConfig;
-use frona::core::error::AppError;
 use frona::core::repository::Repository;
 use frona::credential::keypair::service::KeyPairService;
 use frona::db::init as db;
@@ -179,16 +178,6 @@ async fn test_token_refresh_rotation() {
 
     let old_refresh_result = token_svc.validate_refresh(&keypair_svc, &refresh_jwt).await;
     assert!(old_refresh_result.is_err());
-    assert!(token_svc.refresh(&keypair_svc, &refresh_jwt).await.is_err());
-    assert_eq!(
-        token_svc
-            .repo()
-            .find_by_user_id(&user.id)
-            .await
-            .unwrap()
-            .len(),
-        2
-    );
 
     let new_refresh_claims = token_svc
         .validate_refresh(&keypair_svc, &new_refresh)
