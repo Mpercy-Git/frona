@@ -419,3 +419,58 @@ Still open: `1e06a0d` (dependency refresh; pins surrealdb `=3.2.4`, keepass
 and the Podman/dev-container commits (`6e51320`, `81ed651`, `0e81b09`,
 `e2abe3f`, plus Group B) deliberately excluded. Version bump to 2026.10.0 after
 those land.
+
+## Audit update — 2026-10-23
+
+Upstream `fronalabs/frona` `main` @ `4bc1d4d9` (2026-10-22). 68 non-merge commits
+after the previous audit's marker `53d0062`. Fork `main` @ `d5f8668` (2026-10-13)
+has since picked up many upstream-style fixes directly (auth token types, path
+validation on downloads, Gemini/OpenRouter key validation, history truncation,
+Android paste, title generation) with different SHAs, so **every item below must
+be confirmed by content/diff before porting** — several Oct 17–18 upstream
+commits look like follow-up hardening of areas the fork already covers.
+Note: this clone is shallow and `main`/`upstream/main` share no ancestor, so
+counts come from `53d0062..upstream/main`, not a merge base.
+
+**Group F — security hardening (port first; check against fork's Oct 8 work)**
+`f6b7b3b9` (bind tool approvals to chat), `ec5dc6d3` (authorize task delete
+before cancel), `f0174d38` (MCP log read/stream ownership), `2174e721`,
+`b4067ca6`, `b5b2843c` (workspace path resolution/containment), `0338a279`
+(isolate previews, force downloads), `d5fd55a3` (atomic refresh-token
+consumption), `b8b66448` (token types at entry points), `db96dffa` (presigned
+downloads bound to user), `0335b4e4` (OAuth state expiry), `e9c3369d` (login
+lockouts), `c3ece716` (env-name validation).
+
+**Group G — inference/chat correctness**
+`10b92aa0`, `313fe97d`, `e4104b45`, `1740e858` (native compaction — overlaps the
+fork's own `00b6cfd5` "retain current request"; hand-merge), `6673e1ca`,
+`6fdef674`, `08b77b9e` (token counts), `218abc8f`, `21244827` (pricing),
+`529861fc` (tool-call signatures; overlaps fork Gemini signature work),
+`0c199381` (task stop), `aef08a6d`, `17565f2c`, `d20ae9e4`, `32724716`.
+
+**Group H — tools/MCP/files**
+`888dd917`, `8b70cdca`, `fb982647` (dedicated MCP tool; verify vs. fork's MCP SSE
+client), `4afc6a9c`, `7c9e6297`, `6122618a`+`75079bcc` (edit matching moves into
+text crate), `6dd83b37`, `f1933ff6`.
+
+**Group I — browser**
+`e82098fc`, `8dfb8471`, `3f6a31bb`, `87201927`, `055fe02c`, `ecd92722` (Browserless
+auth/session serialization; touches the fork's browserless test-button settings).
+
+**Group J — web UI** (low risk, mostly verbatim)
+`461d8df5`, `b2d13ba5`, `5de6a810`, `5349cf97`, `aeed500c`, `f1edae5e`,
+`b5354c44`, `35b7b5d2`, `3e470193`, `3f0ab549`, `eec6584f`, `e293020c`,
+`f3b02d8a`, `0391654c`. `625d65b6` (clipboard paste) **conflicts with the fork's
+Android paste fix** (`36ced70e`, `b5d291e1`, `c2f0def7`) — keep the fork's
+behavior, port only what doesn't regress Samsung/Android paste.
+
+**Group K — build/deps/tests** (validate in CI, regenerate lockfiles)
+`2226111d`, `981905ad` (keep SurrealDB 3.2.4 pin), `295f8d06`, `55793b3d`,
+`f55f2b09` (Presage upgrade — **fork pins presage rev `f74b96e0`, plus
+curve25519/rusqlite patches; test Signal before taking**), and test-only
+`4bc1d4d9`, `af0491e8`, `fd1a253d`, `5da5694b`, `072d1586`.
+
+**Suggested order:** F (one PR, security) → G → H → J → I → K, one PR each,
+validated with `cargo check --workspace --tests`, fmt, clippy, `tsc`, eslint,
+vitest. Still open from before: Group B/E Podman commits and the version bump
+(fork `2026.8.5` vs upstream v2026.10.x).
