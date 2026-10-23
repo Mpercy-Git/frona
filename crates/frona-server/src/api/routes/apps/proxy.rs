@@ -283,7 +283,7 @@ async fn authenticate_proxy_request(state: &AppState, headers: &HeaderMap) -> Op
         && let Some(token) = auth_header.strip_prefix("Bearer ")
         && let Ok(claims) = state
             .token_service
-            .validate_api(&state.keypair_service, token)
+            .validate(&state.keypair_service, token)
             .await
     {
         return Some(claims.sub);

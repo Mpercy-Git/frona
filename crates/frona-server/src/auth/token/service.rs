@@ -429,18 +429,6 @@ impl TokenService {
         let decoding_key = keypair_svc.get_verifying_key(&kid).await?;
         let claims = self.jwt.verify::<Claims>(token_str, &decoding_key)?;
 
-        // Check the signed type before the stateless shortcut or DB lookup.
-        // Unknown future token types must opt in at each consuming entry point.
-        if !accepted_types
-            .iter()
-            .any(|token_type| claims.token_type == token_type.as_str())
-        {
-            return Err(AppError::Auth {
-                message: "Token type is not accepted by this endpoint".into(),
-                code: AuthErrorCode::TokenInvalid,
-            });
-        }
-
         // Stateless tokens (Ephemeral) skip DB revocation checks — signature + exp are authoritative.
         if claims.token_type == TokenType::Ephemeral.as_str() {
             return Ok(claims);

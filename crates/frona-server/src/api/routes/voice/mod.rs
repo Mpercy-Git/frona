@@ -107,7 +107,7 @@ pub fn router() -> Router<AppState> {
 pub(super) async fn verify_voice_jwt(state: &AppState, token: &str) -> Result<Claims, AppError> {
     state
         .token_service
-        .validate_access(&state.keypair_service, token)
+        .validate(&state.keypair_service, token)
         .await
 }
 
