@@ -419,3 +419,68 @@ Still open: `1e06a0d` (dependency refresh; pins surrealdb `=3.2.4`, keepass
 and the Podman/dev-container commits (`6e51320`, `81ed651`, `0e81b09`,
 `e2abe3f`, plus Group B) deliberately excluded. Version bump to 2026.10.0 after
 those land.
+
+## Audit update — 2026-10-30
+
+Upstream `fronalabs/frona` `main` @ `f0c22b4c` (2026-10-25). **81 commits** since
+`53d0062` (v2026.10.0, the previous audit's head); none are ported yet (checked by
+subject search against fork history; fork `main` is at `d5f8668`, 2026-10-13, and
+its own work since 10-02 has been fork-only fixes — paste handling, OpenRouter/Gemini
+key validation, compaction context). The fork-side overlap risk is highest in
+inference/compaction, paste handling and provider key validation, where both sides
+fixed the same area independently — diff those by hand rather than cherry-picking.
+
+Proposed order (security first, then correctness, then UI, then build):
+
+**Group F — security hardening (port first; mostly small, server-side, independent)**
+`ec5dc6d3` task deletion authz, `f0174d38` MCP log ownership, `2174e721` agent
+downloads scoped to workspace, `b4067ca6` + `b5b2843c` path resolution/workspace
+roots, `0338a279` preview isolation + forced downloads, `d5fd55a3` atomic refresh
+token consumption, `b8b66448` token-type restriction, `db96dffa` presigned
+downloads bound to user, `0335b4e4` OAuth state expiry, `e9c3369d` login lockouts,
+`f6b7b3b9` tool approvals bound to chat, `8dfb8471`/`3f6a31bb`/`87201927` Browserless
+auth + debugger proxy, `c3ece716` env-name validation. Fork overlaps: its own
+password-reset/push hardening (`9b1c26c4`, `ba9075e7`) — different areas, expect
+clean merges. One PR, run the full security test suite.
+
+**Group G — inference/chat correctness (hand-merge; overlaps fork work)**
+`10b92aa0`, `313fe97d`, `e4104b45`, `1740e858`, `6673e1ca` (compaction + active-turn
+context; compare with fork's `00b6cfd`, `42fd63db`, `61b91b42`), `529861fc` tool-call
+signatures (compare fork `5a482fe2`), `218abc8f`/`21244827`/`08b77b9e`/`6fdef674`
+pricing + token breakdowns (check fork's cost accounting/billing field),
+`32724716`/`d20ae9e4`/`17565f2c` provider validation (fork has `0cbe5845`,
+`f087e10a` — likely redundant; confirm and skip), `badcd103`, `b2d9f630` model-group
+and credential fallbacks, `aef08a6d` legacy-field DB defaults, `0c199381` task stop,
+`b5354c44` schedule notifications.
+
+**Group H — tools/MCP/files**
+`888dd917`, `8b70cdca`, `fb982647` (dedicated `mcpctl` tool + list-change refresh;
+verify against the fork's MCP SSE client), `4afc6a9c`, `7c9e6297`, `6dd83b37`,
+`6122618a`, `75079bcc` (edit matching moved into the text crate), `461d8df5`,
+`b2d13ba5`, `5349cf97`, `5de6a810` (upload limits, previewable-file classification),
+`e82098fc`, `2c6817eb`, `c09cf498` (browser sessions + shared preview).
+
+**Group I — web UI**
+`625d65b6` clipboard normalization (**conflicts with fork's Android paste fix;
+keep the fork's tests, evaluate upstream's approach, do not stack both**), `f3b02d8a`,
+`0391654c` SSE reconnect, `eec6584f`, `e293020c`, `1c4f47af`, `f1af946f`, `10554582`
+(mobile nav), `3d5006aa`, `3e470193`, `3f0ab549`, `35b7b5d2`, `f1edae5e`, `aeed500c`,
+`f1933ff6`, `072d1586` and test fixes (`f0c22b4c`, `4bc1d4d9`, `af0491e8`, `fd1a253d`,
+`5da5694b`).
+
+**Group J — dependencies/build (needs CI or Podman; do last)**
+`f55f2b09` Presage upgrade (fork pins presage rev `f74b96e`; verify the inbound
+Signal/voice code still compiles), `981905ad` (Rust deps; regenerate Cargo.lock, keep
+SurrealDB `=3.2.4`), `2226111d`, `295f8d06` (web deps), `55793b3d`, `ecd92722`,
+`055fe02c`, `a09efd82`, `08213a2b`, `ae88dfe7`, `f104c288`, plus the still-open
+Group B/E Podman commits above.
+
+**Process to stay close to upstream going forward**
+1. Sync weekly (this routine): append an audit section, port Group F-type security
+   fixes within a week.
+2. Port in upstream commit order, one themed PR per group, preserving upstream
+   subjects in fork commit messages so future audits can match by subject.
+3. For the fork-only overlap areas (paste, compaction, key validation), prefer
+   adopting upstream's version and re-applying only the fork delta, to shrink the
+   diff over time; upstream the fork-only fixes where generally useful.
+4. Release bump to 2026.10.x only after Groups F–I land.
