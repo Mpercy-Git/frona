@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreUserInfoClaims};
@@ -8,6 +9,7 @@ use openidconnect::{
     RedirectUrl, Scope, SubjectIdentifier,
 };
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 
 use super::models::OAuthIdentity;
 use super::repository::OAuthRepository;
@@ -17,11 +19,15 @@ use crate::core::config::Config;
 use crate::core::error::{AppError, AuthErrorCode};
 use crate::credential::keypair::service::KeyPairService;
 
-/// In-flight authorize flows, keyed by CSRF state: `(nonce_secret, Nonce, expiry)`.
-///
-/// Named because the bare type is dense enough to obscure the field it
-/// describes, and it appears in both the struct and the constructor.
-type PendingStates = Arc<Mutex<HashMap<String, (String, Nonce, chrono::DateTime<Utc>)>>>;
+const PENDING_STATE_TTL: Duration = Duration::from_secs(10 * 60);
+
+struct PendingState {
+    nonce: Nonce,
+    expires_at: Instant,
+}
+
+/// In-flight authorize flows, keyed by CSRF state.
+type PendingStates = Arc<Mutex<HashMap<String, PendingState>>>;
 
 #[derive(Clone)]
 pub struct OAuthService {
@@ -72,10 +78,7 @@ impl OAuthService {
             scopes,
             allow_unknown_email_verification: config.sso.allow_unknown_email_verification,
             signups_match_email: config.sso.signups_match_email,
-            pending_states: Arc::new(Mutex::new(HashMap::<
-                String,
-                (String, Nonce, chrono::DateTime<Utc>),
-            >::new())),
+            pending_states: Arc::new(Mutex::new(HashMap::new())),
             repo,
             redirect_uri,
             http: openidconnect::reqwest::Client::new(),
@@ -122,17 +125,38 @@ impl OAuthService {
         let csrf_secret = csrf_state.secret().clone();
         let nonce_secret = nonce.secret().clone();
 
-        const STATE_TTL_MINUTES: i64 = 10;
-        let expiry = Utc::now() + chrono::Duration::minutes(STATE_TTL_MINUTES);
-
-        let mut states = self.pending_states.lock().await;
-        // Prune expired entries so the map doesn't grow without bound.
-        let now = Utc::now();
-        states.retain(|_, (_, _, exp)| *exp > now);
-        states.insert(csrf_secret.clone(), (nonce_secret.clone(), nonce, expiry));
-        drop(states);
+        self.store_pending_state(csrf_secret.clone(), nonce).await;
 
         Ok((auth_url.to_string(), csrf_secret, nonce_secret))
+    }
+
+    async fn store_pending_state(&self, state: String, nonce: Nonce) {
+        let mut pending_states = self.pending_states.lock().await;
+        let now = Instant::now();
+        pending_states.retain(|_, pending| pending.expires_at > now);
+        pending_states.insert(
+            state,
+            PendingState {
+                nonce,
+                expires_at: now + PENDING_STATE_TTL,
+            },
+        );
+    }
+
+    async fn consume_state(&self, state: &str) -> Result<Nonce, AppError> {
+        let mut pending_states = self.pending_states.lock().await;
+        let now = Instant::now();
+        // Removal and expiry validation share the lock: concurrent callbacks cannot
+        // reuse a state, and pruning is only housekeeping, not the expiry check.
+        let pending = pending_states.remove(state);
+        pending_states.retain(|_, pending| pending.expires_at > now);
+        pending
+            .filter(|pending| pending.expires_at > now)
+            .map(|pending| pending.nonce)
+            .ok_or_else(|| AppError::Auth {
+                message: "Invalid or expired SSO state".into(),
+                code: AuthErrorCode::CsrfFailed,
+            })
     }
 
     pub async fn handle_callback(
@@ -143,15 +167,7 @@ impl OAuthService {
         _keypair_svc: &KeyPairService,
         token_svc: &TokenService,
     ) -> Result<(User, bool), AppError> {
-        let (_nonce_secret, nonce, _expiry) = self
-            .pending_states
-            .lock()
-            .await
-            .remove(state)
-            .ok_or_else(|| AppError::Auth {
-                message: "Invalid or expired SSO state".into(),
-                code: AuthErrorCode::CsrfFailed,
-            })?;
+        let nonce = self.consume_state(state).await?;
 
         let http_client = self.http.clone();
         let issuer_url = self.issuer_url()?;
@@ -540,4 +556,114 @@ async fn fetch_userinfo(
         .await
         .map(Some)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use surrealdb::Surreal;
+    use surrealdb::engine::local::Db;
+
+    use super::*;
+    use crate::db::repo::generic::SurrealRepo;
+
+    fn service() -> OAuthService {
+        let mut config = Config::default();
+        config.sso.authority = Some("http://unused.invalid".into());
+        config.sso.client_id = Some("test-client".into());
+        config.sso.client_secret = Some("test-secret".into());
+        config.server.backend_url = Some("http://localhost:3001".into());
+        // State-map tests need no database connection or provider HTTP requests.
+        let repo = SurrealRepo::new(Surreal::<Db>::init());
+        OAuthService::new(&config, Arc::new(repo)).unwrap()
+    }
+
+    fn assert_csrf<T: std::fmt::Debug>(result: Result<T, AppError>) {
+        assert!(
+            matches!(
+                result,
+                Err(AppError::Auth {
+                    code: AuthErrorCode::CsrfFailed,
+                    ..
+                })
+            ),
+            "expected rejected SSO state, got {result:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_deadline_is_exclusive_without_another_authorization() {
+        let service = service();
+        for (state, elapsed, valid) in [
+            ("before", PENDING_STATE_TTL - Duration::from_nanos(1), true),
+            ("at", PENDING_STATE_TTL, false),
+            ("after", PENDING_STATE_TTL + Duration::from_nanos(1), false),
+        ] {
+            service
+                .store_pending_state(state.into(), Nonce::new(format!("nonce-{state}")))
+                .await;
+            tokio::time::advance(elapsed).await;
+            let consumed = service.consume_state(state).await;
+            if valid {
+                assert_eq!(consumed.unwrap().secret(), "nonce-before");
+            } else {
+                assert_csrf(consumed);
+            }
+            assert_csrf(service.consume_state(state).await);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_expiring_while_waiting_for_the_lock_is_rejected() {
+        let service = service();
+        service
+            .store_pending_state("waiting".into(), Nonce::new("nonce".into()))
+            .await;
+        let guard = service.pending_states.lock().await;
+        let callback = service.consume_state("waiting");
+        tokio::pin!(callback);
+        // Poll the consumer while the map is locked, then reach its deadline.
+        assert!(futures::poll!(&mut callback).is_pending());
+        tokio::time::advance(PENDING_STATE_TTL).await;
+        drop(guard);
+        assert_csrf(callback.await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unknown_state_consumption_prunes_expired_states_but_keeps_live_states() {
+        let service = service();
+        service
+            .store_pending_state("expired".into(), Nonce::new("old-nonce".into()))
+            .await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        service
+            .store_pending_state("live".into(), Nonce::new("live-nonce".into()))
+            .await;
+        tokio::time::advance(PENDING_STATE_TTL - Duration::from_secs(1)).await;
+        assert_csrf(service.consume_state("unknown").await);
+        let pending = service.pending_states.lock().await;
+        assert!(!pending.contains_key("expired"));
+        assert!(pending.contains_key("live"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn storing_state_sets_ten_minute_deadline_and_prunes_old_states() {
+        let service = service();
+        service
+            .store_pending_state("old".into(), Nonce::new("old-nonce".into()))
+            .await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        service
+            .store_pending_state("live".into(), Nonce::new("live-nonce".into()))
+            .await;
+        tokio::time::advance(PENDING_STATE_TTL - Duration::from_secs(1)).await;
+        let now = Instant::now();
+        service
+            .store_pending_state("new".into(), Nonce::new("new-nonce".into()))
+            .await;
+        let pending = service.pending_states.lock().await;
+        assert!(!pending.contains_key("old"));
+        assert!(pending.contains_key("live"));
+        assert_eq!(pending["new"].nonce.secret(), "new-nonce");
+        assert_eq!(pending["new"].expires_at, now + PENDING_STATE_TTL);
+    }
 }
