@@ -21,6 +21,7 @@ mod spaces;
 mod sso;
 mod system;
 mod tasks;
+mod token_types;
 mod triggers;
 mod vaults;
 
