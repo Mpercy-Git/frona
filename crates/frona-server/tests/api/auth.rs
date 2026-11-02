@@ -1833,7 +1833,7 @@ async fn refresh_and_logout_report_database_revocation_failures_without_clearing
         .unwrap();
     state
         .token_service
-        .validate(&state.keypair_service, &refresh)
+        .validate_refresh(&state.keypair_service, &refresh)
         .await
         .unwrap();
 }

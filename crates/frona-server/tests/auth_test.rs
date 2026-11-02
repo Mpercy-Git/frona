@@ -759,7 +759,7 @@ async fn refresh_has_one_winner_across_independent_services_on_rocksdb() {
         assert!(service.validate(&keys, &old_access).await.is_err());
         assert!(service.refresh(&keys, &old_refresh).await.is_err());
         service.validate(&keys, &access).await.unwrap();
-        service.validate(&keys, &refresh).await.unwrap();
+        service.validate_refresh(&keys, &refresh).await.unwrap();
         let rows = service.repo().find_by_user_id(&user.id).await.unwrap();
         assert_eq!(rows.len(), 2, "only the winning replacement pair may exist");
         service
@@ -929,7 +929,7 @@ async fn refresh_requires_a_live_pair_even_after_validation() {
     SurrealRepo::new(db.clone()).create(&user).await.unwrap();
     let (keys, service) = setup_services(&db);
     let (_, refresh) = service.create_session_pair(&keys, &user).await.unwrap();
-    let claims = service.validate(&keys, &refresh).await.unwrap();
+    let claims = service.validate_refresh(&keys, &refresh).await.unwrap();
     let mut token = service
         .repo()
         .find_active_by_id(&claims.token_id)
@@ -983,7 +983,7 @@ async fn consumption_rejects_missing_expired_and_non_refresh_rows() {
     let (keys, service) = setup_services(&db);
     let (access, refresh) = service.create_session_pair(&keys, &user).await.unwrap();
     let access = service.validate(&keys, &access).await.unwrap();
-    let refresh = service.validate(&keys, &refresh).await.unwrap();
+    let refresh = service.validate_refresh(&keys, &refresh).await.unwrap();
     let mut row = service
         .repo()
         .find_active_by_id(&refresh.token_id)
@@ -1048,7 +1048,7 @@ async fn failed_pair_deletion_rolls_back_and_never_mints_or_hides_revocation_err
     SurrealRepo::new(db.clone()).create(&user).await.unwrap();
     let (keys, service) = setup_services(&db);
     let (access, refresh) = service.create_session_pair(&keys, &user).await.unwrap();
-    let claims = service.validate(&keys, &refresh).await.unwrap();
+    let claims = service.validate_refresh(&keys, &refresh).await.unwrap();
     let pair = service
         .repo()
         .find_active_by_id(&claims.token_id)
@@ -1082,7 +1082,7 @@ async fn failed_pair_deletion_rolls_back_and_never_mints_or_hides_revocation_err
         2
     );
     service.validate(&keys, &access).await.unwrap();
-    service.validate(&keys, &refresh).await.unwrap();
+    service.validate_refresh(&keys, &refresh).await.unwrap();
     db.query("REMOVE EVENT reject_delete ON api_token")
         .await
         .unwrap()
