@@ -51,7 +51,10 @@ impl Gate {
                     TokenType::Access | TokenType::Pat | TokenType::Ephemeral
                 )
             }
-            Self::AppCookie | Self::Voice => kind == TokenType::Access,
+            // The fork's app_session cookie must carry the app-session scope, so
+            // no plain token type is accepted here (see the bootstrap test).
+            Self::AppCookie => false,
+            Self::Voice => kind == TokenType::Access,
             Self::AppBootstrap | Self::Refresh => kind == TokenType::Refresh,
         }
     }
