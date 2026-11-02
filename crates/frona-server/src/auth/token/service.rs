@@ -339,6 +339,19 @@ impl TokenService {
         Ok(claims)
     }
 
+    /// Verify an access token for entry points that issue their own session
+    /// credentials (voice). PATs and ephemeral tokens pass [`Self::validate`]
+    /// but are refused here.
+    pub async fn validate_access(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        let claims = self.validate(keypair_svc, token_str).await?;
+        require_type(&claims, &[TokenType::Access])?;
+        Ok(claims)
+    }
+
     /// Verify a refresh token. Only the session refresh and the app gate
     /// present one; no other entry point may, and this accepts nothing else.
     pub async fn validate_refresh(
