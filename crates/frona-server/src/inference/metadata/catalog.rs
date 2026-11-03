@@ -157,27 +157,20 @@ pub trait CostForUsage {
     /// `ModelCatalogStore::price`, which handles per-provider rig
     /// inconsistencies.
     ///
-    /// Named `full_cost_for`, not `cost_for`: the crate's own inherent
-    /// `cost_for` takes a `TokenUsage` with no cache-write field at all, so
-    /// it never prices Anthropic's cache-write premium. An inherent method
-    /// always wins over a trait method of the same name, so this can't be
-    /// called `cost_for` without silently losing that pricing.
+    /// Adapts rig's `Usage` to the crate's `cost_for`, which prices cache
+    /// reads and writes separately (a model with no published write rate is
+    /// charged the plain input rate).
     fn full_cost_for(&self, u: &Usage) -> Option<f64>;
 }
 
 impl CostForUsage for ModelEntry {
     fn full_cost_for(&self, u: &Usage) -> Option<f64> {
-        let cost = self.cost.as_ref()?;
-        let cache_read = cost.cache_read.unwrap_or(0.0);
-        // A cache write is a premium over fresh input (Anthropic bills 1.25x),
-        // so a model that publishes no write rate is charged at the plain input
-        // rate rather than free — the tokens were processed either way.
-        let cache_write = cost.cache_write.unwrap_or(cost.input);
-        let total = (u.input_tokens as f64) * cost.input
-            + (u.output_tokens as f64) * cost.output
-            + (u.cached_input_tokens as f64) * cache_read
-            + (u.cache_creation_input_tokens as f64) * cache_write;
-        Some(total * PER_MILLION_TO_PER_TOKEN)
+        self.cost_for(&frona_model_catalog::catalog::TokenUsage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+            cached_input_tokens: u.cached_input_tokens,
+            cache_creation_input_tokens: u.cache_creation_input_tokens,
+        })
     }
 }
 
