@@ -978,7 +978,6 @@ async fn reinstall_moves_a_registry_server_to_the_newly_published_version() {
     assert!(!again.changed);
 }
 
-
 #[tokio::test]
 async fn environment_validation_precedes_binding_changes() {
     let (db, vault, service, _tmp) = build_test_harness(vec![secret_env_var("TOKEN")]).await;

@@ -132,12 +132,32 @@ pub(super) async fn serve_path(
     if !metadata.is_file() {
         return Err(ApiError(AppError::NotFound("File not found".into())));
     }
-    let file_len = metadata.len();
-
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("download");
+    let file = fs::File::open(path)
+        .await
+        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+    serve_open_file(file, filename, headers).await
+}
+
+/// Serve an already-opened file, so a caller that resolved and pinned the
+/// handle itself (see `open_workspace_file`) is not re-resolved by pathname.
+pub(super) async fn serve_open_file(
+    mut file: fs::File,
+    filename: &str,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let metadata = file
+        .metadata()
+        .await
+        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+    if !metadata.is_file() {
+        return Err(ApiError(AppError::NotFound("File not found".into())));
+    }
+    let file_len = metadata.len();
+
     let content_type = detect_content_type(filename);
 
     // SVG and other script-executable types must be served as attachments to
@@ -173,10 +193,6 @@ pub(super) async fn serve_path(
             .body(Body::empty())
             .unwrap());
     }
-
-    let mut file = fs::File::open(path)
-        .await
-        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
 
     let response = match requested {
         RangeSpec::Partial(range) => {

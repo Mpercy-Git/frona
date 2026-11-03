@@ -5,7 +5,7 @@ use axum::response::Response;
 use tokio::fs;
 
 use crate::storage::{
-    FileEntry, SearchTarget, VirtualPath, validate_no_traversal, validate_relative_path,
+    FileEntry, SearchTarget, VirtualPath, open_workspace_file, validate_relative_path,
 };
 
 use super::super::super::error::ApiError;
@@ -80,17 +80,22 @@ pub(crate) async fn download_agent_file(
         )));
     }
 
-    // `Path::join` discards the base for an absolute component, and `..` walks
-    // out of it, so refuse both before joining, then check the result stays
-    // inside the workspace once symlinks are resolved.
-    validate_relative_path(&filepath)?;
+    // Resolve, contain and open in one step; the pinned handle is what is served,
+    // so the workspace cannot be swapped between the check and the read.
     let workspace = state
         .storage_service
         .agent_workspace_path(&user_handle, &agent.handle);
-    let path = workspace.join(&filepath);
-    validate_no_traversal(&path, &workspace.to_string_lossy())?;
+    let relative = filepath.clone();
+    let file = tokio::task::spawn_blocking(move || open_workspace_file(&workspace, &relative))
+        .await
+        .map_err(|error| AppError::Internal(format!("Failed to open download: {error}")))??;
 
-    super::serve_path(&path, &headers).await
+    // Preserve the requested symlink's display name.
+    let filename = std::path::Path::new(&filepath)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download");
+    super::serve_open_file(fs::File::from_std(file), filename, &headers).await
 }
 
 pub(crate) async fn delete_user_file(
