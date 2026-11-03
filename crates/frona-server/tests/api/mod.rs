@@ -10,9 +10,13 @@ mod commands;
 mod contacts;
 mod cost;
 mod files;
+#[allow(dead_code, unused_imports)]
+#[path = "../helpers/mod.rs"]
+mod helpers;
 mod mcp;
 mod messages;
 mod misc;
+mod native_file_tools;
 mod navigation;
 mod notifications;
 mod push;

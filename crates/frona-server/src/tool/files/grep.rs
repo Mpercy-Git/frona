@@ -50,11 +50,7 @@ impl GrepTool {
         let scope_arg = arguments.get("path").and_then(|v| v.as_str());
 
         let scope_input = scope_arg.unwrap_or(".");
-        let resolved = if scope_arg.is_some() {
-            super::resolve_path(scope_input, ctx, &self.storage)?
-        } else {
-            super::workspace_root(ctx, &self.storage)
-        };
+        let resolved = super::resolve_path(scope_input, ctx, &self.storage)?;
         let sandbox = self.sandbox_manager.for_tool(ctx).await?;
         if !sandbox.is_readable(&resolved) {
             return Ok(ToolOutput::error(format!(
