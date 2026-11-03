@@ -823,6 +823,9 @@ fn install_question_tool(fixture: &StopFixture) {
         tools.join("ask_user_question.md"),
     )
     .unwrap();
+    // This fork's test state does not build the builtin tools by itself; resume
+    // dispatch looks the question tool up there.
+    fixture.state.tool_manager.init(&fixture.state);
 }
 
 async fn paused_question(
