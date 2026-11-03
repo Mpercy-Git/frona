@@ -484,3 +484,34 @@ Group B/E Podman commits above.
    adopting upstream's version and re-applying only the fork delta, to shrink the
    diff over time; upstream the fork-only fixes where generally useful.
 4. Release bump to 2026.10.x only after Groups F–I land.
+
+### Status update — 2026-11-03 (Group F ported)
+
+All 13 Group F security commits are in, on `claude/sweet-mccarthy-r876pw`.
+Verified: `cargo check -p frona-server --tests`; targeted tests for each
+commit (auth_test 22, token_types 5, api::files 94 incl. operations 37 and
+presentation, lib storage/tool::files 66, OAuth state 4, vault/MCP env-name
+tests); web `tsc`, `eslint`, full-subset `vitest` (534). Full `cargo test`
+and clippy were not run.
+
+| Upstream | Outcome |
+|---|---|
+| `f6b7b3b9` approvals bound to chat | ported verbatim |
+| `ec5dc6d3`, `f0174d38` | fork already had the route fixes; added upstream's tests |
+| `0335b4e4` OAuth state expiry | ported (fork never checked expiry on consume) |
+| `db96dffa` presigned downloads | ported |
+| `c3ece716` env-name validation | ported |
+| `d5fd55a3` atomic refresh consume | ported (`consume_refresh_pair`; tests use `validate_refresh`) |
+| `b8b66448` token types | not ported: fork's `validate*`/`require_type` already equivalent; added upstream's matrix test. **It found a real gap**: voice accepted PATs — fixed via `validate_access` |
+| `e9c3369d` lockouts | only the password-hash error handling ported; the fork's lockout tracker (Retry-After, `AccountLocked`, metrics) kept deliberately |
+| `2174e721` agent downloads | ported (`open_workspace_file`, `rustix`); fork's Range support kept |
+| `b4067ca6` path resolution | ported. **Behavior change**: tool paths with `..` are resolved and left to the sandbox policy instead of rejected |
+| `b5b2843c` workspace roots | ported. Test found a gap: copy/move created the destination before checking later sources — fixed (resolve all sources first) |
+| `0338a279` previews/downloads | ported. **Behavior change**: HTML/SVG/XML served inline under CSP `sandbox allow-scripts` (previously forced attachment); `?download=true` forces attachment |
+
+Environment note for future runs: `protoc` is required (`apt-get update &&
+apt-get install protobuf-compiler`), and builds should use
+`CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0` — default debug builds exhaust
+the sandbox's disk allowance (31 GiB of target/ vs 6.7 GiB).
+
+Next: Group G (inference/chat correctness), then H, I, J as listed above.
