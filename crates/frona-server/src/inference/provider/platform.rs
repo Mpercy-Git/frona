@@ -3,8 +3,8 @@ use std::sync::Arc;
 use rig_core::client::ModelListingClient;
 use rig_core::client::Nothing;
 use rig_core::providers::{
-    anthropic, deepseek, gemini, groq, llamafile, minimax, mira, mistral, moonshot, ollama, openai,
-    openrouter, venice, zai,
+    anthropic, deepseek, groq, llamafile, minimax, mira, mistral, moonshot, ollama, openai, venice,
+    zai,
 };
 
 use crate::core::Handle;
@@ -738,70 +738,7 @@ macro_rules! build_listable_key_client {
     }};
 }
 
-const GEMINI_DEFAULT_ENDPOINT: &str = "https://generativelanguage.googleapis.com";
-
-/// A one-model listing sent with the key in a header, so it never appears in a
-/// URL or log. The client follows no redirects, so the key is never forwarded to
-/// another host.
-fn gemini_key_check(
-    key: &str,
-    base_url: &str,
-) -> Result<(reqwest::Client, reqwest::Url), InferenceError> {
-    let url = reqwest::Url::parse(&format!(
-        "{}/v1beta/models?pageSize=1",
-        base_url.trim_end_matches('/')
-    ))
-    .map_err(|_| InferenceError::ConfigError("Invalid Gemini base URL".into()))?;
-    let mut api_key = reqwest::header::HeaderValue::from_str(key)
-        .map_err(|_| InferenceError::ConfigError("Invalid Gemini API key".into()))?;
-    api_key.set_sensitive(true);
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("x-goog-api-key", api_key);
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|_| InferenceError::ConfigError("Cannot build Gemini key client".into()))?;
-    Ok((client, url))
-}
-
-/// Google's body for an unrecognised or expired key:
-/// `{"error": {"details": [{"reason": "API_KEY_INVALID", ..}]}}`.
-fn gemini_key_invalid(body: &serde_json::Value) -> bool {
-    body["error"]["details"].as_array().is_some_and(|details| {
-        details
-            .iter()
-            .any(|detail| detail["reason"] == "API_KEY_INVALID")
-    })
-}
-
-const OPENROUTER_DEFAULT_ENDPOINT: &str = "https://openrouter.ai/api/v1";
-
-/// An authenticated `GET <base>/key`. OpenRouter answers 200 for a valid key and
-/// 401 otherwise, unlike its public model list, which accepts any key. The client
-/// follows no redirects, so the key is never forwarded to another host.
-fn openrouter_key_check(
-    key: &str,
-    base_url: &str,
-) -> Result<(reqwest::Client, reqwest::Url), InferenceError> {
-    let url = reqwest::Url::parse(&format!("{}/key", base_url.trim_end_matches('/')))
-        .map_err(|_| InferenceError::ConfigError("Invalid OpenRouter base URL".into()))?;
-    let mut authorization = reqwest::header::HeaderValue::from_str(&format!("Bearer {key}"))
-        .map_err(|_| InferenceError::ConfigError("Invalid OpenRouter API key".into()))?;
-    authorization.set_sensitive(true);
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(reqwest::header::AUTHORIZATION, authorization);
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|_| InferenceError::ConfigError("Cannot build OpenRouter key client".into()))?;
-    Ok((client, url))
-}
-
-fn openrouter_prompt_caching<H>(
+pub(crate) fn openrouter_prompt_caching<H>(
     model: rig_core::providers::openrouter::CompletionModel<H>,
     model_ref: &ModelConfig,
 ) -> rig_core::providers::openrouter::CompletionModel<H> {
@@ -876,113 +813,13 @@ pub(crate) fn build_provider(
             build_listable_key_client!(name, config, endpoint, groq, counter, hook = hooks::groq)
         }
         FactoryKind::OpenRouter => {
-            let key = require_api_key(name, config)?;
-            let mut builder = openrouter::Client::builder()
-                .http_client(crate::inference::protocol::http::WireClient::default())
-                .api_key(&key);
-            if let Some(url) = endpoint {
-                builder = builder.base_url(url);
-            }
-            let client = builder.build().map_err(|error| config_error(name, error))?;
-            let validation_client = client.clone();
-            let (key_client, key_url) =
-                openrouter_key_check(&key, endpoint.unwrap_or(OPENROUTER_DEFAULT_ENDPOINT))?;
-            Ok(Arc::new(
-                RigProvider::new(client, counter.clone())
-                    .with_wire_transport()
-                    .with_live_check(move || {
-                        let client = validation_client.clone();
-                        async move {
-                            client
-                                .list_models()
-                                .await
-                                .map_err(CredentialValidationError::from)
-                        }
-                    })
-                    // The model list is public, so it cannot prove a key is valid.
-                    // Credential validation uses an authenticated endpoint instead.
-                    .with_validation_check(move || {
-                        let client = key_client.clone();
-                        let url = key_url.clone();
-                        async move {
-                            let response = client.get(url).send().await.map_err(|_| {
-                                CredentialValidationError::Failed(
-                                    "OpenRouter key request failed".into(),
-                                )
-                            })?;
-                            match response.status().as_u16() {
-                                200 => Ok(()),
-                                401 | 403 => Err(CredentialValidationError::AuthenticationRejected),
-                                status => Err(CredentialValidationError::Failed(format!(
-                                    "OpenRouter returned HTTP {status}"
-                                ))),
-                            }
-                        }
-                    })
-                    .with_hook(hooks::openrouter)
-                    .with_model_decorator(openrouter_prompt_caching),
-            ) as Arc<dyn ModelProvider>)
+            crate::inference::provider::adapter::openrouter::build(resolved, config, counter)
         }
         FactoryKind::DeepSeek => {
             build_listable_key_client!(name, config, endpoint, deepseek, counter)
         }
         FactoryKind::Gemini => {
-            let key = require_api_key(name, config)?;
-            let mut builder = gemini::Client::builder()
-                .http_client(crate::inference::protocol::http::WireClient::default())
-                .api_key(&key);
-            if let Some(url) = endpoint {
-                builder = builder.base_url(url);
-            }
-            let client = builder.build().map_err(|error| config_error(name, error))?;
-            let validation_client = client.clone();
-            let (key_client, key_url) =
-                gemini_key_check(&key, endpoint.unwrap_or(GEMINI_DEFAULT_ENDPOINT))?;
-            Ok(Arc::new(
-                RigProvider::new(client, counter.clone())
-                    .with_wire_transport()
-                    .with_live_check(move || {
-                        let client = validation_client.clone();
-                        async move {
-                            client
-                                .list_models()
-                                .await
-                                .map_err(CredentialValidationError::from)
-                        }
-                    })
-                    // Google reports an invalid key as HTTP 400 `API_KEY_INVALID`, not
-                    // 401/403, so the generic model-list check read it as a failure
-                    // rather than a rejection and the key could never be validated.
-                    .with_validation_check(move || {
-                        let client = key_client.clone();
-                        let url = key_url.clone();
-                        async move {
-                            let response = client.get(url).send().await.map_err(|_| {
-                                CredentialValidationError::Failed(
-                                    "Gemini key request failed".into(),
-                                )
-                            })?;
-                            match response.status().as_u16() {
-                                200 => Ok(()),
-                                401 | 403 => Err(CredentialValidationError::AuthenticationRejected),
-                                400 => {
-                                    let body: serde_json::Value =
-                                        response.json().await.unwrap_or_default();
-                                    if gemini_key_invalid(&body) {
-                                        Err(CredentialValidationError::AuthenticationRejected)
-                                    } else {
-                                        Err(CredentialValidationError::Failed(
-                                            "Gemini returned HTTP 400".into(),
-                                        ))
-                                    }
-                                }
-                                status => Err(CredentialValidationError::Failed(format!(
-                                    "Gemini returned HTTP {status}"
-                                ))),
-                            }
-                        }
-                    }),
-            ) as Arc<dyn ModelProvider>)
+            crate::inference::provider::adapter::gemini::build(resolved, config, counter)
         }
         FactoryKind::Cohere => {
             crate::inference::provider::adapter::cohere::build(resolved, config, counter)
@@ -1212,167 +1049,5 @@ mod tests {
             resolved.effective_base_url.as_deref(),
             Some("https://api.kimi.com/coding")
         );
-    }
-
-    #[tokio::test]
-    async fn openrouter_key_check_accepts_only_a_key_the_provider_recognises() {
-        use wiremock::{
-            Mock, MockServer, ResponseTemplate,
-            matchers::{header, method, path},
-        };
-
-        fn provider(endpoint: &str, key: &str) -> Arc<dyn ModelProvider> {
-            let config: ModelProviderConfig = serde_json::from_value(serde_json::json!({
-                "provider": "openrouter", "base_url": endpoint, "api_key": key,
-            }))
-            .unwrap();
-            let resolved = ProviderPlatform::resolve(&handle("account"), &config).unwrap();
-            build_provider(
-                &resolved,
-                &config,
-                &InferenceCounter::new(crate::chat::broadcast::BroadcastService::new()),
-            )
-            .unwrap()
-        }
-
-        // Like OpenRouter: /key is authenticated, the model list is public.
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/key"))
-            .and(header("authorization", "Bearer real-key"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(
-                    serde_json::json!({"data": {"label": "fixture", "limit": null}}),
-                ),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/key"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(
-                serde_json::json!({"error": {"code": 401, "message": "secret real-key"}}),
-            ))
-            .mount(&server)
-            .await;
-
-        let good = provider(&server.uri(), "real-key")
-            .validate_credentials()
-            .await;
-        assert!(good.is_ok(), "{good:?}");
-        assert!(good.unwrap().models.is_none());
-
-        // The validation service also sends a made-up key and requires it to be
-        // rejected; before this check, OpenRouter's public list accepted it.
-        let bad = provider(&server.uri(), "frona-validation-control-x")
-            .validate_credentials()
-            .await;
-        assert!(
-            matches!(bad, Err(CredentialValidationError::AuthenticationRejected)),
-            "{bad:?}"
-        );
-
-        // A server error is a failure, not a rejection, and never echoes the key.
-        let failing = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("real-key"))
-            .mount(&failing)
-            .await;
-        let error = provider(&failing.uri(), "real-key")
-            .validate_credentials()
-            .await
-            .unwrap_err();
-        assert!(matches!(error, CredentialValidationError::Failed(_)));
-        assert!(!error.to_string().contains("real-key"));
-    }
-
-    #[tokio::test]
-    async fn gemini_key_check_reads_google_invalid_key_as_a_rejection() {
-        use wiremock::{
-            Mock, MockServer, ResponseTemplate,
-            matchers::{header, method, path, query_param},
-        };
-
-        fn provider(endpoint: &str, key: &str) -> Arc<dyn ModelProvider> {
-            let config: ModelProviderConfig = serde_json::from_value(serde_json::json!({
-                "provider": "google", "base_url": endpoint, "api_key": key,
-            }))
-            .unwrap();
-            let resolved = ProviderPlatform::resolve(&handle("account"), &config).unwrap();
-            build_provider(
-                &resolved,
-                &config,
-                &InferenceCounter::new(crate::chat::broadcast::BroadcastService::new()),
-            )
-            .unwrap()
-        }
-
-        // Like Google: a valid key lists models, anything else is HTTP 400
-        // API_KEY_INVALID (not 401/403).
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1beta/models"))
-            .and(query_param("pageSize", "1"))
-            .and(header("x-goog-api-key", "real-key"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(
-                    serde_json::json!({"models": [{"name": "models/gemini-flash"}]}),
-                ),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/v1beta/models"))
-            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
-                "error": {"code": 400, "status": "INVALID_ARGUMENT",
-                    "message": "API key not valid. secret real-key",
-                    "details": [{"reason": "API_KEY_INVALID"}]}
-            })))
-            .mount(&server)
-            .await;
-
-        let good = provider(&server.uri(), "real-key")
-            .validate_credentials()
-            .await;
-        assert!(good.is_ok(), "{good:?}");
-        assert!(good.unwrap().models.is_none());
-
-        // The key travels in a header, never in the URL.
-        for request in server.received_requests().await.unwrap() {
-            assert!(!request.url.to_string().contains("real-key"));
-        }
-
-        // The validation service sends a made-up key and requires a rejection.
-        let bad = provider(&server.uri(), "frona-validation-control-x")
-            .validate_credentials()
-            .await;
-        assert!(
-            matches!(bad, Err(CredentialValidationError::AuthenticationRejected)),
-            "{bad:?}"
-        );
-
-        // A 400 that is not an invalid-key error, and a server error, are
-        // failures rather than rejections, and never echo the key.
-        for (status, body) in [
-            (
-                400,
-                serde_json::json!({"error": {"message": "real-key bad request"}}),
-            ),
-            (500, serde_json::json!({"error": "real-key"})),
-        ] {
-            let failing = MockServer::start().await;
-            Mock::given(method("GET"))
-                .respond_with(ResponseTemplate::new(status).set_body_json(body))
-                .mount(&failing)
-                .await;
-            let error = provider(&failing.uri(), "real-key")
-                .validate_credentials()
-                .await
-                .unwrap_err();
-            assert!(
-                matches!(error, CredentialValidationError::Failed(_)),
-                "{error:?}"
-            );
-            assert!(!error.to_string().contains("real-key"));
-        }
     }
 }

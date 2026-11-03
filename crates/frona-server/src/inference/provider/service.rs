@@ -860,6 +860,10 @@ fn validation_error(error: ProviderValidationError) -> AppError {
             status: 501,
             message: "live validation is not implemented for this authentication method".into(),
         },
+        ProviderValidationError::Failed(message) => AppError::Http {
+            status: 502,
+            message,
+        },
         ProviderValidationError::Storage(_) => {
             AppError::Database("provider credential storage failed".into())
         }
@@ -877,6 +881,22 @@ mod tests {
             provider::{InferenceCounter, validation::binding},
         },
     };
+
+    #[test]
+    fn provider_failures_are_not_reported_as_rejected_credentials() {
+        assert!(matches!(
+            validation_error(ProviderValidationError::Failed(
+                "provider returned HTTP 503".into()
+            )),
+            AppError::Http { status: 502, .. }
+        ));
+        assert!(matches!(
+            validation_error(ProviderValidationError::Rejected(
+                "provider rejected authentication".into()
+            )),
+            AppError::Validation(_)
+        ));
+    }
 
     fn handle() -> Handle {
         Handle::const_validated("account")
