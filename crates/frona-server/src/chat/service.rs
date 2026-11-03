@@ -673,7 +673,9 @@ impl ChatService {
         let system_prompt = agent_config.system_prompt;
         let model_group_name = agent_config.model_group;
 
-        let model_group = self.provider_registry.get_model_group(&model_group_name)?;
+        let model_group = self
+            .provider_registry
+            .resolve_model_group(&model_group_name)?;
         let max_output = model_group
             .max_tokens
             .unwrap_or(model_group.inference.default_max_tokens) as usize;
@@ -766,7 +768,7 @@ impl ChatService {
             model_group.name.clone(),
         );
         let response_text = text_inference(
-            model_group,
+            &model_group,
             &system_prompt,
             rig_history,
             &self.usage_service,
