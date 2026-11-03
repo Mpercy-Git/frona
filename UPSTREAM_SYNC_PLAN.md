@@ -515,3 +515,24 @@ apt-get install protobuf-compiler`), and builds should use
 the sandbox's disk allowance (31 GiB of target/ vs 6.7 GiB).
 
 Next: Group G (inference/chat correctness), then H, I, J as listed above.
+
+### Status update — 2026-11-03 (Group G, all but the compaction cluster)
+
+| Upstream | Outcome |
+|---|---|
+| `08b77b9e`, `b5354c44` | ported (usage token breakdowns; schedule-advance notifications) |
+| `32724716`, `d20ae9e4` | ported: OpenRouter/Gemini adapters replace the fork's inline validation; `ProviderValidationError::Failed` -> 502. Fork delta kept: OpenRouter hook + prompt-caching decorator in the adapter |
+| `17565f2c` | ported (no `dns` flag until reqwest is updated — Group J) |
+| `218abc8f` | ported; fork's `full_cost_for` now delegates to the crate's `cost_for` |
+| `21244827` | already covered (`lookup_model` prefix walk) |
+| `badcd103`, `b2d9f630` | ported (missing agent model group -> primary; missing saved credential -> fresh login + UI prompt) |
+| `aef08a6d` | docs + legacy-agent test only; fork already had every `#[surreal(default)]` |
+| `0c199381` | ported where missing; fork already had `resume_registered` and Stop->task cancel |
+| `1740e858`, `e4104b45` | ported (`ModelConversationHistory`; strict `truncate_history`) |
+| `6673e1ca` | standalone part only (removed unused `truncate_streaming_history`); the rest needs the compaction pair |
+| `529861fc` | already in the fork (own Gemini signature work); upstream's test needs infra the fork lacks |
+| `6fdef674` | **deferred with the compaction pair** (persists raw `total_tokens`, `incomplete_usage_calls`, history migration; the fork already normalizes on write via `total_prompt_usage`) |
+| `313fe97d`, `10b92aa0` | **open — needs a decision**: ~3,800 lines, a rewrite of `chat/compactor.rs` that overlaps the fork's own compaction fixes (`00b6cfd`, `42fd63db`, `61b91b42`) |
+
+Deferred upstream tests (kept out of the tree; restore with the compaction pair):
+`message_compatibility.rs`, `history_truncation.rs`, `tool_signature_replay.rs`.
