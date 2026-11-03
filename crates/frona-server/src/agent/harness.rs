@@ -569,12 +569,25 @@ impl Harness {
             .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
 
         let mut response = self.chat_service.get_message(user_id, message_id).await?;
+        if cancel_token.is_cancelled() {
+            return Ok(AgentLoopOutcome {
+                inference: InferenceResponse::Cancelled(response.content.clone()),
+                response,
+            });
+        }
 
         let builder_system_prompt = builder.system_prompt();
 
         let mut session =
             ChatSessionContext::build(self, user_id, chat.clone(), cancel_token.clone(), builder)
                 .await?;
+
+        if cancel_token.is_cancelled() {
+            return Ok(AgentLoopOutcome {
+                inference: InferenceResponse::Cancelled(response.content.clone()),
+                response,
+            });
+        }
 
         // `message_id` is the AGENT response placeholder; the user message is
         // separate. `build` already read the chat history, so take the user
@@ -697,7 +710,7 @@ impl Harness {
             *last_user = rig_core::completion::Message::user(rendered);
         }
 
-        let inference = crate::inference::inference(InferenceRequest {
+        let mut inference = crate::inference::inference(InferenceRequest {
             registry,
             model_group,
             system_prompt,
@@ -711,6 +724,11 @@ impl Harness {
         })
         .await?;
 
+        if let InferenceResponse::Cancelled(text) = &mut inference
+            && text.is_empty()
+        {
+            *text = response.content.clone();
+        }
         Ok(AgentLoopOutcome {
             inference,
             response,

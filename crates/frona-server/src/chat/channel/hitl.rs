@@ -102,10 +102,19 @@ impl HitlDeliveryService {
                 message_id.clone(),
                 task_id.clone(),
             );
+            // Register before spawning so a Stop pressed right after the
+            // approval can reach the resumed turn.
+            let session = if tid.is_none() {
+                Some(h.active_sessions.register(&c).await)
+            } else {
+                None
+            };
             tokio::spawn(async move {
                 if let Some(tid) = tid {
-                    let _ = exec.run_task_by_id(&tid).await;
-                } else if let Err(e) = h.resume(&u, &c, &m).await {
+                    let _ = exec.resume_task_by_id(&tid).await;
+                } else if let Some((session_id, token)) = session
+                    && let Err(e) = h.resume_registered(&u, &c, &m, session_id, token).await
+                {
                     tracing::error!(error = %e, chat_id = %c, "Failed to resume chat after HITL resolve");
                 }
             });

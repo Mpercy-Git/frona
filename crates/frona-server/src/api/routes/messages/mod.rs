@@ -277,7 +277,7 @@ pub(crate) async fn resolve_typed_and_resume(
     };
     tokio::spawn(async move {
         if let Some(tid) = task_id {
-            let _ = exec.run_task_by_id(&tid).await;
+            let _ = exec.resume_task_by_id(&tid).await;
         } else if let Some((session_id, cancel_token)) = session
             && let Err(e) = h
                 .resume_registered(&user_id, &chat_id, &message_id, session_id, cancel_token)

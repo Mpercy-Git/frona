@@ -1,0 +1,29 @@
+diff a/crates/frona-server/src/agent/task/executor.rs b/crates/frona-server/src/agent/task/executor.rs	(rejected hunks)
+@@ -1,8 +1,8 @@
+ use std::collections::HashMap;
+-use std::sync::Arc;
++use std::sync::{Arc, Weak};
+ 
+ use chrono::Utc;
+-use tokio::sync::Mutex;
++use tokio::sync::{Mutex, OwnedMutexGuard};
+ use tokio_util::sync::CancellationToken;
+ 
+ use crate::agent::task::models::{SignalMode, Task, TaskKind, TaskStatus};
+@@ -540,7 +606,6 @@ impl TaskExecutor {
+                 }
+             };
+ 
+-            let session_token = self.harness.active_sessions.register(&chat_id).await;
+             let builder = Box::new(TaskConversationBuilder {
+                 user_service: self.harness.user_service.clone(),
+                 storage_service: self.harness.storage_service.clone(),
+@@ -560,8 +625,6 @@ impl TaskExecutor {
+                     None,
+                 )
+                 .await;
+-            drop(session_token);
+-            self.harness.active_sessions.remove(&chat_id).await;
+ 
+             match result {
+                 Ok(crate::agent::harness::AgentLoopOutcome {

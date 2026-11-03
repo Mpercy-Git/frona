@@ -81,15 +81,31 @@ pub(crate) async fn stream_message(
         if did_flip {
             let harness = state.harness.clone();
             let user_id = auth.user_id.clone();
-            // Register the turn's cancel token here, not inside the spawned
-            // task: the UI starts showing Stop as soon as this response lands,
-            // and a token registered later is unreachable until then.
-            let (session_id, cancel_token) = state.active_sessions.register(&chat_id).await;
-            tokio::spawn(async move {
-                let _ = harness
-                    .resume_registered(&user_id, &chat_id, &agent_msg_id, session_id, cancel_token)
-                    .await;
-            });
+            if let Some(task_id) = chat.task_id.clone() {
+                // A task chat resumes through its executor, which waits for the
+                // paused invocation to release its slot and registers its own
+                // cancel token; Stop reaches it through `cancel_task`.
+                let executor = state.task_executor.clone();
+                tokio::spawn(async move {
+                    let _ = executor.resume_task_by_id(&task_id).await;
+                });
+            } else {
+                // Register the turn's cancel token here, not inside the spawned
+                // task: the UI starts showing Stop as soon as this response lands,
+                // and a token registered later is unreachable until then.
+                let (session_id, cancel_token) = state.active_sessions.register(&chat_id).await;
+                tokio::spawn(async move {
+                    let _ = harness
+                        .resume_registered(
+                            &user_id,
+                            &chat_id,
+                            &agent_msg_id,
+                            session_id,
+                            cancel_token,
+                        )
+                        .await;
+                });
+            }
         }
 
         Ok(Json(user_response))
