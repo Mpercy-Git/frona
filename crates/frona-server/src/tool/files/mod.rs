@@ -228,9 +228,21 @@ mod resolve_path_tests {
     }
 
     #[tokio::test]
-    async fn traversal_in_bare_path_is_rejected() {
-        assert!(run("../etc/passwd", "mina", "system", "/app/data").is_err());
-        assert!(run("subdir/../../etc/passwd", "mina", "system", "/app/data").is_err());
+    async fn parent_paths_resolve_before_existing_policy_authorizes_them() {
+        assert_eq!(
+            run("reports/../file.txt", "mina", "system", "/app/data").unwrap(),
+            PathBuf::from("/app/data/users/mina/agents/system/file.txt")
+        );
+        assert_eq!(
+            run(
+                "missing/../../sibling/file.txt",
+                "mina",
+                "system",
+                "/app/data"
+            )
+            .unwrap(),
+            PathBuf::from("/app/data/users/mina/agents/sibling/file.txt")
+        );
     }
 
     #[tokio::test]
