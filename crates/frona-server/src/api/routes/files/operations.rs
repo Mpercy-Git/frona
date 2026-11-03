@@ -162,12 +162,21 @@ pub(crate) async fn copy_files(
 
     let dest_dir = resolve_file_virtual_path(&req.destination, &auth, &state, None).await?;
 
+    // Resolve and check every source before creating the destination or
+    // touching anything, so a bad entry late in the batch (for example a
+    // symlink to a workspace root) fails the request instead of leaving it
+    // half applied.
+    let mut resolved_sources = Vec::with_capacity(req.sources.len());
+    for source in &req.sources {
+        resolved_sources
+            .push(resolve_file_virtual_path(source, &auth, &state, Some("copy")).await?);
+    }
+
     fs::create_dir_all(&dest_dir)
         .await
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
 
-    for source in &req.sources {
-        let src = resolve_file_virtual_path(source, &auth, &state, Some("copy")).await?;
+    for src in resolved_sources {
         if !src.exists() {
             continue;
         }
@@ -230,12 +239,21 @@ pub(crate) async fn move_files(
 
     let dest_dir = resolve_file_virtual_path(&req.destination, &auth, &state, None).await?;
 
+    // Resolve and check every source before creating the destination or
+    // touching anything, so a bad entry late in the batch (for example a
+    // symlink to a workspace root) fails the request instead of leaving it
+    // half applied.
+    let mut resolved_sources = Vec::with_capacity(req.sources.len());
+    for source in &req.sources {
+        resolved_sources
+            .push(resolve_file_virtual_path(source, &auth, &state, Some("move")).await?);
+    }
+
     fs::create_dir_all(&dest_dir)
         .await
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
 
-    for source in &req.sources {
-        let src = resolve_file_virtual_path(source, &auth, &state, Some("move")).await?;
+    for src in resolved_sources {
         if !src.exists() {
             continue;
         }
