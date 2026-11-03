@@ -149,12 +149,15 @@ pub(crate) async fn inference_with_retry_and_fallback(
     let mut max_tokens = capped_max_tokens(&model_group.main, max_tokens);
     let result = loop {
         match retry_with_backoff(&model_group.retry, &model_group.main, || async {
+            let request_history = truncated
+                .as_ref()
+                .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
             let provider = provider_for(&model_group.providers, &model_group.main)?;
             provider
                 .inference(
                     &model_group.main,
                     system_prompt,
-                    truncated.clone(),
+                    request_history.clone(),
                     tools.clone(),
                     max_tokens,
                     temperature,
@@ -220,12 +223,15 @@ pub(crate) async fn inference_with_retry_and_fallback(
         let mut max_tokens = capped_max_tokens(fallback, max_tokens);
         let result = loop {
             match retry_with_backoff(&model_group.retry, fallback, || async {
+                let request_history = truncated_fb
+                    .as_ref()
+                    .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
                 let provider = provider_for(&model_group.providers, fallback)?;
                 provider
                     .inference(
                         fallback,
                         system_prompt,
-                        truncated_fb.clone(),
+                        request_history.clone(),
                         tools.clone(),
                         max_tokens,
                         temperature,
@@ -308,12 +314,15 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
     let mut max_tokens = capped_max_tokens(&model_group.main, max_tokens);
     let result = loop {
         match retry_with_backoff(&model_group.retry, &model_group.main, || async {
+            let request_history = truncated
+                .as_ref()
+                .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
             let provider = provider_for(&model_group.providers, &model_group.main)?;
             provider
                 .structured_inference(
                     &model_group.main,
                     system_prompt,
-                    truncated.clone(),
+                    request_history.clone(),
                     schema.clone(),
                     max_tokens,
                     temperature,
@@ -383,12 +392,15 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
         let mut max_tokens = capped_max_tokens(fallback, max_tokens);
         let result = loop {
             match retry_with_backoff(&model_group.retry, fallback, || async {
+                let request_history = truncated_fb
+                    .as_ref()
+                    .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
                 let provider = provider_for(&model_group.providers, fallback)?;
                 provider
                     .structured_inference(
                         fallback,
                         system_prompt,
-                        truncated_fb.clone(),
+                        request_history.clone(),
                         schema.clone(),
                         max_tokens,
                         temperature,

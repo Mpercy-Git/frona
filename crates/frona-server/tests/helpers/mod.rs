@@ -246,6 +246,9 @@ pub struct MockModelProvider {
     histories: Mutex<Vec<Vec<RigMessage>>>,
     stream_histories: Mutex<Vec<Vec<RigMessage>>>,
     tool_histories: Mutex<Vec<Vec<RigToolDefinition>>>,
+    system_prompts: Mutex<Vec<String>>,
+    model_names: Mutex<Vec<String>>,
+    request_settings: Mutex<Vec<(Option<u64>, Option<f64>)>>,
 }
 
 impl MockModelProvider {
@@ -257,7 +260,22 @@ impl MockModelProvider {
             histories: Mutex::new(Vec::new()),
             stream_histories: Mutex::new(Vec::new()),
             tool_histories: Mutex::new(Vec::new()),
+            system_prompts: Mutex::new(Vec::new()),
+            model_names: Mutex::new(Vec::new()),
+            request_settings: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn system_prompts(&self) -> Vec<String> {
+        self.system_prompts.lock().unwrap().clone()
+    }
+
+    pub fn model_names(&self) -> Vec<String> {
+        self.model_names.lock().unwrap().clone()
+    }
+
+    pub fn request_settings(&self) -> Vec<(Option<u64>, Option<f64>)> {
+        self.request_settings.lock().unwrap().clone()
     }
 
     /// The history the provider was handed on its most recent call.
@@ -475,6 +493,20 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<serde_json::Value, InferenceError> {
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push(_system_prompt.into());
+        self.model_names
+            .lock()
+            .unwrap()
+            .push(_model.model_id.clone());
+        self.request_settings
+            .lock()
+            .unwrap()
+            .push((_max_tokens, _temperature));
+        *self.last_history.lock().unwrap() = _chat_history.clone();
+        self.histories.lock().unwrap().push(_chat_history);
         let response = match self.next_response() {
             MockResponse::Barrier(barrier, response) => {
                 barrier.wait().await;

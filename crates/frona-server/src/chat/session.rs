@@ -320,7 +320,8 @@ impl ChatSessionContext {
                 &conv_ctx,
                 conversation_summary.as_deref(),
             )
-            .await;
+            .await
+            .history;
 
         let registry = harness.chat_service.provider_registry().clone();
 

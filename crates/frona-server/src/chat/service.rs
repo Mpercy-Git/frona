@@ -714,7 +714,8 @@ impl ChatService {
                 &conv_ctx,
                 conversation_summary.as_deref(),
             )
-            .await;
+            .await
+            .history;
 
         let catalog_vision = self
             .usage_service
