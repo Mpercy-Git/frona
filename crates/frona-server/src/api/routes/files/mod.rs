@@ -11,6 +11,7 @@ use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, post};
+use serde::Deserialize;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
@@ -25,6 +26,13 @@ use crate::core::error::{AppError, AuthErrorCode};
 use crate::core::state::AppState;
 
 use models::{FileAuth, PresignQuery};
+
+/// Presentation only: both modes require the same file authorization.
+#[derive(Default, Deserialize)]
+pub(super) struct FileResponseQuery {
+    #[serde(default)]
+    pub(super) download: bool,
+}
 
 const MAX_FILE_SIZE: usize = 50 * 1024 * 1024; // 50MB
 // Multipart requests carry boundary markers plus the optional `path` field on
@@ -111,11 +119,12 @@ pub(super) async fn serve_file(
     vpath: &VirtualPath,
     state: &AppState,
     headers: &HeaderMap,
+    download: bool,
 ) -> Result<Response, ApiError> {
     let resolved = state
         .storage_service
         .resolve_virtual_path_for_user(owner, vpath)?;
-    serve_path(&resolved, headers).await
+    serve_path(&resolved, headers, download).await
 }
 
 /// Caller is responsible for path traversal / ownership checks.
@@ -125,6 +134,7 @@ pub(super) async fn serve_file(
 pub(super) async fn serve_path(
     path: &std::path::Path,
     headers: &HeaderMap,
+    download: bool,
 ) -> Result<Response, ApiError> {
     let metadata = fs::metadata(path)
         .await
@@ -139,7 +149,7 @@ pub(super) async fn serve_path(
     let file = fs::File::open(path)
         .await
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-    serve_open_file(file, filename, headers).await
+    serve_open_file(file, filename, headers, download).await
 }
 
 /// Serve an already-opened file, so a caller that resolved and pinned the
@@ -148,6 +158,7 @@ pub(super) async fn serve_open_file(
     mut file: fs::File,
     filename: &str,
     headers: &HeaderMap,
+    download: bool,
 ) -> Result<Response, ApiError> {
     let metadata = file
         .metadata()
@@ -160,25 +171,31 @@ pub(super) async fn serve_open_file(
 
     let content_type = detect_content_type(filename);
 
-    // SVG and other script-executable types must be served as attachments to
-    // prevent stored XSS via <script> tags executing at the app origin.
-    let disposition_type = match content_type {
-        "image/svg+xml" | "text/html" | "text/javascript" | "application/javascript" => {
-            "attachment"
-        }
-        _ => "inline",
-    };
-
     // `Accept-Ranges` on every response, including the full-file one: it's how
     // a media element learns it may seek at all.
     let base = || {
-        Response::builder()
+        let mut builder = Response::builder()
             .header(header::CONTENT_TYPE, content_type)
             .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+            .header(header::REFERRER_POLICY, "no-referrer")
             .header(
                 header::CONTENT_DISPOSITION,
-                format!("{disposition_type}; filename=\"{filename}\""),
-            )
+                content_disposition(filename, download),
+            );
+        if matches!(
+            content_type,
+            "text/html" | "image/svg+xml" | "application/xml"
+        ) {
+            // Keep dashboards executable, but give documents an opaque origin even
+            // on direct/presigned navigation. Never add allow-same-origin here:
+            // these files are untrusted and may share a host with the application's
+            // session. Embedded/public assets work; workspace siblings need their
+            // own signed URLs. This does not grant storage or an authenticated
+            // Frona API bridge.
+            builder = builder.header(header::CONTENT_SECURITY_POLICY, "sandbox allow-scripts");
+        }
+        builder
     };
 
     let requested = range::parse(
@@ -217,4 +234,48 @@ pub(super) async fn serve_open_file(
     };
 
     Ok(response.unwrap())
+}
+
+fn content_disposition(filename: &str, download: bool) -> String {
+    let disposition = if download { "attachment" } else { "inline" };
+    // Path separators and control characters are never useful in a suggested
+    // filename, including on clients whose path rules differ from the server's.
+    let filename: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let fallback: String = filename
+        .chars()
+        .map(|c| {
+            if !c.is_ascii() || matches!(c, '"' | '%') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut value = format!("{disposition}; filename=\"{fallback}\"");
+    if filename != fallback {
+        // RFC 8187 extended values preserve Unicode/quotes without raw header
+        // bytes. Encode everything except unreserved URI bytes (a safe subset of
+        // attr-char); spaces must be %20, not form-urlencoded '+'.
+        let encoded: String = filename
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect();
+        value.push_str(&format!("; filename*=UTF-8''{encoded}"));
+    }
+    value
 }

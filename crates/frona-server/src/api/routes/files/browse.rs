@@ -12,6 +12,7 @@ use crate::storage::{
 
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;
+use super::FileResponseQuery;
 use super::models::{FileAuth, SearchQuery};
 use crate::core::error::AppError;
 use crate::core::state::AppState;
@@ -21,6 +22,7 @@ pub(crate) async fn download_user_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     AxumPath((handle_raw, filename)): AxumPath<(String, String)>,
+    Query(query): Query<FileResponseQuery>,
 ) -> Result<Response, ApiError> {
     let handle = crate::core::Handle::try_new(handle_raw)
         .map_err(|_| ApiError(AppError::NotFound("File not found".into())))?;
@@ -45,7 +47,7 @@ pub(crate) async fn download_user_file(
     }
 
     let vpath = VirtualPath::user(&handle, &filename);
-    super::serve_file(&handle, &vpath, &state, &headers).await
+    super::serve_file(&handle, &vpath, &state, &headers, query.download).await
 }
 
 pub(crate) async fn download_agent_file(
@@ -53,6 +55,7 @@ pub(crate) async fn download_agent_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     AxumPath((agent_seg, filepath)): AxumPath<(String, String)>,
+    Query(query): Query<FileResponseQuery>,
 ) -> Result<Response, ApiError> {
     let (user_id, user_handle) = match &file_auth {
         FileAuth::User(auth) => (auth.user_id.clone(), auth.handle.clone()),
@@ -97,7 +100,7 @@ pub(crate) async fn download_agent_file(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("download");
-    super::serve_open_file(fs::File::from_std(file), filename, &headers).await
+    super::serve_open_file(fs::File::from_std(file), filename, &headers, query.download).await
 }
 
 pub(crate) async fn delete_user_file(
