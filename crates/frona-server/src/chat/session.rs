@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rig_core::completion::Message as RigMessage;
 pub use tokio_util::sync::CancellationToken;
 
@@ -12,10 +14,10 @@ use crate::core::error::AppError;
 use crate::inference::ModelGroup;
 use crate::inference::ModelProviderRegistry;
 use crate::inference::conversation::{
-    ConversationBuilder, ConversationContext, resolve_attachment_path,
+    ConversationBuilder, ConversationContext, ModelConversationHistory, resolve_attachment_path,
 };
 use crate::tool::InferenceContext;
-use crate::tool::registry::AgentToolRegistry;
+use crate::tool::registry::{AgentToolRegistry, ToolFilter};
 
 pub struct ChatSessionContext {
     pub chat: Chat,
@@ -24,6 +26,10 @@ pub struct ChatSessionContext {
     pub model_group: ModelGroup,
     pub rig_history: Vec<RigMessage>,
     pub registry: ModelProviderRegistry,
+    pub(crate) model_history: ModelConversationHistory,
+    pub(crate) builder: Arc<dyn ConversationBuilder>,
+    pub(crate) tool_filters: Vec<ToolFilter>,
+
     pub tool_registry: AgentToolRegistry,
     pub tool_ctx: InferenceContext,
     pub cancel_token: CancellationToken,
@@ -41,7 +47,8 @@ impl ChatSessionContext {
         user_id: &str,
         chat: Chat,
         cancel_token: CancellationToken,
-        builder: Box<dyn ConversationBuilder>,
+        builder: Arc<dyn ConversationBuilder>,
+        tool_filters: &[ToolFilter],
     ) -> Result<Self, AppError> {
         let event_sender: EventSender =
             harness
@@ -213,33 +220,14 @@ impl ChatSessionContext {
             .provider_registry()
             .resolve_model_group(&agent_config.model_group)?;
 
-        let max_output = model_group
-            .max_tokens
-            .unwrap_or(model_group.inference.default_max_tokens) as usize;
-        // Fetched before compaction, not after: the tool calls are most of what
-        // the builder will replay, so the compactor has to weigh them when it
-        // decides whether this conversation still fits.
-        let tool_calls = harness
-            .chat_service
-            .get_tool_calls(&chat.id)
-            .await
-            .unwrap_or_default();
         let loaded = harness
             .chat_service
             .compactor()
-            .compact_chat(
-                user_id,
-                &chat.id,
-                &chat.agent_id,
-                &system_prompt,
-                &tool_calls,
-                model_group.context_window,
-                max_output,
-            )
-            .await?
-            .conversation;
+            .load_conversation(&chat.id)
+            .await?;
         let conversation_summary = loaded.summary;
         let stored_messages = loaded.messages;
+        let tool_calls = harness.chat_service.get_tool_calls(&chat.id).await?;
         // Captured before the rewrites below, which the caller must not see.
         let last_user_message = stored_messages
             .iter()
@@ -313,15 +301,14 @@ impl ChatSessionContext {
             );
         }
 
-        let mut rig_history = builder
+        let mut model_history = builder
             .build(
                 &stored_messages,
                 &tool_calls,
                 &conv_ctx,
                 conversation_summary.as_deref(),
             )
-            .await
-            .history;
+            .await;
 
         let registry = harness.chat_service.provider_registry().clone();
 
@@ -353,7 +340,7 @@ impl ChatSessionContext {
                         .map(|m| m.id.clone())
                         .unwrap_or_default();
                     let n = crate::inference::vision::transcribe_images_in_history(
-                        &mut rig_history,
+                        &mut model_history.history,
                         &vision_group,
                         &registry,
                         &harness.usage_service,
@@ -373,8 +360,9 @@ impl ChatSessionContext {
                     }
                 }
                 None => {
-                    let n =
-                        crate::inference::conversation::strip_images_from_history(&mut rig_history);
+                    let n = crate::inference::conversation::strip_images_from_history(
+                        &mut model_history.history,
+                    );
                     if n > 0 {
                         tracing::info!(
                             model = %conv_ctx.model_ref.as_str(),
@@ -439,6 +427,7 @@ impl ChatSessionContext {
             vault_vars.extend(vault_env);
         }
 
+        let mut rig_history = model_history.history.clone();
         {
             let mut mcx = crate::memory::service::MemoryContext::new(
                 &mut system_prompt,
@@ -450,6 +439,44 @@ impl ChatSessionContext {
             }
         }
 
+        if rig_history != model_history.history {
+            return Err(AppError::Conflict(
+                "Memory retrieval changed the mapped conversation history".into(),
+            ));
+        }
+        if let Some(extra) = builder.system_prompt() {
+            let trimmed = extra.trim();
+            if !trimmed.is_empty() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(trimmed);
+            }
+        }
+        for filter in tool_filters {
+            tool_registry.apply_filter(filter);
+        }
+        let tools = crate::inference::tool_loop::to_rig_tool_definitions(
+            tool_registry.definitions(),
+            tool_registry.mcp_bridge_mode(),
+        );
+        let compacted = harness
+            .chat_service
+            .compactor()
+            .compact_chat(
+                user_id,
+                &chat.id,
+                &chat.agent_id,
+                super::compactor::CompactionContext {
+                    system_prompt: &system_prompt,
+                    model_group: &model_group,
+                    model_history: &model_history,
+                    tools: &tools,
+                },
+            )
+            .await?;
+        model_history = compacted.model_history;
+        rig_history = model_history.history.clone();
+        super::compactor::validate_initial_context(&rig_history, &system_prompt, &model_group)?;
+
         Ok(Self {
             chat,
             agent_config,
@@ -457,6 +484,10 @@ impl ChatSessionContext {
             model_group,
             rig_history,
             registry,
+            model_history,
+            builder,
+            tool_filters: tool_filters.to_vec(),
+
             tool_registry,
             tool_ctx,
             cancel_token,

@@ -213,7 +213,7 @@ async fn build_session_for_chat(state: &AppState, chat_id: &str) -> ChatSessionC
         .await
         .unwrap()
         .expect("chat exists");
-    let builder = Box::new(DefaultConversationBuilder {
+    let builder = Arc::new(DefaultConversationBuilder {
         user_service: state.user_service.clone(),
         storage_service: state.storage_service.clone(),
         agent_service: state.agent_service.clone(),
@@ -224,6 +224,7 @@ async fn build_session_for_chat(state: &AppState, chat_id: &str) -> ChatSessionC
         chat,
         CancellationToken::new(),
         builder,
+        &[],
     )
     .await
     .expect("session builds")

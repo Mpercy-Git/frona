@@ -215,6 +215,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 pub enum MockResponse {
+    Content(Vec<AssistantContent>),
     Text(String),
     TextWithReasoning(String, String),
     ToolCalls(Vec<(String, String, Value)>),
@@ -363,6 +364,18 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push(_system_prompt.to_string());
+        self.model_names
+            .lock()
+            .unwrap()
+            .push(_model.model_id.clone());
+        self.request_settings
+            .lock()
+            .unwrap()
+            .push((_max_tokens, _temperature));
         *self.last_history.lock().unwrap() = chat_history.clone();
         self.histories.lock().unwrap().push(chat_history.clone());
         self.tool_histories.lock().unwrap().push(tools);
@@ -370,10 +383,7 @@ impl ModelProvider for MockModelProvider {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
-            cached_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-            reasoning_tokens: 0,
-            tool_use_prompt_tokens: 0,
+            ..Default::default()
         };
         let response = match self.next_response_for_history(&chat_history) {
             MockResponse::Barrier(barrier, response) => {
@@ -383,6 +393,7 @@ impl ModelProvider for MockModelProvider {
             response => response,
         };
         let content = match response {
+            MockResponse::Content(content) => content,
             MockResponse::Text(t) => vec![AssistantContent::text(&t)],
             MockResponse::TextWithReasoning(text, reasoning) => vec![
                 AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(
@@ -422,15 +433,30 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
-        self.stream_histories.lock().unwrap().push(chat_history);
+        self.stream_histories
+            .lock()
+            .unwrap()
+            .push(chat_history.clone());
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push(_system_prompt.to_string());
+        self.model_names
+            .lock()
+            .unwrap()
+            .push(_model.model_id.clone());
+        self.request_settings
+            .lock()
+            .unwrap()
+            .push((_max_tokens, _temperature));
+        *self.last_history.lock().unwrap() = chat_history.clone();
+        self.histories.lock().unwrap().push(chat_history.clone());
+        self.tool_histories.lock().unwrap().push(_tools.clone());
         let usage = Usage {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
-            cached_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-            reasoning_tokens: 0,
-            tool_use_prompt_tokens: 0,
+            ..Default::default()
         };
         let response = match self.next_response() {
             MockResponse::Barrier(barrier, response) => {
@@ -440,6 +466,18 @@ impl ModelProvider for MockModelProvider {
             response => response,
         };
         let content = match response {
+            MockResponse::Content(content) => {
+                for item in &content {
+                    if let AssistantContent::Text(text) = item {
+                        let _ = token_tx
+                            .send(frona::inference::provider::StreamToken::Text(
+                                text.text.clone(),
+                            ))
+                            .await;
+                    }
+                }
+                content
+            }
             MockResponse::Text(t) => {
                 let _ = token_tx
                     .send(frona::inference::provider::StreamToken::Text(t.clone()))
