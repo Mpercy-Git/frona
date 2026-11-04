@@ -5,6 +5,7 @@ mod app_supervisor;
 mod apps;
 mod auth;
 mod channels;
+mod chat_compaction;
 mod chats;
 mod commands;
 mod contacts;
