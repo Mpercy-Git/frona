@@ -62,6 +62,17 @@ struct Fixture {
 
 async fn app_fixture() -> Fixture {
     let (state, tmp) = test_app_state().await;
+    // These tests are calibrated for a small fixed request prefix, so they start
+    // with default-deny tool access: the seeded base policies would otherwise put
+    // every builtin tool definition (~19k tokens) into each request. Tests that
+    // need tools create the policy they want.
+    state
+        .db
+        .query("DELETE policy")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
     Fixture { state, _tmp: tmp }
 }
 
@@ -1680,7 +1691,8 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
             )
             .await
             .unwrap();
-            session.model_group.context_window = 18_000;
+            // 18_000 plus ~500 tokens of slack for this fork's larger system prompt.
+            session.model_group.context_window = 18_500;
             app.manual(&mut session).await.unwrap();
             let provider = &app.model;
             let compact_history = provider.last_history();
@@ -1774,7 +1786,7 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
             )
             .await
             .unwrap();
-            later.model_group.context_window = 18_000;
+            later.model_group.context_window = 18_500;
             app.manual(&mut later).await.unwrap();
             let compact = provider.last_history();
             assert_eq!(&compact[..compact.len() - 1], &normal[..compact.len() - 1]);
