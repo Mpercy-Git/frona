@@ -56,6 +56,9 @@ async fn pending_credential_call(state: &AppState, chat_id: &str, agent_id: &str
 }
 
 async fn credential_approval(state: &AppState) -> HitlResponse {
+    // The fork's test state does not create the system-managed vault connection
+    // that `connection_id: "managed"` grants are checked against.
+    state.vault_service.sync_config_connections().await.unwrap();
     let credential = state
         .model_provider_service
         .store
