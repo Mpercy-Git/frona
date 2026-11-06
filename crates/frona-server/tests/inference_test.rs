@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
-async fn streaming_preserves_over_budget_history_on_retry_and_fallback() {
+async fn streaming_refuses_over_budget_history_without_sending_or_truncating_it() {
     init_metrics();
     let primary = Arc::new(MockModelProvider::new(vec![
         MockResponse::Error(InferenceError::RateLimited {
@@ -44,7 +44,7 @@ async fn streaming_preserves_over_budget_history_on_retry_and_fallback() {
         RigMessage::user("x".repeat(4_000)),
     ];
     let (events, _, _) = test_event_sender().await;
-    group
+    let error = group
         .stream_inference(
             frona::inference::ModelRequest {
                 input_token_estimate: None,
@@ -60,13 +60,21 @@ async fn streaming_preserves_over_budget_history_on_retry_and_fallback() {
             &mut String::new(),
         )
         .await
-        .unwrap();
-    assert_eq!(primary.stream_histories(), vec![history.clone(); 2]);
-    assert_eq!(fallback.stream_histories(), vec![history]);
+        .err()
+        .expect("over-budget history must fail");
+    // Neither model is sent a request it cannot take, and nothing is truncated
+    // to make it fit: both fail explicitly and the history stays whole.
+    let message = error.to_string();
+    assert!(
+        message.contains("Complete input exceeds context limit"),
+        "{message}"
+    );
+    assert!(primary.stream_histories().is_empty());
+    assert!(fallback.stream_histories().is_empty());
 }
 
 #[tokio::test]
-async fn tool_loop_preserves_request_when_tool_output_exceeds_budget() {
+async fn tool_loop_fails_explicitly_when_tool_output_exceeds_budget() {
     init_metrics();
     let provider = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![(
@@ -102,27 +110,20 @@ async fn tool_loop_preserves_request_when_tool_output_exceeds_budget() {
         "test-msg",
         None,
     )
-    .await
-    .unwrap();
-    assert!(matches!(outcome, ToolLoopOutcome::Completed { .. }));
+    .await;
+    // The oversized tool result is not truncated away and not sent: the loop
+    // fails explicitly, and the only request the provider saw was the opening
+    // one, with the user's request intact.
+    let error = outcome
+        .err()
+        .expect("over-budget turn must fail")
+        .to_string();
+    assert!(
+        error.contains("Complete input exceeds context limit"),
+        "{error}"
+    );
     let histories = provider.stream_histories();
-    assert_eq!(histories.len(), 2);
-    assert_eq!(histories[0], vec![opening.clone()]);
-    assert_eq!(histories[1].first(), Some(&opening));
-    assert_eq!(histories[1].len(), 3, "keep request, tool call and result");
-    assert!(matches!(
-        &histories[1][2],
-        RigMessage::User { content }
-            if content.iter().any(|item| matches!(
-                item,
-                rig_core::completion::message::UserContent::ToolResult(result)
-                    if result.content.iter().any(|item| matches!(
-                        item,
-                        rig_core::completion::message::ToolResultContent::Text(text)
-                            if text.text == output
-                    ))
-            ))
-    ));
+    assert_eq!(histories, vec![vec![opening]]);
 }
 
 #[tokio::test]
