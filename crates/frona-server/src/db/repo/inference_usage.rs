@@ -20,16 +20,28 @@ use super::generic::SurrealRepo;
 /// reads cleanly even when actual prices are populated.
 // The explicit IF matters: SurrealDB's AND does not protect subtraction from
 // missing/NULL totals. Input/output/cache columns are nonnegative u64 values.
-const ROLLUP_FIELDS: &str = "\
-    count(IF type::is_int(total_tokens) { \
-        total_tokens < output_tokens OR total_tokens - output_tokens != input_tokens \
-        OR input_tokens < cached_input_tokens \
-    } ELSE { true }) AS incomplete_usage_calls, \
+/// Counts rows whose recorded total does not support a complete prompt count.
+/// Shared by every query that builds a `UsageRollup`, so none can drift.
+macro_rules! incomplete_usage_calls {
+    () => {
+        "count(IF type::is_int(total_tokens) { \
+            total_tokens < output_tokens OR total_tokens - output_tokens != input_tokens \
+            OR input_tokens < cached_input_tokens \
+        } ELSE { true }) AS incomplete_usage_calls"
+    };
+}
+
+const INCOMPLETE_USAGE_CALLS: &str = incomplete_usage_calls!();
+
+const ROLLUP_FIELDS: &str = concat!(
+    incomplete_usage_calls!(),
+    ", \
     math::sum(input_tokens) AS input_tokens, \
     math::sum(cached_input_tokens) AS cached_input_tokens, \
     math::sum(output_tokens) AS output_tokens, \
     <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
-    count() AS calls";
+    count() AS calls"
+);
 
 #[async_trait]
 impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
@@ -640,6 +652,7 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         let query = format!(
             "SELECT \
                 time::floor(created_at, {dur}) AS bucket, \
+                {INCOMPLETE_USAGE_CALLS}, \
                 math::sum(input_tokens) AS input_tokens, \
                 math::sum(cached_input_tokens) AS cached_input_tokens, \
                 math::sum(output_tokens) AS output_tokens, \
@@ -678,6 +691,7 @@ impl SurrealRepo<InferenceUsage> {
         let query = format!(
             "SELECT \
                 {column} AS key, \
+                {INCOMPLETE_USAGE_CALLS}, \
                 math::sum(input_tokens) AS input_tokens, \
                 math::sum(cached_input_tokens) AS cached_input_tokens, \
                 math::sum(output_tokens) AS output_tokens, \
