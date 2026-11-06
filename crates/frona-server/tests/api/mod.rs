@@ -15,6 +15,7 @@ mod files;
 #[path = "../helpers/mod.rs"]
 mod helpers;
 mod mcp;
+mod message_compatibility;
 mod messages;
 mod misc;
 mod native_file_tools;

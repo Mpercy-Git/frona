@@ -516,23 +516,52 @@ the sandbox's disk allowance (31 GiB of target/ vs 6.7 GiB).
 
 Next: Group G (inference/chat correctness), then H, I, J as listed above.
 
-### Status update — 2026-11-03 (Group G, all but the compaction cluster)
+### Status update — 2026-11-06 (Group G complete)
+
+All of Group G is in. The compaction cluster was adopted from upstream (decision:
+minimise the lasting delta) rather than kept as the fork's own.
 
 | Upstream | Outcome |
 |---|---|
 | `08b77b9e`, `b5354c44` | ported (usage token breakdowns; schedule-advance notifications) |
 | `32724716`, `d20ae9e4` | ported: OpenRouter/Gemini adapters replace the fork's inline validation; `ProviderValidationError::Failed` -> 502. Fork delta kept: OpenRouter hook + prompt-caching decorator in the adapter |
 | `17565f2c` | ported (no `dns` flag until reqwest is updated — Group J) |
-| `218abc8f` | ported; fork's `full_cost_for` now delegates to the crate's `cost_for` |
+| `218abc8f` | ported; fork's `full_cost_for` delegates to the crate's `cost_for` |
 | `21244827` | already covered (`lookup_model` prefix walk) |
-| `badcd103`, `b2d9f630` | ported (missing agent model group -> primary; missing saved credential -> fresh login + UI prompt) |
-| `aef08a6d` | docs + legacy-agent test only; fork already had every `#[surreal(default)]` |
-| `0c199381` | ported where missing; fork already had `resume_registered` and Stop->task cancel |
+| `badcd103`, `b2d9f630` | ported |
+| `aef08a6d` | docs + tests; fork already had every `#[surreal(default)]`. `message_compatibility` (9 tests) passes |
+| `0c199381` | ported where missing; `task_sse` 11/11 |
 | `1740e858`, `e4104b45` | ported (`ModelConversationHistory`; strict `truncate_history`) |
-| `6673e1ca` | standalone part only (removed unused `truncate_streaming_history`); the rest needs the compaction pair |
-| `529861fc` | already in the fork (own Gemini signature work); upstream's test needs infra the fork lacks |
-| `6fdef674` | **deferred with the compaction pair** (persists raw `total_tokens`, `incomplete_usage_calls`, history migration; the fork already normalizes on write via `total_prompt_usage`) |
-| `313fe97d`, `10b92aa0` | **open — needs a decision**: ~3,800 lines, a rewrite of `chat/compactor.rs` that overlaps the fork's own compaction fixes (`00b6cfd`, `42fd63db`, `61b91b42`) |
+| `10b92aa0`, `313fe97d` | **adopted**: native-history compactor, `CompactionContext`, calibrated `InputTokenEstimate`. Subsumes the fork's `tool_turn_tokens` and current-request protection (`00b6cfd`, `42fd63db`, `61b91b42`). `chat_compaction` suite 50/50 |
+| `6673e1ca` | ported: streamed turns refuse over-budget input locally (nothing truncated, no doomed request, fallbacks still tried) |
+| `6fdef674` | ported: raw `total_tokens` persisted, `incomplete_usage_calls`, idempotent history migration |
+| `529861fc` | already in the fork; its test needs infra the fork lacks (skipped, covered by `replayed_tool_call_keeps_its_thought_signature`) |
 
-Deferred upstream tests (kept out of the tree; restore with the compaction pair):
-`message_compatibility.rs`, `history_truncation.rs`, `tool_signature_replay.rs`.
+**Behaviour changes to review**
+- Over-budget streamed turns now fail locally with "Complete input exceeds context
+  limit" instead of being sent for the provider to refuse. Two fork tests that
+  asserted the old behaviour were rewritten. The check uses a token *estimate*
+  (calibrated by the previous call's real usage), so a borderline turn the provider
+  would accept can be refused.
+- `truncate_history` is strict: it errors rather than orphaning tool calls.
+
+**Bugs found by upstream's tests (all fixed)**
+- Usage/pricing keyed off the connection *handle*: a connection named anything but
+  `anthropic` that speaks the Anthropic protocol lost its cache tokens and got no
+  cost. Now keyed off the wire dialect / `catalog_provider`. *Not fixed:* cost
+  recomputation for historical rows (`cost/service.rs`) only has the stored provider
+  string, so custom-named Anthropic connections may still recompute with the old shape.
+- Voice accepted PATs (Group F); copy/move half-applied batches (Group F).
+
+**Fork-specific deltas that remain in this area:** the vision-transcription step
+(now on the built history just before compaction), learned output caps in `retry.rs`,
+delegated-credential env in the session, `provider_registry` API, the mock provider
+recording streams in both `stream_histories` and `histories`.
+
+**Test-environment notes:** the compaction suite clears the seeded base policies
+(`DELETE policy`) because the fork's `test_app_state` permits every builtin tool
+(~19k tokens per request); a few window-sensitive steps carry +500 tokens of slack
+for the fork's larger system prompt. Full `api_routes` needs `--test-threads=3`
+(OOM-killed otherwise): 430/430.
+
+Next: Group H (tools/MCP/files), I (web UI), J (dependencies/build).
