@@ -227,9 +227,17 @@ mod resolve_path_tests {
     }
 
     #[tokio::test]
-    async fn traversal_in_bare_path_is_rejected() {
-        assert!(run("../etc/passwd", "mina", "system", "/app/data").is_err());
-        assert!(run("subdir/../../etc/passwd", "mina", "system", "/app/data").is_err());
+    async fn parent_paths_resolve_before_sandbox_policy_authorizes_them() {
+        // Resolution is not authorization: the sandbox policy checks the
+        // resolved path, so `..` is normalized rather than rejected here.
+        assert_eq!(
+            run("subdir/../file.txt", "mina", "system", "/app/data").unwrap(),
+            PathBuf::from("/app/data/users/mina/agents/system/file.txt")
+        );
+        assert_eq!(
+            run("../etc/passwd", "mina", "system", "/app/data").unwrap(),
+            PathBuf::from("/app/data/users/mina/agents/etc/passwd")
+        );
     }
 
     #[tokio::test]
