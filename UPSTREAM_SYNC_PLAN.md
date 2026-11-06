@@ -419,3 +419,75 @@ Still open: `1e06a0d` (dependency refresh; pins surrealdb `=3.2.4`, keepass
 and the Podman/dev-container commits (`6e51320`, `81ed651`, `0e81b09`,
 `e2abe3f`, plus Group B) deliberately excluded. Version bump to 2026.10.0 after
 those land.
+
+## Audit update — 2026-11-06
+
+Upstream `fronalabs/frona` `main` @ `f6bb78f` (v2026.11.0 tagged `4b7db3c`,
+2026-11-02; latest merge 2026-11-04). **90 commits** landed after `53d0062`
+(the 2026-10-02 audit head). Fork `main` @ `d5f8668` (2026-10-13) has not
+ported anything from this range; no upstream subject appears verbatim in the
+fork log. Note the fork independently built several equivalents (OpenRouter /
+Gemini key validation, Android paste, streamed-turn context, model-group
+fallback, Gemini thought signatures, auth/token hardening). Before porting any
+commit marked "overlap", diff the fork's version first and take only the delta
+— do not blindly overwrite fork work.
+
+**Group F — security hardening (port first; highest value)**
+
+Oct 8–18 upstream auth/files/MCP fixes. Fork has partial equivalents from
+`8ab5292`/`9b1c26c`/`e13d0ca`-era work (overlap), so audit each:
+`0335b4e` (OAuth state expiry), `e9c3369` (login lockouts), `d5fd55a` (atomic
+refresh-token pairs), `b8b6644` (token types per entry point), `db96dff`
+(presigned downloads bound to user), `b5b2843`/`b4067ca`/`2174e72` (workspace
+root/path/download constraints), `0338a27` (preview isolation, 17 files),
+`f0174d3` (MCP log ownership), `ec5dc6d` (authorize task deletion before
+cancel), `f6b7b3b` (tool approvals bound to chat). Land as one PR with tests.
+
+**Group G — chat/inference correctness (port second; large, hand-merge)**
+
+Overlaps the fork's recent compaction/context commits (`00b6cfd`, `42fd63d`):
+`10b92aa` (+2791, compaction w/o losing active requests), `313fe97`,
+`1740e85`, `e4104b4`, `aef08a6`, `6673e1c`, `0391654`, `f3b02d8` (SSE
+reconnect), `d5d8c1e` (agent context snapshots, 63 files/+4847 — biggest; do
+last and only after the others settle), `28a7e68` + `529861f` (tool-call
+identity/signature replay), `b938d1e` (auto Anthropic prompt caching),
+`218abc8`/`2124482`/`08b77b9`/`6fdef67` (cache-write pricing, token counts —
+check against the fork's OpenRouter cost accounting), `b2d9f63`, `badcd10`
+(provider reconnect / agent model-group fallback), `17565f2`, `d20ae9e`,
+`3272471` (provider errors/key validation; likely already covered).
+
+**Group H — tools/MCP/browser**
+
+`888dd91`, `8b70cdc`, `fb98264` (MCP direct backend/tool refresh — verify
+against the fork's MCP SSE client), `4afc6a9`, `7c9e629`, `6dd83b3`,
+`75079bc`, `6122618` (file/edit/image tool fixes), `e82098f`, `8dfb847`,
+`3f6a31b`, `8720192`, `2c6817e`, `c09cf49` (browser sessions, debugger auth,
+shared preview), `b490f7c` (Keenable web search; touches
+`tool/web_search.rs`, config types, search-section.tsx — small, port soon).
+
+**Group I — web UI fixes (small, mostly independent)**
+
+`625d65b` (paste normalization — overlaps fork's Android paste fix; compare),
+`461d8df`, `b2d13ba`, `5de6a81`, `5349cf9`, `3d5006a`, `aeed500`, `35b7b5d`,
+`3e47019`, `3f0ab54`, `eec6584`, `e293020`, `f1af946`, `1c4f47a`, `1055458`,
+`f0c22b4`, `f1edae5`, `b5354c4`, `f1933ff`, `c3ece71`, `295f8d0` (web deps).
+
+**Group J — build/deps/test (last; needs CI/Podman)**
+
+`f55f2b0` (Presage upgrade — small, but fork pins presage; check Signal
+channel + fork pin), `981905a`, `2226111`, `ced1656`, `e3cd601`, `55793b3`,
+`ecd9272`, `055fe02`, `a09efd8`, `08213a2`, `ae88dfe`, `f104c28`, `4bc1d4d`,
+`af0491e`, `fd1a253`, `5da5694`, `072d158`, `30852f7` (tests; port with the
+code they cover). Regenerate Cargo.lock with cargo; keep the fork's git pins.
+Release marker `4b7db3c` (v2026.11.0): bump the fork version only after F–I.
+
+**Suggested order:** (1) Group F as one PR; (2) `b490f7c` + Group I small
+fixes; (3) Group G in dependency order (`1740e85` → `10b92aa` → `313fe97` →
+`e4104b4`/`aef08a6` → streaming fixes → caching/pricing → `d5d8c1e` last);
+(4) Group H; (5) Group J plus the pending Group B/E Podman commits, validated
+in CI. Keep the history-free port approach (no shared ancestor).
+
+**Divergence control:** keep fork-only features (voice, MCP SSE client, PDF
+render, Android paste, OpenRouter routing/cost, extra providers) in separate
+modules; when a fork fix duplicates an upstream one, prefer adopting upstream's
+shape so future ports apply cleanly.
