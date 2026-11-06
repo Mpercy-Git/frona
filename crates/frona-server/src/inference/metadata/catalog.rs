@@ -22,6 +22,7 @@ use chrono::Utc;
 use rig_core::completion::request::Usage;
 
 use crate::core::config::OpenAiApi;
+use crate::inference::protocol::parameters::WireDialect;
 use crate::inference::provider::ModelConfig;
 
 /// Normalize a rig `Usage` to our canonical convention - `input_tokens` is
@@ -37,15 +38,28 @@ use crate::inference::provider::ModelConfig;
 /// - Anthropic - `input_tokens` from Anthropic's response, which excludes both
 ///   already. No adjustment needed.
 fn normalize_usage(provider: &str, u: &Usage) -> Usage {
-    match provider {
-        "anthropic" => *u,
-        _ => Usage {
+    normalize_usage_shape(provider == "anthropic", u)
+}
+
+/// Whether `m` reports disjoint prompt figures (fresh input, cache reads and
+/// cache writes as separate counts). Decided by the model's wire protocol, not
+/// its connection name: a connection called `company-account` can speak the
+/// Anthropic protocol, and its handle says nothing about that.
+pub fn reports_disjoint_usage(m: &ModelConfig) -> bool {
+    WireDialect::for_model(&m.provider) == WireDialect::Anthropic
+}
+
+fn normalize_usage_shape(disjoint: bool, u: &Usage) -> Usage {
+    if disjoint {
+        *u
+    } else {
+        Usage {
             input_tokens: u
                 .input_tokens
                 .saturating_sub(u.cached_input_tokens)
                 .saturating_sub(u.cache_creation_input_tokens),
             ..*u
-        },
+        }
     }
 }
 
@@ -64,15 +78,26 @@ fn normalize_usage(provider: &str, u: &Usage) -> Usage {
 /// same raw `Usage`, so they are alternative views of one call, never applied
 /// on top of each other.
 pub fn total_prompt_usage(provider: &str, u: &Usage) -> Usage {
-    match provider {
-        "anthropic" => Usage {
+    total_prompt_usage_shape(provider == "anthropic", u)
+}
+
+/// [`total_prompt_usage`] for a model, decided by its wire protocol (see
+/// [`reports_disjoint_usage`]).
+pub fn total_prompt_usage_for(m: &ModelConfig, u: &Usage) -> Usage {
+    total_prompt_usage_shape(reports_disjoint_usage(m), u)
+}
+
+fn total_prompt_usage_shape(disjoint: bool, u: &Usage) -> Usage {
+    if disjoint {
+        Usage {
             input_tokens: u
                 .input_tokens
                 .saturating_add(u.cached_input_tokens)
                 .saturating_add(u.cache_creation_input_tokens),
             ..*u
-        },
-        _ => *u,
+        }
+    } else {
+        *u
     }
 }
 
@@ -135,7 +160,7 @@ pub trait CatalogLookup {
 
 impl CatalogLookup for ModelCatalogSnapshot {
     fn lookup_exact(&self, m: &ModelConfig) -> Option<&ModelEntry> {
-        self.lookup_for_provider(catalog_provider(m.provider_name()), &m.model_id)
+        self.lookup_for_provider(catalog_provider(&m.catalog_provider), &m.model_id)
     }
 
     fn lookup_model(&self, provider: &str, model_id: &str) -> Option<&ModelEntry> {
@@ -381,9 +406,9 @@ pub trait StorePricing {
 impl StorePricing for ModelCatalogStore {
     fn price(&self, m: &ModelConfig, u: &Usage) -> (Option<f64>, String) {
         let p = self.current();
-        let normalized = normalize_usage(m.provider_name(), u);
+        let normalized = normalize_usage_shape(reports_disjoint_usage(m), u);
         (
-            p.lookup_model(m.provider_name(), &m.model_id)
+            p.lookup_model(&m.catalog_provider, &m.model_id)
                 .and_then(|e| e.full_cost_for(&normalized)),
             p.version.clone(),
         )

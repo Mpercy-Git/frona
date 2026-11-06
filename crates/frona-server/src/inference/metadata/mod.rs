@@ -12,5 +12,5 @@ pub mod loader;
 
 pub use catalog::{
     CatalogLookup, CostForUsage, ModelCatalogSnapshot, ModelCatalogStore, ModelEntry, StorePricing,
-    defaults, total_prompt_usage,
+    defaults, total_prompt_usage, total_prompt_usage_for,
 };

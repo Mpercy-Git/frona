@@ -14,7 +14,7 @@ use crate::core::config::ProviderBillingKind;
 use crate::core::repository::{Repository, new_id};
 use crate::db::repo::generic::SurrealRepo;
 use crate::inference::metadata::{
-    CatalogLookup, ModelCatalogStore, StorePricing, total_prompt_usage,
+    CatalogLookup, ModelCatalogStore, StorePricing, total_prompt_usage_for,
 };
 use crate::inference::provider::ModelConfig;
 use crate::inference::usage::UsageContext;
@@ -252,7 +252,7 @@ fn build_row(
     // of it. Persisting rig's per-provider shape verbatim meant an Anthropic
     // row (three disjoint figures) and an OpenAI-shaped one (a total plus
     // labelled subsets) disagreed about what the same column meant.
-    let usage = &total_prompt_usage(model_ref.provider_name(), usage);
+    let usage = &total_prompt_usage_for(model_ref, usage);
     InferenceUsage {
         id: new_id(),
         user_id: usage_ctx.user_id.clone(),
