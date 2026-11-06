@@ -206,7 +206,7 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 - **Signals:** an agent can pause a conversation and wait for a matching inbound (a 2FA code, a reply, a class of message) and resume automatically when something arrives, or run continuous monitors with structured results
 - **MCP with bridge mode:** install [Model Context Protocol](https://modelcontextprotocol.io) servers from the public registry in a click, or point a custom install at anything npm can fetch - a `github:owner/repo` spec, a git URL, a tarball - for a server that was never published. Bridge mode advertises a single `mcpctl` CLI to the LLM instead of every MCP tool individually, saving thousands of tokens per turn on agents with many servers connected. The bridge needs the shell tool to run `mcpctl`, so an agent without one falls back to plain per-tool definitions rather than being left with no way to reach a connected server
 - **Browser automation:** headless Chrome via Browserless for navigating websites, filling forms, and extracting data. Persistent browser profiles keep sessions across conversations
-- **Web search:** built-in search via SearXNG, Tavily, or Brave Search
+- **Web search:** built-in search via SearXNG, Tavily, Brave Search, or Keenable
 - **Code execution:** sandboxed shell, Python, and Node.js with per-principal filesystem, network, and resource restrictions
 - **App deployment:** agents build and deploy web applications and services on your behalf, with an approval workflow before anything goes live
 - **Skills:** instruction packages that teach agents new capabilities. Install shared skills or create agent-specific ones
@@ -318,7 +318,7 @@ Frona auto-discovers providers from your configuration and routes different task
 
 Anything else that speaks the OpenAI `/chat/completions` API — vLLM, LM Studio, llama.cpp's server, a LiteLLM proxy, or a hosted service with no dedicated entry — is reachable through `provider: generic`, no code change required. Azure OpenAI, BytePlus, Z.ai, Venice, MiniMax, llamafile and `generic` are [fork enhancements](#-fork-enhancements--unique-to-this-repository).
 
-**Search:** SearXNG (self-hosted), Tavily, Brave Search.
+**Search:** SearXNG (self-hosted), Tavily, Brave Search, Keenable.
 
 **Voice:** Twilio, with ElevenLabs or Polly TTS — inbound *and* outbound calls (inbound answering is a [fork enhancement](#-fork-enhancements--unique-to-this-repository)).
 

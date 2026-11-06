@@ -491,3 +491,26 @@ in CI. Keep the history-free port approach (no shared ancestor).
 render, Android paste, OpenRouter routing/cost, extra providers) in separate
 modules; when a fork fix duplicates an upstream one, prefer adopting upstream's
 shape so future ports apply cleanly.
+
+### Status update — 2026-11-06 (Group F landed, Keenable)
+
+Landed in `132a3ea` / `a28013f` and the Keenable commit: `0335b4e` (OAuth state
+expiry, with upstream's tests), `d5fd55a` (atomic refresh-pair consume),
+`db96dff` (presign key/subject binding), `b4067ca` + `b5b2843` (symlink-safe
+path resolution, workspace-root alias rejection), `2174e72` + `0338a27`
+(pinned agent downloads, sandboxed previews, explicit `?download=true`, web
+`file-transfer`), the `verify_password` error mapping from `e9c3369`, and
+`b490f7c` (Keenable search; README hunks applied by hand).
+
+Already present in the fork (no change): lockout normalization/duration
+(`e9c3369` remainder), `b8b6644` token-type restriction, `f0174d3` MCP log
+ownership, `ec5dc6d` task-delete authorization, `f6b7b3b` tool-approval binding.
+
+Deviations: fork keeps its HTTP Range support and stricter user-subpath check;
+`tool::files::resolve_path` now normalizes `..` and defers to the sandbox policy
+(upstream behavior), with its unit test updated.
+Verified: `cargo check --tests`, lib tests for storage/auth/presign/tool::files/
+web_search/config, web tsc/eslint/vitest on touched files. Not ported: upstream's
+API-level integration tests for these commits; `tests/api` not run.
+
+Next: Group G (start with `1740e85` -> `10b92aa`), then H, I, J.
