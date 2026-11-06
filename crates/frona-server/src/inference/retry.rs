@@ -535,7 +535,9 @@ pub(crate) async fn stream_with_retry_and_fallback(
 ) -> Result<StreamResult, crate::core::error::AppError> {
     let ModelRequest {
         overrides,
-        input_token_estimate,
+        // The active streamed turn is never truncated here, so there is no
+        // local budget check to calibrate.
+        input_token_estimate: _,
         system_prompt,
         history,
         tools,

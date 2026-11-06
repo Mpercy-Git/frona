@@ -24,8 +24,6 @@ use rig_core::completion::request::Usage;
 use crate::core::config::OpenAiApi;
 use crate::inference::provider::ModelConfig;
 
-const PER_MILLION_TO_PER_TOKEN: f64 = 1.0 / 1_000_000.0;
-
 /// Normalize a rig `Usage` to our canonical convention - `input_tokens` is
 /// the FRESH input only; cache reads (`cached_input_tokens`) and cache writes
 /// (`cache_creation_input_tokens`) are additive alongside it, each billed at

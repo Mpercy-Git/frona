@@ -29,21 +29,17 @@ pub struct InferenceUsage {
     pub model_id: String,
     pub model_ref: String,
 
-    // Usage. **Convention:** `input_tokens` is the WHOLE prompt and
-    // `cached_input_tokens` a labelled subset of it, so fresh input is
-    // `input_tokens - cached_input_tokens` and the cache ratio is
-    // `cached_input_tokens / input_tokens` — which is what the usage dashboard
-    // computes. `UsageService::build_row` puts every provider into this shape;
-    // costing uses the complementary fresh-only view (see
-    // `metadata::catalog::normalize_usage`).
-    //
-    // `cached_input_tokens` is rig's collapsed view - see plan "Cache
-    // fidelity" section for why we can't split Anthropic cache_creation vs
-    // cache_read on the streaming path. Cache writes are therefore counted
-    // inside `input_tokens` but not broken out here.
+    /// Total prompt input: fresh tokens, cache reads, and cache writes. Cache
+    /// reads are a subset; input minus reads includes writes, not just fresh.
+    /// The normalization migration recovers historical input from provider
+    /// totals when consistent; unrecoverable rows retain their original counts.
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
+    /// Raw provider total, retained so compaction can detect inconsistent usage.
+    /// Missing historical totals decode as zero and cannot calibrate compaction.
+    #[serde(default)]
+    #[surreal(default)]
     pub total_tokens: u64,
     pub fallback_index: u8,
     pub duration_ms: u64,
@@ -89,6 +85,9 @@ pub struct InferenceUsage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct UsageRollup {
+    /// Rows whose recorded total does not support a complete prompt count.
+    /// Costs remain valid, but token ratios for these aggregates are unknown.
+    pub incomplete_usage_calls: u64,
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
