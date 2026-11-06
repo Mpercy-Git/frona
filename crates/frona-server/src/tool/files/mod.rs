@@ -53,11 +53,10 @@ pub fn resolve_path(
             "virtual-path URIs are not supported here: {input}",
         )));
     }
-    if input.starts_with('/') {
-        return Ok(std::path::PathBuf::from(input));
-    }
-    crate::storage::path::validate_relative_path(input)?;
-    Ok(workspace_root(ctx, storage).join(input))
+    // Use the same absolute destination for the existing sandbox-policy check
+    // and subsequent I/O. The policy, including explicit sibling grants, owns
+    // authorization; resolving a native path does not imply workspace-only access.
+    crate::storage::path::resolve_filesystem_path(&workspace_root(ctx, storage).join(input))
 }
 
 /// Atomically writes `content` to `target` via a tempfile in the same parent.

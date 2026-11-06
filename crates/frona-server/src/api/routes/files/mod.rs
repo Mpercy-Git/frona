@@ -16,6 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 use range::RangeSpec;
+use serde::Deserialize;
 
 use crate::storage::{VirtualPath, detect_content_type};
 
@@ -25,6 +26,13 @@ use crate::core::error::{AppError, AuthErrorCode};
 use crate::core::state::AppState;
 
 use models::{FileAuth, PresignQuery};
+
+/// Presentation only: both modes require the same file authorization.
+#[derive(Default, Deserialize)]
+pub(super) struct FileResponseQuery {
+    #[serde(default)]
+    pub(super) download: bool,
+}
 
 const MAX_FILE_SIZE: usize = 50 * 1024 * 1024; // 50MB
 // Multipart requests carry boundary markers plus the optional `path` field on
@@ -111,11 +119,12 @@ pub(super) async fn serve_file(
     vpath: &VirtualPath,
     state: &AppState,
     headers: &HeaderMap,
+    download: bool,
 ) -> Result<Response, ApiError> {
     let resolved = state
         .storage_service
         .resolve_virtual_path_for_user(owner, vpath)?;
-    serve_path(&resolved, headers).await
+    serve_path(&resolved, headers, download).await
 }
 
 /// Caller is responsible for path traversal / ownership checks.
@@ -125,8 +134,28 @@ pub(super) async fn serve_file(
 pub(super) async fn serve_path(
     path: &std::path::Path,
     headers: &HeaderMap,
+    download: bool,
 ) -> Result<Response, ApiError> {
-    let metadata = fs::metadata(path)
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download");
+    let file = fs::File::open(path)
+        .await
+        .map_err(|_| ApiError(AppError::NotFound("File not found".into())))?;
+    serve_open_file(file, filename, headers, download).await
+}
+
+/// Serve a file that has already been opened (and, for workspace downloads,
+/// pinned against path substitution). `filename` is only the display name.
+pub(super) async fn serve_open_file(
+    mut file: fs::File,
+    filename: &str,
+    headers: &HeaderMap,
+    download: bool,
+) -> Result<Response, ApiError> {
+    let metadata = file
+        .metadata()
         .await
         .map_err(|_| ApiError(AppError::NotFound("File not found".into())))?;
     if !metadata.is_file() {
@@ -134,31 +163,30 @@ pub(super) async fn serve_path(
     }
     let file_len = metadata.len();
 
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("download");
     let content_type = detect_content_type(filename);
-
-    // SVG and other script-executable types must be served as attachments to
-    // prevent stored XSS via <script> tags executing at the app origin.
-    let disposition_type = match content_type {
-        "image/svg+xml" | "text/html" | "text/javascript" | "application/javascript" => {
-            "attachment"
-        }
-        _ => "inline",
-    };
 
     // `Accept-Ranges` on every response, including the full-file one: it's how
     // a media element learns it may seek at all.
     let base = || {
-        Response::builder()
+        let mut builder = Response::builder()
             .header(header::CONTENT_TYPE, content_type)
             .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+            .header(header::REFERRER_POLICY, "no-referrer")
             .header(
                 header::CONTENT_DISPOSITION,
-                format!("{disposition_type}; filename=\"{filename}\""),
-            )
+                content_disposition(filename, content_type, download),
+            );
+        if matches!(
+            content_type,
+            "text/html" | "image/svg+xml" | "application/xml"
+        ) {
+            // Keep dashboards executable, but give documents an opaque origin even
+            // on direct/presigned navigation. Never add allow-same-origin here: these
+            // files are untrusted and may share a host with the application's session.
+            builder = builder.header(header::CONTENT_SECURITY_POLICY, "sandbox allow-scripts");
+        }
+        builder
     };
 
     let requested = range::parse(
@@ -173,10 +201,6 @@ pub(super) async fn serve_path(
             .body(Body::empty())
             .unwrap());
     }
-
-    let mut file = fs::File::open(path)
-        .await
-        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
 
     let response = match requested {
         RangeSpec::Partial(range) => {
@@ -201,4 +225,58 @@ pub(super) async fn serve_path(
     };
 
     Ok(response.unwrap())
+}
+
+fn content_disposition(filename: &str, content_type: &str, download: bool) -> String {
+    // SVG and other script-executable types are never rendered inline from here:
+    // that would execute them at the app origin.
+    let forced = matches!(
+        content_type,
+        "image/svg+xml" | "text/html" | "text/javascript" | "application/javascript"
+    );
+    let disposition = if download || forced {
+        "attachment"
+    } else {
+        "inline"
+    };
+    // Path separators and control characters are never useful in a suggested
+    // filename, including on clients whose path rules differ from the server's.
+    let filename: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let fallback: String = filename
+        .chars()
+        .map(|c| {
+            if !c.is_ascii() || matches!(c, '"' | '%') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut value = format!("{disposition}; filename=\"{fallback}\"");
+    if filename != fallback {
+        // RFC 8187 extended values preserve Unicode/quotes without raw header
+        // bytes. Encode everything except unreserved URI bytes; spaces must be
+        // %20, not form-urlencoded '+'.
+        let encoded: String = filename
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect();
+        value.push_str(&format!("; filename*=UTF-8''{encoded}"));
+    }
+    value
 }
