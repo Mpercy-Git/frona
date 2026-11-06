@@ -47,6 +47,7 @@ async fn streaming_preserves_over_budget_history_on_retry_and_fallback() {
     group
         .stream_inference(
             frona::inference::ModelRequest {
+                input_token_estimate: None,
                 system_prompt: "system",
                 history: history.clone(),
                 tools: vec![],
@@ -99,6 +100,7 @@ async fn tool_loop_preserves_request_when_tool_output_exceeds_budget() {
         &test_metrics_ctx(),
         &test_chat_service().await,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -156,6 +158,7 @@ async fn streaming_failure_reports_retries_and_fallback_context() {
     let error = group
         .stream_inference(
             frona::inference::ModelRequest {
+                input_token_estimate: None,
                 system_prompt: "system",
                 history: vec![RigMessage::user("hi")],
                 tools: vec![],
@@ -212,6 +215,7 @@ async fn test_tool_loop_simple_text_response() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -271,6 +275,7 @@ async fn test_tool_loop_single_tool_call() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -343,6 +348,7 @@ async fn test_tool_loop_multi_turn() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -384,6 +390,7 @@ async fn test_tool_loop_external_tool_returns_pending() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -431,6 +438,7 @@ async fn test_tool_loop_mixed_internal_external() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -477,6 +485,7 @@ async fn test_tool_loop_multiple_external_tools_in_same_turn() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -528,6 +537,7 @@ async fn test_tool_loop_mixed_internal_and_multiple_external() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -571,6 +581,7 @@ async fn test_tool_loop_cancellation_before_inference() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -614,6 +625,7 @@ async fn test_tool_loop_rate_limit_retry() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -672,6 +684,7 @@ async fn test_tool_loop_rate_limit_exhausted() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await;
 
@@ -719,6 +732,7 @@ async fn test_tool_loop_tool_call_failure() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -766,6 +780,7 @@ async fn test_tool_loop_provider_error() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await;
 
@@ -1109,6 +1124,7 @@ async fn test_streaming_tokens_arrive_individually() {
             &metrics,
             &chat_service,
             "test-msg",
+            None,
         )
         .await
     });
@@ -1206,6 +1222,7 @@ async fn test_tool_loop_reasoning_in_completed_outcome() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -1275,6 +1292,7 @@ async fn test_tool_loop_reasoning_with_tool_calls() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -1328,6 +1346,7 @@ async fn test_tool_loop_no_reasoning_when_absent() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -1381,6 +1400,7 @@ async fn test_tool_result_sse_includes_summary() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -1459,6 +1479,7 @@ async fn test_tool_loop_deduplicates_attachments_before_lifecycle_return() {
         &metrics,
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();
@@ -1569,6 +1590,7 @@ async fn run_probe_turn(names: &[&str]) -> (usize, Vec<String>) {
         &test_metrics_ctx(),
         &chat_service,
         "test-msg",
+        None,
     )
     .await
     .unwrap();

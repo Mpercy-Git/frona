@@ -250,6 +250,7 @@ pub struct MockModelProvider {
     system_prompts: Mutex<Vec<String>>,
     model_names: Mutex<Vec<String>>,
     request_settings: Mutex<Vec<(Option<u64>, Option<f64>)>>,
+    usage: Mutex<Usage>,
 }
 
 impl MockModelProvider {
@@ -264,6 +265,12 @@ impl MockModelProvider {
             system_prompts: Mutex::new(Vec::new()),
             model_names: Mutex::new(Vec::new()),
             request_settings: Mutex::new(Vec::new()),
+            usage: Mutex::new(Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                ..Default::default()
+            }),
         }
     }
 
@@ -277,6 +284,10 @@ impl MockModelProvider {
 
     pub fn request_settings(&self) -> Vec<(Option<u64>, Option<f64>)> {
         self.request_settings.lock().unwrap().clone()
+    }
+
+    pub fn set_usage(&self, usage: Usage) {
+        *self.usage.lock().unwrap() = usage;
     }
 
     /// The history the provider was handed on its most recent call.
@@ -379,12 +390,7 @@ impl ModelProvider for MockModelProvider {
         *self.last_history.lock().unwrap() = chat_history.clone();
         self.histories.lock().unwrap().push(chat_history.clone());
         self.tool_histories.lock().unwrap().push(tools);
-        let usage = Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            total_tokens: 15,
-            ..Default::default()
-        };
+        let usage = self.usage.lock().unwrap().clone();
         let response = match self.next_response_for_history(&chat_history) {
             MockResponse::Barrier(barrier, response) => {
                 barrier.wait().await;
@@ -452,12 +458,7 @@ impl ModelProvider for MockModelProvider {
         *self.last_history.lock().unwrap() = chat_history.clone();
         self.histories.lock().unwrap().push(chat_history.clone());
         self.tool_histories.lock().unwrap().push(_tools.clone());
-        let usage = Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            total_tokens: 15,
-            ..Default::default()
-        };
+        let usage = self.usage.lock().unwrap().clone();
         let response = match self.next_response() {
             MockResponse::Barrier(barrier, response) => {
                 barrier.wait().await;

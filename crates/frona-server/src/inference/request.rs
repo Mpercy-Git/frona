@@ -157,6 +157,7 @@ pub struct InferenceRequest {
     /// model group's own inference/streaming (now self-contained via
     /// `model_group.providers`).
     pub registry: ModelProviderRegistry,
+    pub input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
     pub model_group: ModelGroup,
     pub system_prompt: String,
     pub history: Vec<RigMessage>,

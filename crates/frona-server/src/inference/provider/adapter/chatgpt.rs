@@ -581,6 +581,7 @@ mod tests {
         );
         let result = group
             .inference(crate::inference::ModelRequest {
+                input_token_estimate: None,
                 system_prompt: "system",
                 history: vec![Message::user("hello")],
                 tools: vec![],
