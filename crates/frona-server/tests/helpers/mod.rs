@@ -1213,3 +1213,10 @@ pub fn test_harness(
         state.usage_service.clone(),
     ))
 }
+
+pub fn test_providers(
+    name: &str,
+    provider: Arc<dyn ModelProvider>,
+) -> Arc<HashMap<String, Arc<dyn ModelProvider>>> {
+    Arc::new([(name.to_string(), provider)].into())
+}

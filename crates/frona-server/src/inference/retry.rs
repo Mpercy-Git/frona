@@ -165,7 +165,7 @@ fn completion_history(
     let available = group.context_window.saturating_sub(max_output);
     if tokens > available {
         return Err(format!(
-            "Complete compaction input exceeds context limit ({tokens} estimated tokens, {available} available)"
+            "Complete input exceeds context limit ({tokens} estimated tokens, {available} available)"
         ));
     }
     Ok(history.to_vec())
@@ -535,9 +535,7 @@ pub(crate) async fn stream_with_retry_and_fallback(
 ) -> Result<StreamResult, crate::core::error::AppError> {
     let ModelRequest {
         overrides,
-        // The active streamed turn is never truncated here, so there is no
-        // local budget check to calibrate.
-        input_token_estimate: _,
+        input_token_estimate,
         system_prompt,
         history,
         tools,
@@ -560,9 +558,29 @@ pub(crate) async fn stream_with_retry_and_fallback(
         let temperature = overrides.temperature.or(model.request_settings.temperature);
         // Chat history is compacted before the turn starts. Tool results can
         // grow it during this turn, but dropping the opening request here makes
-        // the agent lose its task before its first reply is finished. Preserve
-        // the complete history for every retry and fallback; an oversized
-        // request must surface the provider's error instead of losing context.
+        // the agent lose its task before its first reply is finished. Send the
+        // complete history for every retry and fallback, and refuse locally
+        // (rather than send a request this model cannot take, or a truncated
+        // one) when it does not fit.
+        let history = match completion_history(
+            &history,
+            system_prompt,
+            &tools,
+            model_group,
+            max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize,
+            HistoryOverflow::Reject,
+            if index == 0 {
+                input_token_estimate
+            } else {
+                None
+            },
+        ) {
+            Ok(history) => history,
+            Err(error) => {
+                failures.push(InferenceError::InferenceFailed(error).for_model(model, 0));
+                continue;
+            }
+        };
         let emitted = Arc::new(AtomicBool::new(false));
         let mut max_tokens = capped_max_tokens(model, max_tokens);
         let result = loop {
