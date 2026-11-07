@@ -158,6 +158,17 @@ async fn build_mcp_supervisor() -> (
         900,
         604_800,
     );
+    let agent_service = frona::agent::service::AgentService::new(
+        SurrealRepo::new(db.clone()),
+        &Default::default(),
+        Arc::new(
+            frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                80.0, 80.0, 90.0, 90.0,
+            ),
+        ),
+        policy_service.clone(),
+        user_service.clone(),
+    );
     let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
 
     let service = Arc::new(McpServerService::new(
@@ -170,7 +181,7 @@ async fn build_mcp_supervisor() -> (
         token_service,
         keypair_service,
         user_service,
-        tool_fixture.state.agent_service.clone(),
+        agent_service,
         policy_service,
         storage_for_mcp.clone(),
         "http://localhost".to_string(),

@@ -4,7 +4,6 @@ mod agents;
 mod app_supervisor;
 mod apps;
 mod auth;
-mod browser;
 mod channels;
 mod chats;
 mod commands;

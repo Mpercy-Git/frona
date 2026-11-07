@@ -534,3 +534,21 @@ for storage::content, core::config, tool::mcp. `tests/api` not run.
 Group G (compaction/history rework) deferred as its own PR: fork `compactor.rs`
 is 778 lines vs upstream 430 and overlaps `00b6cfd`/`42fd63d`.
 Next: Group H, then J.
+
+### Status update — 2026-11-07 (Group H landed)
+
+Landed in `cf4001d`, `4ece290`, `b327b25` + follow-up: `75079bc`/`6122618` (edit
+matching now in `frona-text`), `6dd83b3`, `7c9e629`, `4afc6a9`, `888dd91`,
+`8b70cdc` (mcpctl tool), `e82098f`, `2c6817e`, `c09cf49`, and the non-route
+parts of `8dfb847`/`3f6a31b`/`8720192`.
+
+Deviations: `fb98264` skipped (fork's `McpTool` already holds the client's live
+tool cache, so `tools/list_changed` works); debugger-takeover proxy routes
+(`/api/auth/browser/*`, `/api/browser/debugger/*`) NOT ported - fork keeps its own
+`live.rs` live view; fork's edit-drift note dropped. Upstream tests
+`mcpctl.rs`, `mcp_tool_updates.rs`, `mcp_images.rs`, `browser_sessions.rs`,
+`tests/api/browser.rs` dropped (need `helpers::app_state` etc. from Group G).
+Verified: `cargo check --workspace --tests`; tests for frona-text/-browser/
+-cli-mcp and server `tool::` (340). `tests/api` and ignored real-browser tests not run.
+
+Next: Group J (deps/build/tests, Presage `f55f2b0`), then Group G as its own PR.
