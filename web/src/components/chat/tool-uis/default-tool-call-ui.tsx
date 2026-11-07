@@ -15,6 +15,7 @@ import { InlineCode } from "./inline-code";
 import { displayToolName } from "./views/default";
 import { pickView, TOOL_VIEWS_DEFAULT_EXPANDED } from "./views";
 import { SafeToolView } from "./views/safe-tool-view";
+import { isBrowserTool } from "./browser-tool-state";
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 

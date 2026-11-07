@@ -3161,6 +3161,8 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "tungstenite 0.28.0",
+ "url",
 ]
 
 [[package]]
@@ -3172,7 +3174,9 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -8459,7 +8463,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
- "tower-service",
  "tracing",
  "uuid",
 ]
