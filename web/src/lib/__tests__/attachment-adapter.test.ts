@@ -7,9 +7,15 @@ vi.mock("../api-client", async (importActual) => {
   return { ...actual, uploadFile: vi.fn() };
 });
 
-import { createFronaAttachmentAdapter } from "../use-chat-runtime";
+import { createFronaAttachmentAdapter, getBackendAttachment } from "../use-chat-runtime";
 import { uploadFile } from "../api-client";
 import type { PendingAttachment } from "@assistant-ui/react";
+
+async function collect(gen: unknown): Promise<PendingAttachment[]> {
+  const out: PendingAttachment[] = [];
+  for await (const item of gen as AsyncIterable<PendingAttachment>) out.push(item);
+  return out;
+}
 import type { Attachment } from "../types";
 
 const mockUpload = uploadFile as unknown as ReturnType<typeof vi.fn>;
@@ -38,21 +44,26 @@ describe("fronaAttachmentAdapter", () => {
 
     const adapter = createFronaAttachmentAdapter();
     const file = new File(["x"], "photo.jpg", { type: "image/jpeg" });
-    const pending = (await adapter.add({ file })) as PendingAttachment;
+    const [running, pending] = await collect(adapter.add({ file }));
 
-    expect(pending.id).toBe("photo.jpg");
+    expect(running.status.type).toBe("running");
+    // The id is a client-generated key, stable across the upload's phases.
+    expect(pending.id).toBe(running.id);
     expect(pending.name).toBe("photo.jpg");
     expect(pending.status).toEqual({ type: "requires-action", reason: "composer-send" });
+    expect(getBackendAttachment(pending.id)).toEqual(uploaded);
   });
 
-  it("surfaces upload failures via onError and re-throws", async () => {
+  it("surfaces upload failures via onError and keeps the attachment as an error", async () => {
     mockUpload.mockRejectedValue(new Error("File too large (max 10MB)"));
     const onError = vi.fn();
 
     const adapter = createFronaAttachmentAdapter(onError);
     const file = new File(["x"], "big.png", { type: "image/png" });
 
-    await expect(adapter.add({ file })).rejects.toThrow("File too large");
+    const states = await collect(adapter.add({ file }));
+    const last = states[states.length - 1];
+    expect(last.status.type).toBe("incomplete");
     expect(onError).toHaveBeenCalledOnce();
     expect(onError.mock.calls[0][0]).toContain("big.png");
     expect(onError.mock.calls[0][0]).toContain("File too large");

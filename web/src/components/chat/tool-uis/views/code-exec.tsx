@@ -52,11 +52,19 @@ export function execTranscript(
   resultText: string,
   errorText: string | null,
 ): string {
-  const parts = [code, resultText];
-  // An error equal to the result is the same text twice; the panel elides it
-  // when rendering for that reason, so the clipboard should too.
-  if (errorText && errorText !== resultText) parts.push(errorText);
-  return parts.filter((part) => part.length > 0).join("\n\n");
+  // Compare whole lines/blocks, but preserve the original text in the copy.
+  const outputForComparison = resultText.replaceAll("\r\n", "\n").trim();
+  const errorForComparison = errorText?.replaceAll("\r\n", "\n").trim();
+  const errorIncludedInOutput =
+    !!errorForComparison &&
+    `\n${outputForComparison}\n`.includes(`\n${errorForComparison}\n`);
+  return [
+    code,
+    resultText && `Output:\n${resultText}`,
+    errorForComparison && !errorIncludedInOutput && `Error:\n${errorText}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export function makeCodeExecView(config: CodeExecConfig): ToolView {
@@ -94,6 +102,17 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
     const { events: sandboxEvents, remainingText } = parseShellOutput(resultText);
     const sandboxSeverity = bestSeverity(sandboxEvents);
     const copyText = execTranscript(code, resultText, errorText);
+    const commandBlock = code ? (
+      <CodeBlock
+        code={code}
+        language={config.language}
+        wrap={config.wrap}
+        lineNumbers={config.lineNumbers}
+        copyText={copyText}
+      />
+    ) : copyText ? (
+      <CopyButton value={copyText} className="self-end mr-2 mt-2" />
+    ) : null;
 
     const expandable =
       code.length > 0 || resultText.length > 0 || !!errorText;
@@ -131,15 +150,7 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
 
         <ToolRow.Body isExpanded={isExpanded} unstyled>
           <div className="flex flex-col gap-2">
-            {code && (
-              <CodeBlock
-                code={code}
-                language={config.language}
-                wrap={config.wrap}
-                lineNumbers={config.lineNumbers}
-                copyText={copyText}
-              />
-            )}
+            {commandBlock}
             {sandboxEvents.length > 0 && <SandboxBlock events={sandboxEvents} />}
             {remainingText && (
               <pre className="whitespace-pre-wrap text-text-secondary text-xs overflow-x-auto px-3 pb-3">
@@ -151,15 +162,7 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
 
         <ToolRow.Error>
           <div className="flex flex-col gap-2">
-            {code && (
-              <CodeBlock
-                code={code}
-                language={config.language}
-                wrap={config.wrap}
-                lineNumbers={config.lineNumbers}
-                copyText={copyText}
-              />
-            )}
+            {commandBlock}
             {sandboxEvents.length > 0 && <SandboxBlock events={sandboxEvents} />}
             <div className="text-xs px-3 pb-3">
               <p className="font-semibold text-danger">{config.failureLabel}</p>
