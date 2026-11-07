@@ -296,6 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expose_headers([
                 HeaderName::from_static("accept-ranges"),
                 HeaderName::from_static("content-range"),
+                HeaderName::from_static("content-disposition"),
             ])
             .allow_credentials(true)
     });
@@ -348,7 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::skills::router())
         .merge(routes::tools::router())
         .merge(routes::usage::router())
-        .merge(routes::files::router())
+        .merge(routes::files::router(&config.server))
         .merge(routes::share::router())
         .merge(routes::preview::router())
         .merge(routes::metrics::router())

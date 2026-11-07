@@ -2,13 +2,16 @@ mod live;
 
 use std::time::Duration;
 
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
+use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
 use crate::core::config::BrowserConfig;
+use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::tool::browser::session::BrowserSessionManager;
 
@@ -17,6 +20,7 @@ const TEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/browser/snapshot", get(snapshot))
         .route("/api/browser/live/link", get(live::live_link))
         .route("/api/browser/live/ws", get(live::live_socket))
         .route("/api/browser/test", post(test_browser))
@@ -72,4 +76,34 @@ async fn test_browser(auth: AuthUser, Json(req): Json<TestBrowserRequest>) -> Re
         )
             .into_response(),
     }
+}
+
+/// Latest PNG of the user's active browser tab, for the chat tool-call preview.
+/// Viewing never launches or reconnects a browser: with no live session (or no
+/// page) the answer is `204 No Content`.
+async fn snapshot(auth: AuthUser, State(state): State<AppState>) -> Result<Response, ApiError> {
+    // Match BrowserTool's profile selection without exposing profile credentials.
+    let provider = crate::tool::browser::active_profile(&state.vault_service, &auth.user_id).await;
+    let Some(connection) = state
+        .browser_session_manager
+        .existing_connection(&auth.handle, &provider)
+        .await
+    else {
+        return Ok((StatusCode::NO_CONTENT, [("cache-control", "no-store")]).into_response());
+    };
+    let capture = tokio::time::timeout(Duration::from_secs(10), connection.screenshot_bytes(false))
+        .await
+        .map_err(|_| AppError::Browser("Browser snapshot timed out".into()))?;
+    let bytes = match capture {
+        Ok(bytes) => bytes,
+        Err(frona_browser::Error::NoActivePage) => {
+            return Ok((StatusCode::NO_CONTENT, [("cache-control", "no-store")]).into_response());
+        }
+        Err(_) => return Err(AppError::Browser("Browser snapshot unavailable".into()).into()),
+    };
+    Ok((
+        [("content-type", "image/png"), ("cache-control", "no-store")],
+        bytes,
+    )
+        .into_response())
 }

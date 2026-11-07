@@ -17,7 +17,7 @@ use frona_derive::agent_tool;
 
 use super::super::sandbox::SandboxManager;
 use super::super::{InferenceContext, ToolOutput, active_chat};
-use super::read::{is_supported_image, prepare_image};
+use crate::tool::image::{is_supported_image, prepare_image};
 
 const SYSTEM_PROMPT: &str = "You answer questions about an image for an assistant that cannot see it. \
      Answer only from what is visible in the image. Quote any text exactly as written. \
@@ -95,9 +95,13 @@ impl AnalyzeImageTool {
                 path_arg
             )));
         };
-        let image = match prepare_image(&bytes, &mime, path_arg) {
+        let image = match prepare_image(&bytes, &mime) {
             Ok(img) => img,
-            Err(msg) => return Ok(ToolOutput::error(msg)),
+            Err(reason) => {
+                return Ok(ToolOutput::error(format!(
+                    "{reason} at {path_arg} ({mime})"
+                )));
+            }
         };
 
         let Some(vision_group) = crate::inference::vision::resolve_vision_model_group(

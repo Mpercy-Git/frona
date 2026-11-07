@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDownTrayIcon } from "@heroicons/react/24/outline";
+import { fileResponseFilename } from "@/lib/file-transfer";
+import { detectContentType } from "@/lib/file-manager-utils";
 import { apiFetch, getAccessToken } from "@/lib/api-client";
-import { FilePreviewContent } from "@/components/preview/file-preview-content";
+import { FileDownloadButton } from "@/components/preview/file-download-button";
+import { FilePreviewContent, canPreviewFile } from "@/components/preview/file-preview-content";
 
 /** Short form (`/s/{id}`) honours the `Share::File.public` flag — public
  *  shares mint a presigned URL so logged-out viewers can see the file.
@@ -16,7 +19,7 @@ export type PreviewSource =
 
 type FetchState =
   | { status: "loading" }
-  | { status: "ok"; content: string; filename: string; contentType: string; rawUrl: string }
+  | { status: "ok"; content: string | null; filename: string; contentType: string; rawUrl: string }
   | { status: "not_found" }
   | { status: "no_access" }
   | { status: "error" };
@@ -25,16 +28,6 @@ type FetchState =
 function apiPath(source: PreviewSource): string {
   if (source.kind === "short") return `/s/${source.id}`;
   return `/api/files/${source.owner}/${source.handle}/${source.path}`;
-}
-
-/** Falls back to the URL's final path segment when the header is missing. */
-function filenameFrom(header: string | null, fallbackUrl: string): string {
-  if (header) {
-    const match = /filename="?([^";]+)"?/.exec(header);
-    if (match) return match[1];
-  }
-  const segs = fallbackUrl.split("/");
-  return segs[segs.length - 1] || "download";
 }
 
 export function PreviewPage({ source }: { source: PreviewSource }) {
@@ -77,11 +70,11 @@ export function PreviewPage({ source }: { source: PreviewSource }) {
       return;
     }
 
-    const content = await response.text();
-    const contentType = response.headers.get("Content-Type")?.split(";")[0].trim() ?? "text/plain";
     // `response.url` is the final URL after redirects (presigned for public
     // shares, canonical otherwise) — usable as the filename fallback.
-    const filename = filenameFrom(response.headers.get("Content-Disposition"), response.url || path);
+    const filename = fileResponseFilename(response, path);
+    const contentType = detectContentType(filename, response.headers.get("Content-Type"));
+    const content = canPreviewFile(contentType, filename) ? await response.text() : null;
     // Anchor `href` is a real navigation, so it needs the backend host —
     // `apiFetch` adds that for us but the anchor bypasses it.
     const apiUrl = process.env.NEXT_PUBLIC_FRONA_SERVER_BACKEND_URL || "";
@@ -150,22 +143,24 @@ export function PreviewPage({ source }: { source: PreviewSource }) {
           <span aria-hidden className="text-base">📄</span>
           <span className="text-sm font-medium text-text-primary truncate">{state.filename}</span>
         </div>
-        <a
-          href={state.rawUrl}
-          download={state.filename}
+        <FileDownloadButton
+          url={state.rawUrl}
+          filename={state.filename}
           className="flex items-center gap-1.5 rounded-md bg-surface-tertiary px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors"
         >
           <ArrowDownTrayIcon className="h-3.5 w-3.5" />
           Download
-        </a>
+        </FileDownloadButton>
       </header>
       <main className="flex-1 overflow-auto p-4 sm:p-6">
         <div className="mx-auto max-w-3xl">
-          <FilePreviewContent
+          {state.content === null ? (
+            <p className="text-sm text-text-secondary">Preview unavailable. Download this file to view it.</p>
+          ) : <FilePreviewContent
             content={state.content}
             filename={state.filename}
             contentType={state.contentType}
-          />
+          />}
         </div>
       </main>
     </div>

@@ -4,12 +4,14 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use tokio::fs;
 
+use crate::storage::path::{resolve_filesystem_path, resolve_workspace_path};
 use crate::storage::{
-    FileEntry, SearchTarget, VirtualPath, validate_no_traversal, validate_relative_path,
+    FileEntry, SearchTarget, VirtualPath, open_workspace_file, validate_relative_path,
 };
 
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;
+use super::FileResponseQuery;
 use super::models::{FileAuth, SearchQuery};
 use crate::core::error::AppError;
 use crate::core::state::AppState;
@@ -18,6 +20,7 @@ pub(crate) async fn download_user_file(
     file_auth: FileAuth,
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<FileResponseQuery>,
     AxumPath((handle_raw, filename)): AxumPath<(String, String)>,
 ) -> Result<Response, ApiError> {
     let handle = crate::core::Handle::try_new(handle_raw)
@@ -31,9 +34,10 @@ pub(crate) async fn download_user_file(
             }
         }
         FileAuth::Presigned { sub, owner, path } => {
-            // The token's owner must match the URL's {handle} and the sub (issuer).
-            let expected_owner = format!("user:{sub}");
-            if owner != expected_owner || path != filename {
+            let user_handle = state.user_service.handle_of(&sub).await?;
+            // Owners contain user IDs; URLs contain handles. Bind both to the
+            // verified subject rather than trusting a matching filename alone.
+            if owner != format!("user:{sub}") || handle != user_handle || path != filename {
                 return Err(ApiError(AppError::Forbidden(
                     "Presigned URL does not match requested file".into(),
                 )));
@@ -42,13 +46,14 @@ pub(crate) async fn download_user_file(
     }
 
     let vpath = VirtualPath::user(&handle, &filename);
-    super::serve_file(&handle, &vpath, &state, &headers).await
+    super::serve_file(&handle, &vpath, &state, &headers, query.download).await
 }
 
 pub(crate) async fn download_agent_file(
     file_auth: FileAuth,
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<FileResponseQuery>,
     AxumPath((agent_seg, filepath)): AxumPath<(String, String)>,
 ) -> Result<Response, ApiError> {
     let (user_id, user_handle) = match &file_auth {
@@ -79,17 +84,22 @@ pub(crate) async fn download_agent_file(
         )));
     }
 
-    // `Path::join` discards the base for an absolute component, and `..` walks
-    // out of it, so refuse both before joining, then check the result stays
-    // inside the workspace once symlinks are resolved.
-    validate_relative_path(&filepath)?;
+    // Resolve allowed symlinks, then open through pinned directory handles so a
+    // path swapped for a symlink after the check cannot redirect the read.
     let workspace = state
         .storage_service
         .agent_workspace_path(&user_handle, &agent.handle);
-    let path = workspace.join(&filepath);
-    validate_no_traversal(&path, &workspace.to_string_lossy())?;
+    let relative = filepath.clone();
+    let file = tokio::task::spawn_blocking(move || open_workspace_file(&workspace, &relative))
+        .await
+        .map_err(|error| AppError::Internal(format!("Failed to open download: {error}")))??;
 
-    super::serve_path(&path, &headers).await
+    // Stream the already-opened file, preserving the requested symlink's display name.
+    let filename = std::path::Path::new(&filepath)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download");
+    super::serve_open_file(fs::File::from_std(file), filename, &headers, query.download).await
 }
 
 pub(crate) async fn delete_user_file(
@@ -227,11 +237,11 @@ pub(crate) async fn search_files(
             let ws = state
                 .storage_service
                 .agent_workspace(&auth.handle, &agent.handle);
-            let root = ws.base_path().to_path_buf();
+            let root = resolve_filesystem_path(ws.base_path())?;
             let dir = match subpath {
                 Some(sub) => {
                     validate_relative_path(sub)?;
-                    root.join(sub)
+                    resolve_workspace_path(&root, std::path::Path::new(sub))?
                 }
                 None => root.clone(),
             };
@@ -247,11 +257,11 @@ pub(crate) async fn search_files(
                 validate_relative_path(subpath)?;
             }
             let ws = state.storage_service.user_workspace(&auth.handle);
-            let base = ws.base_path().to_path_buf();
+            let base = resolve_filesystem_path(ws.base_path())?;
             let dir = if subpath.is_empty() {
                 base.clone()
             } else {
-                base.join(subpath)
+                resolve_workspace_path(&base, std::path::Path::new(subpath))?
             };
             targets.push(SearchTarget {
                 dir,
@@ -261,7 +271,7 @@ pub(crate) async fn search_files(
         }
         _ => {
             let user_ws = state.storage_service.user_workspace(&auth.handle);
-            let user_dir = user_ws.base_path().to_path_buf();
+            let user_dir = resolve_filesystem_path(user_ws.base_path())?;
             targets.push(SearchTarget {
                 dir: user_dir.clone(),
                 root: user_dir,
@@ -273,7 +283,7 @@ pub(crate) async fn search_files(
                 let ws = state
                     .storage_service
                     .agent_workspace(&auth.handle, &agent.handle);
-                let agent_dir = ws.base_path().to_path_buf();
+                let agent_dir = resolve_filesystem_path(ws.base_path())?;
                 if agent_dir.is_dir() {
                     targets.push(SearchTarget {
                         dir: agent_dir.clone(),

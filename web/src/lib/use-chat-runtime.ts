@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from "react";
-import { useExternalStoreRuntime } from "@assistant-ui/react";
+import { MessageNotSentError, useExternalStoreRuntime } from "@assistant-ui/react";
 import type { CompleteAttachment, AppendMessage, AttachmentAdapter, PendingAttachment } from "@assistant-ui/react";
 import type { ExternalStoreAdapter } from "@assistant-ui/react";
 import { ChatStore, type RetryInfo } from "./chat-store";
@@ -25,22 +25,42 @@ export function getBackendAttachment(id: string): Attachment | undefined {
   return backendAttachmentRegistry.get(id);
 }
 
-function convertBackendAttachment(att: Attachment): CompleteAttachment {
-  const url = att.url ?? "";
+export function getBackendAttachments(attachments: readonly (PendingAttachment | CompleteAttachment)[]): Attachment[] {
+  return attachments.map((attachment) => {
+    if (attachment.status.type === "running") {
+      throw new Error(`Wait for "${attachment.name}" to finish uploading.`);
+    }
+    if (attachment.status.type === "incomplete") {
+      throw new Error(attachment.status.message ?? `Remove and reattach "${attachment.name}" before sending.`);
+    }
+    const backend = getBackendAttachment(attachment.id);
+    if (!backend) {
+      throw new Error(`"${attachment.name}" is no longer available. Remove and reattach it before sending.`);
+    }
+    return backend;
+  });
+}
+
+function completeAttachment(
+  attachment: Pick<CompleteAttachment, "id" | "name" | "contentType" | "file">,
+  url?: string,
+): CompleteAttachment {
   // Only treat it as a renderable image if we actually have a URL — otherwise
   // an empty src produces a broken <img>. Fall back to the file placeholder.
-  const isImage = att.content_type.startsWith("image/") && url !== "";
-  registerBackendAttachment(att.path, att);
+  const imageUrl = attachment.contentType?.startsWith("image/") ? url?.trim() : undefined;
   return {
-    id: att.path,
-    type: isImage ? "image" : "file",
-    name: att.filename,
-    contentType: att.content_type,
+    ...attachment,
+    type: imageUrl ? "image" : "file",
     status: { type: "complete" },
-    content: isImage
-      ? [{ type: "image", image: url }]
-      : [{ type: "text", text: `[file: ${att.filename}]` }],
+    content: imageUrl
+      ? [{ type: "image", image: imageUrl }]
+      : [{ type: "text", text: `[file: ${attachment.name}]` }],
   };
+}
+
+function convertBackendAttachment(att: Attachment, file?: File): CompleteAttachment {
+  registerBackendAttachment(att.path, att);
+  return completeAttachment({ id: att.path, name: att.filename, contentType: att.content_type, ...(file ? { file } : {}) }, att.url);
 }
 
 export function createFronaAttachmentAdapter(
@@ -54,47 +74,46 @@ export function createFronaAttachmentAdapter(
   // was most visible on mobile, where attaching a photo did nothing.
   accept: "*",
 
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
-    let uploaded: Attachment;
-    try {
-      uploaded = await uploadFile(file);
-    } catch (e) {
-      // The runtime swallows adapter errors (only emitting an event), so
-      // without this the upload just vanishes — e.g. a phone photo over the
-      // 10MB cap. Surface it, then re-throw so the attachment isn't kept.
-      const detail = e instanceof Error ? e.message : "Upload failed";
-      onError?.(`Couldn't upload ${file.name}: ${detail}`);
-      throw e;
-    }
-    backendAttachmentRegistry.set(uploaded.path, uploaded);
-    return {
-      id: uploaded.path,
+  async *add({ file }: { file: File }): AsyncGenerator<PendingAttachment> {
+    const attachment: PendingAttachment = {
+      id: crypto.randomUUID(),
       type: "file",
-      name: uploaded.filename,
-      contentType: uploaded.content_type,
-      status: { type: "requires-action", reason: "composer-send" },
+      name: file.name,
+      contentType: file.type,
+      status: { type: "running", reason: "uploading", progress: 0 },
       content: [],
       file,
     };
+    yield attachment;
+    try {
+      const uploaded = await uploadFile(file);
+      backendAttachmentRegistry.set(attachment.id, uploaded);
+      yield {
+        ...attachment,
+        name: uploaded.filename,
+        contentType: uploaded.content_type,
+        status: { type: "requires-action", reason: "composer-send" },
+      };
+    } catch (e) {
+      // The attachment stays in the composer as an error so the draft isn't
+      // lost; also surface it, since a phone photo over the size cap is
+      // otherwise easy to miss.
+      const detail = e instanceof Error ? e.message : "Upload failed";
+      onError?.(`Couldn't upload ${file.name}: ${detail}`);
+      yield {
+        ...attachment,
+        status: {
+          type: "incomplete", reason: "error",
+          message: `Could not upload "${file.name}": ${detail}. Remove and reattach it to retry.`,
+        },
+      };
+    }
   },
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const isImage = attachment.contentType?.startsWith("image/");
     // Prefer the presigned URL from the upload response over a blob URL: it
     // needs no revoking (no leak) and matches what history reload will show.
-    const backend = backendAttachmentRegistry.get(attachment.id);
-    const imageUrl = backend?.url || (attachment.file ? URL.createObjectURL(attachment.file) : undefined);
-    const renderAsImage = isImage && imageUrl != null;
-    return {
-      ...attachment,
-      // Upgrade to "image" for renderable images so the completed attachment
-      // matches what convertBackendAttachment produces on history reload.
-      type: renderAsImage ? "image" : "file",
-      status: { type: "complete" },
-      content: renderAsImage
-        ? [{ type: "image", image: imageUrl }]
-        : [{ type: "text", text: `[file: ${attachment.name}]` }],
-    };
+    return completeAttachment(attachment, getBackendAttachment(attachment.id)?.url);
   },
 
   async remove(attachment) {
@@ -156,9 +175,9 @@ function stripTurnText(parts: AssistantContentPart[]): AssistantContentPart[] {
   });
 }
 
-export function convertMessage(msg: MessageResponse) {
+export function convertMessage(msg: MessageResponse, localImageFiles?: ReadonlyMap<string, File>) {
   if (msg.role === "user" || msg.role === "contact" || msg.role === "livecall") {
-    const attachments = msg.attachments?.map(convertBackendAttachment);
+    const attachments = msg.attachments?.map((att) => convertBackendAttachment(att, localImageFiles?.get(att.path)));
     return {
       id: msg.id,
       role: "user" as const,
@@ -297,7 +316,7 @@ export function convertMessage(msg: MessageResponse) {
               ...(!te.success ? { isError: true } : {}),
             } as Record<string, string | number | boolean | null>,
             argsText: JSON.stringify(te.arguments || {}),
-            result: te.result,
+            ...(te._pending ? {} : { result: te.result }),
           });
         }
       }
@@ -360,6 +379,7 @@ export interface ChatRuntimeOptions {
 
 export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOptions) {
   const toast = useToast();
+  const localImageFiles = useRef(new Map<string, File>()).current;
   const currentChatIdRef = useRef<string | null>(chatId ?? null);
   currentChatIdRef.current = chatId ?? currentChatIdRef.current;
   const onChatCreatedRef = useRef(onChatCreated);
@@ -428,31 +448,23 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
       .map((p) => p.text)
       .join("");
 
-    const attachments: Attachment[] = [];
-    const missingAttachments: string[] = [];
-    if ("attachments" in message && message.attachments) {
-      for (const att of message.attachments) {
-        const backend = backendAttachmentRegistry.get(att.id);
-        if (backend) {
-          attachments.push(backend);
-        } else {
-          // Registry miss (e.g. page reload while a file was staged). Do NOT
-          // throw here: onNew is the runtime's append callback, and rejecting
-          // it makes assistant-ui roll back the optimistic message, which
-          // corrupts its internal tap client list ("Index out of bounds").
-          // Record the miss and surface it non-fatally instead of crashing.
-          missingAttachments.push(att.name ?? att.id);
-        }
-      }
-      if (missingAttachments.length > 0) {
-        toast.error(
-          `Couldn't attach ${missingAttachments.join(", ")} — please re-attach and resend.`,
-        );
-      }
+    let attachments: Attachment[];
+    try {
+      attachments = getBackendAttachments(message.attachments ?? []);
+    } catch (error) {
+      store.failMessage(messageProcessingError(error));
+      // This control error restores the installed runtime's unsent composer draft.
+      throw new MessageNotSentError(error instanceof Error ? error.message : "Attachment unavailable");
     }
 
     let sendChatId = currentChatIdRef.current;
     if (!sendChatId && !onChatCreatedRef.current) return;
+    message.attachments?.forEach((attachment, index) => {
+      const backend = attachments[index];
+      if (!backend.url?.trim() && backend.content_type.startsWith("image/") && attachment.file?.type.startsWith("image/")) {
+        localImageFiles.set(backend.path, attachment.file);
+      }
+    });
     store.addUserMessage(text, attachments.length ? attachments : undefined);
 
     try {
@@ -485,7 +497,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     } catch (error) {
       store.failMessage(messageProcessingError(error));
     }
-  }, [agentId, store, toast]);
+  }, [agentId, store, localImageFiles]);
 
   const onCancel = useCallback(async () => {
     const id = currentChatIdRef.current;
@@ -559,7 +571,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
   const adapter: ExternalStoreAdapter<MessageResponse> = useMemo(() => ({
     messages: filteredMessages,
     isRunning: storeSnapshot.isRunning,
-    convertMessage: (msg: MessageResponse) => convertMessage(msg) ?? {
+    convertMessage: (msg: MessageResponse) => convertMessage(msg, localImageFiles) ?? {
       id: msg.id,
       role: "assistant" as const,
       content: [],
@@ -574,7 +586,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     adapters: {
       attachments: attachmentAdapter,
     },
-  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store, attachmentAdapter]);
+  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store, attachmentAdapter, localImageFiles]);
 
   const runtime = useExternalStoreRuntime(adapter);
 
@@ -587,7 +599,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     runtime.thread.append({
       role: "user",
       content: [{ type: "text", text: content }],
-      attachments: attachments?.map(convertBackendAttachment),
+      attachments: attachments?.map((attachment) => convertBackendAttachment(attachment)),
     });
   }, [runtime]);
 

@@ -1,3 +1,5 @@
+use std::io;
+use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -7,12 +9,19 @@ use crate::core::error::AppError;
 use crate::storage::service::StorageService;
 use frona_derive::agent_tool;
 
+use super::super::image::{is_supported_image, prepare_image};
 use super::super::sandbox::SandboxManager;
-use super::super::{ImageData, InferenceContext, ToolOutput, str_list_arg};
+use super::super::{InferenceContext, ToolOutput, str_list_arg};
 
 const MAX_LINES: usize = 2000;
 const MAX_BYTES: usize = 50 * 1024;
-const IMAGE_MAX_DIM: u32 = 2000;
+
+// Scan only a small directory before sorting. If it exceeds either bound,
+// omit the listing rather than display an unstable filesystem-order subset.
+const MAX_DIRECTORY_ENTRIES: usize = 128;
+const MAX_DIRECTORY_NAME_BYTES: usize = 16 * 1024;
+const MAX_DIRECTORY_DISPLAY_ENTRIES: usize = 50;
+const MAX_DIRECTORY_OUTPUT_BYTES: usize = 8 * 1024;
 /// Pages returned per `render` call. Each page is a full image in the model's
 /// context, so the agent pages through a long PDF rather than taking it all.
 const PDF_RENDER_MAX_PAGES: u32 = 5;
@@ -121,24 +130,17 @@ impl ReadTool {
                 resolved.display(),
             )));
         }
-        if !tokio::fs::try_exists(&resolved).await.unwrap_or(false) {
-            return Ok(ToolOutput::error(format!("file not found: {}", path_arg)));
-        }
-
-        if tokio::fs::metadata(&resolved)
-            .await
-            .is_ok_and(|m| m.is_dir())
-        {
-            return Ok(ToolOutput::error(
-                directory_message(&resolved, path_arg).await,
-            ));
+        let metadata = match tokio::fs::metadata(&resolved).await {
+            Ok(metadata) => metadata,
+            Err(error) => return read_error(path_arg, error),
+        };
+        if metadata.is_dir() {
+            return read_directory(&resolved).await;
         }
 
         let bytes = match tokio::fs::read(&resolved).await {
-            Ok(b) => b,
-            Err(e) => {
-                return Ok(ToolOutput::error(format!("could not read {path_arg}: {e}")));
-            }
+            Ok(bytes) => bytes,
+            Err(error) => return read_error(path_arg, error),
         };
         let size = bytes.len();
 
@@ -169,83 +171,82 @@ impl ReadTool {
     }
 }
 
-/// Explain that `path_arg` is a directory and list its entries, so the agent
-/// can pick a file instead of retrying the same path.
-async fn directory_message(resolved: &std::path::Path, path_arg: &str) -> String {
-    const MAX_ENTRIES: usize = 200;
-    let mut names = Vec::new();
-    if let Ok(mut rd) = tokio::fs::read_dir(resolved).await {
-        while let Ok(Some(entry)) = rd.next_entry().await {
-            let is_dir = entry.file_type().await.is_ok_and(|t| t.is_dir());
-            let name = entry.file_name().to_string_lossy().into_owned();
-            names.push(if is_dir { format!("{name}/") } else { name });
+fn read_error(path: &str, error: io::Error) -> Result<ToolOutput, AppError> {
+    match error.kind() {
+        io::ErrorKind::NotFound => Ok(ToolOutput::error(format!("file not found: {path}"))),
+        io::ErrorKind::PermissionDenied
+        | io::ErrorKind::InvalidInput
+        | io::ErrorKind::InvalidData
+        | io::ErrorKind::NotADirectory
+        | io::ErrorKind::IsADirectory => {
+            Ok(ToolOutput::error(format!("Could not read {path}: {error}")))
         }
+        _ => Err(AppError::Internal(format!("read {path}: {error}"))),
+    }
+}
+
+async fn read_directory(path: &Path) -> Result<ToolOutput, AppError> {
+    const GUIDANCE: &str =
+        "Read got a directory. Choose a file to read; directory names end with '/'.";
+    const OMITTED: &str = "[Listing omitted: directory exceeds the scan limit (128 entries or 16 KiB of names). Use Glob with a narrower pattern to find a file.]";
+    const TRUNCATED: &str =
+        "\n[Listing truncated. Use Glob with a narrower pattern to find a file.]";
+
+    let mut directory = match tokio::fs::read_dir(path).await {
+        Ok(directory) => directory,
+        Err(error) => return read_error("directory (could not list entries)", error),
+    };
+    let mut names = Vec::new();
+    let mut name_bytes = 0;
+    loop {
+        let entry = match directory.next_entry().await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => break,
+            Err(error) => return read_error("directory (could not list entries)", error),
+        };
+        if names.len() == MAX_DIRECTORY_ENTRIES {
+            return Ok(ToolOutput::error(format!("{GUIDANCE}\n{OMITTED}")));
+        }
+        let mut name = entry.file_name().to_string_lossy().into_owned();
+        let file_type = match entry.file_type().await {
+            Ok(file_type) => file_type,
+            Err(error) => return read_error("directory (could not list entries)", error),
+        };
+        if file_type.is_dir() {
+            name.push('/');
+        }
+        name_bytes += name.len();
+        if name_bytes > MAX_DIRECTORY_NAME_BYTES {
+            return Ok(ToolOutput::error(format!("{GUIDANCE}\n{OMITTED}")));
+        }
+        names.push(name);
+    }
+    if names.is_empty() {
+        return Ok(ToolOutput::error(format!(
+            "{GUIDANCE}\n[Directory is empty.]"
+        )));
     }
     names.sort();
-    let total = names.len();
-    names.truncate(MAX_ENTRIES);
-    let mut msg = format!("{path_arg} is a directory, not a file. Read a file inside it");
-    if names.is_empty() {
-        msg.push_str(" (the directory is empty).");
-    } else {
-        msg.push_str(":\n");
-        msg.push_str(&names.join("\n"));
-        if total > MAX_ENTRIES {
-            msg.push_str(&format!("\n... and {} more", total - MAX_ENTRIES));
+    let mut output = GUIDANCE.to_string();
+    for (index, name) in names.iter().enumerate() {
+        // Quote/escape names so embedded newlines cannot masquerade as entries.
+        let line = format!("\n{name:?}");
+        if index == MAX_DIRECTORY_DISPLAY_ENTRIES
+            || output.len() + line.len() + TRUNCATED.len() > MAX_DIRECTORY_OUTPUT_BYTES
+        {
+            output.push_str(TRUNCATED);
+            break;
         }
+        output.push_str(&line);
     }
-    msg
-}
-
-pub(crate) fn is_supported_image(mime: &str) -> bool {
-    matches!(
-        mime,
-        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-    )
-}
-
-/// Decode an image and shrink it to fit within `IMAGE_MAX_DIM` on each side,
-/// ready to hand to a model. Images already within bounds are passed through
-/// untouched. The error is a message for the agent, naming `path_arg`.
-pub(crate) fn prepare_image(bytes: &[u8], mime: &str, path_arg: &str) -> Result<ImageData, String> {
-    let img = image::load_from_memory(bytes)
-        .map_err(|_| format!("could not decode image at {} ({})", path_arg, mime))?;
-    let (w, h) = (img.width(), img.height());
-    if w <= IMAGE_MAX_DIM && h <= IMAGE_MAX_DIM {
-        return Ok(ImageData {
-            bytes: bytes.to_vec(),
-            media_type: mime.to_string(),
-        });
-    }
-    let resized = img.resize(
-        IMAGE_MAX_DIM,
-        IMAGE_MAX_DIM,
-        image::imageops::FilterType::Triangle,
-    );
-    let mut buf = std::io::Cursor::new(Vec::new());
-    let fmt = match mime {
-        "image/jpeg" => image::ImageFormat::Jpeg,
-        "image/gif" => image::ImageFormat::Gif,
-        "image/webp" => image::ImageFormat::WebP,
-        _ => image::ImageFormat::Png,
-    };
-    resized
-        .write_to(&mut buf, fmt)
-        .map_err(|_| format!("could not re-encode image at {}", path_arg))?;
-    Ok(ImageData {
-        bytes: buf.into_inner(),
-        media_type: mime.to_string(),
-    })
+    Ok(ToolOutput::error(output))
 }
 
 fn read_image(bytes: &[u8], mime: &str, path_arg: &str) -> Result<ToolOutput, AppError> {
-    match prepare_image(bytes, mime, path_arg) {
-        Ok(img) => Ok(ToolOutput::mixed(
-            format!("Read image file [{}]", img.media_type),
-            vec![img],
-        )),
-        Err(msg) => Ok(ToolOutput::error(msg)),
-    }
+    Ok(match prepare_image(bytes, mime) {
+        Ok(image) => ToolOutput::mixed(format!("Read image file [{mime}]"), vec![image]),
+        Err(reason) => ToolOutput::error(format!("{reason} at {path_arg} ({mime})")),
+    })
 }
 
 /// Parse a 1-indexed page spec ("3" or "3-5") into an inclusive range, clamped
@@ -363,9 +364,9 @@ async fn render_pdf(
         let Ok(bytes) = std::fs::read(file) else {
             continue;
         };
-        match prepare_image(&bytes, "image/png", path_arg) {
+        match prepare_image(&bytes, "image/png") {
             Ok(img) => images.push(img),
-            Err(msg) => return ToolOutput::error(msg),
+            Err(reason) => return ToolOutput::error(format!("{reason} at {path_arg}")),
         }
     }
     let shown_last = first + images.len() as u32 - 1;
@@ -454,6 +455,14 @@ fn read_text(text: &str, offset: Option<usize>, limit: Option<usize>) -> ToolOut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unexpected_io_failures_remain_internal() {
+        assert!(matches!(
+            read_error("file", io::Error::other("unexpected I/O failure")),
+            Err(AppError::Internal(_))
+        ));
+    }
 
     #[test]
     fn read_text_no_truncation() {

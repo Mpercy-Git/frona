@@ -15,6 +15,7 @@ import { InlineCode } from "./inline-code";
 import { displayToolName } from "./views/default";
 import { pickView, TOOL_VIEWS_DEFAULT_EXPANDED } from "./views";
 import { SafeToolView } from "./views/safe-tool-view";
+import { isBrowserTool } from "./browser-tool-state";
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
@@ -71,10 +72,16 @@ function TimelineDot({
 }
 
 const ToolFallbackImpl: ToolCallMessagePartComponent = (props) => {
-  const { toolName, toolCallId, args, result, status } = props;
   const timeline = useToolTimeline();
+  const browserCall = isBrowserTool(props.toolName) ? timeline?.browserCalls.at(-1) : undefined;
+  const currentProps = browserCall
+    ? { ...props, ...browserCall, status: timeline?.browserStatus ?? props.status }
+    : props;
+  const { toolName, args, result, status } = currentProps;
+  // Keep the first call as the mounted row while its content follows the latest call.
+  const toolCallId = props.toolCallId;
   const [isOpen, setIsOpen] = useState(
-    () => TOOL_VIEWS_DEFAULT_EXPANDED[toolName]?.(args) ?? false,
+    () => isBrowserTool(toolName) || (TOOL_VIEWS_DEFAULT_EXPANDED[toolName]?.(args) ?? false),
   );
 
   if (timeline && !timeline.isVisible(toolCallId)) return null;
@@ -105,7 +112,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = (props) => {
       : null;
 
   const viewProps = {
-    ...props,
+    ...currentProps,
     status: effectiveStatus,
     isExpanded: isOpen,
     onToggle: () => setIsOpen((v) => !v),

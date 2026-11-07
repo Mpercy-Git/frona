@@ -1,8 +1,8 @@
 //! Lifecycle integration test for `McpServerService`:
 //! install → update → uninstall, exercising grant verification, binding
 //! persistence, binding replacement on update, and grant+binding sweep on
-//! uninstall. Does not exercise `start` (which requires spawning a real
-//! sandboxed child process).
+//! uninstall. The ignored environment regression also starts the existing
+//! fake-mcp-server binary as a real child process.
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -228,7 +228,7 @@ async fn build_test_harness_with(
     vault.sync_config_connections().await.unwrap();
 
     let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(
-        true, // sandbox_disabled: we never actually start servers in these tests
+        true, // sandbox_disabled: real process tests exercise the unsandboxed driver
         Arc::new(
             frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
                 80.0, 80.0, 90.0, 90.0,
@@ -312,6 +312,17 @@ async fn build_test_harness_with(
         900,
         604_800,
     );
+    let agent_service = frona::agent::service::AgentService::new(
+        SurrealRepo::new(db.clone()),
+        &Default::default(),
+        Arc::new(
+            frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                80.0, 80.0, 90.0, 90.0,
+            ),
+        ),
+        policy_service.clone(),
+        user_service.clone(),
+    );
     let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
 
     let service = McpServerService::new(
@@ -324,6 +335,7 @@ async fn build_test_harness_with(
         token_service,
         keypair_service,
         user_service,
+        agent_service,
         policy_service,
         storage.clone(),
         "http://localhost".to_string(),

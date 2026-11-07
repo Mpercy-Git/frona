@@ -37,12 +37,34 @@ fn defaults_are_sensible() {
     assert!(config.server.cors_origins.is_none());
     assert!(config.server.base_url.is_none());
     assert_eq!(config.server.max_body_size_bytes, 104_857_600);
+    assert_eq!(config.server.max_upload_file_size_bytes, 104_857_600);
+    assert_eq!(config.server.max_upload_request_size_bytes(), 105_906_176);
     assert!(config.search.provider.is_none());
     assert!(config.search.searxng_base_url.is_none());
     assert_eq!(config.inference.max_tool_turns, 200);
     assert_eq!(config.inference.default_max_tokens, 8192);
     assert_eq!(config.inference.compaction_trigger_pct, 80);
     assert_eq!(config.inference.history_truncation_pct, 90);
+}
+
+#[test]
+fn upload_size_config_defaults_overrides_and_saturates() {
+    let default: Config = serde_json::from_value(serde_json::json!({"server": {}})).unwrap();
+    assert_eq!(default.server.max_upload_file_size_bytes, 100 * 1024 * 1024);
+    let configured: Config = serde_json::from_value(serde_json::json!({
+        "server": {"max_upload_file_size_bytes": 12345}
+    }))
+    .unwrap();
+    assert_eq!(configured.server.max_upload_file_size_bytes, 12345);
+    assert_eq!(
+        configured.server.max_upload_request_size_bytes(),
+        12345 + 1024 * 1024
+    );
+    let maximum = ServerConfig {
+        max_upload_file_size_bytes: usize::MAX,
+        ..Default::default()
+    };
+    assert_eq!(maximum.max_upload_request_size_bytes(), usize::MAX);
 }
 
 #[test]
@@ -191,12 +213,66 @@ fn auth_allow_registration_defaults_to_true() {
 }
 
 #[test]
-fn browser_config_http_base_url() {
+fn browser_urls_preserve_paths_and_queries_and_encode_tokens() {
     let config = BrowserConfig {
-        ws_url: "ws://localhost:3333".into(),
+        ws_url: "wss://localhost:3333/prefix/?region=a%26b&token=old&token=duplicate".into(),
+        api_token: Some("secret +/&?#=é".into()),
         ..Default::default()
     };
-    assert_eq!(config.http_base_url(), "http://localhost:3333");
+    let ws = config.websocket_url(&[]).unwrap();
+    let query: Vec<_> = ws.query_pairs().collect();
+    assert_eq!(
+        query,
+        [
+            ("region".into(), "a&b".into()),
+            ("token".into(), "secret +/&?#=é".into())
+        ]
+    );
+    let http = config
+        .http_url(&["debugger", ""], config.api_token.as_deref(), &[])
+        .unwrap();
+    assert_eq!(http.scheme(), "https");
+    assert_eq!(http.path(), "/prefix/debugger/");
+    assert_eq!(http.query(), ws.query());
+    let kill = config
+        .http_url(&["kill", "id/with?reserved"], Some(config.api_token()), &[])
+        .unwrap();
+    assert_eq!(kill.path(), "/prefix/kill/id%2Fwith%3Freserved");
+}
+
+#[test]
+fn browser_urls_keep_tokenless_sessions_and_admin_fallback() {
+    let mut config = BrowserConfig {
+        ws_url: "ws://localhost:3333?region=test".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        config.websocket_url(&[]).unwrap().query(),
+        Some("region=test")
+    );
+    let admin = config
+        .http_url(&["sessions"], Some(config.api_token()), &[])
+        .unwrap();
+    assert_eq!(admin.path(), "/sessions");
+    assert_eq!(
+        admin
+            .query_pairs()
+            .find(|(key, _)| key == "token")
+            .unwrap()
+            .1,
+        "frona"
+    );
+    config.ws_url.push_str("&token=existing%2Btoken");
+    assert_eq!(
+        config
+            .websocket_url(&[])
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "token")
+            .unwrap()
+            .1,
+        "existing+token"
+    );
 }
 
 #[test]

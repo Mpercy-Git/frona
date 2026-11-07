@@ -10,6 +10,8 @@ path = "src/lib.rs"
 [dependencies]
 chromiumoxide = { version = "0.9", default-features = false, features = ["bytes"] }
 html2md = "0.2"
+psl = "2"
+url = "2"
 tokio = { workspace = true }
 futures = "0.3"
 serde = { workspace = true }
@@ -17,6 +19,7 @@ serde_json = { workspace = true }
 serde_yaml = "0.9"
 similar = "2"
 thiserror = { workspace = true }
+tungstenite = { version = "0.28", default-features = false }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -1,14 +1,13 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use axum::body::Body;
-use backon::{ExponentialBuilder, Retryable};
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::core::config::BrowserConfig;
 use crate::core::error::AppError;
@@ -20,6 +19,8 @@ const BROWSERLESS_SESSION_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
 /// Self-evict before Browserless's hard limit so the next request rebuilds
 /// cleanly instead of hitting a forced close mid-op.
 const SELF_EVICT_MARGIN: Duration = Duration::from_secs(60);
+const CONNECT_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(100), Duration::from_millis(200)];
 /// The startup sweep runs as soon as the server boots, which under
 /// `docker compose up` is while Browserless is still opening its HTTP
 /// listener. Retry connect errors on the admin API so that race is absorbed
@@ -29,11 +30,20 @@ const SESSION_LIST_RETRY_MIN_DELAY: Duration = Duration::from_millis(500);
 const SESSION_LIST_RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
 
 #[derive(serde::Deserialize)]
-struct BrowserlessSession {
+#[allow(dead_code)] // read by the debugger-takeover routes, which this fork does not carry
+pub(crate) struct BrowserlessSession {
     #[serde(rename = "browserId")]
     browser_id: String,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(rename = "browserWSEndpoint", default)]
+    pub browser_ws_endpoint: Option<String>,
     #[serde(rename = "type")]
-    session_type: Option<String>,
+    pub session_type: Option<String>,
     #[serde(rename = "userDataDir", default)]
     user_data_dir: Option<String>,
 }
@@ -45,13 +55,10 @@ type LiveViewers = Arc<std::sync::Mutex<HashMap<String, (u64, Arc<Notify>)>>>;
 pub struct BrowserSessionManager {
     config: Option<BrowserConfig>,
     sessions: Arc<RwLock<HashMap<String, BrowserConnection>>>,
-    /// One lock per `(user, provider)` profile. Without this, two requests
-    /// racing to open the same profile can both miss the session cache and
-    /// both try to launch Chrome against the same `--user-data-dir` at once;
-    /// Browserless accepts only the first, and the second fails every retry
-    /// with "browser already running" since the winner is a healthy session
-    /// that never dies during the retry window.
-    connect_locks: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// One lock per `(user, provider)` profile, pruned once no request holds it.
+    /// Serializes connect/close so racing requests cannot launch Chrome twice
+    /// against the same `--user-data-dir`.
+    profile_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     /// The live viewer currently attached to each profile. A tab has one
     /// screencast, so a second viewer takes over from the first instead of the
     /// two stopping each other's stream.
@@ -83,7 +90,7 @@ impl BrowserSessionManager {
         Self {
             config,
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            connect_locks: Arc::new(RwLock::new(HashMap::new())),
+            profile_locks: Arc::new(Mutex::new(HashMap::new())),
             live_viewers: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_live_viewer: Arc::new(AtomicU64::new(0)),
         }
@@ -117,46 +124,57 @@ impl BrowserSessionManager {
         }
     }
 
-    async fn lock_for(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
-        if let Some(lock) = self.connect_locks.read().await.get(key) {
-            return lock.clone();
-        }
-        self.connect_locks
-            .write()
-            .await
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
-    }
-
     pub fn config(&self) -> Option<&BrowserConfig> {
         self.config.as_ref()
+    }
+
+    /// Viewing a preview must never launch or reconnect a browser.
+    pub async fn existing_connection(
+        &self,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) -> Option<BrowserConnection> {
+        self.sessions
+            .read()
+            .await
+            .get(&Self::profile_key(user_handle, provider))
+            .filter(|connection| connection.is_alive())
+            .cloned()
     }
 
     fn profile_key(user_handle: &crate::core::Handle, provider: &str) -> String {
         format!("{user_handle}/{provider}")
     }
 
-    /// Inserts `/` before the query string — browserless v2 returns HTTP 400 without it.
+    async fn profile_lock(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.profile_locks.lock().await;
+        // Keep only locks still owned by an active connection/close request.
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key.to_string(), Arc::downgrade(&lock));
+        lock
+    }
+
     fn ws_url_for_profile(
         config: &BrowserConfig,
         user_handle: &crate::core::Handle,
         provider: &str,
-    ) -> String {
-        let user_data_dir = config.profile_path(user_handle, provider);
-        let base = config.ws_url.trim_end_matches('/');
-        let mut url = format!(
-            "{}/?--user-data-dir={}&timeout={}",
-            base,
-            user_data_dir.display(),
-            BROWSERLESS_SESSION_TIMEOUT.as_millis()
-        );
-        // Browserless >= 2.57 can enforce a token on every route (STRICT_TOKEN_USE).
-        if let Some(token) = config.api_token.as_deref() {
-            url.push_str("&token=");
-            url.push_str(token);
-        }
-        url
+    ) -> Result<url::Url, AppError> {
+        config
+            .websocket_url(&[
+                (
+                    "--user-data-dir",
+                    &config.profile_path(user_handle, provider).to_string_lossy(),
+                ),
+                (
+                    "timeout",
+                    &BROWSERLESS_SESSION_TIMEOUT.as_millis().to_string(),
+                ),
+            ])
+            .map_err(|_| AppError::Browser("Invalid Browserless URL".into()))
     }
 
     /// Builds the exact WS URL a real session would use (including the
@@ -168,8 +186,14 @@ impl BrowserSessionManager {
         config: &BrowserConfig,
         timeout: Duration,
     ) -> Result<(), frona_browser::Error> {
-        let ws_url = Self::ws_url_for_profile(config, user_handle, "connection-test");
-        let conn = BrowserConnection::connect(&ws_url, timeout, timeout).await?;
+        let ws_url =
+            Self::ws_url_for_profile(config, user_handle, "connection-test").map_err(|error| {
+                frona_browser::Error::ToolFailed {
+                    tool: "browser_connect",
+                    message: error.to_string(),
+                }
+            })?;
+        let conn = BrowserConnection::connect(ws_url.as_str(), timeout, timeout).await?;
         conn.disconnect().await
     }
 
@@ -185,29 +209,31 @@ impl BrowserSessionManager {
         self.kill_browserless_sessions_for_profile(user_handle, provider)
             .await;
 
-        let ws_url = Self::ws_url_for_profile(config, user_handle, provider);
-        tracing::debug!(ws_url = %ws_url, browserless_ws_url = %config.ws_url, "Connecting to browser");
+        let ws_url = Self::ws_url_for_profile(config, user_handle, provider)?;
+        tracing::debug!("Connecting to browser");
 
         let timeout = Duration::from_millis(config.connection_timeout_ms);
         let lifetime = BROWSERLESS_SESSION_TIMEOUT.saturating_sub(SELF_EVICT_MARGIN);
-        // Browserless can still be booting its own Chromium/HTTP listener
-        // right after the container starts (e.g. fresh `docker compose up`),
-        // which surfaces here as a transient connection-refused. A short
-        // retry absorbs that race instead of failing the user's request.
-        (|| BrowserConnection::connect(&ws_url, timeout, lifetime))
-            .retry(
-                ExponentialBuilder::default()
-                    .with_max_times(4)
-                    .with_min_delay(Duration::from_millis(500))
-                    .with_max_delay(Duration::from_secs(5)),
-            )
-            .sleep(tokio::time::sleep)
-            .when(|e| e.is_disconnect())
-            .notify(|e, dur| {
-                tracing::warn!(error = %e, delay = ?dur, "Browser connect failed, retrying");
-            })
-            .await
-            .map_err(|e| AppError::Browser(format!("Failed to connect to browser: {e}")))
+        // Browserless can still be booting right after the container starts, which
+        // surfaces as a transient connect error; a short retry absorbs that race.
+        let mut retries = CONNECT_RETRY_DELAYS.into_iter();
+        loop {
+            match BrowserConnection::connect(ws_url.as_str(), timeout, lifetime).await {
+                Ok(connection) => return Ok(connection),
+                Err(error) => {
+                    if error.is_retryable_connect_error()
+                        && let Some(delay) = retries.next()
+                    {
+                        tracing::warn!(error = %error, delay = ?delay, "Browser connect failed, retrying");
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(AppError::Browser(format!(
+                        "Failed to connect to browser: {error}"
+                    )));
+                }
+            }
+        }
     }
 
     pub async fn connection(
@@ -228,7 +254,7 @@ impl BrowserSessionManager {
         // concurrent callers for the same (user, provider) queue behind the
         // first connect attempt and reuse its result, instead of racing each
         // other to launch Chrome against the same `--user-data-dir`.
-        let lock = self.lock_for(&key).await;
+        let lock = self.profile_lock(&key).await;
         let _guard = lock.lock().await;
 
         if let Some(conn) = self.sessions.read().await.get(&key).cloned() {
@@ -247,16 +273,6 @@ impl BrowserSessionManager {
         Ok(conn)
     }
 
-    pub async fn reconnect(
-        &self,
-        user_handle: &crate::core::Handle,
-        provider: &str,
-    ) -> Result<BrowserConnection, AppError> {
-        let key = Self::profile_key(user_handle, provider);
-        self.sessions.write().await.remove(&key);
-        self.connection(user_handle, provider).await
-    }
-
     fn admin_http_client() -> Client<hyper_util::client::legacy::connect::HttpConnector, Body> {
         Client::builder(TokioExecutor::new()).build_http::<Body>()
     }
@@ -265,14 +281,19 @@ impl BrowserSessionManager {
         let Some(config) = self.config.as_ref() else {
             return vec![];
         };
-        let http_base = config.http_base_url();
         let client = Self::admin_http_client();
 
-        let sessions_url = format!("{http_base}/sessions?token={}", config.api_token());
+        let sessions_url = match config.http_url(&["sessions"], Some(config.api_token()), &[]) {
+            Ok(url) => url,
+            Err(_) => {
+                tracing::warn!("Invalid Browserless sessions URL");
+                return vec![];
+            }
+        };
         let mut delay = SESSION_LIST_RETRY_MIN_DELAY;
         let mut retries_left = SESSION_LIST_CONNECT_RETRIES;
         let resp = loop {
-            let req = match hyper::Request::get(&sessions_url).body(Body::empty()) {
+            let req = match hyper::Request::get(sessions_url.as_str()).body(Body::empty()) {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!("Failed to build sessions list request: {e}");
@@ -299,7 +320,10 @@ impl BrowserSessionManager {
             }
         };
 
-        let body = match resp.into_body().collect().await {
+        let body = match http_body_util::Limited::new(resp.into_body(), 4 << 20)
+            .collect()
+            .await
+        {
             Ok(b) => b.to_bytes(),
             Err(e) => {
                 tracing::warn!("Failed to read sessions response: {e}");
@@ -309,11 +333,40 @@ impl BrowserSessionManager {
 
         match serde_json::from_slice(&body) {
             Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("Failed to parse sessions response: {e}");
+            Err(_) => {
+                tracing::warn!("Failed to parse Browserless sessions response");
                 vec![]
             }
         }
+    }
+
+    /// Only the exact configured profile may be discovered or attached by its owner.
+    #[allow(dead_code)] // used by the debugger-takeover routes, which this fork does not carry
+    pub(crate) async fn debugger_sessions(
+        &self,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) -> Result<Vec<BrowserlessSession>, AppError> {
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| AppError::Browser("Browser is not configured".into()))?;
+        let expected = config.profile_path(user_handle, provider);
+        let sessions = tokio::time::timeout(
+            Duration::from_millis(config.connection_timeout_ms),
+            self.list_browserless_sessions(),
+        )
+        .await
+        .map_err(|_| AppError::Browser("Browserless session discovery timed out".into()))?;
+        Ok(sessions
+            .into_iter()
+            .filter(|session| {
+                session
+                    .user_data_dir
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path) == expected)
+            })
+            .collect())
     }
 
     async fn kill_browserless_session_ids(&self, browser_ids: &[String]) {
@@ -323,12 +376,17 @@ impl BrowserSessionManager {
         let Some(config) = self.config.as_ref() else {
             return;
         };
-        let http_base = config.http_base_url();
         let client = Self::admin_http_client();
 
         for id in browser_ids {
-            let kill_url = format!("{http_base}/kill/{id}?token={}", config.api_token());
-            let req = match hyper::Request::get(&kill_url).body(Body::empty()) {
+            let kill_url = match config.http_url(&["kill", id], Some(config.api_token()), &[]) {
+                Ok(url) => url,
+                Err(_) => {
+                    tracing::warn!("Invalid Browserless kill URL");
+                    continue;
+                }
+            };
+            let req = match hyper::Request::get(kill_url.as_str()).body(Body::empty()) {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!("Failed to build kill request: {e}");
@@ -389,8 +447,10 @@ impl BrowserSessionManager {
         provider: &str,
     ) -> Result<(), AppError> {
         let key = Self::profile_key(user_handle, provider);
-        let mut sessions = self.sessions.write().await;
-        if let Some(conn) = sessions.remove(&key) {
+        let lock = self.profile_lock(&key).await;
+        let _guard = lock.lock().await;
+        let connection = self.sessions.write().await.remove(&key);
+        if let Some(conn) = connection {
             conn.disconnect()
                 .await
                 .map_err(|e| AppError::Browser(format!("Failed to close session: {e}")))?;
@@ -403,7 +463,7 @@ impl BrowserSessionManager {
 /// chromiumoxide's `request_timeout` bounds individual CDP calls.
 pub(crate) async fn run_with_reconnect<T, F, Fut>(
     mgr: &BrowserSessionManager,
-    user_handle: &crate::core::Handle,
+    ctx: &crate::tool::InferenceContext,
     provider: &str,
     op: F,
 ) -> Result<T, AppError>
@@ -411,15 +471,26 @@ where
     F: Fn(BrowserConnection) -> Fut,
     Fut: std::future::Future<Output = Result<T, frona_browser::Error>>,
 {
-    let conn = mgr.connection(user_handle, provider).await?;
-    match op(conn).await {
-        Ok(v) => Ok(v),
-        Err(e) if e.is_disconnect() => {
-            tracing::warn!("Browser session disconnected, reconnecting");
-            let conn = mgr.reconnect(user_handle, provider).await?;
-            op(conn).await.map_err(|e| AppError::Browser(e.to_string()))
+    let operation = async {
+        let conn = mgr.connection(&ctx.user.handle, provider).await?;
+        match op(conn.clone()).await {
+            Ok(value) => Ok(value),
+            Err(error) if error.is_disconnect() => {
+                tracing::warn!("Browser session disconnected, reconnecting");
+                // Invalidate the failed instance, not a replacement another caller created.
+                conn.mark_dead();
+                let conn = mgr.connection(&ctx.user.handle, provider).await?;
+                op(conn)
+                    .await
+                    .map_err(|error| AppError::Browser(error.to_string()))
+            }
+            Err(error) => Err(AppError::Browser(error.to_string())),
         }
-        Err(e) => Err(AppError::Browser(e.to_string())),
+    };
+    tokio::select! {
+        biased;
+        _ = ctx.cancel_token.cancelled() => Err(AppError::Tool("Browser operation cancelled".into())),
+        result = operation => result,
     }
 }
 
@@ -442,10 +513,11 @@ mod tests {
             &cfg("ws://browserless:3333"),
             &crate::handle!("alice"),
             "openai",
-        );
+        )
+        .unwrap();
         assert_eq!(
-            url,
-            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"
+            url.as_str(),
+            "ws://browserless:3333/?--user-data-dir=%2Fprofiles%2Falice%2Fopenai&timeout=86400000"
         );
     }
 
@@ -455,10 +527,11 @@ mod tests {
             &cfg("ws://browserless:3333/"),
             &crate::handle!("alice"),
             "openai",
-        );
+        )
+        .unwrap();
         assert_eq!(
-            url,
-            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"
+            url.as_str(),
+            "ws://browserless:3333/?--user-data-dir=%2Fprofiles%2Falice%2Fopenai&timeout=86400000"
         );
     }
 
@@ -467,11 +540,26 @@ mod tests {
         let mut config = cfg("ws://browserless:3333");
         config.api_token = Some("secret".into());
         let url =
-            BrowserSessionManager::ws_url_for_profile(&config, &crate::handle!("alice"), "openai");
+            BrowserSessionManager::ws_url_for_profile(&config, &crate::handle!("alice"), "openai")
+                .unwrap();
         assert_eq!(
-            url,
-            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000&token=secret"
+            url.as_str(),
+            "ws://browserless:3333/?token=secret&--user-data-dir=%2Fprofiles%2Falice%2Fopenai&timeout=86400000"
         );
+    }
+
+    #[tokio::test]
+    async fn historical_profile_locks_are_pruned() {
+        let manager = BrowserSessionManager::new(None);
+        let active = manager.profile_lock("active").await;
+        for i in 0..100 {
+            drop(manager.profile_lock(&format!("profile{i}")).await);
+            assert!(manager.profile_locks.lock().await.len() <= 2);
+        }
+        assert!(Arc::ptr_eq(&active, &manager.profile_lock("active").await));
+        drop(active);
+        drop(manager.profile_lock("last").await);
+        assert_eq!(manager.profile_locks.lock().await.len(), 1);
     }
 
     #[tokio::test]

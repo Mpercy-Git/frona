@@ -7,7 +7,7 @@ use crate::core::config::Config;
 use crate::core::error::AppError;
 
 use super::models::{FileEntry, SearchTarget};
-use super::path::{Namespace, VirtualPath, validate_no_traversal};
+use super::path::{Namespace, VirtualPath, resolve_filesystem_path, validate_no_traversal};
 use super::workspace::Workspace;
 
 /// Per-user state at `{data_dir}/users/{user_handle}/{subsystem}/...`;
@@ -289,8 +289,15 @@ impl StorageService {
 
 fn search_dir(dir: &Path, root: &Path, query: &str, source: &str) -> Vec<FileEntry> {
     let mut results = Vec::new();
-
-    let walker = ignore::WalkBuilder::new(dir)
+    // The route captures the canonical authorization root. Keep it fixed if
+    // the scope or a child path is later replaced by an outward symlink.
+    let Ok(dir) = resolve_filesystem_path(dir) else {
+        return results;
+    };
+    if !dir.starts_with(root) {
+        return results;
+    }
+    let walker = ignore::WalkBuilder::new(&dir)
         .hidden(true)
         .git_ignore(true)
         .git_global(false)
@@ -298,7 +305,7 @@ fn search_dir(dir: &Path, root: &Path, query: &str, source: &str) -> Vec<FileEnt
         .build();
 
     for entry in walker.flatten() {
-        if entry.path() == dir {
+        if entry.path() == dir.as_path() {
             continue;
         }
 
@@ -308,7 +315,16 @@ fn search_dir(dir: &Path, root: &Path, query: &str, source: &str) -> Vec<FileEnt
         }
 
         let path = entry.path();
-        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+        let Ok(resolved) = resolve_filesystem_path(path) else {
+            continue;
+        };
+        if !resolved.starts_with(root) {
+            continue;
+        }
+        let Ok(metadata) = std::fs::metadata(&resolved) else {
+            continue;
+        };
+        let is_dir = metadata.is_dir();
         let rel = path
             .strip_prefix(root)
             .unwrap_or(path)
@@ -327,20 +343,15 @@ fn search_dir(dir: &Path, root: &Path, query: &str, source: &str) -> Vec<FileEnt
             format!("/{parent_rel}")
         };
 
-        let metadata = entry.metadata().ok();
         let modified: DateTime<Utc> = metadata
-            .as_ref()
-            .and_then(|m| m.modified().ok())
+            .modified()
+            .ok()
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
             .into();
 
         results.push(FileEntry {
             id: format!("{source}:{id}"),
-            size: if is_dir {
-                0
-            } else {
-                metadata.as_ref().map(|m| m.len()).unwrap_or(0)
-            },
+            size: if is_dir { 0 } else { metadata.len() },
             date: modified.to_rfc3339(),
             entry_type: if is_dir { "folder" } else { "file" }.into(),
             parent: format!("{source}:{parent}"),

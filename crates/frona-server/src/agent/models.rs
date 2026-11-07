@@ -8,6 +8,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
+/// Persisted fields follow the database-compatibility guidance on
+/// [`Message`](crate::chat::message::models::Message): meaningful defaults need
+/// `#[surreal(default)]` as well as JSON defaults, otherwise provide a migration
+/// or compatibility reader and cover older rows with database-backed tests.
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "agent")]
