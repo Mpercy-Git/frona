@@ -46,6 +46,7 @@ pub async fn build_configured(db: &Surreal<Db>, configure: impl FnOnce(&mut Conf
         catalogs(&config),
     );
     state.vault_service.sync_config_connections().await.unwrap();
+    state.tool_manager.init(&state);
     Fixture {
         state,
         _directory: directory,
