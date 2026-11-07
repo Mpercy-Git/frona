@@ -30,6 +30,7 @@ const SESSION_LIST_RETRY_MIN_DELAY: Duration = Duration::from_millis(500);
 const SESSION_LIST_RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
 
 #[derive(serde::Deserialize)]
+#[allow(dead_code)] // read by the debugger-takeover routes, which this fork does not carry
 pub(crate) struct BrowserlessSession {
     #[serde(rename = "browserId")]
     browser_id: String,
@@ -340,6 +341,7 @@ impl BrowserSessionManager {
     }
 
     /// Only the exact configured profile may be discovered or attached by its owner.
+    #[allow(dead_code)] // used by the debugger-takeover routes, which this fork does not carry
     pub(crate) async fn debugger_sessions(
         &self,
         user_handle: &crate::core::Handle,
