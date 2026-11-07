@@ -452,7 +452,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     try {
       attachments = getBackendAttachments(message.attachments ?? []);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Attachment unavailable");
+      store.failMessage(messageProcessingError(error));
       // This control error restores the installed runtime's unsent composer draft.
       throw new MessageNotSentError(error instanceof Error ? error.message : "Attachment unavailable");
     }
@@ -497,7 +497,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     } catch (error) {
       store.failMessage(messageProcessingError(error));
     }
-  }, [agentId, store, toast, localImageFiles]);
+  }, [agentId, store, localImageFiles]);
 
   const onCancel = useCallback(async () => {
     const id = currentChatIdRef.current;
