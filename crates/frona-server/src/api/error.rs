@@ -13,41 +13,29 @@ pub fn anonymous_not_found() -> Response {
 
 pub struct ApiError(pub AppError);
 
+pub(crate) struct PublicError {
+    pub status: StatusCode,
+    pub message: String,
+}
+
 impl From<AppError> for ApiError {
     fn from(err: AppError) -> Self {
         ApiError(err)
     }
 }
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
+impl ApiError {
+    pub(crate) fn public_error(&self) -> PublicError {
         let (status, message) = match &self.0 {
-            // Auth failures answer with a machine-readable `code` alongside the
-            // message: an expired session is routine (the client refreshes and
-            // retries) and must not be told apart from a real failure by string
-            // matching on prose.
             AppError::Auth { message, code } => {
-                // Lockout carries a deadline, so it answers with `Retry-After`
-                // rather than falling through to the plain (status, body) path.
-                if let AuthErrorCode::AccountLocked { retry_after_secs } = code {
-                    return (
-                        StatusCode::TOO_MANY_REQUESTS,
-                        [(header::RETRY_AFTER, retry_after_secs.to_string())],
-                        Json(json!({ "error": message, "code": code.as_str() })),
-                    )
-                        .into_response();
-                }
                 let status = match code {
                     AuthErrorCode::AccountDeactivated | AuthErrorCode::AccountConflict => {
                         StatusCode::FORBIDDEN
                     }
+                    AuthErrorCode::AccountLocked { .. } => StatusCode::TOO_MANY_REQUESTS,
                     _ => StatusCode::UNAUTHORIZED,
                 };
-                return (
-                    status,
-                    Json(json!({ "error": message, "code": code.as_str() })),
-                )
-                    .into_response();
+                (status, message.clone())
             }
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
@@ -94,7 +82,43 @@ impl IntoResponse for ApiError {
                 message.clone(),
             ),
         };
+        PublicError { status, message }
+    }
+}
 
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        match &self.0 {
+            // Auth failures answer with a machine-readable `code` alongside the
+            // message: an expired session is routine (the client refreshes and
+            // retries) and must not be told apart from a real failure by string
+            // matching on prose.
+            AppError::Auth { message, code } => {
+                // Lockout carries a deadline, so it answers with `Retry-After`
+                // rather than falling through to the plain (status, body) path.
+                if let AuthErrorCode::AccountLocked { retry_after_secs } = code {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [(header::RETRY_AFTER, retry_after_secs.to_string())],
+                        Json(json!({ "error": message, "code": code.as_str() })),
+                    )
+                        .into_response();
+                }
+                let status = match code {
+                    AuthErrorCode::AccountDeactivated | AuthErrorCode::AccountConflict => {
+                        StatusCode::FORBIDDEN
+                    }
+                    _ => StatusCode::UNAUTHORIZED,
+                };
+                return (
+                    status,
+                    Json(json!({ "error": message, "code": code.as_str() })),
+                )
+                    .into_response();
+            }
+            _ => {}
+        }
+        let PublicError { status, message } = self.public_error();
         let mut message_error = crate::chat::message::error::MessageError::from(&self.0);
         message_error.message = message.clone();
         (

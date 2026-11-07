@@ -2,6 +2,7 @@ pub mod client;
 pub mod diagnosis;
 pub mod manager;
 pub mod mcp_tool;
+pub mod mcpctl;
 pub mod metadata;
 pub mod models;
 pub mod registry;

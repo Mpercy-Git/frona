@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use rmcp::ServiceExt;
 use rmcp::model::{
@@ -76,6 +76,7 @@ impl ClientHandler for McpClientHandler {
 pub struct McpClient {
     running: RunningService<RoleClient, McpClientHandler>,
     cached_tools: Arc<RwLock<Vec<CachedMcpTool>>>,
+    registration: Arc<Mutex<Option<ToolRegistration>>>,
 }
 
 impl McpClient {
@@ -180,10 +181,13 @@ impl McpClient {
     }
 
     pub async fn shutdown(self) -> Result<(), AppError> {
-        self.running
-            .cancel()
-            .await
-            .map_err(|e| AppError::Tool(format!("MCP shutdown failed: {e}")))?;
+        // Cancel pending tools/list before waiting for its registration lock.
+        // Once the client has stopped, no notification can restore removed tools.
+        let result = self.running.cancel().await;
+        if let Some(target) = self.registration.lock().await.take() {
+            target.publish(&[]).await;
+        }
+        result.map_err(|e| AppError::Tool(format!("MCP shutdown failed: {e}")))?;
         Ok(())
     }
 }
@@ -202,4 +206,16 @@ fn cached_from_rmcp_tool(tool: Tool) -> CachedMcpTool {
         description: tool.description.map(|c| c.into_owned()).unwrap_or_default(),
         input_schema,
     }
+}
+
+pub(super) fn tool_definitions(handle: &str, tools: &[CachedMcpTool]) -> Vec<ToolDefinition> {
+    tools
+        .iter()
+        .map(|tool| ToolDefinition {
+            id: format!("mcp__{handle}__{}", tool.name),
+            provider_id: format!("mcp:{handle}"),
+            description: tool.description.clone(),
+            parameters: tool.input_schema.clone(),
+        })
+        .collect()
 }

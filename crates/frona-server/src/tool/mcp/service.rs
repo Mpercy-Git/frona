@@ -226,6 +226,7 @@ pub struct McpServerService {
     token_service: TokenService,
     keypair_service: KeyPairService,
     user_service: UserService,
+    agent_service: crate::agent::service::AgentService,
     policy_service: crate::policy::service::PolicyService,
     storage_service: crate::storage::service::StorageService,
     api_base_url: String,
@@ -253,6 +254,7 @@ impl McpServerService {
         token_service: TokenService,
         keypair_service: KeyPairService,
         user_service: UserService,
+        agent_service: crate::agent::service::AgentService,
         policy_service: crate::policy::service::PolicyService,
         storage_service: crate::storage::service::StorageService,
         api_base_url: String,
@@ -268,11 +270,80 @@ impl McpServerService {
             token_service,
             keypair_service,
             user_service,
+            agent_service,
             policy_service,
             storage_service,
             api_base_url,
             ephemeral_token_expiry_secs,
         }
+    }
+
+    pub fn register_agent_tool(
+        self: &Arc<Self>,
+        registry: &mut crate::tool::registry::AgentToolRegistry,
+        prompts: &crate::agent::prompt::PromptLoader,
+    ) {
+        registry.register(Arc::new(super::mcpctl::McpCtlTool::new(
+            self.clone(),
+            prompts.clone(),
+        )));
+    }
+
+    /// Register a running server's native tools from a fixed definition list.
+    ///
+    /// Used by callers that hold definitions rather than a live client cache
+    /// (tests, and anything registering tools outside the warm-up path). A
+    /// running server registers through [`Self::register_tool_cache`] so the
+    /// agent sees `tools/list_changed` updates.
+    pub async fn register_tools(&self, user_id: &str, handle: &str, tools: Vec<ToolDefinition>) {
+        if tools.is_empty() {
+            self.deregister_tools(user_id, handle).await;
+            return;
+        }
+        let cache = tools
+            .iter()
+            .map(|t| CachedMcpTool {
+                name: strip_namespace(&t.id, handle),
+                description: t.description.clone(),
+                input_schema: t.parameters.clone(),
+            })
+            .collect();
+        self.register_tool_cache(
+            user_id,
+            handle,
+            Arc::new(std::sync::RwLock::new(cache)),
+            String::new(),
+            false,
+        )
+        .await;
+    }
+
+    async fn register_tool_cache(
+        &self,
+        user_id: &str,
+        handle: &str,
+        tool_cache: Arc<std::sync::RwLock<Vec<CachedMcpTool>>>,
+        server_id: String,
+        supports_resources: bool,
+    ) {
+        let tool = super::mcp_tool::McpTool::new(
+            self.manager.clone(),
+            handle,
+            tool_cache,
+            server_id,
+            supports_resources,
+        );
+        self.tool_manager
+            .register_user_tool(user_id, Arc::new(tool))
+            .await;
+        self.policy_service.invalidate_cache(user_id).await;
+    }
+
+    async fn deregister_tools(&self, user_id: &str, handle: &str) {
+        self.tool_manager
+            .deregister_user_tool(user_id, &format!("mcp__{handle}"))
+            .await;
+        self.policy_service.invalidate_cache(user_id).await;
     }
 
     pub async fn list_for_user(&self, user_id: &str) -> Result<Vec<McpServer>, AppError> {
@@ -858,6 +929,7 @@ impl McpServerService {
     pub async fn uninstall(&self, user_id: &str, server_id: &str) -> Result<(), AppError> {
         let server = self.load_owned(user_id, server_id).await?;
         let _ = self.manager.stop(server_id).await;
+        self.deregister_tools(user_id, server.handle.as_str()).await;
         let principal = Principal::mcp_server(&server.id);
         self.vault
             .delete_bindings_for_principal(user_id, &principal)
@@ -951,20 +1023,17 @@ impl McpServerService {
         // Hand the tool the live cache rather than this snapshot: a gated server
         // advertises its full set only after something unlocks it, and that
         // `tools/list_changed` has to reach the agent without a restart.
-        if !tools.is_empty()
-            && let Some(tool_cache) = self.manager.tool_cache_handle(&server.id).await
-        {
-            let mcp_tool = Arc::new(super::mcp_tool::McpTool::new(
-                self.manager.clone(),
+        if tools.is_empty() {
+            self.deregister_tools(user_id, server.handle.as_str()).await;
+        } else if let Some(tool_cache) = self.manager.tool_cache_handle(&server.id).await {
+            self.register_tool_cache(
+                user_id,
                 server.handle.as_str(),
                 tool_cache,
                 server.id.clone(),
                 self.manager.supports_resources(&server.id).await,
-            ));
-            self.tool_manager
-                .register_user_tool(user_id, mcp_tool)
-                .await;
-            self.policy_service.invalidate_cache(user_id).await;
+            )
+            .await;
         }
 
         Ok(StartResult { tools })
@@ -1129,11 +1198,7 @@ impl McpServerService {
         server.updated_at = Utc::now();
         self.repo.update(&server).await?;
 
-        let owner_name = format!("mcp__{}", server.handle);
-        self.tool_manager
-            .deregister_user_tool(user_id, &owner_name)
-            .await;
-        self.policy_service.invalidate_cache(user_id).await;
+        self.deregister_tools(user_id, server.handle.as_str()).await;
 
         Ok(())
     }
@@ -1528,6 +1593,163 @@ fn validate_env_var_names(env: &BTreeMap<String, String>) -> Result<(), AppError
 fn strip_namespace(tool_id: &str, slug: &str) -> String {
     let prefix = format!("mcp__{slug}__");
     tool_id.strip_prefix(&prefix).unwrap_or(tool_id).to_string()
+}
+
+fn allowed_mcp_tools(
+    defs: &[crate::tool::ToolDefinition],
+) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+    let mut map: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for def in defs {
+        if let Some(rest) = def.id.strip_prefix("mcp__")
+            && let Some((slug, tool)) = rest.split_once("__")
+        {
+            map.entry(slug.to_string())
+                .or_default()
+                .insert(tool.to_string());
+        }
+    }
+    map
+}
+
+impl McpServerService {
+    async fn bridge_allowed_tools(
+        &self,
+        user_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<
+        Option<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+        AppError,
+    > {
+        let Some(agent_id) = agent_id else {
+            return Ok(None);
+        };
+        let agent = self.agent_service.get(user_id, agent_id).await?;
+        let registry = self
+            .tool_manager
+            .build_agent_registry(user_id, &agent, &self.policy_service, None)
+            .await;
+        Ok(Some(allowed_mcp_tools(registry.definitions())))
+    }
+    pub async fn bridge_list_servers(
+        &self,
+        user_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<frona_api_types::mcp::BridgeServerInfo>, AppError> {
+        let servers = self.list_for_user(user_id).await?;
+        let allowed = self.bridge_allowed_tools(user_id, agent_id).await?;
+        let result = servers
+            .into_iter()
+            .filter(|server| server.status == McpServerStatus::Running)
+            .filter(|server| {
+                allowed
+                    .as_ref()
+                    .is_none_or(|map| map.contains_key(server.handle.as_str()))
+            })
+            .map(|server| {
+                let tool_count = server
+                    .tool_cache
+                    .iter()
+                    .filter(|tool| {
+                        allowed.as_ref().is_none_or(|map| {
+                            map.get(server.handle.as_str())
+                                .is_some_and(|names| names.contains(&tool.name))
+                        })
+                    })
+                    .count();
+                frona_api_types::mcp::BridgeServerInfo {
+                    handle: server.handle.to_string(),
+                    display_name: server.display_name,
+                    description: server.description,
+                    tool_count,
+                }
+            })
+            .collect();
+        Ok(result)
+    }
+
+    pub async fn bridge_server_tools(
+        &self,
+        user_id: &str,
+        agent_id: Option<&str>,
+        handle: &str,
+    ) -> Result<frona_api_types::mcp::BridgeServerDetail, AppError> {
+        let servers = self.list_for_user(user_id).await?;
+        let server = servers
+            .into_iter()
+            .find(|s| s.handle.as_str() == handle && s.status == McpServerStatus::Running)
+            .ok_or_else(|| AppError::NotFound(format!("MCP server '{handle}'")))?;
+
+        let allowed = self.bridge_allowed_tools(user_id, agent_id).await?;
+        let allowed_tools = match &allowed {
+            Some(map) => Some(map.get(handle).ok_or_else(|| {
+                AppError::Forbidden("Agent does not have access to this MCP server".into())
+            })?),
+            None => None,
+        };
+
+        let tools = server
+            .tool_cache
+            .into_iter()
+            .filter(|t| {
+                allowed_tools
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(&t.name))
+            })
+            .map(|t| frona_api_types::mcp::BridgeToolInfo {
+                name: t.name,
+                description: t.description,
+                input_schema: t.input_schema,
+            })
+            .collect();
+
+        Ok(frona_api_types::mcp::BridgeServerDetail {
+            handle: server.handle.to_string(),
+            display_name: server.display_name,
+            description: server.description,
+            tools,
+        })
+    }
+
+    pub async fn bridge_call_tool(
+        &self,
+        user_id: &str,
+        agent_id: Option<&str>,
+        handle: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<frona_api_types::mcp::BridgeCallResponse, AppError> {
+        if let Some(allowed) = self.bridge_allowed_tools(user_id, agent_id).await?
+            && !allowed
+                .get(handle)
+                .is_some_and(|tools| tools.contains(tool_name))
+        {
+            return Err(AppError::Forbidden(format!(
+                "Agent does not have access to tool '{tool_name}' on server '{handle}'"
+            )));
+        }
+
+        let server_id = self
+            .manager
+            .find_by_handle(user_id, handle)
+            .await
+            .ok_or_else(|| AppError::NotFound(format!("Running MCP server '{handle}'")))?;
+
+        let result = self.manager.call(&server_id, tool_name, arguments).await?;
+
+        let is_error = result.is_error.unwrap_or(false);
+        let content = result
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                rmcp::model::ContentBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(frona_api_types::mcp::BridgeCallResponse { content, is_error })
+    }
 }
 
 #[cfg(test)]

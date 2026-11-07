@@ -36,7 +36,7 @@ use crate::core::principal::PrincipalKind;
 use crate::core::state::AppState;
 use crate::inference::conversation::DefaultConversationBuilder;
 use crate::storage::{Attachment, dedup_filename};
-use crate::tool::files::read::is_supported_image;
+use crate::tool::image::is_supported_image;
 
 pub fn router() -> Router<AppState> {
     Router::new()

@@ -4,6 +4,7 @@ mod agents;
 mod app_supervisor;
 mod apps;
 mod auth;
+mod browser;
 mod channels;
 mod chats;
 mod commands;
@@ -171,6 +172,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
             state.token_service.clone(),
             state.keypair_service.clone(),
             state.user_service.clone(),
+            state.agent_service.clone(),
             state.policy_service.clone(),
             state.storage_service.clone(),
             state.config.server.public_base_url(),
