@@ -16,7 +16,7 @@ import {
   fronaSlashFormatter,
   fronaAtFormatter,
 } from "@/components/chat/frona-trigger-adapter";
-import { registerBackendAttachment, getBackendAttachment } from "@/lib/use-chat-runtime";
+import { registerBackendAttachment, getBackendAttachments } from "@/lib/use-chat-runtime";
 import { useContext } from "react";
 import { usePendingTools } from "@/lib/pending-tools-context";
 import { ChatContext } from "@/lib/chat-context";
@@ -87,6 +87,7 @@ export function FronaComposer({
   const composerRuntime = useAui().composer;
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [browseOpen, setBrowseOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -180,9 +181,14 @@ export function FronaComposer({
     const state = composerRuntime.getState();
     const text = state.text.trim();
     if (!text) return;
-    const backendAttachments = state.attachments
-      .map((a) => getBackendAttachment(a.id))
-      .filter((a): a is Attachment => a != null);
+    let backendAttachments: Attachment[];
+    try {
+      backendAttachments = getBackendAttachments(state.attachments);
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : "Attachment unavailable");
+      return;
+    }
+    setAttachmentError(null);
     composerRuntime.setText("");
     chatCtx.interrupt(text, backendAttachments.length ? backendAttachments : undefined);
   }, [chatCtx, composerRuntime]);
@@ -347,14 +353,20 @@ export function FronaComposer({
                     const state = composerRuntime.getState();
                     const text = state.text.trim();
                     if (!text && !state.attachments.length) return;
-                    const backendAttachments = state.attachments
-                      .map((a) => getBackendAttachment(a.id))
-                      .filter((a): a is Attachment => a != null);
+                    let backendAttachments: Attachment[];
+                    try {
+                      backendAttachments = getBackendAttachments(state.attachments);
+                    } catch (error) {
+                      setAttachmentError(error instanceof Error ? error.message : "Attachment unavailable");
+                      return;
+                    }
+                    setAttachmentError(null);
                     onSend(text, backendAttachments.length > 0 ? backendAttachments : undefined);
                   },
                 }
               : {})}
         >
+          {attachmentError && <p role="alert" className="mb-2 text-sm text-error-text">{attachmentError}</p>}
           <div className="flex flex-wrap gap-1.5 empty:hidden">
             <ComposerPrimitive.Attachments
               components={{ Attachment: ComposerAttachmentBadge }}

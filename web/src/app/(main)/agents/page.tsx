@@ -1,8 +1,9 @@
 "use client";
 
+import { ConfigurationSidebar } from "@/components/layout/configuration-sidebar";
+
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { ArrowLeftIcon } from "@heroicons/react/24/outline";
 import { api } from "@/lib/api-client";
 import { useNavigation } from "@/lib/navigation-context";
 import { getConfig, type SandboxConfig } from "@/lib/config-types";

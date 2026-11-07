@@ -40,6 +40,8 @@ export function TopBar() {
   const menuRef = useRef<HTMLDivElement>(null);
 
   const isChatRelated = pathname.startsWith("/chat") || pathname.startsWith("/home") || pathname.startsWith("/space");
+  const configurationRoute = ["/agents", "/channels", "/mcp"].includes(pathname);
+  const usesSubNav = configurationRoute || pathname.startsWith("/settings");
   const activeTab = isChatRelated ? "chat" : (topTabs.find((t) => pathname.startsWith(t.href))?.id ?? null);
 
   useEffect(() => {
@@ -93,12 +95,14 @@ export function TopBar() {
         </button>
 
         <button
+          aria-label="Home"
           onClick={() => { setActiveChat(null); router.push("/home"); }}
-          className="flex items-center gap-1 cursor-pointer"
+          className="flex shrink-0 items-center gap-1 cursor-pointer"
         >
-          <Logo size={52} />
+          {/* Artwork fills 80% of the SVG: 50px matches the 40px header buttons. */}
+          <Logo size={50} />
           <span
-            className="text-lg font-bold text-text-primary tracking-wide"
+            className="hidden min-[480px]:inline text-lg font-bold text-text-primary tracking-wide"
             style={{ fontFamily: "var(--font-brand)" }}
           >
             FRONA

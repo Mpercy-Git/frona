@@ -1,13 +1,26 @@
 use std::path::Path;
 
 pub fn detect_content_type(filename: &str) -> &'static str {
-    let ext = Path::new(filename)
+    let basename = filename
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(filename)
+        .to_ascii_lowercase();
+    match basename.as_str() {
+        "dockerfile" | "containerfile" => return "text/x-dockerfile",
+        "makefile" | "gnumakefile" => return "text/x-makefile",
+        ".env" | ".gitignore" | ".gitattributes" | ".gitmodules" | ".dockerignore"
+        | ".editorconfig" | ".npmrc" | ".yarnrc" => return "text/plain",
+        name if name.starts_with(".env.") => return "text/plain",
+        _ => {}
+    }
+
+    let ext = Path::new(&basename)
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+        .unwrap_or("");
 
-    match ext.as_str() {
+    match ext {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -33,7 +46,7 @@ pub fn detect_content_type(filename: &str) -> &'static str {
         "c" | "h" => "text/x-c",
         "cpp" | "cc" | "cxx" | "hpp" => "text/x-c++",
         "md" | "markdown" => "text/markdown",
-        "txt" | "log" => "text/plain",
+        "txt" | "log" | "conf" | "cfg" | "ini" | "env" | "properties" => "text/plain",
         "csv" => "text/csv",
         "yaml" | "yml" => "text/yaml",
         "toml" => "text/toml",
@@ -107,6 +120,70 @@ mod tests {
         assert_eq!(detect_content_type("clip.MOV"), "video/quicktime");
         assert_eq!(detect_content_type("clip.mkv"), "video/x-matroska");
         assert_eq!(detect_content_type("clip.ogv"), "video/ogg");
+    }
+
+    #[test]
+    fn text_config_and_build_names_match_frontend_classification() {
+        for (filename, expected) in [
+            ("server.log", "text/plain"),
+            ("app.conf", "text/plain"),
+            ("app.cfg", "text/plain"),
+            ("app.ini", "text/plain"),
+            ("app.env", "text/plain"),
+            ("app.properties", "text/plain"),
+            (".env", "text/plain"),
+            (".env.production", "text/plain"),
+            (".gitignore", "text/plain"),
+            (".gitattributes", "text/plain"),
+            (".gitmodules", "text/plain"),
+            (".dockerignore", "text/plain"),
+            (".editorconfig", "text/plain"),
+            (".npmrc", "text/plain"),
+            (".yarnrc", "text/plain"),
+            ("Dockerfile", "text/x-dockerfile"),
+            ("Containerfile", "text/x-dockerfile"),
+            ("Makefile", "text/x-makefile"),
+            ("GNUmakefile", "text/x-makefile"),
+            ("CMakeLists.txt", "text/plain"),
+        ] {
+            for name in [
+                filename.to_string(),
+                format!("workspace/{}", filename.to_ascii_uppercase()),
+                format!("workspace\\{}", filename.to_ascii_uppercase()),
+            ] {
+                assert_eq!(detect_content_type(&name), expected, "{name}");
+                assert!(is_text_content_type(detect_content_type(&name)), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn existing_source_documents_and_binary_fallbacks_are_preserved() {
+        for (filename, expected) in [
+            ("code.ts", "text/typescript"),
+            ("code.tsx", "text/typescript"),
+            ("code.rs", "text/x-rust"),
+            ("code.py", "text/x-python"),
+            ("script.mjs", "text/javascript"),
+            ("README.MD", "text/markdown"),
+            ("README.markdown", "text/markdown"),
+            ("dashboard.HTML", "text/html"),
+            ("dashboard.htm", "text/html"),
+            ("config.JSON", "application/json"),
+            ("schema.xml", "application/xml"),
+            ("settings.yaml", "text/yaml"),
+            ("package.toml", "text/toml"),
+            ("archive.zip", "application/zip"),
+            ("unknown.bin", "application/octet-stream"),
+            ("unknown", "application/octet-stream"),
+            (".unknown", "application/octet-stream"),
+            ("config.env.bin", "application/octet-stream"),
+            (".env/unknown.bin", "application/octet-stream"),
+            ("folder.txt/unknown", "application/octet-stream"),
+            ("folder.txt\\unknown", "application/octet-stream"),
+        ] {
+            assert_eq!(detect_content_type(filename), expected, "{filename}");
+        }
     }
 
     #[test]

@@ -1,9 +1,10 @@
 "use client";
 
+import { ConfigurationSidebar } from "@/components/layout/configuration-sidebar";
+
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
-  ArrowLeftIcon,
   ChatBubbleLeftRightIcon,
   PlayIcon,
   StopIcon,
@@ -457,7 +458,7 @@ function ChannelDetailPage() {
   const displayName = space?.name ?? manifest?.display_name ?? channel.provider;
 
   return (
-    <div className="flex h-full bg-surface">
+    <div className="flex h-full min-h-0 min-w-0 bg-surface">
       <DeleteConfirmDialog
         open={confirmDeleteOpen}
         onCancel={() => {

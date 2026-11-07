@@ -15,6 +15,7 @@ export interface ServerConfig {
   apps_url?: string | null;
   external_url: string | null;
   max_body_size_bytes: number;
+  max_upload_file_size_bytes: number;
   /** Default IANA timezone for users with no profile timezone set.
       Empty string → auto-detect from TZ env var / /etc/localtime / fall back to UTC. */
   timezone: string;

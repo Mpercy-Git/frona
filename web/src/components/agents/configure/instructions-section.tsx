@@ -48,7 +48,8 @@ export function InstructionsSection({ prompt, defaultPrompt, onPromptChange }: I
         <textarea
           value={prompt}
           onChange={(e) => onPromptChange(e.target.value)}
-          className="flex-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-tertiary focus:border-accent focus:outline-none resize-none"
+          aria-label="System prompt"
+          className="flex-1 min-h-32 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-tertiary focus:border-accent focus:outline-none resize-none"
         />
       </SectionPanel>
     </div>

@@ -865,6 +865,7 @@ function McpServerPage() {
                             setDirty(true);
                           }
                         }}
+                        aria-label={`Remove ${key}`}
                         className="mt-2 p-1.5 text-text-tertiary hover:text-danger transition rounded-lg hover:bg-surface-tertiary"
                       >
                         <TrashIcon className="h-4 w-4" />

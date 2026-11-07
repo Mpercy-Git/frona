@@ -3,6 +3,7 @@
 import type { FC } from "react";
 import { LockClosedIcon } from "@heroicons/react/24/solid";
 import { CodeBlock } from "@/components/ui/code-block";
+import { CopyButton } from "@/components/ui/copy-button";
 import { cn } from "@/lib/utils";
 import { ToolRow } from "./tool-row";
 import { bestSeverity, parseShellOutput } from "./shell-sandbox";
@@ -86,7 +87,7 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
               ? null
               : typeof e === "string"
                 ? e
-                : JSON.stringify(e);
+                : JSON.stringify(e, null, 2);
           })()
         : null;
 
@@ -95,7 +96,7 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
     const copyText = execTranscript(code, resultText, errorText);
 
     const expandable =
-      code.length > 0 || resultText.length > 0 || sandboxEvents.length > 0;
+      code.length > 0 || resultText.length > 0 || !!errorText;
 
     // Title/subtitle. Shell-like tools pass a summarizer that derives both
     // from the command itself. Code-exec tools (python/node) fall back to the

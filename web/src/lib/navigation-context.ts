@@ -87,6 +87,7 @@ export function NavigationProvider({
   const [spaces, setSpaces] = useState<SpaceWithChats[] | undefined>(undefined);
   const [standaloneChats, setStandaloneChats] = useState<ChatResponse[] | undefined>(undefined);
   const [tasks, setTasks] = useState<TaskResponse[] | undefined>(undefined);
+  const taskRequests = useRef(new Map<string, symbol>());
   const [agents, setAgents] = useState<Agent[] | undefined>(undefined);
   const [contacts, setContacts] = useState<Record<string, Contact> | undefined>(undefined);
   const [archivedChats, setArchivedChats] = useState<ChatResponse[]>([]);
@@ -232,6 +233,7 @@ export function NavigationProvider({
   const deleteTaskAction = useCallback(async (taskId: string) => {
     const task = tasks?.find((t) => t.id === taskId);
     await apiDeleteTask(taskId);
+    taskRequests.current.delete(taskId);
     setTasks((prev) => prev?.filter((t) => t.id !== taskId));
     if (task?.chat_id) {
       const chatId = task.chat_id;
@@ -246,6 +248,8 @@ export function NavigationProvider({
   }, [tasks]);
 
   const updateTaskInList = useCallback((taskId: string, fields: Partial<TaskResponse>) => {
+    const request = Symbol();
+    taskRequests.current.set(taskId, request);
     setTasks((prev) => {
       if (!prev) return prev;
       const idx = prev.findIndex((t) => t.id === taskId);
@@ -256,18 +260,19 @@ export function NavigationProvider({
       }
       return prev;
     });
-    const status = fields.status ?? "pending";
-    if (status === "pending" || status === "inprogress") {
-      getTask(taskId)
-        .then((task) => {
-          setTasks((prev) => {
-            if (!prev) return prev;
-            if (prev.some((t) => t.id === task.id)) return prev;
-            return [task, ...prev];
-          });
-        })
-        .catch(() => {});
-    }
+    // Live events omit run dates and updated_at. Refresh those keys without
+    // moving existing rows, and ignore responses superseded by another event.
+    getTask(taskId)
+      .then((task) => {
+        setTasks((prev) => {
+          if (!prev || taskRequests.current.get(taskId) !== request) return prev;
+          if (prev.some(t => t.id === task.id)) {
+            return prev.map(t => t.id === task.id ? task : t);
+          }
+          return [task, ...prev];
+        });
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
