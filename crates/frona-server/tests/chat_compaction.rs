@@ -973,7 +973,7 @@ async fn text_send_persists_attachments_and_sends_current_request_exactly_once()
     // Both paths now use the same standing prompt. Cross the trigger while
     // still fitting the conversation model's own window.
     let mut old = app.messages().find_by_id("old-3").await.unwrap().unwrap();
-    old.content = "OLD-3 ".repeat(6600);
+    old.content = "OLD-3 ".repeat(6560);
     app.messages().update(&old).await.unwrap();
     let attachment = retained[0].attachments[0].clone();
     let content = "new request after compaction";
@@ -1849,7 +1849,7 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
             )
             .await
             .unwrap();
-            session.model_group.context_window = 18_000;
+            session.model_group.context_window = 18_200;
             app.manual(&mut session).await.unwrap();
             let provider = &app.model;
             let compact_history = provider.last_history();

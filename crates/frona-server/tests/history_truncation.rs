@@ -476,10 +476,11 @@ async fn streaming_tool_result_retries_and_fallback_preserve_the_complete_active
         vec![large_result.clone()],
     )));
     let (events, _, _) = helpers::test_event_sender().await;
-    let registry_for_loop = frona::inference::provider::registry::ModelProviderRegistry::for_testing(
-        (*group.providers).clone(),
-        Default::default(),
-    );
+    let registry_for_loop =
+        frona::inference::provider::registry::ModelProviderRegistry::for_testing(
+            (*group.providers).clone(),
+            Default::default(),
+        );
     let outcome = run_tool_loop(
         &registry_for_loop,
         &group,

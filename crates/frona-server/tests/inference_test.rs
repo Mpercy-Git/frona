@@ -64,7 +64,10 @@ async fn streaming_rejects_over_budget_history_without_truncating_it() {
         .expect("over-budget request must be rejected");
     // The request is rejected whole (upstream 10b92aa/e4104b4): history is
     // never silently truncated, and nothing reaches any provider.
-    assert!(format!("{error:?}").contains("exceeds context limit"), "{error:?}");
+    assert!(
+        format!("{error:?}").contains("exceeds context limit"),
+        "{error:?}"
+    );
     assert!(primary.stream_histories().is_empty());
     assert!(fallback.stream_histories().is_empty());
 }
@@ -109,7 +112,10 @@ async fn tool_loop_rejects_request_when_tool_output_exceeds_budget() {
     .await
     .unwrap_err();
     // The oversized follow-up is rejected whole rather than truncated.
-    assert!(format!("{outcome:?}").contains("exceeds context limit"), "{outcome:?}");
+    assert!(
+        format!("{outcome:?}").contains("exceeds context limit"),
+        "{outcome:?}"
+    );
     let histories = provider.stream_histories();
     assert_eq!(histories, vec![vec![opening.clone()]]);
 }
@@ -1113,8 +1119,8 @@ async fn test_streaming_tokens_arrive_individually() {
             &metrics,
             &chat_service,
             "test-msg",
-        None,
-    )
+            None,
+        )
         .await
     });
 

@@ -103,26 +103,22 @@ impl AgentContextSource for CatalogContextSource {
                     )
                     .await?
                 {
-                    entries.insert(
-                        server.id,
-                        {
-                            // The tool cache is populated when the server starts, so
-                            // naming the tools is free and saves a discovery call.
-                            let tools: Vec<String> =
-                                server.tool_cache.iter().map(|t| t.name.clone()).collect();
-                            let description =
-                                server.description.unwrap_or(server.display_name);
-                            format!(
-                                "- {}: {}\n",
-                                server.handle,
-                                crate::agent::prompt::mcp_server_line(
-                                    server.handle.as_ref(),
-                                    &description,
-                                    &tools
-                                )
+                    entries.insert(server.id, {
+                        // The tool cache is populated when the server starts, so
+                        // naming the tools is free and saves a discovery call.
+                        let tools: Vec<String> =
+                            server.tool_cache.iter().map(|t| t.name.clone()).collect();
+                        let description = server.description.unwrap_or(server.display_name);
+                        format!(
+                            "- {}: {}\n",
+                            server.handle,
+                            crate::agent::prompt::mcp_server_line(
+                                server.handle.as_ref(),
+                                &description,
+                                &tools
                             )
-                        },
-                    );
+                        )
+                    });
                 }
             }
             sections.push(AgentContextSection::tagged(

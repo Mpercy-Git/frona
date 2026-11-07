@@ -60,7 +60,10 @@ fn catalog() -> ModelCatalogSnapshot {
     catalog
 }
 
-async fn service(config: &Config, catalog: &ModelCatalogSnapshot) -> frona::inference::provider::registry::ModelProviderRegistry {
+async fn service(
+    config: &Config,
+    catalog: &ModelCatalogSnapshot,
+) -> frona::inference::provider::registry::ModelProviderRegistry {
     let groups = ModelRegistryConfig {
         providers: config.providers.clone(),
         models: config.models.clone(),

@@ -111,9 +111,7 @@ impl HitlDeliveryService {
                 if let Some(tid) = tid {
                     let _ = exec.resume_task_by_id(&tid).await;
                 } else if let Some((session_id, token)) = session
-                    && let Err(e) = h
-                        .resume_registered(&u, &c, &m, session_id, token)
-                        .await
+                    && let Err(e) = h.resume_registered(&u, &c, &m, session_id, token).await
                 {
                     tracing::error!(error = %e, chat_id = %c, "Failed to resume chat after HITL resolve");
                 }
