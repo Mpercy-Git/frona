@@ -11,12 +11,7 @@ pub struct Fixture {
 
 /// Load local catalogs without downloading, just as startup does before refresh.
 pub fn catalogs(config: &Config) -> frona_model_catalog::sources::CatalogSources {
-    frona::initialize_tls();
-    let bundled = std::path::Path::new(&config.storage.shared_config_dir).join("catalogs");
-    frona_model_catalog::sources::CatalogSources::load_with_bundled(
-        std::path::Path::new(&config.storage.cache_dir),
-        Some(&bundled),
-    )
+    frona::app_state_fixture::catalogs(config)
 }
 
 pub async fn build(db: &Surreal<Db>) -> Fixture {

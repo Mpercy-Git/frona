@@ -52,6 +52,7 @@ async fn transcribes_only_voice_notes_in_the_chat_owners_storage() {
     let now = Utc::now();
     let chat: Chat = SurrealRepo::new(db.clone())
         .create(&Chat {
+            agent_context_state: Default::default(),
             id: frona::core::repository::new_id(),
             user_id: "owner".into(),
             space_id: None,
@@ -145,6 +146,7 @@ async fn without_a_provider_voice_notes_are_saved_untouched() {
     let now = Utc::now();
     let chat: Chat = SurrealRepo::new(db.clone())
         .create(&Chat {
+            agent_context_state: Default::default(),
             id: frona::core::repository::new_id(),
             user_id: "owner".into(),
             space_id: None,

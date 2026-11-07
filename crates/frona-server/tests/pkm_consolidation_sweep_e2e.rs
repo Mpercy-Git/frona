@@ -214,6 +214,7 @@ async fn seed_agent(db: &Surreal<Db>) {
 
 async fn seed_chat(db: &Surreal<Db>) -> Chat {
     let chat = Chat {
+        agent_context_state: Default::default(),
         id: frona::core::repository::new_id(),
         user_id: "u1".into(),
         space_id: None,
@@ -692,6 +693,7 @@ async fn playbook_author_reconstructs_invocation_from_procedural_evidence() {
             chat_id: chat.id.clone(),
             message_id: msg_id,
             turn: 0,
+            provider_item_id: None,
             provider_call_id: String::new(),
             name: "shell".into(),
             arguments: json!({ "command": COMMAND }),
@@ -703,8 +705,8 @@ async fn playbook_author_reconstructs_invocation_from_procedural_evidence() {
             system_prompt: None,
             description: None,
             turn_text: Some(TOOL_TURN_TEXT.into()),
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: agent_at,
         })
         .await
@@ -885,6 +887,7 @@ async fn ingest_omits_agent_answer_grounded_in_prior_recall() {
             chat_id: chat.id.clone(),
             message_id: message_id.clone(),
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-recall".into(),
             name: "memory_search".into(),
             arguments: json!({"query":"Casey Owner phone number"}),
@@ -896,8 +899,8 @@ async fn ingest_omits_agent_answer_grounded_in_prior_recall() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -914,6 +917,7 @@ async fn ingest_omits_agent_answer_grounded_in_prior_recall() {
             chat_id: chat.id.clone(),
             message_id: message_id.clone(),
             turn: 2,
+            provider_item_id: None,
             provider_call_id: "provider-read".into(),
             name: "read".into(),
             arguments: json!({"path":page_path}),
@@ -925,8 +929,8 @@ async fn ingest_omits_agent_answer_grounded_in_prior_recall() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -1032,6 +1036,7 @@ async fn ingest_persists_agent_memory_with_durable_web_evidence() {
             chat_id: chat.id.clone(),
             message_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-web".into(),
             name: "web_search".into(),
             arguments: json!({"query":"Acme 4.2 release"}),
@@ -1043,8 +1048,8 @@ async fn ingest_persists_agent_memory_with_durable_web_evidence() {
             system_prompt: None,
             description: None,
             turn_text: Some("Acme released version 4.2.".into()),
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -1174,6 +1179,7 @@ async fn ingest_retains_accepted_tool_evidence_when_a_later_correction_omits_tha
             chat_id: chat.id.clone(),
             message_id: agent_message_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-web-stable".into(),
             name: "web_search".into(),
             arguments: json!({"query":"Acme 4.2 release"}),
@@ -1185,8 +1191,8 @@ async fn ingest_retains_accepted_tool_evidence_when_a_later_correction_omits_tha
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -1310,6 +1316,7 @@ async fn ingest_repairs_unaccounted_research_by_appending_a_grounded_memory() {
             chat_id: chat.id.clone(),
             message_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-compute-box".into(),
             name: "web_fetch".into(),
             arguments: json!({"url":"https://example.test/compute-box"}),
@@ -1321,8 +1328,8 @@ async fn ingest_repairs_unaccounted_research_by_appending_a_grounded_memory() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at + Duration::seconds(1),
         })
         .await
@@ -1447,6 +1454,7 @@ async fn ingest_rebinds_a_unique_agent_quote_to_its_actual_message() {
             chat_id: chat.id.clone(),
             message_id: research_message_id.clone(),
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-compute-box-source".into(),
             name: "web_fetch".into(),
             arguments: json!({"url":"https://example.test/compute-box"}),
@@ -1458,8 +1466,8 @@ async fn ingest_rebinds_a_unique_agent_quote_to_its_actual_message() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -1568,6 +1576,7 @@ async fn ingest_can_split_a_mixed_research_claim_without_losing_supported_facts(
                 chat_id: chat.id.clone(),
                 message_id: message_id.clone(),
                 turn,
+                provider_item_id: None,
                 provider_call_id: format!("provider-{id}"),
                 name: "web_fetch".into(),
                 arguments: json!({"url":format!("https://example.test/{id}")}),
@@ -1579,8 +1588,8 @@ async fn ingest_can_split_a_mixed_research_claim_without_losing_supported_facts(
                 system_prompt: None,
                 description: None,
                 turn_text: None,
-                turn_reasoning: None,
                 signature: None,
+                turn_reasoning: None,
                 created_at: at + Duration::milliseconds(i64::from(turn)),
             })
             .await
@@ -1697,6 +1706,7 @@ async fn ingest_returns_all_missing_critical_values_in_one_grounding_feedback() 
             chat_id: chat.id.clone(),
             message_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-flight-search".into(),
             name: "web_search".into(),
             arguments: json!({"query":"SFO SEA flights"}),
@@ -1708,8 +1718,8 @@ async fn ingest_returns_all_missing_critical_values_in_one_grounding_feedback() 
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -1796,6 +1806,7 @@ async fn ingest_persists_agent_memory_with_successful_curl_web_page_evidence() {
             chat_id: chat.id.clone(),
             message_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-shell".into(),
             name: "shell".into(),
             arguments: json!({"command":"curl https://example.com"}),
@@ -1807,8 +1818,8 @@ async fn ingest_persists_agent_memory_with_successful_curl_web_page_evidence() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -1893,6 +1904,7 @@ async fn ingest_keeps_a_procedure_with_two_citations_from_one_agent_message() {
             chat_id: chat.id.clone(),
             message_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-restart".into(),
             name: "shell".into(),
             arguments: json!({"command":"service postgres restart"}),
@@ -1904,8 +1916,8 @@ async fn ingest_keeps_a_procedure_with_two_citations_from_one_agent_message() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -1983,6 +1995,7 @@ async fn ingest_drops_agent_memory_when_the_only_execution_failed() {
             chat_id: chat.id.clone(),
             message_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-failed".into(),
             name: "python".into(),
             arguments: json!({"code":"fetch_price('ACME')"}),
@@ -1994,8 +2007,8 @@ async fn ingest_drops_agent_memory_when_the_only_execution_failed() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -2078,6 +2091,7 @@ async fn ingest_requires_a_scheduled_task_handle_to_copy_its_event_time() {
             chat_id: chat.id.clone(),
             message_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-schedule".into(),
             name: "create_recurring_task".into(),
             arguments: json!({"title":"Drink water at 08:00"}),
@@ -2089,8 +2103,8 @@ async fn ingest_requires_a_scheduled_task_handle_to_copy_its_event_time() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at + Duration::milliseconds(1),
         })
         .await
@@ -2166,6 +2180,7 @@ async fn ingest_resume_commits_tool_evidence_checkpoint_and_watermark_once() {
             chat_id: chat.id.clone(),
             message_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-web-resume".into(),
             name: "web_search".into(),
             arguments: json!({"query":"Acme 4.2 release"}),
@@ -2177,8 +2192,8 @@ async fn ingest_resume_commits_tool_evidence_checkpoint_and_watermark_once() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -2361,6 +2376,7 @@ async fn ingest_treats_resolved_hitl_text_as_user_confirmation() {
             chat_id: chat.id.clone(),
             message_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-hitl".into(),
             name: "ask_user_question".into(),
             arguments: json!({}),
@@ -2381,8 +2397,8 @@ async fn ingest_treats_resolved_hitl_text_as_user_confirmation() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -2487,6 +2503,7 @@ async fn ingest_uses_tool_evidence_from_a_previous_parallel_window() {
             chat_id: chat.id.clone(),
             message_id: first_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-prior".into(),
             name: "web_fetch".into(),
             arguments: json!({"url":"https://acme.example/releases"}),
@@ -2498,8 +2515,8 @@ async fn ingest_uses_tool_evidence_from_a_previous_parallel_window() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -2603,6 +2620,7 @@ async fn ingest_revises_a_full_batch_to_cite_structured_tool_evidence() {
             chat_id: chat.id.clone(),
             message_id: agent_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-deploy".into(),
             name: "shell".into(),
             arguments: json!({"command":"deploy prod"}),
@@ -2614,8 +2632,8 @@ async fn ingest_revises_a_full_batch_to_cite_structured_tool_evidence() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -2753,6 +2771,7 @@ async fn ingest_corrects_tool_evidence_without_a_matching_agent_source() {
             chat_id: chat.id.clone(),
             message_id: agent_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-model-alpha".into(),
             name: "web_search".into(),
             arguments: json!({"query":"Model Alpha V1 architecture"}),
@@ -2764,8 +2783,8 @@ async fn ingest_corrects_tool_evidence_without_a_matching_agent_source() {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await
@@ -2874,6 +2893,7 @@ async fn ingest_validates_supplied_tool_evidence_when_user_evidence_is_also_pres
             chat_id: chat.id.clone(),
             message_id: agent_id,
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-example-cable".into(),
             name: "web_search".into(),
             arguments: json!({"query":"Example cable"}),
@@ -2885,8 +2905,8 @@ async fn ingest_validates_supplied_tool_evidence_when_user_evidence_is_also_pres
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: at,
         })
         .await

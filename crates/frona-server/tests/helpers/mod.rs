@@ -438,28 +438,10 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
-<<<<<<< ours
-        self.stream_histories.lock().unwrap().push(chat_history);
-        let usage = Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            total_tokens: 15,
-            cached_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-            reasoning_tokens: 0,
-            tool_use_prompt_tokens: 0,
-        };
-||||||| base
-        let usage = Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            total_tokens: 15,
-            cached_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-            reasoning_tokens: 0,
-            tool_use_prompt_tokens: 0,
-        };
-=======
+        self.stream_histories
+            .lock()
+            .unwrap()
+            .push(chat_history.clone());
         self.system_prompts
             .lock()
             .unwrap()
@@ -472,11 +454,10 @@ impl ModelProvider for MockModelProvider {
             .lock()
             .unwrap()
             .push((_max_tokens, _temperature));
-        *self.last_history.lock().unwrap() = _chat_history.clone();
-        self.histories.lock().unwrap().push(_chat_history);
+        *self.last_history.lock().unwrap() = chat_history.clone();
+        self.histories.lock().unwrap().push(chat_history);
         self.tool_histories.lock().unwrap().push(_tools);
         let usage = self.usage.lock().unwrap().clone();
->>>>>>> upstream
         let response = match self.next_response() {
             MockResponse::Barrier(barrier, response) => {
                 barrier.wait().await;
@@ -915,6 +896,22 @@ pub fn test_metrics_ctx() -> frona::inference::usage::UsageService {
     test_usage_service(db)
 }
 
+pub fn test_providers(
+    name: &str,
+    provider: Arc<dyn ModelProvider>,
+) -> Arc<HashMap<String, Arc<dyn ModelProvider>>> {
+    Arc::new([(name.to_string(), provider)].into())
+}
+
+/// Upstream tests call this to build the provider set a `ChatService` resolves
+/// models from; in this fork that set is a `ModelProviderRegistry`.
+pub async fn test_model_service(
+    providers: HashMap<String, Arc<dyn ModelProvider>>,
+    groups: HashMap<String, ModelGroup>,
+) -> ModelProviderRegistry {
+    ModelProviderRegistry::for_testing(providers, groups)
+}
+
 pub fn test_registry_with_provider(
     name: &str,
     provider: Arc<dyn ModelProvider>,
@@ -1080,12 +1077,13 @@ pub fn chat_service_with_context(
         SurrealRepo::new(state.db.clone()),
         SurrealRepo::new(state.db.clone()),
         state.agent_service.clone(),
-        state.model_provider_service.clone(),
+        state.model_provider_service.registry().clone(),
         state.storage_service.clone(),
         state.user_service.clone(),
         state.prompts.clone(),
         state.broadcast_service.clone(),
         state.presign_service.clone(),
+        state.notification_service.clone(),
         state.usage_service.clone(),
         manager,
         agent_prompt_builder,
@@ -1157,11 +1155,6 @@ pub async fn test_chat_service_with_db() -> (
         300,
     );
 
-<<<<<<< ours
-    let chat_service = frona::chat::service::ChatService::new(
-||||||| base
-    frona::chat::service::ChatService::new(
-=======
     let skill_service = frona::agent::skill::service::SkillService::new(
         frona::agent::skill::registry::SkillRegistryClient::new(
             reqwest::Client::new(),
@@ -1179,8 +1172,7 @@ pub async fn test_chat_service_with_db() -> (
         empty_memory_service(),
         skill_service,
     );
-    frona::chat::service::ChatService::new(
->>>>>>> upstream
+    let chat_service = frona::chat::service::ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -1193,16 +1185,10 @@ pub async fn test_chat_service_with_db() -> (
         presign_service,
         frona::notification::service::NotificationService::new(SurrealRepo::new(db.clone())),
         usage_service,
-<<<<<<< ours
-    );
-    (chat_service, db)
-||||||| base
-    )
-=======
         empty_agent_context_manager(&db),
         agent_prompt_builder,
-    )
->>>>>>> upstream
+    );
+    (chat_service, db)
 }
 
 /// Build a `BasicMemoryService` for tests that construct a `Harness` directly
@@ -1284,19 +1270,13 @@ pub fn test_harness(
     providers.insert("mock".to_string(), mock_provider);
     let mut groups = HashMap::new();
     groups.insert("test".to_string(), test_model_group());
-<<<<<<< ours
     let mock_registry = ModelProviderRegistry::for_testing(providers, groups);
-||||||| base
-    let mock_registry = test_model_service(providers, groups).await;
-=======
-    let mock_registry = test_model_service(providers, groups).await;
     let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
         state.prompts.clone(),
         state.storage_service.clone(),
         empty_memory_service(),
         state.skill_service.clone(),
     );
->>>>>>> upstream
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -1336,3 +1316,5 @@ pub fn test_harness(
         state.usage_service.clone(),
     ))
 }
+
+pub mod app_state;

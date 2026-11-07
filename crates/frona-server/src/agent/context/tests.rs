@@ -35,6 +35,7 @@ fn skills(names: &[&str]) -> AgentContextSection {
 }
 fn test_user() -> crate::auth::User {
     crate::auth::User {
+        phone: None,
         id: "user".into(),
         handle: crate::handle!("user"),
         email: "user@example.com".into(),
@@ -51,6 +52,8 @@ pub(super) fn scope() -> AgentContextScope<'static> {
     static USER: std::sync::LazyLock<crate::auth::User> = std::sync::LazyLock::new(test_user);
     static AGENT: std::sync::LazyLock<crate::agent::models::Agent> =
         std::sync::LazyLock::new(|| crate::agent::models::Agent {
+            private_memory: false,
+            voice_id: None,
             id: "agent".into(),
             user_id: "user".into(),
             handle: crate::handle!("agent"),

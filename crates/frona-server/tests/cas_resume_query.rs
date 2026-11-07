@@ -25,6 +25,8 @@ async fn test_db() -> Surreal<Db> {
 
 fn make_message(id: &str, status: MessageStatus) -> Message {
     Message {
+        agent_context_signature: None,
+        processed_content: None,
         id: id.to_string(),
         chat_id: "chat-1".into(),
         role: MessageRole::Agent,
@@ -51,6 +53,7 @@ fn make_tool_call(id: &str, msg_id: &str, hitl_status: Option<ToolStatus>) -> To
         chat_id: "chat-1".into(),
         message_id: msg_id.to_string(),
         turn: 0,
+        provider_item_id: None,
         provider_call_id: format!("pc-{id}"),
         name: "ask_user_question".into(),
         arguments: serde_json::json!({"question": "?"}),
@@ -69,8 +72,8 @@ fn make_tool_call(id: &str, msg_id: &str, hitl_status: Option<ToolStatus>) -> To
         system_prompt: None,
         description: None,
         turn_text: None,
-        turn_reasoning: None,
         signature: None,
+        turn_reasoning: None,
         created_at: Utc::now(),
     }
 }

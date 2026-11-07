@@ -114,6 +114,12 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
     groups.insert("primary".to_string(), test_model_group());
     let mock_registry = ModelProviderRegistry::for_testing(providers, groups);
 
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        state.prompts.clone(),
+        state.storage_service.clone(),
+        helpers::empty_memory_service(),
+        state.skill_service.clone(),
+    );
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -127,6 +133,8 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.presign_service.clone(),
         state.notification_service.clone(),
         state.usage_service.clone(),
+        helpers::empty_agent_context_manager(&state.db),
+        agent_prompt_builder,
     );
     state.chat_service = chat_service.clone();
     // Rebuild Harness so it sees the new chat_service with the mock registry.
@@ -136,7 +144,6 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.storage_service.clone(),
         state.agent_service.clone(),
         helpers::test_memory_service(&state, &db),
-        state.skill_service.clone(),
         state.task_service.clone(),
         state.notification_service.clone(),
         state.vault_service.clone(),
@@ -213,7 +220,7 @@ async fn build_session_for_chat(state: &AppState, chat_id: &str) -> ChatSessionC
         .await
         .unwrap()
         .expect("chat exists");
-    let builder = Box::new(DefaultConversationBuilder {
+    let builder = Arc::new(DefaultConversationBuilder {
         user_service: state.user_service.clone(),
         storage_service: state.storage_service.clone(),
         agent_service: state.agent_service.clone(),
@@ -224,6 +231,7 @@ async fn build_session_for_chat(state: &AppState, chat_id: &str) -> ChatSessionC
         chat,
         CancellationToken::new(),
         builder,
+        &[],
     )
     .await
     .expect("session builds")

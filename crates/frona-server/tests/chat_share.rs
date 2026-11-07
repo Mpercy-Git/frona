@@ -43,6 +43,7 @@ async fn seed_user(user_service: &frona::auth::UserService, id: &str) {
 async fn seed_chat(db: &Surreal<Db>, owner_id: &str) -> Chat {
     let now = Utc::now();
     let chat = Chat {
+        agent_context_state: Default::default(),
         id: frona::core::repository::new_id(),
         user_id: owner_id.to_string(),
         space_id: None,

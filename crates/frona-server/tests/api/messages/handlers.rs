@@ -444,6 +444,7 @@ async fn batched_resolve_resumes_agent_loop() {
         let id = frona::core::repository::new_id();
         tc_ids.push(id.clone());
         let te = ToolCall {
+            provider_item_id: None,
             id,
             chat_id: chat_id.clone(),
             message_id: agent_msg_id.clone(),
