@@ -1255,6 +1255,7 @@ mod tests {
             message_id: msg.id.clone(),
             turn: 0,
             provider_call_id: String::new(),
+            provider_item_id: None,
             name: "web_search".to_string(),
             arguments: serde_json::json!({"q": "x"}),
             result: "ok".to_string(),
