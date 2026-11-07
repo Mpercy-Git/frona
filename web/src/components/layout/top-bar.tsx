@@ -75,15 +75,17 @@ export function TopBar() {
     return (
       <>
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
-      <div className="flex items-center h-14 px-3 bg-surface-nav border-b border-border shrink-0 gap-2 pt-safe">
+      <div className="flex items-center h-14 px-2 min-[400px]:px-3 bg-surface-nav border-b border-border shrink-0 gap-1 min-[400px]:gap-2 pt-safe">
         <button
+          id="mobile-navigation-toggle"
+          aria-label={configurationRoute ? "Open configuration navigation" : "Open navigation"}
+          aria-expanded={usesSubNav ? mobileSubNavOpen : mobileNavOpen}
+          aria-controls={configurationRoute ? "configuration-navigation" : undefined}
           onClick={() => {
-            // These pages render their own left sidebar bound to the sub-nav
-            // drawer (settings, server settings, and the agent/channel/MCP
-            // detail pages). Toggle that drawer on them; elsewhere the
-            // hamburger opens the main navigation drawer.
-            const SUB_NAV_ROUTES = ["/settings", "/admin/settings", "/agents", "/channels", "/mcp"];
-            if (SUB_NAV_ROUTES.some((r) => pathname.startsWith(r))) {
+            // Settings and the configuration detail pages render their own left
+            // sidebar bound to the sub-nav drawer; elsewhere the hamburger opens
+            // the main navigation drawer.
+            if (usesSubNav) {
               setMobileSubNavOpen(!mobileSubNavOpen);
             } else {
               setMobileNavOpen(!mobileNavOpen);
@@ -113,7 +115,7 @@ export function TopBar() {
 
         {hasActiveExecutions && <ActivityIndicator compact />}
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0 min-[400px]:gap-1">
           <AgentDropdown />
           <AppDropdown />
           <NotificationDropdown />

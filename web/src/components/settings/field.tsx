@@ -28,6 +28,7 @@ export function HelpTip({ content, label = "Help" }: { content: string; label?: 
   const [open, setOpen] = useState(false);
   const [hoverOpen, setHoverOpen] = useState(false);
   const contentId = useId();
+  return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Tooltip.Provider delayDuration={200}>
         <Tooltip.Root open={!open && hoverOpen} onOpenChange={nextOpen => setHoverOpen(!open && nextOpen)}>
@@ -60,6 +61,8 @@ export function HelpTip({ content, label = "Help" }: { content: string; label?: 
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+  );
+}
 
 interface FieldProps {
   label: string;

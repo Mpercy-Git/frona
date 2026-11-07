@@ -91,7 +91,6 @@ import { CredsSection } from "@/components/agents/configure/creds-section";
 import { ShareSection } from "@/components/agents/configure/share-section";
 import { TriggersSection } from "@/components/agents/configure/triggers-section";
 import { MemorySection } from "@/components/agents/configure/memory-section";
-import { ConfigSidebar } from "@/components/layout/config-sidebar";
 
 // Superset (includes the owner-only "share" and "triggers") — used for typing +
 // URL validation.
@@ -236,18 +235,13 @@ function AgentSettings() {
     : SECTIONS;
 
   return (
-    <div className="flex h-full bg-surface">
+    <div className="flex h-full min-h-0 min-w-0 bg-surface">
       {/* Sidebar — fixed column on desktop, drawer on mobile */}
-      <ConfigSidebar
+      <ConfigurationSidebar
+        backHref="/chat"
+        backLabel="Back"
         header={
           <>
-            <button
-              onClick={() => router.push("/chat")}
-              className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition mb-4"
-            >
-              <ArrowLeftIcon className="h-4 w-4" />
-              Back
-            </button>
             <h2 className="text-lg font-semibold text-text-primary mb-4 truncate">
               {agentDisplayName(agent.id, agent.name)}
             </h2>
@@ -255,12 +249,12 @@ function AgentSettings() {
         }
         sections={visibleSections}
         activeSection={activeSection}
-        onSelect={(id) => setActiveSection(id as SectionId)}
+        onSectionChange={setActiveSection}
       />
 
       {/* Content */}
-      <div className={`flex-1 ${activeSection === "prompt" ? "flex flex-col" : "overflow-y-auto"}`}>
-        <div className={`max-w-2xl mx-auto p-8 space-y-6 ${activeSection === "prompt" ? "flex-1 flex flex-col" : ""}`}>
+      <div className={`flex-1 min-h-0 min-w-0 overflow-y-auto [overflow-wrap:anywhere] ${activeSection === "prompt" ? "flex flex-col" : ""}`}>
+        <div className={`w-full max-w-2xl mx-auto p-4 md:p-8 space-y-6 ${activeSection === "prompt" ? "flex-1 min-h-0 flex flex-col" : ""}`}>
           {error && (
             <div className="rounded-lg bg-error-bg p-3 text-sm text-error-text">{error}</div>
           )}
@@ -273,7 +267,7 @@ function AgentSettings() {
             </div>
           )}
 
-          <div className={activeSection === "prompt" ? "flex-1 flex flex-col" : ""}>
+          <div className={activeSection === "prompt" ? "flex-1 min-h-0 flex flex-col" : ""}>
             {activeSection === "profile" && (
               <ProfileSection
                 agentId={agentId!}

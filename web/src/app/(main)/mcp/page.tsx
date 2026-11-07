@@ -8,7 +8,7 @@ import { SectionHeader, SectionPanel, Field, TextInput } from "@/components/sett
 import { formatDistanceToNow } from "date-fns";
 import { SandboxSection } from "@/components/agents/configure/sandbox-section";
 import { AddCredentialForm, type VaultGrant, type VaultConnection, type PendingCredential } from "@/components/agents/configure/creds-section";
-import { ConfigSidebar } from "@/components/layout/config-sidebar";
+import { ConfigurationSidebar } from "@/components/layout/configuration-sidebar";
 import { McpLogViewer } from "@/components/mcp/mcp-log-viewer";
 
 interface McpServer {
@@ -370,19 +370,13 @@ function McpServerPage() {
     : server.display_name;
 
   return (
-    <div className="flex h-full bg-surface">
+    <div className="flex h-full min-h-0 min-w-0 bg-surface">
       {/* Sidebar — fixed column on desktop, drawer on mobile */}
-      <ConfigSidebar
+      <ConfigurationSidebar
+        backHref="/settings#mcp"
+        backLabel="Back to Settings"
         header={
           <>
-            <button
-              onClick={() => router.push("/settings#mcp")}
-              className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition mb-4"
-            >
-              <ArrowLeftIcon className="h-4 w-4" />
-              Back to Settings
-            </button>
-
             <div className="flex items-center gap-2 mb-4">
               {ownerAvatar ? (
                 <img src={ownerAvatar} alt="" className="h-8 w-8 rounded-lg shrink-0" />
@@ -400,12 +394,12 @@ function McpServerPage() {
         }
         sections={SECTIONS}
         activeSection={activeSection}
-        onSelect={(id) => setActiveSection(id as SectionId)}
+        onSectionChange={setActiveSection}
       />
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-2xl mx-auto p-8 space-y-6">
+      <div className="flex-1 min-h-0 min-w-0 overflow-y-auto [overflow-wrap:anywhere]">
+        <div className="max-w-2xl mx-auto p-4 md:p-8 space-y-6">
           {restartRequired && server.status === "running" && (
             <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-500 flex items-center justify-between gap-3">
               <span>Saved. Restart the server for the new configuration to take effect.</span>

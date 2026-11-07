@@ -102,16 +102,18 @@ export function AgentDropdown() {
                     router.push(`/agents?id=${agent.id}`);
                     setOpen(false);
                   }}
-                  className="p-1 rounded text-text-tertiary hover:text-text-primary transition opacity-0 group-hover:opacity-100 reveal-on-touch"
+                  className="p-1 rounded text-text-tertiary hover:text-text-primary transition row-action group-hover:opacity-100 group-focus-within:opacity-100"
                   title="Configure"
+                  aria-label={`Configure ${agentDisplayName(agent.id, agent.name)}`}
                 >
                   <Cog6ToothIcon className="h-4 w-4" />
                 </button>
                 {!agent.is_shared && (
                   <button
                     onClick={(e) => handleDelete(e, agent)}
-                    className="p-1 rounded text-text-tertiary hover:text-error-text transition opacity-0 group-hover:opacity-100 reveal-on-touch"
+                    className="p-1 rounded text-text-tertiary hover:text-error-text transition row-action group-hover:opacity-100 group-focus-within:opacity-100"
                     title="Delete"
+                    aria-label={`Delete ${agentDisplayName(agent.id, agent.name)}`}
                   >
                     <TrashIcon className="h-4 w-4" />
                   </button>
