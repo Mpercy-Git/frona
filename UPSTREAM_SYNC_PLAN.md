@@ -514,3 +514,23 @@ web_search/config, web tsc/eslint/vitest on touched files. Not ported: upstream'
 API-level integration tests for these commits; `tests/api` not run.
 
 Next: Group G (start with `1740e85` -> `10b92aa`), then H, I, J.
+
+### Status update — 2026-11-07 (Group I landed, Group G deferred)
+
+Landed in `750176a`..`ee05b31` + follow-up: upload size limits (`461d8df`),
+previewable-file classification (`5349cf9`, fork keeps its own media MIME map),
+MCP env validation (`c3ece71`), `f1933ff`, composer/upload failure handling
+(`b2d13ba`, `3d5006a`, `5de6a81`), `35b7b5d`, `3e47019` (fork already had an
+error boundary), `aeed500`, `eec6584`, `e293020`, `1c4f47a`, `1055458`,
+`f1edae5`, `3f0ab54`, `b5354c4`, `f0c22b4`, `f1af946`, `aef08a6` (docs only).
+
+Deviations: `625d65b` (paste normalization) NOT ported - fork's Android paste
+plugin kept; upstream's `error.test.tsx` and `message_compatibility.rs` dropped
+(need Next upgrade / Group G helpers); test-only hunks for MCP/vault/upload
+integration tests dropped.
+Verified: web tsc/eslint clean, vitest 968 pass; cargo check --tests; lib tests
+for storage::content, core::config, tool::mcp. `tests/api` not run.
+
+Group G (compaction/history rework) deferred as its own PR: fork `compactor.rs`
+is 778 lines vs upstream 430 and overlaps `00b6cfd`/`42fd63d`.
+Next: Group H, then J.
