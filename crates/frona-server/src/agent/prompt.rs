@@ -394,6 +394,7 @@ mod tests {
         ]);
         let handle = Handle::try_new("agent").unwrap();
         let mut user = crate::auth::User {
+            phone: None,
             id: "alice".into(),
             handle: crate::handle!("alice"),
             email: "alice@example.com".into(),

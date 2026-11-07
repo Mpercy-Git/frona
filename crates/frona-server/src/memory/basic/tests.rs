@@ -181,6 +181,7 @@ async fn scheduled_memory_uses_latest_chat_in_scope_or_explicit_memory_group() {
             "space"
         };
         let chat = crate::chat::models::Chat {
+            agent_context_state: Default::default(),
             id: format!("chat-{group}"),
             user_id: user_id.to_string(),
             space_id: Some(space_id.to_string()),

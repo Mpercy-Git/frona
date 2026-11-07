@@ -373,7 +373,7 @@ mod tests {
 
     #[tokio::test]
     async fn tls_failure_wrapped_in_io_keeps_its_safe_cause() {
-        crate::initialize_tls();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         for streaming in [false, true] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let endpoint = format!("https://{}", listener.local_addr().unwrap());

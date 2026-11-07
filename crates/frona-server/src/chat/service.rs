@@ -2437,6 +2437,7 @@ mod tests {
         let service = &state.chat_service;
         let now = chrono::Utc::now();
         let chat = Chat {
+            agent_context_state: Default::default(),
             id: "failed-chat".into(),
             user_id: "user".into(),
             space_id: None,

@@ -1487,6 +1487,7 @@ mod tests {
 
     fn tool_call(name: &str, arguments: serde_json::Value, result: &str) -> ToolCall {
         ToolCall {
+            provider_item_id: None,
             id: "tc1".into(),
             chat_id: "task-chat".into(),
             message_id: "m1".into(),

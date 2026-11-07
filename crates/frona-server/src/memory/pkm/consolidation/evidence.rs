@@ -1120,7 +1120,6 @@ mod tests {
             turn_text: None,
             signature: None,
             turn_reasoning: None,
-            signature: None,
             created_at: Utc::now(),
         }
     }

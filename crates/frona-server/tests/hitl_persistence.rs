@@ -23,6 +23,7 @@ async fn test_db() -> Surreal<Db> {
 
 fn base_tool_call(name: &str) -> ToolCall {
     ToolCall {
+        provider_item_id: None,
         id: frona::core::repository::new_id(),
         chat_id: "chat-1".into(),
         message_id: "msg-1".into(),

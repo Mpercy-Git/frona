@@ -246,7 +246,6 @@ mod tests {
             turn_text: None,
             signature: None,
             turn_reasoning: None,
-            signature: None,
             created_at: Utc.timestamp_opt(i64::from(turn), 0).unwrap(),
         }
     }

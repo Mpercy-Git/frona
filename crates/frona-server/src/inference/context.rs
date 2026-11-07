@@ -258,7 +258,7 @@ mod tests {
             catalog_provider: String::new(),
             provider_handle: crate::handle!("fixture"),
             model_id: "model".into(),
-            provider: crate::core::config::ProviderModel::Generic,
+            provider: crate::core::config::ProviderModel::default(),
             request_settings: Default::default(),
         };
         let history = vec![RigMessage::user("exact history")];

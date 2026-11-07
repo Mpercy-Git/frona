@@ -65,7 +65,6 @@ mod tests {
             turn_text: turn_text.map(str::to_string),
             signature: Some("opaque-provider-signature-not-evidence".into()),
             turn_reasoning: None,
-            signature: None,
             created_at: Utc.timestamp_opt(turn as i64, 0).unwrap(),
         }
     }

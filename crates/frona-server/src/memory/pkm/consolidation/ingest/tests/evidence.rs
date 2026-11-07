@@ -34,6 +34,7 @@ pub(super) fn transcript_source(
 
 fn recall_projection(message_id: &str, result: &str) -> RecallProjection {
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "call-1".into(),
         chat_id: "chat-1".into(),
         message_id: message_id.into(),
@@ -225,6 +226,7 @@ fn critical_values_may_be_covered_across_selected_execution_evidence() {
     )];
     let call = |id: &str, turn: u32, arguments: serde_json::Value, result: &str| {
         crate::inference::tool_call::ToolCall {
+            provider_item_id: None,
             id: id.into(),
             chat_id: "chat-1".into(),
             message_id: "agent-1".into(),
@@ -326,6 +328,7 @@ fn supplied_tool_evidence_requires_a_matching_agent_assertion_source() {
         ),
     ];
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "model-alpha".into(),
         chat_id: "chat-1".into(),
         message_id: "agent-4".into(),
@@ -413,6 +416,7 @@ fn critical_value_rejection_reports_all_missing_values_at_once() {
         },
     )];
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "flights".into(),
         chat_id: "chat-1".into(),
         message_id: "agent-1".into(),
@@ -501,6 +505,7 @@ fn critical_value_rejection_identifies_only_the_unsupported_clause() {
         },
     )];
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "accelerator-a".into(),
         chat_id: "task-chat".into(),
         message_id: "task-agent".into(),
@@ -619,6 +624,7 @@ fn corrected_agent_evidence_checks_the_complete_selected_execution() {
         },
     )];
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "deploy".into(),
         chat_id: "chat-1".into(),
         message_id: "agent-1".into(),
@@ -677,6 +683,7 @@ fn revised_evidence_validation_does_not_use_array_position_as_identity() {
         },
     )];
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "accelerator-a".into(),
         chat_id: "chat-1".into(),
         message_id: "agent-1".into(),
@@ -745,6 +752,7 @@ fn tool_operation_name_is_available_for_critical_value_validation() {
         },
     )];
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "fetch".into(),
         chat_id: "chat-1".into(),
         message_id: "agent-1".into(),
@@ -814,6 +822,7 @@ fn local_negative_constraint_does_not_negate_a_positive_procedure() {
         },
     )];
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "instructions".into(),
         chat_id: "chat-1".into(),
         message_id: "agent-1".into(),
@@ -894,6 +903,7 @@ fn tool_evidence_resolves_against_its_own_agent_citation() {
         ),
     ];
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "release".into(),
         chat_id: "chat-1".into(),
         message_id: "agent-2".into(),
@@ -971,6 +981,7 @@ fn tool_quote_is_resolved_against_the_sanitized_execution_shown_during_ingest() 
         },
     )];
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "request".into(),
         chat_id: "chat-1".into(),
         message_id: "agent-1".into(),
@@ -1065,6 +1076,7 @@ fn requested_url_is_stored_in_web_page_memory_evidence() {
         },
     )];
     let call = crate::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: "release".into(),
         chat_id: "chat-1".into(),
         message_id: "agent-1".into(),
