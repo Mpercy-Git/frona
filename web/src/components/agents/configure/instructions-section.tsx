@@ -15,9 +15,9 @@ export function InstructionsSection({ prompt, defaultPrompt, onPromptChange }: I
   const isDefault = prompt === defaultPrompt;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex min-h-0 flex-col h-full">
       <SectionHeader title="Prompt" description="System prompt sent at the beginning of every conversation" icon={DocumentTextIcon} />
-      <SectionPanel className="flex-1 flex flex-col">
+      <SectionPanel className="flex-1 min-h-0 flex flex-col">
         <div className="flex items-start justify-between gap-3">
           <p className="text-sm text-text-tertiary">
             The system prompt defines how this agent behaves, what it knows, and how it responds.{" "}
@@ -48,7 +48,8 @@ export function InstructionsSection({ prompt, defaultPrompt, onPromptChange }: I
         <textarea
           value={prompt}
           onChange={(e) => onPromptChange(e.target.value)}
-          className="flex-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-tertiary focus:border-accent focus:outline-none resize-none"
+          aria-label="System prompt"
+          className="flex-1 min-h-32 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-tertiary focus:border-accent focus:outline-none resize-none"
         />
       </SectionPanel>
     </div>

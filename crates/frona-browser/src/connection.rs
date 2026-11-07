@@ -22,9 +22,12 @@ struct Handle {
     /// interleave (an action renders compact, an explicit `browser_snapshot` may not).
     last_snapshot: Mutex<Option<(RenderMode, String)>>,
     alive: AtomicBool,
+    disconnect_error: Mutex<Option<Error>>,
     /// Set shorter than Browserless's per-job timeout so we self-evict before
     /// Browserless force-closes the WS mid-op.
     expires_at: Instant,
+    navigation_timeout: Duration,
+    navigation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Drop for Handle {
@@ -58,7 +61,10 @@ impl BrowserConnection {
             snapshot_refs: Mutex::new(None),
             last_snapshot: Mutex::new(None),
             alive: AtomicBool::new(true),
+            disconnect_error: Mutex::new(None),
             expires_at: Instant::now() + lifetime,
+            navigation_timeout: timeout,
+            navigation_lock: Arc::new(tokio::sync::Mutex::new(())),
         });
 
         let weak = Arc::downgrade(&inner);
@@ -70,6 +76,9 @@ impl BrowserConnection {
                     if crate::error::is_cdp_disconnect(&e) {
                         tracing::warn!(error = %e, "chromiumoxide handler reported dead WS; marking connection dead");
                         if let Some(inner) = weak.upgrade() {
+                            if let Ok(mut error) = inner.disconnect_error.lock() {
+                                *error = Some(Error::Cdp(e));
+                            }
                             inner.alive.store(false, Ordering::Release);
                         }
                         return;
@@ -87,12 +96,27 @@ impl BrowserConnection {
         }
 
         let conn = BrowserConnection { inner };
-        if conn.pages().await?.is_empty() {
-            conn.inner
-                .browser
-                .new_page("about:blank")
-                .await
-                .map_err(Error::Cdp)?;
+        let initialization = async {
+            if conn.pages().await?.is_empty() {
+                conn.inner
+                    .browser
+                    .new_page("about:blank")
+                    .await
+                    .map_err(Error::Cdp)?;
+            }
+            Ok::<_, Error>(())
+        }
+        .await;
+        if let Err(error) = initialization {
+            // The handler dropping its channels can hide the actual transport error.
+            // Preserve it so a permanent protocol failure is not retried as a disconnect.
+            return Err(conn
+                .inner
+                .disconnect_error
+                .lock()
+                .ok()
+                .and_then(|mut error| error.take())
+                .unwrap_or(error));
         }
         Ok(conn)
     }
@@ -107,6 +131,14 @@ impl BrowserConnection {
 
     pub fn expires_at(&self) -> Instant {
         self.inner.expires_at
+    }
+
+    pub(crate) async fn lock_navigation(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.inner.navigation_lock.clone().lock_owned().await
+    }
+
+    pub(crate) fn navigation_timeout(&self) -> Duration {
+        self.inner.navigation_timeout
     }
 
     pub(crate) async fn active_page(&self) -> Result<Page> {
@@ -170,6 +202,7 @@ impl BrowserConnection {
     }
 
     pub async fn disconnect(self) -> Result<()> {
+        self.mark_dead();
         if let Ok(mut guard) = self.inner.handler_task.lock()
             && let Some(task) = guard.take()
         {

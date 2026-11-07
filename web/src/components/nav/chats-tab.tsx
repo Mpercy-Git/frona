@@ -33,6 +33,7 @@ export function ChatsTab() {
     deleteChat,
     archiveSpace,
     deleteSpace,
+    setMobileNavOpen,
   } = useNavigation();
   const { activeChatId, activeChat, setActiveChat } = useSession();
   const selectedChatId = activeChatId ?? activeChat?.id ?? null;
@@ -52,9 +53,15 @@ export function ChatsTab() {
   const [spaceActionPending, setSpaceActionPending] = useState(false);
   const [spaceError, setSpaceError] = useState<string | null>(null);
 
+  const navigate = (href: string) => {
+    // Dismiss on selection, including the current route, without waiting for navigation.
+    setMobileNavOpen(false);
+    router.push(href);
+  };
+
   const handleNewChat = () => {
     setActiveChat(null);
-    router.push("/chat");
+    navigate("/chat");
   };
 
   const handleCreateSpace = async (e: React.FormEvent) => {
@@ -178,7 +185,7 @@ export function ChatsTab() {
           }`}
         >
           <button
-            onClick={() => router.push(`/space?id=${space.id}`)}
+            onClick={() => navigate(`/space?id=${space.id}`)}
             className="flex min-w-0 flex-1 items-center gap-1 px-3 py-2 text-left"
           >
             <FolderIcon className="h-4 w-4 shrink-0 text-text-tertiary" />
@@ -187,7 +194,7 @@ export function ChatsTab() {
           </button>
           <button
             onClick={() => setSpaceMenu((id) => (id === space.id ? null : space.id))}
-            className="mr-1 rounded p-0.5 text-text-tertiary opacity-0 transition hover:text-text-primary group-hover:opacity-100 focus:opacity-100"
+            className="mr-1 rounded p-0.5 text-text-tertiary row-action transition hover:text-text-primary group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100"
             aria-label={`Actions for ${space.name}`}
           >
             <EllipsisVerticalIcon className="h-5 w-5" />
@@ -293,7 +300,7 @@ export function ChatsTab() {
               }`}
             >
               <button
-                onClick={() => router.push(`/chat?id=${chat.id}`)}
+                onClick={() => navigate(`/chat?id=${chat.id}`)}
                 className="flex-1 min-w-0 px-3 py-2 text-left text-sm truncate"
                 title={chat.is_shared && chat.shared_by ? `Shared by @${chat.shared_by}` : undefined}
               >
@@ -339,7 +346,7 @@ export function ChatsTab() {
               }`}
             >
               <button
-                onClick={() => router.push(`/chat?id=${chat.id}`)}
+                onClick={() => navigate(`/chat?id=${chat.id}`)}
                 className="flex-1 min-w-0 px-3 py-2 text-left text-sm truncate"
               >
                 {chat.title ?? "New chat"}

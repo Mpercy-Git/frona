@@ -53,11 +53,10 @@ pub fn resolve_path(
             "virtual-path URIs are not supported here: {input}",
         )));
     }
-    if input.starts_with('/') {
-        return Ok(std::path::PathBuf::from(input));
-    }
-    crate::storage::path::validate_relative_path(input)?;
-    Ok(workspace_root(ctx, storage).join(input))
+    // Use the same absolute destination for the existing sandbox-policy check
+    // and subsequent I/O. The policy, including explicit sibling grants, owns
+    // authorization; resolving a native path does not imply workspace-only access.
+    crate::storage::path::resolve_filesystem_path(&workspace_root(ctx, storage).join(input))
 }
 
 /// Atomically writes `content` to `target` via a tempfile in the same parent.
@@ -228,9 +227,17 @@ mod resolve_path_tests {
     }
 
     #[tokio::test]
-    async fn traversal_in_bare_path_is_rejected() {
-        assert!(run("../etc/passwd", "mina", "system", "/app/data").is_err());
-        assert!(run("subdir/../../etc/passwd", "mina", "system", "/app/data").is_err());
+    async fn parent_paths_resolve_before_sandbox_policy_authorizes_them() {
+        // Resolution is not authorization: the sandbox policy checks the
+        // resolved path, so `..` is normalized rather than rejected here.
+        assert_eq!(
+            run("subdir/../file.txt", "mina", "system", "/app/data").unwrap(),
+            PathBuf::from("/app/data/users/mina/agents/system/file.txt")
+        );
+        assert_eq!(
+            run("../etc/passwd", "mina", "system", "/app/data").unwrap(),
+            PathBuf::from("/app/data/users/mina/agents/etc/passwd")
+        );
     }
 
     #[tokio::test]

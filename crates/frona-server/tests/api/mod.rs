@@ -171,6 +171,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
             state.token_service.clone(),
             state.keypair_service.clone(),
             state.user_service.clone(),
+            state.agent_service.clone(),
             state.policy_service.clone(),
             state.storage_service.clone(),
             state.config.server.public_base_url(),
@@ -187,6 +188,7 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::activity::router())
         .merge(routes::admin::router())
         .merge(routes::auth::router())
+        .merge(routes::browser::router())
         .merge(routes::agents::router())
         .merge(routes::chats::router())
         .merge(routes::commands::router())
@@ -195,7 +197,7 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::tasks::router())
         .merge(routes::triggers::router())
         .merge(routes::push::router())
-        .merge(routes::files::router())
+        .merge(routes::files::router(&state.config.server))
         .merge(routes::contacts::router())
         .merge(routes::navigation::router())
         .merge(routes::messages::router())

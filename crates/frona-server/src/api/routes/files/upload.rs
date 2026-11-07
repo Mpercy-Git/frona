@@ -16,22 +16,17 @@ use super::models::PresignRequest;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 
-use super::MAX_FILE_SIZE;
-
-/// Map a multipart streaming error to an `ApiError`. When the request exceeds
-/// the body limit, axum aborts the stream mid-read and the resulting
-/// `MultipartError` carries a `413` status. Without this, that surfaces to the
-/// user as a cryptic "error parsing multipart form-data" instead of the real
-/// cause (an oversized file), so translate it into the same friendly message
-/// the explicit size check below produces.
-fn map_multipart_err(e: MultipartError) -> ApiError {
-    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
-        return ApiError(AppError::Validation(format!(
-            "File too large (max {}MB)",
-            MAX_FILE_SIZE / 1024 / 1024
-        )));
+fn multipart_error(error: MultipartError, max_request_size: usize) -> ApiError {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError(AppError::Http {
+            status: StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+            message: format!(
+                "Upload request too large (max {max_request_size} bytes including multipart data)"
+            ),
+        })
+    } else {
+        ApiError(AppError::Validation(error.body_text()))
     }
-    ApiError(AppError::Validation(e.to_string()))
 }
 
 pub(crate) async fn upload_file(
@@ -39,26 +34,31 @@ pub(crate) async fn upload_file(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<Attachment>, ApiError> {
+    let max_file_size = state.config.server.max_upload_file_size_bytes;
+    let map_multipart_error =
+        |error| multipart_error(error, state.config.server.max_upload_request_size_bytes());
     let mut file_data: Option<(String, Vec<u8>)> = None;
     let mut relative_path: Option<String> = None;
 
-    while let Some(field) = multipart.next_field().await.map_err(map_multipart_err)? {
+    while let Some(mut field) = multipart.next_field().await.map_err(map_multipart_error)? {
         match field.name() {
             Some("path") => {
-                relative_path = Some(field.text().await.map_err(map_multipart_err)?);
+                relative_path = Some(field.text().await.map_err(map_multipart_error)?);
             }
             Some("file") | Some("upload") => {
                 let filename = field.file_name().unwrap_or("upload").to_string();
-                let bytes = field.bytes().await.map_err(map_multipart_err)?;
-
-                if bytes.len() > MAX_FILE_SIZE {
-                    return Err(ApiError(AppError::Validation(format!(
-                        "File too large (max {}MB)",
-                        MAX_FILE_SIZE / 1024 / 1024
-                    ))));
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field.chunk().await.map_err(map_multipart_error)? {
+                    if chunk.len() > max_file_size - bytes.len() {
+                        return Err(ApiError(AppError::Http {
+                            status: StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+                            message: format!("File too large (max {max_file_size} bytes)"),
+                        }));
+                    }
+                    bytes.extend_from_slice(&chunk);
                 }
 
-                file_data = Some((filename, bytes.to_vec()));
+                file_data = Some((filename, bytes));
             }
             _ => {}
         }

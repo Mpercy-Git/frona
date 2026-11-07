@@ -4,34 +4,17 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/components/ui/code-block";
 
-const EXT_TO_LANGUAGE: Record<string, string> = {
-  js: "javascript", jsx: "jsx", ts: "typescript", tsx: "tsx",
-  py: "python", rb: "ruby", rs: "rust", go: "go", java: "java",
-  c: "c", cpp: "cpp", h: "c", hpp: "cpp", cs: "csharp",
-  swift: "swift", kt: "kotlin", scala: "scala", php: "php",
-  sh: "bash", bash: "bash", zsh: "bash", fish: "fish",
-  html: "html", css: "css", scss: "scss", less: "less",
-  json: "json", yaml: "yaml", yml: "yaml", toml: "toml", xml: "xml",
-  sql: "sql", graphql: "graphql", gql: "graphql",
-  md: "markdown", mdx: "mdx", tex: "latex",
-  dockerfile: "dockerfile", makefile: "makefile",
-  tf: "hcl", hcl: "hcl", nix: "nix",
-  lua: "lua", r: "r", dart: "dart", zig: "zig", v: "v",
-  svelte: "svelte", vue: "vue", astro: "astro",
-};
+import { detectContentType, languageFromFilename } from "@/lib/file-manager-utils";
 
-export function languageFromFilename(filename: string): string | null {
-  const ext = filename.split(".").pop()?.toLowerCase();
-  if (!ext) return null;
-  return EXT_TO_LANGUAGE[ext] ?? null;
-}
+export { languageFromFilename };
 
 export function canPreviewFile(contentType: string, filename: string): boolean {
-  if (contentType.startsWith("text/")) return true;
-  if (contentType === "application/json") return true;
-  if (contentType === "application/xml") return true;
-  if (languageFromFilename(filename)) return true;
-  return false;
+  const mime = detectContentType(filename, contentType);
+  return mime.startsWith("text/") || [
+    "application/json", "application/xml", "application/xhtml+xml",
+    "application/javascript", "application/ecmascript", "application/typescript",
+    "application/yaml", "application/x-yaml", "application/toml", "application/sql", "application/graphql",
+  ].includes(mime);
 }
 
 /** Shared by the in-app file-preview modal and the standalone `/p/` page. */
@@ -45,10 +28,22 @@ export function FilePreviewContent({
   contentType: string;
 }) {
   const lang = languageFromFilename(filename);
-  const isMarkdown =
-    contentType === "text/markdown" ||
-    filename.endsWith(".md") ||
-    filename.endsWith(".mdx");
+  const mime = detectContentType(filename, contentType);
+  if (mime === "text/html" || mime === "application/xhtml+xml") {
+    // Never add allow-same-origin: fetched HTML (including blobs) is untrusted.
+    // The opaque origin permits scripts/CDN assets, but denies app DOM/storage.
+    // Relative private assets and persistent storage are intentionally unsupported.
+    return (
+      <iframe
+        title={filename}
+        srcDoc={content}
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        className="w-full min-h-[60vh] border-0 bg-white"
+      />
+    );
+  }
+  const isMarkdown = mime === "text/markdown";
 
   if (isMarkdown) {
     return (
