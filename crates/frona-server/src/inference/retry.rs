@@ -11,14 +11,14 @@ use tokio::sync::mpsc;
 
 use crate::chat::broadcast::EventSender;
 
-use crate::inference::context::truncate_history;
+use crate::inference::context::{estimate_message_tokens, estimate_tokens, truncate_history};
 use crate::inference::error::InferenceError;
 use crate::inference::provider::ModelProvider;
 use crate::inference::provider::{InferenceOutput, ModelConfig, StreamToken};
 use crate::inference::tool_loop::{InferenceEvent, InferenceEventKind};
 use crate::inference::usage::UsageContext;
 use crate::inference::usage::{LatencyMetrics, UsageService};
-use crate::inference::{ModelGroup, RequestOverrides, config::RetryConfig};
+use crate::inference::{ModelGroup, ModelRequest, RequestOverrides, config::RetryConfig};
 use std::collections::HashMap;
 
 /// Result of a retried operation with retry instrumentation. `retry_count` is
@@ -81,6 +81,7 @@ where
     })
 }
 
+<<<<<<< ours
 /// Output caps providers have reported for a model (`provider/model`), learned from
 /// rejections that state the ceiling. Later requests are clamped up front so a
 /// misconfigured `max_tokens` costs one rejected request per process, not one per call.
@@ -116,15 +117,78 @@ fn learn_output_cap(model: &ModelConfig, sent: Option<u64>, error: &InferenceErr
     Some(cap)
 }
 
+||||||| base
+=======
+/// How a completion handles input that exceeds its configured context budget.
+#[derive(Clone, Copy)]
+pub(crate) enum HistoryOverflow {
+    TruncateOldest,
+    Reject,
+}
+
+fn completion_history(
+    history: &[RigMessage],
+    system_prompt: &str,
+    tools: &[RigToolDefinition],
+    group: &ModelGroup,
+    max_output: usize,
+    overflow: HistoryOverflow,
+    input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
+) -> Result<Vec<RigMessage>, String> {
+    if let Some(tokens) = input_token_estimate
+        .and_then(|estimate| estimate.for_request(&group.main, system_prompt, history, tools))
+    {
+        let available = group.context_window.saturating_sub(max_output);
+        if tokens > available {
+            return Err(format!(
+                "Complete input exceeds context limit ({tokens} calibrated tokens, {available} available)"
+            ));
+        }
+        return Ok(history.to_vec());
+    }
+    if matches!(overflow, HistoryOverflow::TruncateOldest) {
+        return truncate_history(
+            history.to_vec(),
+            system_prompt,
+            group.context_window,
+            max_output,
+            group.inference.history_truncation_pct,
+        );
+    }
+    let tokens = history.iter().map(estimate_message_tokens).sum::<usize>()
+        + estimate_tokens(system_prompt)
+        + tools
+            .iter()
+            .map(|tool| {
+                estimate_tokens(
+                    &serde_json::to_string(tool).expect("tool definition is serializable"),
+                )
+            })
+            .sum::<usize>();
+    let available = group.context_window.saturating_sub(max_output);
+    if tokens > available {
+        return Err(format!(
+            "Complete input exceeds context limit ({tokens} estimated tokens, {available} available)"
+        ));
+    }
+    Ok(history.to_vec())
+}
+
+>>>>>>> upstream
 pub(crate) async fn inference_with_retry_and_fallback(
     model_group: &ModelGroup,
-    overrides: RequestOverrides,
-    system_prompt: &str,
-    history: Vec<RigMessage>,
-    tools: Vec<RigToolDefinition>,
-    usage_service: &UsageService,
-    usage_ctx: &UsageContext,
+    request: ModelRequest<'_>,
+    overflow: HistoryOverflow,
 ) -> Result<(Vec<AssistantContent>, crate::inference::Usage), InferenceError> {
+    let ModelRequest {
+        overrides,
+        input_token_estimate,
+        system_prompt,
+        history,
+        tools,
+        usage_service,
+        usage_context: usage_ctx,
+    } = request;
     ensure_usable(&model_group.providers, model_group).await?;
     let mut errors = Vec::new();
     let max_tokens = overrides
@@ -134,18 +198,20 @@ pub(crate) async fn inference_with_retry_and_fallback(
         .temperature
         .or(model_group.main.request_settings.temperature);
     let max_output = max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
-    let truncation_pct = model_group.inference.history_truncation_pct;
 
-    let truncated = truncate_history(
-        history.clone(),
+    let candidate_history = completion_history(
+        &history,
         system_prompt,
-        model_group.context_window,
+        &tools,
+        model_group,
         max_output,
-        truncation_pct,
+        overflow,
+        input_token_estimate,
     );
 
     let ref_str = model_group.main.as_str();
     let start = Instant::now();
+<<<<<<< ours
     let mut max_tokens = capped_max_tokens(&model_group.main, max_tokens);
     let result = loop {
         match retry_with_backoff(&model_group.retry, &model_group.main, || async {
@@ -171,6 +237,42 @@ pub(crate) async fn inference_with_retry_and_fallback(
         }
     };
     match result {
+||||||| base
+    match retry_with_backoff(&model_group.retry, &model_group.main, || async {
+        let provider = provider_for(&model_group.providers, &model_group.main)?;
+        provider
+            .inference(
+                &model_group.main,
+                system_prompt,
+                truncated.clone(),
+                tools.clone(),
+                max_tokens,
+                temperature,
+            )
+            .await
+    })
+    .await
+    {
+=======
+    match retry_with_backoff(&model_group.retry, &model_group.main, || async {
+        let request_history = candidate_history
+            .as_ref()
+            .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
+        let provider = provider_for(&model_group.providers, &model_group.main)?;
+        provider
+            .inference(
+                &model_group.main,
+                system_prompt,
+                request_history.clone(),
+                tools.clone(),
+                max_tokens,
+                temperature,
+            )
+            .await
+    })
+    .await
+    {
+>>>>>>> upstream
         Ok(RetryOutcome {
             value:
                 InferenceOutput {
@@ -209,14 +311,17 @@ pub(crate) async fn inference_with_retry_and_fallback(
             .or(fallback.request_settings.temperature);
         let max_output = max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
         let ref_str = fallback.as_str();
-        let truncated_fb = truncate_history(
-            history.clone(),
+        let candidate_history = completion_history(
+            &history,
             system_prompt,
-            model_group.context_window,
+            &tools,
+            model_group,
             max_output,
-            truncation_pct,
+            overflow,
+            None,
         );
         let start = Instant::now();
+<<<<<<< ours
         let mut max_tokens = capped_max_tokens(fallback, max_tokens);
         let result = loop {
             match retry_with_backoff(&model_group.retry, fallback, || async {
@@ -242,6 +347,42 @@ pub(crate) async fn inference_with_retry_and_fallback(
             }
         };
         match result {
+||||||| base
+        match retry_with_backoff(&model_group.retry, fallback, || async {
+            let provider = provider_for(&model_group.providers, fallback)?;
+            provider
+                .inference(
+                    fallback,
+                    system_prompt,
+                    truncated_fb.clone(),
+                    tools.clone(),
+                    max_tokens,
+                    temperature,
+                )
+                .await
+        })
+        .await
+        {
+=======
+        match retry_with_backoff(&model_group.retry, fallback, || async {
+            let request_history = candidate_history
+                .as_ref()
+                .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
+            let provider = provider_for(&model_group.providers, fallback)?;
+            provider
+                .inference(
+                    fallback,
+                    system_prompt,
+                    request_history.clone(),
+                    tools.clone(),
+                    max_tokens,
+                    temperature,
+                )
+                .await
+        })
+        .await
+        {
+>>>>>>> upstream
             Ok(RetryOutcome {
                 value:
                     InferenceOutput {
@@ -277,13 +418,17 @@ pub(crate) async fn inference_with_retry_and_fallback(
 
 pub(crate) async fn structured_inference_with_retry_and_fallback(
     model_group: &ModelGroup,
-    overrides: RequestOverrides,
-    system_prompt: &str,
-    history: Vec<RigMessage>,
+    request: ModelRequest<'_>,
     schema: serde_json::Value,
-    usage_service: &UsageService,
-    usage_ctx: &UsageContext,
 ) -> Result<serde_json::Value, InferenceError> {
+    let ModelRequest {
+        overrides,
+        system_prompt,
+        history,
+        usage_service,
+        usage_context: usage_ctx,
+        ..
+    } = request;
     ensure_usable(&model_group.providers, model_group).await?;
     let mut errors = Vec::new();
     let max_tokens = overrides
@@ -305,6 +450,7 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
 
     let ref_str = model_group.main.as_str();
     let start = Instant::now();
+<<<<<<< ours
     let mut max_tokens = capped_max_tokens(&model_group.main, max_tokens);
     let result = loop {
         match retry_with_backoff(&model_group.retry, &model_group.main, || async {
@@ -330,6 +476,42 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
         }
     };
     match result {
+||||||| base
+    match retry_with_backoff(&model_group.retry, &model_group.main, || async {
+        let provider = provider_for(&model_group.providers, &model_group.main)?;
+        provider
+            .structured_inference(
+                &model_group.main,
+                system_prompt,
+                truncated.clone(),
+                schema.clone(),
+                max_tokens,
+                temperature,
+            )
+            .await
+    })
+    .await
+    {
+=======
+    match retry_with_backoff(&model_group.retry, &model_group.main, || async {
+        let request_history = truncated
+            .as_ref()
+            .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
+        let provider = provider_for(&model_group.providers, &model_group.main)?;
+        provider
+            .structured_inference(
+                &model_group.main,
+                system_prompt,
+                request_history.clone(),
+                schema.clone(),
+                max_tokens,
+                temperature,
+            )
+            .await
+    })
+    .await
+    {
+>>>>>>> upstream
         Ok(RetryOutcome {
             value,
             retry_count,
@@ -380,6 +562,7 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
             truncation_pct,
         );
         let start = Instant::now();
+<<<<<<< ours
         let mut max_tokens = capped_max_tokens(fallback, max_tokens);
         let result = loop {
             match retry_with_backoff(&model_group.retry, fallback, || async {
@@ -405,6 +588,42 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
             }
         };
         match result {
+||||||| base
+        match retry_with_backoff(&model_group.retry, fallback, || async {
+            let provider = provider_for(&model_group.providers, fallback)?;
+            provider
+                .structured_inference(
+                    fallback,
+                    system_prompt,
+                    truncated_fb.clone(),
+                    schema.clone(),
+                    max_tokens,
+                    temperature,
+                )
+                .await
+        })
+        .await
+        {
+=======
+        match retry_with_backoff(&model_group.retry, fallback, || async {
+            let request_history = truncated_fb
+                .as_ref()
+                .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
+            let provider = provider_for(&model_group.providers, fallback)?;
+            provider
+                .structured_inference(
+                    fallback,
+                    system_prompt,
+                    request_history.clone(),
+                    schema.clone(),
+                    max_tokens,
+                    temperature,
+                )
+                .await
+        })
+        .await
+        {
+>>>>>>> upstream
             Ok(RetryOutcome {
                 value,
                 retry_count,
@@ -447,19 +666,22 @@ pub enum StreamResult {
     Cancelled,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn stream_with_retry_and_fallback(
     model_group: &ModelGroup,
-    overrides: RequestOverrides,
-    system_prompt: &str,
-    chat_history: &[RigMessage],
-    tools: &[RigToolDefinition],
+    request: ModelRequest<'_>,
     event_tx: &EventSender,
     cancel_token: &tokio_util::sync::CancellationToken,
     accumulated_text: &mut String,
-    usage_service: &UsageService,
-    usage_ctx: &UsageContext,
 ) -> Result<StreamResult, crate::core::error::AppError> {
+    let ModelRequest {
+        overrides,
+        input_token_estimate,
+        system_prompt,
+        history,
+        tools,
+        usage_service,
+        usage_context: usage_ctx,
+    } = request;
     let mut failures = Vec::new();
     for (index, model) in std::iter::once(&model_group.main)
         .chain(&model_group.fallbacks)
@@ -474,12 +696,43 @@ pub(crate) async fn stream_with_retry_and_fallback(
         };
         let max_tokens = overrides.max_tokens.or(model.request_settings.max_tokens);
         let temperature = overrides.temperature.or(model.request_settings.temperature);
+<<<<<<< ours
         // Chat history is compacted before the turn starts. Tool results can
         // grow it during this turn, but dropping the opening request here makes
         // the agent lose its task before its first reply is finished. Preserve
         // the complete history for every retry and fallback; an oversized
         // request must surface the provider's error instead of losing context.
+||||||| base
+        let history = truncate_history(
+            chat_history.to_vec(),
+            system_prompt,
+            model_group.context_window,
+            max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize,
+            model_group.inference.history_truncation_pct,
+        );
+=======
+        let history = match completion_history(
+            &history,
+            system_prompt,
+            &tools,
+            model_group,
+            max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize,
+            HistoryOverflow::Reject,
+            if index == 0 {
+                input_token_estimate
+            } else {
+                None
+            },
+        ) {
+            Ok(history) => history,
+            Err(error) => {
+                failures.push(InferenceError::InferenceFailed(error).for_model(model, 0));
+                continue;
+            }
+        };
+>>>>>>> upstream
         let emitted = Arc::new(AtomicBool::new(false));
+<<<<<<< ours
         let mut max_tokens = capped_max_tokens(model, max_tokens);
         let result = loop {
             match stream_one_model(
@@ -511,6 +764,51 @@ pub(crate) async fn stream_with_retry_and_fallback(
             }
         };
         match result {
+||||||| base
+        match stream_one_model(
+            provider,
+            emitted.clone(),
+            model_group,
+            model,
+            RequestOverrides {
+                max_tokens,
+                temperature,
+            },
+            index as u8,
+            system_prompt,
+            &history,
+            tools,
+            event_tx,
+            cancel_token,
+            accumulated_text,
+            usage_service,
+            usage_ctx,
+        )
+        .await
+        {
+=======
+        match stream_one_model(
+            provider,
+            emitted.clone(),
+            model_group,
+            model,
+            RequestOverrides {
+                max_tokens,
+                temperature,
+            },
+            index as u8,
+            system_prompt,
+            &history,
+            &tools,
+            event_tx,
+            cancel_token,
+            accumulated_text,
+            usage_service,
+            usage_ctx,
+        )
+        .await
+        {
+>>>>>>> upstream
             Ok(result) => return Ok(result),
             Err(error) => {
                 failures.push(error);

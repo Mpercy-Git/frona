@@ -1,8 +1,11 @@
+pub(super) mod context;
 use crate::agent::config::parse_frontmatter;
-use crate::agent::prompt::PromptLoader;
+use crate::agent::context::AgentContextScope;
+use crate::agent::prompt::{AgentPromptBuilder, PromptLoader};
 use crate::agent::service::AgentService;
 use crate::agent::workspace::AgentPromptLoader;
 use crate::auth::UserService;
+use crate::chat::message::models::MessageCommand;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
 use crate::core::template::render_template;
@@ -12,10 +15,18 @@ use crate::inference::ModelProviderRegistry;
 use crate::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder,
 };
+<<<<<<< ours
 use crate::inference::text_inference;
 use crate::notification::models::{NotificationData, NotificationLevel};
 use crate::notification::service::NotificationService;
+||||||| base
+use crate::inference::provider::service::ModelProviderService;
+use crate::inference::text_inference;
+=======
+use crate::inference::provider::service::ModelProviderService;
+>>>>>>> upstream
 use crate::storage::StorageService;
+use context::effective_signature;
 use rig_core::completion::Message as RigMessage;
 
 // Reasoning models may consume output tokens before emitting the short text
@@ -38,7 +49,7 @@ use super::message::models::{
 use super::message::repository::MessageRepository;
 use super::models::Chat;
 use super::models::{ChatResponse, CreateChatRequest, UpdateChatRequest};
-use super::repository::ChatRepository;
+use super::repository::{ChatRepository, ChatSummaryRepository};
 use crate::db::repo::tool_calls::ToolCallRepository;
 use crate::inference::tool_call::{ToolCall, ToolCallResponse, ToolStatus};
 pub enum ToolResolveResult {
@@ -56,6 +67,8 @@ impl ToolResolveResult {
 
 #[derive(Clone)]
 pub struct ChatService {
+    agent_prompt_builder: AgentPromptBuilder,
+    agent_context_manager: crate::agent::context::AgentContextManager,
     chat_repo: SurrealChatRepo,
     message_repo: SurrealMessageRepo,
     tool_call_repo: crate::db::repo::tool_calls::SurrealToolCallRepo,
@@ -93,17 +106,27 @@ impl ChatService {
         presign: crate::credential::presign::PresignService,
         notification_service: NotificationService,
         usage_service: crate::inference::usage::UsageService,
+        agent_context_manager: crate::agent::context::AgentContextManager,
+        agent_prompt_builder: AgentPromptBuilder,
     ) -> Self {
         let compactor = super::compactor::ChatCompactor::new(
             crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(message_repo.db().clone()),
             message_repo.clone(),
             std::sync::Arc::new(super::compactor::TextInferenceSummarizer::new(
+<<<<<<< ours
                 provider_registry.clone(),
+||||||| base
+                model_providers.clone(),
+=======
+>>>>>>> upstream
                 usage_service.clone(),
             )),
             prompts.clone(),
+            agent_context_manager.clone(),
         );
         Self {
+            agent_prompt_builder,
+            agent_context_manager,
             chat_repo,
             message_repo,
             tool_call_repo,
@@ -122,6 +145,7 @@ impl ChatService {
         }
     }
 
+<<<<<<< ours
     /// Attach the share service so [`ChatService::get_accessible`] can honor
     /// read-only shares. Call once at startup before the service is cloned.
     pub fn set_share_service(
@@ -218,6 +242,27 @@ impl ChatService {
             .ok()
     }
 
+||||||| base
+=======
+    pub async fn build_system_prompt(
+        &self,
+        config: &AgentConfig,
+        user: &crate::auth::models::User,
+        agent: &crate::agent::models::Agent,
+        additional_instructions: &[&str],
+    ) -> Result<String, AppError> {
+        self.agent_prompt_builder
+            .build(
+                &config.system_prompt,
+                &config.identity,
+                &agent.handle,
+                user,
+                additional_instructions,
+            )
+            .await
+    }
+
+>>>>>>> upstream
     fn broadcast_chat_entity(&self, chat: &Chat, action: crate::chat::broadcast::EntityAction) {
         self.broadcast.broadcast_entity_updated(
             &chat.user_id,
@@ -282,6 +327,7 @@ impl ChatService {
 
         let now = chrono::Utc::now();
         let chat = Chat {
+            agent_context_state: Default::default(),
             id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             space_id: req.space_id,
@@ -456,6 +502,7 @@ impl ChatService {
         }
         let now = chrono::Utc::now();
         let chat = Chat {
+            agent_context_state: Default::default(),
             id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             space_id: Some(space_id.to_string()),
@@ -523,6 +570,7 @@ impl ChatService {
     }
 
     pub async fn persist_inbound_message(&self, msg: &Message) -> Result<Message, AppError> {
+<<<<<<< ours
         let chat = self.chat_repo.find_by_id(&msg.chat_id).await.ok().flatten();
         let mut msg = msg.clone();
         if let Some(chat) = &chat {
@@ -537,6 +585,29 @@ impl ChatService {
                 crate::chat::broadcast::EntityAction::Created,
             );
         }
+||||||| base
+        let saved = self.message_repo.create(msg).await?;
+        if let Ok(Some(chat)) = self.chat_repo.find_by_id(&saved.chat_id).await {
+            self.broadcast_message_persisted(
+                &saved,
+                &chat,
+                crate::chat::broadcast::EntityAction::Created,
+            );
+        }
+=======
+        let chat = self
+            .find_chat(&msg.chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat".into()))?;
+        let saved = self
+            .persist_prepared_message(&chat, msg.clone(), None, None)
+            .await?;
+        self.broadcast_message_persisted(
+            &saved,
+            &chat,
+            crate::chat::broadcast::EntityAction::Created,
+        );
+>>>>>>> upstream
         Ok(saved)
     }
 
@@ -596,7 +667,7 @@ impl ChatService {
     ) -> Result<(), AppError> {
         // Authorize by ownership: get_chat returns NotFound otherwise.
         let chat = self.get_chat(user_id, chat_id).await?;
-        self.message_repo.delete_by_chat_id(chat_id).await?;
+        self.message_repo.clear_with_summary(chat_id).await?;
         self.broadcast_chat_entity(&chat, crate::chat::broadcast::EntityAction::Updated);
         Ok(())
     }
@@ -639,6 +710,41 @@ impl ChatService {
         req: SendMessageRequest,
     ) -> Result<Vec<MessageResponse>, AppError> {
         let chat = self.get_chat(user_id, chat_id).await?;
+        let agent = self
+            .agent_service
+            .find_by_id(&chat.agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Agent".into()))?;
+        let user = self
+            .user_service
+            .find_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("User".into()))?;
+        let task = self.load_chat_task(&chat).await?;
+        let scope = crate::agent::context::AgentContextScope {
+            user: &user,
+            agent: &agent,
+            space_id: chat.space_id.as_deref(),
+            task: task.as_ref(),
+        };
+
+        let mut user_message_builder =
+            Message::builder(chat_id, MessageRole::User, req.content.clone())
+                .attachments(req.attachments.clone());
+        if let Some(ref md) = req.metadata {
+            user_message_builder = user_message_builder.metadata(md.clone());
+        }
+        let user_message = user_message_builder.build();
+        let user_message = self
+            .save_message_and_broadcast(
+                &chat,
+                Some(&scope),
+                user_message,
+                user_id,
+                chat.space_id.as_deref(),
+                crate::chat::broadcast::EntityAction::Created,
+            )
+            .await?;
 
         let title_handle = if chat.title.is_none() {
             let svc = self.clone();
@@ -654,25 +760,14 @@ impl ChatService {
             None
         };
 
-        let mut user_message_builder =
-            Message::builder(chat_id, MessageRole::User, req.content.clone());
-        if let Some(ref md) = req.metadata {
-            user_message_builder = user_message_builder.metadata(md.clone());
-        }
-        let user_message = user_message_builder.build();
-        let user_message = self
-            .save_message_and_broadcast(
-                user_message,
-                user_id,
-                chat.space_id.as_deref(),
-                crate::chat::broadcast::EntityAction::Created,
-            )
+        let agent_config = self.resolve_agent_config(&chat.agent_id).await?;
+        let system_prompt = self
+            .build_system_prompt(&agent_config, &user, &agent, &[])
             .await?;
 
-        let agent_config = self.resolve_agent_config(&chat.agent_id).await?;
-        let system_prompt = agent_config.system_prompt;
         let model_group_name = agent_config.model_group;
 
+<<<<<<< ours
         let model_group = self.provider_registry.get_model_group(&model_group_name)?;
         let max_output = model_group
             .max_tokens
@@ -693,8 +788,45 @@ impl ChatService {
             )
             .await?
             .conversation;
+||||||| base
+        let model_group = self
+            .model_providers
+            .resolve(&crate::inference::ModelRef(model_group_name.clone().into()))?;
+        let max_output = model_group
+            .max_tokens
+            .unwrap_or(model_group.inference.default_max_tokens) as usize;
+        let loaded = self
+            .compactor
+            .compact_chat(
+                user_id,
+                chat_id,
+                &chat.agent_id,
+                &system_prompt,
+                model_group.context_window,
+                max_output,
+            )
+            .await?
+            .conversation;
+=======
+        let model_group = self.model_providers.resolve_with_fallback(
+            &crate::inference::ModelRef(model_group_name.clone().into()),
+            &crate::inference::ModelRef::PRIMARY,
+        )?;
+        let loaded = self.compactor.load_conversation(chat_id).await?;
+        let agent_context = loaded.agent_context;
+>>>>>>> upstream
         let conversation_summary = loaded.summary;
-        let stored_messages = loaded.messages;
+        let mut stored_messages = loaded.messages;
+        let request_index = stored_messages
+            .iter()
+            .position(|m| m.id == user_message.id)
+            .ok_or_else(|| {
+                AppError::Conflict("Request is outside the active conversation".into())
+            })?;
+        stored_messages.truncate(request_index + 1);
+        let request_signature = stored_messages
+            .last()
+            .and_then(|m| m.agent_context_signature.clone());
         let conv_builder = DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
@@ -705,7 +837,15 @@ impl ChatService {
             model_ref: model_group.main.clone(),
             user_id: user_id.to_string(),
         };
+<<<<<<< ours
         let mut rig_history = conv_builder
+||||||| base
+        let tool_calls = self.get_tool_calls(chat_id).await?;
+        let mut rig_history = conv_builder
+=======
+        let tool_calls = self.get_tool_calls(chat_id).await?;
+        let mut model_history = conv_builder
+>>>>>>> upstream
             .build(
                 &stored_messages,
                 &tool_calls,
@@ -713,7 +853,9 @@ impl ChatService {
                 conversation_summary.as_deref(),
             )
             .await;
+        model_history.set_summary_context(agent_context.as_deref());
 
+<<<<<<< ours
         let catalog_vision = self
             .usage_service
             .model_supports_vision(&conv_ctx.model_ref);
@@ -753,6 +895,45 @@ impl ChatService {
         }
 
         rig_history.push(RigMessage::user(&req.content));
+||||||| base
+        rig_history.push(RigMessage::user(&req.content));
+=======
+        let compacted = self
+            .compactor
+            .compact_chat(
+                chat_id,
+                super::compactor::CompactionContext {
+                    agent_context: scope,
+                    system_prompt: &system_prompt,
+                    model_group: &model_group,
+                    model_history: &model_history,
+                    tools: &[],
+                },
+            )
+            .await?;
+        let response_signature = if compacted.compacted {
+            use crate::chat::repository::ChatSummaryRepository;
+            crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(
+                self.message_repo.db().clone(),
+            )
+            .find_by_chat_id(chat_id)
+            .await?
+            .and_then(|s| s.agent_context_signature)
+            .or(request_signature)
+        } else {
+            request_signature
+        };
+        let rig_history = compacted.model_history.history;
+        let input_token_estimate = compacted.input_token_estimate;
+
+        super::compactor::validate_initial_context(
+            &rig_history,
+            &system_prompt,
+            &model_group,
+            &[],
+            input_token_estimate,
+        )?;
+>>>>>>> upstream
         // Pre-allocate the message id so the usage row's message_id matches
         // the assistant Message that's about to be persisted.
         let assistant_message_id = crate::core::repository::new_id();
@@ -765,6 +946,7 @@ impl ChatService {
             user_id,
             model_group.name.clone(),
         );
+<<<<<<< ours
         let response_text = text_inference(
             model_group,
             &system_prompt,
@@ -773,14 +955,41 @@ impl ChatService {
             &usage_ctx,
         )
         .await?;
+||||||| base
+        let response_text = text_inference(
+            &model_group,
+            &system_prompt,
+            rig_history,
+            &self.usage_service,
+            &usage_ctx,
+        )
+        .await?;
+=======
+        let response = model_group
+            .inference(crate::inference::ModelRequest {
+                input_token_estimate,
+                system_prompt: &system_prompt,
+                history: rig_history,
+                tools: vec![],
+                usage_service: &self.usage_service,
+                usage_context: &usage_ctx,
+                overrides: Default::default(),
+            })
+            .await?;
+        let response_text =
+            crate::inference::provider::extract_text_from_choice(&response.content)?;
+>>>>>>> upstream
 
         let mut assistant_message = Message::builder(chat_id, MessageRole::Agent, response_text)
             .agent_id(chat.agent_id.clone())
             .status(MessageStatus::Completed)
             .build();
         assistant_message.id = assistant_message_id;
+        assistant_message.agent_context_signature = response_signature;
         let assistant_message = self
             .save_message_and_broadcast(
+                &chat,
+                Some(&scope),
                 assistant_message,
                 user_id,
                 chat.space_id.as_deref(),
@@ -816,6 +1025,7 @@ impl ChatService {
 
         Ok(messages
             .into_iter()
+            .filter(|msg| !msg.is_internal_context())
             .map(|msg| {
                 let id = msg.id.clone();
                 let mut resp: MessageResponse = msg.into();
@@ -899,6 +1109,8 @@ impl ChatService {
         }
         let msg = builder.build();
         self.save_message_and_broadcast(
+            &chat,
+            None,
             msg,
             user_id,
             chat.space_id.as_deref(),
@@ -921,6 +1133,8 @@ impl ChatService {
             builder = builder.contact_id(cid);
         }
         self.save_message_and_broadcast(
+            &chat,
+            None,
             builder.build(),
             user_id,
             chat.space_id.as_deref(),
@@ -943,6 +1157,8 @@ impl ChatService {
             builder = builder.contact_id(cid);
         }
         self.save_message_and_broadcast(
+            &chat,
+            None,
             builder.build(),
             user_id,
             chat.space_id.as_deref(),
@@ -951,6 +1167,7 @@ impl ChatService {
         .await
     }
 
+<<<<<<< ours
     /// True when `chat_id` is the working chat of background work — a
     /// delegated sub-task, a cron job or run, or a signal watch. Replies there
     /// are intermediate steps the user did not ask to hear about; the outcome
@@ -981,10 +1198,237 @@ impl ChatService {
         }
     }
 
+||||||| base
+=======
+    /// Persist a message in the task's own chat using the task already held by its executor.
+    pub async fn save_task_message(
+        &self,
+        task: &crate::agent::task::models::Task,
+        message: Message,
+    ) -> Result<MessageResponse, AppError> {
+        let chat = self
+            .find_chat(&message.chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat".into()))?;
+        let is_placeholder =
+            message.role == MessageRole::Agent && message.status == Some(MessageStatus::Executing);
+        let saved = self
+            .persist_prepared_message(&chat, message, None, Some(task))
+            .await?;
+        if is_placeholder {
+            return Ok(saved.into());
+        }
+        self.presign_and_broadcast_message(
+            saved,
+            &task.user_id,
+            task.space_id.as_deref(),
+            crate::chat::broadcast::EntityAction::Created,
+        )
+        .await
+    }
+
+    async fn load_chat_task(
+        &self,
+        chat: &Chat,
+    ) -> Result<Option<crate::agent::task::models::Task>, AppError> {
+        match &chat.task_id {
+            Some(id) => Ok(Some(
+                crate::db::repo::tasks::SurrealTaskRepo::new(self.message_repo.db().clone())
+                    .find_by_id(id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("Task".into()))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Bind context only when this message starts a new, non-deferred turn.
+    async fn bind_message_context(
+        &self,
+        chat: &mut Chat,
+        message: &mut Message,
+        scope: Option<&AgentContextScope<'_>>,
+        task: Option<&crate::agent::task::models::Task>,
+    ) -> Result<Option<Message>, AppError> {
+        if message.agent_context_signature.is_some() {
+            return Ok(None);
+        }
+        // Agent-handle commands select the source scope before the turn is
+        // persisted. Static commands retain the chat's default agent.
+        if let Some(MessageCommand::Command { name, .. }) = &message.command {
+            let mut commands = crate::chat::command::CommandRegistry::new();
+            crate::chat::command::builtin::register_all(&mut commands);
+            if commands.get(name).is_none()
+                && let Some(agent) = self
+                    .agent_service
+                    .find_by_handle(&chat.user_id, name)
+                    .await?
+            {
+                chat.agent_id = agent.id.clone();
+                message.agent_id = Some(agent.id);
+            }
+        }
+        let position = self.message_repo.context_position(&chat.id).await?;
+        let summaries = crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(
+            self.message_repo.db().clone(),
+        );
+        let summary = summaries.find_by_chat_id(&chat.id).await?;
+        let previous = effective_signature(&position, summary.as_ref());
+        let deferred_command = matches!(message.command, Some(MessageCommand::Command { .. }));
+        let follows_input = matches!(message.role, MessageRole::Agent)
+            && message.status == Some(MessageStatus::Executing)
+            && position.last.as_ref().is_some_and(|row| {
+                matches!(
+                    row.role,
+                    MessageRole::User
+                        | MessageRole::Contact
+                        | MessageRole::LiveCall
+                        | MessageRole::TaskCompletion
+                )
+            });
+        let starts_turn = matches!(
+            message.role,
+            MessageRole::User
+                | MessageRole::Contact
+                | MessageRole::LiveCall
+                | MessageRole::TaskCompletion
+        ) || (!follows_input
+            && (previous.is_none()
+                || (matches!(message.role, MessageRole::Agent)
+                    && message.status == Some(MessageStatus::Executing))));
+        let prepared = if starts_turn && !deferred_command {
+            Some(if let Some(scope) = scope {
+                self.prepare_message_context(chat, message, scope, previous.as_ref())
+                    .await?
+            } else {
+                let user = self
+                    .user_service
+                    .find_by_id(&chat.user_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("User".into()))?;
+                let agent = self
+                    .agent_service
+                    .find_by_id(&chat.agent_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("Agent".into()))?;
+                let loaded_task;
+                let task = match task {
+                    Some(task) => Some(task),
+                    None => {
+                        loaded_task = self.load_chat_task(chat).await?;
+                        loaded_task.as_ref()
+                    }
+                };
+                let space_id = chat.space_id.clone();
+                let scope = AgentContextScope {
+                    user: &user,
+                    agent: &agent,
+                    space_id: space_id.as_deref(),
+                    task,
+                };
+                self.prepare_message_context(chat, message, &scope, previous.as_ref())
+                    .await?
+            })
+        } else {
+            None
+        };
+        if !starts_turn
+            && matches!(message.role, MessageRole::Agent)
+            && message.status == Some(MessageStatus::Executing)
+        {
+            if let Some(agent_id) = position
+                .last
+                .as_ref()
+                .filter(|row| matches!(row.command, Some(MessageCommand::Command { .. })))
+                .and_then(|row| row.agent_id.clone())
+            {
+                message.agent_id = Some(agent_id);
+            }
+        } else if starts_turn && message.agent_id.is_none() {
+            message.agent_id = Some(chat.agent_id.clone());
+        }
+        let update = prepared
+            .as_ref()
+            .and_then(|prepared| prepared.update.clone());
+        message.agent_context_signature = if deferred_command {
+            None
+        } else {
+            prepared
+                .map(|prepared| prepared.snapshot.signature)
+                .or(previous)
+                .or_else(|| {
+                    position
+                        .last
+                        .as_ref()
+                        .and_then(|row| row.agent_context_signature.clone())
+                })
+        };
+        let prefix = update.unwrap_or_default();
+        // Keep new messages after the saved summary and the preceding message.
+        message.created_at = chrono::Utc::now()
+            .max(position.last.as_ref().map_or(message.created_at, |row| {
+                row.created_at + chrono::Duration::nanoseconds(1)
+            }))
+            .max(summary.as_ref().map_or(message.created_at, |summary| {
+                summary.updated_at + chrono::Duration::nanoseconds(1)
+            }));
+        if matches!(message.role, MessageRole::Agent) && starts_turn {
+            // Autonomous turns need user-side context before assistant output.
+            // Store it as its own immutable system row, atomically with the reply placeholder.
+            let mut context =
+                Message::builder(&chat.id, MessageRole::System, String::new()).build();
+            context.agent_context_signature = message.agent_context_signature.clone();
+            context.processed_content = Some(prefix);
+            context.created_at = message.created_at;
+            message.created_at += chrono::Duration::nanoseconds(1);
+            return Ok(Some(context));
+        }
+        if !deferred_command && starts_turn {
+            message.processed_content = Some(if prefix.is_empty() {
+                message.inference_content().to_owned()
+            } else {
+                format!("{prefix}\n\n{}", message.inference_content())
+            });
+        }
+        Ok(None)
+    }
+
+    /// Save the prepared message and any autonomous-turn context as one unit.
+    pub(super) async fn persist_prepared_message(
+        &self,
+        chat: &Chat,
+        mut message: Message,
+        scope: Option<&AgentContextScope<'_>>,
+        task: Option<&crate::agent::task::models::Task>,
+    ) -> Result<Message, AppError> {
+        let mut chat = chat.clone();
+        let previous_state = chat.agent_context_state.clone();
+        let context = self
+            .bind_message_context(&mut chat, &mut message, scope, task)
+            .await?;
+        let saved = self
+            .message_repo
+            .create_with_context(&message, context.as_ref())
+            .await?;
+        if chat.agent_context_state != previous_state {
+            self.chat_repo
+                .save_agent_context_state(&chat.id, &chat.agent_context_state)
+                .await?;
+        }
+        Ok(saved)
+    }
+
+>>>>>>> upstream
     /// Skips broadcasting - an empty Executing row would render as a phantom
     /// message in the UI while tokens stream.
     async fn save_message(&self, message: Message) -> Result<MessageResponse, AppError> {
-        let saved = self.message_repo.create(&message).await?;
+        let chat = self
+            .find_chat(&message.chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat".into()))?;
+        let saved = self
+            .persist_prepared_message(&chat, message, None, None)
+            .await?;
         Ok(saved.into())
     }
 
@@ -992,13 +1436,27 @@ impl ChatService {
     /// renders broken until refresh because live SSE wouldn't match the GET.
     async fn save_message_and_broadcast(
         &self,
+        chat: &Chat,
+        scope: Option<&AgentContextScope<'_>>,
         message: Message,
         user_id: &str,
         space_id: Option<&str>,
         action: crate::chat::broadcast::EntityAction,
     ) -> Result<MessageResponse, AppError> {
-        let saved = self.message_repo.create(&message).await?;
+        let saved = self
+            .persist_prepared_message(chat, message, scope, None)
+            .await?;
+        self.presign_and_broadcast_message(saved, user_id, space_id, action)
+            .await
+    }
 
+    async fn presign_and_broadcast_message(
+        &self,
+        saved: Message,
+        user_id: &str,
+        space_id: Option<&str>,
+        action: crate::chat::broadcast::EntityAction,
+    ) -> Result<MessageResponse, AppError> {
         let mut response: MessageResponse = saved.clone().into();
         crate::credential::presign::presign_response_by_user_id(
             &self.presign,
@@ -1081,10 +1539,16 @@ impl ChatService {
         chat_id: &str,
         event: MessageEvent,
     ) -> Result<MessageResponse, AppError> {
+        let chat = self
+            .find_chat(chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat".into()))?;
         let msg = Message::builder(chat_id, MessageRole::System, String::new())
             .event(event)
             .build();
         self.save_message_and_broadcast(
+            &chat,
+            None,
             msg,
             user_id,
             space_id,
@@ -1100,8 +1564,14 @@ impl ChatService {
         chat_id: &str,
         content: String,
     ) -> Result<MessageResponse, AppError> {
+        let chat = self
+            .find_chat(chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat".into()))?;
         let msg = Message::builder(chat_id, MessageRole::System, content).build();
         self.save_message_and_broadcast(
+            &chat,
+            None,
             msg,
             user_id,
             space_id,
@@ -1119,12 +1589,18 @@ impl ChatService {
         content: String,
         delivery: Option<crate::chat::message::models::MessageDelivery>,
     ) -> Result<MessageResponse, AppError> {
+        let chat = self
+            .find_chat(chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat".into()))?;
         let mut builder =
             Message::builder(chat_id, MessageRole::Agent, content).agent_id(agent_id.to_string());
         if let Some(d) = delivery {
             builder = builder.delivery(d);
         }
         self.save_message_and_broadcast(
+            &chat,
+            None,
             builder.build(),
             user_id,
             space_id,
@@ -1144,12 +1620,18 @@ impl ChatService {
         event: MessageEvent,
         attachments: Vec<crate::storage::Attachment>,
     ) -> Result<MessageResponse, AppError> {
+        let chat = self
+            .find_chat(chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat".into()))?;
         let msg = Message::builder(chat_id, MessageRole::TaskCompletion, content)
             .agent_id(agent_id.to_string())
             .event(event)
             .attachments(attachments)
             .build();
         self.save_message_and_broadcast(
+            &chat,
+            None,
             msg,
             user_id,
             space_id,
@@ -1432,6 +1914,8 @@ impl ChatService {
         message_id: &str,
         turn: u32,
         tool_call_id: &str,
+        provider_item_id: Option<String>,
+        signature: Option<String>,
         tool_name: &str,
         arguments: &serde_json::Value,
         description: Option<String>,
@@ -1445,6 +1929,8 @@ impl ChatService {
             message_id: message_id.to_string(),
             turn,
             provider_call_id: tool_call_id.to_string(),
+            provider_item_id,
+            signature,
             name: tool_name.to_string(),
             arguments: arguments.clone(),
             result: String::new(),
@@ -1847,6 +2333,7 @@ impl ChatService {
             agent.user_id.clone(),
             model_group.name.clone(),
         );
+<<<<<<< ours
         let result = text_inference(
             &model_group,
             &parsed.template,
@@ -1855,6 +2342,42 @@ impl ChatService {
             &usage_ctx,
         )
         .await?;
+||||||| base
+        let crate::inference::ModelResponse {
+            content: contents, ..
+        } = model_group
+            .inference(crate::inference::ModelRequest {
+                system_prompt: &parsed.template,
+                history: vec![RigMessage::user(user_content)],
+                tools: vec![],
+                usage_service: &self.usage_service,
+                usage_context: &usage_ctx,
+                overrides: crate::inference::RequestOverrides {
+                    max_tokens: Some(TITLE_MAX_TOKENS),
+                    temperature: None,
+                },
+            })
+            .await?;
+        let result = crate::inference::provider::extract_text_from_choice(&contents)?;
+=======
+        let crate::inference::ModelResponse {
+            content: contents, ..
+        } = model_group
+            .inference(crate::inference::ModelRequest {
+                input_token_estimate: None,
+                system_prompt: &parsed.template,
+                history: vec![RigMessage::user(user_content)],
+                tools: vec![],
+                usage_service: &self.usage_service,
+                usage_context: &usage_ctx,
+                overrides: crate::inference::RequestOverrides {
+                    max_tokens: Some(TITLE_MAX_TOKENS),
+                    temperature: None,
+                },
+            })
+            .await?;
+        let result = crate::inference::provider::extract_text_from_choice(&contents)?;
+>>>>>>> upstream
 
         let title = parse_title_response(&result, user_content);
         self.update_chat_title(chat_id, &title).await?;

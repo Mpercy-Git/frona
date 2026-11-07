@@ -15,6 +15,9 @@ pub const PUSH_IMAGE_METADATA_KEY: &str = "push_image";
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "chat")]
 pub struct Chat {
+    #[serde(default)]
+    #[surreal(default)]
+    pub agent_context_state: crate::agent::context::AgentContextState,
     pub id: String,
     pub user_id: String,
     #[serialize_always]
@@ -40,10 +43,13 @@ pub struct Chat {
 /// domain (replaces the old `Memory{source_type: Chat}` storage). The summary
 /// covers messages with `created_at <= compacted_until`; messages after the
 /// cutoff are loaded verbatim. Compacted messages are retained, not deleted.
-#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "chat_summary")]
 pub struct ChatSummary {
+    #[serde(default)]
+    #[surreal(default)]
+    pub agent_context_signature: Option<crate::agent::context::AgentContextSignature>,
     pub id: String,
     pub user_id: String,
     pub chat_id: String,

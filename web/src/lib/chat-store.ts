@@ -8,6 +8,7 @@ export interface RunningTotals {
   outputTokens: number;
   costUsd: number;
   calls: number;
+  incompleteUsageCalls?: number;
 }
 
 const ZERO_TOTALS: RunningTotals = {
@@ -16,15 +17,22 @@ const ZERO_TOTALS: RunningTotals = {
   outputTokens: 0,
   costUsd: 0,
   calls: 0,
+  incompleteUsageCalls: 0,
 };
 
 function addUsage(totals: RunningTotals, u: UsageRecorded): RunningTotals {
+  const incomplete =
+    u.total_tokens === undefined ||
+    u.input_tokens < u.cached_input_tokens ||
+    u.input_tokens + u.output_tokens !== u.total_tokens ||
+    [u.input_tokens, u.cached_input_tokens, u.output_tokens].some((n) => !Number.isInteger(n) || n < 0);
   return {
     inputTokens: totals.inputTokens + u.input_tokens,
     cachedInputTokens: totals.cachedInputTokens + u.cached_input_tokens,
     outputTokens: totals.outputTokens + u.output_tokens,
     costUsd: totals.costUsd + (u.cost_usd ?? 0),
     calls: totals.calls + 1,
+    incompleteUsageCalls: (totals.incompleteUsageCalls ?? totals.calls) + (incomplete ? 1 : 0),
   };
 }
 
@@ -115,6 +123,8 @@ export class ChatStore {
   private listeners = new Set<() => void>();
   private _snapshot: StoreSnapshot | null = null;
   private streamingNotificationScheduled = false;
+  private activityRevision = 0;
+  private historyRequest = 0;
 
   subscribe(callback: () => void): () => void {
     this.listeners.add(callback);
@@ -170,6 +180,7 @@ export class ChatStore {
           output_tokens: number;
           cost_usd: number;
           calls: number;
+          incomplete_usage_calls?: number;
         };
         last_chat_input_tokens: number | null;
         total_tool_calls: number;
@@ -181,6 +192,7 @@ export class ChatStore {
           outputTokens: data.totals.output_tokens,
           costUsd: data.totals.cost_usd,
           calls: data.totals.calls,
+          incompleteUsageCalls: data.totals.incomplete_usage_calls ?? data.totals.calls,
         },
         data.last_chat_input_tokens ?? 0,
         data.total_tool_calls,
@@ -213,6 +225,7 @@ export class ChatStore {
   }
 
   markRunning() {
+    this.activityRevision += 1;
     this.isRunning = true;
     this.notify();
   }
@@ -225,6 +238,7 @@ export class ChatStore {
 
   /** Add a user message optimistically (before backend echo). */
   addUserMessage(content: string, attachments?: Attachment[]) {
+    this.activityRevision += 1;
     this.messages.push({
       id: `${OPTIMISTIC_USER_ID_PREFIX}${Date.now()}`,
       chat_id: "",
@@ -238,6 +252,8 @@ export class ChatStore {
   }
 
   async loadMessages(chatId: string) {
+    const request = ++this.historyRequest;
+    const activityRevision = this.activityRevision;
     // Fire usage seed in parallel — failures are non-fatal (counter just
     // starts from zero and SSE catches up).
     void this.loadUsageSeed(chatId);
@@ -245,6 +261,7 @@ export class ChatStore {
       const { messages, has_more } = await api.get<{ messages: MessageResponse[]; has_more: boolean }>(
         `/api/chats/${chatId}/messages`,
       );
+<<<<<<< ours
       // Merge instead of overwrite so messages that arrived first — via
       // buffered SSE events on an unloaded chat, or the optimistic user
       // message from onNew — survive the historical fetch. Historical
@@ -280,11 +297,48 @@ export class ChatStore {
           (m) => !claimed.has(m),
         );
       }
+||||||| base
+      // Merge instead of overwrite so messages that arrived first — via
+      // buffered SSE events on an unloaded chat, or the optimistic user
+      // message from onNew — survive the historical fetch. Historical
+      // messages predate anything in the store, so they go in front.
+      if (this.messages.length === 0) {
+        this.messages = messages;
+      } else {
+        const existing = new Set(this.messages.map((m) => m.id));
+        const historical = messages.filter((m) => !existing.has(m.id));
+        this.messages = [...historical, ...this.messages];
+      }
+=======
+      if (request !== this.historyRequest) return;
+      const unchanged = activityRevision === this.activityRevision;
+      const latest = messages.at(-1);
+      const previous = latest && this.messages.find((message) => message.id === latest.id);
+      const pendingSend = this.messages.some((message) => message.id.startsWith("__user_"));
+      const stored = new Map(messages.map((message) => [message.id, message]));
+      const existing = new Set(this.messages.map((message) => message.id));
+      // Refresh persisted messages without overwriting events or optimistic
+      // changes that arrived while the request was in flight.
+      this.messages = [
+        ...messages.filter((message) => !existing.has(message.id)),
+        ...this.messages.map((message) => unchanged ? stored.get(message.id) ?? message : message),
+      ];
+>>>>>>> upstream
       this.sortMessagesChronologically();
+      if (unchanged && !pendingSend && latest?.role === "agent") {
+        if (latest.status === "executing") {
+          this.isRunning = true;
+        } else if (latest.status && (!previous || previous.status !== latest.status || !this.isRunning)) {
+          // A terminal message already known before a newer run began is not
+          // evidence that this run has finished.
+          this.clearStreaming();
+        }
+      }
       this.hasMore = has_more;
     } catch {
       // leave any optimistic/SSE-delivered messages alone
     }
+<<<<<<< ours
     // A chat can be opened while a turn is in flight — a reload mid-run, or a
     // task working through its turns. `isRunning` gates the composer's Stop
     // button, so without seeding it from the loaded row the user lands on a
@@ -305,6 +359,10 @@ export class ChatStore {
       // case keeps the spinner.
       this.clearStreaming();
     }
+||||||| base
+=======
+    if (request !== this.historyRequest) return;
+>>>>>>> upstream
     this.hydrateExternalTools();
     this.loaded = true;
     this.notify();
@@ -347,6 +405,7 @@ export class ChatStore {
   }
 
   handleEvent(event: ChatSSEEvent) {
+    if (event.type !== "usage_recorded") this.activityRevision += 1;
     switch (event.type) {
       case "token":
         this.isRunning = true;
@@ -688,6 +747,7 @@ export class ChatStore {
   }
 
   resolveToolCall(toolCallId: string, result: string) {
+    this.activityRevision += 1;
     // Check pending external tools (streaming state) — optimistic update
     const pending = this.pendingExternalTools.get(toolCallId);
     if (pending?.hitl) {
@@ -780,6 +840,7 @@ export class ChatStore {
   }
 
   clearStreaming() {
+    this.activityRevision += 1;
     this.isRunning = false;
     this.streamingText = "";
     this.streamingReasoning = "";

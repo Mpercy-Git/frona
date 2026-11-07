@@ -257,8 +257,14 @@ function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onC
 function AttachmentItem({ attachment }: { attachment: Attachment }) {
   const url = attachment.url;
   const isImage = attachment.content_type.startsWith("image/");
+<<<<<<< ours
   const media = mediaKind(attachment.content_type, attachment.filename);
   const canPreview = canPreviewFile(attachment.content_type, attachment.filename);
+||||||| base
+  const canPreview = isPreviewable(attachment.content_type);
+=======
+  const canPreview = canPreviewFile(attachment.content_type, attachment.filename);
+>>>>>>> upstream
   const [showPreview, setShowPreview] = useState(false);
 
   if (!url) return null;
